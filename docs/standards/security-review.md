@@ -12,7 +12,14 @@ Any change touching the items below gets this checklist applied in
 [keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md) and is cited, not
 restated, here.
 
-## Keys and secrets
+## Keys and secrets (BYOK-local)
+
+This section covers **BYOK-local** secret handling — the user's own provider keys on
+the user's machine. It is **one of three** key-custody models. The canonical home for
+all three — BYOK-local (OS keychain), BYOK-central (AES-256-GCM Postgres org vault), and
+managed (KMS-backed key pools) — is
+[key-management.md](../architecture/key-management.md); the managed model's security
+surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
 
 - **API keys live in the OS keychain** (macOS Keychain / Windows Credential Manager /
   libsecret), resolved by the backend at call time and attached by the
@@ -25,8 +32,44 @@ restated, here.
 - **No plaintext at rest.** No key in a config file, `.env` committed to git,
   `.relavium.yaml`, a log, or the SQLite DB unencrypted (the local DB is SQLCipher;
   secrets still belong in the keychain, not a DB column).
-- Keys are never interpolated into error messages or the `node:error` / `run:error`
+- Keys are never interpolated into error messages or the `node:failed` / `run:failed`
   events (see [error-handling.md](error-handling.md)).
+
+## Managed mode (Phase 2)
+
+Managed mode puts **Relavium's own provider keys** in the data path and proxies LLM
+egress through Relavium's gateway, with metering and billing. This is a distinct security
+surface from BYOK-local: the secrets are Relavium's, not the user's, and the gateway is
+multi-tenant. BYOK-local is the only default; managed is opt-in (see
+[product-constraints.md](../product-constraints.md)). Canonical homes are cited, not
+restated, here.
+
+- **Master key vault + per-provider key pools.** Relavium's master keys live in a
+  KMS-backed vault and are issued to requests from **per-provider key pools** — never
+  hard-coded, never in a config file, never in the SQLite/Postgres app schema as
+  plaintext. See [ADR-0013](../decisions/0013-managed-key-vault-and-pools.md) and
+  [managed-inference.md](../architecture/managed-inference.md).
+- **No prompt logging by default — meter token counts, not content.** The metering path
+  records token counts and usage metadata, **not** prompt or completion bodies. Prompt/
+  response content is not logged, not persisted, and not retained by default. See
+  [ADR-0015](../decisions/0015-managed-mode-data-handling-and-compliance.md).
+- **Audit every key-leak surface.** None of these may ever contain a provider key or a
+  prompt body: the **vault at rest**, the **gateway request path**, **metering rows**,
+  **billing payloads**, and the **usage dashboard**. A review must trace data through each
+  and confirm no key material and no prompt content lands there.
+- **No Relavium/managed key crosses the `LLMProvider` seam.** A managed provider key is
+  attached inside the gateway, on the outbound HTTPS request to the upstream provider only.
+  It must never flow back across the `LLMProvider` interface toward the engine, IPC, the
+  frontend, a store, a log, or a tool — same boundary discipline as a BYOK key, applied to
+  Relavium's secret.
+- **Gateway authn/z, per-account caps, and the kill switch.** Every gateway request is
+  authenticated and authorized to a managed account; per-account usage caps are enforced;
+  and the abuse **kill switch** can immediately cut off an account (see
+  [ADR-0014](../decisions/0014-managed-metering-quota-and-billing.md)). A request that
+  fails authn/z or exceeds its cap is rejected before any managed key is selected.
+- **Multi-tenant isolation.** Tenant data is scoped by `org_id` and enforced with
+  row-level security (RLS) so one account can never read another's keys, metering, or
+  billing rows.
 
 ## Network and custom base URLs
 
@@ -86,4 +129,6 @@ rules live in [logging-and-observability.md](logging-and-observability.md).
 
 Any change to: key handling or the keychain bridge, IPC commands, provider base-URL
 handling, the `run_javascript` sandbox, prompt/tool-call construction, the DB encryption
-path, or a new dependency. When in doubt, run the checklist.
+path, or a new dependency. For **managed mode**, also: the gateway authn/z path, key-pool
+selection, the metering/billing path, and the master-key vault. When in doubt, run the
+checklist.

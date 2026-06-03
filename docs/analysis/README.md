@@ -17,6 +17,7 @@ It has two parts:
 | Document | What it is |
 |----------|-----------|
 | [competitive-landscape-2026-06-03.md](competitive-landscape-2026-06-03.md) | Competitive analysis vs Claude Code, Cursor, Continue.dev, Cline/Roo-code, GitHub Copilot Agent Mode, n8n/Zapier, and CrewAI/AutoGen, with where Relavium wins. |
+| [managed-inference-business-model-2026-06-03.md](managed-inference-business-model-2026-06-03.md) | Decision analysis: BYOK vs managed inference (Relavium's own keys, metered by license). ToS/legality, competitive pricing, unit economics, gateway architecture, compliance. Led to the dual-mode decision ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md)). |
 | [_archive/README.md](_archive/README.md) | Provenance map: which living docs were seeded by which frozen raw-analysis section. The archive itself is **frozen — never edited**. |
 
 ## Conventions

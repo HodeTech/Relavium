@@ -13,6 +13,7 @@ The tree is organized by the *kind of question each section answers*, not by whi
 | [vision.md](vision.md) | **What are we building, and why?** The product vision and the problem Relavium solves. |
 | [product-constraints.md](product-constraints.md) | **What are the hard rules?** Non-negotiable scope and behavior — desktop is agent-management (not an IDE), local-first in Phase 1, cloud in Phase 2. |
 | [uvp.md](uvp.md) | **Why this over the alternatives?** The unique value proposition and positioning. |
+| [deployment-models.md](deployment-models.md) | **How does each customer segment adopt it?** End-to-end deployment per segment (individual / small team / enterprise): execution mode, key model, tier, who pays for tokens, onboarding, governance, and the upgrade path. |
 | [tech-stack.md](tech-stack.md) | **What is it built with?** The pinned, canonical technology choices and versions. |
 | [project-structure.md](project-structure.md) | **Where does code live?** The monorepo layout, packages, and surface boundaries. |
 | [roadmap/README.md](roadmap/README.md) | **What is shipping, and when?** Phase plan and milestones. |
@@ -23,7 +24,8 @@ The tree is organized by the *kind of question each section answers*, not by whi
 | [runbooks/](runbooks/) | **How do I operate it?** Step-by-step operational procedures: local dev setup, adding a provider key, releasing a surface. |
 | [decisions/](decisions/) | **Why is it built this way?** Architecture Decision Records (ADRs) in MADR format. One ADR per non-trivial choice. |
 | [standards/](standards/) | **How should things be written?** Documentation style, the ADR template, and architectural principles. |
-| [analysis/](analysis/) | **What is the landscape, and where do we sit in it?** Competitive analysis and archived raw research. |
+| [compliance/](compliance/) | **What must we satisfy legally and contractually?** *(Phase 2, managed inference)* Provider-ToS posture, data-handling (DPA / sub-processors / KVKK + GDPR / data-residency), and merchant-of-record / tax obligations that apply once Relavium sits in the data path and bills for usage. |
+| [analysis/](analysis/) | **What is the landscape, and where do we sit in it?** Competitive analysis, decision analyses (e.g. the managed-inference business model), and archived raw research. |
 | [ideas/](ideas/) | **What might we build later?** Proposals not yet committed to the roadmap. |
 | [reviews/](reviews/) | **What did we learn from looking back?** Retrospectives and review notes. |
 

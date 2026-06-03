@@ -24,6 +24,10 @@ locked.
 | VS Code extension | **Standard VS Code Extension API** | Bundles `@relavium/core` in-process — no desktop app required. |
 | Auth (portal, Phase 2) | **Better Auth v1** | Framework-agnostic; Drizzle adapter. |
 | State (frontend) | **Zustand v5** | ReactFlow nodes are NOT in React Context — direct Zustand subscriptions prevent O(n) re-renders during streaming. See [ADR-0010](decisions/0010-zustand-direct-subscriptions-for-reactflow.md). |
+| Master-key vault (managed, Phase 2) | **KMS / secrets-manager** (cloud KMS or HashiCorp Vault) | *Phase 2, managed inference only.* Stores Relavium's own provider keys / key pools — never the frontend, never plaintext. See [ADR-0013](decisions/0013-managed-key-vault-and-pools.md). |
+| Billing rail (managed, Phase 2) — **primary** | **Merchant-of-record: Paddle / Lemon Squeezy** | *Phase 2, managed only.* **Legal seller-of-record** and the billing rail — absorbs VAT/sales-tax, chargebacks, disputes. The internal `usage_events` ledger meters consumption and feeds invoicing through it. Default rail given tax/chargeback absorption; launch-blocking precondition. See [ADR-0014](decisions/0014-managed-metering-quota-and-billing.md), [ADR-0015](decisions/0015-managed-mode-data-handling-and-compliance.md). |
+| Billing rail (managed, Phase 2) — **alternative** | **Stripe** (direct PSP / subscription engine) | *Phase 2, managed only.* The direct-PSP alternative — subscriptions + prepaid credits + metered overage — used **only if not going through an MoR**. **Mutually exclusive** with the MoR rail, never layered with it. See [ADR-0014](decisions/0014-managed-metering-quota-and-billing.md). |
+| Metering store (managed, Phase 2) | **Redis 7** | *Phase 2, managed only.* Real-time usage metering, quota enforcement, and rate-limit/cooldown state for the inference gateway. |
 
 ## Notes on the Choices
 
@@ -57,4 +61,9 @@ locked.
 - **Testing**: Vitest (unit), Playwright (e2e)
 
 > Phase-2-only rows (PostgreSQL/Redis/BullMQ, Better Auth) are marked explicitly.
-> They are not part of the shipped Phase 1 stack.
+> They are not part of the shipped Phase 1 stack. The **managed-inference** rows
+> (KMS/secrets-manager, the merchant-of-record/Stripe billing rail, Redis metering)
+> are also Phase-2-only and gate the *managed* mode specifically — they do not touch
+> the BYOK-local Phase-1 path. See
+> [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md)
+> and [architecture/managed-inference.md](architecture/managed-inference.md).

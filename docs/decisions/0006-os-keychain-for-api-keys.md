@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0013-managed-key-vault-and-pools.md](0013-managed-key-vault-and-pools.md) (complements: Relavium's own keys in managed mode), [tech-stack.md](../tech-stack.md)
 
 ## Context
 

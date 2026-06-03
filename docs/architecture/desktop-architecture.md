@@ -72,7 +72,7 @@ Relavium maps responsibilities across that line deliberately:
 | Concern | Lives in | Why |
 |---------|----------|-----|
 | ReactFlow canvas, agent config UI, run monitor | **WebView (React)** | Pure UI; identical to a browser environment, no native integration needed |
-| The workflow engine (`packages/core` + `packages/llm`) | **WebView** | The engine is pure TypeScript and runs in the WebView's JS runtime; LLM calls go out over `fetch` directly to providers |
+| The workflow engine (`packages/core` + `packages/llm`) | **WebView** | The engine is pure TypeScript and runs in the WebView's JS runtime; LLM calls go out over `fetch` directly to providers in BYOK-local mode (Phase 1); in managed mode (Phase 2) egress routes to the Relavium gateway (see [managed-inference.md](managed-inference.md)) |
 | Zustand stores, token double-buffer | **WebView** | Frontend state; see [state-management.md](state-management.md) |
 | SQLite reads/writes | **Rust core** (`tauri-plugin-sql`) | DB access is a privileged plugin; the WebView calls it via commands |
 | Keychain access | **Rust core** (keychain plugin) | Keys must never enter the WebView; see [local-first-and-security.md](local-first-and-security.md) |

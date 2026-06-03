@@ -2,7 +2,7 @@
 
 > Status: Not started (Product Phase 1, final build phase). Blocked on Phase 3.
 
-- **Related**: [../README.md](../README.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-5-cloud.md](phase-5-cloud.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../reference/vscode/extension-api.md](../../reference/vscode/extension-api.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0006-os-keychain-for-api-keys.md](../../decisions/0006-os-keychain-for-api-keys.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
+- **Related**: [../README.md](../README.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-5-managed-inference.md](phase-5-managed-inference.md) (next phase, first Phase-2 deliverable), [phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../reference/vscode/extension-api.md](../../reference/vscode/extension-api.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0006-os-keychain-for-api-keys.md](../../decisions/0006-os-keychain-for-api-keys.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
 ## Goal
 
@@ -80,8 +80,11 @@ Phase 1** (milestone M5).
   in [extension-api.md](../../reference/vscode/extension-api.md#language-server) —
   a follow-up after the marketplace MVP. JSON-Schema-backed completion is wired in
   this phase as a stretch (see 4.J) but the standalone LSP process is deferred.
-- Cloud execution, accounts, the web portal, and `relavium.executionMode = 'cloud'`
-  — Product Phase 2 ([phase-5-cloud.md](phase-5-cloud.md)).
+- Accounts and `relavium.executionMode = 'managed'` (the opt-in managed-inference
+  mode) — Product Phase 2, first introduced in
+  [phase-5-managed-inference.md](phase-5-managed-inference.md). Cloud execution, the
+  web portal, and `relavium.executionMode = 'cloud'` — Product Phase 2 cloud
+  ([phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md)).
 - Scheduled / webhook triggers and email/Slack gate notifications — Product
   Phase 2.
 

@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [product-constraints.md](../product-constraints.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0012-managed-inference-dual-mode.md](0012-managed-inference-dual-mode.md) (amends framing: local-first Phase 1 reaffirmed), [product-constraints.md](../product-constraints.md), [tech-stack.md](../tech-stack.md)
 
 ## Context
 

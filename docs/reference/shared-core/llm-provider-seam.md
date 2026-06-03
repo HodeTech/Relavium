@@ -2,7 +2,7 @@
 
 - **Status**: Stable
 - **Canonical home**: the provider-agnostic `LLMProvider` contract exported by `packages/llm` (`@relavium/llm`)
-- **Related**: [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md) (rationale), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md) (the seam as an immovable contract), [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md) (model/provider/fallback semantics), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md) (run events these chunks feed)
+- **Related**: [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md) (rationale), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md) (the seam as an immovable contract), [../../architecture/managed-inference.md](../../architecture/managed-inference.md) (the Phase-2 `ManagedGatewayProvider` behind this seam), [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md) (model/provider/fallback semantics), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md) (run events these chunks feed)
 
 This page is the one canonical home for the **`LLMProvider` seam** — the
 provider-agnostic boundary that every multi-LLM call in Relavium crosses. It is
@@ -192,6 +192,32 @@ Two streaming subtleties the adapters must handle:
   response. This is the same `costUsd` that surfaces in the `cost:updated` run
   event (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 
+#### Stricter usage-capture rules in managed mode (Phase 2)
+
+In Phase 1 (BYOK) the worst case for a missing usage chunk is a slightly
+inaccurate local cost estimate. In **managed** mode (Phase 2,
+[../../architecture/managed-inference.md](../../architecture/managed-inference.md))
+the same `Usage` shape becomes a **billing record**, so the gateway tightens the
+capture rules — without changing the seam types:
+
+- **Forced `include_usage`.** The gateway **forces**
+  `stream_options: { include_usage: true }` on every OpenAI/DeepSeek managed
+  request (it is not left to caller config), so a final usage chunk is always
+  emitted. Anthropic usage is accumulated from `message_start` (input) and
+  `message_delta` (running output); Gemini usage is read from the final chunk's
+  `usageMetadata`.
+- **Interruption estimation.** If the stream is aborted before a final usage
+  frame arrives, the gateway **estimates** usage from the streamed output plus
+  the known input and records the event as estimated — a billable request is
+  never silently dropped.
+- **Nightly reconciliation.** Estimated and rounded rows are reconciled against
+  the providers' own usage/invoice data nightly, correcting drift in the COGS
+  figure.
+
+These are gateway-side behaviors layered on top of the same normalized `Usage`;
+the seam types are unchanged. The full metering design is in
+[../../architecture/managed-inference.md](../../architecture/managed-inference.md).
+
 ## Fallback lives outside the adapter
 
 Adapters stay **dumb**: they normalize one provider and nothing more. Fallback
@@ -206,6 +232,25 @@ LlmProvider[])` runner (in `packages/core`/`packages/llm`):
 This keeps per-agent fallback (e.g. Anthropic → OpenAI → DeepSeek) a config
 concern declared in [`agent-yaml-spec.md`](../contracts/agent-yaml-spec.md)
 (`fallback_chain` with `max_attempts`), not adapter code.
+
+## A second implementation behind the same seam: `ManagedGatewayProvider` (Phase 2)
+
+Phase 2 adds a **new `LLMProvider` implementation, `ManagedGatewayProvider`**,
+selected by the factory when `executionMode` is `'managed'`. Instead of calling a
+provider SDK directly, it is a thin client that calls a Relavium gateway over
+HTTPS; the gateway runs the **same** per-provider adapters server-side with
+**Relavium's** key and streams results back as the same normalized `StreamChunk`
+union. **No seam type changes are required** — this is exactly the reversibility
+[ADR-0011](../../decisions/0011-internal-llm-abstraction.md) preserves: the seam
+is immovable, the implementation behind it is not. The `ManagedGatewayProvider`
+satisfies the identical `LLMProvider` contract (`id`, `generate`, `stream`,
+`supports`), so `packages/core` cannot tell it apart from a direct adapter. In
+managed mode the `key: string` parameter on `generate`/`stream` carries a
+**managed session/auth token**, not a provider key — it is simply "the credential
+the implementation needs," so the real provider key is injected gateway-side and
+never reaches this client, leaving the seam types unchanged across all three
+modes. The full design — gateway, key vault and pools, metering — is in
+[../../architecture/managed-inference.md](../../architecture/managed-inference.md).
 
 ## Dependency posture
 

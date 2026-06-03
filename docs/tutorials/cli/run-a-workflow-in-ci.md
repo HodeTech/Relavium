@@ -76,7 +76,8 @@ rather than restating it.
 
 6. **Gate the pipeline on the exit code.** The CLI uses deterministic exit codes so CI
    can branch on the outcome: `0` = success, `1` = workflow failed (a node errored and
-   exhausted retries/fallbacks), `2` = invalid invocation. The full table is in the
+   exhausted retries/fallbacks), `2` = invalid invocation, `3` = paused at a human gate
+   (non-interactive). The full table is in the
    [CLI reference](../../reference/cli/commands.md#exit-codes).
 
 ## What just happened

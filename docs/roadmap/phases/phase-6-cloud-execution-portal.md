@@ -1,24 +1,39 @@
-# Phase 5 — Cloud execution and web portal
+# Phase 6 — Cloud execution and web portal
 
-> Status: Not started — **PRODUCT PHASE 2**. Hard-gated on all of Product Phase 1 (Phases 0–4) being shipped and battle-tested by real users.
+> Status: Not started — **PRODUCT PHASE 2**, the **second** Phase-2 deliverable (after [phase-5-managed-inference.md](phase-5-managed-inference.md)). Hard-gated on all of Product Phase 1 (Phases 0–4) being shipped and battle-tested by real users.
 
-- **Related**: [phase-4-vscode.md](phase-4-vscode.md) (prior phase), [../README.md](../README.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../reference/portal/api-reference.md](../../reference/portal/api-reference.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../decisions/0008-local-first-phase-1-cloud-phase-2.md](../../decisions/0008-local-first-phase-1-cloud-phase-2.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)
+- **Related**: [phase-5-managed-inference.md](phase-5-managed-inference.md) (prior phase, the first Phase-2 deliverable), [phase-4-vscode.md](phase-4-vscode.md) (closes Product Phase 1), [../README.md](../README.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../reference/portal/api-reference.md](../../reference/portal/api-reference.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../decisions/0008-local-first-phase-1-cloud-phase-2.md](../../decisions/0008-local-first-phase-1-cloud-phase-2.md), [../../decisions/0012-managed-inference-dual-mode.md](../../decisions/0012-managed-inference-dual-mode.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)
 
 > **Everything in this phase is Product Phase 2.** It must never be mistaken for
 > shipped Phase 1 behavior. The cloud layer is added *alongside* — not replacing —
 > the local-first surfaces; existing desktop/CLI/extension users keep running
-> locally with **no account**. This is the last phase in the roadmap and the only
-> one outside Product Phase 1.
+> locally with **no account**. This is the last phase in the roadmap. It is
+> **decoupled from and sequenced after** managed inference
+> ([phase-5-managed-inference.md](phase-5-managed-inference.md)): managed inference
+> proxies only LLM egress with the engine local, whereas this phase adds the heavy
+> **cloud-execution** plane (workers running the engine server-side) plus the web
+> portal. Cloud may also offer **BYOK-cloud** mode (the user's key, server-side); it
+> reuses the Phase-5 managed accounts/identity and billing where applicable, but it
+> does **not** block, and is not blocked by, managed inference. **BYOK stays
+> first-class** and no mode crosses silently
+> ([ADR-0012](../../decisions/0012-managed-inference-dual-mode.md)).
 
 ## Goal
 
-Add an optional cloud execution layer and a web control-plane portal so teams can
-run workflows server-side (24/7 automation, sharing, cloud triggers), manage
+Add an optional cloud **execution** layer and a web control-plane portal so teams
+can run workflows server-side (24/7 automation, sharing, cloud triggers), manage
 usage/quota/licensing, and govern access — with a **transparent local→cloud switch
 behind the engine's execution-mode interface**, so the *same* `@relavium/core`
 runs in both modes with no fork ([ADR-0008](../../decisions/0008-local-first-phase-1-cloud-phase-2.md)).
-Build this only after Phase 1 reveals which workflows users actually share, which
-triggers they use, and where the engine's real bottlenecks are.
+This is the **heavy cloud-execution plane**, distinct from and sequenced **after**
+the thin managed-inference gateway ([phase-5-managed-inference.md](phase-5-managed-inference.md),
+[ADR-0012](../../decisions/0012-managed-inference-dual-mode.md)): there the engine
+stayed local and only LLM egress was proxied; here the engine itself runs in cloud
+workers. Cloud workers may use **BYOK-cloud** (the user's key in a server-side
+store) and/or the Phase-5 managed gateway for LLM egress, but `managed` inference
+does not depend on this phase. Build this only after Phase 1 reveals which workflows
+users actually share, which triggers they use, and where the engine's real
+bottlenecks are.
 
 ## Outcomes (Definition of Done)
 
@@ -73,38 +88,38 @@ triggers they use, and where the engine's real bottlenecks are.
   a transcript archive — transcripts stay local (local mode) or in ephemeral
   worker storage wiped on completion (cloud mode).
 - **OAuth social providers in the MVP** — email+password for the portal MVP;
-  SAML/OIDC SSO is the Enterprise-tier add (workstream 5.K), not the MVP.
+  SAML/OIDC SSO is the Enterprise-tier add (workstream 6.K), not the MVP.
 - **A shared public workflow marketplace** (later, if ever).
 - **Self-hosted / VPC / data-residency deployment** beyond design hooks — an
   Enterprise concern tracked, not delivered, this phase.
 
 ## Work breakdown
 
-Ordered workstreams. Each maps to the global spine; ids `5.C`, `5.D`, `5.E`,
-`5.G`, `5.J`, `5.K` are on or near the critical path (`5.C → 5.D → 5.E → 5.J`).
+Ordered workstreams. Each maps to the global spine; ids `6.C`, `6.D`, `6.E`,
+`6.G`, `6.J`, `6.K` are on or near the critical path (`6.C → 6.D → 6.E → 6.J`).
 The dependency flow:
 
 ```mermaid
 flowchart TB
-    A["5.A · gate review<br/>+ infra bootstrap"] --> B["5.B · packages/db<br/>Postgres target + RLS"]
-    A --> C["5.C · ExecutionHost seam<br/>(mode switch)"]
-    B --> D["5.D · apps/api skeleton<br/>+ BullMQ dispatch"]
+    A["6.A · gate review<br/>+ infra bootstrap"] --> B["6.B · packages/db<br/>Postgres target + RLS"]
+    A --> C["6.C · ExecutionHost seam<br/>(mode switch)"]
+    B --> D["6.D · apps/api skeleton<br/>+ BullMQ dispatch"]
     C --> D
-    D --> E["5.E · Redis-Streams SSE<br/>(gap-detect + resync)"]
-    D --> F["5.F · cloud worker pool<br/>+ server key store"]
-    B --> G["5.G · Better Auth<br/>+ multi-tenancy"]
-    E --> H["5.H · triggers +<br/>gate notifications"]
+    D --> E["6.E · Redis-Streams SSE<br/>(gap-detect + resync)"]
+    D --> F["6.F · cloud worker pool<br/>+ server key store"]
+    B --> G["6.G · Better Auth<br/>+ multi-tenancy"]
+    E --> H["6.H · triggers +<br/>gate notifications"]
     F --> H
-    G --> J["5.J · apps/portal<br/>(control plane)"]
+    G --> J["6.J · apps/portal<br/>(control plane)"]
     E --> J
-    G --> I["5.I · billing +<br/>quota enforcement"]
-    J --> K["5.K · enterprise<br/>(SSO/RBAC/audit)"]
+    G --> I["6.I · billing +<br/>quota enforcement"]
+    J --> K["6.K · enterprise<br/>(SSO/RBAC/audit)"]
     I --> K
-    H --> L["5.L · security audit<br/>+ launch"]
+    H --> L["6.L · security audit<br/>+ launch"]
     K --> L
 ```
 
-### 5.A — Phase-2 go-gate review and cloud infra bootstrap
+### 6.A — Phase-2 go-gate review and cloud infra bootstrap
 
 Confirm the hard gate is met and stand up the minimum infrastructure, before any
 cloud code. This is a deliberate checkpoint, not a formality.
@@ -122,15 +137,19 @@ cloud code. This is a deliberate checkpoint, not a formality.
   run-output artifacts, and a secrets manager for the server-side key store.
 - Stand up IaC + CI/CD for `apps/api` and `apps/portal` (build, migrate, deploy),
   and a private staging environment.
-- Reconcile the two licensing-tier sketches noted in the
+- **Reuse the Phase-5 managed foundations where they exist**: the accounts/identity
+  (device-flow auth), Stripe billing, and the reconciled tier model already stood up
+  for managed inference ([phase-5-managed-inference.md](phase-5-managed-inference.md))
+  carry forward; this phase extends them with the org/team/RBAC model, not from
+  scratch. (If cloud ships without managed, reconcile the tier sketches in the
   [portal API reference](../../reference/portal/api-reference.md#licensing-tiers)
-  into one tier model before any billing work begins.
+  here instead.)
 
 **Acceptance:** the gate is documented as met; staging Postgres/Redis/object-store
-are reachable from CI; the tier model is reconciled and recorded; no engine fork
-is required to proceed.
+are reachable from CI; the tier model is in place (reused from Phase 5 or reconciled
+here); no engine fork is required to proceed.
 
-### 5.B — `packages/db`: Postgres target, multi-tenancy, and migrations
+### 6.B — `packages/db`: Postgres target, multi-tenancy, and migrations
 
 Extend the **one Drizzle schema** to target Postgres 16 with tenancy, without
 forking the local SQLite model ([ADR-0005](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)).
@@ -153,7 +172,7 @@ forking the local SQLite model ([ADR-0005](../../decisions/0005-sqlite-drizzle-l
 cross-`org_id` reads/writes in a test that asserts isolation; the same schema still
 builds against SQLite with the Phase-1 surfaces green.
 
-### 5.C — `ExecutionHost` seam: the transparent local→cloud switch *(critical path)*
+### 6.C — `ExecutionHost` seam: the transparent local→cloud switch *(critical path)*
 
 The load-bearing abstraction: a stable interface around the engine so surfaces
 never branch on mode. This precedes the API so the contract is fixed first.
@@ -179,7 +198,7 @@ never branch on mode. This precedes the API so the contract is fixed first.
 staging) `CloudExecutionHost` with byte-identical `RunEvent` types and no surface
 code change; the no-silent-fallback and no-transcript-sync rules are covered by tests.
 
-### 5.D — `apps/api` skeleton + BullMQ dispatch *(critical path)*
+### 6.D — `apps/api` skeleton + BullMQ dispatch *(critical path)*
 
 The Hono-on-Bun API that enqueues — never re-implements — execution.
 
@@ -194,14 +213,14 @@ The Hono-on-Bun API that enqueues — never re-implements — execution.
   worker pools; add the **lint rule that bans serializing any provider key into a
   job payload**.
 - Add a Redis sliding-window rate limiter and per-org concurrency caps.
-- Enforce auth + `org_id` scoping on every route (full auth lands in 5.G; stub the
+- Enforce auth + `org_id` scoping on every route (full auth lands in 6.G; stub the
   identity middleware here so routes are tenancy-scoped from day one).
 
 **Acceptance:** a `POST /runs` from `CloudExecutionHost` enqueues a job whose
 payload carries no secrets; `GET /runs/{runId}` reflects the queued/running state;
 all routes reject requests outside the caller's `org_id`.
 
-### 5.E — Redis-Streams SSE transport (gap-detection + resync) *(critical path)*
+### 6.E — Redis-Streams SSE transport (gap-detection + resync) *(critical path)*
 
 Deliver the canonical event stream over HTTP SSE with lossless reconnection — the
 parity-defining piece versus local IPC.
@@ -223,7 +242,7 @@ parity-defining piece versus local IPC.
 lossless reconnection (gap-detect + resync); the delivered event sequence is
 identical to the same workflow run locally over IPC.
 
-### 5.F — Cloud worker pool + server-side key store
+### 6.F — Cloud worker pool + server-side key store
 
 Worker processes that run the unmodified engine in isolation with cloud key handling.
 
@@ -243,7 +262,7 @@ Worker processes that run the unmodified engine in isolation with cloud key hand
 encrypted key store with no key in any payload/log; a run paused at a human gate
 resumes on a *different* worker; egress to a non-allowed host is blocked.
 
-### 5.G — Accounts, Better Auth, and multi-tenancy *(critical path)*
+### 6.G — Accounts, Better Auth, and multi-tenancy *(critical path)*
 
 Identity and tenancy — the foundation for the portal, billing, and enterprise.
 
@@ -254,10 +273,10 @@ Identity and tenancy — the foundation for the portal, billing, and enterprise.
   **API tokens** for CI/CD, per the
   [auth section](../../reference/portal/api-reference.md#authentication); store
   access tokens in the OS keychain on surfaces, never in plaintext files.
-- Replace the 5.D identity stub: every route and queue consumer enforces `org_id`
-  scoping against the authenticated principal, backed by the 5.B RLS.
+- Replace the 6.D identity stub: every route and queue consumer enforces `org_id`
+  scoping against the authenticated principal, backed by the 6.B RLS.
 - Wire `relavium auth login` (device flow, ~10s) and `--with-token` (CI) into the
-  CLI; the engine sets `cloudAuthToken`, which the mode switch (5.C) reads to imply
+  CLI; the engine sets `cloudAuthToken`, which the mode switch (6.C) reads to imply
   cloud mode; refresh happens transparently before API calls.
 - Tenancy isolation tests: a member of org A can never see org B's runs, gates,
   usage, or tokens — through the API *and* directly at the DB layer.
@@ -266,7 +285,7 @@ Identity and tenancy — the foundation for the portal, billing, and enterprise.
 CLI/desktop, and the engine picks up cloud mode from the token with no surface code
 change; cross-org access is provably impossible via API and DB.
 
-### 5.H — Triggers and human-gate notifications
+### 6.H — Triggers and human-gate notifications
 
 Make always-on triggers and out-of-band gate delivery work — capabilities that only
 exist with a server.
@@ -288,7 +307,7 @@ exist with a server.
 gate emails a deep link and approving it (from email or portal) resumes the run
 exactly once even if two channels respond concurrently.
 
-### 5.I — Billing and quota enforcement
+### 6.I — Billing and quota enforcement
 
 Org-level cost governance built on usage telemetry — the commercial spine of Phase 2.
 
@@ -301,7 +320,7 @@ Org-level cost governance built on usage telemetry — the commercial spine of P
 - Enforce quota at submission and mid-run: a hard-stop org cannot enqueue or
   continue cloud runs once over budget; local runs are never gated (users pay their
   own LLM bills).
-- Integrate the reconciled tier model (5.A): Free / Pro / Enterprise entitlements
+- Integrate the reconciled tier model (6.A): Free / Pro / Enterprise entitlements
   gate cloud run-hours, history retention, and notifications.
 - Pricing is always from Relavium's own pricing table, never the provider response
   (consistent with the Phase-1 cost model).
@@ -310,7 +329,7 @@ Org-level cost governance built on usage telemetry — the commercial spine of P
 then the configured enforcement action fires on the next cloud submission; usage and
 cost export to CSV match the per-run `cost:updated` totals.
 
-### 5.J — `apps/portal`: the control-plane SPA *(critical path · M6)*
+### 6.J — `apps/portal`: the control-plane SPA *(critical path · M7)*
 
 The browser control plane — **not** a second execution engine or a new canvas.
 
@@ -323,10 +342,10 @@ The browser control plane — **not** a second execution engine or a new canvas.
   `/dashboard`, `/usage`, `/quota`, `/runs`, `/gates`, `/team`, `/audit`,
   `/settings/auth`.
 - Implement **run-replay URLs**: open a run by id, stream live `RunEvent`s over SSE
-  (5.E), or replay a finished run from durable state — the same per-node status map
+  (6.E), or replay a finished run from durable state — the same per-node status map
   and cost waterfall the desktop renders.
 - Wire usage/quota dashboards, the gate inbox (decide from the browser), and
-  org-level cost aggregation + CSV export to the 5.I/5.D APIs.
+  org-level cost aggregation + CSV export to the 6.I/6.D APIs.
 - Keep the browser out of the data path: it **never** calls LLM providers directly —
   all cloud LLM calls go through workers, so no key ever appears in a network tab.
 
@@ -334,7 +353,7 @@ The browser control plane — **not** a second execution engine or a new canvas.
 shares a run-replay URL a teammate can open, decides a pending gate from the
 browser, and views usage-vs-quota — with no provider key visible in any network tab.
 
-### 5.K — Enterprise: SSO, team workspaces/RBAC, and audit *(M6)*
+### 6.K — Enterprise: SSO, team workspaces/RBAC, and audit *(M7)*
 
 The Enterprise tier on top of the MVP — gated by tier, additive to the portal.
 
@@ -348,13 +367,13 @@ The Enterprise tier on top of the MVP — gated by tier, additive to the portal.
 - Enforced quota and retention policies at the Enterprise tier; design hooks (not
   delivery) for self-hosted portal / VPC peering / data residency.
 - Audit and RBAC checks are enforced server-side at the data layer, consistent with
-  the 5.B RLS and 5.G tenancy model.
+  the 6.B RLS and 6.G tenancy model.
 
 **Acceptance:** an Enterprise org logs in via SSO, an admin assigns roles that
 visibly gate actions, and every privileged action lands in an immutable, exportable
 audit log.
 
-### 5.L — Multi-tenant security audit and launch
+### 6.L — Multi-tenant security audit and launch
 
 The pre-ship gate targeting the new attack surface; nothing launches until it passes.
 
@@ -378,19 +397,19 @@ green; Product Phase 2 is shipped.
 
 ## Milestones
 
-In-phase milestones, ordered. **M6** is the global spine milestone for this phase:
+In-phase milestones, ordered. **M7** is the global spine milestone for this phase:
 *Product Phase 2 — cloud execution + portal with transparent local→cloud switch*,
-achieved by `5.J + 5.G + 5.K`.
+achieved by `6.J + 6.G + 6.K`.
 
 | # | Milestone | Completed by |
 |---|-----------|--------------|
-| 5.M1 | Gate met; infra + one Drizzle schema target Postgres with RLS | 5.A, 5.B |
-| 5.M2 | `ExecutionHost` seam proven: same engine, identical `RunEvent`s, no fork | 5.C |
-| 5.M3 | Cloud engine end-to-end: submit → enqueue → worker run → lossless SSE | 5.D, 5.E, 5.F |
-| 5.M4 | Accounts + multi-tenancy live; surfaces pick up cloud mode from a token | 5.G |
-| 5.M5 | Triggers + gate notifications + quota enforcement working | 5.H, 5.I |
-| **M6** | **Control-plane portal + enterprise: transparent local→cloud, one engine** | **5.J, 5.G, 5.K** |
-| 5.M7 | Security audit passed; Phase 1 local-first regression green; shipped | 5.L |
+| 6.M1 | Gate met; infra + one Drizzle schema target Postgres with RLS | 6.A, 6.B |
+| 6.M2 | `ExecutionHost` seam proven: same engine, identical `RunEvent`s, no fork | 6.C |
+| 6.M3 | Cloud engine end-to-end: submit → enqueue → worker run → lossless SSE | 6.D, 6.E, 6.F |
+| 6.M4 | Accounts + multi-tenancy live; surfaces pick up cloud mode from a token | 6.G |
+| 6.M5 | Triggers + gate notifications + quota enforcement working | 6.H, 6.I |
+| **M7** | **Control-plane portal + enterprise: transparent local→cloud, one engine** | **6.J, 6.G, 6.K** |
+| 6.M6 | Security audit passed; Phase 1 local-first regression green; cloud execution shipped | 6.L |
 
 ## Dependencies
 
@@ -431,10 +450,10 @@ All must be true to consider Product Phase 2 shipped:
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| **Premature cloud build** | Wasted effort on the wrong features | Hard gate (5.A): all of Phase 1 battle-tested first ([ADR-0008](../../decisions/0008-local-first-phase-1-cloud-phase-2.md)); build for the workflows/triggers users actually asked for. |
-| **Engine fork pressure** | Two diverging engines, parity drift | All cloud behavior behind the `ExecutionHost` seam (5.C); import-zone lint keeps cloud concerns out of `@relavium/core`; the API wraps the same engine. |
-| **Local vs cloud event parity drift** | Surfaces misrender cloud runs | Both transports emit the same `RunEvent` union from the same `RunEventBus`; cross-host parity + SSE chaos tests (5.C, 5.E). |
-| **Multi-tenant data leakage** | Cross-org exposure, breach | Tenancy at the data layer (Postgres RLS, 5.B) plus app-level `org_id` scoping; isolation tests at API and DB (5.G); audit gate (5.L). |
-| **Provider-key leakage in the cloud** | Credential compromise | AES-256-GCM at rest; lint bans keys in job payloads; keys read at call time only; audit the four leak surfaces before ship (5.F, 5.L). |
-| **Silent cloud→local fallback** | Credential leak / bypassed enterprise controls | Engine never silently falls back; an unreachable cloud raises an explicit error suggesting a switch (5.C). |
-| **Cost abuse / runaway spend** | Unbounded LLM bills | Per-org concurrency + rate limits (5.D); budgets with warn/pause/hard-stop enforcement at submission and mid-run (5.I). |
+| **Premature cloud build** | Wasted effort on the wrong features | Hard gate (6.A): all of Phase 1 battle-tested first ([ADR-0008](../../decisions/0008-local-first-phase-1-cloud-phase-2.md)); build for the workflows/triggers users actually asked for. |
+| **Engine fork pressure** | Two diverging engines, parity drift | All cloud behavior behind the `ExecutionHost` seam (6.C); import-zone lint keeps cloud concerns out of `@relavium/core`; the API wraps the same engine. |
+| **Local vs cloud event parity drift** | Surfaces misrender cloud runs | Both transports emit the same `RunEvent` union from the same `RunEventBus`; cross-host parity + SSE chaos tests (6.C, 6.E). |
+| **Multi-tenant data leakage** | Cross-org exposure, breach | Tenancy at the data layer (Postgres RLS, 6.B) plus app-level `org_id` scoping; isolation tests at API and DB (6.G); audit gate (6.L). |
+| **Provider-key leakage in the cloud** | Credential compromise | AES-256-GCM at rest; lint bans keys in job payloads; keys read at call time only; audit the four leak surfaces before ship (6.F, 6.L). |
+| **Silent cloud→local fallback** | Credential leak / bypassed enterprise controls | Engine never silently falls back; an unreachable cloud raises an explicit error suggesting a switch (6.C). |
+| **Cost abuse / runaway spend** | Unbounded LLM bills | Per-org concurrency + rate limits (6.D); budgets with warn/pause/hard-stop enforcement at submission and mid-run (6.I). |

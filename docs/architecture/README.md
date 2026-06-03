@@ -27,6 +27,8 @@ and [product-constraints.md](../product-constraints.md) for product framing, and
 | [`desktop-architecture.md`](desktop-architecture.md) | The Tauri v2 shell: Rust glue vs the React WebView, the IPC primitives, plugins, and why the desktop app is not an IDE. |
 | [`multi-llm-providers.md`](multi-llm-providers.md) | The internal `@relavium/llm` abstraction: a provider-agnostic `LLMProvider` seam implemented by thin adapters over each provider's official SDK — fallback chains, tool normalization, and cost tracking. |
 | [`cloud-phase-2.md`](cloud-phase-2.md) | **Phase 2.** The optional cloud execution layer (BullMQ/Redis/Postgres), the web portal, and the transparent local→cloud switch. |
+| [`managed-inference.md`](managed-inference.md) | **Phase 2.** The third execution mode: a thin Relavium gateway that proxies LLM egress on Relavium's key (engine stays local), with key vault + pools, streaming usage capture, and reserve→settle metering. The first Phase-2 deliverable, distinct from cloud execution. |
+| [`key-management.md`](key-management.md) | The single canonical home for **how API keys are managed** across all modes: the three key-custody models — BYOK-local (user's key, OS keychain), BYOK-central / org vault (the enterprise BYOK answer, Phase 2), and managed (Relavium's keys in a KMS, Phase 2) — with the enterprise central-vault design and the security invariants. Answers "for an individual, a small team, and a 300-person enterprise: whose key is it, where does it live, who injects it?" |
 
 ## Reading order
 
@@ -38,8 +40,10 @@ everything and is worth reading early. The surface-specific docs
 ([`desktop-architecture.md`](desktop-architecture.md),
 [`state-management.md`](state-management.md),
 [`multi-llm-providers.md`](multi-llm-providers.md)) elaborate one piece each.
-[`cloud-phase-2.md`](cloud-phase-2.md) is forward-looking and clearly marked as
-not-yet-shipped behavior.
+[`cloud-phase-2.md`](cloud-phase-2.md) and
+[`managed-inference.md`](managed-inference.md) are forward-looking and clearly
+marked as not-yet-shipped Phase-2 behavior; read `cloud-phase-2.md` first, then
+`managed-inference.md` for the third (managed) execution mode it cross-links.
 
 ## Conventions
 

@@ -20,8 +20,8 @@ settled and recorded:
 - Product vision, UVP, and hard constraints (desktop is agent-management, not an
   IDE; local-first Product Phase 1; git-native workflow YAML).
 - The full architecture set (overview, shared core engine, execution model, state
-  management, local-first security, desktop architecture, multi-LLM providers, and
-  the Phase-2 cloud design).
+  management, local-first security, desktop architecture, multi-LLM providers, the
+  Phase-2 cloud design, and the Phase-2 managed-inference design).
 - The canonical reference contracts (workflow/agent YAML specs, the SSE/run-event
   schema, the IPC contract, config, database schema, CLI commands, the VS Code
   extension API).
@@ -30,10 +30,17 @@ settled and recorded:
   `LLMProvider` seam and thin hand-rolled adapters over the official provider SDKs —
   **not** the Vercel AI SDK, **not** LangChain
   ([ADR-0011](../decisions/0011-internal-llm-abstraction.md), superseding
-  [ADR-0004](../decisions/0004-vercel-ai-sdk-multi-llm.md)).
-- The full six-phase roadmap: the [phase index](README.md#phase-index), the
-  [global milestone spine](README.md#global-milestone-spine) (M0–M6), and the
-  [cross-phase invariants](README.md#cross-phase-invariants).
+  [ADR-0004](../decisions/0004-vercel-ai-sdk-multi-llm.md)) — and the **dual-mode
+  managed-inference decision (Option B)**: BYOK-local stays first-class and unchanged,
+  while managed inference is added as an opt-in `managed` mode shipped as the **first**
+  Phase-2 deliverable, decoupled from and ahead of cloud execution
+  ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md), with
+  [ADR-0013](../decisions/0013-managed-key-vault-and-pools.md)/[0014](../decisions/0014-managed-metering-quota-and-billing.md)/[0015](../decisions/0015-managed-mode-data-handling-and-compliance.md)).
+- The full seven-phase roadmap: the [phase index](README.md#phase-index), the
+  [global milestone spine](README.md#global-milestone-spine) (M0–M7), and the
+  [cross-phase invariants](README.md#cross-phase-invariants). Per Option B, Product
+  Phase 2 is split into **build phase 5 (managed inference)** and **build phase 6
+  (cloud execution + portal)**.
 
 ## What is active now
 
@@ -109,6 +116,9 @@ task lists and acceptance criteria are in
 ## Not started yet
 
 Everything from Phase 1 onward: `@relavium/llm`, `@relavium/core`, the CLI, the
-desktop app, the VS Code extension, and (Product Phase 2) the cloud layer and web
-portal. See the [phase index](README.md#phase-index) and the
+desktop app, the VS Code extension, and **Product Phase 2** — first **managed
+inference** ([phase-5-managed-inference.md](phases/phase-5-managed-inference.md), the
+opt-in `managed` gateway, engine still local), then the **cloud execution layer and
+web portal** ([phase-6-cloud-execution-portal.md](phases/phase-6-cloud-execution-portal.md)),
+the two decoupled per Option B. See the [phase index](README.md#phase-index) and the
 [milestone spine](README.md#global-milestone-spine) (M1 onward).

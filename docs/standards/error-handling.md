@@ -69,8 +69,8 @@ We distinguish the two and never leak one as the other:
   diagnosis and go to [structured logs](logging-and-observability.md), never to the
   frontend verbatim. The mapping from internal → user-facing happens at the surface
   boundary, once.
-- Errors surfaced through the run-event stream use the canonical `node:error` and
-  `run:error` events (see the [SSE event schema](../reference/contracts/sse-event-schema.md));
+- Errors surfaced through the run-event stream use the canonical `node:failed` and
+  `run:failed` events (see the [SSE event schema](../reference/contracts/sse-event-schema.md));
   they carry a user-safe message plus an internal correlation id, not a raw exception.
 
 ## Validation at boundaries

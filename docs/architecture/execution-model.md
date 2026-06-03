@@ -76,11 +76,12 @@ Each agent node is handled by the `AgentRunner`, which streams from
 
 As the provider streams tokens back, the `AgentRunner` emits them on the
 `RunEventBus`. The transport differs per surface but the event shape is the same
-[SSE event schema](../reference/contracts/sse-event-schema.md)
-(`node:started` / `agent:token` / `agent:tool_call` / `agent:tool_result` /
-`node:completed` / `node:error` / `human_gate:pending` / `cost:updated` /
-`run:completed` / `run:error`, each carrying a `nodeId` and a monotonically
-increasing `sequenceNumber`):
+[SSE event schema](../reference/contracts/sse-event-schema.md) — the canonical
+`RunEvent` union (`node:started`, `agent:token`, `node:completed`, `node:failed`,
+`human_gate:paused`/`human_gate:resumed`, `cost:updated`, `run:completed`,
+`run:failed`, …), each carrying a `nodeId` and a monotonically increasing
+`sequenceNumber`. The event names and payloads are defined there, not restated
+here:
 
 - **Desktop** — events cross the Tauri IPC boundary (a Tauri Channel for the
   high-throughput token stream) and are routed to the matching ReactFlow node by
@@ -97,7 +98,7 @@ token-rendering performance model (the double-buffer that caps re-renders at
 ### 4. Human gate
 
 A `human_gate` node suspends the run until a human approves, rejects, or edits the
-pending decision. While suspended the engine emits `human_gate:pending`, persists
+pending decision. While suspended the engine emits `human_gate:paused`, persists
 the gate state to the checkpoint, and waits. The gate is resolved from any surface
 that can reach the run:
 
@@ -105,11 +106,12 @@ that can reach the run:
 - VS Code: a sidebar / status-bar prompt and a WebviewPanel card.
 - CLI: a terminal prompt (`relavium gate`).
 
-Because the gate state is checkpointed, resolving it is idempotent across a
-reconnect — re-delivering the same decision does not advance the run twice. A gate
-may carry a timeout with an `on_timeout` policy (fail, or take a default branch);
-this prevents a forgotten gate from blocking a run forever. The gate
-event/decision shapes are part of the
+When a decision arrives the engine reloads state, emits `human_gate:resumed`, and
+the run continues. Because the gate state is checkpointed, resolving it is
+idempotent across a reconnect — re-delivering the same decision does not advance
+the run twice. A gate may carry a timeout with an `on_timeout` policy (fail, or
+take a default branch); this prevents a forgotten gate from blocking a run forever.
+The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the
 [IPC contract](../reference/contracts/ipc-contract.md).
 
@@ -125,7 +127,7 @@ checkpoint and run-event tables are defined in
 ### 6. Finish
 
 On the last node the engine writes the final output and a cost record to SQLite,
-then emits `run:completed` (or `run:error` if the run failed). Per-node token counts
+then emits `run:completed` (or `run:failed` if the run failed). Per-node token counts
 and per-run cost accumulate as `cost:updated` events during the run (payload
 `{ nodeId, model, inputTokens, outputTokens, costUsd, cumulativeCostUsd }`) and are
 persisted at the end — the source of the per-node cost waterfall in the UI. Cost
@@ -150,6 +152,12 @@ host process and LLM calls go directly from the machine to the provider. In
 Phase 2 the same lifecycle runs on cloud workers and events stream over HTTP SSE
 instead of IPC — the surfaces see identical `RunEvent` objects either way. The
 transparent switch is described in [cloud-phase-2.md](cloud-phase-2.md).
+
+A separate Phase-2 **managed** mode keeps the engine running locally and redirects
+only the LLM egress through the Relavium gateway (an egress-only proxy on
+Relavium's key); the run lifecycle above is unchanged
+([ADR-0012](../decisions/0012-managed-inference-dual-mode.md),
+[managed-inference.md](managed-inference.md)).
 
 ## Related documents
 

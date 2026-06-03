@@ -60,8 +60,11 @@ the [config resolution order](../../reference/contracts/config-spec.md), and the
 
 - Any graphical canvas or `packages/ui` work — that is the desktop phase
   ([phase-3-desktop.md](phase-3-desktop.md)).
-- Cloud execution, accounts, OAuth (`relavium auth login`), or remote run
-  dispatch — all **Product Phase 2** ([phase-5-cloud.md](phase-5-cloud.md)).
+- Accounts and OAuth (`relavium auth login`, device flow) — **Product Phase 2**,
+  first introduced with managed inference
+  ([phase-5-managed-inference.md](phase-5-managed-inference.md)). Cloud execution and
+  remote run dispatch are **Product Phase 2** cloud
+  ([phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md)).
 - Scheduled / webhook triggers; only `manual` (and the engine's `file_change`)
   triggers exist in Phase 1, and `file_change` is exercised by later surfaces.
 - SQLCipher-encrypted history and the Tauri keychain plugin — those are desktop

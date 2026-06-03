@@ -55,6 +55,10 @@ flowchart TD
 | 0009 | [Git-native workflow and agent YAML](0009-git-native-workflow-yaml.md) | Accepted | 2026-06-03 |
 | 0010 | [Zustand direct subscriptions for ReactFlow](0010-zustand-direct-subscriptions-for-reactflow.md) | Accepted | 2026-06-03 |
 | 0011 | [Internal multi-LLM abstraction (@relavium/llm)](0011-internal-llm-abstraction.md) | Accepted | 2026-06-03 |
+| 0012 | [Dual-mode inference — managed inference as an opt-in third execution mode](0012-managed-inference-dual-mode.md) | Accepted | 2026-06-03 |
+| 0013 | [Managed-mode provider-key vault and key pools](0013-managed-key-vault-and-pools.md) | Accepted | 2026-06-03 |
+| 0014 | [Managed-mode metering, quota, and billing](0014-managed-metering-quota-and-billing.md) | Accepted | 2026-06-03 |
+| 0015 | [Managed-mode data handling and compliance posture](0015-managed-mode-data-handling-and-compliance.md) | Accepted | 2026-06-03 |
 
 ## Creating a new ADR
 

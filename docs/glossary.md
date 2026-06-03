@@ -133,6 +133,71 @@ How a workflow run is initiated. Full spec in
 - **McpServerPool** — the engine's pool of live MCP server connections,
   started on demand and kept alive for the session.
 
+## Deployment & Customer Segments
+
+- **Deployment model** — the combination of **execution mode** + **licensing tier**
+  a customer adopts: where the LLM key lives, who pays for tokens, and what
+  governance is layered on. The per-segment, end-to-end map (individual / small team
+  / enterprise) is the one home: [deployment-models.md](deployment-models.md).
+- **Customer segment** — the adoption cohort a deployment model is chosen for:
+  **individual developer**, **small team (2–20)**, or **large enterprise**. Each maps
+  to a recommended mode, key model, and tier in
+  [deployment-models.md](deployment-models.md).
+- **BYOK-central / org key vault** — the **enterprise key model**: the **`cloud`
+  (BYOK-cloud)** execution mode, where the **org's** provider keys live in a
+  **central server-side vault** and are **injected server-side** by a cloud worker
+  (never issued per-employee; the org still pays its provider directly, so Relavium
+  meters nothing). Distinct from the Relavium-held managed key pool. *(Phase 2.)*
+  Mechanics: [architecture/key-management.md](architecture/key-management.md) and
+  [decisions/0013-managed-key-vault-and-pools.md](decisions/0013-managed-key-vault-and-pools.md);
+  segment fit: [deployment-models.md](deployment-models.md).
+- **Seat / per-seat licensing** — the billing unit for the paid tiers: one **seat**
+  per named user, priced per seat per month (Pro/Team) or per-seat under a custom
+  annual contract (Enterprise). In BYOK, the seat fee buys software + governance, not
+  tokens. Tiers: [reference/portal/api-reference.md](reference/portal/api-reference.md#licensing-tiers).
+
+## Execution Modes & Managed Inference *(managed = Phase 2)*
+
+- **Execution mode** — how a run's LLM calls are keyed and routed. Three modes
+  behind the one `LLMProvider` seam: **local** (BYOK, the Phase-1 default),
+  **cloud** (BYOK-cloud / **BYOK-central**, Phase 2), and **managed** (Relavium's
+  keys, Phase 2). The engine is identical across all three. Canonical home:
+  [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md)
+  and [architecture/managed-inference.md](architecture/managed-inference.md).
+- **BYOK ("bring your own key")** — the user supplies their own provider API keys
+  (kept in the OS keychain); LLM calls go directly to providers under the user's
+  account, never through Relavium. The Phase-1 default and a permanently-supported,
+  first-class mode (a.k.a. **Private mode**). See
+  [product-constraints.md](product-constraints.md).
+- **Managed inference** *(Phase 2)* — an opt-in convenience mode in which Relavium
+  uses its **own** provider keys and sells metered usage. Only LLM **egress** is
+  proxied through Relavium's gateway; **the engine still runs locally** — so managed
+  inference is distinct from cloud execution. The first Phase-2 deliverable.
+  Canonical home: [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md),
+  [architecture/managed-inference.md](architecture/managed-inference.md).
+- **Inference gateway** *(Phase 2)* — the thin Relavium-hosted proxy
+  (`gateway.relavium.com`) that fronts managed inference: it injects Relavium's
+  keys, captures usage, enforces quota, and meters per request. It is *not* an
+  execution plane. Spec: [architecture/managed-inference.md](architecture/managed-inference.md).
+- **Key pool** *(Phase 2)* — the set of multiple Relavium-held provider keys
+  managed per provider (for org rate limits, zero-downtime rotation, 429-cooldown
+  and cross-provider fallback), held in a KMS-backed vault. See
+  [decisions/0013-managed-key-vault-and-pools.md](decisions/0013-managed-key-vault-and-pools.md).
+- **Included usage / quota** *(Phase 2)* — the metered model usage bundled into a
+  managed plan, enforced by a **hard cap** (the guardrail that makes managed margins
+  viable). See [decisions/0014-managed-metering-quota-and-billing.md](decisions/0014-managed-metering-quota-and-billing.md).
+- **Overage** *(Phase 2)* — metered managed usage beyond the included quota,
+  charged per unit (at cost plus a markup). See
+  [decisions/0014-managed-metering-quota-and-billing.md](decisions/0014-managed-metering-quota-and-billing.md).
+- **Prepaid credits** *(Phase 2)* — managed usage paid for up front and drawn down
+  as it is consumed, so revenue precedes provider cost (positive float, no fronting
+  of COGS). See [decisions/0014-managed-metering-quota-and-billing.md](decisions/0014-managed-metering-quota-and-billing.md).
+- **Merchant-of-record** *(Phase 2)* — a third party (e.g. Paddle / Lemon Squeezy)
+  that is the legal seller of record for managed billing, absorbing VAT / sales-tax
+  across jurisdictions plus chargebacks and disputes. A launch-blocking precondition
+  for managed mode. See [decisions/0015-managed-mode-data-handling-and-compliance.md](decisions/0015-managed-mode-data-handling-and-compliance.md)
+  and the [compliance/](compliance/) area.
+
 ## Data, Files & Storage
 
 - **`.relavium.yaml`** — a workflow definition file; git-committable, the unit
@@ -152,13 +217,18 @@ How a workflow run is initiated. Full spec in
 
 ## Phasing
 
-- **Local-first** — the Phase 1 model: agents run on the user's machine, API
-  calls go directly to providers, no cloud and no account required. Privacy is a
-  feature. See [product-constraints.md](product-constraints.md).
-- **Phase 1** — the local-first product: desktop + VS Code + CLI, no cloud.
-- **Phase 2** — *(explicitly later)* the cloud layer: web portal, cloud execution
-  workers, team sharing, and automatic cloud-hosted firing of scheduled/webhook
-  triggers (whose types are already declarable in Phase 1). See
-  [roadmap/README.md](roadmap/README.md).
+- **Local-first** — the Phase 1 model: agents run on the user's machine, and in
+  **BYOK-local mode** API calls go directly to providers, no cloud and no account
+  required. In that mode privacy is a guarantee; BYOK-local stays a first-class,
+  permanently-supported mode in every phase. See
+  [product-constraints.md](product-constraints.md).
+- **Phase 1** — the local-first product: desktop + VS Code + CLI, BYOK-local, no cloud.
+- **Phase 2** — *(explicitly later)* adds two **independent** capabilities:
+  **managed inference** (the first Phase-2 deliverable — a metered LLM gateway;
+  engine stays local) and, separately, the **cloud layer** (web portal, cloud
+  execution workers, team sharing, automatic cloud-hosted firing of
+  scheduled/webhook triggers whose types are already declarable in Phase 1). See
+  [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md)
+  and [roadmap/README.md](roadmap/README.md).
 
 > Status: draft — to be expanded as reference specs are finalized.

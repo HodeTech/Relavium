@@ -27,14 +27,46 @@ extension.
 ### Local-first in Phase 1
 
 No cloud dependency. No account required to use the product. Agents run on the
-user's machine and API calls go directly to the LLM providers. Privacy is a
-feature. See the execution model in [vision.md](vision.md).
+user's machine and, **in BYOK-local mode**, API calls go directly from the
+user's machine to the LLM providers under the user's own keys. This is the Phase-1
+default and ships unchanged. See the execution model in [vision.md](vision.md).
+
+### Privacy is a permanently-supported mode, not the universal headline
+
+**BYOK-local ("Private mode")** — the user's own keys, calls straight to the
+providers, zero LLM data through Relavium — is a **first-class execution mode that
+is kept permanently supported and non-degraded**. It is the Phase-1 default and
+remains the heavy-user / enterprise / trust lane forever. What changes in Phase 2
+is only that privacy stops being the *universal* headline: a third **`managed`**
+mode (Relavium's keys, LLM egress proxied through Relavium's gateway) is offered as
+an **opt-in convenience mode** for users who would rather not manage keys. The
+privacy guarantee is therefore **mode-scoped** (it holds in BYOK-local/cloud,
+not in managed), never silently weakened. See
+[decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md)
+and [analysis/managed-inference-business-model-2026-06-03.md](analysis/managed-inference-business-model-2026-06-03.md).
+
+### BYOK-local stays first-class and non-degraded — permanently
+
+Adding managed inference must **never** degrade, paywall behind it, or
+second-class the BYOK-local mode. BYOK-local is the higher-margin core business
+and the trust proof; it remains a complete, fully-supported path on every surface
+in every phase. Managed inference is *additive convenience*, not a replacement.
+
+How each customer segment adopts these modes and tiers end-to-end — and why no
+segment is ever forced into managed — is mapped in
+[deployment-models.md](deployment-models.md).
 
 ### Cloud execution is Phase 2
 
 Do not design Phase 1 to require the cloud. The engine architecture must support
-both local and cloud modes via a clean interface switch, so that Phase 2 adds a
-cloud layer without breaking Phase 1 surfaces. See [roadmap/README.md](roadmap/README.md).
+local, cloud, and (Phase 2) managed modes via a clean interface switch, so that
+Phase 2 adds layers without breaking Phase 1 surfaces. See [roadmap/README.md](roadmap/README.md).
+
+> **Managed inference is a separate Phase-2 capability from cloud execution.**
+> Managed inference proxies only **LLM egress** through Relavium's keys/gateway —
+> the engine still runs **locally**. It is the *first* Phase-2 deliverable and is
+> decoupled from (and ships ahead of) the cloud-execution worker plane. See
+> [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md).
 
 ### Workflow files are git-native
 
@@ -50,7 +82,7 @@ The following are explicitly **not** part of the Phase 1 MVP:
 | Out of scope (MVP) | Why / where it lands |
 |--------------------|----------------------|
 | Multi-user / team features | Phase 2 (cloud + portal) |
-| Billing / subscription | Phase 2 |
+| Billing / subscription | Phase 2 — **metered managed-inference billing is the Phase-2 commercial centerpiece** (prepaid credits + hard included-usage cap + metered overage + cheap-default routing; BYOK stays unlimited). See [decisions/0014-managed-metering-quota-and-billing.md](decisions/0014-managed-metering-quota-and-billing.md). |
 | Ollama / local models | API-based providers only for MVP |
 | Cloud execution queue | Phase 2 (BullMQ + Redis) |
 | Web portal | Phase 2 |
@@ -63,6 +95,29 @@ The following are explicitly **not** part of the Phase 1 MVP:
 > only **automatic cloud-hosted firing** (an always-on HTTP listener / cron
 > scheduler) is deferred to Phase 2. See
 > [reference/contracts/workflow-yaml-spec.md](reference/contracts/workflow-yaml-spec.md).
+
+## Phase-2 preconditions for managed inference
+
+Managed inference puts Relavium in the data path and on the hook for billing, so
+two hard gates are **launch-blocking preconditions** — managed mode may not ship
+until both are cleared:
+
+- **Provider-ToS confirmation (gate R1).** Written confirmation / the appropriate
+  commercial or partner agreement from **each** provider that "Relavium holds the
+  key, customers consume metered usage under Relavium's account, Relavium keeps
+  margin" is permitted. Getting this wrong at scale is account termination, not a
+  fine.
+- **Merchant-of-record.** A merchant-of-record (e.g. Paddle / Lemon Squeezy) must
+  be in place to absorb VAT / sales-tax across jurisdictions, plus chargebacks and
+  disputes, before any metered charge is taken.
+
+A KVKK + GDPR / data-residency posture (DPA + sub-processor list, cross-border
+transfer handling, no-prompt-logging-by-default) is the third precondition. These
+gates apply **only to managed mode**; BYOK-local/cloud are unaffected. See
+[decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md),
+[decisions/0015-managed-mode-data-handling-and-compliance.md](decisions/0015-managed-mode-data-handling-and-compliance.md),
+the [compliance/](compliance/) area, and
+[analysis/managed-inference-business-model-2026-06-03.md](analysis/managed-inference-business-model-2026-06-03.md).
 
 ## Rationale
 

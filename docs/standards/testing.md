@@ -31,8 +31,8 @@ in CLI tests before it ever reaches the desktop.
   checkpoint/resume, and cost accumulation. Run events are asserted against the
   [canonical SSE event schema](../reference/contracts/sse-event-schema.md) by their
   colon-namespaced names (`node:started`, `agent:token`, `agent:tool_call`,
-  `agent:tool_result`, `node:completed`, `cost:updated`, `human_gate:pending`,
-  `run:completed`, `run:error`) and by their `sequenceNumber` ordering — never the legacy
+  `agent:tool_result`, `node:completed`, `cost:updated`, `human_gate:paused`,
+  `run:completed`, `run:failed`) and by their `sequenceNumber` ordering — never the legacy
   dotted names.
 - **`packages/llm`** — the seam types, the `ToolNormalizer`, the `CostTracker` pricing
   table, the `FallbackChain` runner, and each adapter's normalization logic (system-prompt

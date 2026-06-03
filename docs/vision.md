@@ -65,14 +65,30 @@ constraint; see [product-constraints.md](product-constraints.md).
 
 ## Execution Model
 
-- **Phase 1 — local-first.** Agents run on the user's machine. LLM API calls go
-  directly from the user's machine to the providers (Anthropic, OpenAI, Gemini,
-  DeepSeek). No cloud dependency, no account required, no server to run. Privacy
-  is a feature, not an add-on.
-- **Phase 2 — cloud.** *(Explicitly Phase 2.)* Cloud execution workers for 24/7
-  automation, team sharing, scheduled and webhook triggers, and mobile-triggered
-  runs. Phase 1 is never designed to *require* the cloud; the engine architecture
-  supports both modes behind a clean interface switch. See [roadmap/README.md](roadmap/README.md).
+- **Phase 1 — local-first (BYOK-local).** Agents run on the user's machine. In
+  this **BYOK-local mode**, LLM API calls go directly from the user's machine to
+  the providers (Anthropic, OpenAI, Gemini, DeepSeek) under the user's own keys.
+  No cloud dependency, no account required, no server to run. In this mode privacy
+  is a guarantee, not an add-on — and it stays a permanently-supported, first-class
+  mode in every later phase (see [product-constraints.md](product-constraints.md)).
+- **Phase 2 — two independent capabilities.** *(Explicitly Phase 2, and separate
+  from each other.)*
+  - **Managed inference** — an opt-in *convenience* mode and the **first** Phase-2
+    deliverable: a thin **gateway** that proxies only **LLM egress** through
+    Relavium's own keys (metered, billed), so users who would rather not manage
+    keys can run with zero setup. Crucially, **the engine still runs locally** —
+    managed inference is *not* cloud execution; only LLM calls are routed through
+    `gateway.relavium.com`. See
+    [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md)
+    and [architecture/managed-inference.md](architecture/managed-inference.md).
+  - **Cloud execution** — a *separate*, later capability: cloud execution workers
+    for 24/7 automation, team sharing, scheduled and webhook triggers, and
+    mobile-triggered runs. This moves the engine itself to the cloud, which managed
+    inference does not.
+
+  Phase 1 is never designed to *require* the cloud; the engine architecture
+  supports local, managed, and cloud modes behind a clean interface switch (the
+  `LLMProvider` seam is unchanged). See [roadmap/README.md](roadmap/README.md).
 
 ## Why It Wins
 

@@ -21,9 +21,19 @@
 4. **Workflow portability** means a workflow built by one developer runs unchanged
    in CI/CD — closing the gap between local AI use and automated pipelines that
    every other tool leaves open.
-5. **Local-first execution** means zero data leaves the machine until the user
-   chooses cloud — a trust and compliance advantage no SaaS-first competitor can
-   claim in Phase 1.
+5. **BYOK-local mode means zero data leaves the machine — guaranteed,
+   permanently.** In Relavium's first-class **BYOK-local ("Private mode")**, runs
+   execute on the user's machine and LLM calls go straight to the providers under
+   the user's own keys; nothing transits Relavium. This is a mode-scoped guarantee
+   kept permanently non-degraded — a trust and compliance advantage no SaaS-first
+   competitor can match. *(Phase 2 adds an opt-in **managed-inference** convenience
+   mode that proxies LLM egress through Relavium's keys; BYOK-local always stays
+   available for users who want the zero-egress guarantee. See
+   [product-constraints.md](product-constraints.md) and
+   [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md).)*
+6. **Convenience without lock-in (Phase 2, opt-in).** Managed inference lets users
+   start with zero key setup, while BYOK-local remains a one-switch escape hatch —
+   same product, your key — so the convenience never becomes lock-in.
 
 ## Positioning
 
@@ -60,3 +70,7 @@ runs it unchanged in their own editor, terminal, or CI. Value scales with team
 size — the workflow file is team infrastructure, not a personal preference. This
 positioning underpins the go-to-market and pricing strategy (gate on
 collaboration and scale, not on capability).
+
+How this maps to adoption per segment — execution mode, key model, tier, and the
+upgrade path for individuals, small teams, and enterprises — is detailed in
+[deployment-models.md](deployment-models.md).

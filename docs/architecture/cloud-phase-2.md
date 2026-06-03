@@ -15,6 +15,16 @@ schedules), and a browser-based canvas. A user can link a Relavium Cloud account
 and choose, **per workflow**, whether to run locally or in the cloud — and can keep
 running entirely locally with no account forever.
 
+> **Cloud execution is not the only Phase-2 mode, and not the first one.** Phase 2
+> also adds **managed inference** — a separate, *thinner* capability where
+> Relavium holds the provider key and meters usage, while the engine **stays
+> local** and only LLM egress is proxied to a gateway. Managed inference is the
+> **first Phase-2 deliverable** and ships **ahead of** the cloud-execution plane
+> described in this document. The two must not be conflated: managed **inference**
+> moves only the LLM call; cloud **execution** moves the whole engine run. See
+> [managed-inference.md](managed-inference.md) for the full design; this document
+> covers the cloud-execution plane (workers, queue, portal).
+
 ```mermaid
 flowchart TB
     subgraph Local["Local surfaces (Phase 1 — unchanged)"]
@@ -112,12 +122,24 @@ These are the *only* substitutions; everything else is shared:
 ## The transparent local→cloud switch
 
 The engine exposes an **identical interface regardless of mode**; surfaces never
-check the mode. Mode is resolved once, at engine creation time, in this order:
+check the mode. `executionMode` is **three-valued** —
+`'local' | 'cloud' | 'managed'` — and the value selects only *where the engine
+runs* and *which `LLMProvider` implementation the factory hands back* (a direct
+provider adapter for `local`/`cloud`, the `ManagedGatewayProvider` for
+`managed`); see [managed-inference.md](managed-inference.md). Mode is resolved
+once, at engine creation time, in this order:
 
-1. An explicit `executionMode` config override.
-2. The presence of a valid cloud auth token (implies cloud mode).
+1. An explicit `executionMode` config override (`local` / `cloud` / `managed`).
+2. The presence of a valid cloud auth token (implies a cloud-linked account; the
+   stored preference then decides between `cloud` execution and `managed`
+   inference — both require an account, but only `cloud` moves the engine off the
+   user's machine).
 3. A stored user preference.
 4. Default: **local**.
+
+`managed` and `cloud` are independent axes: a run can stay local while using
+managed inference, or run in the cloud while still using a BYOK key. The two are
+resolved separately and never inferred from each other.
 
 The migration path is gradual and opt-in: a user starts local, signs up on the
 portal, gets a token, and the desktop app detects it and offers to run in the cloud
@@ -155,6 +177,7 @@ secret-handling rules.
 ## Related documents
 
 - [overview.md](overview.md) — where the cloud layer sits relative to the local surfaces.
+- [managed-inference.md](managed-inference.md) — the separate, earlier Phase-2 mode: a thin gateway that proxies LLM egress on Relavium's key with the engine staying local (managed inference ≠ cloud execution).
 - [local-first-and-security.md](local-first-and-security.md) — the secret-handling rules that carry into Phase 2.
 - [shared-core-engine.md](shared-core-engine.md) · [multi-llm-providers.md](multi-llm-providers.md) — the engine and provider layer the workers run unchanged.
 - [../reference/portal/api-reference.md](../reference/portal/api-reference.md) — the portal/cloud API surface.

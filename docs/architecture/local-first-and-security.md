@@ -14,25 +14,35 @@ feature" true. The concrete keychain mechanics are canonical in
 ```mermaid
 flowchart LR
     subgraph Machine["User's machine — the entire Phase-1 backend"]
-        UI["React WebView<br/>(canvas, run monitor)"]
+        subgraph WebView["React WebView (in-process)"]
+            UI["UI<br/>(canvas, run monitor)"]
+            Core["packages/core engine"]
+            LLM["packages/llm"]
+        end
         Rust["Tauri Rust core"]
-        Core["packages/core engine"]
-        LLM["packages/llm"]
         SQLite[("SQLite<br/>SQLCipher")]
         KC[["OS keychain<br/>(Keychain / Cred Mgr / libsecret)"]]
         FS["Filesystem<br/>.relavium/*.yaml"]
     end
     Providers["LLM providers<br/>(Anthropic / OpenAI / Gemini / DeepSeek)"]
 
-    UI <-->|IPC| Rust
-    Rust --> Core
+    UI --> Core
     Core --> LLM
-    Core --> SQLite
-    Core --> FS
-    LLM -->|read key at call time| KC
+    Core -->|IPC: sql plugin| Rust
+    Rust --> SQLite
+    Rust --> FS
+    LLM -->|IPC: read key at call time| Rust
+    Rust -->|read key| KC
+    Rust -->|key value, transient at call time| LLM
     LLM -->|HTTPS, direct| Providers
-    UI -. "key value never crosses this line" .- KC
+    UI -. "no raw key in UI state (providerStore)" .- LLM
 ```
+
+The engine (`packages/core` + `packages/llm`) runs in the WebView, and LLM egress
+originates from the WebView over HTTPS — in BYOK-local mode straight to the
+provider; the key is fetched from the OS keychain via a Rust command at call time,
+so only the keychain **read** crosses IPC into Rust (see
+[desktop-architecture.md](desktop-architecture.md)).
 
 ## Context
 
@@ -74,11 +84,14 @@ The architectural rules are:
    Secure Enclave on Apple Silicon), Windows Credential Manager, or libsecret on
    Linux. Never in SQLite, never in a config file, never in a workflow YAML.
 2. **Keys are read at call time, in the engine/LLM layer.** `packages/llm` fetches
-   the key from the keychain at the moment of the provider call. Keys are never
-   serialized into checkpoints, run events, or log lines.
-3. **The frontend never sees a key.** The React WebView can list which providers
-   are configured (via `providerStore`) but the key *value* never crosses the IPC
-   boundary into the WebView. This is the line in the diagram above.
+   the key from the keychain — via a Rust command at the moment of the provider
+   call — and uses it for that one HTTPS request. Keys are never serialized into
+   checkpoints, run events, or log lines.
+3. **The UI never holds a raw key.** The key value is fetched from the OS keychain
+   via a Rust command at call time and used transiently by `packages/llm` (in the
+   WebView's JS runtime) for that one HTTPS request. It never reaches the React
+   UI/renderer layer — `providerStore` holds only provider config and a masked
+   hint, never the raw key — and is never persisted, checkpointed, or logged.
 4. **Exported workflows are scrubbed.** When a workflow YAML is exported or
    committed, secret references are replaced with placeholder tokens so a key
    cannot leak through a shared `.relavium.yaml`.

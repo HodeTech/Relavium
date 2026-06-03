@@ -53,7 +53,7 @@ export type RunEvent =
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
-| `run:started` | A run began. | `workflowId`, `inputs`, `executionMode: 'local' \| 'cloud'` |
+| `run:started` | A run began. | `workflowId`, `inputs`, `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType` |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `toolId`, `toolInput` (sanitized — no secrets) |

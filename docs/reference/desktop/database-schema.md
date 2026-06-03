@@ -5,7 +5,7 @@
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
 - **Scope**: Phase 1, local-first. SQLite via `tauri-plugin-sql`, schema managed by Drizzle ORM in `packages/db` (see [project-structure.md](../../project-structure.md)).
-- **Related**: [keychain-and-secrets.md](keychain-and-secrets.md), [tauri-plugins.md](tauri-plugins.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
+- **Related**: [keychain-and-secrets.md](keychain-and-secrets.md), [tauri-plugins.md](tauri-plugins.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
 
 This is the canonical reference for the **local** run-history and catalog database that the desktop app persists on the user's machine. There is no cloud, no account, and no server in Phase 1 — every table below lives in a single encrypted SQLite file. The Phase-2 PostgreSQL divergences are described at the end and detailed in [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md).
 
@@ -331,3 +331,131 @@ Drizzle ORM is used for both engines, so table and column names are identical an
 - **`run_events` partitioning**: the unbounded event log uses Postgres declarative `RANGE`-by-month partitioning (or a TimescaleDB hypertable) with `pg_cron` retention `DROP TABLE`. SQLite has no partitioning, hence the local 90-day archive/prune job.
 - **Concurrency**: Postgres MVCC supports many concurrent writers; SQLite's single-writer WAL lock is adequate locally but would bottleneck cloud-scale parallel runs.
 - **Reintroduced tables**: `workflow_schedules` (cron/interval triggers) becomes functional in Phase 2; `*_versions` tables may return if portal-managed (non-git) versioning is needed.
+
+### Managed-inference tables (Phase 2)
+
+> These tables exist **only in the Phase-2 managed-inference gateway** and have **no SQLite/local counterpart** — managed inference is a cloud capability (Relavium holds the provider key and meters usage; see [../../architecture/managed-inference.md](../../architecture/managed-inference.md)). They are Postgres-native and follow the same Phase-2 conventions as every other cloud table: integer **micro-cents** for money, an `org_id` column with **row-level security**, `TIMESTAMPTZ` timestamps, and `JSONB` blobs. They are governed by [ADR-0013](../../decisions/0013-managed-key-vault-and-pools.md) (key vault/pools), [ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md) (metering/quota/billing), and [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md) (data handling).
+
+#### `provider_key_pool`
+
+The pool of **Relavium's own** provider keys the gateway draws from, one row per key. The **key value is never stored here** — only a reference to the KMS entry that holds it, mirroring the local "keychain ref, not the key" rule for `llm_providers.api_key_keychain_ref`. Multiple rows per provider give per-provider rate-limit headroom, rotation, and 429-cooldown.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | UUID | PRIMARY KEY DEFAULT `gen_random_uuid()` |
+| `org_id` | UUID | NOT NULL — RLS tenant (platform-org for the shared pool) |
+| `provider` | TEXT | NOT NULL — `anthropic` / `openai` / `gemini` / `deepseek` |
+| `region` | TEXT | NULL — segregation key for residency/ban containment |
+| `kms_key_ref` | TEXT | NOT NULL — **reference to the KMS entry; never the key value** |
+| `status` | TEXT | NOT NULL DEFAULT `'active'` — enum `('active','cooldown','rotating','retired','quarantined')` |
+| `cooldown_until` | TIMESTAMPTZ | NULL — set on a 429; key skipped until then |
+| `last_used_at` | TIMESTAMPTZ | NULL |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+| `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+
+```sql
+CREATE INDEX idx_pkp_provider_status ON provider_key_pool (provider, status) WHERE status = 'active';
+ALTER TABLE provider_key_pool ENABLE ROW LEVEL SECURITY;
+```
+
+#### `subscriptions`
+
+A **mirror of the billing provider's (Stripe) subscription state** — the control plane's source of truth for "what tier is this org on, and is it current." Synced from Stripe webhooks; never authoritative over Stripe.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | UUID | PRIMARY KEY DEFAULT `gen_random_uuid()` |
+| `org_id` | UUID | NOT NULL UNIQUE — RLS tenant |
+| `stripe_customer_id` | TEXT | NOT NULL |
+| `stripe_subscription_id` | TEXT | NULL |
+| `tier` | TEXT | NOT NULL — `free` / `pro` / `team` / `enterprise` (see [../portal/api-reference.md](../portal/api-reference.md#licensing-tiers)) |
+| `status` | TEXT | NOT NULL — mirrors Stripe (`active`,`past_due`,`canceled`,`trialing`,…) |
+| `included_usage_microcents` | INTEGER | NOT NULL DEFAULT 0 — the **hard included-usage cap** for the period |
+| `prepaid_credit_microcents` | INTEGER | NOT NULL DEFAULT 0 — remaining prepaid balance |
+| `current_period_start` | TIMESTAMPTZ | NULL |
+| `current_period_end` | TIMESTAMPTZ | NULL |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+| `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+
+```sql
+CREATE UNIQUE INDEX idx_subscriptions_org ON subscriptions (org_id);
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+```
+
+#### `quota_policies`
+
+The enforceable budget/quota **policy** per org (the control-plane record the gateway reads at reserve time). Separate from `subscriptions` so a tier can carry several policies (per-day, per-model) and so enterprise can set custom limits.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | UUID | PRIMARY KEY DEFAULT `gen_random_uuid()` |
+| `org_id` | UUID | NOT NULL — RLS tenant |
+| `scope` | TEXT | NOT NULL — `org` / `user` / `model` |
+| `scope_ref` | TEXT | NULL — user id or canonical model id when scoped |
+| `period` | TEXT | NOT NULL — `day` / `month` |
+| `budget_microcents` | INTEGER | NOT NULL — the cap for the period |
+| `enforcement` | TEXT | NOT NULL DEFAULT `'hard_stop'` — `warn` / `throttle` / `hard_stop` |
+| `warn_threshold_pct` | INTEGER | NOT NULL DEFAULT 80 |
+| `is_active` | BOOLEAN | NOT NULL DEFAULT true |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+| `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+
+```sql
+CREATE INDEX idx_quota_policies_org_scope ON quota_policies (org_id, scope, period) WHERE is_active;
+ALTER TABLE quota_policies ENABLE ROW LEVEL SECURITY;
+```
+
+#### `usage_events`
+
+The **immutable, append-only billing ledger** — one row per metered managed request, written when the gateway **settles** the reserve→settle metering (see [../../architecture/managed-inference.md](../../architecture/managed-inference.md#metering-quota-and-budgets-reserve--settle)). **No prompt or completion bodies are stored** — only counts and costs (meter content, not text; [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)). The UNIQUE `request_id` is what makes settle **idempotent**: a retried settle is a no-op, so a delivery retry can never double-bill. Because it is unbounded and time-ordered, it uses the same **`RANGE`-by-month partitioning** as `run_events`.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | UUID | PRIMARY KEY DEFAULT `gen_random_uuid()` |
+| `org_id` | UUID | NOT NULL — RLS tenant |
+| `request_id` | TEXT | NOT NULL **UNIQUE** — idempotency key for reserve→settle |
+| `user_id` | UUID | NULL — the member who incurred the usage |
+| `provider` | TEXT | NOT NULL — `anthropic` / `openai` / `gemini` / `deepseek` |
+| `model_id` | TEXT | NOT NULL — canonical model id (the pricing key) |
+| `pool_key_id` | UUID | NOT NULL REFERENCES `provider_key_pool(id)` — which Relavium key served it |
+| `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `cache_read_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `cache_write_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `usage_source` | TEXT | NOT NULL DEFAULT `'streamed'` — `streamed` / `estimated` / `reconciled` (how the counts were obtained) |
+| `provider_cost_microcents` | INTEGER | NOT NULL — **COGS**: Relavium's cost from the canonical pricing table |
+| `billed_cost_microcents` | INTEGER | NOT NULL — what the tenant is charged (margin = billed − provider) |
+| `occurred_at` | TIMESTAMPTZ | NOT NULL — partition key |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+
+```sql
+-- immutable ledger: append-only, no UPDATE/DELETE in normal operation
+CREATE UNIQUE INDEX idx_usage_events_request ON usage_events (request_id);
+CREATE INDEX idx_usage_events_org_time ON usage_events (org_id, occurred_at DESC);
+CREATE INDEX idx_usage_events_org_model ON usage_events (org_id, model_id, occurred_at DESC);
+-- PARTITION BY RANGE (occurred_at) — monthly partitions, pg_cron retention, as for run_events
+ALTER TABLE usage_events ENABLE ROW LEVEL SECURITY;
+```
+
+#### `usage_aggregates_daily`
+
+A pre-rolled **daily rollup** of `usage_events` per org (and per model) so the portal's usage/quota dashboards and the reserve-time per-day budget check do not scan the raw ledger. Rebuilt by the nightly reconciliation job, so it is the **reconciled** view of spend.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | UUID | PRIMARY KEY DEFAULT `gen_random_uuid()` |
+| `org_id` | UUID | NOT NULL — RLS tenant |
+| `day` | DATE | NOT NULL |
+| `model_id` | TEXT | NULL — NULL row = all-models total for the day |
+| `input_tokens` | BIGINT | NOT NULL DEFAULT 0 |
+| `output_tokens` | BIGINT | NOT NULL DEFAULT 0 |
+| `request_count` | INTEGER | NOT NULL DEFAULT 0 |
+| `provider_cost_microcents` | BIGINT | NOT NULL DEFAULT 0 |
+| `billed_cost_microcents` | BIGINT | NOT NULL DEFAULT 0 |
+| `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT `now()` |
+
+```sql
+CREATE UNIQUE INDEX idx_usage_agg_daily_org_day_model ON usage_aggregates_daily (org_id, day, COALESCE(model_id, ''));
+CREATE INDEX idx_usage_agg_daily_org_day ON usage_aggregates_daily (org_id, day DESC);
+ALTER TABLE usage_aggregates_daily ENABLE ROW LEVEL SECURITY;
+```

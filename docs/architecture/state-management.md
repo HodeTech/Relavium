@@ -129,11 +129,12 @@ reconnection logic and gap detection do not depend on component lifecycles:
   local desktop case this is a state refetch; over HTTP in Phase 2 it is SSE
   `Last-Event-ID` resumption).
 - `agent:token` events go through the double-buffer; status and cost events
-  (`node:started`, `node:completed`, `cost:updated`, `run:completed`, `run:error`,
-  `human_gate:pending`) update `runStore` directly.
-- A `human_gate:pending` event raises the root-level `HumanGateOverlay`; resolving
-  it is idempotent on reconnect (see
-  [execution-model.md](execution-model.md#4-human-gate)).
+  (`node:started`, `node:completed`, `node:failed`, `cost:updated`,
+  `run:completed`, `run:failed`, `human_gate:paused`, `human_gate:resumed`) update
+  `runStore` directly.
+- A `human_gate:paused` event raises the root-level `HumanGateOverlay`; the
+  matching `human_gate:resumed` clears it, and resolving the gate is idempotent on
+  reconnect (see [execution-model.md](execution-model.md#4-human-gate)).
 
 The event shapes are the
 [SSE event schema](../reference/contracts/sse-event-schema.md); locally they are

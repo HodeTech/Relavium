@@ -47,7 +47,7 @@ and is cited, not restated, here. Every run emits the colon-namespaced events in
 `sequenceNumber`:
 
 `node:started`, `agent:token`, `agent:tool_call`, `agent:tool_result`, `node:completed`,
-`node:error`, `cost:updated`, `human_gate:pending`, `run:completed`, `run:error`.
+`node:failed`, `cost:updated`, `human_gate:paused`, `run:completed`, `run:failed`.
 
 - `cost:updated` carries `{nodeId, model, inputTokens, outputTokens, costUsd,
   cumulativeCostUsd}` and is the live cost-accounting signal that the desktop cost view and

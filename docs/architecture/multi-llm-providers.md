@@ -230,7 +230,7 @@ ADR; it never silently changes the seam. See
 [ADR-0011](../decisions/0011-internal-llm-abstraction.md) for the full decision and
 trigger policy.
 
-## Local vs cloud
+## Local, cloud, and managed
 
 In Phase 1 `packages/llm` runs inside the surface process (Tauri WebView, VS Code
 extension host, or Node CLI) and calls providers directly. In Phase 2 the **same
@@ -239,9 +239,27 @@ encrypted server-side store instead of the OS keychain) and *where* the process 
 The seam, the adapters, tool normalization, fallback, and cost logic are identical in
 both modes — see [cloud-phase-2.md](cloud-phase-2.md).
 
+Phase 2 also adds a **third execution mode, `managed`** (extending `executionMode`
+from `'local' | 'cloud'` to `'local' | 'cloud' | 'managed'`). The **factory selects
+the `LLMProvider` implementation by execution mode**: `local` and `cloud` get the
+direct provider adapters above; `managed` gets a new **`ManagedGatewayProvider`** —
+a thin client that calls a Relavium gateway over HTTPS instead of a provider
+directly. The gateway runs **these same adapters** server-side with **Relavium's**
+key and meters usage. Crucially, this new implementation sits behind the **same
+immovable seam** — no seam type changes — which is exactly the reversibility
+[ADR-0011](../decisions/0011-internal-llm-abstraction.md) was designed to preserve.
+Because the gateway holds keys for every provider, the **fallback chain can run
+gateway-side** in managed mode (the same ordered-models policy from
+[Fallback chains](#fallback-chains), executed in the gateway rather than on the
+user's machine). The full design — key vault and pools, streaming usage capture,
+and reserve→settle metering — is in
+[managed-inference.md](managed-inference.md).
+
 ## Related documents
 
 - [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) — the canonical `LLMProvider` seam types.
+- [managed-inference.md](managed-inference.md) — the Phase-2 `ManagedGatewayProvider` behind the same seam: the gateway, key pools, usage capture, and metering.
+- [cloud-phase-2.md](cloud-phase-2.md) — the cloud-execution plane and the three-valued `executionMode`.
 - [shared-core-engine.md](shared-core-engine.md) — the engine that calls this layer.
 - [execution-model.md](execution-model.md) — how token and cost events flow during a run.
 - [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md) · [../reference/shared-core/mcp-integration.md](../reference/shared-core/mcp-integration.md) — the tools the normalizer maps.
