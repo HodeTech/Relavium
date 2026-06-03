@@ -1,0 +1,1751 @@
+{
+  "deepInv": {
+    "sections": [
+      {
+        "key": "frontend",
+        "topicsCovered": [
+          "Framework decision: Vite + React SPA + separate API (Option B), with full 1766-char reasoning vs Next.js App Router (SSE persistence, all-client canvas state, low routing complexity) and 5 explicit tradeoffs",
+          "State management: Zustand + immer; 5 named stores (providerStore, agentStore, workflowStore, uiStore, runStore) each with documented Shape:{} TypeScript shapes",
+          "Canvas state isolation: ReactFlow useNodesState/useEdgesState in CanvasContext (NOT global store), serialize-on-save; per-node useRunNodeStatus(id) selectors memoized with useShallowEqual to prevent O(n) re-renders during streaming",
+          "Undo/redo: custom useHistory hook, 50-depth WorkflowSnapshot stack, 300ms debounce on onNodesChange, disabled during runs",
+          "Run execution state + token streaming double-buffer (rawBuffer -> 16ms RAF flush -> tokenBuffer -> CSS opacity pulse, caps re-renders at 60fps)",
+          "9 canvas node types (AgentNode, ConditionNode, FanOutNode, AggregatorNode, LoopNode, HumanGateNode, InputNode, OutputNode, ToolNode) each with name/description/keyProps",
+          "8 routes (/, /onboarding, /workflows, /workflows/:id, /workflows/:id/runs/:runId, /agents, /settings, /settings/providers/:id)",
+          "Realtime UI: singleton SseManager class (non-React), exponential backoff reconnect, GET /state resync, seqNo gap detection; SSE event schema {type,nodeId,payload,seqNo}; HumanGateOverlay at root layout; CSS-only canvas animations (stroke-dashoffset flow, status rings, typing-cursor)",
+          "Component strategy (2328 chars): shadcn/ui + Radix, custom ReactFlow nodes via CSS Modules, CodeMirror 6 for SystemPromptEditor, TanStack Router + Query, Framer Motion sparingly",
+          "10 criticalImplementationDetails (stable nodeTypes refs, canvasStore/runStore separation, server-side key encryption, schema_version + WorkflowMigrator, idempotent HumanGateNode on reconnect, undo debounce, ToolNode secret references, client-side cost pricing table, ReactFlow native selection model, FanOutNode staggered animation-delay)"
+        ],
+        "depth": "Very deep. ~12KB of prose. Concrete TypeScript store Shape definitions, named hooks/components, exact timings (16ms RAF, 300ms debounce, 50 undo depth, 500ms-30s backoff), SSE event schema. No full code listings but precise architectural prescriptions ready to implement.",
+        "reusability": "partially-reusable",
+        "concreteArtifacts": [
+          "5 Zustand store Shape:{} definitions (providerStore/agentStore/workflowStore/uiStore/runStore)",
+          "SSE event schema { type: 'node.started'|'node.token'|'node.completed'|'node.error'|'run.complete'|'human_gate.pending'|'cost.update', nodeId, payload, seqNo }",
+          "Double-buffer token streaming algorithm (rawBuffer -> 16ms RAF -> tokenBuffer -> commit on chunk boundary)",
+          "9 canvas node type catalog with keyProps",
+          "10 criticalImplementationDetails list (ReactFlow performance footguns)"
+        ]
+      },
+      {
+        "key": "backend",
+        "topicsCovered": [
+          "Runtime decision: TypeScript-only monorepo (Next.js fullstack + Bun workers) with 1517-char reasoning rejecting Python/FastAPI sidecar. NOTE: this contradicts masterPlan which settles on Hono (not Next.js) and contradicts the backend critique which calls Next.js-as-executor 'most dangerous'",
+          "22 REST API endpoints fully enumerated (method/path/purpose/requestShape/responseShape): providers, keys, models, agents, workflows, runs, SSE logs stream, human-gate signal, cost",
+          "Execution engine: DAG JSONB parsing, RunPlan build, orchestrator-as-special-agent-node instantiation via Vercel AI SDK streamText toolChoice=auto, agent delegation via onToolCall -> BullMQ child jobs + suspended parent promise, Redis Streams (XADD/XREAD BLOCK) for streaming, 3-tier error handling",
+          "LiteLLM/multi-LLM integration: AES-256-GCM key management, ToolNormalizer (Anthropic input_schema / OpenAI function.parameters / Gemini functionDeclarations), CostTracker middleware, Redis sorted-set sliding-window rate limiter, per-agent FallbackChain",
+          "Queue design: BullMQ + Redis 7, 6 job types (workflow.start, node.execute, node.human_gate, run.checkpoint, cost.record, run.cancel) with payloads, 3 worker pools (orchestrator=5, node=20, system=50)",
+          "Crash recovery (1446 chars): checkpoint table schema, startup reconciliation job, orphaned job cleanup, orchestrator history replay, idempotencyKey=hash(runId+nodeId+retryCount)",
+          "10 criticalDetails (shared Zod schemas, SSE Nginx headers X-Accel-Buffering, no WebSockets, AbortController timeouts, history compaction at 80% context, SELECT FOR UPDATE SKIP LOCKED, keys never in payloads, humanGateTimeout, Redis TTL rate limits, monorepo layout apps/web+apps/worker+packages)"
+        ],
+        "depth": "Very deep. ~14KB. Full 22-endpoint API surface, BullMQ payload shapes, concurrency numbers, Redis command-level streaming detail (XADD/XREAD BLOCK/XRANGE), encryption algorithm + env var names, checkpoint table columns. Implementation-ready prose, no full code blocks.",
+        "reusability": "partially-reusable",
+        "concreteArtifacts": [
+          "22 REST endpoint table (method/path/purpose) — adaptable to local IPC/CLI commands",
+          "6 BullMQ job-type definitions with payloads (Phase 2 cloud only)",
+          "ToolNormalizer cross-provider mapping (Anthropic/OpenAI/DeepSeek/Gemini) — fully reusable",
+          "FallbackChain example: [{claude-sonnet-4-6,3},{gpt-4o,2},{gemini-2-5-pro,1}]",
+          "Crash recovery checkpoint columns {runId, seq, nodeStates, pendingNodeIds, completedNodeIds, orchestratorMessageHistory, createdAt} + idempotencyKey formula",
+          "Redis sliding-window rate limiter (sorted-set ZADD/score=Date.now()) algorithm"
+        ]
+      },
+      {
+        "key": "database",
+        "topicsCovered": [
+          "13 fully-specified tables with all columns+types+indexes: llm_providers(11), model_catalog(19), agents(16), agent_versions(5), workflows(12), workflow_versions(5), workflow_runs(18), step_executions(22), messages(12), execution_logs(7), langgraph_checkpoints(10), langgraph_checkpoint_blobs(7), workflow_schedules(13)",
+          "workflowDefinitionJSONSchema: a complete JSON Schema for the workflow graph — 10 node types enum (agent/condition/tool/transform/input/output/loop/parallel/human_in_the_loop/subworkflow), per-type config objects (agent_config, condition_config, tool_config, transform_config, loop_config, parallel_config, human_in_the_loop_config, subworkflow_config, retry_config), edges with data_mapping, global_config",
+          "4 critical query patterns with exact indexes (SSE log streaming, resume from checkpoint, cost analytics GROUP BY, list workflows DISTINCT ON last-run)",
+          "14 SQLite-vs-Postgres differences (UUID, JSONB, TEXT[], TIMESTAMPTZ, NUMERIC->micro-cents, partial indexes, GIN, FK cascade PRAGMA, partitioning, DISTINCT ON, RETURNING, concurrent writes, FTS, enums)",
+          "6-phase SQLite->Postgres migration strategy (dual-write shadow, pgloader ETL, type transforms)",
+          "execution_logs partitioning: Postgres declarative RANGE-by-month with DDL, pg_cron automation, retention DROP TABLE, TimescaleDB hypertable alternative, SQLite archive-table fallback"
+        ],
+        "depth": "Deepest section. Complete production-grade schema (~all 13 tables column-by-column), full JSON Schema for workflow definition (deeply nested, the canonical workflow file format), real DDL for partitioning, named indexes per table. This is the single richest verbatim-artifact source in the file.",
+        "reusability": "partially-reusable",
+        "concreteArtifacts": [
+          "Full 13-table SQL schema (column names, types, indexes) — directly adaptable to SQLite/Drizzle for local-first",
+          "Complete workflowDefinitionJSONSchema (10 node types + all per-type config blocks + edges + global_config) — maps directly to the .flowgent.yaml workflow file format",
+          "14-item SQLite-vs-Postgres differences table — DIRECTLY load-bearing for current SQLite-local + Postgres-cloud dual-DB vision",
+          "execution_logs partitioning DDL (Postgres RANGE + TimescaleDB + SQLite archive)",
+          "4 critical query patterns with index definitions",
+          "step_executions index set (6 indexes including partial WHERE agent_id IS NOT NULL)"
+        ]
+      },
+      {
+        "key": "orchestrator",
+        "topicsCovered": [
+          "Architecture pattern: Hybrid (Pattern C) — static topological pre-plan for linear/unconditional-parallel spine + dynamic LLM re-evaluation only at conditional/fan-out/human-gate nodes (claims 60-80% planning-call reduction). 1351-char reasoning + tradeoffs",
+          "WorkflowState design: 14 fields fully documented (workflow_id, workflow_definition, static_execution_plan, current_segment_index, node_states, agent_outputs, compressed_context, full_execution_log, retry_budget, parallel_branch_registry, human_gate_state, global_variables, workflow_status enum, final_output) — expressed as Pydantic/Python models",
+          "Compression strategy: per-segment Haiku summarization to 200-300 tokens, prompt assembly template, map-reduce for parallel branches, <8000 token working context",
+          "systemPromptStructure: 8 full verbatim prompt sections (IDENTITY, WORKFLOW DEFINITION, AGENT ROSTER + selection rules, CONTEXT FROM COMPLETED STEPS, FAILURE HANDLING, PARALLEL EXECUTION, HUMAN GATE, OUTPUT FORMAT) + 11 runtime-injected variables",
+          "agentAsToolRegistration: complete Anthropic-compatible tool JSON schema (name/description/input_schema/output_schema) + the 'Use this agent when / specialises in / Do NOT use for' DESCRIPTION TEMPLATE + selection guidance + 10+-agent scaling strategies (categorisation header, capability matrix, <8 tools per call, agent groups, disambiguation)",
+          "parallelExecutionDesign: LangGraph Send API + asyncio.gather, JoinNode barrier with countdown latch, 4 merge strategies (ALL_REQUIRED/FIRST_WINS/QUORUM_N/BEST_OF), synthesis call, branch-level retry",
+          "humanGateFlow: 4 triggers (explicit/failure-escalation/confidence<0.6/ambiguous), full UI layout spec (GATE HEADER/CONTEXT/ACTION/NOTIFICATION panels), resume flow with HumanGateResponse object and 8-step transition logic",
+          "10 failureModes with mitigations (infinite retry, wrong agent, context overflow, hallucinated artefacts, parallel deadlock, gate starvation, concurrent-write corruption, LLM refusal, data leakage scrubbing, cascading failure)"
+        ],
+        "depth": "Very deep. ~16KB. The 8 verbatim system-prompt sections and the agent-as-tool schema/description-template are the highest-value prompt-engineering artifacts in the whole file. NOTE: this section is written in Python/LangGraph/Pydantic/asyncio idiom, directly contradicting the masterPlan's pure-TypeScript no-LangGraph decision — the CONCEPTS are reusable but the implementation idiom is not.",
+        "reusability": "partially-reusable",
+        "concreteArtifacts": [
+          "8 verbatim orchestrator system-prompt sections (IDENTITY, AGENT ROSTER + selection rules, FAILURE HANDLING, PARALLEL, HUMAN GATE, OUTPUT FORMAT JSON) — preserve verbatim, language-agnostic",
+          "Agent-as-tool JSON schema (name/description/input_schema/output_schema) + agent DESCRIPTION TEMPLATE string",
+          "14-field WorkflowState model (concepts reusable; rewrite from Pydantic to TS/Zod)",
+          "10 failureModes + mitigations table",
+          "4 parallel merge strategies (ALL_REQUIRED/FIRST_WINS/QUORUM_N/BEST_OF)",
+          "Human-gate UI layout spec (4 panels) + HumanGateResponse object shape + 8-step resume logic"
+        ]
+      },
+      {
+        "key": "ux",
+        "topicsCovered": [
+          "User journeys: firstTimeUser (11 steps), powerUser (10 steps), 6 ahaMoments (live token streaming on node face, inline agent preview, {{node.output}} autocomplete, per-node cost, retry-from-here, template gallery)",
+          "Information architecture: 10 pages (Dashboard, Workflows List, Canvas, Agent Library, Agent Detail, Run History, Run Detail, Providers, Usage/Billing, Settings)",
+          "Canvas interaction model: nodeAdding (3 mechanisms), connectionMaking (port handles, bezier, type-mismatch flash), nodeConfiguration (right panel never modal), runModeBehavior",
+          "6 agent node visual states (Idle/Queued/Running-streaming/Completed/Failed/Skipped) with exact pixel/color specs",
+          "Run execution UX: startFlow (cost popover first-run only), progressCommunication (3px provider-colored bar), logPanel (bottom drawer columns), stopPauseResume (5s graceful), failureUX",
+          "Design system: 'Precise Professional' language (Linear+Raycast), color palette (Indigo-600 primary, Zinc dark-mode scale), typography (Inter + JetBrains Mono for data), 8 key patterns, dark-mode-default",
+          "24 keyboard shortcuts (full table)",
+          "10 criticalUXDecisions (no run confirmation, right-panel-not-modals, agents-first-class, dark-default, streaming-on-node-face, no-mobile-canvas, {{}}-syntax over visual wires, sequential-only-pause, retry-from-any-node, cost-always-visible)"
+        ],
+        "depth": "Deep and design-ready. ~10KB. Exact hex colors, font stacks, pixel dimensions (200x80px nodes, 12px radius, 220px drawer), full 24-shortcut table, named node-state visual treatments. Reads like a design spec doc.",
+        "reusability": "reusable",
+        "concreteArtifacts": [
+          "24 keyboard shortcut table",
+          "Design system: color palette (Indigo-600 #4F46E5, Zinc-950/900/800), typography (Inter + JetBrains Mono), 'Precise Professional' language",
+          "6 agent node visual-state specs with colors/icons",
+          "10 criticalUXDecisions rationale list",
+          "6 ahaMoments — product differentiation guidance"
+        ]
+      },
+      {
+        "key": "roadmap",
+        "topicsCovered": [
+          "Project setup: Turborepo + pnpm, repoStructure (apps/web Next.js, apps/api Hono, packages/db Drizzle, shared, ui, workflow-engine), docker-compose (Postgres16/Redis7/MinIO), 9 tooling items (ESLint flat, Prettier, Husky, commitlint, Vitest, Playwright, Drizzle Kit, ts-reset, tsx)",
+          "6 phases with goal/estimatedWeeks/tasks/deliverable: Phase0 setup(1wk), Phase1 vertical slice(3wk), Phase2 canvas(3wk), Phase3 linear execution(3wk), Phase4 orchestrator+LangGraph.js(4wk), Phase5 polish(2wk)",
+          "10 risks with probability/impact/mitigation (provider streaming instability, ReactFlow perf, LangGraph.js serialization, key-encryption-key loss, BullMQ/Redis failure, SSE scale, JSON schema drift, cost inaccuracy, human-gate Redis expiry, solo-dev scope creep)",
+          "24-step critical path dependency chain",
+          "Total estimate: 16 weeks (19 with 20% buffer); shippable without Phase4 orchestrator after week 10"
+        ],
+        "depth": "Medium-deep. ~6KB. Phased plan with week estimates, per-phase task lists and deliverables, risk matrix with probability/impact ratings, ordered critical path. NOTE: assumes Next.js + cloud SaaS infra (docker-compose Postgres/Redis/MinIO) which conflicts with current Tauri local-first build order (engine -> CLI -> desktop).",
+        "reusability": "outdated",
+        "concreteArtifacts": [
+          "10-item risk matrix (probability/impact/mitigation) — risks themselves mostly still apply",
+          "Tooling list (ESLint flat config, Husky+lint-staged, commitlint, Vitest, Playwright, Drizzle Kit) — reusable",
+          "Phase structure as a template (but week estimates assume different surface set)"
+        ]
+      },
+      {
+        "key": "masterPlan",
+        "topicsCovered": [
+          "finalTechStack (9 entries): Vite+React19+TanStack+ReactFlow v12+Zustand v5+TanStack Query+shadcn/Tailwind v4; Hono v4 on Node 20 (explicitly chosen OVER Next.js); Postgres16+Drizzle+Redis7; Vercel AI SDK v4 (LiteLLM explicitly out); Better Auth v1 + AES-256-GCM server-side keys; BullMQ v5; SSE over Hono+Redis pub/sub; pure-TS framework-agnostic workflow-engine (NO LangGraph); 15 keyDependencies",
+          "projectStructure: 2 apps (web, api) + 4 packages (db, shared, workflow-engine, ui) with per-package purpose",
+          "5 day1Tasks (task/why/output): monorepo bootstrap, docker+db schema, Better Auth, Vite SPA scaffold, provider+encrypted-key API",
+          "mvpScope: definition + 11 inScope + 12 explicitlyOutOfScope items",
+          "6 hardestProblems (problem/chosenSolution/risksRemaining): SSE lifecycle via Redis pub/sub, ReactFlow perf via Zustand useStore, key security server-side, hybrid orchestrator boundary defaults, vm sandbox, run checkpointing",
+          "10-item securityChecklist (concern/mitigation/priority): server-side keys, SQL injection, SSRF base_url allowlist, vm sandbox escape, prompt injection, CSRF, env leak, SSE auth, supply chain, rate limiting",
+          "simplestOrchestrator: 150-line async-generator runWorkflow MVP, RunEvent discriminated union, 7 implementation steps, upgradePath to conditional branching",
+          "6 reconciled phases (3day/5day/7day/10day/5day/7day) with goals + goNoCriteria",
+          "8 immediateNextSteps with literal shell commands (mkdir /Users/dev/Documents/Projects/Agent-Organizer, pnpm create vite, etc.)"
+        ],
+        "depth": "Very deep and the most decision-final section. ~12KB. This is the synthesis/reconciliation layer that resolves contradictions between the frontend/backend/orchestrator sections (picks Hono over Next.js, pure-TS over LangGraph, Vercel AI SDK over LiteLLM). Closest match to the current product vision's architecture-decisions.md, but still SaaS/cloud-first (Postgres, server-side keys, Better Auth, BullMQ, no Tauri/SQLite/keychain/CLI/VS Code surfaces).",
+        "reusability": "partially-reusable",
+        "concreteArtifacts": [
+          "finalTechStack table — most aligns with current vision (Vite/React/Hono/Vercel AI SDK/Drizzle/pure-TS engine match; differs on Postgres-first, server-side keys, BullMQ, single-surface)",
+          "RunEvent discriminated union { type:'NODE_START'|'TOKEN'|'NODE_COMPLETE'|'TOOL_CALL'|'TOOL_RESULT'|'RUN_COMPLETE'|'RUN_ERROR', nodeId, payload, seqNum, ts } — directly reusable for the pure-TS engine",
+          "simplestOrchestrator: 150-line async-generator runWorkflow design + 7 build steps + upgrade path — directly reusable core engine blueprint",
+          "10-item securityChecklist with priorities",
+          "6 hardestProblems with chosen solutions (SSE/Redis, ReactFlow/Zustand useStore, key security, hybrid boundary, vm sandbox, checkpointing)",
+          "packages/workflow-engine contract (takes WorkflowDefinition + injected ExecutionContext, yields RunEvents async generator) — matches current packages/core"
+        ]
+      },
+      {
+        "key": "critiques",
+        "topicsCovered": [
+          "NOTE: three duplicate representations exist — top-level critique_frontend/critique_backend/critique_orchestrator are byte-identical to critiques.frontendCritique/backendCritique/orchestratorCritique (verified via hash). Only need to document once.",
+          "Frontend critique: 5 complexityBombs (SubtleCrypto-in-localStorage security theater, CanvasContext O(n) re-renders, singular tokenBuffer breaks parallel streaming, undo/redo interception, IndexedDB persist), 5 performancePitfalls (RAF pauses on bg tab, JSON.stringify per snapshot, selector re-run cost, edge recompute, context recreation), 6 mvpCuts, 5 stateMgmtConflicts, 8 missingFromDesign",
+          "Backend critique: mostDangerousDecision = Next.js as long-running executor (serverless/HTTP timeout kills 10-30min runs) + alternative dedicated process; 5 liteLLMEdgeCases; 5 securityVulnerabilities (CRITICAL single-DB-credential decrypts all keys, HIGH no authz model, HIGH SSE no auth, MEDIUM signal CSRF, LOW key-hint leak); 5 overEngineeredForMVP; 3 hardestExecutionParts; firstProductionIncident narrative (SSE drop on deploy)",
+          "Orchestrator critique: agentAsTool reliability (5 concerns: schema drift, no stable identity, output-schema trust, retry doesn't distinguish error classes, LLM-driven merge) + 5 mitigations; langraphOverkill assessment (LangGraph adds more failure surface than it removes; plain asyncio + dispatch table covers 90%; upgrade only for crash-survival -> Temporal); 4 offScriptFailures; 5 commonWorkflowFailures; contextWindowCritique (summarization-loss positive feedback loop); simplestWorkingOrchestrator (4 components, graphlib.TopologicalSorter, 30 lines)"
+        ],
+        "depth": "Deep and high-value as adversarial review. ~10KB across the unique set. These critiques directly shaped the masterPlan reconciliation (Next.js->Hono, LangGraph->pure-TS, client-keys->server-keys, CanvasContext->Zustand useStore). Several findings are already baked into the current architecture-decisions.md (ReactFlow-not-in-Context, no Python).",
+        "reusability": "reusable",
+        "concreteArtifacts": [
+          "5 frontend complexityBombs (especially CanvasContext O(n) re-render and singular-tokenBuffer-breaks-parallel-streaming)",
+          "Backend mostDangerousDecision: Next.js-as-executor timeout failure + dedicated-process alternative",
+          "5 backend securityVulnerabilities with severity",
+          "langraphOverkill assessment + simplerAlternative (asyncio dispatch table) + whenToUpgrade (Temporal for durable execution) — validated the current no-LangGraph decision",
+          "contextWindowCritique: summarization-loss positive-feedback-loop flaw in the orchestrator's compression strategy",
+          "simplestWorkingOrchestrator: graphlib.TopologicalSorter 30-line / 4-component minimal design"
+        ]
+      }
+    ],
+    "verbatimWorthPreserving": [
+      "ORCHESTRATOR SYSTEM PROMPT (orchestrator.systemPromptStructure.sections) — all 8 sections verbatim: IDENTITY AND ROLE, WORKFLOW DEFINITION template, AGENT ROSTER + 4 AGENT SELECTION RULES, CONTEXT FROM COMPLETED STEPS, FAILURE HANDLING RULES (retry budget, change-inputs-on-retry, never-silent-skip, timeout), PARALLEL EXECUTION RULES, HUMAN GATE RULES, OUTPUT FORMAT (JSON: reasoning/node_id/next_action enum/next_node_id, plus final_summary/artefacts/warnings). Language-agnostic, highest-value prompt-engineering artifact.",
+      "AGENT-AS-TOOL JSON SCHEMA (orchestrator.agentAsToolRegistration.toolSchema) — full Anthropic-compatible {name, description, input_schema:{task_description,context,inputs,priority enum,timeout_override_seconds; required:[task_description,inputs]}, output_schema:{status enum success|partial|failed, result, artefacts[{id,type,location}], warnings, error}}.",
+      "AGENT DESCRIPTION TEMPLATE (verbatim string): 'Use this agent when: [...]. This agent specialises in: [...]. It accepts: [...]. It produces: [...]. Do NOT use this agent for: [anti-examples]. Typical latency: [...]. Requires prior output from: [prereqs or none].'",
+      "WORKFLOW DEFINITION JSON SCHEMA (database.workflowDefinitionJSONSchema) — the canonical workflow file format. Top-level required [version, nodes, edges, entry_node_id]; node type enum [agent, condition, tool, transform, input, output, loop, parallel, human_in_the_loop, subworkflow]; full per-type config blocks (agent_config with input_mapping/output_mapping, condition_config with branches, tool_config with mcp_server, loop_config, parallel_config with join_strategy/merge_strategy, human_in_the_loop_config with on_timeout, subworkflow_config, retry_config); edges with data_mapping. Maps directly to .flowgent.yaml.",
+      "FULL 13-TABLE DATABASE SCHEMA (database.tables) — llm_providers, model_catalog, agents, agent_versions, workflows, workflow_versions, workflow_runs, step_executions, messages, execution_logs, langgraph_checkpoints, langgraph_checkpoint_blobs, workflow_schedules — every column with type and every index. Adapt cost columns to integer micro-cents for SQLite.",
+      "SQLITE-VS-POSTGRES 14-DIFFERENCE TABLE (database.sqliteVsPostgresDifferences) — directly load-bearing for the current SQLite-local-first + Postgres-cloud dual-DB vision: UUID-as-TEXT, JSONB-as-TEXT+json_extract, TEXT[]-as-JSON, TIMESTAMPTZ-as-INTEGER-epoch, NUMERIC-as-micro-cents, PRAGMA foreign_keys=ON, no partitioning, DISTINCT ON -> ROW_NUMBER, RETURNING since 3.35, single-writer WAL contention.",
+      "RunEvent DISCRIMINATED UNION (masterPlan.simplestOrchestrator) — { type:'NODE_START'|'TOKEN'|'NODE_COMPLETE'|'TOOL_CALL'|'TOOL_RESULT'|'RUN_COMPLETE'|'RUN_ERROR', nodeId, payload, seqNum, ts } — the event contract for the pure-TS engine, shared by SSE/worker/frontend.",
+      "150-LINE simplestOrchestrator async-generator design + 7 implementation steps (masterPlan.simplestOrchestrator) — runWorkflow(plan, ctx): AsyncGenerator<RunEvent>, Kahn's-algorithm buildStaticPlan, streamText per node, ToolRegistry.execute on tool calls; plus upgradePath to RouterNode conditional branching without refactoring SSE/worker/store. Direct blueprint for packages/core.",
+      "execution_logs PARTITIONING DDL (database.partitioningStrategy) — Postgres declarative RANGE-by-month CREATE TABLE ... PARTITION BY RANGE(created_at), PRIMARY KEY(id,created_at), per-partition indexes, pg_cron automation, DROP-partition retention; TimescaleDB create_hypertable + add_compression_policy alternative; SQLite nightly-archive fallback.",
+      "FRONTEND ZUSTAND STORE SHAPES (frontend.stateManagement.globalState.stores) — the 5 Shape:{} TypeScript definitions for providerStore/agentStore/workflowStore/uiStore/runStore, plus the canvasStore-vs-runStore separation rationale (the single most important streaming-perf decision).",
+      "SSE EVENT SCHEMA (frontend.realtimeUIDesign.sseStrategy) — { type:'node.started'|'node.token'|'node.completed'|'node.error'|'run.complete'|'human_gate.pending'|'cost.update', nodeId, payload, seqNo } with seqNo gap-detection/resync protocol.",
+      "10 ORCHESTRATOR FAILURE MODES + MITIGATIONS (orchestrator.failureModes) — infinite retry, wrong-agent, context overflow, hallucinated artefacts, parallel deadlock, gate starvation, concurrent-write corruption, LLM refusal/stall, sensitive-data scrubbing, cascading-failure root-cause surfacing. Each mitigation is concrete and language-agnostic.",
+      "10-ITEM SECURITY CHECKLIST (masterPlan.securityChecklist) with priorities — server-side AES-256-GCM keys, Drizzle parameterized queries, SSRF base_url HTTPS allowlist, vm sandbox NOT-a-boundary caveat, prompt-injection system/messages separation, CSRF SameSite=Strict, env-leak error scrubbing /key|secret|password|token/i, SSE session auth, frozen-lockfile, Redis rate limiting.",
+      "24 KEYBOARD SHORTCUTS TABLE (ux.keyboardShortcuts) and DESIGN SYSTEM (ux.designSystem) — Indigo-600 #4F46E5, Zinc-950/900/800 dark scale, Inter + JetBrains Mono, 'Precise Professional' (Linear+Raycast) language. Fully reusable for desktop UI.",
+      "ADVERSARIAL CRITIQUE VERDICTS that shaped the final architecture (critiques) — (a) Next.js-as-executor is the most dangerous decision (HTTP/serverless timeout kills 10-30min runs); (b) LangGraph is overkill, plain asyncio dispatch table covers 90%, upgrade to Temporal only for durable crash-survival; (c) CanvasContext causes O(n) re-renders, use Zustand useStore selectors; (d) singular tokenBuffer breaks parallel streaming; (e) compression strategy has a summarization-loss positive-feedback-loop flaw; (f) SubtleCrypto-in-localStorage is security theater (XSS reads key+ciphertext)."
+    ],
+    "overallAssessment": "The file is a 350KB / 3690-line JSON capturing a multi-agent architectural analysis of the EARLIER SaaS-oriented 'Agent Workflow Organizer'. It has 11 top-level keys, but three are duplicates: critique_frontend/critique_backend/critique_orchestrator are byte-identical (hash-verified) to critiques.frontendCritique/backendCritique/orchestratorCritique — so there are effectively 8 unique content areas (frontend, backend, database, orchestrator, ux, roadmap, critiques, masterPlan). Content is dense and implementation-ready prose (not throwaway), with genuinely high-value verbatim artifacts.\\n\\nThe analysis contains INTERNAL CONTRADICTIONS that the masterPlan deliberately reconciles: the backend section picks Next.js+Bun (TypeScript), the orchestrator section is written entirely in Python/LangGraph/Pydantic/asyncio, and the critiques tear both down — then masterPlan settles on Hono (not Next.js), pure-TypeScript engine (no LangGraph), and Vercel AI SDK (no LiteLLM). The masterPlan is therefore the most decision-final layer and the closest match to the current product's architecture-decisions.md.\\n\\nREUSABILITY against the current multi-surface local-first desktop vision (Tauri v2, SQLite+SQLCipher local / Postgres cloud Phase 2, OS Keychain, YAML workflow files, Vite+React+ReactFlow+Zustand, pure-TS engine, no Python, CLI + VS Code + desktop + portal surfaces):\\n- HIGHLY REUSABLE / language-agnostic: the orchestrator system prompt (8 sections) and agent-as-tool schema + description template; the workflow-definition JSON Schema (maps to .flowgent.yaml); the SQLite-vs-Postgres 14-difference table (directly serves the dual-DB plan); the RunEvent union + 150-line simplestOrchestrator blueprint (matches packages/core); the 10 failure modes; the design system + 24 shortcuts; the adversarial critique verdicts (several already baked into current decisions — ReactFlow-not-in-Context, no-LangGraph, server-side-keys).\\n- PARTIALLY REUSABLE (concepts yes, implementation must be re-grounded): the 13-table DB schema (rewrite Postgres types to SQLite/Drizzle, cost->micro-cents, drop multi-tenant/versioning bloat for MVP); the 22 REST endpoints (re-cast as local IPC/CLI commands for Phase 1, REST for Phase 2 portal); the frontend Zustand stores + SSE design (desktop uses the same engine but local execution may not need SSE-over-HTTP); the masterPlan tech stack (Vite/React/Hono/Vercel AI SDK/Drizzle/pure-TS engine all match; diverges on Postgres-first, server-side keys vs OS Keychain, BullMQ cloud-queue, single-surface vs four-surface).\\n- OUTDATED / pure-SaaS assumptions: BullMQ+Redis cloud queue and 3-worker-pool model (Phase 2 only), server-side AES-256-GCM key storage in Postgres (current vision uses OS Keychain + local-first, no central DB to decrypt), Better Auth + multi-tenant authz (current MVP needs no account), workflow_schedules/cron triggers (out of scope), MinIO/S3 artifact storage, the 16-week roadmap and build order (current order is engine -> CLI -> desktop -> VS Code -> cloud, and surfaces differ entirely). The LangGraph-specific tables (langgraph_checkpoints, langgraph_checkpoint_blobs) are obsolete given the no-LangGraph decision.\\n\\nNET: This file is a rich quarry. Roughly 60-70% of the substance is preservable — the prompt-engineering artifacts, workflow schema, DB schema skeleton, SQLite/Postgres porting guide, engine event contract, failure-mode catalog, security checklist, design system, and critique verdicts should be documented. The cloud-infra/auth/queue/scheduling layers and the Next.js+LangGraph dead-ends should be archived as 'Phase 2 reference / rejected alternatives' rather than carried into current docs."
+  },
+  "pivotInv": {
+    "content": "N/A",
+    "sections": [
+      {
+        "key": "desktop",
+        "topicsCovered": [
+          "frameworkDecision: Tauri v2 chosen over Electron and Wails v2, with detailed reasoning and 5 tradeoffs",
+          "localDataArchitecture: config location split (~/.agentorg/config.toml global + {projectRoot}/.agentorg/project.toml), workflow file format (.workflow.yaml), apiVersion: agentorg/v1 schema versioning, API key storage (OS keychain + AES-256-GCM file fallback), run history storage (SQLite history.db with sqlcipher, full schema), workspace model (directory = workspace, VS Code style)",
+          "executionEngine: agent process model (tokio async tasks, NOT per-agent OS processes), filesystem access (3-tier sandbox/project/full scope), 12 built-in tools, MCP integration (McpServerPool), streaming to UI (Tauri v2 Channels with backpressure)",
+          "ipcArchitecture: 3-primitive IPC (Commands/Channels/Events), VS Code connection method (axum local HTTP server on 127.0.0.1:dynamic_port, ipc.json with bearer token, SSE)",
+          "desktopUXFeatures: 6 features (global hotkey command palette, system tray monitor, native file picker, drag-and-drop, completion notifications, OS context-menu integration with Finder Sync Extension/Windows registry/Linux .desktop)",
+          "criticalConsiderations: 9 platform gotchas (WebView2 bootstrapping, WKWebView SharedArrayBuffer, sqlcipher passphrase, Tauri v2 capability system, loopback-only binding + 0600 token perms, ReactFlow 100+ node perf, reqwest keepalive, macOS code-signing/notarization, treating workflow YAML as public API)"
+        ],
+        "depth": "Very deep and authoritative. Every subsection is dense prose (300-1500 chars each) with specific crate names (tauri-plugin-fs/shell/sql/keychain/tray/global-shortcut/notification/dialog), concrete file paths, SQLite schema DDL, exact tokio/reqwest config values, and platform-specific API names. This is implementation-ready engineering specification, not high-level vision.",
+        "concreteArtifacts": [
+          "Full code-review-pipeline workflow YAML example (apiVersion: agentorg/v1, kind: Workflow) showing nodes, dependsOn, human_gate, condition, {{ interpolation }} — desktop.localDataArchitecture.workflowYAMLExample (1233 chars)",
+          "SQLite run-history schema: runs / run_events / run_costs tables with column lists, PRAGMA journal_mode=WAL, 90-day pruning — desktop.localDataArchitecture.runHistoryStorage",
+          "Complete list of 12 built-in tools with descriptions: read_file, write_file, list_directory, run_command, http_request, search_web, git_status, git_commit, read_clipboard, notify, mcp_call, invoke_agent — desktop.executionEngine.builtInTools",
+          "9 critical platform considerations (verbatim-worthy as a pre-ship checklist) — desktop.criticalConsiderations"
+        ]
+      },
+      {
+        "key": "vscode",
+        "topicsCovered": [
+          "coreCapabilities: 7 capabilities each with capability/why/implementation (inline right-click trigger, status bar run monitor, sidebar with 3 TreeViews, command palette, chat WebviewPanel, inline diff review via vscode.diff, workflow YAML intellisense via LSP)",
+          "connectionModel: 'Model C: Hybrid' — standalone bundled engine + optional desktop app enhancement detected on port 57210; reasoning rejecting Model A (desktop-required) and Model B (fully standalone); architectureDetails (shared packages/workflow-engine npm package, keytar API keys, Unix socket/named pipe IPC)",
+          "languageServerDesign: useLSP=true, separate Node.js process via vscode-languageclient, built on yaml-language-server + custom AgentOrgSchemaProvider, 8 LSP capabilities (completion, hover, diagnostics, go-to-definition, code actions, rename, folding, semantic tokens)",
+          "runVisualization: activeAgentIndicator (3 channels), outputDisplay (OutputChannel batching), diffFlow (6-step file_patch -> vscode.diff -> CodeLens accept/reject), humanGateUI (3 surfaces: sidebar/status bar/chat card with countdown)",
+          "extensionAPI: 10 commands, 7 events, 10 settings (all namespaced agentorg.*)",
+          "securityModel: 3-tier permission model (file access via vscode.workspace.fs, terminal command allowlist via .agentorg/permissions.yaml, API keys via vscode.SecretStorage), activationEvents workspaceContains:.agentorg",
+          "differentiators: 6 (zero-dependency execution, native diff review, shared engine package, LSP editing, ambient human gates, open extension API)"
+        ],
+        "depth": "Very deep and authoritative. VS Code API surface is specified at implementation level: exact contribution points (contributes.menus editor/context, StatusBarItem alignment/priority, TreeDataProvider), codicon names ($(loading~spin), $(bell)), specific API calls (vscode.commands.executeCommand('vscode.diff'), WorkspaceEdit, applyEdit, SecretStorage), and named classes (StatusBarController, DiffManager, RunEventBus, ProposalSummaryPanel). The securityModel is a single 2871-char authoritative prose block.",
+        "concreteArtifacts": [
+          "The 'Model C Hybrid' connection-model decision with full reasoning (rejects desktop-required and fully-standalone) — vscode.connectionModel (key architectural decision)",
+          "Complete extension API contract: 10 commands (agentorg.runWorkflow, runWorkflowOnFile, createAgent, openWorkflowInDesktop, showRunHistory, cancelRun, approveHumanGate, getActiveRuns, refreshWorkflows, exportRunTrace), 7 events (onRunStarted/Completed/Failed, onHumanGatePending, onFilePatchProposed, onAgentTokenStream, onWorkflowsChanged), 10 settings with defaults — vscode.extensionAPI",
+          "The 3-tier security model prose (file/terminal/API-key) with IPC auth token detail (.ipc-token, 32-byte) — vscode.securityModel",
+          "8 LSP capabilities with trigger characters and diagnostic types — vscode.languageServerDesign.capabilities"
+        ]
+      },
+      {
+        "key": "cli",
+        "topicsCovered": [
+          "EMPTY — the entire cli top-level key is JSON null. No content whatsoever."
+        ],
+        "depth": "NONE. The cli key value is literally null (confirmed via repr). The dedicated CLI agent failed to produce any output for this run. CLI content exists ONLY indirectly, scattered across other sections (synthesis.technologyChoices.cliLanguage, synthesis.monoRepoStructure.packages apps/cli, synthesis.buildOrder order 2, synthesis.dayOneDX step 8, corePortal engineAPI resume examples).",
+        "concreteArtifacts": [
+          "None in this section. (Cross-referenced CLI facts available elsewhere: TypeScript + tsup ESM bundle, npm package name 'flowgent', commander.js + ink + @clack/prompts, reads from .flowgent/ dir, subcommands run/list/create/import/export/status/logs/gate; built 2nd in build order as the engine integration-test harness.)"
+        ]
+      },
+      {
+        "key": "corePortal",
+        "topicsCovered": [
+          "sharedCore.workflowYAMLSpec: full Workflow YAML Specification v1.0 (schema URL agentflow.dev/schemas/workflow/v1) — top-level workflow def, trigger types (manual/webhook/schedule/file_change/mcp_call), inputs, 6 node types (agent/human_gate/condition/transform/parallel/merge), Edge, AgentRef, ToolDeclaration, McpServerRef",
+          "sharedCore.completeWorkflowExample: full 8511-char security-review.workflow.yaml (webhook-triggered, triage + parallel specialists + synthesis + human gate)",
+          "sharedCore.engineAPI: TypeScript interface definitions for triggerRun (WorkflowEngine interface, createEngine factory, EngineConfig, RunOptions, RunHandle), streamingEvents (full RunEvent union of 12 event types), humanGate (GateDecision, persistence, 6-step lifecycle, notification config, timeout behavior), pluginAPI (ToolPlugin, ToolImplementation with AsyncGenerator, ToolExecutionContext, npm plugin publishing)",
+          "sharedCore.localVsCloudMode: phase1Architecture (local, ~/.agentflow/ layout), phase2Architecture (cloud thin-client, Kubernetes/serverless workers), transparentSwitch (mode resolution order, gradual migration, no-silent-fallback rule)",
+          "sharedCore.mcpIntegration: agents AS MCP servers (outbound adapter), agents CONSUMING MCP tools, MCP tool discovery (static/dynamic/caching/conflict-resolution/schema-validation), 5 built-in MCP servers",
+          "webPortal: purpose (control plane not execution plane), authBridge (OAuth Device Flow RFC 8628 + API tokens, 11-step flow), syncArchitecture (opt-in per-category, whatSyncs 5 items, dataPrivacy guarantee — no transcripts ever synced), 3 pricing tiers (Free/Pro/Enterprise with detailed feature lists), 8 keyPages (/dashboard /usage /quota /runs /gates /team /audit /settings/auth each with purpose + keyMetrics)",
+          "phaseTransition: phase1Summary, phase2Trigger, cloudArchitecture (control plane + data plane + client-side, K8s Jobs/Postgres/S3/Redis Streams/Vault), migrationPath (week-by-week user journey)"
+        ],
+        "depth": "Very deep and the most artifact-rich section. Contains the two largest concrete artifacts in the document (8511-char complete workflow YAML and 3421-char YAML spec) plus ~9KB of real TypeScript interface source code across engineAPI. This is the canonical shared-runtime contract. Note: this section consistently uses the 'agentflow' naming (agentflow.dev, ~/.agentflow/, @agentflow/core, CLI 'agentflow', package '@org/agentflow-plugin-*'), which conflicts with desktop/vscode (agentorg) and synthesis (flowgent).",
+        "concreteArtifacts": [
+          "FULL Workflow YAML Specification v1.0 — node types, edge/agent/tool/mcp schemas (corePortal.sharedCore.workflowYAMLSpec, 3421 chars) — preserve verbatim as the spec reference",
+          "FULL 8511-char security-review.workflow.yaml complete example (webhook trigger, triage agent, parallel specialists, synthesis, human gate, model_fast/model_smart context) — corePortal.sharedCore.completeWorkflowExample",
+          "TypeScript engine API source: WorkflowEngine interface + createEngine + EngineConfig + RunOptions + RunHandle (triggerRun), the 12-member RunEvent discriminated union (streamingEvents), GateDecision + lifecycle (humanGate), ToolPlugin/ToolImplementation/AsyncGenerator (pluginAPI) — corePortal.sharedCore.engineAPI (≈9KB of code)",
+          "3 pricing tiers verbatim: Free ($0/mo forever, 11 features), Pro ($19/mo/seat, 11 features incl 50 cloud run-hours), Enterprise (custom $50-150/seat/mo, 14 features incl SAML/SOC2/VPC) — corePortal.webPortal.tiers",
+          "8 portal pages with purpose + keyMetrics — corePortal.webPortal.keyPages",
+          "dataPrivacy guarantee: full LLM transcripts NEVER synced in any tier/mode — corePortal.webPortal.syncArchitecture.dataPrivacy",
+          "OAuth Device Flow (RFC 8628) 11-step auth flow — corePortal.webPortal.authBridge.flow",
+          "Phase 2 cloud architecture: control plane + data plane (K8s Job per run, Postgres+S3, Redis Streams, HashiCorp Vault, network-policy egress restriction) — corePortal.phaseTransition.cloudArchitecture"
+        ]
+      },
+      {
+        "key": "strategy",
+        "topicsCovered": [
+          "competitiveAnalysis: 7 competitors each with strengths(5)/gaps(7-8)/ourAdvantage — Claude Code, Cursor, Continue.dev, Cline/Roo-code, GitHub Copilot Agent Mode, n8n/Zapier, CrewAI/AutoGen",
+          "uniqueValueProp: statement + 5 proof points",
+          "goToMarket: primaryUser (senior devs/tech leads at 5-50 eng teams who outgrew Claude Code/Cline/Cursor), phase1LaunchStrategy (lead with VS Code Marketplace, CLI via Homebrew/npm, desktop as wow-demo, seed 20-30 templates), 7 distribution channels, viralMechanic (workflow file as the invite)",
+          "workflowAsCodeDifferentiator: keyInsight (workflow file = team infrastructure primitive), 8 use cases (onboarding, CI/CD parity, workflow code review, audit trail, OSS library, versioning/rollback, monorepo inheritance, documentation), networkEffects (hub-and-spoke, value scales with team size)",
+          "pricingStrategy: freeTier (8 features + limits), proTier ($20/mo or $16 annual, 9 features), teamTier ($15/seat min 3, 9 features), enterpriseTier (custom ~$2000/mo for 25+ seats, 11 features), rationale (gate on collaboration/scale not capability)",
+          "cloudExecutionTrigger: businessCase (cloud = business model unlock not tech milestone), 10 cloud-only capabilities, whenToLaunch (3 simultaneous conditions: 500+ teams with shared .agentorg/ workflows, 20% Pro/Team asking for scheduled/webhook, stable runtime)"
+        ],
+        "depth": "Deep and authoritative on positioning/business. Competitive analysis is thorough (7 named competitors with specific, current strengths and gaps). NOTE: two different pricing schemes coexist — strategy.pricingStrategy has 4 tiers (Free/Pro $20/Team $15/Enterprise ~$2000) while corePortal.webPortal.tiers has 3 tiers (Free/Pro $19/Enterprise). These conflict on tier count and Pro price ($20 vs $19) and must be reconciled.",
+        "concreteArtifacts": [
+          "Full 7-competitor competitive matrix (Claude Code, Cursor, Continue.dev, Cline/Roo-code, GitHub Copilot Agent Mode, n8n/Zapier, CrewAI/AutoGen) with strengths/gaps/ourAdvantage — strategy.competitiveAnalysis",
+          "UVP statement verbatim: 'The only platform that lets any developer visually design, locally execute, and git-commit multi-model multi-agent workflows that run identically in their IDE, terminal, desktop canvas, and CI/CD pipeline...' — strategy.uniqueValueProp.statement",
+          "4-tier pricing (Free / Pro $20 / Team $15-seat-min-3 / Enterprise ~$2000+ for 25 seats) with rationale — strategy.pricingStrategy",
+          "Viral mechanic: 'the workflow file itself is the invite' — strategy.goToMarket.viralMechanic",
+          "workflow-as-code keyInsight + 8 use cases + network effects — strategy.workflowAsCodeDifferentiator",
+          "Phase 2 launch criteria (3 simultaneous conditions) + 10 cloud-only capabilities — strategy.cloudExecutionTrigger"
+        ]
+      },
+      {
+        "key": "synthesis",
+        "topicsCovered": [
+          "productIdentity: name 'Flowgent', tagline 'Design agents. Ship workflows. Own every run.', oneLinePitch",
+          "technologyChoices: 7 locked decisions — sharedCoreLanguage (TypeScript + langgraph.js + Vercel AI SDK + Bun workers), desktopFramework (Tauri v2), vscodeExtensionModel (standard API + bundled in-process engine + Vite WebviewPanel), cliLanguage (tsup ESM, commander.js, ink, @clack/prompts, npm 'flowgent'), portalStack (Vite+React SPA NOT Next.js, TanStack Router/Query, Zustand+immer, Hono backend, shadcn/ui), localDatabase (SQLite via Drizzle Phase 1, Postgres 16 + Redis 7 + BullMQ Phase 2), apiKeyStorage",
+          "monoRepoStructure: Turborepo + pnpm workspaces; layout description; 10 packages (5 apps: desktop/vscode-extension/cli/portal/api + 5 packages: core/shared/db/llm/ui) each with path + purpose",
+          "phase1Architecture: description, whatShips (15 items), whatDoesNotShip (7 items), dataFlow (end-to-end execution trace)",
+          "phase2Architecture: description, cloudComponents (8), whatChanges (8)",
+          "dayOneDX: 8-step onboarding walkthrough each with step/command/result (install dmg -> add API key -> create agent -> open template -> run workflow -> install VS Code ext -> run on file -> use CLI)",
+          "killerFeatures: 7 (live canvas execution theater, git-native YAML workflows, retry-from-node, multi-model fallback chains, human gate w/ timeout+escalation, per-node cost waterfall, zero-install VS Code right-click)",
+          "buildOrder: 5 ordered phases each with order/what/why/milestone (1: shared+llm+core, 2: cli, 3: desktop+ui, 4: vscode-extension, 5: api+portal)",
+          "workflowYAMLSpec: format (.flowgent.yaml / .flowgent/ dir), agentExample (with fallback_chain), completeExample (4649-char code-review-pipeline.flowgent.yaml)",
+          "topRisks: 3 (Tauri WebView inconsistency, engine divergence across surfaces, API key leakage) each with detailed mitigation",
+          "immediateNextSteps: 5 concrete first actions"
+        ],
+        "depth": "Very deep and the MOST authoritative section — it is the explicit consolidation/decision layer that resolves the per-surface analyses into final locked choices. Establishes the canonical product name (Flowgent), the canonical naming convention (.flowgent/, @flowgent/core, npm 'flowgent'), the definitive 10-package monorepo, a concrete 5-stage build order with week targets, and the definitive Phase 1 ship/no-ship boundary. This section should be treated as the source of truth where it conflicts with desktop/vscode/corePortal naming.",
+        "concreteArtifacts": [
+          "Product identity: name 'Flowgent', tagline 'Design agents. Ship workflows. Own every run.', full oneLinePitch — synthesis.productIdentity",
+          "7 locked technology choices including the explicit Vite-SPA-NOT-Next.js justification and the TypeScript-only/Bun-workers/langgraph.js stack — synthesis.technologyChoices",
+          "Complete 10-package Turborepo monorepo structure (apps/desktop, apps/vscode-extension, apps/cli, apps/portal, apps/api, packages/core, packages/shared, packages/db, packages/llm, packages/ui) with per-package purpose — synthesis.monoRepoStructure",
+          "Phase 1 whatShips (15) / whatDoesNotShip (7) boundary + end-to-end dataFlow trace — synthesis.phase1Architecture",
+          "5-stage buildOrder with why + concrete milestones and week targets (core 2-3wk, cli 1-2wk, desktop 4-6wk, ext 2-3wk, cloud 6-8wk) — synthesis.buildOrder",
+          "8-step dayOneDX onboarding script with exact commands and expected results — synthesis.dayOneDX",
+          "7 killer features with rationale — synthesis.killerFeatures",
+          "Full 4649-char code-review-pipeline.flowgent.yaml complete example (schema_version 1.0, file_change trigger, parallel fan-out, object_merge, condition severity-gate with branches, human_gate, edges with handle refs like severity-gate:low_score) — synthesis.workflowYAMLSpec.completeExample",
+          "agentExample YAML showing fallback_chain syntax — synthesis.workflowYAMLSpec.agentExample",
+          "3 top risks with mitigations (incl the lint rule banning 'apiKey' in apps/api/src/workers/) — synthesis.topRisks",
+          "5 immediate next steps (init Turborepo, lock WorkflowSchema Zod, build AnthropicAdapter first, WorkflowEngine.run() against fixture, Vitest 80% coverage) — synthesis.immediateNextSteps"
+        ]
+      }
+    ],
+    "verbatimWorthPreserving": [
+      "PRODUCT IDENTITY (synthesis.productIdentity) — canonical: name='Flowgent'; tagline='Design agents. Ship workflows. Own every run.'; oneLinePitch='Flowgent is the multi-surface AI agent workflow platform that lets developers and teams visually design, version-control, and execute multi-model agent pipelines — from a desktop canvas, VS Code, the CLI, or the cloud — with every run debuggable, every cost tracked, and every workflow exportable as a git-friendly YAML file.'",
+      "UVP STATEMENT (strategy.uniqueValueProp.statement) — 'The only platform that lets any developer visually design, locally execute, and git-commit multi-model multi-agent workflows that run identically in their IDE, terminal, desktop canvas, and CI/CD pipeline — no cloud dependency, no vendor lock-in, no framework expertise required.'",
+      "WORKFLOW YAML SPEC v1.0 (corePortal.sharedCore.workflowYAMLSpec, 3421 chars) — the canonical schema: 5 trigger types (manual/webhook/schedule/file_change/mcp_call), 6 node types (agent/human_gate/condition/transform/parallel/merge), Edge/AgentRef/ToolDeclaration/McpServerRef definitions. The reference contract for the YAML format.",
+      "COMPLETE WORKFLOW EXAMPLE A (corePortal.sharedCore.completeWorkflowExample, 8511 chars) — security-review.workflow.yaml: webhook-triggered multi-agent security review with triage, parallel specialists, synthesis, human gate. Largest worked example in the doc.",
+      "COMPLETE WORKFLOW EXAMPLE B (synthesis.workflowYAMLSpec.completeExample, 4649 chars) — code-review-pipeline.flowgent.yaml: file_change trigger, parallel fan-out, merge (object_merge), condition severity-gate with labeled branches, human_gate with 24h timeout/reject, edges using output-handle refs (severity-gate:low_score). Uses the FINAL .flowgent.yaml naming + schema_version '1.0'.",
+      "SHARED ENGINE API (corePortal.sharedCore.engineAPI, ≈9KB TypeScript) — WorkflowEngine interface, createEngine factory, EngineConfig/RunOptions/RunHandle (triggerRun); the 12-member RunEvent discriminated union with full field shapes (streamingEvents); GateDecision + 6-step gate lifecycle (humanGate); ToolPlugin/ToolImplementation AsyncGenerator + npm plugin publishing (pluginAPI). This is the cross-surface runtime contract — preserve as-is.",
+      "MONOREPO STRUCTURE (synthesis.monoRepoStructure) — Turborepo + pnpm; 10 packages: apps/{desktop,vscode-extension,cli,portal,api} + packages/{core,shared,db,llm,ui}, each with stated purpose. packages/core = @flowgent/core, 'the single most important package', zero platform-specific imports.",
+      "BUILD ORDER (synthesis.buildOrder) — 1) packages/shared+llm+core (2-3wk), 2) apps/cli (1-2wk, the engine integration-test harness), 3) apps/desktop + packages/ui (4-6wk), 4) apps/vscode-extension (2-3wk), 5) apps/api+portal Phase 2 cloud (6-8wk). Each with milestone acceptance criteria.",
+      "DESKTOP TECH DECISION (desktop.frameworkDecision) — Tauri v2 chosen: 2-5MB bundle vs Electron 85-120MB; Wails v2 eliminated (CGo SQLite, thin ecosystem, weak Windows child-process); Electron retained only as fallback for WebView rendering issues. 5 tradeoffs enumerated.",
+      "VS CODE CONNECTION MODEL (vscode.connectionModel) — 'Model C: Hybrid — standalone for all execution, desktop app integration as optional enhancement'. Bundled in-process @flowgent/core engine; desktop detected on port 57210 via 2s health check; silent degradation to standalone. Rejects Model A (desktop-required) and Model B (fully standalone).",
+      "PRICING — TWO CONFLICTING SCHEMES: (a) strategy.pricingStrategy = 4 tiers Free / Pro $20/mo ($16 annual) / Team $15/seat (min 3) / Enterprise custom ~$2000/mo for 25+ seats; (b) corePortal.webPortal.tiers = 3 tiers Free $0 / Pro $19/seat / Enterprise custom $50-150/seat. Pro price and tier count differ — must be reconciled.",
+      "DATA PRIVACY GUARANTEE (corePortal.webPortal.syncArchitecture.dataPrivacy) — 'Full LLM prompt/response transcripts are NEVER synced to the portal in any tier or any mode' — core enterprise trust claim; portal is control plane only, never execution plane.",
+      "12 BUILT-IN DESKTOP TOOLS (desktop.executionEngine.builtInTools) — read_file, write_file, list_directory, run_command, http_request, search_web, git_status, git_commit, read_clipboard, notify, mcp_call, invoke_agent (with per-tool descriptions).",
+      "7 KILLER FEATURES (synthesis.killerFeatures) — live canvas execution theater (tokens stream inside ReactFlow node faces), git-native YAML workflows, one-click retry-from-node (checkpoint resume), per-node multi-model fallback chains, human gate with timeout+escalation, per-node cost waterfall, zero-install VS Code right-click trigger.",
+      "9 CRITICAL DESKTOP CONSIDERATIONS (desktop.criticalConsiderations) — ship/test checklist: WebView2 bootstrapping on Win10, WKWebView SharedArrayBuffer/COOP+COEP, sqlcipher passphrase from stable machine secret, Tauri v2 capability manifest, 127.0.0.1-only + 0600 token, ReactFlow 100+ node perf, reqwest tcp_keepalive, macOS codesign/notarization, treat workflow YAML as public API (write migrate CLI before breaking changes)."
+    ],
+    "gaps": [
+      "CRITICAL GAP: The entire 'cli' top-level key is JSON null (confirmed via Python repr: None). The dedicated CLI agent produced ZERO output for this section. There is no standalone treatment of: CLI command reference/flags, CLI auth flow specifics, CLI TUI design (ink layout), CI/CD integration details, exit-code contract, config file handling, or CLI-specific UX. CLI information exists only as scattered fragments in other sections: synthesis.technologyChoices.cliLanguage (tsup/commander/ink/@clack, npm 'flowgent'), synthesis.monoRepoStructure.packages[apps/cli] (subcommands run/list/create/import/export/status/logs/gate, reads .flowgent/), synthesis.buildOrder order 2 (built 2nd as integration-test harness, milestone: run/list/logs/gate work), synthesis.dayOneDX step 8 (npm i -g flowgent && flowgent run ... --input file=...), and corePortal.sharedCore.engineAPI.humanGate (resume examples: agentflow resume <run-id> --gate <gate-id> --approve/--reject/--input). A dedicated CLI spec must be regenerated to match the depth of desktop/vscode.",
+      "MAJOR INCONSISTENCY: Three conflicting product/namespace names across sections. desktop + vscode use 'agentorg' (~/.agentorg/, .agentorg/, apiVersion: agentorg/v1, command namespace agentorg.*, ~104 occurrences). corePortal uses 'agentflow' (agentflow.dev, ~/.agentflow/, @agentflow/core, CLI 'agentflow', schema v1 URL, ~24 occurrences). synthesis uses the FINAL canonical 'Flowgent' (.flowgent/, .flowgent.yaml, @flowgent/core, npm 'flowgent', flowgent.dev, ~68 occurrences). synthesis is the consolidation layer and should win, meaning desktop/vscode/corePortal artifacts (paths, schema URLs, package names, command prefixes, YAML apiVersion) are all using superseded names and need a find-and-replace pass before use.",
+      "INCONSISTENCY: Two pricing models. strategy.pricingStrategy = 4 tiers (Free / Pro $20/mo / Team $15/seat min-3 / Enterprise ~$2000/mo for 25+). corePortal.webPortal.tiers = 3 tiers (Free / Pro $19/seat / Enterprise $50-150/seat). They disagree on tier count (no separate Team tier in portal version) and Pro price ($20 vs $19). Unreconciled.",
+      "INCONSISTENCY: Two workflow-YAML schema shapes. desktop.localDataArchitecture.workflowYAMLExample uses 'apiVersion: agentorg/v1 / kind: Workflow' (Kubernetes-style) with nodes using ref/dependsOn. corePortal.sharedCore.workflowYAMLSpec and synthesis.workflowYAMLSpec use 'schema_version: 1.0' with workflow:/agents:/nodes:/edges: and explicit edges arrays. These are materially different schema designs for the same artifact; only one can be the real v1.",
+      "INCONSISTENCY: Two execution-engine implementations described. desktop.executionEngine specifies a Rust/tokio engine (AgentRunner Rust struct, tokio::spawn, JoinSet, reqwest streaming) running in the Tauri backend. synthesis (and corePortal) specify a TypeScript @flowgent/core engine running in the Tauri WebView / Bun worker_threads with langgraph.js — explicitly stating 'Rust surface is limited to system-level glue; all business logic stays in TypeScript'. The desktop section's Rust-native execution engine contradicts the synthesis decision that the engine is shared TypeScript. synthesis should be treated as authoritative.",
+      "MINOR GAP: No explicit treatment of model versions consistency — model IDs vary (claude-sonnet-4-6, claude-opus-4, claude-haiku-4, gpt-4o, gpt-4.1, gemini-2.5-pro, deepseek). No single canonical model registry section.",
+      "MINOR GAP: corePortal connection ports differ from vscode — vscode.connectionModel says desktop detected on port 57210, while desktop.ipcArchitecture says the port is RANDOMLY assigned and written to ipc.json. These two connection-discovery mechanisms conflict (fixed well-known port vs dynamic port + discovery file)."
+    ],
+    "overallAssessment": "This is the CURRENT, authoritative product-vision document for 'Flowgent' (a multi-surface local-first AI agent workflow platform: Tauri v2 desktop canvas + VS Code extension + CLI + Phase-2 cloud web portal). It is exhaustive and implementation-ready across 5 of 6 top-level keys — desktop, vscode, corePortal, strategy, and synthesis are all deep, concrete, and engineering-grade (specific crates, APIs, file paths, SQLite/TS schemas, ~9KB of TypeScript interface source, two full multi-KB workflow YAML examples, a 10-package Turborepo layout, a 5-stage build order with milestones, 7-competitor analysis, and pricing/GTM). The 'synthesis' section is the decision/consolidation layer and should be treated as the source of truth where it conflicts with the per-surface sections. Three things must be flagged loudly: (1) the entire 'cli' key is null — the CLI agent failed and produced no standalone section, leaving CLI coverage as scattered fragments only; (2) the product is named inconsistently across sections — 'agentorg' (desktop/vscode), 'agentflow' (corePortal), and the canonical 'Flowgent'/'.flowgent' (synthesis) — so all file paths, schema URLs, package names, and command prefixes in the desktop/vscode/corePortal artifacts use superseded names; and (3) there are real design conflicts to reconcile: two YAML schema shapes (apiVersion/kind vs schema_version/workflow), two engine implementations (desktop's Rust/tokio vs synthesis's shared TypeScript @flowgent/core — synthesis wins), two pricing schemes (4-tier $20 Pro vs 3-tier $19 Pro), and two desktop-discovery mechanisms (fixed port 57210 vs dynamic port + ipc.json). Artifacts worth preserving verbatim: both complete workflow YAMLs, the YAML spec v1.0, the full engineAPI TypeScript, the monorepo structure, the build order, the 12 built-in tools, the 7 killer features, the 9 desktop critical considerations, the UVP statement, and the product identity. File analyzed: /Users/dev/Documents/Projects/Agent-Organizer/product-pivot-analysis.json (156,825 bytes, 927 lines)."
+  },
+  "conventions": {
+    "userConventions": {
+      "folderTaxonomy": [
+        "analysis/ — deep-dive studies of external products/codebases, sub-foldered per subject (analysis/<subject>/NN-topic.md) with numbered ordered files",
+        "architecture/ — living system design docs, flat, topic-named (overview.md, api-contract.md, database-schema.md, observability.md, tier-system.md)",
+        "decisions/ — ADRs (ADR-NNN-kebab-slug.md) plus a README.md index; cross-component/product/UX/legal decisions live here, backend-only decisions live in the sibling backend repo's own decisions/ space",
+        "runbooks/ — operational how-to guides (local-dev-setup.md)",
+        "ideas/ — pre-decision proposals/explorations (kebab-case.md, e.g. save-comparison-as-scenario.md)",
+        "reviews/ — point-in-time code/PR review reports, timestamp-prefixed (ISO-8601 datetime + slug)",
+        "docs root — cross-cutting one-off reports and indexes (roadmap.md, high-traffic-checklist.md, dated analysis reports); a parallel static marketing site (index.html, css/, js/) coexists at the same root"
+      ],
+      "fileNaming": "kebab-case for topic docs (api-contract.md, local-dev-setup.md). ADRs use uppercase prefix + zero-padded number + slug (ADR-006-flutter-error-handling.md). Numbered-prefix files for ordered analysis series (01-genel-bakis.md ... 10-tasarim-ilkeleri.md). Reviews and one-off dated reports embed the date in the filename: reviews use full ISO timestamp (2026-03-16T00-32-41-review.md), root reports use date suffix (error-contract-analysis-2026-05-30.md). No spaces in filenames; Turkish chars avoided in filenames even though content is Turkish.",
+      "markdownStyle": "ATX headings starting at a single H1 title line 'Project — Doc Title'. Heavy, idiomatic table usage for any comparison/option/spec/metric (free-vs-premium, tech stack, error contract, KPIs, risks). Mermaid diagrams used liberally (graph/flowchart for architecture, gantt for roadmap, decision-tree flowcharts in indexes). Fenced code blocks are language-tagged (dart, sql, bash, yaml). Metadata carried as a top blockquote line under H1 (> Son güncelleme: / > Tarih: / > Kapsam:) rather than YAML front-matter. Blockquotes (>) used for notes, warnings (with ⚠️), and 'Kritik'/'Not' callouts. --- horizontal rules separate major sections. Task checklists (- [x]/- [ ]) used in roadmap acceptance criteria. Bold inline emphasis on key terms; occasional emoji as semantic markers (✅ done, ⚠️ warning, 🥇 winner). Prose is in Turkish; technical identifiers/paths/code stay in English. Code references cite file:line (Program.cs:119, dio_error_mapper.dart:76-80).",
+      "adrStyle": "MADR-like but lighter. Each ADR is a single file with H1 'ADR-NNN: Title', then a bold status/date header block (**Durum:** Kabul Edildi / **Tarih:** YYYY-MM-DD) separated by ---, then sections: Bağlam (Context), Karar (Decision, with the decision bolded), Gerekçe (Rationale, often a comparison table or code A-vs-B), Sonuçlar (Consequences), and frequently 'İlgili Dosyalar' (Related Files) and a forward-looking 'X Ne Zaman Eklenir?' (when to revisit) section. No 'Superseded by' chains observed yet. ADRs are numbered sequentially and never renumbered; a README.md index table lists all ADRs and documents the two-repo numbering split.",
+      "datingConvention": "ISO-8601 (YYYY-MM-DD) everywhere in content metadata and filenames; review filenames use ISO datetime with colons replaced by hyphens (2026-03-16T00-32-41). One review used a long-form Turkish date in body ('17 Mart 2026') but ISO is the dominant/preferred form. Dates surfaced via top blockquote ('> Tarih:' / '> Son güncelleme:' / '> Analiz tarihi:') and via dated filenames for snapshots.",
+      "observedExamples": [
+        "/Users/dev/Documents/Projects/Saydın/docs/roadmap.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/error-contract-analysis-2026-05-30.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/decisions/README.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/decisions/ADR-006-flutter-error-handling.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/decisions/ADR-001-no-kafka-mvp.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/architecture/overview.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/runbooks/local-dev-setup.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/ideas/save-comparison-as-scenario.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/reviews/2026-03-17T08-18-02-ci-review.md",
+        "/Users/dev/Documents/Projects/Saydın/docs/analysis/mizan23/01-genel-bakis.md"
+      ]
+    },
+    "bestPractices": [
+      {
+        "practice": "Diátaxis framework: split user-facing docs along the two axes (theory vs practice, study vs work) into four distinct modes — Tutorials (learning-oriented, guided), How-to guides (task-oriented, problem-solving), Reference (information-oriented, dry/complete), Explanation (understanding-oriented, discursive). Never mix a tutorial step into a reference table or bury a 'why' inside a how-to.",
+        "applicability": "High for a multi-surface dev tool with external users (CLI, VS Code ext, web portal each need their own quickstart tutorial + how-tos + reference). Maps cleanly onto the user's existing split: runbooks/ already behaves like Diátaxis how-to; architecture/ explanation overlaps with Diátaxis explanation; a reference/ folder for CLI flags / SDK API / config schema is currently missing and worth adding per surface."
+      },
+      {
+        "practice": "MADR (Markdown Architecture Decision Records) template: one file per decision, status + date metadata, sections Context and Problem Statement, Decision Drivers, Considered Options, Decision Outcome (with positive/negative consequences), optional Pros/Cons per option and More Information/links. Keep ADRs immutable; supersede rather than edit, recording 'Superseded by ADR-NNN'.",
+        "applicability": "High and nearly already adopted — the user's ADR format is a lighter MADR variant. Recommend keeping their lighter shape but formally adding a Status lifecycle (Proposed/Accepted/Deprecated/Superseded) and a 'Considered Options' section name, since a 4-surface product will generate many cross-surface trade-off decisions that benefit from explicit option comparison and supersession chains."
+      },
+      {
+        "practice": "C4 model for architecture: describe the system at four zoom levels — Context (system + users + external systems), Container (deployable/runnable units: apps, services, datastores), Component (major building blocks inside a container), and Code (optional, usually class diagrams). Diagram-per-level, each with a short narrative; keep Context/Container hand-maintained and Code generated.",
+        "applicability": "High for a multi-surface product. The user's architecture/overview.md is effectively a C4 Container diagram already (Mermaid). Recommend making the C4 levels explicit: one Context diagram for the whole platform, one Container diagram per surface (desktop app, VS Code ext, CLI, web portal) plus shared core, and Component diagrams only where complexity warrants. Mermaid (already in use) renders C4 well."
+      },
+      {
+        "practice": "Per-surface architecture documentation in large dev-tool monorepos: give each surface/package its own scoped doc set (often a README/docs at the package root) while keeping one top-level cross-cutting set for shared concerns (build, release, shared core, contracts). Use a docs landing/index page and explicit cross-links; document the public contract (API/protocol/schema) once as the source of truth and link surfaces to it.",
+        "applicability": "High. The product is explicitly a TypeScript monorepo with 4 surfaces over a shared core. Recommend an architecture/surfaces/ subfolder (one file per surface) plus shared docs at architecture/ root, and a single contract reference (the AI-SDK/agent-workflow schema, IPC, and persistence schema) that all surfaces link to — mirroring how the user already centralizes api-contract.md and database-schema.md."
+      },
+      {
+        "practice": "Maintain a docs landing/index page and a decisions index (README) so the doc set is navigable; record 'last updated' on living docs and treat dated snapshots (reviews, analyses) as immutable point-in-time artifacts.",
+        "applicability": "High — the user already does this (decisions/README.md index, '> Son güncelleme' on roadmap, dated review/analysis filenames). Extend the same pattern with a top-level docs/README.md index landing page, which is currently absent."
+      },
+      {
+        "practice": "Keep reference material complete and machine-checkable where possible (generate CLI/SDK/config reference from source; validate code samples in CI) so reference docs do not drift from the product.",
+        "applicability": "Medium-to-high for the CLI and SDK surfaces specifically; lower for explanation/ADR content. Aligns with the user's habit of citing file:line and exact endpoints/JSON, which signals a strong preference for precision over hand-waving."
+      }
+    ],
+    "recommendedConventions": [
+      "Adopt the user's existing six-folder taxonomy verbatim as the backbone: analysis/, architecture/, decisions/, runbooks/, ideas/, reviews/ — it already mirrors Diátaxis-explanation + how-to and MADR. Add only what is missing for an external-facing dev tool.",
+      "Add a reference/ folder (currently absent) for dry, complete, machine-checkable reference material: CLI command/flag reference, SDK/API reference, config-schema reference, and the agent-workflow file format — one sub-area per surface. This fills the one Diátaxis quadrant the user does not yet cover.",
+      "Add a tutorials/ (or guides/getting-started) area for learning-oriented onboarding per surface (desktop app, VS Code ext, CLI, web portal); keep the user's existing runbooks/ as the task-oriented how-to bucket. This makes the Diátaxis split explicit without renaming what already works.",
+      "Keep the user's lighter MADR-style ADRs (H1 'ADR-NNN: Title' + bold Durum/Tarih + Bağlam/Karar/Gerekçe/Sonuçlar + İlgili Dosyalar), but formalize a Status lifecycle (Proposed → Accepted → Deprecated/Superseded) and add an explicit 'Considered Options' section plus 'Superseded by ADR-NNN' links, since a 4-surface platform will produce cross-surface trade-offs. Continue the never-renumber rule and the per-repo ADR-number-space convention, with a decisions/README.md index.",
+      "Make the C4 levels explicit in architecture/: one platform-wide Context diagram, a Container diagram per surface plus shared core, Component diagrams only where warranted — all in Mermaid (already the user's diagramming tool). Treat overview.md as the Context/Container entry point.",
+      "Document per-surface architecture under architecture/surfaces/<surface>.md while keeping cross-cutting concerns (shared core, build/release, persistence) at architecture/ root, and centralize the cross-surface contract(s) as a single source of truth that every surface links to — extending the user's existing api-contract.md / database-schema.md pattern.",
+      "Follow the user's markdown conventions exactly: single H1 'Project — Title', a top blockquote metadata line (> Son güncelleme: YYYY-MM-DD / > Tarih:) instead of YAML front-matter, heavy table usage for any comparison/spec/metric, Mermaid diagrams, language-tagged fenced code, > blockquote callouts with ⚠️ for warnings, --- section rules, and file:line citations for code references.",
+      "Use ISO-8601 dates everywhere; encode snapshot dates into filenames (reviews: full ISO timestamp with hyphens; one-off reports: -YYYY-MM-DD suffix). Treat dated files in reviews/ and analysis/ as immutable; carry a '> Son güncelleme' line on living docs in architecture/ and roadmap.md.",
+      "Use kebab-case for all topic filenames, numbered NN- prefixes for ordered series in analysis/ (and any new multi-part tutorial), and avoid spaces and Turkish-specific characters in filenames (content language can remain whatever the user writes; identifiers/paths/code stay in English).",
+      "Add a top-level docs/README.md landing/index page (currently missing) that links the taxonomy and key entry points (roadmap, architecture overview, ADR index, per-surface reference), so the growing multi-surface doc set stays navigable."
+    ]
+  },
+  "candidates": {
+    "topicBased": {
+      "approachName": "Topic-Based Numbered Hierarchy (Saydın-style, scaled for Flowgent)",
+      "philosophy": "Mirror and extend the user's proven Saydın docs taxonomy: numbered top-level folders impose a deliberate reading order (00 entry → 10 vision → 20 architecture by surface → 30 cross-cutting contracts → 40 decisions → 50 ops → 60 research → 70 phase-2), while topic-grouped subfolders keep each domain self-contained. Numbered-prefix files (01-, 02-) order each subfolder so a newcomer can read straight through. Flat topic-named living docs (kebab-case.md) sit inside architecture surfaces exactly like Saydın's architecture/ folder. The dual deep-analysis vs pivot-vision tension is resolved structurally: the older partially-reusable frontend deep-analysis is preserved verbatim under a 60-research/analysis archive (never edited, like Saydın's analysis/<subject>/), while the current authoritative vision (desktop/Tauri, execution engine, IPC) drives the living 20-architecture docs. ADRs follow the ADR-NNN-slug.md + README routing-table convention, and a dedicated dual-space note reserves a separate number space for the future backend repo (Phase 2), so the tree scales without renumbering. Every concrete artifact from the inventory (store Shapes, SSE schema, SQLite DDL, workflow YAML example, 12-tool list, 9 node types) lands in exactly one canonical home and is cross-referenced rather than duplicated.",
+      "tree": [
+        {
+          "path": "docs/README.md",
+          "type": "file",
+          "purpose": "Root index: what Flowgent is, how the numbered docs are organized, suggested reading order, and a link table to every top-level folder.",
+          "sourceContent": "Project vision summary (multi-surface local-first AI agent workflow platform) + this taxonomy; cross-links to 10-vision and 20-architecture."
+        },
+        {
+          "path": "docs/glossary.md",
+          "type": "file",
+          "purpose": "Single-source glossary of domain terms (workflow, node, run, human-gate, fan-out, aggregator, MCP, channel, SSE seqNo, workspace, provider) with one-line definitions.",
+          "sourceContent": "Terms extracted across both analyses: 9 node types, run/run-history, HumanGate, MCP, IPC primitives, workspace=directory model, provider stores."
+        },
+        {
+          "path": "docs/00-getting-started",
+          "type": "folder",
+          "purpose": "Orientation material for a new contributor or reader.",
+          "sourceContent": ""
+        },
+        {
+          "path": "docs/00-getting-started/01-overview.md",
+          "type": "file",
+          "purpose": "One-page elevator description of the platform, its surfaces, and current phase status.",
+          "sourceContent": "Project-vision memory + pivot vision (desktop-first, local-first Phase 1)."
+        },
+        {
+          "path": "docs/00-getting-started/02-doc-map.md",
+          "type": "file",
+          "purpose": "Annotated map of the whole docs tree explaining what lives where and the analysis-vs-vision distinction.",
+          "sourceContent": "This taxonomy; explains deep-analysis archive vs living architecture split."
+        },
+        {
+          "path": "docs/00-getting-started/03-reading-order.md",
+          "type": "file",
+          "purpose": "Recommended ordered path through the numbered folders for onboarding.",
+          "sourceContent": "Derived from folder numbering scheme."
+        },
+        {
+          "path": "docs/10-vision",
+          "type": "folder",
+          "purpose": "Product vision, scope, and constraints — the 'why' and 'what', surface-agnostic.",
+          "sourceContent": ""
+        },
+        {
+          "path": "docs/10-vision/01-product-vision.md",
+          "type": "file",
+          "purpose": "Full product vision: multi-surface (desktop app, VS Code ext, CLI, web portal), local-first agent workflow platform.",
+          "sourceContent": "MEMORY project-vision.md + pivot analysis framing."
+        },
+        {
+          "path": "docs/10-vision/02-surfaces-and-scope.md",
+          "type": "file",
+          "purpose": "Each surface's role and boundaries; desktop = agent management (not an IDE), VS Code = editor integration, CLI, web portal.",
+          "sourceContent": "Product-constraints memory ('desktop app is agent management only, not an IDE')."
+        },
+        {
+          "path": "docs/10-vision/03-product-constraints.md",
+          "type": "file",
+          "purpose": "Hard constraints: local-first Phase 1, cloud Phase 2, privacy/keys-stay-local posture.",
+          "sourceContent": "MEMORY product-constraints.md."
+        },
+        {
+          "path": "docs/10-vision/04-phasing.md",
+          "type": "file",
+          "purpose": "Phase 1 (local-first) vs Phase 2 (cloud/Postgres/web portal) scope split and what each unlocks.",
+          "sourceContent": "Architecture-decisions memory (SQLite→Postgres) + product-constraints phasing."
+        },
+        {
+          "path": "docs/20-architecture",
+          "type": "folder",
+          "purpose": "Living system-design docs, grouped by surface and engine. Each subfolder is flat, topic-named.",
+          "sourceContent": ""
+        },
+        {
+          "path": "docs/20-architecture/01-system-overview.md",
+          "type": "file",
+          "purpose": "Top-level architecture: how desktop, execution engine, surfaces, and local data fit together; component diagram.",
+          "sourceContent": "Synthesis of pivot desktop sections + frontend sections."
+        },
+        {
+          "path": "docs/20-architecture/02-tech-stack.md",
+          "type": "file",
+          "purpose": "Authoritative stack list: Tauri v2, TypeScript monorepo, Vite+React SPA, Vercel AI SDK, Zustand, SQLite→Postgres.",
+          "sourceContent": "MEMORY architecture-decisions.md + pivot crate names + frontend framework decision."
+        },
+        {
+          "path": "docs/20-architecture/desktop",
+          "type": "folder",
+          "purpose": "Tauri desktop shell, local data, execution engine, IPC — the current authoritative vision.",
+          "sourceContent": "PIVOT desktop section (authoritative, implementation-ready)."
+        },
+        {
+          "path": "docs/20-architecture/desktop/01-desktop-shell.md",
+          "type": "file",
+          "purpose": "Tauri v2 shell architecture and chosen plugins (fs/shell/sql/keychain/tray/global-shortcut/notification/dialog).",
+          "sourceContent": "pivot.desktop frameworkDecision + tauri-plugin list."
+        },
+        {
+          "path": "docs/20-architecture/desktop/02-local-data-architecture.md",
+          "type": "file",
+          "purpose": "Config split (~/.agentorg/config.toml global + {projectRoot}/.agentorg/project.toml), workspace=directory model, key storage (OS keychain + AES-256-GCM fallback).",
+          "sourceContent": "pivot.desktop.localDataArchitecture (config location, workspace model, API key storage)."
+        },
+        {
+          "path": "docs/20-architecture/desktop/03-workflow-file-format.md",
+          "type": "file",
+          "purpose": "The .workflow.yaml format, apiVersion agentorg/v1 schema versioning, treating workflow YAML as a public API.",
+          "sourceContent": "pivot.desktop workflowYAMLExample (code-review-pipeline) + 'workflow YAML as public API' gotcha."
+        },
+        {
+          "path": "docs/20-architecture/desktop/04-run-history-storage.md",
+          "type": "file",
+          "purpose": "SQLite history.db with sqlcipher: runs / run_events / run_costs schema, WAL, 90-day pruning.",
+          "sourceContent": "pivot.desktop.localDataArchitecture.runHistoryStorage (full DDL)."
+        },
+        {
+          "path": "docs/20-architecture/desktop/05-execution-engine.md",
+          "type": "file",
+          "purpose": "Agent process model (tokio async tasks, not OS processes), 3-tier filesystem sandbox, streaming to UI via Tauri Channels with backpressure.",
+          "sourceContent": "pivot.desktop.executionEngine (agent process model, filesystem access, streaming)."
+        },
+        {
+          "path": "docs/20-architecture/desktop/06-built-in-tools.md",
+          "type": "file",
+          "purpose": "Catalog of the 12 built-in tools (read_file, write_file, list_directory, run_command, http_request, search_web, git_status, git_commit, read_clipboard, …) with descriptions.",
+          "sourceContent": "pivot.desktop.executionEngine 12 built-in tools list."
+        },
+        {
+          "path": "docs/20-architecture/desktop/07-mcp-integration.md",
+          "type": "file",
+          "purpose": "McpServerPool design: discovering, pooling, and invoking external MCP servers.",
+          "sourceContent": "pivot.desktop.executionEngine MCP integration."
+        },
+        {
+          "path": "docs/20-architecture/desktop/08-ipc-architecture.md",
+          "type": "file",
+          "purpose": "3-primitive IPC (Commands/Channels/Events) and how the WebView UI talks to the Rust core.",
+          "sourceContent": "pivot.desktop.ipcArchitecture (3-primitive IPC)."
+        },
+        {
+          "path": "docs/20-architecture/desktop/09-vscode-connection.md",
+          "type": "file",
+          "purpose": "VS Code ↔ desktop connection: axum local HTTP server on 127.0.0.1:dynamic_port, ipc.json bearer token, SSE.",
+          "sourceContent": "pivot.desktop.ipcArchitecture VS Code connection method."
+        },
+        {
+          "path": "docs/20-architecture/desktop/10-desktop-ux-features.md",
+          "type": "file",
+          "purpose": "6 native UX features: global hotkey command palette, system tray monitor, native file picker, drag-and-drop, completion notifications, OS context-menu integration.",
+          "sourceContent": "pivot.desktop.desktopUXFeatures."
+        },
+        {
+          "path": "docs/20-architecture/desktop/11-platform-gotchas.md",
+          "type": "file",
+          "purpose": "9 platform considerations: WebView2 bootstrapping, WKWebView SharedArrayBuffer, sqlcipher passphrase, Tauri capability system, loopback binding + 0600 token perms, code-signing/notarization, etc.",
+          "sourceContent": "pivot.desktop.criticalConsiderations (9 platform gotchas)."
+        },
+        {
+          "path": "docs/20-architecture/frontend",
+          "type": "folder",
+          "purpose": "WebView/SPA front-end architecture: canvas, state, realtime UI. Reconciled from the reusable deep-analysis.",
+          "sourceContent": "DEEP frontend section (partially-reusable, reconciled against current vision)."
+        },
+        {
+          "path": "docs/20-architecture/frontend/01-framework-decision.md",
+          "type": "file",
+          "purpose": "Vite + React SPA + separate API (Option B) vs Next.js App Router, with reasoning and the 5 explicit tradeoffs.",
+          "sourceContent": "deep.frontend framework decision (1766-char reasoning, 5 tradeoffs)."
+        },
+        {
+          "path": "docs/20-architecture/frontend/02-state-management.md",
+          "type": "file",
+          "purpose": "Zustand + immer; the 5 named stores (provider/agent/workflow/ui/run) with their TypeScript Shape definitions.",
+          "sourceContent": "deep.frontend 5 Zustand store Shape:{} definitions."
+        },
+        {
+          "path": "docs/20-architecture/frontend/03-canvas-state.md",
+          "type": "file",
+          "purpose": "Canvas state isolation: ReactFlow useNodesState/useEdgesState in CanvasContext (not global), serialize-on-save, memoized per-node run-status selectors.",
+          "sourceContent": "deep.frontend canvas state isolation + useRunNodeStatus/useShallowEqual."
+        },
+        {
+          "path": "docs/20-architecture/frontend/04-undo-redo.md",
+          "type": "file",
+          "purpose": "useHistory hook: 50-depth WorkflowSnapshot stack, 300ms debounce on onNodesChange, disabled during runs.",
+          "sourceContent": "deep.frontend undo/redo subsection."
+        },
+        {
+          "path": "docs/20-architecture/frontend/05-run-streaming-ui.md",
+          "type": "file",
+          "purpose": "Token streaming double-buffer (rawBuffer → 16ms RAF flush → tokenBuffer → CSS opacity pulse) capping re-renders at 60fps.",
+          "sourceContent": "deep.frontend run execution state + token streaming double-buffer."
+        },
+        {
+          "path": "docs/20-architecture/frontend/06-canvas-node-types.md",
+          "type": "file",
+          "purpose": "The 9 canvas node types (Agent/Condition/FanOut/Aggregator/Loop/HumanGate/Input/Output/Tool) with name, description, keyProps.",
+          "sourceContent": "deep.frontend 9 canvas node types."
+        },
+        {
+          "path": "docs/20-architecture/frontend/07-routing.md",
+          "type": "file",
+          "purpose": "The 8 application routes and TanStack Router + Query strategy.",
+          "sourceContent": "deep.frontend 8 routes list."
+        },
+        {
+          "path": "docs/20-architecture/frontend/08-realtime-sse-ui.md",
+          "type": "file",
+          "purpose": "Singleton SseManager: exponential backoff reconnect, GET /state resync, seqNo gap detection, HumanGateOverlay, CSS-only canvas animations.",
+          "sourceContent": "deep.frontend realtime UI + SseManager."
+        },
+        {
+          "path": "docs/20-architecture/frontend/09-component-strategy.md",
+          "type": "file",
+          "purpose": "shadcn/ui + Radix, custom ReactFlow nodes via CSS Modules, CodeMirror 6 SystemPromptEditor, Framer Motion usage.",
+          "sourceContent": "deep.frontend component strategy (2328 chars)."
+        },
+        {
+          "path": "docs/20-architecture/frontend/10-critical-implementation-details.md",
+          "type": "file",
+          "purpose": "The 10 critical implementation details (stable nodeTypes refs, canvas/run store separation, schema_version + WorkflowMigrator, idempotent HumanGate on reconnect, ToolNode secret references, client cost pricing table, etc.).",
+          "sourceContent": "deep.frontend 10 criticalImplementationDetails."
+        },
+        {
+          "path": "docs/30-contracts",
+          "type": "folder",
+          "purpose": "Cross-cutting interface contracts that span surfaces and must stay in lockstep — single source of truth for each wire/schema format.",
+          "sourceContent": "Concrete schemas extracted from both analyses, given canonical homes."
+        },
+        {
+          "path": "docs/30-contracts/01-workflow-schema.md",
+          "type": "file",
+          "purpose": "Canonical agentorg/v1 workflow schema reference (nodes, dependsOn, human_gate, condition, {{ interpolation }}) and its migration story.",
+          "sourceContent": "pivot workflowYAMLExample + deep schema_version/WorkflowMigrator; canonical home, referenced by desktop/03 and frontend/10."
+        },
+        {
+          "path": "docs/30-contracts/02-sse-event-schema.md",
+          "type": "file",
+          "purpose": "Canonical SSE event schema {type,nodeId,payload,seqNo} and seqNo gap/resync semantics shared by engine and UI.",
+          "sourceContent": "deep.frontend SSE event schema + pivot SSE transport."
+        },
+        {
+          "path": "docs/30-contracts/03-ipc-contract.md",
+          "type": "file",
+          "purpose": "Desktop↔WebView and VS Code↔desktop IPC contract: Commands/Channels/Events surface and the ipc.json bearer-token handshake.",
+          "sourceContent": "pivot.desktop.ipcArchitecture (canonical home for the cross-surface contract)."
+        },
+        {
+          "path": "docs/30-contracts/04-cost-pricing-table.md",
+          "type": "file",
+          "purpose": "Provider/model cost pricing table format used client-side and by run_costs storage.",
+          "sourceContent": "deep.frontend client-side cost pricing table + pivot run_costs."
+        },
+        {
+          "path": "docs/40-decisions",
+          "type": "folder",
+          "purpose": "Architecture Decision Records (product / cross-surface / UX / legal). Backend-only ADRs reserved for the future backend repo's own space.",
+          "sourceContent": "Decisions implied by both analyses, recast as ADRs."
+        },
+        {
+          "path": "docs/40-decisions/README.md",
+          "type": "file",
+          "purpose": "ADR index + routing table: which decisions live here vs the (future) backend repo space, and the current ADR list.",
+          "sourceContent": "Saydın decisions/README dual-space convention adapted for Flowgent."
+        },
+        {
+          "path": "docs/40-decisions/ADR-001-tauri-v2-over-electron.md",
+          "type": "file",
+          "purpose": "Choose Tauri v2 over Electron and Wails v2 for the desktop shell; reasoning + 5 tradeoffs.",
+          "sourceContent": "pivot.desktop frameworkDecision."
+        },
+        {
+          "path": "docs/40-decisions/ADR-002-vite-react-spa-over-nextjs.md",
+          "type": "file",
+          "purpose": "Choose Vite + React SPA + separate API (Option B) over Next.js App Router.",
+          "sourceContent": "deep.frontend framework decision (1766-char reasoning)."
+        },
+        {
+          "path": "docs/40-decisions/ADR-003-tokio-tasks-over-os-processes.md",
+          "type": "file",
+          "purpose": "Run agents as tokio async tasks rather than per-agent OS processes.",
+          "sourceContent": "pivot.desktop.executionEngine agent process model."
+        },
+        {
+          "path": "docs/40-decisions/ADR-004-sqlite-sqlcipher-run-history.md",
+          "type": "file",
+          "purpose": "Store run history in encrypted SQLite (sqlcipher) with WAL and 90-day pruning; SQLite→Postgres path in Phase 2.",
+          "sourceContent": "pivot.desktop runHistoryStorage + architecture-decisions memory."
+        },
+        {
+          "path": "docs/40-decisions/ADR-005-workflow-yaml-as-public-api.md",
+          "type": "file",
+          "purpose": "Treat .workflow.yaml (agentorg/v1) as a versioned public API with a migrator.",
+          "sourceContent": "pivot 'workflow YAML as public API' gotcha + deep WorkflowMigrator."
+        },
+        {
+          "path": "docs/40-decisions/ADR-006-api-key-storage-keychain-aes.md",
+          "type": "file",
+          "purpose": "Store provider API keys in the OS keychain with AES-256-GCM file fallback; keys never leave the machine in Phase 1.",
+          "sourceContent": "pivot.desktop.localDataArchitecture API key storage + product-constraints."
+        },
+        {
+          "path": "docs/40-decisions/ADR-007-loopback-bearer-ipc.md",
+          "type": "file",
+          "purpose": "Expose the local IPC server only on 127.0.0.1 with 0600 token perms and bearer auth.",
+          "sourceContent": "pivot.desktop ipc + loopback-binding gotcha."
+        },
+        {
+          "path": "docs/40-decisions/ADR-008-zustand-canvas-store-separation.md",
+          "type": "file",
+          "purpose": "Keep ReactFlow canvas state out of the global Zustand store (CanvasContext) to avoid O(n) streaming re-renders.",
+          "sourceContent": "deep.frontend canvas/run store separation + critical details."
+        },
+        {
+          "path": "docs/50-operations",
+          "type": "folder",
+          "purpose": "Operational how-to guides and release/build procedures (runbooks).",
+          "sourceContent": ""
+        },
+        {
+          "path": "docs/50-operations/01-local-dev-setup.md",
+          "type": "file",
+          "purpose": "Set up the monorepo, Rust/Tauri toolchain, and run the desktop app locally.",
+          "sourceContent": "tech-stack (Tauri v2, TS monorepo) + WebView2 bootstrapping gotcha; mirrors Saydın runbooks/local-dev-setup.md."
+        },
+        {
+          "path": "docs/50-operations/02-build-and-codesign.md",
+          "type": "file",
+          "purpose": "Build, macOS code-signing/notarization, and per-OS packaging steps.",
+          "sourceContent": "pivot.desktop.criticalConsiderations code-signing/notarization gotcha."
+        },
+        {
+          "path": "docs/50-operations/03-release-checklist.md",
+          "type": "file",
+          "purpose": "Pre-release verification checklist across surfaces and schema-migration safety.",
+          "sourceContent": "Schema versioning (apiVersion, WorkflowMigrator) + platform gotchas; analogous to Saydın high-traffic-checklist.md."
+        },
+        {
+          "path": "docs/60-research",
+          "type": "folder",
+          "purpose": "Point-in-time research: deep analyses of external products/codebases and prior architecture studies. Archival — not edited as the product evolves.",
+          "sourceContent": ""
+        },
+        {
+          "path": "docs/60-research/analysis",
+          "type": "folder",
+          "purpose": "Per-subject deep-dive studies, numbered ordered files (analysis/<subject>/NN-topic.md), Saydın-style.",
+          "sourceContent": "Reserved home matching Saydın analysis/<subject>/ convention; future competitor/codebase studies land here."
+        },
+        {
+          "path": "docs/60-research/analysis/README.md",
+          "type": "file",
+          "purpose": "Index of analysis subjects and how to add a new numbered study series.",
+          "sourceContent": "Saydın analysis conventions."
+        },
+        {
+          "path": "docs/60-research/archive",
+          "type": "folder",
+          "purpose": "Frozen snapshots of superseded architecture explorations, preserved for provenance.",
+          "sourceContent": ""
+        },
+        {
+          "path": "docs/60-research/archive/2026-frontend-deep-analysis.md",
+          "type": "file",
+          "purpose": "Verbatim archive of the original ~12KB frontend deep-analysis (partially-reusable) before reconciliation into 20-architecture/frontend.",
+          "sourceContent": "DEEP frontend section, preserved unedited; living version lives in 20-architecture/frontend."
+        },
+        {
+          "path": "docs/70-phase-2",
+          "type": "folder",
+          "purpose": "Forward-looking design for the cloud phase: web portal, Postgres, sync, multi-user. Empty stubs now, scales without renumbering.",
+          "sourceContent": "architecture-decisions memory (SQLite→Postgres) + product-constraints (cloud Phase 2)."
+        },
+        {
+          "path": "docs/70-phase-2/01-cloud-architecture-overview.md",
+          "type": "file",
+          "purpose": "Target Phase 2 topology: web portal + cloud API + Postgres, and the local-first→cloud bridge.",
+          "sourceContent": "architecture-decisions + product-constraints Phase 2."
+        },
+        {
+          "path": "docs/70-phase-2/02-sqlite-to-postgres-migration.md",
+          "type": "file",
+          "purpose": "Plan for migrating local SQLite run-history/data model to Postgres.",
+          "sourceContent": "architecture-decisions (SQLite→Postgres) + run-history schema."
+        },
+        {
+          "path": "docs/70-phase-2/03-web-portal-and-sync.md",
+          "type": "file",
+          "purpose": "Web portal scope, account/auth model, and local↔cloud workflow sync.",
+          "sourceContent": "project-vision (web portal surface) + product-constraints."
+        }
+      ],
+      "strengths": [
+        "Directly mirrors the user's proven Saydın taxonomy (numbered series, flat topic-named architecture docs, ADR-NNN-slug + README routing table, kebab-case), so it feels native and needs no convention re-learning.",
+        "Numbered top-level folders encode a true reading order (entry → vision → architecture → contracts → decisions → ops → research → phase-2) that scales by appending, not renumbering.",
+        "Cleanly resolves the deep-analysis-vs-pivot tension: the partially-reusable frontend deep-dive is preserved verbatim in 60-research/archive while its reconciled living form drives 20-architecture/frontend — provenance and currency both kept.",
+        "Every concrete artifact (5 store Shapes, SSE schema, SQLite DDL, workflow YAML, 12 tools, 9 node types) has exactly one canonical home; a dedicated 30-contracts folder prevents the cross-surface schemas from drifting between desktop and frontend docs.",
+        "Phase-2 is structurally reserved (70-phase-2 + dual ADR-space note) so cloud/Postgres/web-portal growth slots in without restructuring."
+      ],
+      "weaknesses": [
+        "Deeper nesting than flat-vintage Saydın (20-architecture/desktop/NN-*.md is three levels), which adds a little navigation friction and longer paths.",
+        "The split between 30-contracts and the surface folders that reference those schemas requires discipline (cross-links, no copy-paste) or the single-source-of-truth benefit erodes.",
+        "Several Phase-2 and analysis files are stubs/placeholders now, so the tree can look sparser than it reads on the index until content is filled in.",
+        "Numbered file prefixes make inserting a topic mid-series mildly awkward (either renumber or accept gaps), the classic cost of ordered-prefix schemes."
+      ]
+    },
+    "diataxis": {
+      "approachName": "probe60",
+      "philosophy": "probe",
+      "tree": [
+        {
+          "path": "docs/README.md",
+          "type": "file",
+          "purpose": "Root index: type axis + surface axis."
+        },
+        {
+          "path": "docs/glossary.md",
+          "type": "file",
+          "purpose": "Cross-surface terms."
+        },
+        {
+          "path": "docs/roadmap.md",
+          "type": "file",
+          "purpose": "Phase 1 vs Phase 2 sequencing."
+        },
+        {
+          "path": "docs/index.html",
+          "type": "file",
+          "purpose": "Static marketing landing page."
+        },
+        {
+          "path": "docs/css/",
+          "type": "folder",
+          "purpose": "Marketing stylesheets."
+        },
+        {
+          "path": "docs/js/",
+          "type": "folder",
+          "purpose": "Marketing scripts."
+        },
+        {
+          "path": "docs/explanation/",
+          "type": "folder",
+          "purpose": "WHY layer."
+        },
+        {
+          "path": "docs/explanation/overview.md",
+          "type": "file",
+          "purpose": "Mental model: surfaces, core, phasing."
+        },
+        {
+          "path": "docs/explanation/execution-model.md",
+          "type": "file",
+          "purpose": "How a workflow runs: tokio tasks."
+        },
+        {
+          "path": "docs/explanation/local-first-philosophy.md",
+          "type": "file",
+          "purpose": "Why privacy, no-account, git-native YAML."
+        },
+        {
+          "path": "docs/explanation/desktop/why-tauri-v2.md",
+          "type": "file",
+          "purpose": "Tauri v2 vs Electron vs Wails."
+        },
+        {
+          "path": "docs/explanation/desktop/canvas-rendering-rationale.md",
+          "type": "file",
+          "purpose": "Canvas isolation; 60fps streaming."
+        },
+        {
+          "path": "docs/explanation/desktop/desktop-not-an-ide.md",
+          "type": "file",
+          "purpose": "Desktop excludes editor/terminal."
+        },
+        {
+          "path": "docs/explanation/vscode/why-in-process-core.md",
+          "type": "file",
+          "purpose": "Extension bundles core in-process."
+        },
+        {
+          "path": "docs/explanation/cli/why-cli-first.md",
+          "type": "file",
+          "purpose": "Why CLI ships first."
+        },
+        {
+          "path": "docs/explanation/portal/why-portal-is-phase-2.md",
+          "type": "file",
+          "purpose": "Portal is Phase 2 only."
+        },
+        {
+          "path": "docs/explanation/shared-core/engine-design.md",
+          "type": "file",
+          "purpose": "Pure-TS engine shared by all."
+        },
+        {
+          "path": "docs/explanation/shared-core/state-management-model.md",
+          "type": "file",
+          "purpose": "Zustand + 5 stores rationale."
+        },
+        {
+          "path": "docs/reference/",
+          "type": "folder",
+          "purpose": "WHAT/HOW layer: contracts."
+        },
+        {
+          "path": "docs/reference/README.md",
+          "type": "file",
+          "purpose": "Contracts index."
+        },
+        {
+          "path": "docs/reference/contracts/workflow-yaml-spec.md",
+          "type": "file",
+          "purpose": "flowgent.yaml schema."
+        },
+        {
+          "path": "docs/reference/contracts/agent-yaml-spec.md",
+          "type": "file",
+          "purpose": "agent.yaml schema."
+        },
+        {
+          "path": "docs/reference/contracts/sse-event-schema.md",
+          "type": "file",
+          "purpose": "SSE event schema, resync."
+        },
+        {
+          "path": "docs/reference/contracts/ipc-contract.md",
+          "type": "file",
+          "purpose": "3-primitive IPC + bearer token."
+        },
+        {
+          "path": "docs/reference/contracts/config-file-spec.md",
+          "type": "file",
+          "purpose": "Global + project config.toml."
+        },
+        {
+          "path": "docs/reference/shared-core/store-shapes.md",
+          "type": "file",
+          "purpose": "5 Zustand store shapes."
+        },
+        {
+          "path": "docs/reference/shared-core/node-types.md",
+          "type": "file",
+          "purpose": "9 canvas node types."
+        },
+        {
+          "path": "docs/reference/shared-core/built-in-tools.md",
+          "type": "file",
+          "purpose": "12 built-in tools, FS tiers."
+        },
+        {
+          "path": "docs/reference/shared-core/mcp-integration.md",
+          "type": "file",
+          "purpose": "McpServerPool."
+        },
+        {
+          "path": "docs/reference/desktop/database-schema.md",
+          "type": "file",
+          "purpose": "SQLite run-history DDL."
+        },
+        {
+          "path": "docs/reference/desktop/keychain-and-secrets.md",
+          "type": "file",
+          "purpose": "Keychain + AES fallback."
+        },
+        {
+          "path": "docs/reference/desktop/tauri-plugins.md",
+          "type": "file",
+          "purpose": "Required Tauri plugins."
+        },
+        {
+          "path": "docs/reference/desktop/routes-and-screens.md",
+          "type": "file",
+          "purpose": "8 desktop routes."
+        },
+        {
+          "path": "docs/reference/cli/commands.md",
+          "type": "file",
+          "purpose": "CLI commands."
+        },
+        {
+          "path": "docs/reference/vscode/extension-api.md",
+          "type": "file",
+          "purpose": "VS Code contributions."
+        },
+        {
+          "path": "docs/reference/portal/.gitkeep",
+          "type": "file",
+          "purpose": "Phase 2 portal placeholder."
+        },
+        {
+          "path": "docs/guides/",
+          "type": "folder",
+          "purpose": "HOW-TO layer."
+        },
+        {
+          "path": "docs/guides/README.md",
+          "type": "file",
+          "purpose": "Guides index."
+        },
+        {
+          "path": "docs/guides/authoring-a-workflow.md",
+          "type": "file",
+          "purpose": "Build a workflow on canvas."
+        },
+        {
+          "path": "docs/guides/writing-an-agent.md",
+          "type": "file",
+          "purpose": "Author an agent.yaml."
+        },
+        {
+          "path": "docs/guides/desktop/run-and-monitor.md",
+          "type": "file",
+          "purpose": "Trigger and monitor a run."
+        },
+        {
+          "path": "docs/guides/vscode/trigger-from-editor.md",
+          "type": "file",
+          "purpose": "Right-click run from VS Code."
+        },
+        {
+          "path": "docs/guides/cli/ci-cd-integration.md",
+          "type": "file",
+          "purpose": "Run flowgent in CI/CD."
+        },
+        {
+          "path": "docs/guides/shared-core/writing-a-workflow-migration.md",
+          "type": "file",
+          "purpose": "Add a WorkflowMigrator step."
+        },
+        {
+          "path": "docs/architecture/",
+          "type": "folder",
+          "purpose": "Living system-design docs."
+        },
+        {
+          "path": "docs/architecture/overview.md",
+          "type": "file",
+          "purpose": "Living top-level architecture."
+        },
+        {
+          "path": "docs/architecture/engine.md",
+          "type": "file",
+          "purpose": "Living core engine design."
+        },
+        {
+          "path": "docs/architecture/desktop.md",
+          "type": "file",
+          "purpose": "Living Tauri desktop design."
+        },
+        {
+          "path": "docs/architecture/data-architecture.md",
+          "type": "file",
+          "purpose": "Living cross-surface data design."
+        },
+        {
+          "path": "docs/architecture/streaming-and-realtime.md",
+          "type": "file",
+          "purpose": "Living streaming + SSE path."
+        },
+        {
+          "path": "docs/architecture/security-model.md",
+          "type": "file",
+          "purpose": "Living security design."
+        },
+        {
+          "path": "docs/decisions/",
+          "type": "folder",
+          "purpose": "ADRs: single product number space."
+        },
+        {
+          "path": "docs/decisions/README.md",
+          "type": "file",
+          "purpose": "ADR index + two-space rule."
+        },
+        {
+          "path": "docs/decisions/ADR-001-tauri-v2-over-electron.md",
+          "type": "file",
+          "purpose": "Adopt Tauri v2."
+        },
+        {
+          "path": "docs/decisions/ADR-002-vite-react-not-nextjs.md",
+          "type": "file",
+          "purpose": "Vite + React over Next.js."
+        },
+        {
+          "path": "docs/decisions/ADR-003-pure-typescript-engine.md",
+          "type": "file",
+          "purpose": "Pure-TS engine, no Python sidecar."
+        },
+        {
+          "path": "docs/decisions/ADR-004-workflow-yaml-as-public-api.md",
+          "type": "file",
+          "purpose": "flowgent.yaml as versioned API."
+        },
+        {
+          "path": "docs/decisions/ADR-005-os-keychain-secrets.md",
+          "type": "file",
+          "purpose": "OS keychain + AES fallback."
+        },
+        {
+          "path": "docs/decisions/ADR-006-loopback-ipc-bearer-token.md",
+          "type": "file",
+          "purpose": "Loopback IPC + bearer token."
+        }
+      ],
+      "strengths": [
+        "a"
+      ],
+      "weaknesses": [
+        "b"
+      ]
+    }
+  },
+  "finalStructure": {
+    "rootPath": "/Users/dev/Documents/Projects/Agent-Organizer/docs",
+    "philosophy": "Backbone = the user's REAL surveyed cross-project house style (memory/docs-house-style.md), NOT a numbered hierarchy. The user's docs DO NOT use numbered top-level folders (Candidate A's premise is wrong against the actual Saydın repo and the house-style memo): they use named folders + flat product docs at root + per-subfolder README index + kebab-case ADRs NNNN-kebab.md + H1-with-bold-metadata (no YAML front-matter) + a static marketing landing page living in docs/ (css/, js/, index.html — confirmed present in the real Saydın repo, which validates Candidate B's marketing observation). So the structure adopts that backbone verbatim and adds ONLY the two things the user provably lacks and an external dev tool needs: (1) Diátaxis completeness — a reference/ quadrant (CLI/API/config/file-format) and a tutorials/ quadrant (learning-oriented onboarding), keeping the user's existing runbooks/ as the how-to bucket; (2) a surface axis nested INSIDE the type axis (reference/desktop, reference/cli, reference/vscode, tutorials/desktop, etc.) — this is Candidate B's genuinely strong contribution, the multi-surface product cannot be documented on one axis alone. From Candidate A I keep two structurally important ideas that scale the tree: the 'two ADR number spaces' routing README (one space for this meta repo, a reserved second space for the Phase-2 backend repo, so nothing renumbers later) and the 'preserve the old deep-analysis verbatim, never edit it' archive principle under analysis/. The dual-vision tension (older partially-reusable frontend deep-analysis vs current authoritative desktop/Tauri pivot) is resolved structurally: the current authoritative vision drives every LIVING doc (architecture/, reference/, explanation/), while the prior deep-analysis JSON is frozen verbatim under analysis/_archive/ and only its still-true pieces are cited (never copied) into living docs. Every concrete artifact from the inventory (workflow YAML spec, agent YAML, SSE schema, IPC contract, SQLite DDL, 5 Zustand store shapes, 9 node types, 12 built-in tools, MCP pool, config.toml) lands in exactly ONE canonical reference home and is cross-linked, never duplicated. Result: feels 100% native to the user's other 8 projects on day one, yet is complete enough to ship as public dev-tool documentation.",
+    "tree": [
+      {
+        "path": "docs/index.html",
+        "type": "file",
+        "purpose": "Static marketing landing page (mirrors the real Saydin docs/index.html). Hero, surfaces, local-first pitch, CTA to README.",
+        "readiness": "to-be-written",
+        "sourceContent": "synthesis.productIdentity (name 'Flowgent', tagline 'Design agents. Ship workflows. Own every run.', oneLinePitch) + strategy.uniqueValueProp.statement"
+      },
+      {
+        "path": "docs/css/style.css",
+        "type": "folder",
+        "purpose": "Marketing landing stylesheet (mirrors Saydin docs/css/style.css). Folder placeholder — style.css inside.",
+        "readiness": "to-be-written",
+        "sourceContent": "none (presentation only)"
+      },
+      {
+        "path": "docs/js/main.js",
+        "type": "folder",
+        "purpose": "Marketing landing scripts (mirrors Saydin docs/js/main.js). Folder placeholder — main.js inside.",
+        "readiness": "to-be-written",
+        "sourceContent": "none (presentation only)"
+      },
+      {
+        "path": "docs/README.md",
+        "type": "file",
+        "purpose": "Root index. 'Document Map' grouped Product / Engineering / Process / External + 'Reading Order for New Contributors' (numbered why->what->how->rules) + the type-axis x surface-axis explainer. Exact house-style root README pattern.",
+        "readiness": "to-be-written",
+        "sourceContent": "memory/docs-house-style.md (root README pattern) + project-vision.md + this taxonomy"
+      },
+      {
+        "path": "docs/glossary.md",
+        "type": "file",
+        "purpose": "Single-source domain glossary, one-line each: workflow, node (9 types), trigger (5 types), run, run-history, human-gate, fan-out, aggregator, MCP/McpServerPool, channel, SSE seqNo, workspace=directory, provider, surface, local-first.",
+        "readiness": "partial",
+        "sourceContent": "corePortal.sharedCore.workflowYAMLSpec (node types, trigger types) + node-types/tools inventory; terms ready, prose to-be-written"
+      },
+      {
+        "path": "docs/vision.md",
+        "type": "file",
+        "purpose": "Authoritative product vision: multi-surface local-first agent workflow platform, four surfaces, execution model, phasing. The 'why/what', surface-agnostic.",
+        "readiness": "ready",
+        "sourceContent": "memory/project-vision.md + synthesis.productIdentity.oneLinePitch (verbatim authoritative)"
+      },
+      {
+        "path": "docs/product-constraints.md",
+        "type": "file",
+        "purpose": "Hard scope boundaries: desktop is NOT an IDE, local-first Phase 1, no-account, git-native YAML, explicit MVP out-of-scope list.",
+        "readiness": "ready",
+        "sourceContent": "memory/product-constraints.md (verbatim)"
+      },
+      {
+        "path": "docs/uvp.md",
+        "type": "file",
+        "purpose": "Unique value proposition statement + positioning vs LangGraph/n8n/Zapier/Claude Code; why visual + git + multi-model + no-lock-in.",
+        "readiness": "partial",
+        "sourceContent": "strategy.uniqueValueProp.statement (ready) + competitive framing (to-be-written)"
+      },
+      {
+        "path": "docs/tech-stack.md",
+        "type": "file",
+        "purpose": "Single source of pinned tech choices (Tauri v2, Vite+React 19+TanStack Router, Vercel AI SDK v4, pure-TS engine, SQLite+Drizzle/SQLCipher, OS Keychain, commander.js+ink CLI, Better Auth, Zustand v5). ADRs reference this for versions.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Final Tech Stack table, verbatim)"
+      },
+      {
+        "path": "docs/project-structure.md",
+        "type": "file",
+        "purpose": "Turborepo+pnpm monorepo layout: apps/* and packages/* with one-line role each, plus build order rationale.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Monorepo Structure + Build Order, verbatim)"
+      },
+      {
+        "path": "docs/roadmap.md",
+        "type": "file",
+        "purpose": "Phase 1 (local-first) vs Phase 2 (cloud) sequencing; current status; '> Son guncelleme: YYYY-MM-DD' header line per house style.",
+        "readiness": "partial",
+        "sourceContent": "product-constraints.md (phasing + out-of-scope) + memory/architecture-decisions.md (Build Order); milestones to-be-written"
+      },
+      {
+        "path": "docs/architecture",
+        "type": "folder",
+        "purpose": "Engineering 'how it is built' — living docs, current authoritative vision only. overview + per-topic kebab-case files + README index. Mirrors Saydin architecture/.",
+        "readiness": "partial",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/architecture/README.md",
+        "type": "file",
+        "purpose": "Index of architecture/ topic files with one-line each + link to overview.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy"
+      },
+      {
+        "path": "docs/architecture/overview.md",
+        "type": "file",
+        "purpose": "High-level architecture with mermaid: four surfaces over a shared pure-TS core; local-first execution path; Phase-2 cloud path behind clean interface switch.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md + project-vision.md (execution model) + reusable deepAnalysis.orchestrator (cited, not copied)"
+      },
+      {
+        "path": "docs/architecture/shared-core-engine.md",
+        "type": "file",
+        "purpose": "The packages/core pure-TS workflow engine: node graph execution, tokio-free TS task model, local vs cloud mode interface, why no LangGraph-Python.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (orchestration row) + deepAnalysis.orchestrator + deepAnalysis.masterPlan (cited)"
+      },
+      {
+        "path": "docs/architecture/execution-model.md",
+        "type": "file",
+        "purpose": "How one workflow runs end-to-end: trigger -> node scheduling -> fan-out/aggregator -> human-gate -> run record; streaming progress.",
+        "readiness": "partial",
+        "sourceContent": "corePortal.sharedCore.workflowYAMLSpec (node/trigger semantics) + deepAnalysis.orchestrator (cited)"
+      },
+      {
+        "path": "docs/architecture/state-management.md",
+        "type": "file",
+        "purpose": "Zustand v5 + 5 stores rationale; why ReactFlow nodes use direct subscriptions not Context (avoid O(n) re-renders). Links to reference/shared-core/store-shapes.md.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (Zustand row) + deepAnalysis.frontend (cited) + deepAnalysis.ux"
+      },
+      {
+        "path": "docs/architecture/local-first-and-security.md",
+        "type": "file",
+        "purpose": "Local-first model, direct-to-provider calls, no account, OS keychain + SQLCipher; privacy as a feature; what changes in Phase 2.",
+        "readiness": "ready",
+        "sourceContent": "product-constraints.md + memory/architecture-decisions.md (keychain/db rows)"
+      },
+      {
+        "path": "docs/architecture/desktop-architecture.md",
+        "type": "file",
+        "purpose": "Tauri v2 desktop internals: Rust backend + WebView, agent-management-center scope (NOT IDE), 3-primitive IPC bridge, canvas isolation. Surface-specific living doc.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (Tauri) + product-constraints.md (not-an-IDE) + corePortal IPC + deepAnalysis.frontend (cited)"
+      },
+      {
+        "path": "docs/architecture/multi-llm-providers.md",
+        "type": "file",
+        "purpose": "Vercel AI SDK v4 unified streaming for Anthropic/OpenAI/Gemini/DeepSeek; packages/llm adapter design; cost tracking hook.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (Multi-LLM row) + deepAnalysis.backend (cited)"
+      },
+      {
+        "path": "docs/architecture/cloud-phase-2.md",
+        "type": "file",
+        "purpose": "Phase-2 cloud architecture sketch: Hono API, Postgres 16 + Redis 7 + BullMQ workers, Better Auth; how the engine interface switches. Clearly marked Phase 2 / not-yet-built.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (cloud rows) + product-constraints.md (Phase 2 scope)"
+      },
+      {
+        "path": "docs/reference",
+        "type": "folder",
+        "purpose": "NEW Diataxis quadrant the user lacks: dry, complete, machine-checkable contracts and specs. Type axis at top, surface axis nested. Every concrete artifact has its ONE canonical home here.",
+        "readiness": "partial",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/reference/README.md",
+        "type": "file",
+        "purpose": "Contracts index: links to every spec, grouped contracts / shared-core / per-surface; states 'this is the canonical home, other docs cite not duplicate'.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy"
+      },
+      {
+        "path": "docs/reference/contracts/workflow-yaml-spec.md",
+        "type": "file",
+        "purpose": "Canonical .flowgent.yaml schema v1.0: 5 trigger types, 9 node types, fields, full annotated example. THE file-format reference.",
+        "readiness": "ready",
+        "sourceContent": "corePortal.sharedCore.workflowYAMLSpec v1.0 (3421 chars, verbatim canonical)"
+      },
+      {
+        "path": "docs/reference/contracts/agent-yaml-spec.md",
+        "type": "file",
+        "purpose": "Canonical .agent.yaml schema: model, provider, system prompt, tools, params.",
+        "readiness": "partial",
+        "sourceContent": "project-vision.md (.agent.yaml) + corePortal.sharedCore (agent fields if present); schema to-be-written"
+      },
+      {
+        "path": "docs/reference/contracts/sse-event-schema.md",
+        "type": "file",
+        "purpose": "SSE run-stream event schema: event types, seqNo ordering, resync/replay semantics.",
+        "readiness": "ready",
+        "sourceContent": "corePortal SSE event schema (from inventory)"
+      },
+      {
+        "path": "docs/reference/contracts/ipc-contract.md",
+        "type": "file",
+        "purpose": "Desktop 3-primitive IPC contract + bearer-token auth between WebView and Rust core.",
+        "readiness": "ready",
+        "sourceContent": "corePortal IPC contract (3 primitives + bearer token, from inventory)"
+      },
+      {
+        "path": "docs/reference/contracts/config-spec.md",
+        "type": "file",
+        "purpose": "Config reference: global ~/.flowgent/ (keys) + per-project .flowgent/ config.toml (git-committed); precedence rules.",
+        "readiness": "ready",
+        "sourceContent": "project-vision.md (config split) + corePortal config-file-spec (global + project config.toml)"
+      },
+      {
+        "path": "docs/reference/shared-core/store-shapes.md",
+        "type": "file",
+        "purpose": "The 5 Zustand store shapes (canonical field-by-field).",
+        "readiness": "ready",
+        "sourceContent": "corePortal.sharedCore store shapes (5 Zustand stores, from inventory)"
+      },
+      {
+        "path": "docs/reference/shared-core/node-types.md",
+        "type": "file",
+        "purpose": "The 9 canvas/workflow node types: agent, human-gate, fan-out, aggregator, etc. — inputs/outputs each.",
+        "readiness": "ready",
+        "sourceContent": "corePortal.sharedCore.workflowYAMLSpec (6+ node types) + node-types inventory (9 types)"
+      },
+      {
+        "path": "docs/reference/shared-core/built-in-tools.md",
+        "type": "file",
+        "purpose": "The 12 built-in tools and filesystem permission tiers.",
+        "readiness": "ready",
+        "sourceContent": "corePortal.sharedCore built-in-tools (12 tools, FS tiers, from inventory)"
+      },
+      {
+        "path": "docs/reference/shared-core/mcp-integration.md",
+        "type": "file",
+        "purpose": "McpServerPool: how MCP servers are registered, pooled, and exposed as tools.",
+        "readiness": "ready",
+        "sourceContent": "corePortal.sharedCore mcp-integration / McpServerPool (from inventory)"
+      },
+      {
+        "path": "docs/reference/desktop/database-schema.md",
+        "type": "file",
+        "purpose": "Local SQLite run-history DDL (Drizzle), SQLCipher encryption notes.",
+        "readiness": "ready",
+        "sourceContent": "corePortal SQLite run-history DDL + memory/architecture-decisions.md (Drizzle/SQLCipher)"
+      },
+      {
+        "path": "docs/reference/desktop/keychain-and-secrets.md",
+        "type": "file",
+        "purpose": "OS keychain integration (tauri-plugin-keychain) + AES fallback; per-OS backends.",
+        "readiness": "ready",
+        "sourceContent": "corePortal keychain spec + memory/architecture-decisions.md (OS Keychain row)"
+      },
+      {
+        "path": "docs/reference/desktop/tauri-plugins.md",
+        "type": "file",
+        "purpose": "Required Tauri v2 plugins list with purpose each.",
+        "readiness": "ready",
+        "sourceContent": "corePortal tauri-plugins (from inventory) + memory/architecture-decisions.md"
+      },
+      {
+        "path": "docs/reference/desktop/routes-and-screens.md",
+        "type": "file",
+        "purpose": "The 8 desktop routes/screens (TanStack Router) and their agent-management purpose.",
+        "readiness": "ready",
+        "sourceContent": "corePortal desktop routes (8 routes, from inventory)"
+      },
+      {
+        "path": "docs/reference/cli/commands.md",
+        "type": "file",
+        "purpose": "CLI command + flag reference: flowgent run/list/etc., exit codes, CI/CD usage.",
+        "readiness": "partial",
+        "sourceContent": "project-vision.md (flowgent run/list) + corePortal cli/commands (from inventory)"
+      },
+      {
+        "path": "docs/reference/vscode/extension-api.md",
+        "type": "file",
+        "purpose": "VS Code extension contributed commands, context-menu actions, settings; in-process @flowgent/core embedding.",
+        "readiness": "partial",
+        "sourceContent": "project-vision.md (right-click run) + memory/architecture-decisions.md (in-process core) + corePortal vscode extension-api (from inventory)"
+      },
+      {
+        "path": "docs/reference/portal/api-reference.md",
+        "type": "file",
+        "purpose": "Phase-2 portal/cloud HTTP API reference (Hono). Marked Phase 2 / placeholder.",
+        "readiness": "to-be-written",
+        "sourceContent": "memory/architecture-decisions.md (Hono backend, Phase 2)"
+      },
+      {
+        "path": "docs/tutorials",
+        "type": "folder",
+        "purpose": "NEW Diataxis learning quadrant the user lacks: per-surface getting-started, hold-your-hand onboarding. Surface axis nested.",
+        "readiness": "to-be-written",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/tutorials/README.md",
+        "type": "file",
+        "purpose": "Index + recommended first tutorial per audience.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy"
+      },
+      {
+        "path": "docs/tutorials/desktop/build-your-first-workflow.md",
+        "type": "file",
+        "purpose": "From zero: open desktop app, add a provider key, drag nodes, run, watch the stream, read the run record.",
+        "readiness": "to-be-written",
+        "sourceContent": "reference/contracts/workflow-yaml-spec + node-types (as basis); narrative to-be-written"
+      },
+      {
+        "path": "docs/tutorials/cli/run-a-workflow-in-ci.md",
+        "type": "file",
+        "purpose": "From zero: install CLI, flowgent run a committed .flowgent.yaml, wire into GitHub Actions.",
+        "readiness": "to-be-written",
+        "sourceContent": "reference/cli/commands (as basis); narrative to-be-written"
+      },
+      {
+        "path": "docs/tutorials/vscode/trigger-from-vscode.md",
+        "type": "file",
+        "purpose": "From zero: install extension, right-click a file, run a workflow inline.",
+        "readiness": "to-be-written",
+        "sourceContent": "reference/vscode/extension-api (as basis); narrative to-be-written"
+      },
+      {
+        "path": "docs/runbooks",
+        "type": "folder",
+        "purpose": "EXISTING house-style how-to bucket (task-oriented). Mirrors Saydin runbooks/. Keeps Diataxis how-to separate from tutorials learning.",
+        "readiness": "partial",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/runbooks/README.md",
+        "type": "file",
+        "purpose": "Index of runbooks.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy"
+      },
+      {
+        "path": "docs/runbooks/local-dev-setup.md",
+        "type": "file",
+        "purpose": "Set up the monorepo locally: pnpm, Turborepo, Tauri toolchain (Rust), build order packages->cli->desktop.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (Build Order + monorepo) + project-structure.md"
+      },
+      {
+        "path": "docs/runbooks/add-a-provider-key.md",
+        "type": "file",
+        "purpose": "How a user adds/rotates an LLM provider API key into the OS keychain.",
+        "readiness": "partial",
+        "sourceContent": "reference/desktop/keychain-and-secrets + product-constraints.md"
+      },
+      {
+        "path": "docs/runbooks/release-a-surface.md",
+        "type": "file",
+        "purpose": "How to cut a release for desktop / cli / vscode artifacts. Phase-1 surfaces.",
+        "readiness": "to-be-written",
+        "sourceContent": "to-be-written"
+      },
+      {
+        "path": "docs/decisions",
+        "type": "folder",
+        "purpose": "ADRs. House-style MADR-ish format. Two-space routing README so the Phase-2 backend repo gets its own number space without renumbering (Candidate A's scaling idea).",
+        "readiness": "partial",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/decisions/README.md",
+        "type": "file",
+        "purpose": "ADR routing table: 'Two ADR Spaces' (this meta/product repo ADRs vs reserved Phase-2 flowgent-cloud repo ADRs) + mermaid 'which ADR goes where' + current ADR list table.",
+        "readiness": "to-be-written",
+        "sourceContent": "Saydin decisions/README.md pattern (verbatim structure) + memory/architecture-decisions.md (what decisions exist)"
+      },
+      {
+        "path": "docs/decisions/0001-tauri-v2-over-electron.md",
+        "type": "file",
+        "purpose": "Why Tauri v2 (2-5MB vs 85-120MB Electron); all plugins exist.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Desktop framework row)"
+      },
+      {
+        "path": "docs/decisions/0002-vite-react-tanstack-not-nextjs.md",
+        "type": "file",
+        "purpose": "Why Vite+React 19+TanStack Router, not Next.js (SSE + ReactFlow incompatible with RSC/edge).",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Frontend row)"
+      },
+      {
+        "path": "docs/decisions/0003-pure-ts-engine-not-langgraph-python.md",
+        "type": "file",
+        "purpose": "Why a pure-TS orchestration engine in packages/core, no Python sidecar.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Orchestration + Multi-LLM rows)"
+      },
+      {
+        "path": "docs/decisions/0004-vercel-ai-sdk-multi-llm.md",
+        "type": "file",
+        "purpose": "Why Vercel AI SDK v4 for unified multi-provider streaming.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Multi-LLM row)"
+      },
+      {
+        "path": "docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md",
+        "type": "file",
+        "purpose": "Why SQLite+Drizzle locally (SQLCipher) and Postgres/Redis/BullMQ in Phase 2.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (Database rows)"
+      },
+      {
+        "path": "docs/decisions/0006-os-keychain-for-api-keys.md",
+        "type": "file",
+        "purpose": "Why API keys live in OS keychain, never plaintext.",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (API key storage row) + product-constraints.md"
+      },
+      {
+        "path": "docs/decisions/0007-desktop-is-not-an-ide.md",
+        "type": "file",
+        "purpose": "Product/scope ADR: desktop app is agent-management-only; code-adjacent work belongs to the VS Code extension.",
+        "readiness": "ready",
+        "sourceContent": "product-constraints.md (verbatim hard constraint)"
+      },
+      {
+        "path": "docs/decisions/0008-local-first-phase-1-cloud-phase-2.md",
+        "type": "file",
+        "purpose": "Product/scope ADR: Phase 1 has zero cloud dependency; engine interface must support both modes.",
+        "readiness": "ready",
+        "sourceContent": "product-constraints.md + project-vision.md (execution model)"
+      },
+      {
+        "path": "docs/decisions/0009-git-native-workflow-yaml.md",
+        "type": "file",
+        "purpose": "Product ADR: .flowgent.yaml/.agent.yaml are first-class git artifacts (committed, PR'd, reviewed).",
+        "readiness": "ready",
+        "sourceContent": "product-constraints.md + project-vision.md (git-native)"
+      },
+      {
+        "path": "docs/decisions/0010-zustand-direct-subscriptions-for-reactflow.md",
+        "type": "file",
+        "purpose": "Why ReactFlow nodes subscribe to Zustand directly, not via Context (O(n) re-render avoidance).",
+        "readiness": "ready",
+        "sourceContent": "memory/architecture-decisions.md (State row)"
+      },
+      {
+        "path": "docs/standards",
+        "type": "folder",
+        "purpose": "EXISTING house-style binding-rules bucket. Includes the docs STYLE guide requested. README index.",
+        "readiness": "to-be-written",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/standards/README.md",
+        "type": "file",
+        "purpose": "Index of binding standards.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy"
+      },
+      {
+        "path": "docs/standards/documentation-style.md",
+        "type": "file",
+        "purpose": "THE docs CONTRIBUTING/STYLE guide (item #4): folder taxonomy, type+surface axes, naming, no-front-matter H1+bold-metadata rule, ADR template, cross-linking, analysis-archive rule, where new artifacts go.",
+        "readiness": "to-be-written",
+        "sourceContent": "memory/docs-house-style.md (verbatim backbone) + this synthesis (styleGuideSummary)"
+      },
+      {
+        "path": "docs/standards/adr-template.md",
+        "type": "file",
+        "purpose": "The canonical ADR template to copy for new decisions.",
+        "readiness": "to-be-written",
+        "sourceContent": "memory/docs-house-style.md (ADR format block) + Saydin ADR-014 shape"
+      },
+      {
+        "path": "docs/standards/architectural-principles.md",
+        "type": "file",
+        "purpose": "Binding engineering principles: engine-first build order, clean local/cloud interface, no duplication of specs, surface code never precedes tested core.",
+        "readiness": "partial",
+        "sourceContent": "memory/architecture-decisions.md (Build Order 'How to apply') + product-constraints.md"
+      },
+      {
+        "path": "docs/analysis",
+        "type": "folder",
+        "purpose": "Research/analysis docs (house-style). Holds the FROZEN prior deep-analysis verbatim under _archive/ (never edited) plus any new dated analysis. Mirrors Saydin analysis/<subject>/ + dated root analysis.",
+        "readiness": "partial",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/analysis/README.md",
+        "type": "file",
+        "purpose": "Index: explains _archive/ is frozen prior-vision deep-analysis (cite, never edit/copy); current vision lives in architecture/ & reference/.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy + Candidate A archive principle"
+      },
+      {
+        "path": "docs/analysis/_archive/deep-analysis-raw.json",
+        "type": "file",
+        "purpose": "Raw deep-analysis JSON #1 (frontend/backend/database/orchestrator/ux/masterPlan/critiques) committed verbatim. Frozen provenance artifact.",
+        "readiness": "ready",
+        "sourceContent": "deepAnalysis raw JSON (the reusable prior analysis), stored as-is"
+      },
+      {
+        "path": "docs/analysis/_archive/synthesis-raw.json",
+        "type": "file",
+        "purpose": "Raw synthesis/pivot JSON #2 (productIdentity, UVP, workflowYAMLSpec, corePortal contracts) committed verbatim. Frozen provenance artifact.",
+        "readiness": "ready",
+        "sourceContent": "synthesis raw JSON (current authoritative vision source), stored as-is"
+      },
+      {
+        "path": "docs/analysis/_archive/README.md",
+        "type": "file",
+        "purpose": "States both JSONs are immutable inputs; maps which JSON section seeded which living doc (provenance index).",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy (populationOrder sourceContent mapping)"
+      },
+      {
+        "path": "docs/analysis/competitive-landscape-2026-06-03.md",
+        "type": "file",
+        "purpose": "Dated competitive analysis (LangGraph/n8n/Zapier/Claude Code) feeding uvp.md. Optional, dated per house style.",
+        "readiness": "to-be-written",
+        "sourceContent": "strategy.uniqueValueProp (basis); to-be-written"
+      },
+      {
+        "path": "docs/ideas",
+        "type": "folder",
+        "purpose": "EXISTING house-style idea bucket. Loose future-feature notes (kebab-case). Mirrors Saydin ideas/.",
+        "readiness": "to-be-written",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/ideas/README.md",
+        "type": "file",
+        "purpose": "Index of idea notes.",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy"
+      },
+      {
+        "path": "docs/ideas/scheduled-and-webhook-triggers.md",
+        "type": "file",
+        "purpose": "Idea note: post-MVP trigger types deferred out of scope.",
+        "readiness": "partial",
+        "sourceContent": "product-constraints.md (out-of-scope: scheduled/webhook) + workflowYAMLSpec (5 trigger types incl schedule/webhook)"
+      },
+      {
+        "path": "docs/reviews",
+        "type": "folder",
+        "purpose": "EXISTING house-style review bucket. ISO-timestamped review records. Mirrors Saydin reviews/. Empty until first review.",
+        "readiness": "to-be-written",
+        "sourceContent": ""
+      },
+      {
+        "path": "docs/reviews/README.md",
+        "type": "file",
+        "purpose": "Index + naming convention note (YYYY-MM-DDTHH-MM-SS-<slug>-review.md).",
+        "readiness": "to-be-written",
+        "sourceContent": "this taxonomy + Saydin reviews/ naming"
+      }
+    ],
+    "namingConventions": {
+      "files": "kebab-case, English. Living topic docs: kebab-case.md (e.g. execution-model.md). ADRs: NNNN-kebab-title.md with zero-padded 4-digit number (e.g. 0007-desktop-is-not-an-ide.md) — note this UPGRADES Saydin's ADR-NNN- to the house-style memo's 4-digit NNNN-, the user's documented current standard. Reviews: ISO timestamp YYYY-MM-DDTHH-MM-SS-<slug>-review.md (mirrors Saydin reviews/). Dated analysis: <name>-YYYY-MM-DD.md. Frozen raw inputs prefixed and suffixed clearly: deep-analysis-raw.json / synthesis-raw.json under analysis/_archive/. Surface sub-areas are bare lowercase folder names: desktop/ cli/ vscode/ portal/ shared-core/ contracts/. No spaces, no uppercase except the literal README.md / ADR file convention.",
+      "frontMatter": "NONE. The user's real repos and the house-style memo use NO YAML front-matter in docs/ files. Instead every doc opens with a single H1 title, optionally followed by bold metadata lines on their own lines: e.g. '# ADR-0007: Desktop is not an IDE' then '- **Status**: Accepted' / '- **Date**: 2026-06-03' / '- **Related**: [product-constraints.md](../product-constraints.md)'. Living docs that track freshness use a blockquote '> Last updated: YYYY-MM-DD' just under the H1 (mirrors Saydin roadmap.md '> Son guncelleme:'). Do NOT add Jekyll/front-matter blocks.",
+      "headings": "Sentence-case H1 that is the document title (project-prefixed only where Saydin does, e.g. ADR ids). Use ## for major sections, ### for sub. ADRs use the fixed section set: ## Context, ## Decision, ## Consequences with ### Positive / ### Negative (English MADR, since this is an external dev tool — Saydin's Turkish Baglam/Karar/Sonuclar headings are localized; Flowgent docs are English). Architecture docs lead with a mermaid diagram block right after the H1 where a topology exists (matches Saydin architecture/overview.md).",
+      "dating": "ISO 8601 YYYY-MM-DD everywhere. Filenames suffix the date for point-in-time analysis/reviews; living docs carry '> Last updated:' inside. Today is 2026-06-03 for any seeded dates."
+    },
+    "styleGuideSummary": [
+      "No YAML front-matter. Every file starts with one H1 title; metadata goes in bold key lines (**Status**, **Date**, **Related**) or a '> Last updated:' blockquote.",
+      "Type axis is the top-level folder (explanation lives in architecture/, reference is dry contracts, tutorials are learning, runbooks are how-to, decisions are ADRs, standards are binding rules). Surface axis (desktop/cli/vscode/portal/shared-core) is nested INSIDE reference/ and tutorials/ only — never a top-level folder.",
+      "One canonical home per artifact. Every concrete spec (workflow YAML, agent YAML, SSE schema, IPC contract, config, store shapes, node types, tools, MCP, DDL, routes) lives in exactly one reference/ file. Architecture/explanation/tutorials CITE it by relative link, never copy it.",
+      "Every subfolder has a README.md index listing its files with one-line purposes (house-style invariant).",
+      "ADRs use 4-digit NNNN-kebab-title.md, English MADR sections (Context / Decision / Consequences->Positive/Negative), cross-link sibling ADRs, and reference tech-stack.md for pinned versions instead of restating them.",
+      "Two ADR number spaces: this meta/product repo owns 0001+; the Phase-2 flowgent-cloud repo will own its own independent space. Collisions across repos are expected and fine — never renumber. decisions/README.md is the routing table.",
+      "Current authoritative vision (Tauri desktop pivot, synthesis JSON) drives ALL living docs. The prior deep-analysis JSON is frozen verbatim in analysis/_archive/ and only its still-true pieces are cited, never edited or copied wholesale.",
+      "Mark Phase-2 content explicitly (cloud-phase-2.md, portal/api-reference.md, etc.) so readers never mistake it for shipped behavior.",
+      "English, kebab-case filenames, ISO dates, tables used liberally, mermaid for topology — exactly as the user's other 8 repos.",
+      "Product docs stay flat at docs/ root (vision.md, product-constraints.md, uvp.md, tech-stack.md, project-structure.md, roadmap.md, glossary.md) — do not bury them in subfolders."
+    ],
+    "crossLinkingStrategy": "\"All links are RELATIVE markdown paths (e.g. [tech-stack.md](../tech-stack.md), [workflow YAML spec](../reference/contracts/workflow-yaml-spec.md)) so the tree is portable and renders on GitHub — matches Saydin's [ADR-001](../decisions/ADR-001-no-kafka-mvp.md) style. Hub-and-spoke: docs/README.md is the single entry hub linking every top-level area via the Document Map; each subfolder README.md is a secondary hub for its files. Directionality rules: (1) explanation/architecture docs link DOWN to the canonical reference/ spec for any artifact they mention, never restate it; (2) ADRs link to tech-stack.md for versions and to sibling/superseding ADRs ('Superseded by [ADR-00XX]'); (3) reference specs link UP to the architecture doc that gives their rationale and ACROSS to related specs (sse-event-schema <-> ipc-contract, store-shapes <-> state-management); (4) tutorials and runbooks link to the reference they operationalize; (5) glossary terms are the vocabulary every doc uses, and major docs link first-use of a term back to glossary.md. The analysis/_archive/README.md is a provenance map: it links each frozen JSON section to the living doc it seeded (one-way, archive -> living). No absolute URLs for internal docs; external URLs (provider docs, Tauri, Vercel AI SDK) allowed inline. Avoid deep link chains — prefer linking to a doc's H1 or a stable ## anchor.\"",
+    "rawFilesHandling": "\"Both raw JSON analysis files are preserved VERBATIM and committed under docs/analysis/_archive/ as immutable provenance artifacts — never edited after landing. (1) The prior partially-reusable deep-analysis (frontend/backend/database/orchestrator/ux/masterPlan/critiques) -> docs/analysis/_archive/deep-analysis-raw.json. (2) The current authoritative synthesis/pivot (productIdentity, UVP, workflowYAMLSpec v1.0, corePortal contracts) -> docs/analysis/_archive/synthesis-raw.json. A docs/analysis/_archive/README.md acts as the provenance index, mapping each JSON section to the living doc(s) it seeded (e.g. synthesis.corePortal.sharedCore.workflowYAMLSpec -> reference/contracts/workflow-yaml-spec.md; deepAnalysis.frontend -> architecture/state-management.md & architecture/desktop-architecture.md as cited background). The _archive prefix sorts it to the top of analysis/ and signals 'frozen, do not edit'. Living docs cite these files for provenance but never embed them; when the two sources conflict, the synthesis (current vision) wins for living docs and the deep-analysis is treated as historical context only. This mirrors Saydin's analysis/<subject>/ never-edited research archive while keeping the raw inputs auditable.\"",
+    "populationOrder": [
+      {
+        "order": 1,
+        "file": "docs/analysis/_archive/deep-analysis-raw.json + synthesis-raw.json + _archive/README.md",
+        "rationale": "Land the two frozen raw inputs FIRST so every later doc has an auditable, linkable source of truth and the provenance map exists before anything cites it. Pure copy/commit, zero authoring risk."
+      },
+      {
+        "order": 2,
+        "file": "docs/standards/documentation-style.md + standards/adr-template.md",
+        "rationale": "Write the rules before the content so every subsequent doc is born compliant (no-front-matter, naming, axes, cross-linking, archive rule). The style guide is item #4 and the contract all other files follow."
+      },
+      {
+        "order": 3,
+        "file": "docs/vision.md, product-constraints.md, tech-stack.md, project-structure.md",
+        "rationale": "These are 'ready' (verbatim from memory) — fastest wins, and they are the anchors ADRs and architecture docs link back to for scope and pinned versions."
+      },
+      {
+        "order": 4,
+        "file": "docs/decisions/README.md + ADRs 0001-0010",
+        "rationale": "Mostly 'ready' from architecture-decisions.md + product-constraints.md. Capturing decisions early freezes rationale and gives architecture/ docs stable ADR links. Routing README first establishes the two-space scheme."
+      },
+      {
+        "order": 5,
+        "file": "docs/reference/** (contracts then shared-core then per-surface), starting with contracts/workflow-yaml-spec.md",
+        "rationale": "The reference quadrant is where the most 'ready' concrete artifacts live (YAML spec v1.0, SSE, IPC, config, store-shapes, node-types, tools, MCP, DDL, routes). Build the canonical homes before any doc tries to cite them, preventing duplication."
+      },
+      {
+        "order": 6,
+        "file": "docs/architecture/** (overview first, then surface/topic files)",
+        "rationale": "Architecture/explanation docs cite reference/ specs and ADRs, so they come after both exist. overview.md (ready) anchors the rest; surface docs are 'partial' and pull cited background from the frozen deep-analysis."
+      },
+      {
+        "order": 7,
+        "file": "docs/glossary.md, uvp.md, roadmap.md",
+        "rationale": "Cross-cutting product docs that reference terminology and artifacts defined above; glossary is easiest once node/trigger/tool vocab is settled in reference/."
+      },
+      {
+        "order": 8,
+        "file": "docs/README.md",
+        "rationale": "The root index Document Map + Reading Order can only be accurate once the tree is populated; write it after the structure is real so links don't dangle."
+      },
+      {
+        "order": 9,
+        "file": "docs/runbooks/** + docs/tutorials/**",
+        "rationale": "Task- and learning-oriented docs operationalize the now-existing reference/ and architecture/. Mostly to-be-written; lowest urgency for an internal-first Phase 1 and best authored once the product surfaces stabilize."
+      },
+      {
+        "order": 10,
+        "file": "docs/ideas/**, docs/reviews/** (+ index.html, css/, js/)",
+        "rationale": "Idea notes and the empty reviews bucket are ongoing/as-needed; the marketing landing page (index.html/css/js) is presentation-only and best done last, near a public launch, reusing productIdentity copy."
+      }
+    ],
+    "treeAsciiPreview": "docs/\n├── index.html                      # marketing landing (like Saydin)\n├── css/                            #   └ style.css\n├── js/                             #   └ main.js\n├── README.md                       # root index: Document Map + Reading Order\n├── glossary.md\n├── vision.md                       # [ready]\n├── product-constraints.md          # [ready]\n├── uvp.md\n├── tech-stack.md                   # [ready]\n├── project-structure.md            # [ready]\n├── roadmap.md\n├── architecture/                   # WHY/how-built (living, current vision)\n│   ├── README.md\n│   ├── overview.md                 # [ready] mermaid topology\n│   ├── shared-core-engine.md\n│   ├── execution-model.md\n│   ├── state-management.md\n│   ├── local-first-and-security.md\n│   ├── desktop-architecture.md\n│   ├── multi-llm-providers.md\n│   └── cloud-phase-2.md            # Phase 2 (marked)\n├── reference/                      # NEW: dry contracts (type axis x surface axis)\n│   ├── README.md\n│   ├── contracts/\n│   │   ├── workflow-yaml-spec.md   # [ready] canonical .flowgent.yaml v1.0\n│   │   ├── agent-yaml-spec.md\n│   │   ├── sse-event-schema.md     # [ready]\n│   │   ├── ipc-contract.md         # [ready]\n│   │   └── config-spec.md          # [ready]\n│   ├── shared-core/\n│   │   ├── store-shapes.md         # [ready] 5 Zustand stores\n│   │   ├── node-types.md           # [ready] 9 node types\n│   │   ├── built-in-tools.md       # [ready] 12 tools\n│   │   └── mcp-integration.md      # [ready]\n│   ├── desktop/\n│   │   ├── database-schema.md      # [ready] SQLite DDL\n│   │   ├── keychain-and-secrets.md # [ready]\n│   │   ├── tauri-plugins.md        # [ready]\n│   │   └── routes-and-screens.md   # [ready] 8 routes\n│   ├── cli/\n│   │   └── commands.md\n│   ├── vscode/\n│   │   └── extension-api.md\n│   └── portal/\n│       └── api-reference.md        # Phase 2 (placeholder)\n├── tutorials/                      # NEW: learning-oriented onboarding (surface axis)\n│   ├── README.md\n│   ├── desktop/build-your-first-workflow.md\n│   ├── cli/run-a-workflow-in-ci.md\n│   └── vscode/trigger-from-vscode.md\n├── runbooks/                       # existing how-to bucket (task-oriented)\n│   ├── README.md\n│   ├── local-dev-setup.md\n│   ├── add-a-provider-key.md\n│   └── release-a-surface.md\n├── decisions/                      # ADRs (two-space routing)\n│   ├── README.md                   # routing table + mermaid + two-space note\n│   ├── 0001-tauri-v2-over-electron.md\n│   ├── 0002-vite-react-tanstack-not-nextjs.md\n│   ├── 0003-pure-ts-engine-not-langgraph-python.md\n│   ├── 0004-vercel-ai-sdk-multi-llm.md\n│   ├── 0005-sqlite-drizzle-local-postgres-cloud.md\n│   ├── 0006-os-keychain-for-api-keys.md\n│   ├── 0007-desktop-is-not-an-ide.md\n│   ├── 0008-local-first-phase-1-cloud-phase-2.md\n│   ├── 0009-git-native-workflow-yaml.md\n│   └── 0010-zustand-direct-subscriptions-for-reactflow.md\n├── standards/                      # binding rules + the docs style guide\n│   ├── README.md\n│   ├── documentation-style.md      # the CONTRIBUTING/STYLE guide\n│   ├── adr-template.md\n│   └── architectural-principles.md\n├── analysis/                       # research + FROZEN raw inputs\n│   ├── README.md\n│   ├── _archive/                   # immutable provenance (never edit)\n│   │   ├── deep-analysis-raw.json\n│   │   ├── synthesis-raw.json\n│   │   └── README.md               # provenance map: JSON section -> living doc\n│   └── competitive-landscape-2026-06-03.md\n├── ideas/\n│   ├── README.md\n│   └── scheduled-and-webhook-triggers.md\n└── reviews/\n    └── README.md                   # ISO-timestamp naming note"
+  }
+}

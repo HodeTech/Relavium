@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+.turbo/
+
+# Tauri / Rust
+target/
+**/src-tauri/target/
+**/src-tauri/gen/
+
+# Env & secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.local
+
+# Local Relavium state (run history, keys live in the OS keychain, never here)
+.relavium/runs.db
+*.db-wal
+*.db-shm
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test / coverage
+coverage/
+.vitest/

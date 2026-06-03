@@ -1,0 +1,1107 @@
+{
+  "llmOptions": {
+    "optInternal": {
+      "option": "Internal in-house multi-provider LLM abstraction (`@relavium/llm`) wrapping each provider's official TS SDK / raw HTTP behind a small unified interface — no heavy 3rd-party framework.",
+      "summary": "Build a thin, owned abstraction in `packages/llm` exposing a unified `generate()`/`stream()` over a small `LlmProvider` interface, with one adapter per provider (Anthropic, OpenAI, Gemini, DeepSeek). DeepSeek and OpenAI share one OpenAI-compatible adapter path; Anthropic and Gemini get dedicated adapters. The hard part is not the happy path (that is a weekend per provider) — it is the normalization tax (tool schemas, streaming events, stop reasons, usage fields) and the ongoing drift maintenance. For exactly four providers with a deliberately narrow surface (text + tools + streaming + usage), internal build is realistic and the BEST long-term fit for a local-first, no-lock-in, pure-TS engine. The honest risk is scope creep into provider-specific modalities (vision, caching, files, reasoning traces, parallel tool calls) where an owned layer turns into a second job. Mitigate by freezing the interface to a capability-gated lowest-common-denominator + typed escape hatch, and a per-provider conformance test suite run in CI against live APIs (nightly) and recorded fixtures (PR).",
+      "design": "CORE INTERFACE (packages/llm/src/types.ts), deliberately small:\n\n```ts\n// Normalized request — provider-agnostic\ninterface LlmRequest {\n  model: string;                 // canonical id, e.g. \"claude-sonnet-4\", mapped per adapter\n  system?: string;               // ALWAYS a top-level field; adapters place it correctly\n  messages: LlmMessage[];        // role: 'user'|'assistant'|'tool'\n  tools?: ToolDef[];             // JSON-Schema params, normalized\n  toolChoice?: 'auto'|'none'|'required'|{ name: string };\n  temperature?: number;\n  maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it\n  stopSequences?: string[];\n  signal?: AbortSignal;          // cancellation, works in Node + WebView fetch\n  providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)\n}\n\ninterface LlmMessage {\n  role: 'user' | 'assistant' | 'tool';\n  content: ContentPart[];        // normalized parts, not raw strings\n}\ntype ContentPart =\n  | { type: 'text'; text: string }\n  | { type: 'tool_call'; id: string; name: string; args: unknown }      // assistant -> wants tool\n  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean };\n\ninterface ToolDef {\n  name: string;\n  description?: string;\n  parameters: JSONSchema7;       // single canonical schema; adapters reshape\n}\n\n// Normalized non-streaming result\ninterface LlmResult {\n  content: ContentPart[];        // text + any tool_call parts\n  stopReason: StopReason;\n  usage: Usage;\n  raw: unknown;                  // provider response, for debugging/escape hatch\n}\ntype StopReason = 'stop' | 'length' | 'tool_use' | 'content_filter' | 'error';\n\ninterface Usage {\n  inputTokens: number;\n  outputTokens: number;\n  cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined\n  cacheWriteTokens?: number;\n  costUsd?: number;              // computed by a pricing table keyed on canonical model id\n}\n\n// Normalized streaming — one discriminated union for ALL providers\ntype StreamChunk =\n  | { type: 'text_delta'; text: string }\n  | { type: 'tool_call_start'; id: string; name: string }\n  | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON\n  | { type: 'tool_call_end'; id: string }\n  | { type: 'stop'; stopReason: StopReason; usage: Usage }\n  | { type: 'error'; error: LlmError };\n\ninterface LlmProvider {\n  readonly id: 'anthropic' | 'openai' | 'gemini' | 'deepseek';\n  generate(req: LlmRequest, key: string): Promise<LlmResult>;\n  stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;\n  supports: CapabilityFlags;     // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning }\n}\n```\n\nFALLBACK CHAINS live OUTSIDE the adapters, in a small `withFallback(providers: LlmProvider[])` runner in packages/core (or llm): try provider[0], on a classified-retryable LlmError (rate limit, 5xx, overload) move to next; surface per-attempt usage so cost accounting is accurate even on failover. Adapters stay dumb; the chain is policy. This keeps per-agent fallback (Anthropic -> OpenAI -> DeepSeek) a config concern, not adapter code.\n\nWHAT MUST BE NORMALIZED (the actual work):\n1. SYSTEM PROMPT PLACEMENT: OpenAI/DeepSeek -> a {role:'system'} message prepended. Anthropic -> top-level `system` param (NOT a message). Gemini -> `systemInstruction` field on the request. We keep `system` as one field and each adapter routes it.\n2. TOOL/FUNCTION SCHEMA: OpenAI/DeepSeek -> `tools:[{type:'function',function:{name,description,parameters}}]`. Anthropic -> `tools:[{name,description,input_schema}]`. Gemini -> `tools:[{functionDeclarations:[{name,description,parameters}]}]` with a RESTRICTED OpenAPI-subset schema (no $ref, limited formats) — the riskiest reshape; we validate/strip unsupported JSON-Schema keywords for Gemini. One canonical JSONSchema7 in, three shapes out.\n3. TOOL CALL / RESULT ROUND-TRIP: OpenAI -> assistant `tool_calls[]` with id + stringified JSON args; result is a {role:'tool',tool_call_id} message. Anthropic -> assistant `content` block `tool_use{id,name,input}`; result is a user message with `tool_result{tool_use_id}` block. Gemini -> `functionCall{name,args}` part; result is a `functionResponse` part (NO id — we synthesize/track ids ourselves by name+order). Normalizing the missing-id case for Gemini is a real edge.\n4. STREAMING EVENTS: OpenAI/DeepSeek -> SSE `chat.completion.chunk` with `choices[].delta` (content or tool_calls fragments; tool-call args arrive as incremental JSON string fragments per index). Anthropic -> typed event stream: message_start, content_block_start/delta(text_delta|input_json_delta)/stop, message_delta(carries stop_reason+usage), message_stop. Gemini -> `streamGenerateContent` emitting candidate chunks with parts. Each adapter folds its native events into our StreamChunk union; tool-arg JSON deltas are concatenated into argsJsonDelta and parsed at tool_call_end.\n5. STOP REASONS: OpenAI stop|length|tool_calls|content_filter -> our enum. Anthropic end_turn|max_tokens|tool_use|stop_sequence -> our enum. Gemini STOP|MAX_TOKENS|SAFETY|RECITATION -> our enum. We map to {stop,length,tool_use,content_filter,error}.\n6. USAGE FIELDS: OpenAI usage{prompt_tokens,completion_tokens} (+prompt_tokens_details.cached_tokens). Anthropic usage{input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens}. Gemini usageMetadata{promptTokenCount,candidatesTokenCount}. DeepSeek mirrors OpenAI + prompt_cache_hit_tokens. Critically: in STREAMING, OpenAI requires stream_options:{include_usage:true} to emit a final usage chunk; Anthropic puts usage in message_delta; Gemini in the final chunk. Cost is OUR pricing table keyed on canonical model id, not from the provider.\n\nDEPENDENCY POSTURE: prefer official SDKs (@anthropic-ai/sdk, openai, @google/generative-ai) for typed event parsing and retry plumbing; DeepSeek uses the `openai` SDK with a custom baseURL (api.deepseek.com) — no separate dep. Alternatively, raw fetch + SSE parser to drop all deps (max no-lock-in) at the cost of re-implementing SSE/retry. Recommended middle path: SDKs behind the adapter boundary so they are swappable without touching callers.",
+      "pros": [
+        "Zero framework lock-in — the whole point of the no-vendor-lock-in principle. We own the interface; providers are swappable adapters, and we are never blocked waiting on a 3rd-party lib to add a model or fix a bug.",
+        "Exactly the surface we need, nothing we don't. A workflow engine needs text + tools + streaming + usage/cost + fallback. We avoid carrying a large API surface (embeddings, RAG, agents-as-a-framework) we will never call.",
+        "Runs identically in Node worker and Tauri WebView because it is just fetch + async iterators — no Node-only deps, no Vercel edge assumptions, no Python sidecar. One build target via tsup, ESM + CJS.",
+        "Cost accounting is first-class and trustworthy: our own pricing table keyed on canonical model ids, normalized usage incl. cache tokens — not dependent on a 3rd-party exposing the field we need.",
+        "Fallback chains, retry classification, and per-attempt usage are policy WE control — trivial to express per-agent (Anthropic -> OpenAI -> DeepSeek) without fighting a framework's opinions.",
+        "Debuggability: `raw` passthrough + thin adapters mean when a provider misbehaves we read OUR ~200-line adapter, not a vendor's abstraction stack. Smaller blast radius.",
+        "Tiny dependency tree improves Tauri bundle size discipline (a documented value) and supply-chain surface — only official provider SDKs, which we'd arguably pull in transitively anyway."
+      ],
+      "cons": [
+        "We own the drift. Every provider API change, new model id, new param, new streaming event, new usage field is OUR ticket. Across 4 providers this is a real, recurring, non-zero tax (realistically a few hours every few weeks, spikier around major model launches).",
+        "Gemini is genuinely awkward: restricted OpenAPI-subset tool schemas (no $ref, limited formats), function-call results without ids, different streaming shape, and safety/RECITATION stop reasons. It is the adapter most likely to leak provider-specifics and the one a 3rd-party lib would have already absorbed.",
+        "We re-implement plumbing that mature libs give free: incremental tool-arg JSON assembly, SSE parsing edge cases, retry/backoff classification, partial-JSON tolerance. Each is small but each is a bug source until covered by tests.",
+        "Capability divergence forces a lowest-common-denominator interface or a typed escape hatch (`providerOptions`). Prompt caching, vision, parallel tool calls, reasoning/thinking traces, structured outputs all differ — supporting them uniformly is ongoing design work, and the escape hatch erodes the abstraction.",
+        "No community shielding: when a provider ships a breaking change, a popular lib often patches it within days for everyone; we find out via a failing conformance test (good) or a user bug report (bad).",
+        "Higher up-front cost than `npm install` + 30 lines. We pay the integration + normalization + test-suite cost before shipping the first agent, which slows time-to-first-working-CLI slightly."
+      ],
+      "effort": "INITIAL BUILD (4 providers, streaming + tool calls + usage/cost + fallback), one experienced TS dev:\n- Interface + types + pricing table + StreamChunk union + fallback runner + error taxonomy: ~2-3 days.\n- OpenAI adapter (also the DeepSeek base via baseURL override): ~2-3 days incl. streaming tool-arg assembly and include_usage handling. DeepSeek then ~0.5 day (model ids, cache-hit token field, quirks).\n- Anthropic adapter (typed event stream, tool_use/tool_result round-trip, system param, cache usage): ~2-3 days.\n- Gemini adapter (systemInstruction, restricted tool schema reshaping + JSON-Schema sanitizer, id synthesis, safety stop reasons, stream shape): ~3-4 days — the long pole.\n- Conformance test suite (one spec run against all adapters: streams text, calls a tool, returns usage, maps stop reasons, handles fallback) + recorded fixtures: ~2-3 days.\nTOTAL: roughly 2.5-3.5 focused weeks to a solid, tested v1. A rough happy-path-only version is ~3-4 days but is a liability without the test suite.\n\nONGOING MAINTENANCE: budget a few hours every 2-4 weeks steady-state — new model ids in the pricing/capability table (frequent, cheap), param/field additions (occasional), streaming-format or schema changes (rare but expensive, mostly Gemini/Anthropic on major launches). New modalities (vision, audio, files, reasoning traces) are project-sized, not maintenance — gate them behind capabilities and only build when a workflow needs them. The conformance suite (nightly vs live APIs, fixtures on PR) converts most drift from a production incident into a red CI run, which is the single biggest leverage point.",
+      "fitWithVision": "Strongest fit of any option with the documented principles. NO-VENDOR-LOCK-IN is an explicit, adversarially-reviewed principle — an owned abstraction is the literal expression of it, and it directly resolves the user's rejection of Vercel AI SDK without substituting a different framework dependency (LangChain) that reintroduces the same lock-in concern. ENGINE-FIRST / ONE-LANGUAGE-TYPESCRIPT: `@relavium/llm` is pure TS with no Python sidecar, fits the planned packages/llm slot and the build order (shared -> llm -> core -> cli). LOCAL-FIRST PHASE 1: calls go straight from the user machine to providers using a key from the OS keychain passed into `generate()/stream()` — the adapter is stateless and keychain-agnostic, so the desktop (Tauri) reads the key via tauri-plugin-keychain and the CLI reads it from ~/.relavium, both calling the same package. RUNS IN BOTH NODE + TAURI: it is fetch + async iterators only, so the identical package executes in the Node engine/CLI worker and inside the Tauri WebView; no edge/runtime assumptions. PHASE 1 -> PHASE 2 CLEAN SWITCH: because fallback/retry/usage are our policy, moving execution to a cloud BullMQ worker reuses the same `@relavium/llm` unchanged. One concrete contradiction to flag: ADR-0004 currently names Vercel AI SDK AND the orchestration row mentions @langchain/langgraph — adopting internal build means rewriting ADR-0004 and removing the langchain reference, and the existing `packages/llm` description ('Vercel AI SDK wrappers') must change to 'in-house provider adapters'.",
+      "lockInRisk": "Lowest of all options. Lock-in is to our own ~800-1200 line abstraction, which we can refactor at will. Residual coupling is only to the official provider SDKs behind the adapter boundary (and even that is optional — adapters can use raw fetch), so swapping or dropping an SDK never touches engine/CLI/UI callers. The escape hatch (`providerOptions` + `raw`) is the one place provider-specifics leak; discipline (keep escape-hatch usage out of packages/core, confine it to opt-in agent config) keeps that contained. There is effectively zero risk of a 3rd-party abandoning the project, changing its license, or pivoting its API out from under us.",
+      "verdict": "RECOMMEND internal build as the destination, with eyes open about the Gemini adapter and the drift tax. For a deliberately narrow surface (text + tools + streaming + usage/cost + fallback) across only four providers, the normalization work is bounded and well-understood, and it is the only option that fully honors the no-lock-in principle the team already committed to. The decisive lever is the per-provider conformance suite — without it, internal build is fragile; with it, drift becomes a CI signal rather than an incident. PRAGMATIC SEQUENCING that also satisfies the user's stated fallback: because the interface above is the real asset, define `@relavium/llm`'s interface NOW and implement adapters directly against official SDKs from day one (the SDKs already do the SSE/retry plumbing, cutting the long-pole effort). This captures the no-lock-in benefit immediately without a framework, and is cheaper than people assume precisely because we lean on official SDKs inside the boundary rather than reimplementing transport. Build OpenAI+DeepSeek first (shared path, fastest to a working CLI), then Anthropic, then Gemini, gating non-core modalities behind capability flags until a workflow demands them."
+    },
+    "optLangchain": {
+      "option": "LangChain.js (@langchain/core + @langchain/anthropic / @langchain/openai / @langchain/google-genai) as the multi-LLM abstraction layer",
+      "summary": "LangChain.js gives you working, maintained chat-model classes for all 4 providers (DeepSeek via the OpenAI-compatible ChatOpenAI) with .stream(), bindTools(), and usage_metadata out of the box — so it CAN cover the LLM-call layer. But Relavium only needs the thin LLM-call slice, and that is the part where LangChain adds the least value while imposing the most cost: it drags in the Runnable/LCEL abstraction and a heavy transitive dependency graph (~100kB+ gzipped stack), leaks its own message/content-block model into your pure-TS engine, and carries a documented history of churn — it shipped v1.0 in late 2025 (createReactAgent→createAgent, deprecated APIs deleted, community/legacy chains moved to @langchain/classic, a new contentBlocks message format), and @langchain/core 0.3.x carries CVE-2026-25528 whose fix only exists in 1.x, forcing a major bump. Recent provider bugs hit exactly your needs (streaming usage double-counting cache tokens, Anthropic tool-call deltas not truly streamed). For a project whose stated principles are engine-first, one-language-TypeScript, local-first, and NO vendor lock-in, full LangChain.js is a poor fit. The only defensible variant is the narrow middle-ground: import ONLY the @langchain/<provider> chat-model classes behind your own packages/llm interface — but even that inherits @langchain/core, the Runnable base, and the churn, so it is barely cheaper than writing thin adapters over the official provider SDKs (which is the Internal-abstraction option Analyst's other track covers).",
+      "design": "How it maps to the 4 providers and the 5 required capabilities:\n\nPROVIDERS\n- Anthropic: `import { ChatAnthropic } from \"@langchain/anthropic\"` (wraps @anthropic-ai/sdk).\n- OpenAI: `import { ChatOpenAI } from \"@langchain/openai\"` (wraps openai SDK).\n- Google Gemini: `import { ChatGoogleGenerativeAI } from \"@langchain/google-genai\"` (wraps @google/generative-ai). (Note: Google has two integrations — google-genai vs google-vertexai/google-common — a recurring source of confusion.)\n- DeepSeek: there IS a `ChatDeepSeek` in @langchain/deepseek, but it is effectively a thin ChatOpenAI subclass; you can equally point ChatOpenAI at the DeepSeek base URL. Either way it rides the OpenAI-compatible path.\n\nCAPABILITIES\n- Streaming tokens: `for await (const chunk of model.stream(messages))` yields AIMessageChunk objects; you concatenate `.content` (or read v1 `contentBlocks`). Works for all 4.\n- Tool/function calling: define tools with Zod via `tool()` or schema objects, then `model.bindTools([...])`. Tool calls surface as normalized `tool_calls` on the AIMessage regardless of provider — this normalization is LangChain's single biggest real value-add (Anthropic vs OpenAI vs Gemini tool schemas genuinely differ).\n- Usage + cost accounting: `response.usage_metadata` gives `{ input_tokens, output_tokens, total_tokens }` normalized across providers, plus `input_token_details` for cache/reasoning tokens. BUT cost ($) is NOT provided — you compute it from a price table yourself either way. And there is an open bug (#10249) where streaming double-counts Anthropic cache tokens, so you cannot fully trust usage_metadata for billing without your own reconciliation.\n- Per-agent fallback chains: `model.withFallbacks([modelB, modelC])` exists and is genuinely convenient — but it is implemented as a Runnable, so adopting it pulls LCEL semantics into your engine. Relavium's engine should own fallback policy (it ties into cost/observability), so this is arguably better implemented in packages/core regardless of library.\n\nRUNTIME FIT\n- Node worker (CLI/engine): fine — this is LangChain.js's primary target.\n- Tauri desktop WebView: the chat-model classes are designed to run in Node/edge; in a browser/WebView context you hit the usual issues (Node built-ins, larger bundle, and the fact that calling providers from the WebView with raw keys is something you'd avoid anyway — in Tauri you'd route LLM calls through the Rust side / a Node-ish worker, not the WebView). So in practice LLM calls live in the engine/worker, not the WebView, which is the same regardless of library — LangChain doesn't help here and its bundle weight hurts if it ever does load in the WebView.\n\nMIDDLE GROUND (provider classes only): you can absolutely do `packages/llm` exposing your own LlmProvider interface, and internally instantiate ChatAnthropic/ChatOpenAI/ChatGoogleGenerativeAI, mapping their AIMessage/usage_metadata onto YOUR types so Runnables never leak past packages/llm. This is the most sensible way to use LangChain here. It still installs @langchain/core (the Runnable base, message classes, tracing hooks) under each provider package, so you do not escape the dependency weight or the version-pinning dance — but you do contain the conceptual leak.",
+      "pros": [
+        "All 4 providers covered by maintained, batteries-included chat-model classes; DeepSeek rides the OpenAI-compatible path (ChatDeepSeek or ChatOpenAI+baseURL).",
+        "Cross-provider NORMALIZATION is the real value: tool_calls, message roles, and usage_metadata are unified, so your engine doesn't hand-write per-provider tool-schema and response translation. This is the genuinely tedious part of an internal build.",
+        "Unified .stream() and bindTools() APIs identical across providers — write the engine's call path once.",
+        "Built-in conveniences you'd otherwise build: withFallbacks(), withRetry(), structured-output helpers, withStructuredOutput(), and a large community knowledge base / examples.",
+        "Large ecosystem and documentation; easy to hire for and to find Stack Overflow / LLM-generated answers.",
+        "If you ever DO want graph/agent orchestration, LangGraph.js is right there — though Relavium explicitly has its own engine, so this is mostly irrelevant."
+      ],
+      "cons": [
+        "You are buying a framework to use ~5% of it. Relavium has its OWN pure-TS engine; you need only the LLM-call slice — exactly where LangChain's value is thinnest (it's mostly a normalizer over the same official SDKs you could call directly) and its baggage thickest.",
+        "Concept leakage: chat models ARE Runnables. Even contained in packages/llm, the message classes (AIMessage/HumanMessage), content-block model, and the new v1 contentBlocks/outputVersion split impose LangChain's data model on your boundary. If it leaks past packages/llm, your engine becomes LangChain-shaped — direct contradiction of the 'no vendor lock-in' and 'pure-TS engine' principles.",
+        "Dependency weight: the LangChain stack is ~100kB+ gzipped vs ~34kB for a raw provider SDK, and each @langchain/<provider> ALSO bundles the underlying official SDK plus @langchain/core. You ship two layers (LangChain wrapper + vendor SDK) instead of one. Tree-shaking is imperfect because Runnable machinery and tracing hooks are pulled in.",
+        "Churn / breaking changes are documented and recent: v0.3→v1.0 (late 2025) deleted deprecated APIs, renamed createReactAgent→createAgent, moved @langchain/community and legacy chains to @langchain/classic, and introduced a new message contentBlocks format gated by outputVersion:'v1'. The 'no breaking changes until v2.0' promise is brand-new and unproven.",
+        "Security forcing-function: @langchain/core 0.3.x carries CVE-2026-25528 with the fix only in 1.x — i.e., staying on a 'stable' minor isn't an option; you're pushed onto the major-bump treadmill.",
+        "Multi-package version-pinning hell: @langchain/core is a peer dependency of every provider package; mismatched versions across @langchain/anthropic / openai / google-genai cause subtle dual-instance bugs. You must keep them lockstep.",
+        "Real, recent bugs in exactly your required features: streaming usage_metadata double-counts Anthropic cache tokens (#10249) — corrupts cost accounting; and Anthropic tool-call argument deltas aren't truly streamed (#9814) — defeats streaming-tool UX. You inherit these and wait on upstream.",
+        "Cost ($) is still your job — usage_metadata gives tokens, not money — so the 'accounting' win is partial; you maintain a price table regardless.",
+        "Pulling the framework for fallback/retry pulls LCEL semantics into orchestration that your engine should own anyway (fallback policy ties into your cost/observability layer)."
+      ],
+      "effort": "INITIAL BUILD: Lowest of all options to first-working-call — `pnpm add @langchain/core @langchain/anthropic @langchain/openai @langchain/google-genai`, instantiate 4 classes, and .stream()/bindTools() work in a day. Writing the packages/llm wrapper that maps AIMessage+usage_metadata to your own types is maybe 2-4 days for clean containment. So ~1 week to a contained, working multi-provider layer — clearly faster than building internal adapters from scratch (which is more like 2-4 weeks for the same 4 providers with tool normalization).\n\nONGOING MAINTENANCE: This is where it inverts and becomes the WORST option for a small team valuing stability. You take on: (1) lockstep upgrades of 4+ @langchain packages that share a @langchain/core peer; (2) reacting to majors on LangChain's cadence, not yours (v1 just landed; CVE forced a bump); (3) absorbing upstream bugs in usage/streaming that directly hit cost and UX, with no ability to hot-patch beyond your own reconciliation layer; (4) a contentBlocks/outputVersion migration looming as v1 normalizes message format. Net: cheap to start, recurring tax forever, on someone else's schedule — the opposite of the local-first, low-dependency posture in product-constraints.md.",
+      "fitWithVision": "POOR-TO-MIXED fit. Against the four documented principles: (1) engine-first — Relavium has its OWN pure-TS engine and explicitly is NOT using LangGraph/agent framework, so you'd adopt LangChain for the narrow LLM-call layer only, which is precisely where it's most replaceable by thin SDK adapters; (2) one-language-TypeScript — LangChain.js is TS, so no Python sidecar concern (a real win over LangChain-Python and a tie with Vercel AI SDK); (3) local-first Phase 1 — fine, LLM calls go direct from machine to provider, no cloud needed, LangChain doesn't break this; (4) NO vendor lock-in — this is the sharpest conflict: adopting LangChain's Runnable + message model in your call layer is a real lock-in vector unless rigorously contained behind packages/llm, and even then @langchain/core and its churn are baked in. Tauri specifics: LLM calls belong in the engine/worker, not the WebView (you wouldn't expose keys to WebView; keys live in OS keychain), so the desktop surface is unaffected either way — LangChain's bundle weight is a non-issue for the WebView but a mild negative for the CLI/worker binary. CLI: fine on Node. Net: it does not violate the local-first/one-language constraints, but it sits in direct tension with no-lock-in and engine-first, and it buys a framework for a job that is mostly normalization.",
+      "lockInRisk": "MODERATE-TO-HIGH if used as a framework; LOW-MODERATE if rigidly contained to provider classes behind packages/llm. The lock-in is conceptual, not contractual: your code starts speaking AIMessage/HumanMessage/contentBlocks and Runnable semantics. The user's own stated fallback strategy ('start 3rd-party, migrate to internal later') is HARDER to execute with LangChain than with thin SDK wrappers, because LangChain's message/content model differs from the raw provider SDKs you'd migrate TO — so the migration is a re-map, not a peel-away. The mitigations (own LlmProvider interface, map types at the packages/llm boundary, never import @langchain types outside that package) are mandatory, not optional, and they reduce LangChain's value to mostly its tool-normalization. Churn risk compounds lock-in: you're locked to a dependency that breaks on its own cadence (v1 just shipped; CVE forced upgrades).",
+      "verdict": "DO NOT adopt full LangChain.js as the framework — it conflicts with the engine-first and no-vendor-lock-in principles and taxes a small team with churn for a layer that is mostly a normalizer over the same official SDKs. Given the user rejects Vercel AI SDK on preference, the realistic shortlist becomes (A) thin INTERNAL adapters over the official provider SDKs, vs (B) the LangChain provider-classes-only middle ground. My recommendation: prefer the INTERNAL adapter, and treat LangChain.js NOT as a dependency to ship but as a free reference implementation — read how @langchain/anthropic/openai/google-genai normalize tool schemas and usage so you don't rediscover the edge cases. If, and only if, time-to-first-demo is the dominant constraint, adopt the narrow middle ground (ONLY @langchain/<provider> chat-model classes behind your own packages/llm LlmProvider interface, zero LangChain types past that boundary, no LCEL/Runnables in the engine) as an explicitly TEMPORARY bridge — which directly matches the user's stated 'start 3rd-party, migrate to internal later' fallback. But note that this middle ground is only marginally cheaper than the internal adapter (you still own a price table, cost calc, fallback policy, and usage reconciliation), while it imports @langchain/core, its CVE/upgrade treadmill, and a harder eventual migration. So the middle ground is a defensible bridge, not a destination. The cross-provider tool-call/usage normalization is the one piece worth either borrowing (copy the logic) or temporarily renting (provider-classes-only) — everything else in LangChain is overhead for Relavium's purpose-built engine."
+    },
+    "optVercel": {
+      "option": "Stay on / start with a 3rd-party TS LLM library — incumbent Vercel AI SDK v4 (ADR-0004), vs Token.js, llm.js, official-SDKs-with-a-tiny-wrapper, and a LiteLLM Python sidecar. Recommendation: do NOT keep Vercel AI SDK as the documented choice (user preference is a hard input), do NOT use a LiteLLM sidecar (kills portability), and pick a thin TS library as the temporary \"start-fast\" layer behind the existing `packages/llm` seam.",
+      "summary": "Vercel AI SDK is genuinely the strongest engineering fit for exactly your four providers + your five requirements (streaming, tool calling, usage/cost, fallback, Node+Tauri), and it is MIT and runtime-agnostic, so the user's objection is preference-driven rather than a technical lock-in. But preference is a hard input here, and there ARE secondary non-preference concerns (single-vendor stewardship, fast-moving major versions, \"ai-sdk-isms\" leaking into your types) that make it reasonable to avoid stamping a Vercel-stewarded library into the ADR corpus as the canonical layer. Crucially, your architecture already isolates the provider library behind a thin `packages/llm` adapter (model id + messages + tools in; token stream + cost record out) — that seam is exactly the \"start 3rd-party, migrate internal later\" boundary the user wants. Among 3rd-party TS options, the best swap-out-friendly start is calling the four official provider SDKs behind your own tiny wrapper (you already need that wrapper layer; the SDKs are the part you'd keep even after going \"internal\"), with Token.js as the fastest zero-effort interim if you want one import today. llm.js is too thin/immature, and LiteLLM reintroduces the Python runtime ADR-0003 deliberately removed.",
+      "design": "Your design already has the right shape. `packages/core`'s AgentRunner hands `packages/llm` (the ProviderAdapter) a model id + messages + tools and gets back a normalized token stream + cost record (see /Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/multi-llm-providers.md). Every 3rd-party option below lives ENTIRELY inside `packages/llm`; the engine never imports provider types. That is the migration seam.\n\nVERCEL AI SDK v4 (incumbent): one import gives `streamText`/`streamObject` with a unified async token+tool-call stream, provider packages `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, and DeepSeek via its OpenAI-compatible endpoint (`@ai-sdk/openai` with a custom baseURL, or `@ai-sdk/deepseek`). Tool calling is unified (Zod-typed `tool()` defs translated to each provider's wire shape), `result.usage` gives promptTokens/completionTokens for your CostTracker, and `experimental_telemetry`/provider metadata expose reasoning + cache fields. Fallback chains you implement yourself around it (the SDK has no built-in router) — which you already planned. Pure JS, no native deps, runs in Node worker, VS Code ext host, and the Tauri WebView/sidecar Node context. This is a clean fit for all four providers and all five requirements.\n\nOFFICIAL SDKs + TINY WRAPPER (recommended start): import `@anthropic-ai/sdk`, `openai`, `@google/generative-ai` (or `@google/genai`), and call DeepSeek through the `openai` package pointed at api.deepseek.com (it's OpenAI-compatible). Your `packages/llm` already MUST contain a ToolNormalizer + FallbackChain + CostTracker per your own architecture doc; the only extra work vs Vercel is normalizing three streaming/tool dialects yourself (Anthropic SSE `content_block_delta`, OpenAI/DeepSeek `chat.completions` deltas, Gemini `generateContentStream`). That is ~3 stream adapters, not N. The payoff: this IS the internal abstraction the user wants eventually — going \"fully internal\" later means deleting nothing, just not adding a unifying lib on top. Lowest lock-in of any option.\n\nTOKEN.JS (fastest interim): single client, ~200+ models, OpenAI-style `create({stream:true})` API, bundles provider calls, supports all four of your providers, tool calling and streaming included. MIT, browser/Node. Behaves like a drop-in unified client you can put behind `packages/llm` in an afternoon, then swap for official-SDKs once you need provider-specific features. Smaller community/bus-factor than Vercel.\n\nLLM.JS: very small unified wrapper, supports the major providers + streaming, but the tool-calling/usage normalization surface is thin and the project is single-maintainer/immature — fine for a chatbot, under-built for fallback-chains + per-node cost accounting as a product feature.\n\nLITELLM SIDECAR (Python): the most battle-tested router (huge provider catalog, built-in fallback + budget/cost tracking + retries), but it is a Python process. It cannot load inside the VS Code extension host, bloats the 2-5MB Tauri target, and adds a process/port/lifecycle on the hot path — exactly what ADR-0003 and the current ADR-0004 already rejected. Off the table for Phase 1 local-first.",
+      "pros": [
+        "Vercel AI SDK is the lowest-effort path that satisfies all five requirements for exactly your four providers today; unified streamText + Zod tool calling + usage out of the box, no Python.",
+        "It is MIT-licensed and runtime-agnostic (no Vercel account, no Vercel hosting, runs in Node/VS Code host/Tauri) — so the user's concern is brand/stewardship preference, not a technical or legal lock-in.",
+        "Official-SDKs-with-a-tiny-wrapper has the lowest lock-in of all options and doubles as the eventual internal abstraction: the SDKs are the layer you keep even after 'going internal', so migration cost is near zero.",
+        "Token.js gives a true one-import unified client covering all four providers in an afternoon — ideal as a throwaway start-fast layer behind the existing packages/llm seam.",
+        "Your architecture already isolates the provider lib behind a thin ProviderAdapter (model id + messages + tools -> token stream + cost record), so ANY of these can be swapped without touching the engine — the 'migrate internal later' path is already built in.",
+        "Avoiding a Python sidecar (LiteLLM) preserves the portability and tiny-bundle wins from ADR-0001/0003 with no new process boundary on the hot path."
+      ],
+      "cons": [
+        "Vercel AI SDK is single-vendor-stewarded with a fast major-version cadence (v3->v4->v5 churn); its types and 'streamText' idioms can leak into packages/llm if the wrapper is sloppy, raising migration cost later — and it's stamped with the Vercel brand the user wants to avoid, which is a hard input.",
+        "Fallback chains, per-node/per-model cost accounting, and provider-specific escape hatches (cache control, reasoning) are NOT free in any TS library — you build them yourself regardless of choice, so the library only saves the streaming/tool-normalization slice.",
+        "Official-SDKs path means owning ~3 streaming/tool-call dialect adapters (Anthropic vs OpenAI/DeepSeek vs Gemini) and tracking each SDK's breaking changes yourself — more up-front code than a unified lib.",
+        "Token.js and especially llm.js have small communities / single-maintainer bus-factor; provider-specific newest features (e.g., latest Gemini or Anthropic cache controls) may lag, and you'd drop to a direct call as an escape hatch.",
+        "llm.js is under-built for product-grade usage/cost normalization and fallback — fine for chat, risky as the backbone of a cost-tracking feature.",
+        "LiteLLM, though the most feature-complete router, is a Python process: incompatible with the VS Code extension host, bloats the Tauri bundle, and adds a port/lifecycle/failure mode on the hot path — disqualified by ADR-0003's portability constraint."
+      ],
+      "effort": "Build: Vercel AI SDK behind packages/llm ~ 0.5-1 week to wire all four providers + Zod tools + usage mapping (fallback/cost are separate work you owe anyway). Token.js ~ a few days, similar shape. Official-SDKs + wrapper ~ 1.5-3 weeks because you write ~3 streaming/tool-normalization adapters and a unified tool-call type yourself (this is the work the unified libs save). LiteLLM sidecar ~ low to stand up the proxy but high integration tax (process supervision, ports, packaging into Tauri AND VS Code — effectively impossible in the extension host), so its real effort is 'unbounded / blocked'. Ongoing maintenance: Vercel AI SDK = track its (frequent) major versions; Token.js/llm.js = depend on small-team upkeep, occasional direct-call escape hatches; Official-SDKs = track 3-4 SDK changelogs but each is first-party, stable, and the one you'd keep long-term, so this is the most durable maintenance profile. Critically, because everything sits behind the existing ProviderAdapter seam, switching between these later is days, not a rewrite.",
+      "verdict": "Drop Vercel AI SDK as the CANONICAL documented choice (supersede ADR-0004) on the user's hard preference — it has no technical lock-in, but the user doesn't want a Vercel-stewarded lib and there's enough secondary stewardship/version-churn risk to make that reasonable. Do NOT adopt a LiteLLM Python sidecar (it violates the portability/tiny-bundle constraints ADR-0003 already settled). Among 3rd-party TS options, the best 'start fast, migrate internal later' choice is to call the four official provider SDKs behind your own tiny wrapper inside packages/llm: it has the lowest lock-in, it doubles as the internal abstraction the user ultimately wants (migration becomes a no-op), and the four providers are all official-SDK or OpenAI-compatible so coverage is complete. If the team wants to move even faster for the very first milestone, start on Token.js (one unified import, all four providers, an afternoon's work) strictly as a throwaway layer behind the same seam, and graduate to official-SDKs as provider-specific features (Anthropic cache control, Gemini/DeepSeek specifics) demand escape hatches. llm.js is too thin for a cost-tracking, fallback-chain product. Either way, the engine never imports a provider type — the swap remains a days-not-rewrite change because the packages/llm ProviderAdapter boundary already exists.",
+      "fitWithVision": "Strong fit on every axis EXCEPT the new no-Vercel directive. Pure-TS engine: all TS options (Vercel, Token.js, llm.js, official SDKs) are pure JS with no native deps, so they load identically in the Node CLI/worker, the VS Code extension host, and the Tauri WebView/sidecar Node context — preserving ADR-0003's portability. The LiteLLM sidecar is the one option that BREAKS this (Python runtime can't live in the VS Code ext host, bloats the 2-5MB Tauri bundle). Local-first: every TS option calls providers directly from the user's machine with keys read from the OS keychain at call time (ADR-0006) — no cloud, no account, matching the local-first constraint; LiteLLM would add a process even for local use. No-lock-in: official-SDKs-with-a-wrapper is the strongest no-lock-in answer and is literally the internal abstraction the principle implies; Vercel AI SDK is technically no-lock-in (MIT, runtime-agnostic) but conflicts with the user's brand preference. The git-native YAML fallback_chain feature is implemented by YOUR FallbackChain regardless of library, so it's unaffected by this choice. CLI + Tauri + VS Code all share the same packages/llm — the recommendation keeps that single shared layer intact.",
+      "lockInRisk": "Low-to-medium and fully containable. Technical lock-in for Vercel AI SDK is genuinely low: MIT license, runtime-agnostic, no Vercel account/hosting required, and the engine only touches it through the packages/llm ProviderAdapter — the engine has zero provider/SDK imports. The real lock-in risks are softer: (1) Vercel single-vendor stewardship + roadmap control + fast major-version churn (v3->v4->v5) can leak 'streamText'-style idioms and SDK types into the wrapper if discipline slips, raising migration cost — mitigated by keeping packages/llm types your own and never re-exporting SDK types; (2) Token.js/llm.js carry bus-factor risk (small/single-maintainer projects) more than lock-in risk. Official-SDKs-with-a-wrapper has the LOWEST lock-in of all options because the SDKs are first-party and are the layer you keep even when you go 'fully internal'. LiteLLM's lock-in is architectural, not licensing: adopting it locks you into shipping and supervising a Python process everywhere, which is the heaviest and least reversible commitment of the set."
+    },
+    "optStrategy": {
+      "option": "Define an internal `LLMProvider` seam in @relavium/llm as the immovable contract; build hand-rolled adapters for the 4 providers behind it from day 1 (Option 1), with a 3rd-party-behind-the-seam fallback (Option 2) reserved for a named trigger.",
+      "summary": "The user's core architectural insight is correct AND the existing docs already encode it: the engine talks to packages/llm through a provider-agnostic boundary (AgentRunner hands it modelId+messages+tools, gets back a token stream + cost record; the public RunEvent contract carries no SDK types). If that seam is defined as OUR stable interface and NOTHING SDK-shaped leaks across it, swapping the implementation later is cheap and localized. Migration only gets expensive if SDK types, streaming shapes, or tool-call representations leak past the seam. Given only 4 well-documented providers (3 of which are OpenAI-wire-compatible), \"internal from day 1 behind our own seam\" is the lower total-cost path AND the only one that fully honors the documented no-vendor-lock-in + one-language-TS principles. The remaining real question is hand-rolled-vs-3rd-party as the IMPLEMENTATION behind the seam — and because the seam makes that reversible, it stops being a high-stakes bet. Recommend: build the seam now (non-negotiable), implement it with thin hand-rolled adapters first; adopt a 3rd-party behind the seam only if a concrete trigger fires.",
+      "design": "The seam is a single TypeScript interface in @relavium/llm, owned by Relavium, expressed only in Relavium/Zod types — never re-exporting any vendor type. Concretely:\n\n  interface LLMProvider {\n    readonly id: 'anthropic'|'openai'|'google'|'deepseek';\n    stream(req: LLMRequest, signal: AbortSignal): AsyncIterable<LLMChunk>;\n  }\n  // LLMRequest: { model, messages: RelaviumMessage[], tools: CanonicalTool[], temperature?, maxTokens? }\n  // LLMChunk (discriminated union): {type:'text', delta} | {type:'tool_call', id, name, argsDelta} | {type:'usage', input, output} | {type:'finish', reason}\n\nThe 4 providers map cleanly: Anthropic via @anthropic-ai/sdk (messages.stream); OpenAI, DeepSeek, and Gemini all via the OpenAI Chat Completions wire format (OpenAI SDK + base-URL swap — DeepSeek and Gemini both ship OpenAI-compatible endpoints), so in practice it's roughly TWO adapter shapes, not four. The existing docs already place ToolNormalizer (one canonical tool shape ↔ each provider's input_schema/function.parameters/functionDeclarations), FallbackChain (the agent.yaml ordered list), and CostTracker (tokens→micro-units) ON the Relavium side of the seam, so an implementation swap touches only the per-provider stream() body, not normalization/fallback/cost. AgentRunner consumes LLMChunk and re-emits the public RunEvent union (agent:token/agent:tool_call/node:completed.tokensUsed) — that union, not the provider response, is what every surface and Phase-2 SSE bind to. Provider selection is a factory keyed by the agent.yaml `provider` string (already a plain string in the Zod schema, not a vendor enum). Hosts: identical in Node worker (CLI/engine) and Tauri — both adapter styles are plain fetch/SDK over HTTPS with an injected key from the keychain and an AbortController; no browser-only or Node-only assumption crosses the seam (matches packages/core's \"zero platform-specific imports\").",
+      "pros": [
+        "VALIDATES the user's insight: with a leak-free seam, the implementation choice (hand-rolled vs 3rd-party) becomes reversible and localized to packages/llm — it stops being a one-way door, which de-risks the entire decision.",
+        "Zero sunk cost today: the repo is docs-only, so the seam can be born internal-first with no rip-out of an already-wired dependency.",
+        "Only 4 providers, effectively ~2 adapter shapes (Anthropic native + OpenAI-wire for OpenAI/DeepSeek/Gemini-compat), makes hand-rolled total cost low — you are NOT signing up to maintain 100 providers.",
+        "Strongest possible alignment with documented principles: 'no vendor lock-in' becomes structurally true (not aspirational), and 'one-language-TS / engine-first' is preserved with no extra runtime.",
+        "Removes the exact risk ADR-0004 already flagged in its Negatives (coupling to SDK provider-adapter coverage & release cadence, capabilities normalized away) by making 3rd-party optional and swappable rather than load-bearing.",
+        "Full control over the killer feature (cross-provider fallback chains) and over cost accounting precision (micro-units) — no waiting on a vendor to expose a usage field or a provider capability.",
+        "Honors the user's stated Vercel preference without a knee-jerk re-pick: the seam means we are not betting the engine on ANY single vendor SDK."
+      ],
+      "cons": [
+        "Hand-rolled adapters mean WE own the long-tail breakage: per-provider streaming-format quirks, tool-call JSON-fragment reassembly, rate-limit/error-code mapping, and silent wire-format changes — the SDK would absorb some of that.",
+        "Up-front effort is higher than `pnpm add ai` + four 1-line provider registrations; the seam + 2 adapter shapes + normalizer/cost wiring is a real (if bounded) build.",
+        "Risk of UNDER-designing the seam: if LLMChunk/CanonicalTool miss a real capability (e.g. parallel tool calls, reasoning/thinking tokens, prompt caching, structured-output/JSON-mode), you pay a seam-revision cost that touches AgentRunner too — the seam must be capability-complete on day 1, not just token-complete.",
+        "A too-thin seam can normalize away provider-specific features (same critique ADR-0004 raises) unless an explicit escape-hatch/passthrough is designed in from the start.",
+        "Two failure-surface owners over time: hand-rolled means no community fixes for provider drift; you must monitor 4 providers' changelogs yourself."
+      ],
+      "effort": "SEAM ITSELF (the load-bearing part, required in ALL options): ~1-2 days to define LLMProvider/LLMRequest/LLMChunk/CanonicalTool as Relavium-owned types + the AgentRunner adapter→RunEvent mapping + factory. This cost is unavoidable and is paid once.\n\nOPTION 1 (hand-rolled behind the seam): initial ~1-1.5 weeks for 2 adapter shapes (Anthropic native; OpenAI-wire shared by OpenAI/DeepSeek/Gemini-compat) including SSE/tool-fragment reassembly, usage extraction, error mapping, AbortController wiring. ONGOING: you own provider-drift watch for 4 providers — realistically a few hours per provider per significant API change, concentrated in the streaming/tool-call parsing.\n\nOPTION 2 (3rd-party behind the seam): initial ~2-3 days (wrap one SDK's streamText into LLMChunk, map tool + usage shapes). ONGOING: you inherit the vendor's release cadence — upgrades, occasional breaking changes, waiting on the vendor to wrap a new provider feature; lower day-to-day parsing burden, higher dependency-churn burden.\n\nKEY POINT: because the seam is identical in both, switching Option 2→Option 1 (or vice-versa) later is bounded to packages/llm internals — single-digit days, no engine/surface/contract changes. That reversibility is the whole reason the seam earns its up-front cost.",
+      "verdict": "RECOMMEND Option 1 — internal from day 1 behind our own seam — because for 4 providers (≈2 adapter shapes) the total cost of hand-rolling is LOWER than adopt-a-3rd-party-then-rip-it-out, and it makes the documented 'no vendor lock-in' principle structurally true rather than aspirational. The user's architectural insight is CONFIRMED, with one critical caveat: the cheap-migration property holds ONLY IF no vendor type, streaming shape, or tool-call representation leaks across the seam — the engine must depend exclusively on Relavium-owned types (LLMChunk, CanonicalTool, RunEvent). The good news is the existing docs already put ToolNormalizer, FallbackChain, CostTracker, and the RunEvent union on the Relavium side of that boundary, so the architecture is already shaped for this; ADR-0004 even pre-states the leak risk in its own Negatives. DECISION CRITERIA — choose internal (Option 1) when: provider count is small and stable (true: 4), you need full control of the killer fallback + cost features (true), and lock-in must be structural (true per principles). Choose 3rd-party-behind-seam (Option 2) only if you must ship in days not weeks OR you want a temporary reference implementation while learning provider quirks. Option 3 (3rd-party DIRECTLY, no seam) is REJECTED outright — it violates no-vendor-lock-in and turns a future swap into an engine-wide rewrite; it is the only genuinely expensive-to-undo choice. MIGRATION TRIGGERS to go Option 1→2 (adopt a lib): (a) hand-rolled provider-drift maintenance exceeds ~1 day/month sustained; (b) a 5th+ provider with a novel wire format is required; (c) a must-have capability (e.g. broad provider catalog) only the lib provides. TRIGGERS to go 2→1 (drop the lib): (a) the lib blocks a needed provider feature (caching/reasoning/parallel tools) behind its release cadence; (b) a lib breaking change costs more than owning the adapter would; (c) the lib pulls in an unwanted runtime/footprint (e.g. Vercel-coupled packaging) — directly relevant to the user's stated Vercel aversion. ACTION ON ADR-0004: supersede it (per the principles doc's 'needs an ADR that supersedes, not a quiet exception' rule) with a new ADR establishing the LLMProvider seam as the decision, hand-rolled adapters as the day-1 implementation, and the above triggers as the documented migration policy — the seam, not the implementation, is the architectural commitment.",
+      "fitWithVision": "Excellent fit, arguably better than the current ADR-0004. (1) Pure-TS engine: hand-rolled adapters are plain fetch/official-SDK calls in TypeScript — no Python, no sidecar, satisfying the 'one-language-TS' and 'no LangGraph-Python' principles as fully as the Vercel SDK does, with one fewer heavyweight dependency. (2) Tauri desktop + Node worker + VS Code host: the seam crosses none of these boundaries with platform-specific code — adapters are HTTPS + injected keychain key + AbortController, runnable identically in a Node CLI worker and the Tauri/VS Code host, preserving packages/core's documented 'zero platform-specific imports'. (3) CLI-first build order: packages/llm is built in step 1 alongside shared+core and proven by the CLI before any UI — an internal seam with thin adapters is straightforward to unit-test there, keeping the engine APIs honest. (4) Local-first: calls go directly machine→provider in Phase 1; in Phase 2 the SAME package runs in cloud workers with only the key source changing — the seam is agnostic to where the key/process lives, exactly as multi-llm-providers.md and local-first-and-security.md already specify. (5) No-vendor-lock-in: this option is the literal implementation of that principle — lock-in becomes impossible-by-construction rather than mitigated-by-discipline.",
+      "lockInRisk": "LOW by construction — and lower than the current ADR-0004 path. The whole point of the seam is to make lock-in structural-impossible: the engine, every surface, and the Phase-2 SSE bind only to Relavium-owned types (LLMProvider, LLMChunk, CanonicalTool, RunEvent, agent.yaml's plain `provider` string), so no provider SDK or 3rd-party lib is load-bearing above packages/llm. The ONLY residual risk is a discipline risk: if a vendor type or streaming shape is allowed to leak across the seam (e.g. AgentRunner pattern-matching on an SDK's chunk object, or re-exporting a vendor enum), the cheap-swap property silently erodes — exactly the failure ADR-0004 names in its Negatives. Mitigations: (a) lint/architectural rule forbidding vendor-package imports outside packages/llm/adapters/*; (b) the seam types live in @relavium/shared and the engine imports ONLY those; (c) a conformance test suite the seam must pass, run against every adapter, so swapping implementations is provably behavior-preserving. With those guards, switching hand-rolled↔3rd-party↔different-lib is a packages/llm-internal change measured in single-digit days, with zero changes to engine, surfaces, or contracts."
+    }
+  },
+  "llmDecision": {
+    "recommendation": "Build an internal, Relavium-owned multi-LLM abstraction in `packages/llm` (`@relavium/llm`): a single provider-agnostic `LLMProvider` seam expressed only in Relavium/Zod types, implemented from day one by thin hand-rolled adapters over each provider's official TS SDK (Anthropic and Gemini dedicated; OpenAI and DeepSeek share one OpenAI-compatible adapter). The seam — modelId + messages + tools in, normalized chunk stream + cost record out, with no vendor type ever crossing it — is the immovable contract; the adapter implementation behind it is deliberately reversible. Migration stance: internal-first, no 3rd-party framework; adopt a thin TS library behind the same seam only if a named trigger fires (e.g. sustained provider-drift maintenance cost or a must-have capability not economically hand-rollable), never the Vercel AI SDK.",
+    "rationale": "All four analyses converge on the seam, and three of four (A, B, D) recommend an internal implementation behind it; Analyst C, who rates Vercel strongest on pure engineering, explicitly concedes the user's no-Vercel preference is a hard input and that the best swap-friendly start is thin wrappers over the official provider SDKs — which is the internal option. So the recommendation honors the user's hard constraint (no Vercel) and their stated lean (internal, with a 3rd-party bridge as fallback) while still being defensible on the merits. It is the only option that fully satisfies the documented principles: one-language-TypeScript and engine-first (no Python sidecar, no LiteLLM), and crucially NO vendor lock-in — Analyst B shows full LangChain.js violates this (Runnable/LCEL leakage, ~100kB+ transitive graph, v1.0 churn, CVE-2026-25528 in 0.3.x forcing a major bump, provider bugs hitting our exact needs), and even the narrow @langchain/<provider> variant inherits @langchain/core and is barely cheaper than hand-rolled adapters. The scope is genuinely small and bounded (four well-documented providers, three OpenAI-wire-compatible) and the surface is deliberately narrow (text + tools + streaming + usage), so Analyst A's internal build is realistic; the only real risk — normalization tax and provider drift into vision/caching/reasoning modalities — is mitigated by freezing a capability-gated lowest-common-denominator interface with a typed providerOptions escape hatch and a per-provider conformance test suite (recorded fixtures on PR, live nightly). Analyst D's key point makes the bet low-stakes: because nothing SDK-shaped crosses the seam, swapping the implementation later is cheap and localized, so \"internal now, 3rd-party-behind-seam only on a named trigger\" is the lowest-total-cost, fully-reversible path.",
+    "revisedAdr0004": "# ADR-0004: Internal multi-LLM abstraction (`@relavium/llm`), not a 3rd-party framework\n\n- **Status**: Accepted (supersedes the earlier *Vercel AI SDK for multi-LLM* decision recorded under this number)\n- **Date**: 2026-06-03\n- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [tech-stack.md](../tech-stack.md)\n\n## Context\n\nThis ADR replaces the original ADR-0004, which selected the **Vercel AI SDK** as the multi-LLM layer. That choice is withdrawn: the project will not adopt Vercel-stewarded products. The objection is a hard product input, not a defect claim — the Vercel AI SDK is MIT and runtime-agnostic — but it removes it from consideration, and the alternatives were re-evaluated from scratch.\n\nRelavium is multi-model by definition: an agent node names a model from Anthropic, OpenAI, Google (Gemini), or DeepSeek, and the engine must call any of them through one code path. Two hard requirements fall out of that, plus three more from product scope:\n\n- **Unified streaming.** Every provider streams tokens and tool calls differently. The engine emits a single normalized [run-event stream](../reference/contracts/sse-event-schema.md) (`node.token`, `agent:tool_call`, …) regardless of which provider produced it.\n- **Cross-provider tool normalization.** Tool/function-calling schemas differ per provider; the engine presents one canonical tool model and translates to each wire format.\n- **Usage + cost accounting**, **per-agent fallback chains**, and execution on **both a Node worker (CLI/engine) and inside a Tauri desktop context**.\n\nThis layer lives in `packages/llm` and is consumed by the pure-TypeScript engine from [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md). It must run in every host the engine runs in (desktop, CLI, VS Code extension, Phase-2 cloud workers), so it cannot pull in a separate runtime. API keys are read from the OS keychain per [ADR-0006](0006-os-keychain-for-api-keys.md) and never exposed to the frontend. The target provider set is small (four) and well documented, and three of the four (OpenAI, DeepSeek, Gemini) are reachable over an OpenAI-compatible wire format.\n\n## Decision\n\n**We build an internal, Relavium-owned multi-LLM abstraction in `packages/llm` (`@relavium/llm`).** Its centre is a single provider-agnostic seam — an `LLMProvider` interface expressed only in Relavium/Zod types — implemented by thin hand-rolled adapters over each provider's official TypeScript SDK. We do **not** adopt the Vercel AI SDK, LangChain.js, or any other multi-LLM framework, and we do **not** run a Python sidecar (LiteLLM).\n\nThe seam is the immovable contract; the adapter implementation behind it is deliberately reversible. `AgentRunner` (in `packages/core`) hands `packages/llm` a model id, a message list, and tools, and gets back a normalized chunk stream (`text` / `tool_call` / `usage` / `finish`) plus a cost record. **No vendor SDK type ever crosses that seam.** Anthropic and Gemini get dedicated adapters; OpenAI and DeepSeek share one OpenAI-compatible adapter.\n\nConsidered options:\n\n1. **Internal abstraction over official provider SDKs (`@relavium/llm`)** — owned seam, thin per-provider adapters, no framework. *Chosen.*\n2. **Vercel AI SDK** — the original choice; withdrawn on the no-Vercel-products constraint (a hard input).\n3. **LangChain.js (`@langchain/core` + per-provider chat models)** — working multi-provider classes, but it drags in the Runnable/LCEL abstraction and a heavy transitive graph, leaks its own message/content-block model into the engine, and carries documented churn (v1.0 reshape, `@langchain/core` 0.3.x exposed to CVE-2026-25528 whose fix lands only in 1.x). Even the narrow \"import only the `@langchain/<provider>` chat models behind our seam\" variant inherits `@langchain/core` and is barely cheaper than hand-rolled adapters.\n4. **LiteLLM Python sidecar** — mature router, but reintroduces the Python runtime [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md) deliberately removed; cannot live in the VS Code extension host and bloats the Tauri bundle ([ADR-0001](0001-tauri-v2-over-electron.md)).\n\nThe internal abstraction wins because it is the only option that fully honors Relavium's documented principles — engine-first, one-language-TypeScript, local-first, and **no vendor lock-in** — for a deliberately narrow surface (text + tools + streaming + usage) against just four providers. The happy path per provider is small; the real cost is the *normalization tax* (tool schemas, streaming events, stop reasons, usage fields) and ongoing provider drift. That cost is bounded and is exactly what we would pay to a framework in coupling and churn instead. We contain it by **freezing the interface to a capability-gated lowest-common-denominator plus a typed `providerOptions` escape hatch**, and by a **per-provider conformance test suite** — recorded fixtures on PR, live APIs nightly in CI.\n\nBecause nothing SDK-shaped crosses the seam, replacing the implementation later is cheap and localized. We therefore adopt an **internal-first, framework-never (esp. Vercel-never) stance with a reversible 3rd-party bridge**: a thin TS library *behind the same seam* (e.g. Token.js) becomes an option only if a **named trigger** fires — sustained provider-drift maintenance cost exceeding the framework's coupling cost, or a must-have capability that is not economically hand-rollable. The trigger fires a follow-up ADR; it never silently changes the seam.\n\nProvider details and built-in tool wiring are in [architecture/multi-llm-providers.md](../architecture/multi-llm-providers.md) and [reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md). Pinned SDK versions live in [tech-stack.md](../tech-stack.md).\n\n## Consequences\n\n### Positive\n\n- One TypeScript code path for every provider, with zero framework dependency; the engine emits a single normalized [run-event stream](../reference/contracts/sse-event-schema.md) regardless of which model ran.\n- **No vendor lock-in and no leaked vendor types.** The seam is pure Relavium/Zod; the only third-party code is each provider's own official SDK, which we would keep even after any future migration.\n- No Python runtime and no sidecar — `packages/llm` loads in the same hosts as the engine (desktop, CLI, VS Code extension, Phase-2 cloud workers), preserving the portability won in [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md).\n- Provider-agnostic tool calling: agents declare tools once; the `ToolNormalizer` translates to each wire format, which is what makes cross-provider fallback chains possible.\n- Adding a provider is a contained adapter change in one package; OpenAI and DeepSeek already share one adapter path.\n- The migration story is real, not aspirational: because the seam admits no vendor type, a 3rd-party bridge can be slotted behind it on a named trigger without touching `packages/core`.\n- API keys stay engine-side: read from the OS keychain ([ADR-0006](0006-os-keychain-for-api-keys.md)) and attached by the adapter, never reaching the frontend.\n\n### Negative\n\n- We own the normalization tax and ongoing provider drift (tool schemas, streaming events, stop reasons, usage fields) that a framework would otherwise absorb. Mitigated by a frozen lowest-common-denominator interface, a typed `providerOptions` escape hatch, and a conformance suite (recorded fixtures on PR, live nightly in CI).\n- Provider-specific modalities (vision, prompt caching, files, reasoning traces, parallel tool calls) are out of the common interface by default; surfaced only through `providerOptions` to prevent scope creep into a \"second product\".\n- More code to write and test up front than importing a ready-made multi-provider library.\n- We forgo a framework's broader long-tail provider catalog; acceptable because MVP scope is API-based providers only (no Ollama / local models), so the target set is small and well covered.\n- Cost/token accounting depends on mapping each provider's usage fields correctly into our cost model; this is an adapter responsibility, covered by the conformance suite and documented in [architecture/multi-llm-providers.md](../architecture/multi-llm-providers.md).",
+    "techStackRow": "| Multi-LLM | **Internal `@relavium/llm` abstraction** over official provider SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`; DeepSeek via the OpenAI-compatible adapter) | No 3rd-party framework, no Vercel, no Python sidecar; an owned provider-agnostic seam gives unified streaming + tool calling + cost across Anthropic / OpenAI / Gemini / DeepSeek with no vendor lock-in. See [ADR-0004](decisions/0004-internal-llm-abstraction.md). |",
+    "architectureDocChanges": [
+      "Rewrite the opening so packages/llm is described as Relavium's OWN abstraction over the official provider SDKs, not a Vercel AI SDK wrapper; state the principle that NO vendor SDK type crosses the seam.",
+      "Define the seam explicitly: the LLMProvider interface (id + stream(req, signal)) in Relavium/Zod types, with LLMRequest (model, messages, tools, temperature?, maxTokens?) in and a discriminated-union LLMChunk stream out (text delta | tool_call {id,name,argsDelta} | usage {input,output} | finish {reason}) plus a cost record.",
+      "Update the mermaid flowchart: replace the 'Vercel AI SDK v4 (streamText / streamObject)' node with per-provider adapters — AnthropicAdapter (@anthropic-ai/sdk), an OpenAI-compatible adapter shared by OpenAI and DeepSeek, and GeminiAdapter (@google/genai) — all sitting behind the LLMProvider seam.",
+      "Replace the draft status note: the choice is now an internal abstraction per the revised ADR-0004; remove the 'Vercel AI SDK provides streaming' framing and re-anchor on the owned seam.",
+      "Document the capability model: a capability-gated lowest-common-denominator interface (text + tools + streaming + usage) plus a typed providerOptions escape hatch for provider-specific features (vision, caching, reasoning, parallel tool calls), which are explicitly out of the common path.",
+      "Add a 'Conformance and drift' section: per-provider conformance test suite — recorded fixtures on PR, live provider APIs nightly in CI — as the mechanism that contains the normalization/drift tax.",
+      "Keep tool normalization, fallback chains, and cost tracking sections, but reword so streaming/tool/usage normalization is performed by OUR adapters rather than delegated to a framework; cancellation via AbortSignal works in both Node and the Tauri WebView fetch.",
+      "Add a short 'Migration stance' note: internal-first; a thin 3rd-party TS library may be slotted behind the same seam only on a named trigger via a follow-up ADR; Vercel AI SDK is excluded.",
+      "Fix the final 'Related documents' link to point at the renamed ADR-0004 (0004-internal-llm-abstraction.md) and update its description."
+    ],
+    "companionAdr": {
+      "needed": true,
+      "title": "ADR-0011: The provider-agnostic `LLMProvider` seam as an immovable contract",
+      "summary": "Records the seam itself (not the implementation behind it) as a binding architectural contract: a single LLMProvider interface in @relavium/llm expressed only in Relavium/Zod types, taking modelId + messages + tools and returning a normalized chunk stream + cost record. Mandates that NO vendor SDK type — message shapes, content blocks, streaming events, tool-call representations — may cross the seam, since that leak is the only thing that makes a future implementation swap expensive. Defines the named triggers under which a 3rd-party library may be adopted behind the seam (sustained drift cost; an uneconomical-to-hand-roll capability) and requires a follow-up ADR when one fires. Note: ADR-0004 already carries the seam-and-trigger reasoning, so this companion is optional — promote it only if the seam needs to be cited independently as a standalone contract from reference/ and standards/ docs."
+    },
+    "adrFilenameChange": "Rename docs/decisions/0004-vercel-ai-sdk-multi-llm.md to docs/decisions/0004-internal-llm-abstraction.md (keep the number 0004). The old filename must be renamed (git mv), not left as a duplicate. Every inbound link to the old slug must be repointed: decisions/README.md (index row), decisions/0002-vite-react-tanstack-not-nextjs.md (Related + body), decisions/0003-pure-ts-engine-not-langgraph-python.md (Related + two body refs), decisions/0006-os-keychain-for-api-keys.md (Related + two body refs), decisions/0008-local-first-phase-1-cloud-phase-2.md (one body ref), architecture/multi-llm-providers.md (Related link), and tech-stack.md (new row link).",
+    "otherDocImpacts": [
+      "docs/decisions/README.md — update the index row 0004 title to 'Internal multi-LLM abstraction (@relavium/llm), not a 3rd-party framework' and repoint the link to 0004-internal-llm-abstraction.md (status stays Accepted).",
+      "docs/tech-stack.md — replace the Multi-LLM row (line 18) with the new internal-abstraction row, and rewrite the 'Multi-LLM, not single-provider' note (lines 30-33) to drop 'Vercel AI SDK' and say one unified interface is provided by our own @relavium/llm adapters; keep the LiteLLM/Python-out statement.",
+      "docs/README.md — line 3: change 'multi-provider LLM access runs through the Vercel AI SDK' to 'runs through Relavium's own @relavium/llm abstraction over the official provider SDKs'.",
+      "docs/architecture/README.md — lines 22 and 28: drop 'Vercel AI SDK'; describe multi-llm-providers.md as the internal @relavium/llm abstraction (adapters, fallback, tool normalization, cost).",
+      "docs/architecture/overview.md — lines 23, 74, 105 (and the participant label ~143): remove 'Vercel AI SDK' from the diagram node and prose; describe packages/llm as provider adapters over official SDKs behind an owned seam.",
+      "docs/decisions/0002-vite-react-tanstack-not-nextjs.md — line 5 (Related) and line 29 (body): repoint the ADR-0004 slug; the body ref to 'the multi-LLM streaming layer chosen in ADR-0004' still reads fine after the rename.",
+      "docs/decisions/0003-pure-ts-engine-not-langgraph-python.md — line 5 (Related) and lines 29/46: repoint the slug, and reword line 46's 'mitigated by the Vercel AI SDK choice in ADR-0004' to 'mitigated by the internal @relavium/llm abstraction in ADR-0004'.",
+      "docs/decisions/0006-os-keychain-for-api-keys.md — line 5 (Related) and lines 9/23: repoint the slug, and change 'hands it to the Vercel AI SDK' to 'hands it to the @relavium/llm adapter'.",
+      "docs/decisions/0008-local-first-phase-1-cloud-phase-2.md — line 19: repoint the ADR-0004 slug (prose unaffected).",
+      "docs/standards/architectural-principles.md — line 38: change 'multi-LLM streaming goes through the Vercel AI SDK' to 'multi-LLM streaming goes through Relavium's own @relavium/llm abstraction over the official provider SDKs'.",
+      "docs/standards/documentation-style.md — line 85: in the external-URL example, replace 'Vercel AI SDK' with provider SDK docs (Anthropic / OpenAI / Google) so the example no longer implies a Vercel dependency.",
+      "docs/runbooks/local-dev-setup.md — line 44: change the build comment 'provider adapters over the Vercel AI SDK' to 'provider adapters over the official provider SDKs'.",
+      "docs/project-structure.md — line 61 already describes @relavium/llm as per-provider adapters with ToolNormalizer/CostTracker/RateLimiter/FallbackChain (no Vercel mention); confirm it stays accurate (it does) — no change required beyond optionally noting the OpenAI/DeepSeek shared adapter.",
+      "docs/glossary.md — line ~100 references '@relavium/llm adapter' generically; no Vercel mention, so no change needed (verify only).",
+      "Memory file architecture-decisions.md (auto-memory) — the Multi-LLM row (line 16) and packages/llm line (line 34) still say 'Vercel AI SDK'; flag for update so persisted memory matches the new ADR, since it is the authoritative stack summary across sessions."
+    ]
+  },
+  "reviews": {
+    "revArch": {
+      "directory": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/",
+      "filesReviewed": 9,
+      "overallVerdict": "The architecture set is high quality, internally coherent, and well cross-linked — the \"one engine, thin surfaces, local-first, Phase-2-marked\" model is consistent across all nine files and the Relavium rename is complete (zero \"Flowgent\"/\"agentorg\" leakage in architecture/). The single dominant problem is that the multi-LLM decision has been replaced: every file that mentions the LLM layer still presents the Vercel AI SDK as the chosen, settled foundation. multi-llm-providers.md must be substantially rewritten; overview.md, README.md, and (cross-cuttingly) ADR-0004 + tech-stack.md + architectural-principles.md all assert the now-rejected choice. Separately and independent of the LLM pivot, there is a real consistency break: all flow docs use the LEGACY dotted run-event names (node.token, run.complete, cost.update, seqNo) while citing the SSE schema as canonical, but that schema has moved to colon-namespaced names (agent:token, run:completed, sequenceNumber) and explicitly labels the dotted form legacy. There are also smaller drift items (fallback_chain field name attempts vs max_attempts, gemini model-id format, micro-units vs micro-cents). Fix order: (1) rewrite multi-llm-providers.md to the internal @relavium/llm abstraction and re-point the ADR link; (2) scrub Vercel mentions in overview.md/README.md; (3) reconcile the run-event names across all four flow docs; (4) the cross-cutting ADR-0004 supersession is a decisions/ task but must be flagged because every architecture doc links to it as \"Accepted\".",
+      "crossCutting": [
+        "ADR-0004 (decisions/0004-vercel-ai-sdk-multi-llm.md) is still Status: Accepted and is the authoritative target of every multi-LLM cross-link in architecture/. Per the new decision it must be Superseded by a new ADR (e.g. 0011) that records the internal @relavium/llm abstraction, the LLMProvider seam (Relavium/Zod types only, no vendor type crossing it), the adapter strategy (Anthropic + Gemini dedicated, OpenAI + DeepSeek sharing one OpenAI-compatible adapter), and the internal-first migration stance with named triggers and explicit 'never the Vercel AI SDK' rule. Until that exists, the architecture docs cannot link to a correct ADR. Every architecture file that says '[ADR-0004] — the Vercel AI SDK decision' needs its link/label updated once 0011 lands.",
+        "tech-stack.md row 'Multi-LLM | Vercel AI SDK v4' and the 'Notes on the Choices' bullet ('The Vercel AI SDK gives one unified streaming interface') are the version-of-record both the architecture docs and ADRs defer to; they assert the rejected choice and must be updated to '@relavium/llm — internal abstraction over official provider SDKs'. This is outside architecture/ but every architecture doc inherits its framing from here.",
+        "standards/architectural-principles.md §2 ('One language — TypeScript') states 'multi-LLM streaming goes through the Vercel AI SDK' — a binding principle that now contradicts the decision; must be reworded to 'multi-LLM streaming goes through Relavium's own packages/llm abstraction (thin adapters over each provider's official SDK)'. The new decision also arguably deserves a new principle: 'No vendor lock-in at the LLM seam — the LLMProvider contract is expressed only in Relavium/Zod types; no vendor type crosses it.'",
+        "Run-event naming is inconsistent system-wide: the canonical reference/contracts/sse-event-schema.md now uses colon-namespaced names (agent:token, node:completed, run:completed, human_gate:paused/resumed) with a `sequenceNumber` field, and explicitly tags the dotted names (node.token, run.complete, cost.update, seqNo) as LEGACY. But execution-model.md, state-management.md, overview.md, and shared-core-engine.md all still use the dotted/legacy names and `seqNo`. Every architecture doc that names events must be reconciled to the colon form (or the schema must declare the dotted form canonical — pick one). This predates and is independent of the LLM pivot.",
+        "project-structure.md and architecture-decisions memory describe packages/llm adapters as 'Vercel AI SDK wrappers' / list AnthropicAdapter, OpenAIAdapter, GeminiAdapter, DeepSeekAdapter. The adapter inventory is actually now: AnthropicAdapter (official SDK), GeminiAdapter (official SDK), and ONE shared OpenAI-compatible adapter serving both OpenAI and DeepSeek. project-structure.md's package description ('Vercel AI SDK wrappers' is in the memory; project-structure.md itself just lists four adapters) should reflect the 3-adapter / OpenAI-compatible-shared shape and drop any Vercel wrapper framing."
+      ],
+      "fileFindings": [
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/multi-llm-providers.md",
+          "issues": [
+            {
+              "issue": "Entire document is built on the rejected Vercel AI SDK. Intro ('It wraps the Vercel AI SDK v4'), the Mermaid diagram node 'Vercel AI SDK v4 / streamText / streamObject', the Status note, the Context section ('settled by ADR-0004: the Vercel AI SDK v4 provides unified streaming...'), the Streaming section ('the SDK's streamText'), and the related-docs link 'ADR-0004 — the Vercel AI SDK decision' all assert the now-rejected foundation.",
+              "severity": "high",
+              "fix": "Rewrite to the internal @relavium/llm abstraction. Replace the Vercel-SDK layer with the LLMProvider seam (modelId + messages + tools in; normalized chunk stream + cost record out; no vendor type crosses it). Describe the thin hand-rolled adapters: dedicated AnthropicAdapter and GeminiAdapter over their official TS SDKs, plus ONE shared OpenAI-compatible adapter serving OpenAI and DeepSeek. In the Mermaid diagram, replace the 'Vercel AI SDK v4 / streamText / streamObject' node with 'provider adapters → official @anthropic-ai/sdk, @google/genai, openai SDK'. Re-point the ADR link to the new superseding ADR (e.g. 0011) and relabel. State the immovable-contract-vs-reversible-adapter framing and the internal-first migration stance (adopt a thin TS lib behind the same seam only on a named trigger, never Vercel)."
+            },
+            {
+              "issue": "fallback_chain example uses `attempts:` and omits `provider:`, conflicting with the canonical agent-yaml-spec which requires `max_attempts:` and `provider:` per entry. The example model id is `gemini-2-5-pro` (hyphens) while the canonical spec uses `gemini-2.5-pro` (dots).",
+              "severity": "medium",
+              "fix": "Change the YAML to `{ model: claude-sonnet-4-6, provider: anthropic, max_attempts: 3 }` etc. matching agent-yaml-spec.md, and fix `gemini-2-5-pro` → `gemini-2.5-pro`. Better: do not restate the schema at all — cite agent-yaml-spec.md per the no-duplicated-specs principle."
+            },
+            {
+              "issue": "Cost section says costs are stored as 'integer micro-units' but the canonical database-schema.md (model_catalog) says 'integer micro-cents'. Unit terminology mismatch.",
+              "severity": "low",
+              "fix": "Use 'integer micro-cents' to match database-schema.md, or drop the unit detail and cite the schema."
+            },
+            {
+              "issue": "Says the model catalog / context windows / pricing are 'canonical in database-schema.md and surfaced via providerStore' — correct for pricing (model_catalog table) and providerStore, but tool normalization is described here as if a packages/llm concern while shared-core-engine.md lists ToolNormalizer/ToolRegistry as packages/core exports. Two docs locate the normalizer in different packages.",
+              "severity": "medium",
+              "fix": "Pick one home for ToolNormalizer. project-structure.md lists ToolNormalizer under BOTH packages/core exports AND packages/llm; resolve: the canonical-tool→provider-wire translation belongs in packages/llm (per this doc), the engine-side ToolRegistry/dispatch in packages/core. Make shared-core-engine.md and this doc agree on that split."
+            },
+            {
+              "issue": "Status note still reads 'draft — to be expanded. The Vercel AI SDK choice ... grounded in the architecture-decisions and analysis sources.'",
+              "severity": "medium",
+              "fix": "Update the Status note to reference the new internal-abstraction decision and its ADR; remove the Vercel grounding claim."
+            }
+          ],
+          "gaps": [
+            "No mention of how per-provider capability divergence is handled at the seam (e.g. Anthropic prompt caching / extended thinking, OpenAI tool-call streaming deltas, Gemini safety settings). The new internal abstraction owns this normalization explicitly; the doc should name an escape-hatch / passthrough strategy now that there is no SDK to lean on.",
+            "No statement of the named migration triggers (sustained provider-drift maintenance cost; a must-have capability not economically hand-rollable) that would justify adopting a thin TS library behind the same seam. This is a core part of the new decision and should be documented here or in the ADR and cited.",
+            "Does not address running inside the Tauri WebView vs a Node worker — the user directive requires the abstraction to run in BOTH. Official SDKs differ in fetch/stream behavior across those runtimes; the doc should note the seam is runtime-agnostic and how (e.g. inject a fetch impl / WHATWG streams only)."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/overview.md",
+          "issues": [
+            {
+              "issue": "Three Vercel AI SDK assertions: the Packages Mermaid node 'packages/llm — provider adapters (Vercel AI SDK)'; Context bullet 'Multi-LLM access goes through the Vercel AI SDK v4 in packages/llm'; and the packages list 'packages/llm — provider adapters built on the Vercel AI SDK'.",
+              "severity": "high",
+              "fix": "Replace all three with the internal abstraction: Mermaid node 'packages/llm — internal LLMProvider seam · thin adapters over official SDKs'; Context bullet 'Multi-LLM access goes through Relavium's own packages/llm abstraction — thin hand-rolled adapters over each provider's official TS SDK, no 3rd-party framework'; packages list entry updated to match."
+            },
+            {
+              "issue": "End-to-end sequence diagram and event description use legacy dotted names implicitly via cross-doc consistency (it labels 'tokens on RunEventBus'); fine here, but the surrounding flow docs it anchors use node.token/run.complete which are now legacy.",
+              "severity": "low",
+              "fix": "When reconciling event names cross-doc, ensure overview's narrative ('tokens stream', 'run complete') stays neutral or uses the colon-namespaced canonical names."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/README.md",
+          "issues": [
+            {
+              "issue": "Index table entry for multi-llm-providers.md reads 'The Vercel AI SDK abstraction in packages/llm: provider adapters, fallback chains, tool normalization, and cost tracking.'",
+              "severity": "high",
+              "fix": "Rewrite to 'The internal @relavium/llm abstraction: a provider-agnostic LLMProvider seam implemented by thin adapters over each provider's official SDK — fallback chains, tool normalization, cost tracking.'"
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/execution-model.md",
+          "issues": [
+            {
+              "issue": "Section 3 lists run events as 'node.started / node.token / node.completed / node.error / human_gate.pending / cost.update / run.complete, each carrying a nodeId and a monotonically increasing seqNo' — these are the LEGACY dotted names the canonical sse-event-schema.md now supersedes with colon-namespaced names (agent:token, node:completed, run:completed, human_gate:paused) and a `sequenceNumber` field. The doc cites that schema as canonical while contradicting it.",
+              "severity": "high",
+              "fix": "Replace the event list with the canonical colon-namespaced names and rename seqNo → sequenceNumber, or (if dotted is preferred) change the schema — but the two must match. Recommend matching the schema: 'node:started / agent:token / node:completed / node:error / human_gate:paused / cost events / run:completed, each carrying nodeId and a monotonically increasing sequenceNumber.'"
+            },
+            {
+              "issue": "Section 3 says seqNo 'lets the desktop renderer batch high-frequency token events' and the state diagram/transport are otherwise consistent — but the seqNo field name itself is wrong per the schema (sequenceNumber).",
+              "severity": "medium",
+              "fix": "Rename seqNo → sequenceNumber everywhere in this doc to match the canonical schema."
+            },
+            {
+              "issue": "human_gate is described as 'human_gate.pending' (pending) but the canonical schema uses human_gate:paused (and human_gate:resumed for resolution). The state diagram node 'AwaitingGate' is fine but the emitted event name is wrong.",
+              "severity": "medium",
+              "fix": "Use human_gate:paused / human_gate:resumed to match the schema."
+            }
+          ],
+          "gaps": [
+            "Local-vs-cloud section is solid, but the doc never references the LLM layer by its new identity; since AgentRunner 'streams from packages/llm', a one-line note that the provider seam is Relavium-owned (not a 3rd-party SDK) would re-ground it after the pivot. Low priority."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/state-management.md",
+          "issues": [
+            {
+              "issue": "Uses legacy dotted event names throughout: the Mermaid diagram routes 'node.token', 'node.started / completed / cost'; the realtime-pipeline section lists 'node.started, node.completed, cost.update, run.complete, human_gate.pending'; the double-buffer text keys on 'node.token'. All are legacy per the canonical sse-event-schema.md (now agent:token, node:completed, run:completed, human_gate:paused).",
+              "severity": "high",
+              "fix": "Reconcile to the canonical colon-namespaced names. Note the streaming token event is now agent:token (not node.token) — important because the double-buffer is described as keyed on that event."
+            },
+            {
+              "issue": "Realtime pipeline says 'Events carry a seqNo; the manager detects gaps' — field is sequenceNumber in the canonical schema.",
+              "severity": "medium",
+              "fix": "Rename seqNo → sequenceNumber."
+            }
+          ],
+          "gaps": [
+            "The double-buffer is described as keying tokens per node by nodeId — correct — but with the rename to agent:token, confirm the per-node buffer keys off agent:token.nodeId. Worth an explicit note since this is the parallel-stream-corruption correctness point."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/shared-core-engine.md",
+          "issues": [
+            {
+              "issue": "RunEventBus is described as carrying typed run events whose 'contract is the SSE event schema', but the doc does not name events; however it lists ToolNormalizer AND ToolRegistry as packages/core exports while multi-llm-providers.md places ToolNormalizer in packages/llm. Cross-doc ownership conflict for ToolNormalizer.",
+              "severity": "medium",
+              "fix": "Decide the package boundary: keep ToolNormalizer (canonical-tool ↔ provider-wire) in packages/llm and expose only ToolRegistry/dispatch from packages/core, then update this export list. project-structure.md currently lists ToolNormalizer in core's exports too — fix all three to agree."
+            },
+            {
+              "issue": "Provider-fallback section reads cleanly but anchors on the rejected stack indirectly: it points to multi-llm-providers.md for 'the fallback mechanism and cost accounting' which currently describe the Vercel SDK. No direct Vercel mention here, so this is a downstream dependency, not a local edit.",
+              "severity": "low",
+              "fix": "No change needed in this file beyond confirming the multi-llm-providers.md rewrite keeps the fallback/cost cross-link target valid."
+            }
+          ],
+          "gaps": [
+            "Retry/fallback section mentions 'Known failure modes ... are catalogued in the analysis sources' — a dangling reference to docs/analysis rather than a stable reference/ home. Consider promoting that checklist into reference/ and citing it, per the one-canonical-home principle.",
+            "The orchestrator-as-node section says its 'prompt structure, agent-as-tool schema, and selection rules are reference material' but provides no cross-link to where in reference/ that lives (unlike every other claim in the doc, which links). Add the link or note it is not yet written."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/local-first-and-security.md",
+          "issues": [
+            {
+              "issue": "Filesystem row in the Mermaid diagram and the 'What stays on the machine' framing are consistent with the rest of the docs; no Vercel references. Minor: the diagram FS node says '.relavium/*.yaml' while the table and other docs consistently say '.relavium/*.relavium.yaml' for workflows and '*.agent.yaml' for agents.",
+              "severity": "low",
+              "fix": "Make the diagram FS label match: '.relavium/*.relavium.yaml + *.agent.yaml' (or just '.relavium/ workflow + agent YAML') for consistency with overview.md and the table below it."
+            },
+            {
+              "issue": "Secret-handling rule 2 says 'packages/llm fetches the key from the keychain at the moment of the provider call' — correct and survives the LLM pivot, but it implicitly assumes the SDK-passing flow from ADR-0006 ('hands it to the Vercel AI SDK'). After the pivot the key is handed to the internal adapter, not an SDK. No edit needed here (this doc says 'packages/llm', which stays true), but ADR-0006's wording will need the same scrub.",
+              "severity": "low",
+              "fix": "No change in this file; flag ADR-0006 line 23 ('hands it to the Vercel AI SDK') for update during the cross-cutting ADR scrub."
+            }
+          ],
+          "gaps": [
+            "Strong doc overall. One gap given the new abstraction: with hand-rolled adapters making raw HTTPS calls, the security model should state that the adapter is responsible for never logging request bodies/headers (Authorization) — previously implicitly delegated to the SDK. A one-line addition to rule 2 would close it."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/desktop-architecture.md",
+          "issues": [
+            {
+              "issue": "Channels section references the token stream payloads as 'the SSE event schema' (correct cross-link) but the surrounding narrative ('routed to the matching ReactFlow node by nodeId') is consistent. No Vercel reference. The only naming-adjacent risk is that the IPC token stream carries what other docs call node.token — once renamed to agent:token, ensure this doc's 'token stream' wording stays neutral.",
+              "severity": "low",
+              "fix": "Keep 'token stream' wording neutral; no specific event-name strings to change here, but verify after the cross-doc rename that the IPC contract and this doc agree on the streamed event type (agent:token)."
+            },
+            {
+              "issue": "Engine-location claim is correct and well-argued ('the engine runs in the WebView, LLM calls go out over fetch directly to providers'). With the internal abstraction now making raw fetch calls (no SDK), this 'over fetch directly' statement becomes even more literally true and is worth keeping — but note the WebView CSP/connect-src must allow the four provider origins. Not currently mentioned.",
+              "severity": "low",
+              "fix": "Optionally add a one-line note that the Tauri CSP / capability config must allow outbound connections to the provider API origins, since the engine (now with hand-rolled adapters) calls them directly from the WebView via fetch."
+            }
+          ],
+          "gaps": [
+            "No mention of where packages/llm's hand-rolled HTTP calls sit relative to the Tauri HTTP plugin vs the WebView's native fetch. The plugin table lists 'HTTP plugin — outbound HTTP for the http_request built-in tool', implying LLM calls use WebView fetch, not the plugin. Worth one clarifying line now that the LLM layer owns its own transport."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/cloud-phase-2.md",
+          "issues": [
+            {
+              "issue": "'What stays the same' section asserts 'packages/core and packages/llm run in cloud workers exactly as they run on a user's machine' and cross-links multi-llm-providers.md — correct and survives the pivot (the internal abstraction is even more portable than an SDK). No Vercel reference. The cross-link target just needs to remain valid after the rewrite.",
+              "severity": "low",
+              "fix": "No edit needed; the claim is actually strengthened by the internal-abstraction decision (Relavium-owned code runs identically on Node workers and in the WebView). Verify the multi-llm-providers.md cross-link still resolves after its rewrite."
+            },
+            {
+              "issue": "Server-side key store row says cloud keys 'instead of the OS keychain' are handed to the same packages/llm — consistent. No change for the LLM pivot.",
+              "severity": "low",
+              "fix": "None."
+            }
+          ],
+          "gaps": [
+            "Phase-2 doc is well-scoped and clearly marked. Given the new abstraction explicitly must run on 'a Node worker', this doc could add one sentence confirming the LLMProvider seam is runtime-agnostic (Node worker + Bun + WebView), reinforcing the 'engine does not change' claim. Optional."
+          ]
+        }
+      ]
+    },
+    "revDec": {
+      "directory": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/",
+      "filesReviewed": 11,
+      "overallVerdict": "The decisions/ corpus is high-quality, internally consistent in tone, and faithfully follows the condensed-MADR house style (H1 + bold Status/Date/Related, Context/Decision/Consequences with Positive/Negative, cross-links to siblings and tech-stack.md, specs cited not restated). Numbering is clean (0001-0010, zero-padded), dates are uniform ISO 2026-06-03, and the README routing table (two ADR spaces, mermaid decision tree) is accurate and well-conceived. The ONE structural problem is the multi-LLM decision: ADR-0004 (Vercel AI SDK) is now contradicted by the new directive to build an internal @relavium/llm abstraction with hand-rolled per-provider adapters. ADR-0004 must NOT be rewritten (MADR rule: preserve history) — it must be marked Superseded and a new ADR-0011 (LLM abstraction seam) added. Notably, project-structure.md and the glossary ALREADY describe the per-provider-adapter shape, so the docs are internally split: ADR-0004/tech-stack/architecture say Vercel AI SDK, while project-structure/glossary describe Relavium-owned adapters. Secondary findings: an unused **Deciders** field in the template that no ADR uses, a Proposed-vs-Accepted contradiction between the template and the README, a status-enum mismatch across three files, and several genuinely missing ADRs (LLM abstraction, monorepo/tooling, error-handling/observability, testing strategy, MCP). Specific per-file findings below.",
+      "fileFindings": [
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0004-vercel-ai-sdk-multi-llm.md",
+          "issues": [
+            {
+              "issue": "Core conflict with the new directive. The whole ADR decides 'We use the Vercel AI SDK as the multi-LLM provider layer', which is exactly the choice the user has now rejected on preference grounds (no Vercel products) in favor of a Relavium-owned internal abstraction with hand-rolled per-provider adapters. The ADR is now factually wrong about the project's direction.",
+              "severity": "high",
+              "fix": "Do NOT rewrite the body (MADR rule, echoed in this file's own template and README: superseded ADRs are preserved verbatim). Change only the Status line to 'Superseded by [ADR-0011](0011-internal-llm-abstraction-over-vendor-sdks.md)' (next free number), keep the Date, and add a one-line forward pointer. Create ADR-0011 carrying the new decision and full rationale."
+            },
+            {
+              "issue": "The new chosen approach is literally listed here as rejected option #3: 'Per-provider official SDKs, normalized by hand — maximum control, maximum boilerplate', dismissed because 'Hand-rolling per-provider SDKs gives the most control but reimplements precisely the streaming/tool-normalization work the SDK already provides.' The superseding ADR-0011 must directly rebut this exact sentence so the reversal is reasoned, not silent.",
+              "severity": "high",
+              "fix": "In ADR-0011's Decision, explicitly address why the 'maximum boilerplate' objection is now accepted: the seam (modelId + messages + tools in -> normalized chunk stream + cost record out, no vendor type crossing it) is the immovable contract; adapters are thin and deliberately reversible; Anthropic + Gemini get dedicated adapters, OpenAI + DeepSeek share one OpenAI-compatible adapter; and name the migration trigger (sustained provider-drift cost or a must-have non-hand-rollable capability) that would justify adopting a thin TS lib behind the same seam — never the Vercel AI SDK."
+            },
+            {
+              "issue": "Negative-consequence mitigation already anticipates the reversal ('Mitigated by keeping packages/llm a thin, swappable wrapper rather than leaking SDK types across the engine'). This is the seam the new direction formalizes — good provenance, but it reads as self-undermining once superseded.",
+              "severity": "low",
+              "fix": "Leave as-is in the superseded body; reference it in ADR-0011 as evidence the swap was always architecturally cheap (the seam was a stated invariant from day one)."
+            }
+          ],
+          "gaps": [
+            "No version of this ADR ever pinned 'v4' — the body says 'Vercel AI SDK' generically while tech-stack.md and architecture/multi-llm-providers.md say 'v4'. Minor, but the version discipline (versions only in tech-stack.md) is correctly followed by the ADR itself."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/README.md",
+          "issues": [
+            {
+              "issue": "Index table still lists ADR-0004 as 'Accepted'. After supersession it will be stale.",
+              "severity": "high",
+              "fix": "Update the 0004 row Status to 'Superseded by 0011' (linked) and add the new 0011 row 'Internal LLM abstraction over vendor SDKs | Accepted | <date>'."
+            },
+            {
+              "issue": "'Creating a new ADR' step 3 says: 'Start at status Accepted once the decision is settled.' This contradicts adr-template.md, whose Status is 'Proposed' and whose comment says 'start with Status: Proposed. Flip to Accepted in a separate commit.' Two binding instructions disagree on the starting status.",
+              "severity": "medium",
+              "fix": "Pick one workflow. Given every existing ADR is born 'Accepted' and dated the same day, align the template's comment to the README (born-Accepted) OR align the README to the template (Proposed->Accepted). Recommend documenting both as valid but making them consistent."
+            },
+            {
+              "issue": "The 'Format' section lists four sections ('then four sections:') but then enumerates only three bullets (Context, Decision, Consequences). Off-by-one wording.",
+              "severity": "low",
+              "fix": "Change 'then four sections' to 'then three sections' (Consequences splitting into Positive/Negative is a sub-split, not a fourth top-level section)."
+            },
+            {
+              "issue": "'Creating a new ADR' step 2 references 'bold Status / Date / Related lines' but the adr-template.md also has a 'Deciders' line. The README omits Deciders; the template includes it; no actual ADR (0001-0010) uses Deciders. Three-way inconsistency on which metadata fields are canonical.",
+              "severity": "medium",
+              "fix": "Decide whether Deciders is part of the house style. Since 0001-0010 omit it and documentation-style.md §7's required structure also omits it, remove Deciders from adr-template.md (or add it to all ADRs). The README and documentation-style.md should then agree with the template."
+            }
+          ],
+          "gaps": [
+            "The README index has no 'Status' legend explaining the enum (Accepted/Proposed/Deprecated/Superseded). Minor, but would help once the first Superseded row appears."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0003-pure-ts-engine-not-langgraph-python.md",
+          "issues": [
+            {
+              "issue": "Last Negative bullet: 'TypeScript's agent/LLM tooling ecosystem is younger than Python's; mitigated by the Vercel AI SDK choice in ADR-0004.' Once ADR-0004 is superseded, this mitigation points at a rejected decision and the rationale weakens (internal hand-rolled adapters do NOT borrow ecosystem maturity the way a popular SDK would).",
+              "severity": "medium",
+              "fix": "This ADR stays Accepted (the pure-TS engine decision is untouched), so per MADR do not rewrite history. Instead, note in ADR-0011 that it inherits and re-answers this concern: the mitigation shifts from 'a mature SDK' to 'a deliberately thin seam plus the official per-provider SDKs (which are themselves mature).' Optionally add a forward-link from 0003 to 0011 in the Related line (allowed: adding a cross-link is not rewriting reasoning)."
+            },
+            {
+              "issue": "Related line links ADR-0004 as the paired multi-LLM decision. After supersession the canonical sibling is ADR-0011.",
+              "severity": "low",
+              "fix": "Add ADR-0011 to the Related line (keep 0004 too, for history). The body prose 'The engine pairs with the multi-LLM layer in [ADR-0004]' may remain as historical context but ideally gains a parenthetical '(now [ADR-0011])'."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0002-vite-react-tanstack-not-nextjs.md",
+          "issues": [
+            {
+              "issue": "Body references ADR-0004 twice as 'the multi-LLM streaming layer chosen in ADR-0004' / 'the multi-LLM streaming layer chosen in [ADR-0004]'. The argument (Next.js edge/RSC is a poor host for the streaming layer) survives the supersession, but the citation target should be the live ADR.",
+              "severity": "low",
+              "fix": "After ADR-0011 exists, add it to the Related line alongside 0004 and consider a '(superseded by ADR-0011)' parenthetical at the in-prose citation. The substantive reasoning needs no change."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0006-os-keychain-for-api-keys.md",
+          "issues": [
+            {
+              "issue": "Decision prose: 'When the engine needs a key, the backend reads it and hands it to the Vercel AI SDK ([ADR-0004]).' This bakes the Vercel SDK into the keychain ADR. With the internal abstraction, the key is handed to the @relavium/llm adapter, not the Vercel SDK.",
+              "severity": "medium",
+              "fix": "This ADR stays Accepted. Do not rewrite history, but this is a factual implementation reference rather than the core decision, so a light correction is defensible: change 'hands it to the Vercel AI SDK' to 'hands it to the packages/llm provider adapter' and update the citation to ADR-0011. If strict no-edit policy is preferred, instead add ADR-0011 to Related and let ADR-0011 restate the key-handoff path."
+            },
+            {
+              "issue": "Related line lists ADR-0004 as a sibling. Should track the live LLM ADR.",
+              "severity": "low",
+              "fix": "Add ADR-0011 to the Related line (retain 0004 for history)."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0008-local-first-phase-1-cloud-phase-2.md",
+          "issues": [
+            {
+              "issue": "Body: 'LLM API calls go directly from that machine to the providers (see ADR-0004)'. Citation points to soon-superseded ADR.",
+              "severity": "low",
+              "fix": "Add ADR-0011 to the Related line and update the in-prose citation to ADR-0011 (or '(now ADR-0011)'). The local-first decision itself is unaffected."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0001-tauri-v2-over-electron.md",
+          "issues": [],
+          "gaps": [
+            "Solid. References ADR-0002/0005/0006/0007/0008/0009 correctly; no LLM coupling to fix. The 'Electron retained as documented fallback' framing is a good model for how ADR-0011 should phrase its own migration trigger."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md",
+          "issues": [],
+          "gaps": [
+            "No LLM coupling. House-style compliant. One minor note: it asserts SQLCipher passphrase 'derived from a stable machine secret' while ADR-0006 says the encrypted-file fallback uses 'machine secret + user passphrase' — these are different mechanisms (DB-at-rest vs key-file) and the ADRs correctly call that out, so no conflict."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0007-desktop-is-not-an-ide.md",
+          "issues": [
+            {
+              "issue": "Related line links to [vision.md](../vision.md) and [product-constraints.md](../product-constraints.md) (good — both exist). No issue with content. Note it is the only ADR linking vision.md; consistent enough.",
+              "severity": "low",
+              "fix": "No action required; included only to confirm cross-links resolve."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0009-git-native-workflow-yaml.md",
+          "issues": [],
+          "gaps": [
+            "Compliant and well cross-linked (0007, 0008, product-constraints, competitive analysis). No LLM coupling."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0010-zustand-direct-subscriptions-for-reactflow.md",
+          "issues": [],
+          "gaps": [
+            "Compliant. Only ADR with a 2-item Related line (0002 + tech-stack) which is fine given its narrow scope."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/adr-template.md",
+          "issues": [
+            {
+              "issue": "Template includes a '**Deciders**: @cemililik' metadata line that NONE of ADR-0001..0010 use, and which documentation-style.md §7's 'Required structure' also omits. The template is out of sync with both the actual corpus and the binding style guide.",
+              "severity": "medium",
+              "fix": "Either remove the Deciders line from the template (to match every shipped ADR and §7) or add Deciders retroactively to all ten ADRs and to §7. Removing is far cheaper and matches existing practice."
+            },
+            {
+              "issue": "Template Status defaults to 'Proposed' with a comment instructing 'Flip to Accepted in a separate commit', but README step 3 says start at 'Accepted', and all ten ADRs were born 'Accepted' on the same date. The template's prescribed workflow does not match observed practice.",
+              "severity": "medium",
+              "fix": "Reconcile with decisions/README.md (see that file's finding). If born-Accepted is the real workflow, change the template default and comment accordingly."
+            }
+          ],
+          "gaps": []
+        }
+      ],
+      "crossCutting": [
+        "ACTION 1 (highest priority): Add ADR-0011 'Internal LLM abstraction over vendor SDKs' (or similar slug, e.g. 0011-internal-llm-abstraction-not-vercel-ai-sdk.md) that supersedes ADR-0004. It must: (a) state the decision — a Relavium-owned LLMProvider seam expressed only in Relavium/Zod types, implemented by thin hand-rolled adapters over each provider's official TS SDK (Anthropic + Gemini dedicated, OpenAI + DeepSeek sharing one OpenAI-compatible adapter); (b) define the immovable contract (modelId + messages + tools in -> normalized chunk stream + cost record out, no vendor type crossing the seam) and list the required capabilities (streaming tokens, tool/function calling, usage+cost accounting, per-agent fallback chains, runs on both Node worker and Tauri desktop); (c) walk the alternatives the user raised — Vercel AI SDK (rejected on preference: no Vercel products), LangChain/LangChain.js (rejected: heavy, vendor lock-in, ecosystem younger argument doesn't justify it), pure internal (chosen); (d) record the migration stance — internal-first, adopt a thin TS lib behind the SAME seam only if a named trigger fires (sustained provider-drift maintenance cost OR a must-have capability not economically hand-rollable), never the Vercel AI SDK; (e) rebut ADR-0004 option-3's 'maximum boilerplate' dismissal directly.",
+        "ACTION 2: Flip ADR-0004 Status to 'Superseded by ADR-0011' (link forward) and DO NOT touch its body — this is mandated by the corpus's own MADR rules (README 'Creating a new ADR' step 4; documentation-style.md §7; adr-template.md comment).",
+        "ACTION 3: Update decisions/README.md index — change 0004 row to Superseded, add 0011 row.",
+        "ACTION 4: Update non-ADR docs that still assert Vercel AI SDK (these are OUTSIDE decisions/ but are the cross-link targets the ADRs reference, and they now contradict the new direction): docs/tech-stack.md line 18 (Multi-LLM row), lines 30-33 (Notes); docs/architecture/multi-llm-providers.md (entire doc wraps 'Vercel AI SDK v4' — mermaid node line 18, lines 4/27/36/143); docs/architecture/overview.md lines 23/74/105; docs/architecture/README.md line 28; docs/standards/architectural-principles.md line 38 ('multi-LLM streaming goes through the Vercel AI SDK'); docs/runbooks/local-dev-setup.md line 44; docs/README.md line 3. documentation-style.md §5 line 85 lists 'Vercel AI SDK' as an example of an allowed external link — harmless but could be swapped to 'provider SDK docs'.",
+        "INTERNAL CONTRADICTION ALREADY PRESENT: project-structure.md line 61 and glossary.md line ~99 ALREADY describe Relavium-owned per-provider adapters (AnthropicAdapter/OpenAIAdapter/GeminiAdapter/DeepSeekAdapter via @relavium/llm) with NO mention of Vercel — i.e. these two docs already match the NEW direction and contradict ADR-0004/tech-stack/architecture. The new ADR-0011 will make project-structure.md and glossary.md the correct ones; this is good news (less to change) but confirms the docs were already drifting.",
+        "MISSING ADRs the project clearly needs (none exist; numbering would continue 0011+): (1) LLM abstraction seam — the ACTION-1 ADR above, the most urgent; (2) Monorepo + tooling decision (Turborepo + pnpm + Vitest + Playwright) — referenced everywhere in tech-stack/project-structure/architectural-principles but never given a 'why' ADR; (3) Error handling, retry/backoff, and observability/logging strategy across the engine (fallback-chain semantics live in architecture but the cross-cutting error model has no ADR); (4) Testing strategy ADR (Vitest unit + Playwright e2e + CLI-as-test-harness is asserted as principle but undecided in an ADR); (5) MCP (Model Context Protocol) adoption as the tool-integration mechanism — it is a real architectural commitment in glossary/reference but has no ADR; (6) optionally a Better Auth ADR for Phase 2 (currently only a tech-stack row). Prioritize (1) now, (2) and (4) soon, the rest as the architecture lands.",
+        "HOUSE-STYLE / CONSISTENCY (decisions/ + standards/): (a) adr-template.md 'Deciders' field is used by zero ADRs and is absent from documentation-style.md §7 — remove it or apply it everywhere; (b) Proposed-vs-Accepted starting-status contradiction between adr-template.md and decisions/README.md step 3 — reconcile; (c) status enum differs across three files: documentation-style.md §7 lists 'Proposed | Accepted | Deprecated | Superseded', adr-template.md comment lists the same four, but decisions/README.md never enumerates them and uses only 'Accepted' — once a Superseded appears, make sure the README, template, and §7 all agree; (d) decisions/README.md 'Format' says 'four sections' but lists three — fix to three.",
+        "POSITIVES worth preserving: numbering is clean and zero-padded; every ADR has consistent Status/Date/Related metadata and Context/Decision/Consequences(Positive/Negative); cross-linking between sibling ADRs and to tech-stack.md is thorough and bidirectional in most cases; the two-ADR-space routing table (product vs cloud) with the mermaid decision tree is accurate and a genuinely good design; specs are cited not restated (one-canonical-home rule honored); dates are uniform ISO. The supersession is the main work; the rest of the corpus is in good shape."
+      ]
+    },
+    "revRef": {
+      "directory": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/",
+      "filesReviewed": 23,
+      "overallVerdict": "Strong, coherent reference quadrant — well cross-linked, genuinely DRY, and consistent on the immovable contracts (RunEvent union, IPC primitives, config resolution, YAML specs, secrets-never-cross-the-boundary). The single biggest issue created by the new multi-LLM decision is structural, not textual: the reference docs contain NO literal \"Vercel\"/\"AI SDK\" strings (good), but they DELEGATE the entire LLM/provider contract to architecture/multi-llm-providers.md and ADR-0004, both of which are Vercel-saturated and now wrong. Because of that delegation there is currently NO canonical home in the reference quadrant for the new Relavium-owned LLMProvider seam (modelId + messages + tools in -> normalized chunk stream + cost record out, no vendor type crossing). This is both a correctness gap (cross-links now point at stale content) and a one-canonical-home gap (the immovable seam has no DRY home). Recommended: add reference/shared-core/llm-provider-seam.md as the canonical home for the seam + normalized chunk/usage/cost types, repoint agent-yaml-spec and shared-core/README at it, and have architecture/multi-llm-providers.md + ADR-0004 be rewritten/superseded to cite it. Secondary issues: dated/inconsistent model ids (gpt-4o, gemini id format), SSE schema lacks any cost event though cost streaming is promised elsewhere, node-types \"nine\" miscount and parallel/merge engine-enum collision, and a model_catalog FK design that fights the provider-agnostic seam and cross-provider fallback. None of these block the docs; they are accuracy/consistency fixes plus one new canonical file.",
+      "crossCutting": [
+        "NEW LLM DECISION — the immovable seam has no canonical home in reference/. The reference quadrant's own README (line 21) says shared-core covers 'packages/core AND packages/llm', yet there is NO reference/shared-core file documenting @relavium/llm. The LLMProvider seam (modelId + messages + tools in; normalized chunk stream + cost record out; no vendor type ever crossing) is the new immovable contract — by the reference quadrant's own charter ('single source of truth for every Relavium contract, schema, and shape') it MUST have a canonical home here. Today every link about the LLM layer (agent-yaml-spec.md lines 6/47/78, shared-core/README.md line 3 & footer) points OUT to architecture/multi-llm-providers.md, which is entirely built on 'Vercel AI SDK v4' (its mermaid diagram, Context section, streamText/streamObject references, ADR-0004 citation). FIX: create reference/shared-core/llm-provider-seam.md as the canonical home for the seam interface, the normalized ProviderChunk/StreamEvent shape, the UsageRecord/CostRecord shape, the adapter map (Anthropic dedicated, Gemini dedicated, OpenAI+DeepSeek shared OpenAI-compatible adapter), and the fallback-chain contract; then repoint the reference cross-links at it and demote architecture/multi-llm-providers.md to narrative that cites it.",
+        "VERCEL/LANGCHAIN COUPLING IS UPSTREAM OF reference/, NOT INSIDE IT. Confirmed via grep: zero 'Vercel'/'ai-sdk' strings in reference/. The decision-flagging the orchestrator asked for therefore lands on: architecture/multi-llm-providers.md (Vercel throughout), decisions/0004-vercel-ai-sdk-multi-llm.md (the ADR itself — must be superseded, NOT by a Vercel choice), tech-stack.md line 18 & 30-32 (Multi-LLM = Vercel AI SDK v4; LiteLLM dismissed), and the architecture-decisions MEMORY file lines 16/17/34 (Vercel AI SDK v4; '@langchain/langgraph'; packages/llm = 'Vercel AI SDK wrappers'). These are outside the reviewed directory but every LLM cross-link in reference/ resolves into them, so they must be updated in lockstep or the reference docs become misleading. packages/llm description in the memory ('Provider adapters (Vercel AI SDK wrappers)') directly contradicts the new 'hand-rolled adapters over official SDKs' direction.",
+        "MODEL-ID HYGIENE for a mid-2026 product. Across reference/ the only non-Anthropic concrete model ids are 'gpt-4o' (agent-yaml-spec, workflow-yaml-spec) and 'gemini-2.5-pro'. 'gpt-4o' is a 2024-era id and reads stale in examples; pick a current/placeholder convention and apply consistently. Also a cross-doc format drift: reference uses 'gemini-2.5-pro' while architecture/multi-llm-providers.md line 93 uses 'gemini-2-5-pro' (dashes vs dots) — agree on ONE canonical model-id grammar since modelId is the seam's primary key and the LSP/completion + cost-catalog lookups depend on exact-match ids.",
+        "DEEPSEEK UNDER-SPECIFIED relative to its first-class status. The decision names DeepSeek a day-one provider (sharing the OpenAI-compatible adapter), and agent-yaml-spec lists 'deepseek' as a valid provider, but NO reference doc shows a DeepSeek example, model id, base_url, or notes that it routes through the OpenAI-compatible adapter. The new llm-provider-seam.md should state the adapter map explicitly (anthropic->dedicated, google->dedicated, openai+deepseek->shared OpenAI-compatible) so the 'provider' field's relationship to the adapter is canonical rather than implied.",
+        "FALLBACK-CHAIN SHAPE DRIFT across three docs. agent-yaml-spec uses fallback_chain entries of { model, provider, max_attempts }; the architecture doc uses { model, attempts } (no provider, different key name); the database-schema stores fallback_chain inside agents.config JSON with no shape note. Since fallback is one of the five seam-required capabilities and a headline feature, lock ONE shape (the reference's { model, provider, max_attempts }) and have the architecture doc cite it instead of restating a divergent form.",
+        "COST-EVENT GAP IN THE CANONICAL EVENT UNION. sse-event-schema.md's RunEvent union has NO cost/usage event type, yet: its own intro promises 'cost waterfalls' as a live-rendered concern; runStore (store-shapes) has a costAccumulator fed 'directly by the RunEvent stream'; tauri-plugins and ipc-contract say channels stream 'cost updates'; and architecture/multi-llm-providers emits 'cost.update events'. Today cost only rides inside node:completed.tokensUsed (no USD, no per-token-chunk cost). Decide explicitly: either (a) cost is derived client-side from tokensUsed + model_catalog pricing (then say so and drop 'cost update' as a stream event everywhere), or (b) add a first-class cost/usage event to the union. The seam's required 'usage+cost accounting' output makes this a contract-level decision, not cosmetic.",
+        "DESKTOP-IS-A-PROXY CONTRADICTION for LLM calls. ipc-contract.md line 75 states the Rust backend makes LLM streaming calls ('As LLM tokens arrive from the streaming HTTP response (reqwest with the stream feature)'), and keychain-and-secrets says the Rust backend attaches the Authorization header. But the engine + @relavium/llm is pure TypeScript and (per the new decision) must run inside a Tauri desktop context AND a Node worker via the same seam. If @relavium/llm runs in the WebView/JS side, the streaming HTTP call is NOT reqwest-in-Rust; if it runs in Rust, then @relavium/llm is not the thing making the call. Clarify where the seam executes on desktop (JS engine in WebView calling fetch, vs Rust calling reqwest) because keychain access, AbortController cancellation, and cost accounting all hinge on it. This is the 'runs on BOTH a Node worker and inside a Tauri desktop context' requirement and the docs are currently inconsistent about it."
+      ],
+      "fileFindings": [
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/README.md",
+          "issues": [
+            {
+              "issue": "Line 3 claims this section documents 'packages/core AND packages/llm', and the footer table lists store-shapes, node-types, built-in-tools, mcp-integration — but there is NO file documenting packages/llm (@relavium/llm). Under the new decision the LLMProvider seam is the most important new contract and has no canonical home here.",
+              "severity": "high",
+              "fix": "Add a row + new file reference/shared-core/llm-provider-seam.md ('The @relavium/llm provider seam: LLMProvider interface, normalized chunk stream, usage/cost record, adapter map, fallback contract'). This makes the reference quadrant honor its own DRY/one-canonical-home charter for the LLM layer."
+            }
+          ],
+          "gaps": [
+            "No canonical reference for @relavium/llm despite the README promising packages/llm coverage."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/agent-yaml-spec.md",
+          "issues": [
+            {
+              "issue": "Lines 6, 47, and 78 are the only places an agent's model/provider/fallback semantics are anchored, and all three point to architecture/multi-llm-providers.md, which is fully Vercel-AI-SDK-based and now contradicts the internal-abstraction decision. The agent spec's authoritative LLM home is therefore stale.",
+              "severity": "high",
+              "fix": "Repoint these links to the new reference/shared-core/llm-provider-seam.md for the seam/adapter/fallback contract and keep only model-matrix/pricing references going to the model catalog (database-schema.md). The agent file shape itself is correct and needs no field change."
+            },
+            {
+              "issue": "Line 78 attributes 'cross-provider tool-schema normalization' to @relavium/llm but the only place that normalization is described is the Vercel-based architecture doc. The normalization contract (Relavium canonical tool def -> per-provider shape, in Zod types only) is a seam guarantee with no canonical home.",
+              "severity": "medium",
+              "fix": "Document tool-schema normalization as part of the new llm-provider-seam.md (it is one of the five required seam capabilities) and cite it from here."
+            },
+            {
+              "issue": "Example model ids 'gpt-4o' (lines 19, 70, 99) and 'gemini-2.5-pro' read dated for a mid-2026 product and use a grammar that diverges from the architecture doc ('gemini-2-5-pro').",
+              "severity": "low",
+              "fix": "Standardize on one model-id grammar and refresh non-Anthropic example ids; note that modelId is the seam's exact-match key so the catalog and examples must agree."
+            }
+          ],
+          "gaps": [
+            "No DeepSeek example despite it being a listed provider and day-one target.",
+            "Does not state that 'provider' maps to an adapter (anthropic/google dedicated; openai+deepseek shared OpenAI-compatible) — that mapping currently lives nowhere canonical."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/workflow-yaml-spec.md",
+          "issues": [
+            {
+              "issue": "Inline agents in workflows carry model/provider/fallback_chain (lines 106-123, 281-318) but the doc never links to the LLM seam home for what those mean operationally — it relies on agent-yaml-spec which in turn relies on the stale architecture doc.",
+              "severity": "low",
+              "fix": "After the new seam doc exists, add it to the Related line so the LLM semantics of inline agents resolve to a current canonical home."
+            },
+            {
+              "issue": "Repeated 'gpt-4o' example ids (lines 120, 296) inherit the same dated/inconsistent model-id concern.",
+              "severity": "low",
+              "fix": "Refresh to the standardized model-id convention chosen for the seam."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/sse-event-schema.md",
+          "issues": [
+            {
+              "issue": "The RunEvent discriminated union (lines 38-66) contains no cost/usage event, yet cost streaming is promised here (intro), in store-shapes (costAccumulator fed by the stream), in ipc-contract/tauri-plugins (channels stream 'cost updates'), and in the architecture doc (cost.update events). The seam's required usage+cost accounting output has no event-level representation.",
+              "severity": "high",
+              "fix": "Decide and document explicitly: either add a cost/usage event variant to the RunEvent union (with the normalized UsageRecord shape from the seam doc), or state that cost is derived client-side from node:completed.tokensUsed + catalog pricing and remove 'cost update' as a stream concept elsewhere. Keep the two statements consistent across all surface docs."
+            },
+            {
+              "issue": "node:completed.tokensUsed and the GateDecision/usage payloads carry no USD or model-pricing data; combined with the absence of a cost event, the 'cost waterfall' feature has no wire source defined.",
+              "severity": "medium",
+              "fix": "Cross-reference the seam's CostRecord and the model_catalog pricing source so the cost-waterfall data path is unambiguous."
+            }
+          ],
+          "gaps": [
+            "No event marks fallback-chain transitions (primary model exhausted -> next model engaged). Given fallback is a headline feature and a seam requirement, a node:fallback / agent:fallback event would let surfaces show 'switched to GPT-4o' live; currently a provider switch is invisible in the stream."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/ipc-contract.md",
+          "issues": [
+            {
+              "issue": "Line 75 states LLM tokens arrive from a streaming HTTP response made with 'reqwest (stream feature)' on the Rust side, implying the LLM call originates in Rust. This conflicts with @relavium/llm being a pure-TS seam that must run inside the Tauri context AND a Node worker. If the TS engine makes the call, it is fetch in the WebView, not reqwest in Rust.",
+              "severity": "medium",
+              "fix": "Clarify execution locus: state whether the @relavium/llm seam runs in the WebView (JS fetch + AbortController, keychain read via an IPC command that returns the key only to the in-process engine) or in Rust. The current text reads as a Rust-native LLM client, which contradicts the one-language-TS engine and the seam's dual-runtime requirement."
+            },
+            {
+              "issue": "Commands table has set_provider_key/get_key_status but no command to enumerate models or read the model catalog/pricing the seam needs at call time for cost accounting.",
+              "severity": "low",
+              "fix": "Consider a list_models / get_model_catalog command (or confirm the catalog is read directly via SQL plugin) so the seam's cost path has a defined IPC source on desktop."
+            }
+          ],
+          "gaps": [
+            "No IPC command surfaces fallback-chain configuration validation or provider-adapter availability to the UI."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/config-spec.md",
+          "issues": [
+            {
+              "issue": "config.toml [preferences] default_model = 'claude-sonnet-4-6' and project [defaults] model carry a bare model id with no provider, but the seam keys on (provider, modelId) and the same model string could in principle differ by adapter. With DeepSeek/OpenAI sharing an adapter this is mostly fine, but the global default has no provider field.",
+              "severity": "low",
+              "fix": "Either document that default_model is provider-inferred from the model-id catalog, or add a default_provider key, so the seam can resolve the adapter deterministically from config."
+            }
+          ],
+          "gaps": [
+            "No config surface for choosing/ordering provider adapters or for the OpenAI-compatible base_url override that DeepSeek (and self-hosted OpenAI-compatible endpoints) would need — relevant since base_url lives in the DB catalog but user-level override has no config home."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/node-types.md",
+          "issues": [
+            {
+              "issue": "Multiple count/mapping inconsistencies: shared-core/README says 'nine canvas/engine node types'; this file's table lists ~11 concepts and the canvas section says 'nine custom ReactFlow node components' but then documents only 9 while the reconciliation table includes Transform and Subworkflow as additional rows. routes-and-screens.md also says 'All 9 node types' and lists exactly 9 (omitting Transform/Subworkflow). The canonical count is ambiguous.",
+              "severity": "medium",
+              "fix": "State one authoritative count with an explicit split: N user-authorable YAML types vs M canvas components vs the full engine enum, and make README/routes-and-screens cite this file's number rather than asserting their own."
+            },
+            {
+              "issue": "Fan-out and Fan-in both map to engine enum 'parallel' (lines 22-23: parallel, and 'parallel (join)'), but parallel-config (line 100) is a single block describing branch_node_ids + join_strategy. It is unclear whether merge/AggregatorNode is its own engine type or folded into parallel. The YAML has distinct 'parallel' and 'merge' types (workflow-yaml-spec) but the engine enum has only 'parallel'.",
+              "severity": "medium",
+              "fix": "Reconcile: either add a 'merge'/'join' engine enum value, or explicitly state that YAML 'merge' compiles into the join half of a 'parallel' engine node, and make the AggregatorNode strategy list (concat/json_array/best_of_n/custom_js) match the YAML merge_strategy list (concat/object_merge/first/custom) — they currently differ."
+            },
+            {
+              "issue": "AggregatorNode strategies (concat, json_array, best_of_n, custom_js) do not match workflow-yaml-spec merge_strategy values (concat, object_merge, first, custom) nor parallel_config merge_strategy (merge_keys, collect_array, first_wins). Three different vocabularies for the same concept.",
+              "severity": "medium",
+              "fix": "Define one canonical merge-strategy enum and have the canvas labels and YAML keys map onto it in the reconciliation table."
+            },
+            {
+              "issue": "condition_config expression_type includes 'python_ast' (line 96) — inconsistent with the pure-TypeScript, no-Python engine principle and with workflow-yaml-spec where conditions are 'JS expressions'.",
+              "severity": "medium",
+              "fix": "Drop 'python_ast' (or justify it) so the condition/transform expression model is consistently JS/jmespath/jsonlogic and aligned with the no-Python decision."
+            }
+          ],
+          "gaps": [
+            "No node type represents a direct multi-LLM operation distinct from agent; fine, but worth confirming the 'tool' node + agent node fully cover the seam's surface."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/store-shapes.md",
+          "issues": [
+            {
+              "issue": "RunStore.costAccumulator: CostBreakdown is 'fed directly by the RunEvent stream' (lines 86-91) but the RunEvent union defines no cost event (see sse-event-schema finding). The store contract depends on a wire event that does not exist.",
+              "severity": "medium",
+              "fix": "Once the cost-event decision is made in sse-event-schema, align this: either name the cost-bearing event(s) that update costAccumulator, or document that it is derived from node:completed.tokensUsed + catalog pricing."
+            },
+            {
+              "issue": "providerStore (lines 33-38) models keyStatus per ProviderId but has no notion of per-adapter capability or model availability that the new seam introduces (e.g. which adapter/base_url is in play for deepseek vs openai).",
+              "severity": "low",
+              "fix": "Optional: note that provider->adapter resolution and model lists come from the catalog/seam, so the UI doesn't conflate provider id with adapter."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/built-in-tools.md",
+          "issues": [
+            {
+              "issue": "Tool table id 'search_web' (line 27) vs the canvas/desktop 'web_search' usage (workflow-yaml-spec line 158 lists 'web_search' in a node tools array) — tool id drift.",
+              "severity": "low",
+              "fix": "Pick one canonical tool id ('search_web' or 'web_search') and use it in workflow-yaml-spec examples too; tool ids are an exact-match contract."
+            },
+            {
+              "issue": "Tool-schema normalization for these built-in tools across providers is described only in the Vercel-based architecture doc; built-in-tools is the canonical tool catalog but doesn't anchor the normalization contract.",
+              "severity": "low",
+              "fix": "Add a one-line pointer to the new llm-provider-seam.md noting that these tool defs are the canonical input to the seam's tool normalizer."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/mcp-integration.md",
+          "issues": [
+            {
+              "issue": "McpServerRef transport lists 'stdio | sse | websocket' (line 42) while config-spec.md's [[mcp_servers]] transport lists only 'stdio | http' (line 70). Transport vocabularies for MCP servers diverge between the two canonical homes.",
+              "severity": "medium",
+              "fix": "Reconcile the MCP transport enum across mcp-integration.md and config-spec.md (sse vs http vs websocket) to one canonical set; MCP transport is a config contract and must match."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/desktop/database-schema.md",
+          "issues": [
+            {
+              "issue": "agents.model_id is NOT NULL REFERENCES model_catalog(id), and step_executions.model_id / run_costs.model_id similarly FK to model_catalog(id) (lines 125, 217, 298). This hard-couples every agent and step to a catalog row keyed by the local catalog UUID. The new seam treats modelId as a provider-scoped string and supports fallback to models that may not be pre-seeded in the catalog; a strict FK will reject runs that use a model not yet in model_catalog (e.g. a brand-new id or a fallback target).",
+              "severity": "medium",
+              "fix": "Either (a) relax to a soft reference (store the raw provider model-id string + nullable catalog FK), or (b) define an upsert/auto-seed path so any model the seam can address is guaranteed a catalog row. Document how fallback-chain target models get cost-priced when absent from the catalog."
+            },
+            {
+              "issue": "messages table models OpenAI-style fields (role system/user/assistant/tool, tool_calls, tool_call_id, finish_reason) — i.e. the OpenAI wire shape. The new decision forbids any vendor type crossing the seam; persisting in an OpenAI-shaped schema risks re-importing a vendor shape as the de-facto canonical message model.",
+              "severity": "medium",
+              "fix": "State that messages stores the Relavium-normalized message shape (which happens to resemble OpenAI's) and that this is a Relavium-owned schema, not the OpenAI SDK type. Confirm Anthropic/Gemini messages map into it losslessly (e.g. content_parts covers Anthropic content blocks and Gemini parts)."
+            },
+            {
+              "issue": "model_catalog has supports_json_mode, cached_input_cost_per_mtok_microcents, etc. These are capability/pricing fields the seam needs, but there's no field capturing which adapter serves the model (dedicated Anthropic, dedicated Gemini, shared OpenAI-compatible) — relevant now that adapter selection is a Relavium concept, not Vercel's.",
+              "severity": "low",
+              "fix": "Consider an adapter/protocol column (e.g. 'anthropic' | 'gemini' | 'openai_compatible') or document that it's derived from provider, so DeepSeek/OpenAI sharing one adapter is represented in the catalog."
+            },
+            {
+              "issue": "Doc references LangGraph checkpoint tables being dropped (line 58) and cites decision 0003 — correct and consistent with no-LangGraph. No action needed, but confirms the memory file's '@langchain/langgraph' mention (architecture-decisions.md line 17) is the contradiction, not this doc.",
+              "severity": "low",
+              "fix": "No change here; flag architecture-decisions.md memory line 17 ('implementable in TS with @langchain/langgraph') as contradicting decision 0003 and the no-3rd-party-framework stance."
+            }
+          ],
+          "gaps": [
+            "No table or column captures per-run provider-fallback events/attribution, so 'which model actually answered after a fallback' is only inferable from step_executions.attempt_number + model_id, not explicit. Given fallback is a headline feature, an explicit fallback indicator would help cost/debug views."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/desktop/keychain-and-secrets.md",
+          "issues": [
+            {
+              "issue": "Entry naming uses account = '{providerId}:{keyId}' (e.g. anthropic:default, openai:work). With DeepSeek + OpenAI sharing one adapter but being distinct providers/keys, confirm providerId here is the user-facing provider (deepseek) not the adapter (openai_compatible) so keys don't collide.",
+              "severity": "low",
+              "fix": "Add a sentence clarifying providerId in the keychain account is the provider identity (anthropic/openai/google/deepseek), independent of which adapter serves it, so DeepSeek and OpenAI keys are stored separately."
+            },
+            {
+              "issue": "Doc states Rust backend reads the key at call time and attaches the Authorization header (lines 25-31) — same Rust-makes-the-LLM-call assumption as ipc-contract. If the TS seam runs in the WebView, the key must reach the in-process JS engine, not just Rust.",
+              "severity": "medium",
+              "fix": "Align with the ipc-contract clarification on where @relavium/llm executes; if the engine is in the WebView, document the narrow IPC path by which the key reaches the in-process seam without ever being displayed."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/desktop/tauri-plugins.md",
+          "issues": [
+            {
+              "issue": "Line 61 attributes streaming 'token chunks ... cost updates' to channels as RunEvent stream, but the RunEvent union has no cost event (consistency with sse-event-schema gap).",
+              "severity": "low",
+              "fix": "Adjust wording once the cost-event decision is made; if cost is derived client-side, don't call it a streamed event here."
+            },
+            {
+              "issue": "Line 72 ('reqwest keepalive ... LLM streaming calls from Rust') again asserts LLM streaming happens in Rust, reinforcing the locus contradiction with the pure-TS seam.",
+              "severity": "medium",
+              "fix": "Reconcile with the chosen execution model for @relavium/llm on desktop; if the JS engine makes the calls, this reqwest note applies only to the loopback/HTTP mirror or should be removed."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/desktop/routes-and-screens.md",
+          "issues": [
+            {
+              "issue": "Line 54 asserts 'All 9 node types' and enumerates 9 components, but node-types.md's count and component list are ambiguous (see node-types finding). The screens doc restates a count that should be owned by node-types.md.",
+              "severity": "low",
+              "fix": "Replace the hard-coded '9' with a cite to node-types.md so the count has one canonical home."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/cli/commands.md",
+          "issues": [
+            {
+              "issue": "No CLI command exposes provider/model/adapter management beyond the planned 'relavium provider' stub (line 52). With an internal multi-LLM layer, listing available models/adapters and validating a fallback chain from the CLI would be useful, but it's only a planned stub.",
+              "severity": "low",
+              "fix": "When provider subcommands are finalized, ensure they cover: list providers, set/rotate key (keychain), list models (catalog), and validate an agent's fallback chain against available adapters."
+            },
+            {
+              "issue": "Minor typo 'CLi' (line 10).",
+              "severity": "low",
+              "fix": "Fix to 'CLI'."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/vscode/extension-api.md",
+          "issues": [
+            {
+              "issue": "relavium.providerTimeout setting (line 109) and the events projection are fine, but the extension host runs the pure-TS engine in-process and makes LLM calls directly (line 23, 'direct HTTPS to LLM provider APIs'). This is the cleanest statement of the seam's runtime in the whole reference set — it should be the model the desktop docs align TO, since desktop currently says Rust/reqwest makes the calls.",
+              "severity": "low",
+              "fix": "Use this doc's 'engine in-process, direct HTTPS' framing as the canonical seam-runtime statement and make ipc-contract/keychain/tauri-plugins consistent with it (engine-in-WebView making fetch calls), resolving the locus contradiction."
+            },
+            {
+              "issue": "LSP model-id completion/hover with per-token cost (lines 121-124) depends on the model catalog and the seam's exact-match modelId grammar; the dated/inconsistent example ids elsewhere would surface here as wrong completions.",
+              "severity": "low",
+              "fix": "Tie completion source to the canonical model-id grammar chosen for the seam/catalog."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/portal/api-reference.md",
+          "issues": [
+            {
+              "issue": "Doc is correctly fenced as Phase 2 / draft and contains no Vercel coupling. References vision.md and product-constraints.md by relative path (line 10) — verify those exist at docs root (they do at docs/product-constraints.md and docs/vision.md; the link '../../product-constraints.md' from reference/portal/ resolves to docs/product-constraints.md — correct).",
+              "severity": "low",
+              "fix": "No change needed; link targets resolve. Keep as-is."
+            }
+          ],
+          "gaps": [
+            "Phase-2 only; no LLM-seam impact since cloud workers reuse the same @relavium/llm package. Worth one line confirming the cloud worker uses the identical internal seam (not a different provider layer) once the seam doc exists."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/README.md",
+          "issues": [
+            {
+              "issue": "The hub presents the reference quadrant as the single source of truth for 'every Relavium contract, schema, and shape' and lists a shared-core section for '@relavium/core' (line 21) but never @relavium/llm, even though the seam is now a top-tier contract. The map is missing its most important new entry.",
+              "severity": "medium",
+              "fix": "Add @relavium/llm / the LLMProvider seam to the shared-core section of this hub (new llm-provider-seam.md row) so the reference 'map' actually covers the LLM contract it claims authority over."
+            },
+            {
+              "issue": "Line 7 directs readers to architecture/ and decisions/ for rationale; those targets (multi-llm-providers.md, ADR-0004) are now Vercel-stale, so following the hub's own guidance leads to wrong rationale for the LLM layer.",
+              "severity": "low",
+              "fix": "No edit needed in the hub itself beyond the new row, but ensure the architecture/ADR rationale is updated in lockstep so the hub's pointers stay trustworthy."
+            }
+          ],
+          "gaps": [
+            "Hub omits any reference to the LLM provider seam."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/README.md",
+          "issues": [
+            {
+              "issue": "Index is accurate and DRY for the five contracts it lists. No LLM-seam entry, but the seam more naturally belongs under shared-core than contracts, so this file is arguably correct to omit it — flagging only so the placement decision is deliberate.",
+              "severity": "low",
+              "fix": "Confirm the seam home is shared-core (recommended) and leave this contracts index unchanged; if the team decides the seam is a 'contract', add it here instead."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/desktop/README.md",
+          "issues": [
+            {
+              "issue": "Accurate index of the four desktop reference files; no LLM-decision impact. References ADR-0007 (desktop-is-not-an-ide) which exists. No issues.",
+              "severity": "low",
+              "fix": "No change required."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/cli/README.md",
+          "issues": [
+            {
+              "issue": "Accurate one-file index; no LLM coupling. No issues.",
+              "severity": "low",
+              "fix": "No change required."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/vscode/README.md",
+          "issues": [
+            {
+              "issue": "Accurate one-file index; correctly states the extension bundles packages/core and runs in-process. No LLM coupling issues.",
+              "severity": "low",
+              "fix": "No change required."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/portal/README.md",
+          "issues": [
+            {
+              "issue": "Accurate Phase-2 index; correctly fenced as not part of Phase 1. No issues.",
+              "severity": "low",
+              "fix": "No change required."
+            }
+          ],
+          "gaps": []
+        }
+      ]
+    },
+    "revStd": {
+      "directory": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/",
+      "filesReviewed": 4,
+      "overallVerdict": "The four Relavium standards files (README, documentation-style, adr-template, architectural-principles) are well-written, internally cross-linked, and faithful to the documented house style — documentation-style.md in particular is mature and binding-grade. BUT the standards set is materially INCOMPLETE relative to the user's own house standard (OS-Project ships 14 standards; Relavium has 4). The four present standards cover only docs/ADR concerns; there is NO binding rule governing source code, commits, reviews, testing, security, error handling, or logging — even though architectural-principles.md repeatedly promises code rules (\"every surface\", \"full unit test coverage\", \"clean execution interface\") and the engine-first build order assumes a tested engine. Two correctness defects need immediate fixes: (1) architectural-principles.md §2 is now WRONG — it codifies \"multi-LLM streaming goes through the Vercel AI SDK\" as a binding principle, which the new internal-@relavium/llm-abstraction decision reverses; (2) adr-template.md (\"start with Status: Proposed\") and decisions/README.md (\"Start at status Accepted once the decision is settled\") give contradictory ADR-status workflow guidance. architectural-principles.md is also self-labeled \"draft — to be expanded\" with a deferred \"To be expanded\" list, so it is not yet complete as a binding document. Prioritized gap: add code-style-typescript, then testing, error-handling, code-review, commit-style, security-review, logging-and-observability (mirroring the OS-Project set, retargeted from Rust/no_std to the TS monorepo + Tauri + local-first key-handling context).",
+      "fileFindings": [
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/architectural-principles.md",
+          "issues": [
+            {
+              "issue": "Principle 2 (One language — TypeScript) hard-codes the now-reversed Vercel AI SDK choice as a binding rule: 'multi-LLM streaming goes through the Vercel AI SDK, and orchestration is implemented directly in TypeScript.' The new direction is an internal, Relavium-owned abstraction in packages/llm (@relavium/llm) with hand-rolled thin adapters over each provider's official SDK behind a vendor-type-free LLMProvider seam; the Vercel AI SDK is explicitly rejected. A binding principle now asserts something false.",
+              "severity": "high",
+              "fix": "Rewrite the second half of §2 to drop the Vercel AI SDK clause. State that multi-LLM goes through the internal @relavium/llm abstraction (a provider-agnostic LLMProvider seam expressed only in Relavium/Zod types, with thin per-provider adapters), and that no vendor LLM type crosses the seam. Cross-link the new/updated ADR that supersedes ADR-0004 and architecture/multi-llm-providers.md."
+            },
+            {
+              "issue": "The document is self-labeled 'Status: draft — to be expanded' and ends with a 'To be expanded' section listing four principles not yet written (clean execution-mode interface, checkpoint-based resume, cross-provider tool normalization boundary, Zustand direct subscriptions). A binding standard that is admittedly a draft and lists missing rules is incomplete as the enforceable invariant set.",
+              "severity": "medium",
+              "fix": "Flesh out the four deferred principles (or convert them to numbered principles with links to their canonical homes once those architecture docs land) and drop the 'draft' status blockquote when the set is complete. At minimum promote 'cross-provider tool normalization as the boundary between packages/llm and packages/core' into a real numbered principle now, since it is the seam the multi-LLM decision turns on."
+            },
+            {
+              "issue": "The 'cross-provider tool normalization' deferred bullet still frames packages/llm as a normalization layer without naming the no-vendor-types-cross-the-seam contract that is now the immovable part of the architecture. The binding invariant (vendor SDK types never leak past the LLMProvider seam; adapter implementation is reversible) is not captured anywhere as a principle.",
+              "severity": "medium",
+              "fix": "Add an explicit principle: 'Provider-agnostic LLM seam — packages/llm exposes one LLMProvider contract in Relavium/Zod types only; no provider SDK type ever crosses into packages/core. The seam is fixed; the adapter behind it is reversible.' This is the engineering-side rule the multi-LLM ADR depends on."
+            }
+          ],
+          "gaps": []
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/documentation-style.md",
+          "issues": [
+            {
+              "issue": "§5 Links lists 'Vercel AI SDK' as a sample external-URL term ('External URLs (Tauri, Vercel AI SDK, provider docs) may be absolute and inline.'). With the Vercel AI SDK rejected, this example now points readers at a dependency the project no longer uses.",
+              "severity": "low",
+              "fix": "Replace the Vercel AI SDK example with a neutral one, e.g. 'External URLs (Tauri, provider SDK docs, npm packages) may be absolute and inline.'"
+            },
+            {
+              "issue": "§7 documents the ADR status enum and required structure but does not state whether a new ADR starts at Proposed or Accepted — leaving the Proposed-vs-Accepted contradiction between adr-template.md and decisions/README.md unresolved at the place that is supposed to be the canonical style rule.",
+              "severity": "low",
+              "fix": "Add one sentence to §7 fixing the canonical workflow (e.g. 'New ADRs start at Proposed and flip to Accepted in a separate commit once settled' OR 'start Accepted when settled') and make adr-template.md and decisions/README.md both match it."
+            }
+          ],
+          "gaps": [
+            "documentation-style.md is the only style guide and it covers Markdown only. There is no companion code-style standard, so the 'born-compliant' discipline it establishes for docs has no code analog despite architectural-principles §1 assuming a fully tested TS engine."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/adr-template.md",
+          "issues": [
+            {
+              "issue": "The template instructs 'fill it in, and start with Status: Proposed. Flip to Accepted in a separate commit once the decision is settled.' decisions/README.md §'Creating a new ADR' instead says 'Start at status Accepted once the decision is settled.' The two binding sources give contradictory ADR-status workflow guidance. (Compounding this, all 10 existing ADRs are already 'Accepted' with no 'Proposed' history, which matches the README, not the template.)",
+              "severity": "high",
+              "fix": "Pick one workflow and make adr-template.md, decisions/README.md, and documentation-style.md §7 agree. Given the existing corpus is born-Accepted, either (a) change the template comment to allow starting Accepted, or (b) keep Proposed-first and update the README to match — but they must be reconciled."
+            }
+          ],
+          "gaps": [
+            "The template hard-codes '- **Deciders**: @cemililik' as the only decider; fine for solo phase but worth a note that this becomes a real list once contributors join (mirrors OS-Project's solo-phase carve-outs)."
+          ]
+        },
+        {
+          "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/README.md",
+          "issues": [
+            {
+              "issue": "The 'Documents' table lists only the 3 sibling files plus itself and presents the set as complete ('This folder holds the binding rules ... and the engineering principles that govern how the platform is built'). It claims to govern 'how things must be written and built' but binds nothing about source code, commits, tests, reviews, security, errors, or logging — a scope the README itself advertises ('built here').",
+              "severity": "medium",
+              "fix": "Either narrow the README's stated scope to docs+principles, or (preferred, to match house style) expand the index to include the missing code/process standards once created, with a Status column like OS-Project's standards/README.md."
+            },
+            {
+              "issue": "Unlike OS-Project's standards/README.md, the index has no Status column and no 'how to propose a change to a standard' / 'reading order' sections. For a binding-rules folder the change-control process (which ADR motivates a standard; how to supersede it) is itself part of the standard's authority.",
+              "severity": "low",
+              "fix": "Add a 'Proposing a change to a standard' subsection (ADR-first, like OS-Project) and optionally a reading-order list, so standards have a defined amendment path."
+            }
+          ],
+          "gaps": []
+        }
+      ],
+      "crossCutting": [
+        "MISSING STANDARDS (prioritized list of files Relavium should add to docs/standards/, modeled on the OS-Project house set but retargeted from Rust/no_std/kernel to the TypeScript monorepo + Tauri v2 + local-first context). P0 — code-style-typescript.md: tsconfig strictness, ESLint+Prettier as source of truth (CI rejects unformatted), naming, file/module layout for the packages/* + apps/* monorepo, no-`any`/explicit-return-type discipline, Zod-at-boundaries, the rule that no provider SDK type crosses the @relavium/llm seam, public-API doc-comment expectations. This is the single biggest gap and the one architectural-principles §1 (engine-first, fully tested) most depends on.",
+        "P0 — testing.md: test layers for a TS engine (unit on packages/core + packages/llm; contract tests that the LLMProvider seam normalizes every adapter identically; CLI integration as the 'fastest feedback loop' from principle §1; what must have tests — every node type, every adapter, every error path, every bug fix gets a regression test; coverage stance; vitest/whatever runner pinned in tech-stack; CI gates). Engine-first build order is unenforceable without this.",
+        "P1 — error-handling.md: Result/typed-error vs throw policy across engine and adapters; how provider/network/rate-limit/auth failures map into normalized run-events and the per-agent fallback chain; cost-accounting on partial/failed streams; no-leak-of-vendor-error-types past the seam; user-facing vs internal error surfaces (desktop, CLI, VS Code).",
+        "P1 — security-review.md + an error/secrets dimension: Relavium's crown-jewel is API keys in the OS keychain (ADR-0006, principle §6). Need a binding security-review trigger list (anything touching keychain/secret flow, IPC contract, the frontend boundary keys must never cross, MCP tool execution, file-system tools, workflow YAML that can execute code) and a checklist (secrets never to disk/frontend/logs, IPC input validation, redaction). OS-Project's security-review.md is the template; retarget from capabilities/kernel to keychain/IPC/tool-execution.",
+        "P1 — commit-style.md: Conventional Commits + scopes matching the monorepo (core, llm, shared, cli, desktop, vscode, api, portal, ui, docs, standards, adr, deps), trailers (Refs: ADR-NNNN), granularity, AI-authored-commit policy. The MEMORY/house style clearly values this (OS-Project has it).",
+        "P2 — code-review.md: author prep, reviewer checklist that cites the other standards, PR size, the grep-every-rename post-fix sweep discipline (a recurrence the user already codified in OS-Project), solo-phase self-review. Pairs with security-review gate.",
+        "P2 — logging-and-observability.md: structured logging, levels, MANDATORY secret/API-key redaction (ties to principle §6), run-event vs log distinction, how the SSE/run-event stream relates to logs, what desktop/CLI/VS Code surfaces emit. OS-Project's exists; retarget from no_std ring buffers to a Node/Tauri context.",
+        "P3 (consider) — infrastructure.md / release.md equivalents: toolchain pinning, dependency-addition policy (directly relevant: the multi-LLM 'adopt a thin TS library only if a named trigger fires' stance belongs in a dependency policy), supply-chain, and a per-surface release standard (the release-a-surface runbook exists but a binding release standard does not). localization.md is likely N/A given the English-only + Phase-1 scope, but a one-line 'English-only docs/code' rule could fold into documentation-style or code-style.",
+        "CONSISTENCY — three reconciliations needed regardless of new files: (1) strike the Vercel AI SDK from architectural-principles §2 and documentation-style §5 and replace with the @relavium/llm internal-abstraction language; this must land in the same change as the ADR that supersedes ADR-0004. (2) Resolve the Proposed-vs-Accepted ADR-status contradiction across adr-template.md, decisions/README.md, and documentation-style §7. (3) When ADR-0004 is superseded, the new principle wording in architectural-principles §2 should cite the superseding ADR, per the project's own 'a proposal that breaks a principle needs an ADR' rule.",
+        "HOUSE-STYLE ALIGNMENT — the user's MEMORY notes OS-Project as the preferred reference for the docs taxonomy + ADR format. Relavium's standards README already mirrors the OS-Project 'standard vs ADR vs guide' framing well; completing the standards set to match OS-Project's coverage (code/test/review/commit/security/error/logging) is the concrete way to honor the documented house standard."
+      ]
+    }
+  },
+  "fixPlan": {
+    "editFixes": [
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0004-vercel-ai-sdk-multi-llm.md",
+        "change": "Change ONLY the Status line from 'Accepted' to 'Superseded by [ADR-0011](0011-internal-llm-abstraction.md)' and add a one-line forward pointer at the top. Do NOT rewrite the body (MADR: preserve history verbatim). Keep the Date. This is the file being git-renamed (see renames) so update the link target to the new slug too.",
+        "priority": "high",
+        "reason": "ADR-0004 decides 'we use the Vercel AI SDK', the exact choice the user rejected on preference grounds. Every architecture/reference doc links to it as the authoritative, Accepted multi-LLM decision, so until it is marked Superseded the whole corpus points at a wrong settled choice. MADR rule (echoed in this repo's adr-template.md and decisions/README.md) forbids rewriting; supersede-and-link-forward is the only correct move."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/README.md",
+        "change": "In the index table, change the 0004 row to reflect the new title/slug ('Internal LLM abstraction over vendor SDKs' pointing at 0004-internal-llm-abstraction.md) and Status 'Superseded'. Add a new 0011 row (Accepted, 2026-06-03) for the internal @relavium/llm abstraction ADR. Also fix step 3 of 'Creating a new ADR' ('Start at status Accepted once the decision is settled') to match the adr-template workflow (Proposed -> Accepted) — see crossCuttingThemes.",
+        "priority": "high",
+        "reason": "The index is the routing table for decisions/; it must show the supersession and the new ADR or readers land on stale content. The 'Start at status Accepted' line directly contradicts adr-template.md's 'start with Status: Proposed', a real workflow ambiguity."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/multi-llm-providers.md",
+        "change": "Substantial rewrite. Replace the Vercel AI SDK v4 framing throughout (H1 intro lines 4-5, mermaid 'Vercel AI SDK v4' node line 18, status note lines 27-31, Context lines 36-43, Streaming line 51) with the internal Relavium-owned @relavium/llm abstraction: a single provider-agnostic LLMProvider seam (Relavium/Zod types only, no vendor type crossing), implemented by thin hand-rolled adapters over each provider's official TS SDK (Anthropic + Gemini dedicated; OpenAI + DeepSeek sharing one OpenAI-compatible adapter). Repoint the ADR link (lines 36, 143) to the renamed 0004 slug and/or new ADR-0011. Cite the new reference/shared-core/llm-provider-seam.md as the canonical seam home rather than restating it. Fix the four secondary drifts in this same pass: cost.update->cost:update / node.token->agent:token (lines 19, 53, 120), fallback_chain 'attempts'->'max_attempts' (lines 91-93), 'gemini-2-5-pro'->'gemini-2.5-pro' (line 93), 'micro-units'->'micro-cents' (line 125).",
+        "priority": "high",
+        "reason": "This is the canonical architecture home for the LLM layer and is entirely built on the now-rejected Vercel AI SDK. It is also the single doc concentrating every verified secondary drift (legacy event names, attempts vs max_attempts, gemini id format, micro-units vs micro-cents), so one rewrite pass closes the LLM pivot and all four drift items here."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/overview.md",
+        "change": "Scrub Vercel: mermaid node 'provider adapters (Vercel AI SDK)' (line 23), Context bullet 'Multi-LLM access goes through the Vercel AI SDK v4' (line 74), and the packages/llm bullet 'provider adapters built on the Vercel AI SDK' (lines 105-108). Replace with 'Relavium-owned provider adapters in @relavium/llm behind a vendor-type-free LLMProvider seam'.",
+        "priority": "high",
+        "reason": "overview.md is the 'start here' system map; it asserts the rejected Vercel choice as settled fact in three places (diagram, Context, package list). Must align with the new decision."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/README.md",
+        "change": "Update the multi-llm-providers.md index-row description (line 28) from 'The Vercel AI SDK abstraction in packages/llm' to 'The Relavium-owned @relavium/llm abstraction: provider adapters behind a vendor-type-free LLMProvider seam, fallback chains, tool normalization, and cost tracking.'",
+        "priority": "medium",
+        "reason": "The architecture index labels the LLM doc as 'the Vercel AI SDK abstraction' — stale once the doc is rewritten."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/architectural-principles.md",
+        "change": "Rewrite the second half of Principle 2 (lines 37-39): drop 'multi-LLM streaming goes through the Vercel AI SDK' and replace with the internal @relavium/llm abstraction (vendor-type-free LLMProvider seam, hand-rolled adapters over official provider SDKs, orchestration in TypeScript). Keep the 'no Python sidecar / no LangGraph-Python' assertions. Update the §2 reference to point at the new ADR.",
+        "priority": "high",
+        "reason": "Principle 2 codifies the rejected Vercel AI SDK as a BINDING principle ('a proposal that breaks one of these needs an ADR'). A binding rule now asserts something false; until fixed, the standards mandate the wrong foundation."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/tech-stack.md",
+        "change": "Update the 'Multi-LLM' row (line 18) from 'Vercel AI SDK v4 | No Python sidecar; unified streaming...' to 'Internal @relavium/llm abstraction | Provider-agnostic LLMProvider seam; hand-rolled thin adapters over official provider SDKs; no Python sidecar.' and rewrite the 'Multi-LLM, not single-provider' note (lines 30-33) to drop 'The Vercel AI SDK gives one unified streaming interface' while keeping the fallback-chain feature and 'LiteLLM/Python sidecar out' points. Point version pins at the per-provider official SDKs.",
+        "priority": "high",
+        "reason": "tech-stack.md is the single source of truth for pinned choices; ADRs reference it for versions. The Multi-LLM row and note still pin Vercel AI SDK v4, contradicting the new decision and every doc that cites this file."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/README.md",
+        "change": "Edit line 3: change 'multi-provider LLM access runs through the Vercel AI SDK' to 'multi-provider LLM access runs through Relavium's own @relavium/llm abstraction'.",
+        "priority": "medium",
+        "reason": "The docs-tree root README states the rejected Vercel choice in its one-paragraph project summary — a visible top-level assertion of the wrong foundation. (Not flagged by the architecture review but verified present.)"
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/execution-model.md",
+        "change": "Reconcile run-event names to the canonical colon-namespaced RunEvent union: node.started->node:started, node.token->agent:token, node.completed->node:completed, node.error->node:failed, human_gate.pending->human_gate:paused, cost.update->cost:update (or the canonical cost event name once added), run.complete->run:completed (lines 80-82, 91, 99, 127-128); rename seqNo->sequenceNumber (lines 82, 91).",
+        "priority": "medium",
+        "reason": "All flow docs cite sse-event-schema.md as canonical but use the dotted names the schema explicitly labels LEGACY. A consistency break independent of the LLM pivot; the schema's own note says new code targets the colon form."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/architecture/state-management.md",
+        "change": "Reconcile the same legacy dotted event names to colon-namespaced form: node.token->agent:token (lines 17, 106-107, 114, 131), node.started/completed/cost->node:started/node:completed/cost:update (lines 19, 132), cost.update->cost:update, run.complete->run:completed, human_gate.pending->human_gate:paused (lines 132-134), seqNo->sequenceNumber (line 128).",
+        "priority": "medium",
+        "reason": "Same canonical-vs-legacy event-name break as execution-model.md; both flow docs must match the sse-event-schema RunEvent union they cite."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/sse-event-schema.md",
+        "change": "Add a cost event to the RunEvent union and event table (e.g. cost:update with payload nodeId, model, costMicrocents, cumulative) so cost streaming has a canonical typed home; cost.update/cost:update is referenced by multiple flow docs but the union currently has no cost event.",
+        "priority": "medium",
+        "reason": "Cost streaming is promised in multi-llm-providers.md, execution-model.md, and state-management.md ('cost.update events during the run'), but the canonical RunEvent union lists no cost event — a real contract gap. Adding it gives the flow docs a real event name to reconcile to."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/README.md",
+        "change": "Add a row to the file table for the new llm-provider-seam.md ('The provider-agnostic LLMProvider seam and normalized chunk/usage/cost types exported by @relavium/llm.'). The README's parent (reference/README.md line 21) already claims shared-core covers 'packages/core AND packages/llm', but no @relavium/llm file is listed.",
+        "priority": "medium",
+        "reason": "The reference quadrant charters shared-core to cover packages/llm yet lists only packages/core shapes; the new LLMProvider seam (the immovable contract) has no canonical home here. This row wires in the new file (see newFiles)."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/agent-yaml-spec.md",
+        "change": "Repoint the LLM-layer delegations (Related line 6, model-matrix line 47, fallback resolution line 78) from architecture/multi-llm-providers.md to the new reference/shared-core/llm-provider-seam.md for the seam/normalized types (keep an architecture link for explanation only).",
+        "priority": "low",
+        "reason": "agent-yaml-spec currently delegates the entire provider contract to the Vercel-saturated multi-llm-providers.md. Once the canonical seam doc exists, the spec should cite it (one-canonical-home) rather than an explanation doc."
+      },
+      {
+        "file": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/adr-template.md",
+        "change": "Remove the unused **Deciders** field (line 5) OR add it to all ADRs — pick one; currently no ADR in the corpus uses it. Recommend dropping it from the template to match the corpus.",
+        "priority": "low",
+        "reason": "The template ships a Deciders metadata line that zero of the 10 existing ADRs use, so the template and the corpus disagree on the required metadata shape. Low impact but a real template-vs-practice drift."
+      }
+    ],
+    "newFiles": [
+      {
+        "path": "/Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0011-internal-llm-abstraction.md",
+        "purpose": "The new ADR (next free number 0011) carrying the full multi-LLM decision and rationale: build an internal Relavium-owned @relavium/llm abstraction exposing a single provider-agnostic LLMProvider seam (modelId + messages + tools in -> normalized chunk stream + cost record out; no vendor type ever crosses it), implemented day-one by thin hand-rolled adapters over each provider's official TS SDK (Anthropic + Gemini dedicated, OpenAI + DeepSeek sharing one OpenAI-compatible adapter). Records the internal-first migration stance with named triggers (sustained provider-drift cost; a must-have capability not economically hand-rollable) and the explicit 'never the Vercel AI SDK' rule. Follows adr-template.md; Related to 0003, 0006, 0008, the renamed 0004, and tech-stack.md. The seam itself is the immovable contract; the adapter implementation is deliberately reversible.",
+        "priority": "high"
+      },
+      {
+        "path": "/Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/llm-provider-seam.md",
+        "purpose": "Canonical reference home for the immovable LLMProvider seam and its normalized types: the request shape (modelId + messages + tools), the normalized streamed chunk union, the usage/cost record (integer micro-cents, consistent with database-schema.md), and the rule that no vendor type crosses the seam. This is the DRY home the reference quadrant currently lacks; agent-yaml-spec.md and shared-core/README.md repoint here, and architecture/multi-llm-providers.md + ADR-0011 cite it.",
+        "priority": "high"
+      },
+      {
+        "path": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/code-style-typescript.md",
+        "purpose": "Binding TypeScript source-code standard for the monorepo (the highest-priority missing standard): module/import rules, the no-vendor-type-across-the-seam discipline, Zod-schema-as-source-of-truth, error-shape conventions, naming. architectural-principles.md repeatedly promises code rules ('every surface', 'clean execution interface') but no binding source-code standard exists; the user's own house standard (OS-Project) ships 14 standards vs Relavium's 4.",
+        "priority": "medium"
+      },
+      {
+        "path": "/Users/dev/Documents/Projects/Agent-Organizer/docs/standards/testing.md",
+        "purpose": "Binding testing standard (Vitest unit + Playwright e2e): the engine-first build order in architectural-principles.md §1 assumes 'full unit test coverage' of packages/core/llm/shared before any surface exists, but no standard codifies what that means. Second-highest-priority gap mirroring the OS-Project standards set.",
+        "priority": "medium"
+      }
+    ],
+    "renames": [
+      "git mv /Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0004-vercel-ai-sdk-multi-llm.md -> /Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/0004-internal-llm-abstraction.md (keep the number 0004; do not leave a duplicate). Repoint every inbound link to the old slug: decisions/README.md (index row), decisions/0002-vite-react-tanstack-not-nextjs.md (Related line 5 + body line 29), decisions/0003-pure-ts-engine-not-langgraph-python.md (Related line 5 + body lines 29 and 46), decisions/0006-os-keychain-for-api-keys.md (Related line 5 + body lines 9 and 23), decisions/0008-local-first-phase-1-cloud-phase-2.md (body line 19), architecture/multi-llm-providers.md (Context line 36 + Related line 143). NOTE: the body of the renamed file stays verbatim (Superseded); the new title/decision lives in the separate ADR-0011."
+    ],
+    "crossCuttingThemes": [
+      "LLM-layer pivot: the settled choice flipped from the Vercel AI SDK to an internal Relavium-owned @relavium/llm abstraction (vendor-type-free LLMProvider seam + hand-rolled per-provider adapters). This touches one ADR (supersede + rename), one new ADR, one new reference seam doc, and Vercel scrubs in tech-stack, architectural-principles, two architecture docs, two README files.",
+      "One-canonical-home enforced for the LLM seam: the immovable contract (modelId+messages+tools in -> normalized chunk stream + cost record out) currently has NO reference home; every doc delegates to the Vercel-saturated architecture doc. Fix = create reference/shared-core/llm-provider-seam.md and repoint delegators to it.",
+      "Run-event name reconciliation: all flow docs (execution-model, state-management, multi-llm-providers) use LEGACY dotted names (node.token, run.complete, cost.update, seqNo) while citing the SSE schema, which has moved to colon-namespaced names (agent:token, run:completed, sequenceNumber) and labels the dotted form legacy — plus the canonical union is missing a cost event entirely.",
+      "Smaller spec drift, all concentrated in multi-llm-providers.md: fallback_chain 'attempts' vs canonical 'max_attempts', 'gemini-2-5-pro' vs canonical 'gemini-2.5-pro', and 'micro-units' vs canonical 'micro-cents' — fixable in the same rewrite pass.",
+      "Standards-set incompleteness and template drift: Relavium ships 4 standards vs the user's 14-standard house norm; architectural-principles promises code/testing rules that have no binding home, the adr-template Proposed-vs-README-Accepted workflow contradicts, and the template carries an unused Deciders field."
+    ],
+    "openQuestionsForUser": [
+      "Confirm the new ADR number: the LLM-abstraction ADR is planned as 0011 and the renamed file keeps 0004 (now Superseded). Good to proceed with 0011?",
+      "How many of the missing standards do you want now? This plan includes only the two highest-priority (code-style-typescript, testing). The full OS-Project-parity set would also add error-handling, code-review, commit-style, security-review, and logging-and-observability — create those now or defer?",
+      "The node-types review item ('nine miscount') was checked and is NOT a real issue (exactly 9 canvas components exist; Transform/Subworkflow are reserved/inline) so it was dropped. The parallel/merge engine-enum collision (both Fan-out and Fan-in map to enum 'parallel') IS real but is documented intentionally — confirm you want it left as-is or split into distinct enums."
+    ]
+  }
+}

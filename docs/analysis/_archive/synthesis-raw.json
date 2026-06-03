@@ -1,0 +1,928 @@
+{
+  "desktop": {
+    "frameworkDecision": {
+      "choice": "Tauri v2",
+      "reasoning": "Tauri v2 wins decisively for this use case. The five non-negotiable requirements — filesystem access, child process spawning, local HTTP server, SQLite, and system tray — are all first-class capabilities in Tauri v2's Rust backend via its plugin ecosystem (tauri-plugin-fs, tauri-plugin-shell, tauri-plugin-sql, tauri-plugin-notification, tauri-plugin-global-shortcut, tauri-plugin-tray). The ReactFlow canvas is pure React/TypeScript running in the WebView, which is identical to a browser environment — no framework-specific integration required. The killer advantage over Electron is bundle size: a Tauri app ships at 2–5 MB vs Electron's 85–120 MB because Tauri uses the OS-native WebView (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux) instead of bundling a full Chromium. For a developer-targeting product where bundle size is an explicit concern, this is decisive. Wails v2 (Go backend) is eliminated because: (1) Go's ecosystem for child-process orchestration and OS keychain integration is thinner than Rust's, (2) the SQLite bindings (mattn/go-sqlite3) require CGo which complicates cross-compilation, (3) the Wails community and plugin ecosystem is an order of magnitude smaller than Tauri's, and (4) Go has no meaningful advantage over Rust for this workload profile. Electron is retained as a viable fallback if cross-platform WebView rendering consistency becomes a blocking issue (WKWebView on macOS lacks a few CSS features), but for this product the trade-off strongly favors Tauri.",
+      "tradeoffs": [
+        "Tauri uses OS WebView so CSS/JS rendering can differ slightly across platforms (WKWebView on macOS, WebView2 on Windows) — ReactFlow and modern React are well-tested in both, but edge-case CSS must be verified on each target",
+        "Rust learning curve: backend plugin code and custom Tauri commands require Rust; however, 90% of business logic stays in TypeScript (the frontend/WebView), so the Rust surface is limited to system-level glue code",
+        "Electron would give a fully predictable Chromium rendering environment and a larger plugin ecosystem (e.g. node-sqlite3, node-keytar) at the cost of an 85+ MB bundle and 200+ MB RAM overhead",
+        "Wails v2 is easier to learn (Go) but has no equivalent of Tauri's plugin registry, no native keychain plugin, and weaker Windows support for child process management",
+        "Tauri's IPC is message-passing (invoke/emit) rather than direct function calls — all cross-boundary data must be serializable to JSON, which is fine for this use case but rules out passing raw streams directly (solved via channels in Tauri v2)"
+      ]
+    },
+    "localDataArchitecture": {
+      "configLocation": "Split model: global config at ~/.agentorg/config.toml (API keys, global preferences, MCP server registrations, update channel), per-project config at {projectRoot}/.agentorg/project.toml (project-level defaults, workspace-relative agent overrides). This mirrors VS Code's user vs workspace settings split. The ~/.agentorg/ directory is created on first launch. The .agentorg/ project directory is committed to git (minus the secrets file) so teams share workflow definitions. A .agentorgignore file (modeled on .gitignore) controls which .agentorg/ files are excluded from git.",
+      "workflowFileFormat": "YAML with a .workflow.yaml extension stored in {projectRoot}/.agentorg/workflows/. YAML is chosen over JSON because: (1) multiline strings for system prompts are readable without escape sequences, (2) comments are legal (# version history annotations), (3) it diffs cleanly in git. Each workflow file is a standalone, self-describing unit — no database lookup required to understand it. Agent definitions live in {projectRoot}/.agentorg/agents/{agent-name}.agent.yaml. The schema is versioned (apiVersion: agentorg/v1) so future migrations can be handled by a schema migration tool.",
+      "workflowYAMLExample": "apiVersion: agentorg/v1\nkind: Workflow\nmetadata:\n  name: code-review-pipeline\n  description: Reviews a PR diff and posts a summary comment\n  tags: [code, review, github]\nspec:\n  input:\n    schema:\n      prUrl: string\n      focusAreas: string[]\n  nodes:\n    - id: fetch-diff\n      kind: agent\n      ref: ./agents/github-fetcher.agent.yaml\n      input:\n        prUrl: \"{{ input.prUrl }}\"\n    - id: analyze-security\n      kind: agent\n      ref: ./agents/security-reviewer.agent.yaml\n      dependsOn: [fetch-diff]\n      input:\n        diff: \"{{ nodes.fetch-diff.output.diff }}\"\n        focusAreas: \"{{ input.focusAreas }}\"\n    - id: analyze-logic\n      kind: agent\n      ref: ./agents/logic-reviewer.agent.yaml\n      dependsOn: [fetch-diff]\n      input:\n        diff: \"{{ nodes.fetch-diff.output.diff }}\"\n    - id: human-gate\n      kind: human_gate\n      dependsOn: [analyze-security, analyze-logic]\n      timeout: 3600\n      prompt: \"Review the analysis below and approve to post comment.\"\n    - id: post-comment\n      kind: agent\n      ref: ./agents/github-commenter.agent.yaml\n      dependsOn: [human-gate]\n      condition: \"{{ nodes.human-gate.decision == 'approve' }}\"\n  output:\n    commentUrl: \"{{ nodes.post-comment.output.url }}\"",
+      "apiKeyStorage": "Dual-layer strategy: (1) Primary — OS keychain via the tauri-plugin-keychain crate, which calls Security.framework (macOS Keychain), Windows Credential Manager, or libsecret (Linux GNOME Keyring) depending on platform. Each API key is stored as a separate keychain entry with service=agentorg and account={providerId}:{keyId}. This provides hardware-backed encryption on macOS (Secure Enclave on M-series) and integrates with the OS lock screen. (2) Fallback for headless/CI environments — AES-256-GCM encrypted file at ~/.agentorg/secrets.enc, with the encryption key derived from a machine-specific secret (macOS: IOPlatformUUID, Windows: MachineGuid, Linux: /etc/machine-id) XOR'd with a user-set master passphrase. The master passphrase is never stored — it is prompted at launch and kept in process memory only. The keychain approach is the default; file-based is opt-in via config.",
+      "runHistoryStorage": "SQLite database at ~/.agentorg/history.db (global, cross-project) using the tauri-plugin-sql plugin with the sqlcipher feature enabled for encryption at rest. Schema: runs(id, workflow_id, workflow_path, project_root, status, input_json, output_json, started_at, completed_at, error), run_events(id, run_id, seq, ts, level, node_id, agent_id, event_type, payload_json), run_costs(id, run_id, node_id, model_id, input_tokens, output_tokens, cost_usd). The database is opened with PRAGMA journal_mode=WAL for concurrent read performance. Run events are pruned after 90 days by a background job triggered on app launch. A secondary per-project SQLite at {projectRoot}/.agentorg/runs.db stores only run metadata (no full event logs) for git-committed project history — this allows teammates to see historical run summaries without the full event payload.",
+      "workspaceModel": "Workspace = a directory the user has opened, exactly like VS Code. The app maintains a recent workspaces list in ~/.agentorg/config.toml. Opening a workspace loads all .workflow.yaml and .agent.yaml files from {workspaceRoot}/.agentorg/ into the canvas. Multiple workspaces can be open in separate windows (Tauri supports multi-window via WebviewWindowBuilder). A workspace can optionally define an .agentorg/workspace.toml that declares shared variables (e.g. default model, shared tool configs) inherited by all workflows in that workspace. There is no concept of a 'project' separate from a workspace — the filesystem directory is the unit of organization, enabling trivial git integration."
+    },
+    "executionEngine": {
+      "agentProcessModel": "Each agent node executes as an async Rust task (tokio::spawn) within the Tauri backend process, NOT as a separate OS process. This is the critical design decision: spawning a new OS process per agent adds 50-200ms overhead per node invocation, which compounds badly in parallel fan-out workflows. Instead, the Tauri backend maintains a tokio runtime with a configurable worker thread pool (default: num_cpus * 2). Each agent node is a Future that calls the LLM API over HTTP, processes the streaming response, and emits events via Tauri's event channel. For tool executions that involve running user commands (bash, python scripts), THOSE spawn OS child processes via tauri-plugin-shell with explicit allowlists. This hybrid model gives sub-millisecond task dispatch for pure LLM calls while maintaining process isolation for shell tool execution. An 'agent' in the execution model is a Rust struct AgentRunner { node_id, agent_def, input, run_id } implementing a run() async method. The workflow executor holds a JoinSet<AgentResult> and fans out parallel branches by spawning multiple tokio tasks simultaneously.",
+      "filesystemAccess": "Configurable scope model with three tiers. Tier 1 (Sandboxed, default for untrusted workflows): agents can only read/write within the current workspace directory and ~/.agentorg/tmp/. Enforced by the tauri-plugin-fs scope configuration in tauri.conf.json — all file operations go through Tauri's scoped FS plugin which validates paths before syscalls. Tier 2 (Project-scoped): the workflow YAML can declare an expanded scope with explicit path allowlists — user approves on first run via a native permission dialog. Tier 3 (Full access): power users can grant unrestricted FS access per-workflow via the UI, which stores a capability grant in the project config. Tauri v2's capability system handles all three tiers through its permissions manifest without custom path validation code in Rust.",
+      "builtInTools": [
+        {
+          "name": "read_file",
+          "description": "Reads file content as UTF-8 string or base64 for binary files. Respects the workflow's FS scope tier. Supports glob patterns for reading multiple files. Returns {content, mimeType, sizeBytes, lastModified}."
+        },
+        {
+          "name": "write_file",
+          "description": "Writes or appends content to a file within the allowed scope. Creates parent directories if they don't exist (configurable). Returns {path, bytesWritten}."
+        },
+        {
+          "name": "list_directory",
+          "description": "Lists directory contents with optional recursive flag and glob filter. Returns {entries: [{name, type, sizeBytes, lastModified}]}. Respects FS scope."
+        },
+        {
+          "name": "run_command",
+          "description": "Spawns a shell command via tauri-plugin-shell with an explicit per-workflow command allowlist (declared in workflow YAML under spec.tools.allowedCommands). Streams stdout/stderr back as events. Returns {exitCode, stdout, stderr, durationMs}. Never executes unlisted commands."
+        },
+        {
+          "name": "http_request",
+          "description": "Makes outbound HTTP/HTTPS requests via Tauri's HTTP plugin. Supports GET/POST/PUT/DELETE, custom headers, JSON body, streaming response. Domain allowlist configurable per workflow."
+        },
+        {
+          "name": "search_web",
+          "description": "Performs a web search using the configured search provider (Brave Search API or SearXNG self-hosted). Returns {results: [{title, url, snippet}]}. API key stored in keychain under service=agentorg, account=search-provider."
+        },
+        {
+          "name": "git_status",
+          "description": "Runs git status, git log, git diff in the workspace directory via run_command. Returns structured JSON parsed from git output. Pre-approved in the default command allowlist for git-aware workflows."
+        },
+        {
+          "name": "git_commit",
+          "description": "Stages specified files and creates a git commit with a provided message. Requires human_gate node approval before execution when used in automated workflows (enforced by the workflow engine)."
+        },
+        {
+          "name": "read_clipboard",
+          "description": "Reads current clipboard text content via Tauri's clipboard plugin. Useful for 'process what I just copied' workflow triggers."
+        },
+        {
+          "name": "notify",
+          "description": "Sends a native desktop notification with title, body, and optional action buttons. Used by agents to request human attention mid-run without blocking workflow execution."
+        },
+        {
+          "name": "mcp_call",
+          "description": "Connects to a registered local MCP server (listed in ~/.agentorg/config.toml under [mcp_servers]) via stdio or HTTP transport and invokes a tool by name. Returns the MCP tool result as JSON. MCP server processes are managed by the Tauri backend — started on demand, kept alive for the session, restarted on crash."
+        },
+        {
+          "name": "invoke_agent",
+          "description": "Calls another agent node within the same workflow by nodeId, passing explicit input. Used by orchestrator agents to delegate sub-tasks. This is the dynamic dispatch mechanism — the workflow YAML can declare static edges, but orchestrator agents can also invoke nodes dynamically via this tool."
+        }
+      ],
+      "mcpIntegration": "MCP servers are registered in ~/.agentorg/config.toml as [[mcp_servers]] entries with fields: name, transport ('stdio' or 'http'), command (for stdio: e.g. 'npx -y @modelcontextprotocol/server-filesystem'), args, env, url (for HTTP transport). The Tauri backend maintains a McpServerPool: a HashMap<server_name, McpClient> of persistent connections. On app launch, servers marked autostart=true are started immediately; others start on first use. The mcp_call built-in tool resolves the server by name, ensures the connection is live (reconnects if dropped), and calls the MCP tool via the MCP protocol. Stdio servers are managed as child processes via tokio::process::Command — the Tauri backend owns their lifecycle and can restart them. Tool schemas from all registered MCP servers are fetched at startup (tools/list) and made available to agents, so they appear in the agent tool picker UI alongside built-in tools.",
+      "streamingToUI": "Tauri v2 Channels (tauri::ipc::Channel) are used for streaming, not Tauri events. Channels are the correct primitive for high-throughput ordered streams — they are typed, backpressure-aware, and avoid the string serialization overhead of window.emit(). The workflow executor holds a Channel<RunEvent> per run. Each tokio task (agent node) receives a clone of the channel's sender half. As LLM tokens arrive from the HTTP streaming response (via reqwest with stream feature), they are parsed and emitted as RunEvent::TokenChunk { node_id, seq, content } through the channel. The frontend receives these via the channel's onmessage callback and routes them to the correct ReactFlow node by node_id. The channel is closed when the run terminates. Backpressure: if the frontend falls behind (e.g. React render is slow), the channel's internal buffer fills and the Rust sender awaits — this naturally throttles LLM token processing without dropping events. For the VS Code extension connection (which connects over HTTP, not IPC), the Tauri backend mirrors all RunEvents to the local HTTP SSE endpoint simultaneously."
+    },
+    "ipcArchitecture": {
+      "approach": "Tauri v2 uses a three-primitive IPC model: (1) Commands (tauri::command) for request-response operations — the frontend calls invoke('command_name', {args}) and receives a Promise<Result>. Used for: loading workflows, saving files, starting/cancelling runs, fetching run history from SQLite. (2) Channels (tauri::ipc::Channel) for ordered high-throughput streams — used for streaming run events (token chunks, node status changes, cost updates) from the Rust backend to the React frontend in real time. A channel is created per run start and its ID is returned in the invoke('start_run') response; the frontend subscribes to it immediately. (3) Tauri Events (window.emit / listen) for broadcast notifications — used for system-level signals like active run count changes (for tray badge update), app update availability, and MCP server health changes. Commands and channels are the primary IPC surfaces; events handle loose coupling for UI elements not directly involved in a run.",
+      "vscodeConnectionMethod": "The Tauri backend spawns a local HTTP server on 127.0.0.1:{dynamic_port} using axum (a Rust async HTTP framework that runs inside the tokio runtime — no separate process required). The port is randomly assigned at startup (avoiding conflicts) and written to ~/.agentorg/ipc.json: {port, authToken, pid, startedAt}. The VS Code extension reads this file to discover the port and auth token. All VS Code extension-to-desktop-app communication uses standard HTTP: REST endpoints for triggering workflows and querying run status, SSE for subscribing to run event streams. Authentication uses a Bearer token (the authToken from ipc.json) — it is a randomly generated 256-bit hex string, valid for the lifetime of the app process. The VS Code extension also watches ipc.json for changes (via vscode.workspace.createFileSystemWatcher) to detect app restarts and reconnect. This HTTP approach means the VS Code extension works identically whether the desktop app is Tauri, Electron, or any future replacement — the protocol is decoupled from the framework. WebSockets are available as a fallback if SSE reconnection proves unreliable on Windows, but SSE with Last-Event-ID resumption is the default."
+    },
+    "desktopUXFeatures": [
+      {
+        "feature": "Global hotkey to trigger a workflow from anywhere",
+        "implementation": "tauri-plugin-global-shortcut registers a configurable hotkey (default: Cmd+Shift+A on macOS, Ctrl+Shift+A on Windows/Linux) at the OS level. When triggered, the Tauri backend emits an event to the frontend which opens a Command Palette overlay (floating window via WebviewWindowBuilder with decorations=false, always_on_top=true, transparent background). The palette shows recent workflows and a fuzzy search box. The user types a workflow name or trigger phrase, selects it, and the run starts immediately. If the app window is hidden (in tray), the palette appears without surfacing the main window. A secondary hotkey (Cmd+Shift+R) triggers 'Run on current selection' — it reads clipboard content (or asks the active app via Accessibility APIs on macOS) and runs the last-used workflow with that content as input."
+      },
+      {
+        "feature": "System tray for monitoring active runs",
+        "implementation": "tauri-plugin-tray creates a persistent tray icon. The icon has three states: idle (static icon), active (animated spinner using a sequence of PNG frames cycled via a 100ms Rust interval), and attention-needed (pulsing icon when a human_gate node is awaiting approval). The tray menu (built with MenuBuilder) shows: current active run count, a list of up to 5 recent runs with status badges, a 'New Run' submenu listing the 5 most recently used workflows, and 'Show Window' / 'Quit' actions. The tray badge on macOS shows the count of awaiting-human-gate runs. Run status changes update the tray menu in real time by calling tray.set_menu() from the Rust event handler. On Windows, a balloon notification fires when a long run completes while the window is hidden."
+      },
+      {
+        "feature": "Native file picker integration",
+        "implementation": "tauri-plugin-dialog exposes open() and save() which call the OS-native file picker (NSOpenPanel on macOS, IFileOpenDialog on Windows, GTK FileChooserDialog on Linux). In the ReactFlow canvas, workflow input nodes of type 'file' render a 'Browse' button that calls invoke('pick_file', {filters, multiple}) — no Electron-style dialog.showOpenDialog workaround needed. For agent tool definitions, file path parameters show a path input with a folder icon that triggers the native picker. The returned path is validated against the workflow's FS scope before being passed to the agent. File paths are stored as workspace-relative paths in workflow YAML (e.g. ./data/input.csv) so workflows remain portable."
+      },
+      {
+        "feature": "Drag-and-drop files onto the canvas",
+        "implementation": "Tauri v2's drag-and-drop support is handled at two levels. Level 1 — dropping onto the canvas background: the WebView intercepts the dragover and drop DOM events; dropped file paths are extracted from the DataTransfer object (Tauri populates event.dataTransfer.files with native File objects including the real filesystem path). The frontend creates a new Input Node at the drop coordinates pre-populated with the file path. Level 2 — dropping onto an existing agent node: the node highlight style activates on dragenter, and on drop the file path is injected into the agent node's input mapping for the 'file' parameter. For multiple files dropped simultaneously, a 'Batch Input' node is created that fans out to the target agent. Tauri's onDragDrop window event is also registered as a fallback for drops that land outside the WebView area."
+      },
+      {
+        "feature": "Desktop notifications for completed runs",
+        "implementation": "tauri-plugin-notification sends native OS notifications (UserNotifications on macOS, Windows Toast Notifications, libnotify on Linux). Notifications fire on: (1) run completion — title: workflow name, body: 'Completed in 4.2s — 3 nodes, $0.012', action button: 'View Results' which focuses the app window and opens the run detail panel; (2) run failure — body includes the failing node name and truncated error message; (3) human gate waiting — body: 'Approval needed: [node name]', action button: 'Review' which opens the approval dialog directly. Notification preferences are per-workflow (configurable in the workflow settings panel). On macOS, notifications use the app's bundle identifier for grouping and support notification categories with action buttons registered via UNNotificationCategory. Silent notifications (no sound) are used for routine completions; sound notifications for failures and human gates."
+      },
+      {
+        "feature": "Run on current file context menu integration",
+        "implementation": "macOS: A Finder Sync Extension (bundled as a separate target in the Tauri app's Xcode build phase) registers a context menu item 'Run AgentOrg Workflow...' for files matching configured extensions (*.ts, *.py, *.md, etc. — configurable). The extension communicates with the main app via XPC. When triggered, it sends the file path to the main app which opens a workflow picker sheet showing workflows that accept file input. Windows: A registry entry under HKEY_CURRENT_USER\\Software\\Classes\\*\\shell\\AgentOrg is written by the installer (NSIS/WiX, generated by Tauri's bundler) to add the context menu item. The registered command launches the app with a --context-file flag if not running, or signals the running instance via a named pipe. Linux: A .desktop file action is registered in ~/.local/share/applications/. The workflow picker is a lightweight floating window (400x500px, no titlebar) that appears near the cursor position."
+      }
+    ],
+    "criticalConsiderations": [
+      "WebView2 on Windows requires a separate bootstrapper or must be bundled — Tauri's NSIS/WiX installer handles WebView2 bootstrapping automatically, but the app will not launch on Windows machines without WebView2 Runtime (pre-installed on Windows 11, requires install on Windows 10). Test the installer flow on a clean Windows 10 VM before shipping.",
+      "WKWebView on macOS 13+ disables SharedArrayBuffer unless the page serves Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers — ReactFlow itself does not require SharedArrayBuffer, but if any canvas worker (e.g. layout computation with elkjs) uses it, the Tauri custom protocol handler must inject these headers.",
+      "SQLite with sqlcipher requires the SQLCIPHER_PASSPHRASE environment variable to be set before opening the database — in Tauri this is done in the Rust setup() hook before the plugin initializes. The passphrase must be derived from a stable machine secret (not hardcoded) to survive app restarts without user prompt.",
+      "Tauri v2's capability system (permissions manifest in src-tauri/capabilities/) replaces v1's allowlist — every plugin API the frontend can call must be explicitly declared. Forgetting a capability causes silent 'not allowed' errors at runtime. Define capabilities incrementally and test each plugin surface during development.",
+      "The local HTTP server for VS Code extension connectivity must bind only to 127.0.0.1 (loopback), never 0.0.0.0. The auth token in ipc.json must have file permissions 0600 (owner read/write only). On macOS, the app's network entitlement (com.apple.security.network.server) must be declared in the entitlements plist or the HTTP server binding will be silently blocked by the app sandbox.",
+      "ReactFlow with 100+ nodes has known performance issues with the default SVG edge renderer — switch to the useEdgesUpdater pattern and enable ReactFlow's nodesDraggable=false during active runs to prevent accidental graph mutations while a workflow is executing. Use React.memo on custom node components to prevent re-renders on every streaming token event.",
+      "LLM API calls from the Rust backend must use reqwest with a custom client that sets timeout(Duration::from_secs(120)) and tcp_keepalive(Duration::from_secs(30)) — without keepalive, long streaming responses on macOS are dropped after 60s by the OS TCP stack on idle connections.",
+      "Code-signing is mandatory for macOS distribution outside the App Store — unsigned apps are quarantined by Gatekeeper and require user bypass. Tauri's CI workflow supports codesign and notarization via the APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD environment variables. Budget time for Apple Developer Program enrollment and notarization turnaround.",
+      "The workflow YAML format must be treated as a public API from day one — breaking changes to the schema will invalidate users' git-committed workflow files. Version the schema with apiVersion: agentorg/v1, write a migration CLI (agentorg migrate) before making any breaking changes, and publish a JSON Schema for IDE validation in VS Code via the yaml-language-server comment directive."
+    ]
+  },
+  "vscode": {
+    "coreCapabilities": [
+      {
+        "capability": "Inline workflow triggering via right-click context menu",
+        "why": "Developers are already in their editor looking at a file. The zero-friction path is right-click → 'Run workflow on this file'. Without this, they must context-switch to the desktop app or CLI. This single feature justifies the install.",
+        "implementation": "Register a contributes.menus entry for editor/context and explorer/context. The command 'agentorg.runWorkflowOnFile' reads the active file URI, queries .agentorg/ for workflows that declare file-type compatibility in their input schema (e.g. accepts: ['*.ts', '*.py']), and presents a QuickPick filtered list. Selected workflow is dispatched to the in-process engine (Model C hybrid). File path is injected as the workflow input payload. This also registers a keybinding (default: Ctrl+Shift+W / Cmd+Shift+W) for the same action on the active editor."
+      },
+      {
+        "capability": "Status bar run monitor",
+        "why": "Passive awareness of background agent runs is critical. Developers trigger a workflow and return to coding. Without a status bar item they have no idea if the run is still going, succeeded, or needs their approval at a human gate.",
+        "implementation": "A StatusBarController class (singleton, activated on extension load) registers a vscode.StatusBarItem with alignment=Right, priority=100. It subscribes to the RunEventBus (internal EventEmitter). States: idle (hidden), running ($(loading~spin) 2 agents active), awaiting-human ($(bell) Approval needed — amber color, clicking opens the HumanGatePanel), completed ($(check) Done in 3.2s — clears after 5s), failed ($(error) Run failed — red, persistent until dismissed). The status bar text is clickable and opens the Active Runs sidebar panel. Multiple concurrent runs show the count: $(loading~spin) 3 runs active."
+      },
+      {
+        "capability": "Sidebar: Agent Library, Workflow List, Active Run Monitor",
+        "why": "The sidebar is the persistent home for the extension. Developers need to browse what agents exist, what workflows are configured, and watch live runs without opening a separate app.",
+        "implementation": "Register a contributes.views container 'agentorg' with icon from .agentorg/icons. Three TreeView providers: (1) WorkflowTreeProvider — reads .agentorg/workflows/*.yaml, groups by tag, shows last-run status icon, supports drag-to-run. (2) AgentLibraryTreeProvider — reads .agentorg/agents/*.yaml, shows model badge, context menu to edit/duplicate. (3) ActiveRunsTreeProvider — live-updated from RunEventBus, shows per-run status and nested node-level status. Each tree node has inline action buttons (codicon icons) via TreeItem.command and contributes.menus/view/item/context. The Run tree supports expanding a run to see per-node status, streaming output preview (truncated to 3 lines), cost so far, and an [Approve] / [Reject] button for human-gate nodes."
+      },
+      {
+        "capability": "Command palette integration",
+        "why": "VS Code developers live in the command palette. Discoverability and keyboard-driven workflows are table stakes for a 'must install' extension.",
+        "implementation": "Register at minimum: 'agentorg.runWorkflow' (fuzzy search across all workflows), 'agentorg.createAgent' (opens a multi-step input wizard using vscode.window.showInputBox/showQuickPick sequence), 'agentorg.openWorkflowInDesktop' (IPC to desktop app — graceful degradation if not running), 'agentorg.showRunHistory' (opens Run History panel), 'agentorg.cancelRun' (lists active runs to cancel), 'agentorg.approveHumanGate', 'agentorg.configureSettings'. All commands are in the 'Agent Organizer' category for grouping."
+      },
+      {
+        "capability": "Chat panel for multi-agent workflow invocation",
+        "why": "Natural language is the lowest-friction trigger. A developer can type 'refactor this file to use async/await and add tests' and the extension maps that intent to the right workflow, similar to GitHub Copilot Chat but executing multi-agent pipelines instead of single-model completions.",
+        "implementation": "Implemented as a WebviewPanel (not using the vscode.chat API which is GitHub Copilot-specific) with a custom React/Preact UI bundled separately. The panel has a chat input, a workflow selector chip (pre-selects best-match workflow from NLP intent detection), and a streaming output display. Messages are sent to the in-process engine. Streaming tokens appear in a virtual-scroll list. The panel is opened via 'agentorg.openChat' command or the sidebar header action. It persists state across panel visibility toggles using getState/setState on the webview. Context awareness: the panel automatically includes the active file, selected text, and workspace root in the workflow input metadata."
+      },
+      {
+        "capability": "Inline diff view for agent-proposed code changes",
+        "why": "When an agent modifies code, the developer must review and accept/reject before the file is written. This is the core trust boundary — without it the extension is unsafe for production codebases.",
+        "implementation": "When a workflow produces file mutation events (output type 'file_patch' containing a unified diff), the extension stages the proposed changes in a temporary in-memory document and calls vscode.commands.executeCommand('vscode.diff', originalUri, proposedUri, 'Agent Proposal: filename.ts'). The diff uses VS Code's native diff editor — familiar to all developers. A custom CodeLens provider injects [Accept All] [Reject All] [Accept Hunk] buttons above each changed section. Accepting writes via vscode.workspace.applyEdit using WorkspaceEdit. Rejecting clears the proposed document. For multi-file changes, a ProposedChangesPanel (TreeView) lists all pending file modifications before any are applied."
+      },
+      {
+        "capability": "Workflow YAML/JSON intellisense via Language Server",
+        "why": "Developers editing .agentorg/*.yaml files need autocomplete, hover docs, and error detection. Without this, editing workflow configs is error-prone and requires reading external docs.",
+        "implementation": "A dedicated language server process (see languageServerDesign) provides completions, hover, diagnostics, and go-to-definition for all .agentorg/ config files. This is the feature that makes the extension indispensable for the workflow author role — equivalent to how the Python extension makes editing Python files authoritative."
+      }
+    ],
+    "connectionModel": {
+      "choice": "Model C: Hybrid — standalone for all execution, desktop app integration as optional enhancement",
+      "reasoning": "Model A (desktop-required) is a distribution liability: the extension would be uninstallable without a separate native app running, which breaks the VS Code extension mental model and would generate 1-star reviews from developers who just want to try it. Claude Code's standalone model proves users expect zero external dependencies. Model B (fully standalone) is technically correct but misses integration value — developers who have the desktop app open on their second monitor should be able to jump to the visual canvas with one click. Model C gives the best of both: the extension ships a bundled TypeScript workflow engine (same engine package as the desktop app and CLI — this is the key architectural constraint) that runs in the VS Code extension host process. This means zero external dependency for workflow execution. When the desktop app IS running, the extension detects it on a well-known local port (default: 57210) via an HTTP health check at activation time. If detected, enhanced features are unlocked: 'Open in Designer' command launches the canvas to that workflow, live run status syncs bidirectionally, and agent configs edited in the desktop app hot-reload into the extension. The hybrid detection uses a 2-second timeout health check — if the desktop app is not on that port, the extension silently continues in standalone mode with no user-visible degradation. This mirrors how the Live Share extension works — full standalone value, richer experience when the server is present.",
+      "architectureDetails": "Shared engine package: packages/workflow-engine (TypeScript) is published as an npm package consumed by the desktop app (Electron), CLI (Node.js), and this extension (VS Code extension host). The engine is pure TypeScript with no native bindings — critical for running inside the VS Code extension host which has Node.js but not arbitrary native modules. The engine exposes: WorkflowRunner class, AgentRegistry, RunEventBus (EventEmitter). API key access: standalone mode reads from .agentorg/secrets.enc (AES-256-GCM encrypted file, key derived from OS keychain via the 'keytar' module which VS Code ships natively). Desktop IPC: when the desktop app is detected, the extension registers as a secondary client on the desktop app's local IPC socket (Unix domain socket on macOS/Linux, named pipe on Windows) using the existing protocol defined in the backend architecture. Run events flow over this socket. The extension never proxies API calls through the desktop app — LLM calls always go directly from the extension host to the provider APIs, avoiding latency and avoiding the desktop app being a single point of failure."
+    },
+    "languageServerDesign": {
+      "useLSP": true,
+      "implementation": "The language server runs as a separate Node.js process spawned by the extension's activate() function using vscode-languageclient/node. This is the standard pattern (same as the Python extension, YAML extension, JSON Schema extension). It must be a separate process — not in-process — because YAML parsing with schema validation is CPU-intensive and would block the extension host's event loop, causing VS Code UI jank. The server binary is bundled in the extension at dist/server/agentorgLanguageServer.js. It uses the 'yaml-language-server' as a base (it already handles YAML parsing and JSON Schema validation) extended with a custom AgentOrgSchemaProvider that generates live JSON Schema from the actual agents and workflows in the workspace's .agentorg/ folder. Schema is regenerated on file-watcher events (chokidar watches .agentorg/**/*.yaml). The server communicates with the extension client over stdio. The client is initialized in the extension's activate() with a DocumentSelector targeting { scheme: 'file', pattern: '**/.agentorg/**/*.{yaml,json,yml}' }.",
+      "capabilities": [
+        "Completion — agent name completions in workflow YAML: when the cursor is at 'agentId:' the server reads the AgentRegistry (loaded from .agentorg/agents/) and returns a CompletionList with each agent's id, name (as detail), and first line of system prompt (as documentation). Model ID completions: when cursor is at 'modelId:' returns all registered model IDs with provider prefix and context window in the detail field. Step reference completions: in 'inputMapping:' expressions, completes nodeId references from the workflow's own nodes array. Trigger characters: ':', '$', '{' (for JSONata expressions in inputMapping/outputMapping).",
+        "Hover — hovering over an agentId value shows a HoverCard with the agent's full config: model, system prompt preview (first 200 chars), tools list, temperature, token limits. Hovering over a modelId shows provider, context window, cost per 1k tokens. Hovering over a workflow node reference shows the node's type and label. Rendered as Markdown in the hover popup.",
+        "Diagnostics — real-time validation: missing required fields (severity: Error), unknown agentId references that do not match any .agentorg/agents/*.yaml file (Error), cyclic workflow graphs detected via DFS (Error, with a path trace in the message), unreachable nodes with no incoming edges (Warning), human_gate nodes with no timeout configured (Warning, links to docs), deprecated model IDs (Information). Diagnostics refresh on save and on 250ms debounced keystroke.",
+        "Go-to-definition — pressing F12 on an agentId value opens the corresponding .agentorg/agents/<agentId>.yaml file. On a modelId, opens the provider's models section in .agentorg/providers.yaml. On a nodeId reference in an edge definition, jumps to that node's definition within the same workflow file using a DocumentLink.",
+        "Code actions — quick-fix actions for diagnostics: 'Create missing agent' (scaffolds a new agent YAML with the referenced id), 'Remove unreachable node', 'Add default humanGateTimeout'. Invoked via the lightbulb menu (Ctrl+. / Cmd+.).",
+        "Rename symbols — renaming an agentId in its definition file triggers a WorkspaceEdit that updates all workflow YAML files that reference that agentId. Uses the server's cross-file reference index built from the .agentorg/ watcher.",
+        "Folding ranges — collapses workflow node definitions, edge lists, and systemPrompt multiline strings. The systemPrompt field often contains hundreds of lines; folding it keeps workflow files navigable.",
+        "Semantic tokens — highlights agentId values with a distinct token color (separate from string literals), nodeId references in a different color, JSONata expressions in inputMapping/outputMapping with expression-aware highlighting (identifiers vs operators vs string literals within the expression)."
+      ]
+    },
+    "runVisualization": {
+      "activeAgentIndicator": "Three simultaneous channels for indicating which agent is active: (1) Sidebar — the Active Runs tree node for the currently-executing agent node gets a spinning $(loading~spin) codicon prefixed to its label, replacing the idle $(circle-outline). The tree auto-reveals (tree.reveal()) the active node so it is always visible without manual scrolling. (2) Editor decorations — a vscode.TextEditorDecorationType with a left-margin gutter icon (a pulsing dot rendered as an SVG data URI, animated via CSS) is applied to the file currently being processed by the active agent. This uses the same mechanism as the Git blame gutter — visible without cluttering the code. The decoration is cleared when the agent completes. (3) Status bar — the status bar item shows the agent name truncated to 20 chars: $(loading~spin) ReviewAgent analyzing... This is the minimal-noise signal for developers who have minimized the sidebar.",
+      "outputDisplay": "Streaming output uses a custom OutputChannel named 'Agent Organizer: [run label]' created per run via vscode.window.createOutputChannel(). This is the correct VS Code primitive for streaming text — it appends lines without requiring a webview and supports ANSI color codes (OutputChannel.appendLine with vscode.window.createOutputChannel(name, {log: false})). The channel is shown automatically when a run starts (channel.show(true) — the second arg preserves focus on the editor). For the active-agent streaming tokens (high-frequency, 30-50 tokens/second), a separate channel named 'Agent Organizer: Live Stream' is used. Tokens are batched into 100ms flush intervals (setInterval flushing a local buffer) to prevent the channel from becoming a performance bottleneck. For the chat panel, streaming renders inside the WebviewPanel's React component using the same double-buffer technique from the desktop frontend (accumulate in rawBuffer, flush on requestAnimationFrame). The chat panel is the primary UX surface; the output channel is the secondary log surface for non-interactive runs (e.g. right-click triggered workflows).",
+      "diffFlow": "When a workflow node emits output of type 'file_patch': (1) The RunEventBus fires a 'filePatchProposed' event with payload { runId, nodeId, patches: FilePatch[] } where FilePatch = { uri: string, unifiedDiff: string }. (2) The DiffManager (extension-side class) intercepts this event and creates an in-memory TextDocument for each patched file by applying the unified diff to the current file content using the 'diff' npm package (already in the shared engine). The proposed content is stored in a Map<uri, ProposedDocument>. (3) vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(originalPath), proposedInMemoryUri, 'Agent Proposal: ' + path.basename(originalPath), { preview: true }) is called. The preview flag prevents the diff tab from becoming a permanent editor tab. (4) A CodeLens provider (registered for the scheme 'agentorg-proposal') injects [Accept] [Reject] [Open in Designer] lenses at the top of each changed block (identified by parsing the unified diff hunk headers). (5) Accept calls workspace.applyEdit with a WorkspaceEdit that replaces file content. Reject removes the entry from ProposedDocument map and closes the diff tab. (6) If the run produces changes to multiple files, a ProposalSummaryPanel (TreeView in the sidebar) lists all pending proposals with file names, line change counts, and per-file accept/reject buttons. A global [Accept All] button at the top. No changes are written to disk until explicitly accepted.",
+      "humanGateUI": "Human-gate approval is surfaced in three places depending on developer context: (1) If the sidebar is open: the Active Runs tree node for the blocked node shows $(bell) AWAITING APPROVAL in amber color with two inline action buttons [Approve] [Reject] in the tree item's buttons array (contributes.menus/view/item/context). (2) Status bar becomes amber and shows $(bell) Approval needed — clicking it calls 'agentorg.approveHumanGate' which first presents a QuickPick showing the gate's prompt text and [Approve] [Reject] options. This covers the common case where the developer is focused in an editor with sidebar closed. (3) If the workflow was triggered from the chat panel, a dedicated approval card appears inline in the chat thread — same visual treatment as a chat message but with large Approve/Reject buttons and the agent's last message shown as context. The approval card is rendered inside the WebviewPanel and is keyboard accessible (Tab to focus, Enter to approve, Escape to reject). All three surfaces dispatch to the same runStore.resolveHumanGate() action which POSTs to the engine's signal endpoint. The human gate card shows a countdown timer if the workflow has humanGateTimeout configured — a CSS progress bar drains over the timeout duration. When the timer reaches zero, the gate auto-resolves per the node's on_timeout policy (approve_by_default or reject_by_default) and a warning notification fires."
+    },
+    "extensionAPI": {
+      "commands": [
+        "agentorg.runWorkflow — run a named workflow with optional input payload; returns a RunHandle object with .on() for events and .cancel()",
+        "agentorg.runWorkflowOnFile — run a workflow on a specific file URI; auto-selects compatible workflows",
+        "agentorg.createAgent — open the agent creation wizard; returns AgentConfig on completion",
+        "agentorg.openWorkflowInDesktop — open a workflow by ID in the desktop designer (no-op if desktop app not running)",
+        "agentorg.showRunHistory — open the run history panel for a workflow ID",
+        "agentorg.cancelRun — cancel a running workflow by run ID",
+        "agentorg.approveHumanGate — approve or reject a pending human gate with optional note",
+        "agentorg.getActiveRuns — returns array of ActiveRun objects for programmatic consumers",
+        "agentorg.refreshWorkflows — force-reload workflow definitions from disk (useful after external edits)",
+        "agentorg.exportRunTrace — export a run's full execution trace as JSON for debugging"
+      ],
+      "events": [
+        "agentorg.onRunStarted — fires with { runId, workflowId, workflowName, input } when any run starts",
+        "agentorg.onRunCompleted — fires with { runId, workflowId, output, durationMs, costUsd } on success",
+        "agentorg.onRunFailed — fires with { runId, workflowId, error, nodeId } on failure",
+        "agentorg.onHumanGatePending — fires with { runId, nodeId, promptText, timeoutMs } when a gate opens",
+        "agentorg.onFilePatchProposed — fires with { runId, nodeId, patches: FilePatch[] } before any diff is applied; consumers can intercept and cancel",
+        "agentorg.onAgentTokenStream — fires with { runId, nodeId, agentId, token } on each streamed token; high-frequency, use sparingly",
+        "agentorg.onWorkflowsChanged — fires when .agentorg/ files change on disk"
+      ],
+      "settings": [
+        "agentorg.workflowsPath — path to the .agentorg folder relative to workspace root (default: .agentorg)",
+        "agentorg.desktopAppPort — local port for desktop app IPC detection (default: 57210)",
+        "agentorg.autoShowOutputOnRun — whether to auto-focus the output channel when a run starts (default: true)",
+        "agentorg.maxConcurrentRuns — max simultaneous workflow runs in the extension host (default: 3)",
+        "agentorg.humanGateNotificationSound — play a sound when a human gate opens (default: true)",
+        "agentorg.diffAutoOpen — automatically open diff view when agent proposes file changes (default: true)",
+        "agentorg.streamingBatchIntervalMs — how often to flush streaming tokens to output channel (default: 100)",
+        "agentorg.telemetry — opt-in usage telemetry for improving the extension (default: false)",
+        "agentorg.logLevel — extension host log verbosity: error | warn | info | debug (default: warn)",
+        "agentorg.providerTimeout — per-LLM-call timeout in seconds (default: 120)"
+      ]
+    },
+    "securityModel": "\"The extension operates under a three-tier permission model. Tier 1 — File access: The extension ONLY reads and writes files within the open workspace. vscode.workspace.workspaceFolders is the boundary. All file reads go through vscode.workspace.fs (the VS Code virtual filesystem API) rather than Node.js fs directly — this ensures compatibility with remote workspaces (SSH, WSL, Codespaces) and respects VS Code's file permission model. Agent-proposed file writes are NEVER applied automatically — they always go through the diff-and-accept flow described in runVisualization. The extension refuses to operate outside the workspace boundary at the engine level: WorkflowRunner is initialized with a sandboxedRoot parameter and all file tool paths are validated against it before execution. Tier 2 — Terminal command execution: Agents with shell tool access create a vscode.Terminal via vscode.window.createTerminal({ name: 'Agent: ' + agentName, hideFromUser: false }) and send commands via terminal.sendText(). The terminal is ALWAYS visible to the user — no hidden process spawning. For sandboxing, the extension checks if the workspace has a .agentorg/permissions.yaml file that explicitly lists allowed command patterns (glob-style: e.g. 'npm test', 'pytest *', 'tsc --noEmit'). Commands not matching the allowlist are blocked and the developer is prompted to approve with a modal (vscode.window.showWarningMessage with modal: true and [Allow Once] [Allow Always] [Deny] buttons). 'Allow Always' appends the pattern to .agentorg/permissions.yaml. Tier 3 — API key management: API keys are NEVER stored in VS Code settings (settings.json is readable by all extensions). Keys are stored using the VS Code SecretStorage API (vscode.ExtensionContext.secrets) which delegates to the OS keychain (macOS Keychain, Windows Credential Manager, Linux libsecret). The extension's activate() reads keys from SecretStorage only when a run starts, passes them to the engine's in-memory provider registry, and clears them from the registry when the run completes. Keys are never written into workflow YAML files, never sent to the desktop app over IPC, never included in run trace exports. When the desktop app is running (hybrid mode), the extension requests key access via the IPC protocol's authenticated key-fetch endpoint — the desktop app returns the key only after verifying the requesting process is the VS Code extension via the shared IPC auth token (a random 32-byte token written to .agentorg/.ipc-token at desktop app startup, readable only by the OS user running the desktop app). Additional: The extension declares a minimal activationEvents list to avoid loading in unrelated workspaces. It activates only when a .agentorg/ folder is detected in the workspace (workspaceContains:.agentorg). This prevents the extension from consuming memory in every open project.\"",
+    "differentiators": [
+      "Zero-dependency execution: the bundled workflow engine runs entirely in the VS Code extension host Node.js process — no Docker, no desktop app required, no port conflicts. Developers on a fresh machine can install the extension and run their first workflow in under 60 seconds.",
+      "Native diff review flow: agent-proposed code changes use VS Code's built-in diff editor, not a custom webview. Developers review proposals with the exact same UI they use for git diff, with per-hunk accept/reject via CodeLens. This is the trust primitive that makes the extension safe for production code.",
+      "Shared engine package with desktop and CLI: the workflow engine is a single TypeScript package consumed by all three surfaces. A bug fix or new node type in the engine benefits all three surfaces simultaneously. There is no 'extension-specific' execution path that diverges from the desktop app's behavior.",
+      "LSP-powered .agentorg/ editing: the language server makes editing workflow YAML a first-class development experience — autocomplete, hover docs, go-to-definition, and real-time error detection. Developers who write workflows by hand (rather than using the visual canvas) get IDE-quality assistance.",
+      "Human-gate approval is ambient: gates surface in the status bar, sidebar, and chat panel simultaneously. A developer who triggers a workflow and returns to coding will see the approval prompt in the status bar without losing their place in the code.",
+      "Open extension API: other extensions can subscribe to agentorg.onRunCompleted, intercept agentorg.onFilePatchProposed to add custom validation, or trigger workflows programmatically via agentorg.runWorkflow. This enables the ecosystem — a hypothetical 'AgentOrg + GitHub Actions' extension could trigger a CI workflow every time a run completes successfully."
+    ]
+  },
+  "cli": null,
+  "corePortal": {
+    "sharedCore": {
+      "workflowYAMLSpec": "# Workflow YAML Specification v1.0\n# Schema: https://agentflow.dev/schemas/workflow/v1\n\n# Top-level workflow definition\nworkflow:\n  id: string                    # unique, kebab-case\n  version: semver               # '1.0.0'\n  name: string\n  description: string\n  tags: string[]\n  trigger:                      # what initiates this workflow\n    type: manual | webhook | schedule | file_change | mcp_call\n    schedule?: cron_expression  # only when type=schedule\n    webhook?: { path: string, secret_env: string }\n    file_change?: { glob: string, debounce_ms: number }\n  inputs:                       # typed input declarations\n    - name: string\n      type: string | number | boolean | file_path | code_diff | secret\n      required: boolean\n      default?: any\n      description: string\n  agents: AgentRef[]            # inline or $ref to agent files\n  nodes: Node[]                 # execution graph nodes\n  edges: Edge[]                 # directed connections between nodes\n  context:                      # shared variables available via {{ctx.*}}\n    - key: string\n      value: any | '{{interpolation}}'\n\n# Node types\nNode:\n  id: string\n  type: agent | human_gate | condition | transform | parallel | merge\n  # --- agent node ---\n  agent_ref?: string            # references agents[] by id\n  prompt_template?: string      # supports {{variable}} interpolation\n  tools?: string[]              # tool ids available to this agent\n  model?: string                # override model for this node\n  temperature?: number\n  max_tokens?: number\n  timeout_ms?: number\n  retry?: { max: number, backoff: 'linear' | 'exponential' }\n  # --- human_gate node ---\n  gate_type?: 'approval' | 'input' | 'review'\n  assignee?: string | '{{ctx.pr_author}}'\n  message_template?: string\n  timeout_action?: 'reject' | 'approve' | 'escalate'\n  timeout_ms?: number\n  # --- condition node ---\n  condition?: string            # JS expression over {{run.outputs}}\n  branches?: { label: string, condition: string, target_node: string }[]\n  # --- transform node ---\n  transform?: string            # JS expression, output becomes node result\n  # --- parallel node ---\n  parallel_of?: string[]        # node ids to run concurrently\n  # --- merge node ---\n  merge_strategy?: 'concat' | 'object_merge' | 'first' | 'custom'\n  merge_fn?: string             # JS expression when strategy=custom\n\nEdge:\n  from: string                  # node id\n  to: string                    # node id\n  label?: string\n  condition?: string            # optional JS expression, edge taken when truthy\n\nAgentRef:\n  id: string\n  name: string\n  description: string\n  model: string                 # e.g. 'claude-sonnet-4-6', 'gpt-4o'\n  system_prompt: string         # supports {{variable}} interpolation\n  tools: ToolDeclaration[]\n  mcp_servers?: McpServerRef[]\n  memory?: { type: 'none' | 'window' | 'summary', window_size?: number }\n\nToolDeclaration:\n  id: string\n  type: builtin | mcp | plugin | http\n  # builtin: read_file, write_file, bash, web_search, etc.\n  # mcp: references an MCP server tool\n  # plugin: user-supplied package\n  # http: arbitrary REST endpoint\n  config?: Record<string, any>\n\nMcpServerRef:\n  id: string\n  transport: stdio | sse | websocket\n  command?: string              # stdio: path to MCP server binary\n  args?: string[]\n  url?: string                  # sse/websocket\n  env?: Record<string, string>  # env vars injected into MCP server process",
+      "completeWorkflowExample": "# security-review.workflow.yaml\nworkflow:\n  id: security-review\n  version: 1.0.0\n  name: AI Security Review\n  description: |\n    Runs a multi-agent security review on a git diff or file set.\n    Triage agent filters noise, then specialist agents review in parallel,\n    a synthesis agent compiles findings, and a human gate approves before\n    the final report is posted to the PR.\n  tags: [security, code-review, ci]\n  trigger:\n    type: webhook\n    webhook:\n      path: /hooks/security-review\n      secret_env: WEBHOOK_SECRET\n\n  inputs:\n    - name: git_diff\n      type: code_diff\n      required: true\n      description: The unified diff to review\n    - name: repo_url\n      type: string\n      required: true\n    - name: pr_number\n      type: number\n      required: false\n    - name: pr_author\n      type: string\n      required: false\n    - name: severity_threshold\n      type: string\n      required: false\n      default: medium\n      description: Minimum severity to surface — low/medium/high/critical\n\n  context:\n    - key: review_date\n      value: '{{env.TODAY}}'\n    - key: model_fast\n      value: claude-haiku-4\n    - key: model_smart\n      value: claude-sonnet-4-6\n\n  agents:\n    - id: triage-agent\n      name: Security Triage\n      description: Quickly classifies which changed files/lines warrant deep review\n      model: '{{ctx.model_fast}}'\n      system_prompt: |\n        You are a security triage specialist. Given a git diff, identify which\n        changed files and line ranges are most likely to contain security issues.\n        Categories: injection, auth, crypto, supply_chain, secrets, iac, logic.\n        Output JSON: { files: [{path, category, reason, priority: 1-5}] }\n      tools: []\n      memory:\n        type: none\n\n    - id: sast-agent\n      name: SAST Analyst\n      description: Static analysis for injections, XSS, SSRF, path traversal, etc.\n      model: '{{ctx.model_smart}}'\n      system_prompt: |\n        You are an expert in static application security testing. Focus on:\n        injection flaws (SQL, command, LDAP), XSS, SSRF, path traversal,\n        deserialization, and insecure direct object references.\n        For each finding: { id, severity, cwe_id, file, line_start, line_end,\n        description, recommendation, confidence: low|medium|high }\n      tools:\n        - id: read_file\n          type: builtin\n        - id: grep\n          type: builtin\n      mcp_servers:\n        - id: filesystem\n          transport: stdio\n          command: npx\n          args: ['-y', '@modelcontextprotocol/server-filesystem', '{{inputs.repo_url}}']\n      memory:\n        type: window\n        window_size: 20\n\n    - id: secrets-agent\n      name: Secrets Scanner\n      description: Detects hardcoded credentials, tokens, keys, and private data\n      model: '{{ctx.model_fast}}'\n      system_prompt: |\n        You are a secrets detection specialist. Scan for: API keys, passwords,\n        private keys, tokens, connection strings, and PII. Flag any entropy\n        anomalies or patterns matching known secret formats.\n        Output: [{ id, severity, type, file, line, masked_value, recommendation }]\n      tools:\n        - id: read_file\n          type: builtin\n      memory:\n        type: none\n\n    - id: dependency-agent\n      name: Dependency Auditor\n      description: Reviews changes to package manifests for vulnerable dependencies\n      model: '{{ctx.model_fast}}'\n      system_prompt: |\n        You are a supply-chain security specialist. Examine changes to\n        package.json, requirements.txt, go.mod, Cargo.toml, pom.xml.\n        Check for: known CVEs, suspicious new packages, version downgrades,\n        typosquatting, and removed lock file integrity.\n        Output: [{ id, severity, package, version, cve_ids, recommendation }]\n      tools:\n        - id: web_search\n          type: builtin\n          config:\n            allowed_domains: [osv.dev, nvd.nist.gov, github.com/advisories]\n      memory:\n        type: none\n\n    - id: synthesis-agent\n      name: Security Report Synthesizer\n      description: Merges all specialist findings into a unified, prioritized report\n      model: '{{ctx.model_smart}}'\n      system_prompt: |\n        You are a principal security engineer writing an executive security review.\n        Given findings from SAST, secrets, and dependency agents, produce:\n        1. Executive summary (2-3 sentences)\n        2. Critical & high findings (detailed, actionable)\n        3. Medium findings (grouped by category)\n        4. Informational notes\n        5. Recommended remediation order\n        Filter out findings below severity: {{inputs.severity_threshold}}.\n        Format as Markdown suitable for a GitHub PR comment.\n      tools: []\n      memory:\n        type: none\n\n    - id: pr-comment-agent\n      name: PR Comment Poster\n      description: Posts the approved security report to the pull request\n      model: '{{ctx.model_fast}}'\n      system_prompt: |\n        Post the security review report to PR #{{inputs.pr_number}} in\n        {{inputs.repo_url}}. Use the GitHub API tool to create a PR review\n        with line-level annotations where possible.\n      tools:\n        - id: github_pr_review\n          type: plugin\n          config:\n            token_env: GITHUB_TOKEN\n      memory:\n        type: none\n\n  nodes:\n    - id: triage\n      type: agent\n      agent_ref: triage-agent\n      prompt_template: |\n        Triage the following git diff for security-relevant changes.\n        Diff:\n        {{inputs.git_diff}}\n\n    - id: parallel-review\n      type: parallel\n      parallel_of: [sast-review, secrets-review, dependency-review]\n\n    - id: sast-review\n      type: agent\n      agent_ref: sast-agent\n      prompt_template: |\n        Perform SAST on these prioritized files from the diff.\n        Triage output: {{nodes.triage.output}}\n        Full diff:\n        {{inputs.git_diff}}\n\n    - id: secrets-review\n      type: agent\n      agent_ref: secrets-agent\n      prompt_template: |\n        Scan for secrets and credentials in this diff.\n        Diff:\n        {{inputs.git_diff}}\n\n    - id: dependency-review\n      type: agent\n      agent_ref: dependency-agent\n      prompt_template: |\n        Audit dependency changes in this diff.\n        Diff:\n        {{inputs.git_diff}}\n\n    - id: merge-findings\n      type: merge\n      merge_strategy: object_merge\n\n    - id: synthesize\n      type: agent\n      agent_ref: synthesis-agent\n      prompt_template: |\n        Synthesize these findings into a final report.\n        SAST findings: {{nodes.sast-review.output}}\n        Secrets findings: {{nodes.secrets-review.output}}\n        Dependency findings: {{nodes.dependency-review.output}}\n\n    - id: has-critical-findings\n      type: condition\n      condition: 'JSON.parse(nodes[\"synthesize\"].output).critical_count > 0'\n      branches:\n        - label: has_criticals\n          condition: 'JSON.parse(nodes[\"synthesize\"].output).critical_count > 0'\n          target_node: human-approval\n        - label: no_criticals\n          condition: 'JSON.parse(nodes[\"synthesize\"].output).critical_count === 0'\n          target_node: auto-post\n\n    - id: human-approval\n      type: human_gate\n      gate_type: approval\n      assignee: '{{inputs.pr_author}}'\n      message_template: |\n        Security review found {{nodes.synthesize.output.critical_count}} critical\n        finding(s) in PR #{{inputs.pr_number}}. Please review and approve or\n        reject posting this security report.\n        Preview:\n        {{nodes.synthesize.output.summary}}\n      timeout_ms: 86400000\n      timeout_action: escalate\n\n    - id: auto-post\n      type: agent\n      agent_ref: pr-comment-agent\n      prompt_template: |\n        Post this approved security review to the PR.\n        Report: {{nodes.synthesize.output}}\n\n    - id: approved-post\n      type: agent\n      agent_ref: pr-comment-agent\n      prompt_template: |\n        Post this human-approved security review to the PR.\n        Report: {{nodes.synthesize.output}}\n        Approved by: {{nodes.human-approval.approved_by}}\n\n  edges:\n    - from: triage\n      to: parallel-review\n    - from: parallel-review\n      to: merge-findings\n    - from: merge-findings\n      to: synthesize\n    - from: synthesize\n      to: has-critical-findings\n    - from: has-critical-findings\n      to: human-approval\n      label: has_criticals\n    - from: has-critical-findings\n      to: auto-post\n      label: no_criticals\n    - from: human-approval\n      to: approved-post\n      condition: 'nodes[\"human-approval\"].decision === \"approved\"'",
+      "engineAPI": {
+        "triggerRun": "// packages/core/src/engine.ts\n\nimport type { WorkflowDefinition, RunOptions, RunHandle } from './types';\n\n// Primary surface-facing API — every surface (desktop, CLI, VS Code, web) uses this.\nexport interface WorkflowEngine {\n  /**\n   * Load and validate a workflow definition.\n   * Throws WorkflowValidationError if the schema is invalid.\n   */\n  loadWorkflow(source: WorkflowDefinition | string): Promise<LoadedWorkflow>;\n\n  /**\n   * Trigger a workflow run. Returns immediately with a RunHandle;\n   * all progress is delivered via the event stream on the handle.\n   */\n  run(workflow: LoadedWorkflow, inputs: Record<string, unknown>, options?: RunOptions): RunHandle;\n\n  /**\n   * Resume a paused run (e.g. after human-gate approval).\n   */\n  resume(runId: string, gateId: string, decision: GateDecision): Promise<void>;\n\n  /**\n   * Cancel a running workflow. In-flight agent calls are interrupted.\n   */\n  cancel(runId: string): Promise<void>;\n\n  /**\n   * Retrieve a past run by ID (local store or cloud depending on mode).\n   */\n  getRunState(runId: string): Promise<RunState>;\n\n  /**\n   * List runs, optionally filtered.\n   */\n  listRuns(filter?: RunFilter): Promise<RunSummary[]>;\n}\n\n// Factory — surfaces call this once at startup.\nexport function createEngine(config: EngineConfig): WorkflowEngine;\n\nexport interface EngineConfig {\n  executionMode: 'local' | 'cloud';\n  apiKeys?: Record<string, string>;     // provider -> key (local mode)\n  cloudEndpoint?: string;               // required in cloud mode\n  cloudAuthToken?: string;              // from web portal auth bridge\n  storageDir?: string;                  // local: where run state is persisted\n  plugins?: PluginRegistration[];       // surface-supplied plugins\n  mcpServers?: McpServerConfig[];       // globally available MCP servers\n  telemetry?: TelemetryConfig;          // usage reporting to web portal\n}\n\nexport interface RunOptions {\n  dryRun?: boolean;                     // validate + resolve without executing\n  stepMode?: boolean;                   // pause before each node (debug)\n  tags?: string[];                      // for filtering in portal\n  runId?: string;                       // supply to resume deterministically\n  timeoutMs?: number;\n}\n\n// RunHandle is the live object returned by engine.run().\nexport interface RunHandle {\n  readonly runId: string;\n  readonly events: AsyncIterable<RunEvent>;   // primary streaming interface\n  readonly state: () => RunState;             // synchronous snapshot\n  cancel: () => Promise<void>;\n  waitForCompletion: () => Promise<RunResult>;\n}",
+        "streamingEvents": "// packages/core/src/events.ts\n\nexport type RunEvent =\n  | RunStartedEvent\n  | NodeStartedEvent\n  | AgentTokenEvent\n  | AgentToolCallEvent\n  | AgentToolResultEvent\n  | NodeCompletedEvent\n  | NodeFailedEvent\n  | HumanGatePausedEvent\n  | HumanGateResumedEvent\n  | RunCompletedEvent\n  | RunFailedEvent\n  | RunCancelledEvent;\n\n// Every event carries a timestamp and runId.\ninterface BaseEvent {\n  type: string;\n  runId: string;\n  timestamp: string;          // ISO 8601\n  sequenceNumber: number;     // monotonically increasing per run\n}\n\nexport interface RunStartedEvent extends BaseEvent {\n  type: 'run:started';\n  workflowId: string;\n  inputs: Record<string, unknown>;\n  executionMode: 'local' | 'cloud';\n}\n\nexport interface NodeStartedEvent extends BaseEvent {\n  type: 'node:started';\n  nodeId: string;\n  nodeType: string;\n}\n\nexport interface AgentTokenEvent extends BaseEvent {\n  type: 'agent:token';\n  nodeId: string;\n  token: string;              // streaming LLM token\n  model: string;\n}\n\nexport interface AgentToolCallEvent extends BaseEvent {\n  type: 'agent:tool_call';\n  nodeId: string;\n  toolId: string;\n  toolInput: unknown;         // sanitized — no secrets\n}\n\nexport interface AgentToolResultEvent extends BaseEvent {\n  type: 'agent:tool_result';\n  nodeId: string;\n  toolId: string;\n  success: boolean;\n  outputSummary: string;      // truncated for UI\n}\n\nexport interface NodeCompletedEvent extends BaseEvent {\n  type: 'node:completed';\n  nodeId: string;\n  output: unknown;\n  tokensUsed: { input: number; output: number; model: string };\n  durationMs: number;\n}\n\nexport interface NodeFailedEvent extends BaseEvent {\n  type: 'node:failed';\n  nodeId: string;\n  error: { code: string; message: string; retryable: boolean };\n}\n\nexport interface HumanGatePausedEvent extends BaseEvent {\n  type: 'human_gate:paused';\n  nodeId: string;\n  gateType: 'approval' | 'input' | 'review';\n  message: string;\n  assignee?: string;\n  timeoutMs?: number;\n  expiresAt?: string;\n}\n\nexport interface HumanGateResumedEvent extends BaseEvent {\n  type: 'human_gate:resumed';\n  nodeId: string;\n  decision: 'approved' | 'rejected' | 'input_provided';\n  decidedBy: string;\n  payload?: unknown;          // when gate_type=input\n}\n\nexport interface RunCompletedEvent extends BaseEvent {\n  type: 'run:completed';\n  outputs: Record<string, unknown>;\n  totalTokensUsed: TokenUsageSummary;\n  durationMs: number;\n}\n\nexport interface RunFailedEvent extends BaseEvent {\n  type: 'run:failed';\n  error: { code: string; message: string; nodeId?: string };\n  partialOutputs: Record<string, unknown>;\n}\n\n// Surface usage — identical regardless of local or cloud mode:\n// const handle = engine.run(wf, inputs);\n// for await (const event of handle.events) {\n//   switch (event.type) {\n//     case 'agent:token': renderStreamingToken(event.token); break;\n//     case 'human_gate:paused': showApprovalUI(event); break;\n//     case 'run:completed': showResult(event.outputs); break;\n//   }\n// }",
+        "humanGate": "// packages/core/src/human-gate.ts\n\n/**\n * Human gates persist their paused state across process restarts.\n * Local mode: saved to storageDir/runs/{runId}/gates/{gateId}.json\n * Cloud mode: managed by cloud worker, client polls or uses SSE\n */\n\nexport interface GateDecision {\n  decision: 'approved' | 'rejected' | 'input_provided';\n  decidedBy: string;          // user id or 'timeout_escalation'\n  payload?: unknown;          // for gate_type=input\n  comment?: string;\n}\n\n// When a human_gate node is reached:\n// 1. Engine serializes full run state to disk (local) or cloud store.\n// 2. Engine emits HumanGatePausedEvent — all surfaces receive it.\n// 3. Engine suspends — no more processing, process may exit.\n// 4. Surface presents approval UI (desktop modal, CLI prompt, portal page,\n//    VS Code notification, or external webhook notification).\n// 5. User acts — surface calls engine.resume(runId, gateId, decision).\n// 6. Engine reloads run state, emits HumanGateResumedEvent, continues.\n\n// Notification delivery:\nexport interface GateNotificationConfig {\n  channels: ('in_app' | 'email' | 'webhook' | 'slack')[]; // configured in portal\n  webhookUrl?: string;\n  slackWebhookUrl?: string;\n}\n\n// Timeout behavior is declared per-node:\n// timeout_action: reject   → auto-reject on timeout\n// timeout_action: approve  → auto-approve on timeout (dangerous, use sparingly)\n// timeout_action: escalate → notify fallback assignees, extend timeout\n\n// Surface-agnostic resume example (CLI):\n// $ agentflow resume <run-id> --gate <gate-id> --approve\n// $ agentflow resume <run-id> --gate <gate-id> --reject --comment 'Too risky'\n// $ agentflow resume <run-id> --gate <gate-id> --input '{\"api_key\": \"...\"}'",
+        "pluginAPI": "// packages/core/src/plugins.ts\n\n/**\n * Plugin = a named set of tool implementations that agents can use.\n * Surfaces register plugins at engine creation time.\n * Plugins can also be published as npm packages and declared in workflow YAML.\n */\n\nexport interface ToolPlugin {\n  id: string;                           // unique, e.g. 'github', 'jira', 'slack'\n  version: string;\n  displayName: string;\n  tools: ToolImplementation[];\n  setup?: (config: Record<string, unknown>) => Promise<void>;\n  teardown?: () => Promise<void>;\n}\n\nexport interface ToolImplementation {\n  id: string;                           // must match tool declaration in YAML\n  description: string;\n  inputSchema: JSONSchema;              // validated before calling execute()\n  outputSchema?: JSONSchema;\n  execute(\n    input: unknown,\n    context: ToolExecutionContext\n  ): AsyncGenerator<ToolEvent, ToolResult, void>;\n}\n\n// Generators let tools emit progress events back to the engine event stream.\nexport type ToolEvent =\n  | { type: 'progress'; message: string }\n  | { type: 'artifact'; name: string; content: string; mimeType: string };\n\nexport interface ToolResult {\n  success: boolean;\n  output: unknown;\n  error?: string;\n}\n\nexport interface ToolExecutionContext {\n  runId: string;\n  nodeId: string;\n  workflowId: string;\n  env: Record<string, string>;          // env vars declared in workflow\n  abortSignal: AbortSignal;\n  logger: ToolLogger;\n}\n\n// Plugin registration — called during engine initialization.\nexport interface PluginRegistration {\n  plugin: ToolPlugin;\n  config?: Record<string, unknown>;    // passed to plugin.setup()\n}\n\n// Built-in tools (always registered, no plugin needed):\n// read_file, write_file, bash, web_search, http_request,\n// git_diff, git_log, grep, list_directory\n\n// Publishing a plugin as an npm package:\n// package.json: { \"agentflow-plugin\": true, \"main\": \"dist/index.js\" }\n// Workflow YAML can then reference:\n//   tools:\n//     - id: my_tool\n//       type: plugin\n//       package: '@org/agentflow-plugin-github'\n//       config: { token_env: GITHUB_TOKEN }"
+      },
+      "localVsCloudMode": {
+        "phase1Architecture": "Phase 1 — Local Execution Mode:\n\nAll LLM API calls originate from the user's machine directly to providers\n(Anthropic, OpenAI, Google, etc.). API keys are stored in the local OS\nkeychain (Keychain on macOS, Credential Manager on Windows, libsecret on Linux).\nRun state is persisted to a local SQLite database at\n~/.agentflow/runs.db (or %APPDATA%\\agentflow\\runs.db on Windows).\nMCP server processes are spawned as child processes by the engine.\nWorkflow files are read from the local filesystem.\nNo data leaves the machine except to LLM API providers.\n\nLocal storage layout:\n~/.agentflow/\n  runs.db                   # SQLite: all run state, events, outputs\n  workflows/                # cached/imported workflow definitions\n  plugins/                  # installed plugin packages\n  mcp-servers/              # managed MCP server binaries\n  logs/                     # rolling logs per run\n\nengine is created with:\n  createEngine({\n    executionMode: 'local',\n    apiKeys: { anthropic: keychain.get('ANTHROPIC_API_KEY') },\n    storageDir: '~/.agentflow'\n  })",
+        "phase2Architecture": "Phase 2 — Cloud Execution Mode:\n\nThe engine acts as a thin client. When engine.run() is called:\n1. Engine serializes the workflow + inputs + user identity to the cloud API.\n2. Cloud workers (Kubernetes jobs or serverless functions) execute the run.\n3. Engine receives a runId and subscribes to an SSE stream for events.\n4. The same RunHandle and RunEvent types are returned — surfaces are unaware\n   of the execution location change.\n5. Human gate pauses are stored in cloud; any surface (including web portal)\n   can fulfill them.\n6. LLM API calls are made from cloud workers using provider API keys managed\n   by the platform (user links their keys in the portal, or uses platform-\n   provisioned keys under the Pro/Enterprise plan).\n7. Outputs and run state are stored in cloud; optionally replicated locally.\n\nCloud engine creation:\n  createEngine({\n    executionMode: 'cloud',\n    cloudEndpoint: 'https://api.agentflow.dev',\n    cloudAuthToken: authBridge.getToken(),  // from web portal auth\n    telemetry: { reportUsage: true }        // drives portal quota tracking\n  })",
+        "transparentSwitch": "Transparent mode switching:\n\nThe engine exposes an identical TypeScript interface regardless of mode.\nSurfaces do not check executionMode — they call engine.run() and handle\nRunEvent objects the same way in both modes.\n\nMode is resolved at engine creation time from:\n  1. Explicit config.executionMode override\n  2. Presence of a valid cloudAuthToken (implies cloud mode)\n  3. User preference stored in ~/.agentflow/settings.json\n  4. Default: 'local'\n\nGradual migration path:\n- User starts on local mode (Phase 1).\n- User signs up on web portal, gets auth token.\n- Desktop app detects token, shows opt-in prompt: 'Run in cloud for\n  persistence, team sharing, and no local API key management?'\n- User opts in: engine is recreated with executionMode='cloud'.\n- CLI: agentflow config set execution-mode cloud\n- VS Code: setting agentflow.executionMode = 'cloud'\n- All surfaces pick up the change from ~/.agentflow/settings.json\n  on next engine initialization — no code changes in surfaces required.\n\nFallback behavior:\n- If cloud is unreachable and executionMode='cloud', engine throws\n  CloudUnavailableError with a suggestion to switch to local mode.\n- Engine never silently falls back from cloud to local — that could\n  leak credentials or bypass enterprise controls."
+      },
+      "mcpIntegration": "MCP Integration Architecture:\n\n--- Agents as MCP Servers (outbound) ---\nEvery loaded workflow can be exposed as an MCP server so that external\ntools (Claude Desktop, Cursor, other MCP clients) can invoke your agents.\n\nThe engine ships an MCP adapter:\n  import { createMcpAdapter } from '@agentflow/core/mcp';\n  const adapter = createMcpAdapter(engine, {\n    workflows: ['security-review', 'refactor-agent'],\n    transport: 'stdio'  // or 'sse'\n  });\n  adapter.listen(); // registers each workflow as an MCP tool\n\nEach workflow appears as an MCP tool named agentflow_{workflow_id}.\nTool inputSchema is derived from the workflow's inputs[] declarations.\nThe MCP tool call blocks until run:completed, then returns the outputs.\nHuman gates emit a special MCP notification asking the client to prompt\nthe user — this bridges MCP's request-response model with human gates.\n\n--- Agents Consuming MCP Tools ---\nAgents declare mcp_servers in their definition. The engine:\n1. Spawns (stdio) or connects to (SSE/WS) each MCP server.\n2. Calls tools/list on each server and registers discovered tools into\n   the agent's tool namespace as mcp_{server_id}_{tool_name}.\n3. When an agent calls a tool, the engine routes to the correct MCP server\n   using the registered mapping.\n4. Tool results are streamed back as AgentToolResultEvents.\n5. MCP server processes are kept alive for the run duration, then torn down.\n\nBuilt-in MCP servers available out-of-the-box (auto-installed via npx):\n- @modelcontextprotocol/server-filesystem  (read/write local files)\n- @modelcontextprotocol/server-brave-search (web search)\n- @modelcontextprotocol/server-puppeteer   (browser automation)\n- @modelcontextprotocol/server-github      (GitHub API)\n- @modelcontextprotocol/server-postgres    (database access)\n\n--- MCP Tool Discovery ---\nAt agent startup the engine performs discovery:\n1. Static discovery: tools listed in mcp_servers[].tools_whitelist YAML\n   are pre-resolved at workflow load time — fast, deterministic.\n2. Dynamic discovery: if no whitelist, the engine calls tools/list at\n   agent init time and registers all available tools.\n3. Capability caching: tool lists are cached per (server_command, args)\n   hash for 1 hour to avoid repeated process spawning.\n4. Conflict resolution: if two MCP servers expose a tool with the same\n   name, the engine prefixes with the server id: github_create_issue vs\n   jira_create_issue. Workflow YAML can use either name.\n5. Schema validation: engine validates all MCP tool calls against the\n   server-reported JSON schema before sending — prevents malformed calls."
+    },
+    "webPortal": {
+      "purpose": "The web portal is the control plane, not the execution plane. It is the single surface where users manage identity, billing, quota, team access, audit compliance, and (in Phase 2) cloud execution queue. Workflows are never designed or run here — that happens in the desktop app, VS Code extension, or CLI. The portal exists to answer: Who is running what, how much does it cost, who has access, and is it compliant?",
+      "authBridge": {
+        "method": "OAuth Device Flow (RFC 8628), supplemented by long-lived API tokens for CI/CD",
+        "reasoning": "License keys are the simplest but give no revocation, no per-device audit trail, and no user identity — problematic for Enterprise SSO and team workspaces. API tokens work well for CI/CD but are awkward for interactive desktop/CLI auth (user must copy-paste into a file). OAuth Device Flow is the best fit because: (1) the desktop app and CLI can initiate auth with a single command without opening a browser themselves, (2) user authenticates in any browser including their corporate SSO-connected browser, (3) access tokens are short-lived with refresh tokens, enabling revocation, (4) each device gets its own token — revoking one device doesn't affect others. GitHub CLI uses exactly this model for the same reasons. API tokens are issued separately for CI/CD pipelines (non-interactive) and are scoped to specific permissions.",
+        "flow": "1. Surface calls POST /auth/device — receives device_code + user_code + verification_uri.\n2. Surface prints: 'Open https://agentflow.dev/activate and enter code: XXXX-XXXX'.\n3. User opens browser, signs in (username/password, Google OAuth, or Enterprise SAML/OIDC).\n4. User enters user_code on activation page.\n5. Surface polls POST /auth/device/token every 5 seconds with device_code.\n6. On success: receives access_token (1hr TTL) + refresh_token (90-day TTL).\n7. Tokens stored in OS keychain (never in plaintext files).\n8. Engine EngineConfig.cloudAuthToken is set to the access token.\n9. CLI: agentflow auth login — runs the full device flow in ~10 seconds.\n10. CI/CD: agentflow auth login --with-token — reads AGENTFLOW_TOKEN env var, skips device flow.\n11. Token refresh happens transparently inside the engine before API calls."
+      },
+      "syncArchitecture": {
+        "syncMechanism": "Opt-in sync per data category. Nothing syncs by default in local mode. Sync is enabled per-category in settings (desktop app or CLI: agentflow config set sync.run_history true). Sync is encrypted in transit (TLS 1.3) and at rest (AES-256). Sync is eventually consistent — the portal is never the source of truth for local execution; it is a read-only aggregate view of what surfaces choose to report. In Phase 2 (cloud execution), run state lives in the cloud natively and sync is no longer needed for that category.",
+        "whatSyncs": [
+          "Usage telemetry (tokens per model per agent per run) — opt-in, anonymizable; this is what drives the portal quota dashboard. Reported as compact usage events at run completion, not full transcripts.",
+          "Run metadata (runId, workflowId, status, duration, timestamps, tags) — opt-in; enables run history view in portal without uploading outputs.",
+          "Workflow definitions (YAML/JSON) — explicit cloud backup action by user, or team-share action; never automatic background sync.",
+          "Agent library — team-level sharing; when a user publishes an agent to team workspace it is uploaded; pull is explicit (agentflow agent pull <id>).",
+          "Audit log events (enterprise only) — structured event records for compliance: who ran what workflow, what human gates were fulfilled by whom, what tools were called. Pushed from engine at run completion."
+        ],
+        "dataPrivacy": "Full LLM prompt/response transcripts are NEVER synced to the portal in any tier or any mode — they remain on the user's machine (local mode) or in the isolated cloud worker's ephemeral storage (cloud mode, deleted after run). The portal sees only structured metadata and aggregate token counts, not content. This is the core privacy guarantee that makes the platform viable for enterprise security teams running sensitive code reviews."
+      },
+      "tiers": [
+        {
+          "name": "Free",
+          "price": "$0/month forever",
+          "features": [
+            "Unlimited local workflow execution (no platform token limits — user pays their own LLM provider bills)",
+            "Up to 5 saved workflow definitions in cloud backup",
+            "Usage dashboard: last 30 days of token metrics (synced from local, opt-in)",
+            "1 personal workspace",
+            "Access to public community agent library (read-only)",
+            "OAuth device flow authentication",
+            "Core engine npm package (Apache 2.0, free to self-host)",
+            "Desktop app, VS Code extension, CLI (all surfaces)",
+            "MCP integration (agents as MCP servers, consuming MCP tools)",
+            "Up to 3 concurrent local runs",
+            "Community support (GitHub Discussions)"
+          ]
+        },
+        {
+          "name": "Pro",
+          "price": "$19/month per seat",
+          "features": [
+            "Everything in Free",
+            "Unlimited cloud workflow backup",
+            "Usage dashboard: full history (12 months), per-model breakdown, cost estimation in USD",
+            "Quota management: set monthly token budgets per model, receive alerts at 80%/100%",
+            "Phase 2: Cloud execution (50 cloud run-hours/month included, $0.10/hr overage)",
+            "Human gate notifications via email and Slack webhooks",
+            "Priority support (48hr response SLA)",
+            "Up to 10 concurrent local runs (unlimited in cloud mode)",
+            "Run history with output metadata (not transcripts) in portal",
+            "API token management (up to 10 CI/CD tokens)",
+            "Early access to new features"
+          ]
+        },
+        {
+          "name": "Enterprise",
+          "price": "Custom (annual contract, typically $50-150/seat/month)",
+          "features": [
+            "Everything in Pro",
+            "SSO: SAML 2.0 and OIDC (Okta, Azure AD, Google Workspace, custom IdP)",
+            "Team workspaces: shared agent library, workflow templates, shared MCP server configs",
+            "Role-based access control: viewer / runner / editor / admin per workspace",
+            "Audit logs: SOC 2-compliant structured event log with 7-year retention",
+            "Compliance exports: CSV/JSON audit log export for SIEM integration",
+            "Enforced quota policies: admin-set per-user and per-team monthly budgets",
+            "Enterprise cloud execution: dedicated worker pool, VPC peering option, data residency (US/EU)",
+            "Custom LLM provider integration: Azure OpenAI, AWS Bedrock, on-premises models",
+            "SLA: 99.9% uptime for cloud execution, 4hr support response",
+            "Dedicated Customer Success Manager for teams > 25 seats",
+            "Custom contract terms, MSA, DPA for GDPR/HIPAA compliance",
+            "Self-hosted portal option (Docker Compose or Helm chart)",
+            "Unlimited API tokens, unlimited concurrent cloud runs"
+          ]
+        }
+      ],
+      "keyPages": [
+        {
+          "page": "/dashboard",
+          "purpose": "Landing page after login. Snapshot of health and activity across all surfaces. Answers: is everything working, what ran recently, am I close to quota?",
+          "keyMetrics": [
+            "Token usage this month vs quota (gauge chart per model)",
+            "Active runs right now (polling, shows human gates awaiting action)",
+            "Run success rate last 7 days (sparkline)",
+            "Top 5 workflows by token consumption this month",
+            "Recent run activity feed (last 10 runs across all surfaces)"
+          ]
+        },
+        {
+          "page": "/usage",
+          "purpose": "Deep-dive analytics on token consumption and cost. Helps users understand their LLM spend and optimize workflows.",
+          "keyMetrics": [
+            "Token consumption by model over time (stacked bar: daily/weekly/monthly toggle)",
+            "Token consumption by workflow (table + bar chart)",
+            "Token consumption by agent within a workflow (drill-down)",
+            "Estimated cost in USD per model (based on published pricing, updated monthly)",
+            "Input vs output token ratio (helps identify prompts that can be compressed)",
+            "Average tokens per run per workflow (trend over time)"
+          ]
+        },
+        {
+          "page": "/quota",
+          "purpose": "Quota configuration and alert management. Pro/Enterprise only for setting limits; Free users see usage-only view.",
+          "keyMetrics": [
+            "Monthly budget per model (editable, Pro+)",
+            "Current month spend vs budget (progress bars)",
+            "Alert thresholds (80%, 100%, configurable — triggers email/Slack)",
+            "Budget enforcement action: warn only / pause new runs / hard stop",
+            "Per-user budget allocation (Enterprise: admin sets per-seat limits)",
+            "Quota reset date and carry-over policy"
+          ]
+        },
+        {
+          "page": "/runs",
+          "purpose": "Run history browser. Searchable log of all workflow executions reported from surfaces. Not a workflow execution interface.",
+          "keyMetrics": [
+            "Run list with: workflow name, surface, status, duration, tokens used, timestamp",
+            "Filter by: workflow, surface, status (completed/failed/cancelled/paused), date range, tag",
+            "Run detail view: node execution timeline, token usage per node, error details",
+            "Human gate history for a run: who approved what, when",
+            "Export run metadata to CSV"
+          ]
+        },
+        {
+          "page": "/gates",
+          "purpose": "Human gate inbox. All pending approvals across all runs, from all surfaces, in one place. This is the primary reason power users open the portal during active workflows.",
+          "keyMetrics": [
+            "Pending gates list: workflow, gate message, assignee, time remaining before timeout",
+            "Approve / Reject / Provide Input actions directly in portal",
+            "Gate history: all resolved gates with decision, decider, timestamp",
+            "Email/Slack notification settings per gate type",
+            "Bulk approve (for low-risk gate types, Enterprise only)"
+          ]
+        },
+        {
+          "page": "/team",
+          "purpose": "Team workspace management. Enterprise only. Shared agent library, member access control.",
+          "keyMetrics": [
+            "Member list with role (viewer/runner/editor/admin)",
+            "Invite by email / SSO group",
+            "Shared agent library: browse, publish, version, deprecate agents",
+            "Shared workflow templates",
+            "Per-member usage breakdown (token consumption)",
+            "Pending invitations"
+          ]
+        },
+        {
+          "page": "/audit",
+          "purpose": "SOC 2 and compliance audit log. Enterprise only. Immutable, tamper-evident structured event log.",
+          "keyMetrics": [
+            "Event log table: timestamp, actor, event type, resource, surface, IP, outcome",
+            "Filter by actor, event type (run_started, gate_approved, agent_published, member_invited, settings_changed), date range",
+            "Export to CSV/JSON for SIEM ingestion",
+            "Retention policy display and configuration",
+            "Alert rules: notify security team on specific event patterns (e.g. gate approved by non-owner)"
+          ]
+        },
+        {
+          "page": "/settings/auth",
+          "purpose": "Authentication configuration: active device sessions, API tokens, SSO setup.",
+          "keyMetrics": [
+            "Active device sessions list (device name, last seen, revoke button)",
+            "API tokens: name, scopes, last used, revoke",
+            "SSO configuration (Enterprise): IdP metadata, test connection, forced SSO toggle",
+            "MFA setup (TOTP)",
+            "Password / email change"
+          ]
+        }
+      ]
+    },
+    "phaseTransition": {
+      "phase1Summary": "Phase 1 delivers a fully functional local-execution platform. The core engine is open-source (Apache 2.0) and runs entirely on the user's machine. LLM API calls go directly to providers (Anthropic, OpenAI, etc.) using keys the user controls. Run state is persisted in a local SQLite database. The web portal exists but is lightweight: it only receives opt-in usage telemetry pushed at run completion, displays the quota/usage dashboard, and manages human gate notifications. No code runs in the cloud in Phase 1 — the portal is purely a metrics aggregator and control plane. This architecture lets the platform launch without cloud infrastructure for execution, dramatically reducing operational complexity and earning trust with security-conscious users.",
+      "phase2Trigger": "Phase 2 cloud execution is triggered by one or more of: (a) user explicitly opts in via 'agentflow config set execution-mode cloud' or the desktop app settings toggle, (b) a workflow YAML declares 'execution: cloud' at the top level (useful for CI/CD workflows that should not depend on a local machine being online), or (c) an Enterprise admin enforces cloud mode for all team members via workspace policy. The opt-in is per-surface or per-workflow — a developer might keep local mode in VS Code for interactive work but set cloud mode in CI/CD. The engine interface is identical in both modes; surfaces require zero code changes.",
+      "cloudArchitecture": "Cloud execution architecture (Phase 2):\n\nControl Plane (portal backend):\n- Run submission API: POST /runs — accepts workflow + inputs, queues a job, returns runId\n- Run state API: GET /runs/{runId} — current state, outputs, events replay\n- SSE endpoint: GET /runs/{runId}/events — real-time event stream for active runs\n- Gate API: POST /runs/{runId}/gates/{gateId}/decide — fulfill human gates from any surface\n- Worker orchestration: Kubernetes Job per run, auto-scaled 0-N\n- Run state store: PostgreSQL (structured) + S3 (large outputs, artifacts)\n- Event bus: Redis Streams for real-time event fan-out to connected SSE clients\n- LLM API key management: user-linked keys stored in HashiCorp Vault, injected into worker environment at runtime\n\nData Plane (cloud workers):\n- Isolated Kubernetes Jobs (one pod per run, network policy restricts egress to allowed LLM providers + declared MCP server URLs)\n- Same packages/core engine code runs inside workers — no separate cloud-specific engine\n- MCP servers run as sidecar containers within the same pod\n- Worker ephemeral storage: all LLM transcripts deleted on pod termination\n- Output artifacts uploaded to user-scoped S3 prefix, deleted after 30 days (configurable)\n- Enterprise: dedicated node pools, optional VPC peering to customer cloud account\n\nClient-side in cloud mode:\n- engine.run() → HTTP POST to cloud API → returns RunHandle backed by SSE subscription\n- RunHandle.events AsyncIterable yields the same RunEvent types, now delivered over SSE\n- Human gates in cloud: HumanGatePausedEvent delivered to all surfaces + notification channels simultaneously; first surface to call engine.resume() wins (idempotent)\n- Offline handling: if SSE connection drops, client reconnects using Last-Event-ID header and replays missed events from the event bus\n- Local fallback: if cloudEndpoint unreachable, engine throws — surfaces show 'Cloud unavailable, switch to local mode?' prompt\n\nMigration of existing local runs:\n- Local runs (Phase 1) stay in local SQLite — no migration needed\n- Portal shows a unified run history combining local-reported runs and cloud-native runs, distinguished by a 'surface' badge",
+      "migrationPath": "Migration path from Phase 1 to Phase 2 for a typical user:\n\nWeek 1 (Phase 1): User installs desktop app. Creates workflows, runs them locally. API keys in OS keychain. Run history in local SQLite.\n\nMonth 1: User signs up on web portal. Desktop app detects auth token, shows 'Connect to portal?' prompt. User opts in — usage telemetry starts flowing to portal dashboard. Execution remains local.\n\nMonth 2: User wants team sharing. Upgrades to Pro. Publishes a few agents to cloud backup. Enables 'agentflow config set sync.run_history true'. Portal now shows full run history. Execution still local.\n\nMonth 3: User tries cloud execution for a CI/CD workflow that needs to run without a local machine. Sets 'execution: cloud' in that specific workflow YAML. One workflow runs in cloud; all others still local. Human gates for that workflow now appear in portal /gates page.\n\nMonth 6: Enterprise team onboards. Admin enforces cloud mode in workspace policy. All team members' runs now execute in cloud. Usage tracked per-member in portal. SSO configured. Audit logs enabled. Individual developers never needed to change any code — only the EngineConfig.executionMode changed, transparently applied by the workspace policy sync."
+    }
+  },
+  "strategy": {
+    "competitiveAnalysis": [
+      {
+        "competitor": "Claude Code (Anthropic)",
+        "strengths": [
+          "Deep Claude model integration with superior reasoning",
+          "Native CLI with strong terminal UX",
+          "VS Code extension with tight editor integration",
+          "Agentic file editing with bash execution",
+          "Backed by Anthropic — trust and safety credibility"
+        ],
+        "gaps": [
+          "Single-model only — no model switching or multi-model orchestration",
+          "No visual workflow canvas — purely conversational/CLI paradigm",
+          "No workflow persistence or version control (no YAML/workflow files)",
+          "No multi-agent coordination — one agent per session",
+          "No team workflow sharing or org-level governance",
+          "No CI/CD integration path — designed for interactive use only",
+          "No cross-surface consistency (CLI and extension feel different)"
+        ],
+        "ourAdvantage": "We offer everything Claude Code does across surfaces, but add multi-model routing, multi-agent orchestration, visual design, and version-controllable workflows that teams can share via git — Claude Code users graduate to us when they outgrow single-agent, single-model workflows"
+      },
+      {
+        "competitor": "Cursor",
+        "strengths": [
+          "Best-in-class AI-native editor UX with deeply embedded AI",
+          "Fast inline completions and multi-file edits",
+          "Agent mode with strong codebase awareness",
+          "Large and loyal developer community",
+          "Predictable subscription pricing developers trust"
+        ],
+        "gaps": [
+          "Editor-only — no CLI, no desktop canvas, no web portal",
+          "No visual workflow builder — all interactions are chat/command-driven",
+          "No workflow persistence or reuse — every session starts from scratch",
+          "No multi-agent coordination or parallel agent execution",
+          "Locked into Cursor fork — cannot use in standard VS Code or JetBrains",
+          "No CI/CD integration — cannot run same workflows in pipelines",
+          "No team workflow library or org-level workflow governance"
+        ],
+        "ourAdvantage": "Cursor wins on editor polish but creates vendor lock-in and has no workflow abstraction layer. We operate as a workflow orchestration layer above any editor, so developers keep their preferred tools and gain reusable, shareable, version-controlled AI workflows"
+      },
+      {
+        "competitor": "Continue.dev",
+        "strengths": [
+          "Fully open-source with strong community trust",
+          "Multi-model support (OpenAI, Anthropic, Ollama, local models)",
+          "VS Code and JetBrains support",
+          "Highly configurable via config.json",
+          "No vendor lock-in — bring your own API keys"
+        ],
+        "gaps": [
+          "No visual workflow canvas or workflow designer",
+          "No multi-agent orchestration — single agent sessions only",
+          "No workflow persistence as version-controllable files",
+          "No CLI tool for CI/CD integration",
+          "No desktop app surface",
+          "No web portal for team/enterprise management",
+          "Community-driven roadmap means enterprise features are slow to arrive",
+          "No team workflow sharing primitives"
+        ],
+        "ourAdvantage": "Continue.dev solves model flexibility but stops at the chat/autocomplete layer. We share the multi-model philosophy but add the orchestration and workflow abstraction layer above it — Continue.dev users who want to chain agents and persist workflows are our natural upgrade path"
+      },
+      {
+        "competitor": "Cline / Roo-code",
+        "strengths": [
+          "Highly capable agentic coding with browser and terminal access",
+          "Open-source and extensible",
+          "Strong community of power users and contributors",
+          "Model-agnostic with broad provider support",
+          "Aggressive agentic capabilities (file system, shell, browser)"
+        ],
+        "gaps": [
+          "No visual workflow canvas — purely conversational agent paradigm",
+          "No workflow version control or reuse primitives",
+          "No multi-agent coordination — single agent per session",
+          "No team collaboration or workflow sharing",
+          "No CLI for CI/CD use cases",
+          "No desktop app or web portal surface",
+          "High token cost per session with no workflow optimization layer",
+          "No enterprise control plane or governance"
+        ],
+        "ourAdvantage": "Cline is the power user's agentic workhorse but every run is ephemeral and manual. We add the orchestration layer that makes Cline-style agentic execution reusable, composable, and team-shareable — with visual design and version control"
+      },
+      {
+        "competitor": "GitHub Copilot Agent Mode",
+        "strengths": [
+          "Massive distribution through GitHub ecosystem",
+          "Deep GitHub integration (PRs, issues, Actions, Codespaces)",
+          "Enterprise trust via Microsoft backing",
+          "Familiar UX for millions of existing Copilot users",
+          "Workspace-aware context across entire repositories"
+        ],
+        "gaps": [
+          "GitHub/Microsoft ecosystem lock-in — poor experience outside GitHub",
+          "No visual workflow canvas or workflow designer",
+          "No multi-model routing — Microsoft/OpenAI models only",
+          "No local-first execution — all runs go through Microsoft infrastructure",
+          "No portable workflow files — workflows are not version-controllable artifacts",
+          "No cross-surface consistency (VS Code only, no CLI or desktop)",
+          "Limited multi-agent coordination capabilities",
+          "Not useful for teams not on GitHub (GitLab, Bitbucket, self-hosted)"
+        ],
+        "ourAdvantage": "GitHub Copilot Agent Mode is powerful inside the GitHub bubble but creates deep ecosystem lock-in. We are VCS-agnostic, model-agnostic, and surface-agnostic — our workflows run identically whether triggered from VS Code, CLI, desktop canvas, or CI regardless of git host"
+      },
+      {
+        "competitor": "n8n / Zapier",
+        "strengths": [
+          "Mature visual workflow builders with large node libraries",
+          "Strong non-technical user adoption",
+          "n8n is self-hostable with open-source core",
+          "Extensive integrations (hundreds of SaaS connectors)",
+          "Proven business model with clear enterprise path"
+        ],
+        "gaps": [
+          "Not AI-native — LLM nodes are bolted on, not first-class",
+          "No developer-native surfaces (no VS Code, no CLI for devs)",
+          "Workflows cannot execute code agents or shell commands natively",
+          "No local-first execution model — cloud-only or self-hosted server",
+          "No understanding of code context, repos, or development workflows",
+          "No multi-agent AI orchestration primitives",
+          "Not designed for software engineering workflows",
+          "No IDE integration whatsoever"
+        ],
+        "ourAdvantage": "n8n and Zapier own general automation workflows but have no credibility or capability in the developer AI agent space. We are the developer-native, AI-first version of what they built — with deep code context, IDE integration, and agent orchestration that they cannot replicate"
+      },
+      {
+        "competitor": "CrewAI / AutoGen",
+        "strengths": [
+          "Powerful multi-agent orchestration frameworks",
+          "Highly flexible and programmable agent topologies",
+          "Active open-source communities",
+          "Support for complex agent-to-agent communication patterns",
+          "Research and enterprise adoption for complex AI pipelines"
+        ],
+        "gaps": [
+          "Python framework only — no IDE integration, no visual canvas",
+          "No VS Code extension, no CLI tool for non-Python users",
+          "No desktop app or visual workflow designer",
+          "Requires Python expertise to use — not accessible to most developers",
+          "No version-controllable workflow format that non-engineers can read",
+          "No local-first execution on developer machines natively",
+          "No web portal for team governance or usage management",
+          "High barrier to entry — must write code to define agents"
+        ],
+        "ourAdvantage": "CrewAI and AutoGen prove multi-agent orchestration is valuable but require Python expertise and produce no visual artifacts. We deliver the same multi-agent power through a visual canvas and YAML workflow files that any developer can read, edit, and share — no framework expertise required"
+      }
+    ],
+    "uniqueValueProp": {
+      "statement": "The only platform that lets any developer visually design, locally execute, and git-commit multi-model multi-agent workflows that run identically in their IDE, terminal, desktop canvas, and CI/CD pipeline — no cloud dependency, no vendor lock-in, no framework expertise required.",
+      "proof": [
+        "Every competitor owns at most two surfaces; we own all four (desktop, VS Code, CLI, web) with a single workflow runtime",
+        "No competitor produces version-controllable workflow artifacts (YAML in .agentorg/) — our workflows are first-class git objects",
+        "No competitor combines visual design + local execution + multi-model routing + multi-agent orchestration in a single product",
+        "Workflow portability means a workflow built by one developer runs unchanged in CI/CD — closing the gap between local AI use and automated pipelines that every other tool leaves open",
+        "Local-first execution means zero data leaves the machine until the user chooses cloud — a trust and compliance advantage no SaaS-first competitor can claim in Phase 1"
+      ]
+    },
+    "goToMarket": {
+      "primaryUser": "Individual senior developers and tech leads at small-to-medium engineering teams (5–50 engineers) who already use Claude Code, Cline, or Cursor and have hit the ceiling of single-agent, single-surface workflows. They own their own toolchain decisions, have API keys, and evangelize tools internally. They are the Claude Code power user who wants more.",
+      "phase1LaunchStrategy": "Lead with the VS Code extension on the VS Code Marketplace as the zero-friction entry point — it reaches developers in their existing environment with no behavior change required. Simultaneously publish the CLI via Homebrew and npm for terminal-native users. The desktop canvas is the 'wow demo' artifact used for content marketing and conference talks but is not the primary acquisition surface in Phase 1. The web portal launches as a lightweight quota dashboard — it exists to handle API key management and team invitations, not as a standalone product. Seed the .agentorg/ workflow library on GitHub before launch with 20–30 high-quality workflow templates covering the top developer use cases (code review, PR description generation, test generation, dependency audit, documentation generation). These templates serve as both distribution and product education.",
+      "distributionChannels": [
+        "VS Code Marketplace — primary acquisition channel, zero install friction for the 30M+ VS Code users",
+        "Homebrew tap and npm package — CLI distribution for terminal users and CI/CD integration",
+        "Direct download from website — desktop app (macOS dmg, Windows exe, Linux AppImage)",
+        "GitHub organization — open workflow template library at github.com/agentorg/workflows drives SEO and community",
+        "Product Hunt launch — one-time spike for initial awareness and early adopter community seeding",
+        "Developer newsletter sponsorships (TLDR, Bytes, Pointer) — targeted reach to the exact ICP",
+        "Conference demos (local AI track at KubeCon, AI Engineer Summit, GitHub Universe)"
+      ],
+      "viralMechanic": "Workflow sharing is the core viral loop. When a developer commits a .agentorg/workflow.yaml file to their team's repository, every other developer on the team encounters the file in git, installs the extension to run it, and becomes a user. The workflow file itself is the invite. Secondary viral mechanic: the public workflow library on GitHub — developers star, fork, and PR improve workflows, generating organic GitHub activity and SEO. Tertiary: CLI output includes a shareable workflow run summary link (web portal) that developers paste into Slack or PR comments, exposing non-users to the product."
+    },
+    "workflowAsCodeDifferentiator": {
+      "keyInsight": "By making workflows YAML files that live in .agentorg/ inside the project repository, the product transforms from a personal productivity tool into a team infrastructure primitive — the workflow file becomes the durable, reviewable, auditable record of how a team uses AI, which no conversational or session-based tool can provide. This single design decision creates switching costs, team network effects, and an enterprise compliance story simultaneously.",
+      "useCases": [
+        "Team onboarding: new engineers run the team's established AI workflows on day one without learning prompting — the workflow encodes the team's best practices",
+        "CI/CD parity: the same PR review workflow a developer runs locally in VS Code runs automatically in GitHub Actions on every pull request — one workflow definition, two execution contexts",
+        "Workflow code review: workflows are reviewed in PRs like any other code change, creating a governance and quality control layer for AI usage that no other tool provides",
+        "Audit trail: git history of .agentorg/ files shows exactly how the team's AI workflows evolved over time — valuable for compliance, post-mortems, and knowledge transfer",
+        "Open-source workflow library: teams publish their .agentorg/ directories to GitHub, creating an ecosystem of community-maintained workflow templates (analogous to GitHub Actions marketplace)",
+        "Workflow versioning and rollback: if a workflow change causes regressions in AI output quality, git revert fixes it — no vendor dashboard required",
+        "Monorepo workflow inheritance: parent directory workflows are inherited by subdirectories, enabling org-level standards with project-level overrides",
+        "Documentation artifact: the workflow YAML file documents not just what AI does but why — comments in YAML serve as living documentation of the team's AI strategy"
+      ],
+      "networkEffects": "Each workflow file committed to a shared repo creates a pull toward adoption for every team member who pulls that repo. At the org level, a platform team publishing canonical workflows to an internal GitHub repository creates a hub-and-spoke distribution model where the platform team's workflow quality improvements propagate to all consuming teams automatically via git pull. This is a network effect that no session-based tool (Claude Code, Cursor, Cline) can replicate — their value is personal and does not compound with team size. Our value scales with team size because each new team member both consumes existing workflows and contributes new ones."
+    },
+    "pricingStrategy": {
+      "freeTier": {
+        "features": [
+          "Unlimited local agent execution (user provides own API keys)",
+          "Visual desktop canvas with full workflow designer",
+          "VS Code extension with full inline triggering",
+          "CLI tool with full CI/CD integration support",
+          "Up to 10 saved workflows in .agentorg/",
+          "Access to full public workflow template library",
+          "Single user — no team collaboration features",
+          "Community support via GitHub Discussions"
+        ],
+        "limits": "10 saved workflows, single user, no managed API keys, no team features, no usage analytics"
+      },
+      "proTier": {
+        "price": "$20/month per user (annual: $16/month)",
+        "features": [
+          "Everything in Free",
+          "Unlimited saved workflows",
+          "Workflow version history and rollback UI",
+          "Advanced multi-agent topologies (parallel, conditional branching, loops)",
+          "Managed API key vault (no per-user key management)",
+          "Usage analytics and cost tracking per workflow",
+          "Workflow sharing via private links",
+          "Priority email support",
+          "Early access to Phase 2 cloud execution beta"
+        ]
+      },
+      "teamTier": {
+        "price": "$15/month per seat (minimum 3 seats, annual billing)",
+        "features": [
+          "Everything in Pro for all seats",
+          "Team workflow library with access controls (read/write/admin per workflow)",
+          "Centralized API key management (one key pool for the team)",
+          "Shared usage dashboard across all team members",
+          "Workflow approval workflows (PR-style review before team publishing)",
+          "SSO via Google and GitHub OAuth",
+          "Team onboarding workflow templates",
+          "Slack and GitHub integration for workflow run notifications",
+          "Dedicated support with 48-hour response SLA"
+        ]
+      },
+      "enterpriseTier": {
+        "price": "Custom (starting ~$2,000/month for 25+ seats)",
+        "features": [
+          "Everything in Team for all seats",
+          "SAML SSO and SCIM provisioning",
+          "SOC 2 Type II compliance documentation",
+          "Audit logs for all workflow runs and modifications",
+          "Custom model routing rules (route specific workflows to approved models only)",
+          "Air-gapped deployment option (on-premises web portal)",
+          "Dedicated customer success manager",
+          "SLA with 99.9% uptime guarantee for cloud execution (Phase 2)",
+          "Custom workflow template development (professional services)",
+          "Private workflow marketplace for internal distribution",
+          "4-hour support response SLA"
+        ]
+      },
+      "rationale": "The free tier is deliberately generous on capability (full canvas, full CLI, full extension) but gated on collaboration and scale — a solo developer gets the full power of the platform indefinitely, which drives deep adoption and word-of-mouth. Monetization happens when workflows move from personal use to team infrastructure, which is when the product delivers its highest value. This avoids the failure mode of gating core features behind payment (which kills adoption) while ensuring that the highest-value use cases (team workflow libraries, centralized governance, CI/CD at scale) are firmly in paid tiers. We do not compete with LLM providers on API pricing — users bring their own keys on Free and Pro, and managed key pooling on Team/Enterprise is a convenience feature priced for its operational value, not as a margin play on token costs."
+    },
+    "cloudExecutionTrigger": {
+      "businessCase": "Cloud execution in Phase 2 is not a technical milestone — it is a business model unlock. Local-first in Phase 1 establishes trust, removes the data-leaving-the-machine objection, and allows rapid adoption without infrastructure cost. Cloud execution becomes the right investment when the team workflow library adoption creates demand for workflows that must run without a human's machine being on: scheduled automation, triggered pipelines, mobile-initiated runs, and always-on monitoring agents. At that point, cloud execution is not a nice-to-have — it is the only way to deliver the value the product has already trained users to expect.",
+      "cloudOnlyCapabilities": [
+        "Scheduled workflow execution (cron-triggered agents that run at 2am without a laptop being open)",
+        "Webhook-triggered workflows (GitHub push triggers a workflow run without developer action)",
+        "Always-on monitoring agents (continuously watching a service and alerting on anomalies)",
+        "Mobile triggering (initiate a workflow from a phone — impossible with local-only execution)",
+        "Team workflow runs without VPN (remote team members trigger shared workflows without connecting to company network)",
+        "Parallel cloud-scale execution (run 50 agent instances simultaneously for large codebase analysis — impossible on a laptop)",
+        "Workflow run sharing with full replay (share a cloud run URL with a manager or stakeholder who has no local setup)",
+        "Cross-team workflow orchestration (a platform team's cloud workflow triggers downstream team workflows without any human in the loop)",
+        "Persistent agent memory across sessions (cloud execution enables durable agent state that survives laptop restarts)",
+        "Compliance and audit logging to immutable cloud storage (required for regulated industries)"
+      ],
+      "whenToLaunch": "Launch Phase 2 cloud execution when three conditions are simultaneously true: (1) at least 500 teams have active .agentorg/ workflow files in shared repositories, indicating the workflow-as-code primitive has been validated; (2) at least 20% of Pro/Team users have requested or asked about scheduled or webhook-triggered execution in support tickets or feature requests, indicating demand is pull-based not push-based; and (3) the core local execution runtime is stable enough that cloud execution is a deployment environment change, not an architectural rewrite. The business signal is that users are leaving workflows on their desktops overnight wishing they ran automatically — that is the moment cloud execution sells itself."
+    }
+  },
+  "synthesis": {
+    "productIdentity": {
+      "name": "Flowgent",
+      "tagline": "Design agents. Ship workflows. Own every run.",
+      "oneLinePitch": "Flowgent is the multi-surface AI agent workflow platform that lets developers and teams visually design, version-control, and execute multi-model agent pipelines — from a desktop canvas, VS Code, the CLI, or the cloud — with every run debuggable, every cost tracked, and every workflow exportable as a git-friendly YAML file."
+    },
+    "technologyChoices": {
+      "sharedCoreLanguage": "TypeScript — one language, one type system (Zod schemas shared end-to-end), one CI chain. No Python runtime alongside Node; all LLM orchestration is handled by @langchain/langgraph (langgraph.js) + Vercel AI SDK + provider SDKs (anthropic, openai, @google/generative-ai, deepseek). Bun is the worker runtime for agent node execution threads.",
+      "desktopFramework": "Tauri v2 — 2–5 MB bundle vs Electron's 85–120 MB; tauri-plugin-fs, tauri-plugin-shell, tauri-plugin-sql (SQLite), tauri-plugin-tray, tauri-plugin-global-shortcut cover all five non-negotiables (filesystem, child process, local HTTP, SQLite, system tray). The ReactFlow canvas runs identically in the OS WebView (WKWebView/WebView2) as it would in a browser. Rust surface is limited to system-level glue; all business logic stays in TypeScript.",
+      "vscodeExtensionModel": "Standard VS Code Extension API (contributes.menus, StatusBarItem, WebviewPanel, TreeDataProvider). The extension runs a bundled in-process variant of the shared core engine (Model C hybrid) so workflows execute locally without requiring the desktop app to be running. Webpack bundles the extension to a single CJS file; the WebviewPanel hosts a Vite-built React panel.",
+      "cliLanguage": "TypeScript compiled with tsup to a single ESM bundle, distributed via npm as 'flowgent' (global install). Uses commander.js for argument parsing, ink (React for CLIs) for interactive TUI output, and @clack/prompts for setup wizards. The CLI invokes the same shared @flowgent/core engine as all other surfaces.",
+      "portalStack": "Vite + React SPA (not Next.js). Justification: the canvas is client-centric (ReactFlow state, SSE EventSource connections, Zustand stores), SSR adds zero value (auth-gated, no SEO), and Next.js App Router RSC boundaries create friction with persistent SSE connections and complex canvas state. TanStack Router for typed file-based routing, TanStack Query for server state, Zustand + immer for client state. Backend: Hono (TypeScript) on Node.js/Bun, deployed separately. shadcn/ui + Radix primitives + Tailwind CSS for UI.",
+      "localDatabase": "Phase 1 (local-only): SQLite via tauri-plugin-sql (desktop) and better-sqlite3 (CLI/extension). Schema managed by Drizzle ORM with migration files checked into git. Phase 2 (cloud): PostgreSQL 16 + Redis 7. BullMQ on Redis for job queues. Drizzle ORM used for both SQLite and Postgres — identical query API, only the driver changes.",
+      "apiKeyStorage": "Phase 1 — desktop: OS keychain via tauri-plugin-keychain (macOS Keychain, Windows Credential Manager, Linux libsecret). CLI: OS keychain via keytar. VS Code extension: vscode.SecretStorage API. Never written to disk in plaintext. Phase 2 — cloud portal: AES-256-GCM encryption at rest in Postgres (bytea column), encryption key from environment secret manager (Doppler/Infisecret). Key hint (last 4 chars) stored plaintext for display. Keys are decrypted in-process at call time, never logged, never in Redis job payloads."
+    },
+    "monoRepoStructure": {
+      "layout": "Turborepo monorepo with pnpm workspaces. All packages use TypeScript with shared tsconfig bases. Turborepo remote cache for CI. Single root package.json for tooling (ESLint, Prettier, Vitest config). Three app surfaces and five shared packages.",
+      "packages": [
+        {
+          "path": "apps/desktop",
+          "purpose": "Tauri v2 desktop application. src-tauri/ contains Rust Tauri commands and plugin configuration. src/ contains the React + Vite frontend (WorkflowCanvas, ReactFlow nodes, Zustand stores, SSE manager, all UI panels). Calls @flowgent/core via Tauri invoke IPC for engine operations; calls OS APIs (keychain, filesystem, tray) via Tauri plugin IPC."
+        },
+        {
+          "path": "apps/vscode-extension",
+          "purpose": "VS Code extension. src/extension.ts is the activation entry point. src/engine/ contains the bundled in-process agent execution engine (imports @flowgent/core directly). src/panels/ contains WebviewPanel React UIs (Sidebar, HumanGatePanel, RunMonitor). Webpack bundles to out/extension.js (CJS). Published to VS Code Marketplace as 'flowgent.flowgent'."
+        },
+        {
+          "path": "apps/cli",
+          "purpose": "Terminal CLI. src/index.ts is the commander.js entry. src/commands/ contains subcommands: run, list, create, import, export, status, logs, gate. Uses ink for streaming TUI output (live node status, token stream). Installed globally via npm install -g flowgent. Reads workflows from .flowgent/ directory in the project root or from a path flag."
+        },
+        {
+          "path": "apps/portal",
+          "purpose": "Cloud web portal (Phase 2). Vite + React SPA. src/routes/ for TanStack Router file-based routes. src/stores/ for Zustand stores. src/components/canvas/ for ReactFlow nodes and edges. Deployed to Cloudflare Pages or Vercel. Calls apps/api over HTTPS."
+        },
+        {
+          "path": "apps/api",
+          "purpose": "Cloud backend API (Phase 2). Hono on Bun. src/routes/ for REST endpoints (/workflows, /runs, /agents, /providers, /cost). src/engine/ imports @flowgent/core and wraps it with BullMQ job dispatch and Redis stream SSE. src/workers/ contains BullMQ worker processes (orchestrator-pool, node-pool, system-pool). Postgres via Drizzle ORM, Redis via ioredis. Deployed as a Docker container."
+        },
+        {
+          "path": "packages/core",
+          "purpose": "@flowgent/core — the shared execution engine. The single most important package. Exports: WorkflowEngine (parse YAML, build DAG RunPlan, execute nodes, checkpoint state), AgentRunner (invoke LLM via provider adapter, handle tool calls, retry/fallback), WorkflowYAMLParser (parse + validate workflow YAML with Zod), ToolNormalizer (provider-specific tool schema conversion), RunEventBus (EventEmitter for SSE events). Has zero platform-specific imports — runs identically in Tauri WebView, VS Code extension host, Node.js CLI, and Bun API server."
+        },
+        {
+          "path": "packages/shared",
+          "purpose": "@flowgent/shared — Zod schemas, TypeScript types, and constants shared across all surfaces and packages. WorkflowSchema, AgentSchema, RunSchema, NodeSchema, EdgeSchema, RunEvent, CostEvent, HumanGateEvent. Imported by every other package. No runtime dependencies except zod."
+        },
+        {
+          "path": "packages/db",
+          "purpose": "@flowgent/db — Drizzle ORM schema definitions and migration files. Exports separate configs for SQLite (local) and Postgres (cloud) — same table names and column types, different driver. Migration CLI: drizzle-kit generate + drizzle-kit migrate. Used by apps/desktop (SQLite), apps/cli (SQLite), apps/api (Postgres)."
+        },
+        {
+          "path": "packages/llm",
+          "purpose": "@flowgent/llm — LLM provider adapters. ProviderAdapter interface implemented for: AnthropicAdapter (claude-sonnet-4-6, claude-opus-4), OpenAIAdapter (gpt-4o, gpt-4.1), GeminiAdapter (gemini-2.5-pro), DeepSeekAdapter. Each adapter normalizes streaming responses, tool calls, and usage tokens to the canonical format defined in @flowgent/shared. ToolNormalizer, CostTracker, RateLimiter, FallbackChain live here."
+        },
+        {
+          "path": "packages/ui",
+          "purpose": "@flowgent/ui — shared React component library. Contains all ReactFlow custom node types (AgentNode, ConditionNode, FanOutNode, AggregatorNode, LoopNode, HumanGateNode, InputNode, OutputNode, ToolNode) and custom edge types. These components are imported by apps/desktop, apps/vscode-extension panels, and apps/portal — ensuring visual consistency across surfaces. Also contains shadcn/ui base components and Tailwind config."
+        }
+      ]
+    },
+    "phase1Architecture": {
+      "description": "Phase 1 is a fully local, zero-cloud-dependency product. The desktop app (Tauri v2) is the primary surface. All data stays on the user's machine. No account, no subscription, no server to run. The engine executes in the Tauri WebView process using @flowgent/core. SQLite (via tauri-plugin-sql) stores workflows, agents, run history, and cost records. API keys live in the OS keychain via tauri-plugin-keychain — never on disk in plaintext. The VS Code extension and CLI ship alongside the desktop app and share the same @flowgent/core engine, so all three surfaces work offline from day one.",
+      "whatShips": [
+        "Tauri v2 desktop app with ReactFlow canvas editor",
+        "Local SQLite database for all workflow/agent/run data via Drizzle ORM",
+        "OS keychain API key storage (macOS Keychain / Windows Credential Manager / libsecret)",
+        "@flowgent/core engine: YAML parsing, DAG execution, checkpoint/resume, retry/fallback",
+        "@flowgent/llm adapters for Anthropic, OpenAI, Gemini, DeepSeek",
+        "VS Code extension with inline workflow triggering, status bar monitor, and sidebar panels",
+        "CLI with run/list/create/import/export/logs/gate subcommands",
+        "ReactFlow canvas with all 9 node types and custom edges",
+        "Real-time SSE-style token streaming inside node faces (IPC-based, not HTTP SSE in Phase 1)",
+        "Human gate approval flow (modal in desktop, terminal prompt in CLI, WebviewPanel in VS Code)",
+        "Per-run cost tracking and per-node token counts stored locally in SQLite",
+        "Workflow YAML import/export (git-committable)",
+        "Run history with replay, node inspection, and Gantt trace timeline",
+        "Agent library with inline test chat",
+        "Starter workflow templates (3–5 curated templates bundled at install)"
+      ],
+      "whatDoesNotShip": [
+        "Cloud execution or cloud sync",
+        "Multi-user or team features",
+        "Web portal (apps/portal and apps/api)",
+        "Webhook and schedule triggers (file_change trigger ships; webhook/schedule require a cloud listener)",
+        "BullMQ/Redis job queue (not needed locally — execution is synchronous in Bun workers managed by @flowgent/core)",
+        "Auth/accounts system",
+        "Shared workflow marketplace"
+      ],
+      "dataFlow": "User action (canvas Run button / CLI flowgent run / VS Code right-click) -> @flowgent/core.WorkflowEngine.start(workflowId, input) -> WorkflowYAMLParser validates YAML -> DAG RunPlan built -> AgentRunner spawns per-node Bun worker_thread (or runs inline for VS Code extension host) -> @flowgent/llm.ProviderAdapter streams tokens via AbortController-guarded fetch -> tokens emitted on RunEventBus -> surface-specific renderer receives events (Tauri emit IPC / VS Code WebviewPanel postMessage / ink TUI update) -> run checkpointed to SQLite on each node completion -> final output written to SQLite run record -> cost event written to SQLite cost_events table"
+    },
+    "phase2Architecture": {
+      "description": "Phase 2 adds a cloud execution layer and web portal without replacing or breaking the local-first Phase 1 surfaces. The core change is that @flowgent/core can now be invoked by apps/api (Hono + Bun) via BullMQ jobs instead of direct function calls, enabling multi-user access, team workflow sharing, cloud-triggered runs (webhooks, schedules), and the web portal. Existing desktop/CLI/extension users can optionally link a Flowgent Cloud account and push workflows to the cloud for shared access — but they can continue running locally without any account.",
+      "cloudComponents": [
+        "apps/api: Hono REST API on Bun — wraps @flowgent/core with BullMQ job dispatch, Redis Stream SSE, Postgres state, and multi-tenant auth (Clerk or Auth.js with magic link + OAuth)",
+        "apps/portal: Vite + React SPA — identical canvas UX to the desktop app, running in a browser instead of Tauri WebView",
+        "PostgreSQL 16 (Neon serverless or self-hosted on Railway/Fly.io) — replaces SQLite for cloud runs; Drizzle ORM migration from SQLite schema is ~90% compatible",
+        "Redis 7 (Upstash or self-hosted) — BullMQ job queues (orchestrator-pool concurrency=5, node-pool concurrency=20, system-pool concurrency=50) + Redis Streams for SSE log delivery + sliding-window rate limiter sorted sets",
+        "BullMQ worker processes (apps/api/src/workers/) — orchestrator-pool, node-pool, system-pool with Bun worker_thread per agent node",
+        "Cloudflare Workers or Vercel Edge for webhook listener endpoints (POST /webhooks/:workflowId) — ultra-low-latency enqueue without waking the full API server",
+        "Doppler or Infisecret for server-side encryption key management (PROVIDER_KEY_ENCRYPTION_SECRET)",
+        "Object storage (R2 or S3) for large run output artifacts (file outputs, generated files from ToolNodes)"
+      ],
+      "whatChanges": [
+        "API key storage moves from OS keychain to AES-256-GCM encrypted Postgres bytea column for cloud runs; local runs still use OS keychain",
+        "Run execution moves from in-process Bun worker_threads to BullMQ jobs dispatched by apps/api, enabling multi-server scaling",
+        "SSE delivery moves from Tauri IPC/postMessage to HTTP SSE over Redis Streams (XREAD BLOCK) consumed by apps/portal EventSource",
+        "Workflow storage gains multi-tenancy: org_id column on all tables, row-level security in Postgres, team-level sharing permissions",
+        "Webhook and schedule triggers become functional: Cloudflare Worker enqueues workflow.start jobs; cron is managed by BullMQ's repeat job system",
+        "Human gate notifications gain email/Slack delivery (Phase 2 ops feature): when a gate is pending and the assignee is not actively viewing the portal, a notification is sent via Resend (email) or Slack webhook",
+        "The desktop app and CLI gain a 'sync to cloud' command that pushes local SQLite workflows to the cloud Postgres and optionally executes future runs in the cloud — users choose per-workflow whether to run locally or in the cloud",
+        "Cost tracking gains org-level aggregate views, budget alerts (POST to Slack/email when monthly spend exceeds threshold), and CSV export"
+      ]
+    },
+    "dayOneDX": [
+      {
+        "step": "Install the desktop app",
+        "command": "Download Flowgent-1.0.0-aarch64.dmg (macOS, ~4 MB) from flowgent.dev/download or: brew install --cask flowgent",
+        "result": "App opens. No account prompt. Canvas is visible but dimmed. Single focused CTA: 'Connect your first API key'."
+      },
+      {
+        "step": "Add your first API key",
+        "command": "Click 'Connect API Key' -> select Anthropic -> paste sk-ant-... -> click 'Verify & Save'",
+        "result": "Key verified inline with a green checkmark. Model list populates in real time showing claude-sonnet-4-6, claude-opus-4 with context windows and $/token pricing. Key is stored in macOS Keychain — never on disk."
+      },
+      {
+        "step": "Create your first agent",
+        "command": "Click 'Create Agent' -> type name 'Summarizer' -> select claude-sonnet-4-6 -> write system prompt 'You summarize text concisely.' -> click 'Test Agent' -> type 'Summarize the history of the internet' -> watch streaming response",
+        "result": "Streaming tokens appear in the inline test chat. Agent is saved to local SQLite. User sees their agent is live before touching the canvas."
+      },
+      {
+        "step": "Open a starter template",
+        "command": "Click template card 'Research Pipeline' on the dashboard",
+        "result": "Canvas opens with a pre-built 3-node workflow: InputNode -> ResearchAgent -> SummaryAgent -> OutputNode. Nodes use placeholder agents that auto-bind to the user's just-created agent."
+      },
+      {
+        "step": "Run the workflow",
+        "command": "Click 'Run' button in canvas toolbar (or press Cmd+Enter) -> fill in input modal: 'topic: quantum computing' -> click 'Start Run'",
+        "result": "Nodes light up sequentially with pulsing rings. Streaming tokens appear inside the ResearchAgent node face. Run completes in ~15 seconds. OutputNode shows the final summary. Run History panel slides up from the bottom showing: duration 14.2s, cost $0.0031, 1,847 tokens."
+      },
+      {
+        "step": "Install the VS Code extension",
+        "command": "In VS Code: Extensions panel -> search 'Flowgent' -> Install. Or: code --install-extension flowgent.flowgent",
+        "result": "Flowgent sidebar appears in VS Code Activity Bar. Status bar item shows 'Flowgent: idle' at the bottom right. Right-clicking any .ts/.py/.md file now shows 'Run Flowgent Workflow on this file' in the context menu."
+      },
+      {
+        "step": "Run a workflow on a file from VS Code",
+        "command": "Right-click a TypeScript file -> 'Run Flowgent Workflow on this file' -> select 'Code Review Chain' from QuickPick -> press Enter",
+        "result": "Status bar item changes to '$(loading~spin) 1 run active'. Flowgent sidebar opens showing the live run with per-node streaming status. Completed nodes show green checkmarks. Final output appears in the Run Output panel as a formatted code review."
+      },
+      {
+        "step": "Use the CLI",
+        "command": "npm install -g flowgent && flowgent run ./workflows/code-review.yaml --input file=./src/index.ts",
+        "result": "Terminal shows ink-rendered TUI: animated node names with status indicators (running/done/error), streaming token output for the active node, and a final cost/duration summary line. Exit code 0 on success, 1 on workflow failure — CI-friendly."
+      }
+    ],
+    "killerFeatures": [
+      {
+        "feature": "Live canvas execution theater",
+        "why": "Token streaming appears inside individual ReactFlow node faces as the workflow executes — not in a separate log panel, but directly on the canvas node. Parallel branches stream simultaneously. Users watch their multi-agent pipeline think in real time. This transforms the canvas from a static diagram into a live operational display. No competitor (Claude Code, Cursor, n8n, Dify) does this — they all separate the diagram from the output."
+      },
+      {
+        "feature": "Git-native YAML workflows",
+        "why": "Every workflow is a reviewable, diffable, version-controllable YAML file. Teams can PR workflow changes, revert bad agent prompts, and ship workflow changes through the same CI/CD pipeline as code changes. This is the graduation path from Claude Code and Cursor — users who outgrow chat-driven, stateless interactions get persistence and collaboration without leaving their git workflow. Competitor n8n uses proprietary JSON blobs; Dify stores workflows in a database with no git integration."
+      },
+      {
+        "feature": "One-click 'Retry from node' on failure",
+        "why": "When a node fails mid-workflow (rate limit, bad output, timeout), users click the red-pulsing failed node and see a 'Retry from here' button. The engine replays from that checkpoint using the already-completed upstream outputs — no re-running the full workflow, no re-spending tokens on steps that already succeeded. Checkpoint-based resume (SQLite Phase 1, Postgres Phase 2) makes this possible. This single feature turns debugging from a destructive, expensive act into a surgical one."
+      },
+      {
+        "feature": "Multi-model fallback chains per agent",
+        "why": "Each agent node can be configured with a fallback chain: [{claude-sonnet-4-6, 3 attempts}, {gpt-4o, 2 attempts}, {gemini-2-5-pro, 1 attempt}]. If the primary model rate-limits or fails, the engine automatically tries the next model in the chain without user intervention. Production workflows keep running even during provider outages. No other visual workflow tool exposes per-node model fallback chains as a first-class UI concept."
+      },
+      {
+        "feature": "Human gate with timeout and escalation",
+        "why": "HumanGateNode pauses any workflow at any point and requires a real human decision (approve/reject/provide input) before continuing. Gates have configurable timeouts with auto-approve or auto-reject fallbacks and optional Slack/email notification (Phase 2). This makes Flowgent viable for compliance-sensitive workflows (content moderation, legal review, financial approvals) where fully autonomous AI execution is unacceptable. This is the feature that sells Flowgent to enterprise teams, not just individual developers."
+      },
+      {
+        "feature": "Per-node cost waterfall in run history",
+        "why": "Every run shows a per-node cost breakdown: which agent consumed how many tokens at what price. Users immediately see that one node accounts for 80% of spend and can swap it for a cheaper model on that node specifically. This granular cost visibility — not just total run cost but per-node, per-model attribution — is unique among workflow tools and directly addresses the top developer anxiety about production LLM usage: unpredictable costs."
+      },
+      {
+        "feature": "Zero-install VS Code right-click trigger",
+        "why": "Installing the VS Code extension and right-clicking any file to run a workflow on it requires no desktop app, no account, no server. The extension bundles @flowgent/core and runs the workflow in-process. For developers who live in VS Code, this is the path of least resistance to their first meaningful Flowgent run. The install-to-value gap is under 3 minutes."
+      }
+    ],
+    "buildOrder": [
+      {
+        "order": 1,
+        "what": "packages/shared + packages/llm + packages/core",
+        "why": "These three packages are the foundation everything else builds on. @flowgent/shared defines the Zod schemas and TypeScript types; @flowgent/llm provides the provider adapters (Anthropic first, then OpenAI, Gemini, DeepSeek); @flowgent/core provides the WorkflowEngine, DAG runner, checkpoint logic, and RunEventBus. Without a working engine, no surface can be built. Build them in this order with 100% unit test coverage (Vitest) before touching any surface code. This also forces the YAML spec to be finalized as a Zod schema, preventing later breaking changes. Target: 2–3 weeks.",
+        "milestone": "Engine milestone: flowgent run ./workflow.yaml works from a Node.js test script, streaming tokens to console, checkpointing to SQLite, retrying on failure."
+      },
+      {
+        "order": 2,
+        "what": "apps/cli",
+        "why": "The CLI is the fastest feedback loop for validating the engine under real conditions. It has no UI complexity (no ReactFlow, no Tauri Rust, no VS Code API) — just ink TUI over @flowgent/core. Building the CLI first forces every engine API to be ergonomic for a scripted caller (no hidden assumptions about a browser environment), which improves the engine's design. The CLI also becomes the integration test harness: flowgent run test-workflow.yaml --input ... becomes the fastest way to regression-test the engine. Target: 1–2 weeks after engine milestone.",
+        "milestone": "CLI milestone: flowgent run, flowgent list, flowgent logs, flowgent gate commands all work. A 3-node sequential workflow runs end-to-end with streaming output in the terminal."
+      },
+      {
+        "order": 3,
+        "what": "apps/desktop (Tauri v2) with packages/ui (ReactFlow nodes)",
+        "why": "With a proven engine (tested via CLI), the desktop app is about building the canvas UI over a solid foundation. Build packages/ui (all 9 ReactFlow node types) as part of this phase — these components will later be shared with apps/portal. The Tauri Rust layer is thin (keychain IPC, filesystem IPC, tray setup); the bulk of work is the React canvas and Zustand stores. Build in this order within desktop: (1) canvas with node types and edges, (2) Zustand stores and SSE event handling, (3) AgentNode streaming display, (4) human gate modal, (5) run history panel, (6) settings/provider/agent CRUD pages. Target: 4–6 weeks.",
+        "milestone": "Desktop milestone: a user can install the .dmg, add an API key via macOS Keychain, build a 3-node workflow on the canvas, run it with live streaming, see cost breakdown in run history — all offline, no account."
+      },
+      {
+        "order": 4,
+        "what": "apps/vscode-extension",
+        "why": "The VS Code extension reuses @flowgent/core (already proven) and packages/ui components (rendered in WebviewPanel). The key engineering work is the VS Code API integration: context menu registration, StatusBarController, TreeDataProvider for the sidebar, and the in-process engine activation. Build after desktop because the Webview panels can share CSS and component patterns from the desktop app's canvas work. The extension is the single highest-leverage distribution channel — VS Code has 15M+ daily users and the Marketplace provides organic discovery. Target: 2–3 weeks.",
+        "milestone": "Extension milestone: right-click a .ts file -> select workflow -> watch streaming status in sidebar -> see human gate prompt in WebviewPanel -> approve -> run completes."
+      },
+      {
+        "order": 5,
+        "what": "apps/api + apps/portal (Phase 2 cloud layer)",
+        "why": "Only build the cloud layer after Phase 1 surfaces are battle-tested by real users. Real usage data from Phase 1 will reveal which workflows users want to share (justifying multi-tenancy), which triggers they actually use (justifying webhook/schedule infra), and where the engine's performance bottlenecks are (justifying BullMQ + Redis). Building cloud prematurely means over-engineering for imagined requirements. The apps/api server largely wraps @flowgent/core with BullMQ dispatch — the engine is already written. apps/portal is largely a web-hosted version of the desktop canvas — packages/ui is already written. The incremental Phase 2 work is primarily auth, multi-tenancy, BullMQ wiring, and deployment infra. Target: 6–8 weeks after Phase 1 ships.",
+        "milestone": "Cloud milestone: a team can log in to flowgent.dev, import a workflow YAML from git, run it in the cloud, share a run replay URL with a colleague, and approve a human gate via email link."
+      }
+    ],
+    "workflowYAMLSpec": {
+      "format": "YAML 1.2, UTF-8. File extension: .flowgent.yaml or stored in .flowgent/ directory at project root. Schema version is a top-level field and is validated against the @flowgent/shared WorkflowSchema Zod definition on parse. Interpolation uses {{variable}} syntax throughout (inputs, context, prompt templates). Node IDs are kebab-case strings unique within the workflow. Edge sources can reference node output handles by name (nodeId:handleName) for condition/fanout nodes; omitting the handle name defaults to the default output handle.",
+      "agentExample": "agents:\n  - id: summarizer\n    name: Summarizer Agent\n    model: claude-sonnet-4-6\n    provider: anthropic\n    system_prompt: |\n      You are a concise summarizer. Summarize the input in 3 bullet points.\n      Focus on: {{ctx.focus_area}}\n    temperature: 0.3\n    max_tokens: 512\n    tools: []\n    retry:\n      max: 3\n      backoff: exponential\n    fallback_chain:\n      - model: gpt-4o\n        provider: openai\n        max_attempts: 2\n      - model: gemini-2.5-pro\n        provider: google\n        max_attempts: 1",
+      "completeExample": "# .flowgent/code-review-pipeline.flowgent.yaml\nschema_version: '1.0'\nworkflow:\n  id: code-review-pipeline\n  version: '1.2.0'\n  name: Code Review Pipeline\n  description: |\n    Three-stage code review: security scan, style review, and human approval gate.\n  tags: [engineering, review, security]\n\n  trigger:\n    type: file_change\n    file_change:\n      glob: 'src/**/*.ts'\n      debounce_ms: 2000\n\n  inputs:\n    - name: file_path\n      type: file_path\n      required: true\n      description: Path to the TypeScript file to review\n    - name: reviewer_email\n      type: string\n      required: false\n      default: 'team@example.com'\n      description: Email to notify when human gate is reached\n\n  context:\n    - key: focus_area\n      value: 'security vulnerabilities and type safety'\n    - key: code_content\n      value: '{{inputs.file_path | read_file}}'\n\n  agents:\n    - id: security-scanner\n      name: Security Scanner\n      model: claude-sonnet-4-6\n      provider: anthropic\n      system_prompt: |\n        You are a security-focused code reviewer. Analyze the following TypeScript\n        code for security vulnerabilities, injection risks, and unsafe patterns.\n        Return a JSON object with fields: {issues: [{severity, line, description, fix}], score: 0-10}\n      temperature: 0.1\n      max_tokens: 1024\n      retry:\n        max: 3\n        backoff: exponential\n      fallback_chain:\n        - model: gpt-4o\n          provider: openai\n          max_attempts: 2\n\n    - id: style-reviewer\n      name: Style Reviewer\n      model: claude-sonnet-4-6\n      provider: anthropic\n      system_prompt: |\n        You are a TypeScript style and architecture reviewer. Review the code for\n        naming conventions, complexity, and best practices. Return JSON:\n        {suggestions: [{type, line, message}], overall_grade: A|B|C|D|F}\n      temperature: 0.2\n      max_tokens: 1024\n\n    - id: report-synthesizer\n      name: Report Synthesizer\n      model: claude-sonnet-4-6\n      provider: anthropic\n      system_prompt: |\n        Combine the security scan and style review results into a single,\n        readable markdown report suitable for a pull request comment.\n      temperature: 0.3\n      max_tokens: 2048\n\n  nodes:\n    - id: input\n      type: input\n\n    - id: fan-out\n      type: parallel\n      parallel_of: [security-scan-node, style-review-node]\n\n    - id: security-scan-node\n      type: agent\n      agent_ref: security-scanner\n      prompt_template: |\n        Review this TypeScript file for security issues:\n        ```typescript\n        {{ctx.code_content}}\n        ```\n      timeout_ms: 60000\n\n    - id: style-review-node\n      type: agent\n      agent_ref: style-reviewer\n      prompt_template: |\n        Review this TypeScript file for style and architecture:\n        ```typescript\n        {{ctx.code_content}}\n        ```\n      timeout_ms: 60000\n\n    - id: merge\n      type: merge\n      merge_strategy: object_merge\n\n    - id: severity-gate\n      type: condition\n      condition: 'run.outputs[\"security-scan-node\"].score < 7'\n      branches:\n        - label: low_score\n          condition: 'true'\n          target_node: human-approval\n        - label: passing\n          condition: 'false'\n          target_node: synthesize-report\n\n    - id: human-approval\n      type: human_gate\n      gate_type: approval\n      assignee: '{{inputs.reviewer_email}}'\n      message_template: |\n        Security scan flagged issues in {{inputs.file_path}}.\n        Score: {{run.outputs[\"security-scan-node\"].score}}/10.\n        Issues found: {{run.outputs[\"security-scan-node\"].issues | length}}.\n        Approve to continue to report generation, or reject to halt.\n      timeout_ms: 86400000\n      timeout_action: reject\n\n    - id: synthesize-report\n      type: agent\n      agent_ref: report-synthesizer\n      prompt_template: |\n        Security results: {{run.outputs[\"security-scan-node\"] | json}}\n        Style results: {{run.outputs[\"style-review-node\"] | json}}\n        Human gate decision: {{run.outputs[\"human-approval\"].decision | default(\"not required\")}}\n      timeout_ms: 45000\n\n    - id: output\n      type: output\n      output_format: markdown\n\n  edges:\n    - from: input\n      to: fan-out\n    - from: fan-out\n      to: security-scan-node\n    - from: fan-out\n      to: style-review-node\n    - from: security-scan-node\n      to: merge\n    - from: style-review-node\n      to: merge\n    - from: merge\n      to: severity-gate\n    - from: severity-gate:low_score\n      to: human-approval\n    - from: severity-gate:passing\n      to: synthesize-report\n    - from: human-approval\n      to: synthesize-report\n    - from: synthesize-report\n      to: output"
+    },
+    "topRisks": [
+      {
+        "risk": "Tauri WebView rendering inconsistency breaks the ReactFlow canvas on Windows or Linux",
+        "mitigation": "Establish a cross-platform rendering test suite (Playwright + Tauri's test utilities) that runs the canvas on macOS WKWebView, Windows WebView2, and Linux WebKitGTK in CI. Maintain a known-broken CSS list and apply targeted polyfills. If WebView2 on Windows has a blocking regression for a specific ReactFlow feature, the Electron fallback path is pre-evaluated in the frameworkDecision — the monorepo structure ensures the React canvas code is identical; only the Tauri shell would swap to Electron. Pre-validate ReactFlow 11+ and all 9 custom node types on all three platforms before Phase 1 ships."
+      },
+      {
+        "risk": "The @flowgent/core engine diverges across surfaces — bugs present on CLI but not desktop, or VS Code extension runs stale engine version",
+        "mitigation": "The engine is a single package (@flowgent/core) with zero platform-specific imports. All surfaces import the exact same package version pinned in their package.json. Turborepo enforces that any surface that depends on @flowgent/core rebuilds when core changes. Integration tests run core directly (not through any surface) in CI. Any surface-specific engine workaround is treated as a bug in core, not a surface patch. The CLI (apps/cli) serves as the canonical integration test harness because it has no UI to hide engine failures."
+      },
+      {
+        "risk": "API key leakage — keys exposed in logs, Redis job payloads, exported workflow YAMLs, or browser network tab",
+        "mitigation": "Four independent controls: (1) OS keychain Phase 1 / AES-256-GCM Postgres Phase 2 — keys never written to disk or database in plaintext. (2) @flowgent/core fetches keys from storage at call time; keys are never serialized into BullMQ job payloads, run checkpoints, or log events — enforced by a lint rule that bans the word 'apiKey' in any file under apps/api/src/workers/. (3) Workflow YAML export strips all secret references and replaces them with placeholder tokens — enforced in the WorkflowYAMLSerializer. (4) The browser/portal never calls LLM APIs directly; all LLM calls are proxied through apps/api, so no key ever appears in the browser network tab. A pre-release security audit specifically targets these four surfaces before Phase 2 ships."
+      }
+    ],
+    "immediateNextSteps": [
+      "Initialize the Turborepo monorepo: pnpm create turbo@latest flowgent --example with-prisma, then restructure to the apps/packages layout defined above",
+      "Define the final WorkflowSchema in packages/shared/src/schemas/workflow.ts as a Zod schema — this is the north star that all engine and surface code aligns to; do not proceed to engine coding until this schema is locked",
+      "Build the AnthropicAdapter in packages/llm first (it is the primary model), get streaming + tool_call normalization + usage token extraction working with a hardcoded test, then add the Zod-validated response parsing",
+      "Stand up the WorkflowEngine.run() method in packages/core against a fixture YAML with a 2-node sequential workflow — get checkpoint write/read/resume working against better-sqlite3 before any surface code is written",
+      "Set up Vitest with coverage thresholds (80% line coverage minimum) for packages/shared, packages/llm, and packages/core from day one — the engine is the most critical code in the product and must be regression-proof before surfaces are built on top of it"
+    ]
+  }
+}
