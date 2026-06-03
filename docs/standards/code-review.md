@@ -35,7 +35,7 @@ are actually enforced — automation catches format and types; a human catches t
 
 **Security**
 - Run the [security-review checklist](security-review.md) on any change that touches keys,
-  the keychain, IPC, network calls, custom base URLs, the `run_javascript` sandbox, or
+  the keychain, IPC, network calls, custom base URLs, the `run_command` sandbox, or
   prompt construction. No secret reaches the frontend or the logs.
 
 **Performance**

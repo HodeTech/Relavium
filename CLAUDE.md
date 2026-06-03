@@ -24,7 +24,13 @@ It is a **Turborepo + pnpm monorepo**:
 | `apps/desktop` | Tauri v2 desktop app — the agent-management center (canvas, run monitoring). |
 | `apps/cli` | Terminal CLI (`commander.js` + `ink`). The engine's first real consumer + regression harness. |
 | `apps/vscode-extension` | Standalone VS Code extension (bundles the engine). |
-| `apps/api`, `apps/portal` | **Phase 2 (cloud)** — backend + web portal. |
+| `apps/api`, `apps/portal` | **Phase 2** — backend + **control-plane** web portal (not a second canvas). |
+
+A run executes in one of **three execution modes** behind the one `LLMProvider` seam —
+**local** (BYOK, the Phase-1 default), **cloud** (BYOK-central, Phase 2), and **managed**
+(Relavium's own keys via a metered egress gateway; engine still runs locally, Phase 2). The
+engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md)..[ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
+and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
 **Status: pre-implementation.** The documentation, architecture decisions, and
 phased roadmap are complete; engineering begins at
@@ -54,7 +60,10 @@ These apply to every AI agent in this repo, regardless of model, runner, or tool
 6. **Local-first, secure by default.** API keys live in the OS keychain — never in
    plaintext, never in logs, never sent to the frontend or into a job payload. See
    [ADR-0006](docs/decisions/0006-os-keychain-for-api-keys.md) and
-   [docs/standards/security-review.md](docs/standards/security-review.md).
+   [docs/standards/security-review.md](docs/standards/security-review.md). *(Phase-2
+   managed mode)* Relavium's own provider keys live in a KMS-backed master-key vault and
+   per-provider key pools, attached only inside the gateway on the outbound request — they
+   never cross the `LLMProvider` seam either ([ADR-0013](docs/decisions/0013-managed-key-vault-and-pools.md)).
 7. **The desktop app is an agent-management center, NOT an IDE** — no code editor,
    file browser, or terminal. See [ADR-0007](docs/decisions/0007-desktop-is-not-an-ide.md).
 8. **One canonical home per artifact.** Concrete specs (workflow/agent YAML,

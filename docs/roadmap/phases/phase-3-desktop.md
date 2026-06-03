@@ -295,7 +295,7 @@ a live cost accumulator, all over the Tauri channel. **Critical path.**
   `human_gate:paused`, block the canvas, collect the decision, and call `resume_run`
   with the `GateDecision`; reflect `human_gate:resumed`.
 - Maintain a live `costAccumulator` in `runStore` from `cost:updated` events
-  (`costUsd` / `cumulativeCostUsd`), surfaced in the canvas toolbar.
+  (`costMicrocents` / `cumulativeCostMicrocents`), surfaced in the canvas toolbar.
 - Implement gap detection: on a `sequenceNumber` jump, call `get_run_state` and
   resync rather than trusting a partial view.
 - Wire the `file_change` trigger so saving a watched file can start a run.

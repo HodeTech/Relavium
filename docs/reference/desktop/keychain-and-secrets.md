@@ -13,26 +13,23 @@ This is the canonical reference for how the desktop app stores LLM provider API 
 
 ```mermaid
 flowchart TB
-  subgraph OS["OS-native secret store (primary)"]
+  subgraph OS["OS-native secret store (Phase-1 only store)"]
     KC["macOS Keychain (Security.framework)<br/>Windows Credential Manager<br/>Linux libsecret / GNOME Keyring"]
   end
-  subgraph File["Encrypted file (fallback, opt-in)"]
-    ENC["~/.relavium/secrets.enc<br/>AES-256-GCM"]
-  end
-  RUST["Tauri Rust backend<br/>(holds keys in memory only)"]
+  RUST["Tauri Rust backend<br/>(resolves keys at call time)"]
   LLM["LLM provider APIs"]
   WV["WebView / React frontend"]
+  WV -- "invoke llm_stream (key ref, never the key)" --> RUST
   RUST -- read at call time --> KC
-  RUST -- read at call time --> ENC
   RUST -- Authorization header --> LLM
   RUST -.->|never sends keys| WV
 ```
 
-API keys are read **at LLM-call time** by the Rust backend, used to set the request `Authorization` header, and never round-tripped to the frontend. The WebView only ever sees a non-sensitive **key hint** (e.g. last 4 characters) for display.
+API keys are read **at LLM-call time** by the Rust backend (via the `llm_stream` command — the WebView passes only a key *reference*), used to set the request `Authorization` header, and never round-tripped to the frontend. The WebView only ever sees a non-sensitive **key hint** (e.g. last 4 characters) for display. The command shape is canonical in [../contracts/ipc-contract.md](../contracts/ipc-contract.md#rust-delegated-llm-egress).
 
-## Layer 1 — OS keychain (default)
+## The key store — OS keychain (the only Phase-1 store)
 
-The primary store is the OS-native secret manager, accessed via `tauri-plugin-keychain` (the keyring/keychain plugin; see [tauri-plugins.md](tauri-plugins.md)). The plugin dispatches to the platform backend:
+In Phase 1 the OS-native secret manager is the **only** key store, accessed via `tauri-plugin-keychain` (the keyring/keychain plugin; see [tauri-plugins.md](tauri-plugins.md)). The plugin dispatches to the platform backend:
 
 | Platform | Backend | Notes |
 |----------|---------|-------|
@@ -51,19 +48,9 @@ The built-in web-search tool stores its key the same way under `account = search
 
 The `llm_providers` table stores only an `api_key_keychain_ref` (the `account` identifier) — **never the key value** (see [database-schema.md](database-schema.md)).
 
-## Layer 2 — AES-256-GCM encrypted file (fallback, opt-in)
+## Encrypted-file fallback — deferred past v1.0
 
-For headless or CI environments where no OS keychain is available, an opt-in file fallback is used:
-
-- **Location**: `~/.relavium/secrets.enc`
-- **Cipher**: AES-256-GCM (authenticated encryption — detects tampering)
-- **Key derivation**: a machine-specific secret **XOR'd** with a user-set master passphrase
-  - macOS: `IOPlatformUUID`
-  - Windows: `MachineGuid`
-  - Linux: `/etc/machine-id`
-- **Master passphrase**: prompted at launch, held in process memory only, and **never stored**. Losing it means the file cannot be decrypted (by design).
-
-The keychain approach is the default; the file fallback is enabled explicitly via config (see [../contracts/config-spec.md](../contracts/config-spec.md)).
+There is **no** encrypted-file key store in v1.0. A headless/CI fallback for environments without an OS keychain is **reserved** for a later release, and when it lands it must use a **proper KDF** (e.g. Argon2id over a user passphrase) — Relavium does **not** hand-roll key derivation, so the earlier machine-secret-XOR scheme is explicitly off the table. For v1.0 the OS keychain is the only key store; where no Secret Service / keychain is available, the app surfaces an error rather than falling back to a hand-rolled file format (see [No silent plaintext fallback](#operational-notes)).
 
 ## Database passphrase (SQLCipher)
 
@@ -76,15 +63,15 @@ The global run-history database (`~/.relavium/history.db`) is encrypted with SQL
 | Frontend / WebView | Receives only a key hint (last 4 chars). Never the key. |
 | Workflow YAML (`.relavium.yaml`) | Tools reference secrets by env-var name / keychain ref, never inline. Export strips/placeholders any secret reference. |
 | Run records, `messages`, `run_events` | Tool inputs are sanitized before persistence; no `Authorization` value is ever logged. |
-| VS Code IPC (hybrid mode) | When the desktop app is running, it returns a key to the VS Code extension only over the authenticated loopback IPC after verifying the shared `.ipc-token`; see [../contracts/ipc-contract.md](../contracts/ipc-contract.md). |
+| VS Code IPC (desktop-enhanced mode) | The VS Code extension is **standalone** and keeps its own keys in `vscode.SecretStorage`; the loopback desktop↔extension channel **never carries a raw key in either direction**. The handshake (dynamic port + bearer token) is canonical in [../contracts/ipc-contract.md](../contracts/ipc-contract.md#vs-code-mirror-loopback-http). |
 | Tray / notifications | Never include secret material. |
 
 ## Operational notes
 
 - **SQLCipher passphrase must be set before plugin init.** Derive it from a stable machine secret (not hardcoded) so restarts do not require a user prompt.
 - **Capability gating.** Every keychain plugin call the frontend can trigger must be declared in the Tauri v2 capabilities manifest (`src-tauri/capabilities/`); a missing capability surfaces as a silent "not allowed" runtime error.
-- **Linux dependency.** libsecret requires a Secret Service provider to be running; if none is present, the app falls back to the encrypted-file layer.
-- **No silent plaintext fallback.** If neither the keychain nor the file fallback can be used, the app surfaces an error rather than writing a key in the clear.
+- **Linux dependency.** libsecret requires a Secret Service provider to be running; if none is present in v1.0, key storage is unavailable and the app surfaces an error (the KDF-based file fallback is deferred — see [Encrypted-file fallback — deferred past v1.0](#encrypted-file-fallback--deferred-past-v10)).
+- **No silent plaintext fallback.** If the OS keychain cannot be used, the app surfaces an error rather than writing a key in the clear; it never hand-rolls an alternative key store.
 
 ## Phase 2 divergence
 

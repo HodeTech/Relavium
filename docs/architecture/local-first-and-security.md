@@ -31,18 +31,26 @@ flowchart LR
     Core -->|IPC: sql plugin| Rust
     Rust --> SQLite
     Rust --> FS
-    LLM -->|IPC: read key at call time| Rust
+    LLM -->|"IPC: llm_stream (request shape + key ref)"| Rust
     Rust -->|read key| KC
-    Rust -->|key value, transient at call time| LLM
-    LLM -->|HTTPS, direct| Providers
-    UI -. "no raw key in UI state (providerStore)" .- LLM
+    Rust -->|"HTTPS (Authorization header)"| Providers
+    Rust -->|StreamChunk channel| LLM
+    UI -. "no raw key ever in WebView (providerStore holds a masked hint)" .- LLM
 ```
 
-The engine (`packages/core` + `packages/llm`) runs in the WebView, and LLM egress
-originates from the WebView over HTTPS — in BYOK-local mode straight to the
-provider; the key is fetched from the OS keychain via a Rust command at call time,
-so only the keychain **read** crosses IPC into Rust (see
-[desktop-architecture.md](desktop-architecture.md)).
+The engine (`packages/core` + `packages/llm`) runs in the WebView on the desktop,
+exactly as on every other surface. On the desktop, though, the adapters do **not**
+make the network call themselves: the authenticated streaming HTTPS request is
+**delegated to a Rust command** (`llm_stream`). The WebView hands Rust the request
+shape and a key *reference*; Rust reads the actual key from the OS keychain, sets
+the `Authorization` header, performs the request, and streams chunks back over a
+channel. So the raw key value **never enters the WebView** — only the keychain
+read and the egress live in Rust (see
+[desktop-architecture.md](desktop-architecture.md) and the
+[IPC contract](../reference/contracts/ipc-contract.md#rust-delegated-llm-egress)).
+On the Node-style surfaces (CLI, VS Code extension host, Phase-2 Bun API) the same
+adapters use a direct `fetch`/SDK transport inside their one trusted process, with
+the key resolved at call time.
 
 ## Context
 
@@ -83,15 +91,17 @@ The architectural rules are:
 1. **Keys live only in the OS keychain.** macOS Keychain (hardware-backed via the
    Secure Enclave on Apple Silicon), Windows Credential Manager, or libsecret on
    Linux. Never in SQLite, never in a config file, never in a workflow YAML.
-2. **Keys are read at call time, in the engine/LLM layer.** `packages/llm` fetches
-   the key from the keychain — via a Rust command at the moment of the provider
-   call — and uses it for that one HTTPS request. Keys are never serialized into
-   checkpoints, run events, or log lines.
-3. **The UI never holds a raw key.** The key value is fetched from the OS keychain
-   via a Rust command at call time and used transiently by `packages/llm` (in the
-   WebView's JS runtime) for that one HTTPS request. It never reaches the React
-   UI/renderer layer — `providerStore` holds only provider config and a masked
-   hint, never the raw key — and is never persisted, checkpointed, or logged.
+2. **Keys are read at call time, by Rust, never by the WebView.** On the desktop,
+   `packages/llm` invokes the Rust `llm_stream` command with a key *reference*;
+   Rust reads the actual key from the OS keychain, sets the `Authorization` header,
+   and uses it for that one HTTPS request. The raw key value is resolved inside
+   Rust and is never serialized into checkpoints, run events, or log lines. (On the
+   Node-style surfaces the key is likewise resolved at call time inside the one
+   trusted process, never persisted or logged.)
+3. **The WebView never holds a raw key.** Because the desktop egress is
+   Rust-delegated, the raw key value never crosses into the WebView's JS runtime at
+   all — `providerStore` holds only provider config and a masked hint, never the
+   raw key — and the key is never persisted, checkpointed, or logged.
 4. **Exported workflows are scrubbed.** When a workflow YAML is exported or
    committed, secret references are replaced with placeholder tokens so a key
    cannot leak through a shared `.relavium.yaml`.

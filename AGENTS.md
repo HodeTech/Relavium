@@ -12,8 +12,13 @@ product): a pure-TypeScript workflow engine shared by a Tauri desktop app, a VS 
 extension, and a CLI, with workflows authored as git-committable YAML. It is a
 Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 `packages/db`, `packages/ui`; `apps/desktop`, `apps/cli`, `apps/vscode-extension`;
-`apps/api` + `apps/portal` are Phase 2). **Status: pre-implementation** — engineering
-begins at [Phase 0](docs/roadmap/phases/phase-0-foundations.md).
+`apps/api` + the control-plane `apps/portal` are Phase 2). A run executes in one of three
+**execution modes** behind the one `LLMProvider` seam — **local** (BYOK, Phase-1 default),
+**cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
+gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
+phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
+**Status: pre-implementation** — engineering begins at
+[Phase 0](docs/roadmap/phases/phase-0-foundations.md).
 
 ## The non-negotiable rules
 
@@ -24,7 +29,9 @@ begins at [Phase 0](docs/roadmap/phases/phase-0-foundations.md).
 3. **No vendor SDK type crosses the `@relavium/llm` `LLMProvider` seam** (ADR-0011).
 4. **The engine (`packages/core`) has zero platform-specific imports.**
 5. **Local-first, secure by default.** API keys live in the OS keychain — never
-   plaintext, never in logs, never sent to the frontend (ADR-0006).
+   plaintext, never in logs, never sent to the frontend (ADR-0006). *(Phase-2 managed
+   mode)* Relavium's own keys live in a KMS-backed master-key vault + key pools, attached
+   only inside the gateway and never crossing the seam (ADR-0013).
 6. **The desktop app is an agent-management center, not an IDE** (ADR-0007).
 7. **One canonical home per artifact** — specs live in [docs/reference/](docs/reference/); link, don't restate.
 8. **Decisions are ADRs** in [docs/decisions/](docs/decisions/), condensed MADR,

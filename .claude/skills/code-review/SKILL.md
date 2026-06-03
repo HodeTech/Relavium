@@ -20,7 +20,7 @@ typecheck catch format and types; this review catches the rest. It applies the b
 ## When not to use
 
 - You are still implementing — use [../implement-task/SKILL.md](../implement-task/SKILL.md).
-- The change touches keys, the keychain, custom base URLs, the `run_javascript` sandbox, or
+- The change touches keys, the keychain, custom base URLs, the `run_command` sandbox, or
   prompt construction — run [../security-review/SKILL.md](../security-review/SKILL.md)
   (this skill defers the security verdict there).
 

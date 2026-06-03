@@ -56,7 +56,7 @@ The desktop canvas renders nine custom ReactFlow node components. Each subscribe
 
 The core execution node. Renders the agent name, a model badge (e.g. `claude-sonnet-4-6`), and the provider icon. During a run it shows streaming token output (scrollable monospace, ~10 lines visible with expand), an animated status-ring border (idle / queued / running / done / error), and token count + estimated cost in the footer. One default input and one default output handle.
 
-- **Key props**: `agentId`, `label`, `nodeRunStatus`, `streamingText`, `tokenCount`, `costUsd`, `isSelected`
+- **Key props**: `agentId`, `label`, `nodeRunStatus`, `streamingText`, `tokenCount`, `costMicrocents`, `isSelected`
 
 ### `ConditionNode`
 
@@ -72,7 +72,7 @@ Splits one input into N parallel branches (2–8 output handles, each optionally
 
 ### `AggregatorNode`
 
-Collects N parallel branch results into one output. Strategy is configurable: `concat`, `json_array`, `best_of_n` (a secondary agent picks), `custom_js`. Shows a progress bar of completed branches; visually blocked (greyed border) until all expected inputs arrive.
+Collects N parallel branch results into one output. Strategy is configurable; the canvas `strategy` prop carries the **authored YAML `merge_strategy` value** verbatim (`concat` | `object_merge` | `first` | `custom`) so the three layers agree — see the [merge-strategy reconciliation table](#merge-strategy-reconciliation) below. (`best_of_n` — a secondary-LLM picker — is **reserved, not v1.0**; see that table.) Shows a progress bar of completed branches; visually blocked (greyed border) until all expected inputs arrive.
 
 - **Key props**: `strategy`, `expectedInputCount`, `completedInputCount`, `nodeRunStatus`, `aggregatedOutput`
 
@@ -115,17 +115,33 @@ In the engine's `WorkflowDefinition`, a node carries `id`, `type`, `label`, opti
 | Engine config block | Present when `type =` | Notable fields |
 | --- | --- | --- |
 | `agent_config` | `agent` | `agent_id`, `model_override_id`, `system_prompt_append`, `input_mapping`, `output_mapping`, `config_override` |
-| `condition_config` | `condition` | `expression_type` (`jmespath`/`jsonlogic`/`python_ast`), `expression`, `branches[]`, `default_target_node_id` |
+| `condition_config` | `condition` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `expression`, `branches[]`, `default_target_node_id` |
 | `tool_config` | `tool` | `tool_name`, `tool_source` (`builtin`/`mcp`), `mcp_server`, `parameters`, `input_mapping`, `output_mapping` |
-| `transform_config` | `transform` | `expression_type` (`jmespath`/`jsonlogic`), `transformations[]` (`target_key`, `expression`) |
+| `transform_config` | `transform` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `transformations[]` (`target_key`, `expression`) |
 | `loop_config` | `loop` | `iterate_over`, `item_key`, `body_entry_node_id`, `body_exit_node_id`, `max_iterations`, `collect_results_key` |
 | `fan_out_config` | `fan_out` | `branch_node_ids[]`, the split fan-out half of an authored `parallel` block |
-| `fan_in_config` | `fan_in` | `join_strategy` (`wait_all`/`wait_first`/`wait_n`), `wait_n`, `merge_strategy` (`merge_keys`/`collect_array`/`first_wins`), the aggregating join half |
-| `human_in_the_loop_config` | `human_in_the_loop` | `prompt_template`, `timeout_seconds`, `on_timeout` (`fail`/`continue_default`/`cancel`), `input_schema` |
+| `fan_in_config` | `fan_in` | `join_strategy` (`wait_all`/`wait_first`/`wait_n`) — *when* to fire — plus `wait_n`; and `merge_strategy` (`concat`/`object_merge`/`first`/`custom`) — *how* to combine, named identically to the authored YAML value (see the [merge-strategy reconciliation table](#merge-strategy-reconciliation)); the aggregating join half |
+| `human_in_the_loop_config` | `human_in_the_loop` | `prompt_template`, `timeout_seconds`, `on_timeout` (`reject`/`approve`/`escalate` — same enum as the authored YAML `timeout_action`; see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#human_gate-node)), `input_schema` |
 | `subworkflow_config` | `subworkflow` | `workflow_id`, `input_mapping`, `output_mapping` |
 | `retry_config` | any | `max_attempts`, `backoff_seconds`, `retry_on[]` (error types) |
 
 > The authored YAML uses friendlier field names (e.g. `parallel_of`, `merge_strategy`, `timeout_action`) that map onto the engine config blocks above. The YAML is the user contract — see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md). The mapping itself is owned by `@relavium/core` and is exercised on parse against the `WorkflowSchema` Zod definition.
+
+> **Expression languages (condition / transform).** The only `expression_type` values are `js` (the default — a **sandboxed JavaScript expression**, no I/O, no ambient globals), `jmespath`, and `jsonlogic`. **There is no Python expression evaluator** — per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) the engine is pure TypeScript and ships no Python runtime. `workflow-yaml-spec.md` exposes the same set; its bare `condition:` / `transform:` strings are `js` expressions by default.
+
+### Merge-strategy reconciliation
+
+A fan-in / aggregator node combines N branch results with **one** named strategy. As with node types, the three layers historically drifted; the **authored YAML `merge_strategy` value is canonical**, and the canvas (`AggregatorNode.strategy`) and engine (`fan_in_config.merge_strategy`) carry that same value verbatim:
+
+| YAML `merge_strategy` (authoritative) | Canvas `AggregatorNode.strategy` | Engine `fan_in_config.merge_strategy` | Behavior |
+| --- | --- | --- | --- |
+| `concat` | `concat` | `concat` | Concatenate branch outputs into an ordered array. |
+| `object_merge` | `object_merge` | `object_merge` | Shallow-merge branch objects into one object (later branches win on key collision). |
+| `first` | `first` | `first` | Take the first branch to resolve; ignore the rest. Pairs with `join_strategy: wait_first`. |
+| `custom` | `custom` | `custom` | Apply the author-supplied `merge_fn` (a `js` expression over the branch outputs). |
+| `best_of_n` *(reserved — not v1.0)* | `best_of_n` *(reserved)* | `best_of_n` *(reserved)* | A secondary-LLM picker selects the "best" branch. **Not in the v1.0 YAML contract** — it carries unaccounted extra-LLM cost and event implications (an additional agent call + `cost:updated` events), so it is held as a reserved/forward-compat slot, in parity with `LoopNode`. |
+
+`join_strategy` (`wait_all` / `wait_first` / `wait_n`) is an **orthogonal** axis — it controls *when* the join fires, not *how* outputs are combined; do not conflate it with `merge_strategy`.
 
 ## Edges
 

@@ -1,6 +1,8 @@
 # Architectural Principles
 
-> Status: draft — to be expanded
+- **Status**: Accepted
+- **Date**: 2026-06-04
+- **Related**: [tech-stack.md](../tech-stack.md), [product-constraints.md](../product-constraints.md), [security-review.md](security-review.md), [documentation-style.md](documentation-style.md)
 
 These are the binding engineering principles for Relavium. They are derived from the
 finalized tech-stack decisions (see [tech-stack.md](../tech-stack.md) and the
@@ -114,14 +116,77 @@ about owning the *product* layers; it is not a license to re-implement vetted se
 foundations. See [security-review.md](security-review.md) and
 [ADR-0011](../decisions/0011-internal-llm-abstraction.md).
 
-## To be expanded
+## 10. Clean execution-mode interface — local, cloud, managed
 
-The following are known principles to flesh out as the architecture docs land:
+A run executes in one of three **execution modes**, all behind the single
+`LLMProvider`/`ExecutionHost` seam: **local** (BYOK, the engine runs in the host
+process and LLM calls go straight to the provider — the Phase-1 default), **cloud**
+(BYOK-central, Phase 2 — the same run lifecycle runs on cloud workers and events stream
+over HTTP SSE instead of IPC), and **managed** (Phase 2 — the engine still runs locally
+but LLM egress is redirected through Relavium's metered gateway on Relavium's own key).
+The surfaces see identical `RunEvent` objects in every mode, so the choice of mode is a
+deployment concern, never an engine rewrite.
 
-- Clean execution-mode interface (local vs cloud) — link to
-  [execution-model.md](../architecture/execution-model.md) once written.
-- Checkpoint-based resume as a first-class engine capability (retry-from-node).
-- Cross-provider tool normalization as the boundary between `packages/llm` and
-  `packages/core`.
-- Zustand direct subscriptions for the ReactFlow canvas (no Context) — see
-  [ADR-0010](../decisions/0010-zustand-direct-subscriptions-for-reactflow.md).
+**Applied rule:** mode is selected at the seam, not threaded through the engine. The
+`packages/core` run lifecycle (parse → plan → walk → checkpoint) is byte-for-byte the
+same across all three modes; adding cloud execution adds a worker host, and managed adds a
+`ManagedGatewayProvider`, but neither changes how a node runs. Design any
+mode-sensitive code so a fourth mode could be added by implementing the seam, not by
+editing the engine. See [execution-model.md](../architecture/execution-model.md),
+[managed-inference.md](../architecture/managed-inference.md), and
+[ADR-0012](../decisions/0012-managed-inference-dual-mode.md).
+
+## 11. Checkpoint-based resume is a first-class engine capability
+
+State is persisted at **every node boundary**, not only at the end of a run. After each
+node completes, the engine writes a checkpoint capturing run status, per-node states, the
+completed/pending node IDs, and (for an orchestrator) its message history. This is the
+mechanism — not an add-on — behind three guarantees: **resume after crash** (the host
+reconciles in-flight runs from the last checkpoint on startup), **retry-from-node** (a
+user re-runs from any node without replaying completed upstream work), and **idempotency**
+(re-executing a node uses a stable key derived from `runId + nodeId + retryCount`, so a
+retry never double-applies a side effect).
+
+**Applied rule:** treat the checkpoint shape as a contract, not an implementation detail.
+The same checkpoint is what Phase-1 local SQLite persistence and the Phase-2 cloud layer's
+durable execution both consume, so a node must be written to be safely re-runnable from its
+last boundary. Never introduce run state that lives only in memory and cannot be
+reconstructed from the checkpoint. See
+[shared-core-engine.md](../architecture/shared-core-engine.md#checkpoint-and-resume) and
+[execution-model.md](../architecture/execution-model.md).
+
+## 12. Cross-provider tool normalization is the `packages/llm` ↔ `packages/core` boundary
+
+The four providers describe tool/function calling differently (Anthropic `input_schema`,
+OpenAI/DeepSeek `function.parameters`, Gemini `functionDeclarations` over an OpenAPI
+subset), and a workflow author must never have to care. The **`ToolNormalizer`** lives in
+`packages/llm`, on the Relavium side of the seam: it takes Relavium's single canonical tool
+definition (built-in and MCP tools alike), translates it into each provider's required
+shape on the way out, and normalizes the provider's tool-call response back into one shape
+on the way in. The engine-side `ToolRegistry` and dispatch live in `packages/core` and see
+only the canonical shape — they never pattern-match a vendor tool format.
+
+**Applied rule:** the canonical-tool ↔ wire translation belongs in `packages/llm` and
+nowhere else; the engine speaks only the canonical tool shape. This is what lets the same
+agent definition run unchanged against any provider and makes cross-provider fallback
+chains possible (switching providers mid-chain needs no re-encoding of tools). A vendor
+tool format leaking into `packages/core` is a seam violation, exactly as a leaked vendor
+SDK type is (principle 9, [ADR-0011](../decisions/0011-internal-llm-abstraction.md)). See
+[multi-llm-providers.md](../architecture/multi-llm-providers.md#tool-normalization) and
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).
+
+## 13. Zustand direct subscriptions for the ReactFlow canvas
+
+The desktop canvas drives its state from **Zustand with direct, selector-based store
+subscriptions — not React Context**. ReactFlow renders many nodes that update
+independently and at high frequency during a run (streaming tokens, status changes, cost
+ticks); a Context provider would re-render the whole subtree on every state change. Direct
+store subscriptions let each node component subscribe to only the slice it paints, so a
+token arriving on one node face does not re-render the rest of the graph.
+
+**Applied rule:** read canvas/run state via fine-grained Zustand selectors, never by
+threading a Context value through the node tree, and keep selectors narrow so a high-rate
+update touches the minimum component set. This is a binding performance boundary for the
+canvas, not a stylistic preference. See
+[ADR-0010](../decisions/0010-zustand-direct-subscriptions-for-reactflow.md) and
+[state-management.md](../architecture/state-management.md).

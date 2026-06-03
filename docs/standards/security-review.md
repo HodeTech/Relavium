@@ -84,12 +84,15 @@ restated, here.
 - Outbound requests carry the AbortSignal and a timeout; a hung provider must not pin a
   worker open.
 
-## Sandbox for `run_javascript`
+## Sandbox for `run_command`
 
-- The `run_javascript` built-in tool executes **untrusted, model-generated code** and runs
-  in a sandbox with **no ambient authority**: no filesystem, no network, no process/env,
-  no keychain, and a CPU/memory/time budget that terminates a runaway. It never receives a
-  provider key or any secret. Treat its output as untrusted input. See
+- The `run_command` built-in tool spawns **model-driven shell execution** and runs
+  sandboxed: only commands on the workflow's `allowedCommands` allowlist execute (an
+  unlisted command never runs), under the workflow's filesystem **scope tier** (restricted
+  fs — no reach outside the granted paths), with **no network** authority beyond what an
+  allowed command itself performs, and a CPU/memory/time budget that terminates a runaway.
+  It never receives a provider key or any secret. Treat its output (stdout/stderr/exit code)
+  as untrusted input. See
   [built-in-tools.md](../reference/shared-core/built-in-tools.md) for the canonical tool
   contract.
 
@@ -128,7 +131,7 @@ rules live in [logging-and-observability.md](logging-and-observability.md).
 ## When a review is mandatory
 
 Any change to: key handling or the keychain bridge, IPC commands, provider base-URL
-handling, the `run_javascript` sandbox, prompt/tool-call construction, the DB encryption
+handling, the `run_command` sandbox, prompt/tool-call construction, the DB encryption
 path, or a new dependency. For **managed mode**, also: the gateway authn/z path, key-pool
 selection, the metering/billing path, and the master-key vault. When in doubt, run the
 checklist.

@@ -17,7 +17,7 @@ name: string                # human-readable display name
 description: string         # what this agent does (used in UI and tool descriptions)
 
 model: string               # required, e.g. 'claude-sonnet-4-6', 'gpt-4o', 'gemini-2.5-pro'
-provider: string            # required, e.g. 'anthropic' | 'openai' | 'google' | 'deepseek'
+provider: string            # required, e.g. 'anthropic' | 'openai' | 'gemini' | 'deepseek'
 
 system_prompt: string       # required; supports {{variable}} interpolation
 temperature: number         # optional, default per-provider
@@ -45,7 +45,7 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `name` | recommended | Display name. |
 | `description` | recommended | Surfaced in pickers and, when the agent is exposed via MCP, in the tool description. |
 | `model` | yes | Provider model id. For the supported model matrix see [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md). |
-| `provider` | yes | `anthropic`, `openai`, `google`, `deepseek`. |
+| `provider` | yes | `anthropic`, `openai`, `gemini`, `deepseek`. The `gemini` adapter backs Google Gemini models — see [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md). |
 | `system_prompt` | yes | Multiline YAML scalar; `{{ctx.*}}` / `{{inputs.*}}` interpolation supported. |
 | `temperature` | no | Sampling temperature. |
 | `max_tokens` | no | Output token cap. |
@@ -71,7 +71,7 @@ fallback_chain:
     provider: openai
     max_attempts: 2
   - model: gemini-2.5-pro
-    provider: google
+    provider: gemini
     max_attempts: 1
 ```
 
@@ -100,7 +100,7 @@ fallback_chain:
     provider: openai
     max_attempts: 2
   - model: gemini-2.5-pro
-    provider: google
+    provider: gemini
     max_attempts: 1
 ```
 

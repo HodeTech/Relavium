@@ -33,6 +33,7 @@ workflow:
   context: ContextEntry[]    # shared variables exposed as {{ctx.*}}
 
   agents: AgentRef[]         # inline agents, or $ref to .agent.yaml files
+  tools: ToolPolicy          # workflow-wide tool guardrails (command/domain allowlists)
   nodes: Node[]              # execution-graph nodes
   edges: Edge[]              # directed connections between nodes
 ```
@@ -47,6 +48,7 @@ workflow:
 | `inputs` | no | Typed declarations validated before a run starts. |
 | `context` | no | Named values (possibly interpolated) available as `{{ctx.key}}`. |
 | `agents` | yes (if any agent node) | Inline definitions or refs to agent files. |
+| `tools` | required to use `run_command` | Workflow-wide tool guardrails — `allowedCommands` (and optional `allowedDomains`). See [Tool policy](#tool-policy-spectools). |
 | `nodes` | yes | The graph. |
 | `edges` | yes | The connections. |
 
@@ -193,6 +195,8 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 
 A condition node selects a branch by evaluating each branch's `condition` against run state. Branch labels are also referenceable from edges as `nodeId:branchLabel` (see [Edges](#edges)).
 
+A bare `condition:` string is a **sandboxed JavaScript expression** (`expression_type: js`, the default — no I/O, no ambient globals). The other allowed expression languages are `jmespath` and `jsonlogic` (set `expression_type` to opt in). **There is no Python expression evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The full `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
+
 ### `transform` node
 
 ```yaml
@@ -201,21 +205,48 @@ A condition node selects a branch by evaluating each branch's `condition` agains
   transform: '{ files: run.outputs["scan"].issues.map(i => i.line) }'
 ```
 
-A JS expression whose result becomes the node's output. No LLM call.
+A sandboxed JavaScript expression (`expression_type: js`, the default) whose result becomes the node's output. No LLM call. As with `condition`, `jmespath` / `jsonlogic` are the only other allowed `expression_type` values, and there is no Python evaluator — see [node-types.md](../shared-core/node-types.md#per-type-engine-config).
 
 ### `parallel` and `merge` nodes
 
 ```yaml
 - id: fan-out
   type: parallel
-  parallel_of: [security-scan-node, style-review-node]
+  parallel_of: [security-scan-node, style-review-node]  # declares branch membership; see note
 
 - id: merge
   type: merge
   merge_strategy: object_merge       # concat | object_merge | first | custom
-  merge_fn: |                        # required only when strategy = custom
+  merge_fn: |                        # required only when strategy = custom (a `js` expression)
     { ...a, ...b }
 ```
+
+`merge_strategy` is the **authoritative** name for the aggregation behavior; the canvas (`AggregatorNode`) and engine (`fan_in_config`) carry the same value — see the [merge-strategy reconciliation table](../shared-core/node-types.md#merge-strategy-reconciliation). `best_of_n` (a secondary-LLM picker) is **reserved, not v1.0**, and is not a valid `merge_strategy` value in `'1.0'`.
+
+> **`parallel_of` is authoritative for branch membership.** On a `parallel` node, `parallel_of: [...]` alone defines which nodes are the concurrent branches; the parser materializes a fan-out edge to each listed node, so explicit `from: fan-out` edges are **not required**. The complete example below writes them out for readability, but they are redundant with `parallel_of` and must not contradict it — if both are present they must agree (the validator rejects an explicit fan-out edge to a node not in `parallel_of`).
+
+## Tool policy (`spec.tools`)
+
+Workflow-wide tool guardrails live under a top-level `tools:` block. This is the **canonical home** for the command allowlist that [built-in-tools.md](../shared-core/built-in-tools.md) references — `run_command` never executes a command that is not on this list.
+
+```yaml
+workflow:
+  # …
+  tools:
+    allowedCommands:            # allowlist for the `run_command` built-in tool
+      - 'npm test'              # matched against the resolved command string
+      - 'npm run lint'
+      - 'git diff'
+    allowedDomains:             # optional allowlist for the `http_request` built-in tool
+      - 'api.github.com'
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `tools.allowedCommands` | required to use `run_command` | An explicit allowlist of permitted shell commands. **Empty or absent ⇒ `run_command` is disabled** (it never runs an unlisted command). Enforced by the engine, not by convention — see [built-in-tools.md](../shared-core/built-in-tools.md#the-built-in-tools). |
+| `tools.allowedDomains` | no | Per-workflow domain allowlist for `http_request`. |
+
+The command allowlist is **independent of the filesystem scope tier** (a workflow can be FS-sandboxed *and* still carry an empty command allowlist). The FS tier itself is set in project config (`fs_scope`), not here — see [config-spec.md](config-spec.md) and [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers).
 
 ## Edges
 

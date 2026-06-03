@@ -1,6 +1,8 @@
 # Managed-Inference Business Model — Decision Analysis
 
-> Status: analysis (decision pending) · Date: 2026-06-03
+> Resolved 2026-06-04 → decided as dual-mode; see [ADR-0012](../decisions/0012-managed-inference-dual-mode.md)..[0015](../decisions/0015-managed-mode-data-handling-and-compliance.md). The "decision pending" framing below is preserved as the original analysis.
+
+> Status: analysis (resolved — see banner above) · Date: 2026-06-03
 
 A founder-requested deep analysis of whether Relavium should move from the
 currently-documented **BYOK + local-first** model to a **managed-inference** model

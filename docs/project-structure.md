@@ -5,8 +5,9 @@
 
 Relavium is a **Turborepo monorepo with pnpm workspaces**. Every package is
 TypeScript with shared `tsconfig` bases, a single root `package.json` for tooling
-(ESLint, Prettier, Vitest), and Turborepo remote cache for CI. There are five app
-surfaces and five shared packages.
+(ESLint, Prettier, Vitest), and Turborepo remote cache for CI. There are **four
+product surfaces** (desktop, VS Code, CLI, portal) plus a Phase-2 backend
+(`apps/api`, infrastructure rather than a product surface), and five shared packages.
 
 ## Layout
 
@@ -49,7 +50,7 @@ flowchart TD
 | `apps/desktop` | Tauri v2 desktop app. `src-tauri/` holds Rust commands + plugin config; `src/` holds the React + Vite frontend (canvas, ReactFlow nodes, Zustand stores, run UI). Calls `@relavium/core` via Tauri IPC, OS APIs (keychain, fs, tray) via Tauri plugins. |
 | `apps/vscode-extension` | VS Code extension. `src/extension.ts` is the activation entry; `src/engine/` bundles the in-process engine (imports `@relavium/core`); `src/panels/` holds WebviewPanel React UIs. Published as `relavium.relavium`. |
 | `apps/cli` | Terminal CLI. `commander.js` entry with `run / list / create / import / export / status / logs / gate` subcommands; `ink` for streaming TUI. Installed via `npm i -g relavium`. |
-| `apps/portal` | **Phase 2.** Cloud web portal — Vite + React SPA, TanStack Router routes, shares `packages/ui` canvas. Calls `apps/api` over HTTPS. |
+| `apps/portal` | **Phase 2.** Cloud web portal — Vite + React SPA, TanStack Router routes. A **control plane** (dashboards, usage, quota, governance, run history, gate inbox); it uses `packages/ui` components but **not** the workflow-designer canvas — workflow authoring stays on the desktop/VS Code surfaces. Calls `apps/api` over HTTPS. |
 | `apps/api` | **Phase 2.** Cloud backend — Hono on Bun, wraps `@relavium/core` with BullMQ dispatch + Redis-stream SSE, Postgres via Drizzle. Holds BullMQ worker pools. |
 
 ## Packages
@@ -60,7 +61,7 @@ flowchart TD
 | `packages/shared` | **`@relavium/shared`** — Zod schemas, TypeScript types, constants used everywhere (`WorkflowSchema`, `AgentSchema`, `RunSchema`, `NodeSchema`, `EdgeSchema`, `RunEvent`, `CostEvent`, `HumanGateEvent`). No runtime deps except zod. |
 | `packages/llm` | **`@relavium/llm`** — provider adapters (`AnthropicAdapter`, `GeminiAdapter`, and a shared OpenAI-compatible adapter serving both OpenAI and DeepSeek via a custom `baseURL`) normalizing streaming, tool calls, and usage tokens to the canonical format. Houses `ToolNormalizer`, `CostTracker`, `FallbackChain`. Three adapters, per [tech-stack.md](tech-stack.md) and ADR-0011. |
 | `packages/db` | **`@relavium/db`** — Drizzle schema + migrations. Same table names and column types for SQLite (local) and Postgres (cloud), different driver. See [reference/desktop/database-schema.md](reference/desktop/database-schema.md). |
-| `packages/ui` | **`@relavium/ui`** — shared React component library. All ReactFlow custom node types (Agent, Condition, FanOut, Aggregator, Loop, HumanGate, Input, Output, Tool) and edges, plus shadcn/ui base + Tailwind config. Imported by desktop, VS Code panels, and portal for visual consistency. |
+| `packages/ui` | **`@relavium/ui`** — shared React component library. All ReactFlow custom node types (Agent, Condition, FanOut, Aggregator, Loop, HumanGate, Input, Output, Tool) and edges, plus shadcn/ui base + Tailwind config. The canvas node types are imported by desktop and VS Code panels; the portal imports only the shadcn/ui base + Tailwind layer for visual consistency (it is a control plane, not a canvas surface). |
 
 ## Build Order
 

@@ -175,11 +175,11 @@ from a provider field.
 - Build the pricing table keyed on canonical model id (input/output per-token, plus
   cache-read/write where the provider exposes it), sourced from the model catalog in
   [database-schema.md](../../reference/desktop/database-schema.md).
-- Implement `CostTracker.cost(modelId, usage) -> costUsd` and the accumulator that
-  produces `{ inputTokens, outputTokens, costUsd, cumulativeCostUsd }` for the
+- Implement `CostTracker.cost(modelId, usage) -> costMicrocents` and the accumulator that
+  produces `{ inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }` for the
   `cost:updated` event ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)).
 - Store/aggregate as integer **micro-cents** to avoid float drift; expose a single
-  conversion point to `costUsd`.
+  conversion point to `costMicrocents`.
 - Surface **per-attempt** usage so cost stays accurate across a failover (consumed
   by 1.K).
 
@@ -435,7 +435,7 @@ Executes a single agent node end-to-end against `@relavium/llm`.
   `agent:tool_call` / `agent:tool_result` events on the bus.
 - Apply the agent's `fallback_chain` via the 1.K runner and feed usage to the
   `CostTracker`, emitting `cost:updated` (`{ nodeId, model, inputTokens,
-  outputTokens, costUsd, cumulativeCostUsd }`).
+  outputTokens, costMicrocents, cumulativeCostMicrocents }`).
 - Handle the tool-call loop: dispatch tool calls through the `ToolRegistry` (1.T),
   feed results back, and continue until a non-`tool_use` stop.
 - Thread `AbortSignal` for cancellation; map a final node failure to `node:failed`

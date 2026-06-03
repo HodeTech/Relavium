@@ -49,8 +49,8 @@ and is cited, not restated, here. Every run emits the colon-namespaced events in
 `node:started`, `agent:token`, `agent:tool_call`, `agent:tool_result`, `node:completed`,
 `node:failed`, `cost:updated`, `human_gate:paused`, `run:completed`, `run:failed`.
 
-- `cost:updated` carries `{nodeId, model, inputTokens, outputTokens, costUsd,
-  cumulativeCostUsd}` and is the live cost-accounting signal that the desktop cost view and
+- `cost:updated` carries `{nodeId, model, inputTokens, outputTokens, costMicrocents,
+  cumulativeCostMicrocents}` and is the live cost-accounting signal that the desktop cost view and
   the CLI both render — cost observability is a product feature, not an add-on.
 - The legacy dotted names (`node.token`, `run.complete`, `cost.update`) and `seqNo` are
   wrong; use the canonical names and `sequenceNumber` everywhere, including logs.

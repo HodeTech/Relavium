@@ -27,7 +27,7 @@ flowchart LR
 The extension follows a **hybrid** model: standalone for all execution, with the desktop app as an optional enhancement.
 
 - **Standalone (default):** the bundled engine executes workflows entirely in the extension host. LLM calls go **directly** from the extension host to provider APIs — the desktop app is never a proxy or a single point of failure.
-- **Desktop-enhanced (optional):** at activation the extension probes the desktop app on its loopback port (default `57210`) with a short health check. If present, enhanced features unlock — `relavium.openWorkflowInDesktop` jumps to the visual canvas, and run status can sync. If the desktop app is not detected, the extension silently continues in standalone mode with no user-visible degradation. The IPC protocol is the loopback HTTP/token contract defined in [ipc-contract.md](../contracts/ipc-contract.md).
+- **Desktop-enhanced (optional):** at activation the extension discovers a running desktop app via the loopback handshake (it reads the desktop-written `~/.relavium/ipc.json` for the dynamic port and bearer token — canonical in [ipc-contract.md](../contracts/ipc-contract.md#vs-code-mirror-loopback-http)) and runs a short health check. If present, enhanced features unlock — `relavium.openWorkflowInDesktop` jumps to the visual canvas, and run status can sync. If the desktop app is not detected, the extension silently continues in standalone mode with no user-visible degradation. No raw key ever transits this channel (see [Security model](#security-model)).
 
 The engine, workflow files, and run-event stream are shared verbatim across surfaces, so a run behaves identically whether launched from the editor, the [CLI](../cli/commands.md), or the [desktop canvas](../desktop/routes-and-screens.md).
 
@@ -98,7 +98,7 @@ Configured in VS Code settings (`settings.json`); all namespaced `relavium.*`.
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `relavium.workflowsPath` | `.relavium` | Path to the workflow folder, relative to the workspace root. |
-| `relavium.desktopAppPort` | `57210` | Loopback port used to detect the desktop app for hybrid mode. |
+| `relavium.desktopAppPort` | `57210` | Optional override for the desktop app's loopback port; normally the port is discovered automatically from `~/.relavium/ipc.json` (see [ipc-contract.md](../contracts/ipc-contract.md#vs-code-mirror-loopback-http)). |
 | `relavium.autoShowOutputOnRun` | `true` | Auto-focus the run output channel when a run starts. |
 | `relavium.maxConcurrentRuns` | `3` | Max simultaneous workflow runs in the extension host. |
 | `relavium.humanGateNotificationSound` | `true` | Play a sound when a human gate opens. |
@@ -141,7 +141,7 @@ The extension operates under a three-tier permission model.
 
 1. **File access** — the extension only reads and writes within the open workspace (`vscode.workspace.workspaceFolders` is the boundary). All file I/O goes through `vscode.workspace.fs` (not Node `fs` directly) so it works in remote workspaces (SSH/WSL/Codespaces). The engine is initialized with a sandboxed root, and every tool path is validated against it before execution. Agent-proposed writes always go through the [diff-and-accept flow](#inline-diff-review-flow).
 2. **Terminal command execution** — shell-tool commands run in a **visible** `vscode.Terminal` (no hidden process spawning). Commands are checked against a workspace `.relavium/permissions.yaml` allowlist (glob patterns, e.g. `npm test`, `pytest *`, `tsc --noEmit`); a non-matching command prompts a modal `[Allow Once] [Allow Always] [Deny]`, where *Allow Always* appends the pattern to the allowlist.
-3. **API keys** — keys are stored via `vscode.SecretStorage` (which delegates to the OS keychain: macOS Keychain / Windows Credential Manager / Linux libsecret), **never** in `settings.json`. They are read only when a run starts, passed to the engine's in-memory provider registry, and cleared on completion. Keys are never written into workflow YAML, never included in run-trace exports, and never sent to the desktop app over IPC. In hybrid mode, key access is requested over the authenticated loopback IPC, gated by the shared `.ipc-token`; see [ipc-contract.md](../contracts/ipc-contract.md) and [keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+3. **API keys** — keys are stored via `vscode.SecretStorage` (which delegates to the OS keychain: macOS Keychain / Windows Credential Manager / Linux libsecret), **never** in `settings.json`. They are read only when a run starts, passed to the engine's in-memory provider registry, and cleared on completion. Keys are never written into workflow YAML, never included in run-trace exports, and never sent over IPC. The extension is **standalone for key custody**: it holds its own keys in `vscode.SecretStorage` and never requests, receives, or proxies a key over the desktop loopback channel in either direction. The desktop-enhanced loopback link carries only run/status data; its handshake is canonical in [ipc-contract.md](../contracts/ipc-contract.md#vs-code-mirror-loopback-http) (see also [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
 
 ## Phase 2 note
 

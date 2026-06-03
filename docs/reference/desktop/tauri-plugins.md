@@ -36,7 +36,7 @@ flowchart LR
 | `tauri-plugin-global-shortcut` | OS-level global hotkeys. | Command-palette hotkey (`Cmd/Ctrl+Shift+A`) and "run on selection" (`Cmd/Ctrl+Shift+R`) |
 | `tauri-plugin-notification` | Native desktop notifications with action buttons. | Run completed / failed / human-gate-waiting alerts |
 | `tauri-plugin-dialog` | Native file pickers (`NSOpenPanel` / `IFileOpenDialog` / GTK `FileChooserDialog`). | File-typed workflow input nodes; tool path parameters |
-| `tauri-plugin-http` | Outbound HTTP/HTTPS with streaming, per-workflow domain allowlist. | The `http_request` / `search_web` built-in tools |
+| `tauri-plugin-http` | Outbound HTTP/HTTPS with streaming, per-workflow domain allowlist. | The `http_request` / `web_search` built-in tools |
 | `tauri-plugin-clipboard` | Read clipboard contents. | The `read_clipboard` built-in tool; "run on current selection" |
 
 The built-in tools referenced above are specified in [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md).

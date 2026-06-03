@@ -67,8 +67,9 @@ task lists and acceptance criteria are in
    `package.json` (tooling only) with a pinned `packageManager`, `pnpm-workspace.yaml`
    declaring `packages/*` + `apps/*`, `turbo.json` with `build/lint/typecheck/test`
    pipelines, `.npmrc`, Node/pnpm pins, and the `packages/{shared,llm,core,db,ui}` +
-   `apps/{cli,desktop,vscode-extension}` directory skeleton — building out **only
-   `packages/shared`** now and leaving the rest as minimal placeholders.
+   `apps/{cli,desktop,vscode-extension}` directory skeleton — building out
+   **`packages/shared`** and **`packages/db`** (both have Phase-1/2 consumers) now and
+   leaving the rest as minimal placeholders.
    *Done when:* `pnpm install` succeeds from a clean checkout and the workspace graph
    resolves with no peer-dep errors.
 
@@ -102,12 +103,16 @@ task lists and acceptance criteria are in
    *Done when:* all schema tests pass, the reference YAML round-trips with no drift,
    and the event names + `cost:updated` payload are pinned by test.
 
-5. **[0.F → 0.H] Close out the gate: seam fence, CI, and docs.** Scaffold the
-   no-vendor-type-across-the-seam ESLint zone (with a quarantined forbidden-import
-   fixture proving it actively fails), stand up the GitHub Actions CI that runs
-   `pnpm turbo run lint typecheck test` on every push/PR with the Turborepo remote
-   cache, and confirm the `docs/` tree ships in-repo with resolving links and the
-   binding standards enforced.
+5. **[0.F → 0.I] Close out the gate: seam fence, CI, docs, and `@relavium/db`.**
+   Scaffold the no-vendor-type-across-the-seam ESLint zone (with a quarantined
+   forbidden-import fixture proving it actively fails), stand up the GitHub Actions CI
+   that runs `pnpm turbo run lint typecheck test` on every push/PR with the Turborepo
+   remote cache, confirm the `docs/` tree ships in-repo with resolving links and the
+   binding standards enforced, and scaffold **`packages/db`** — the Drizzle schema +
+   `drizzle-kit` migrations + the SQLite client for the
+   [database-schema.md](../reference/desktop/database-schema.md) table set, with a smoke
+   test that applies every migration and round-trips a row (no engine wiring yet; its
+   Phase-1/2 consumers come later).
    *Done when:* CI is green on push, the seam fence is demonstrably live, and the
    [Phase 0 exit criteria](phases/phase-0-foundations.md#exit-criteria-go--no-go) all
    pass — achieving **M0**. Then update this page and move work to

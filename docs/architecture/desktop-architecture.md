@@ -23,6 +23,7 @@ flowchart TB
         subgraph Rust["Rust core (privileged glue)"]
             Cmds["#[tauri::command] handlers"]
             Chan["Tauri Channels<br/>(token stream)"]
+            Egress["LLM HTTP egress<br/>(reqwest; key from keychain)"]
             Plugins["Plugins:<br/>sql · keychain · fs · shell ·<br/>dialog · notification · tray ·<br/>global-shortcut · http"]
             HTTP["loopback HTTP server<br/>(VS Code bridge, 127.0.0.1)"]
         end
@@ -33,11 +34,13 @@ flowchart TB
 
     Canvas -->|invoke command| Cmds
     Chan -->|run events| Stores
+    Core -->|invoke llm_stream| Egress
+    Egress -->|StreamChunk channel| Core
     Core --> Plugins
     Cmds --> Plugins
     Plugins --> SQLite
-    Plugins --> KC
-    Core -->|HTTPS, direct| Providers
+    Egress -->|read key| KC
+    Egress -->|HTTPS| Providers
     HTTP -. "SSE / REST" .-> VSCode["VS Code extension"]
 ```
 
@@ -72,9 +75,10 @@ Relavium maps responsibilities across that line deliberately:
 | Concern | Lives in | Why |
 |---------|----------|-----|
 | ReactFlow canvas, agent config UI, run monitor | **WebView (React)** | Pure UI; identical to a browser environment, no native integration needed |
-| The workflow engine (`packages/core` + `packages/llm`) | **WebView** | The engine is pure TypeScript and runs in the WebView's JS runtime; LLM calls go out over `fetch` directly to providers in BYOK-local mode (Phase 1); in managed mode (Phase 2) egress routes to the Relavium gateway (see [managed-inference.md](managed-inference.md)) |
+| The workflow engine (`packages/core` + `packages/llm`) | **WebView** | The engine is pure TypeScript and runs in the WebView's JS runtime; the adapters depend on an injected HTTP transport. On the desktop that transport is the Rust `llm_stream` command — Rust reads the key from the keychain, performs the authenticated HTTPS request, and streams chunks back — so the raw key never enters the WebView (see [LLM egress is Rust-delegated](#llm-egress-is-rust-delegated-on-the-desktop)). In managed mode (Phase 2) egress instead routes to the Relavium gateway (see [managed-inference.md](managed-inference.md)) |
 | Zustand stores, token double-buffer | **WebView** | Frontend state; see [state-management.md](state-management.md) |
 | SQLite reads/writes | **Rust core** (`tauri-plugin-sql`) | DB access is a privileged plugin; the WebView calls it via commands |
+| The authenticated LLM HTTPS egress (per call) | **Rust core** (`llm_stream` command, `reqwest`) | Rust reads the key from the keychain, sets the `Authorization` header, and streams chunks back, so the raw key never enters the WebView; orchestration/normalization stay in the WebView engine (see below) |
 | Keychain access | **Rust core** (keychain plugin) | Keys must never enter the WebView; see [local-first-and-security.md](local-first-and-security.md) |
 | Scoped filesystem, shell tool execution | **Rust core** (fs / shell plugins) | Privileged, capability-gated operations |
 | System tray, global shortcut, native notifications, file dialogs | **Rust core** (respective plugins) | OS-level integration |
@@ -91,6 +95,27 @@ Note that the engine itself runs **in the WebView**, not in Rust. Rust does not
 re-implement workflow execution; it provides system services (DB, keychain, FS,
 shell, tray) that the engine and UI invoke. This keeps `packages/core` identical
 across all four surfaces (see [shared-core-engine.md](shared-core-engine.md)).
+
+### LLM egress is Rust-delegated on the desktop
+
+The one nuance: while the engine and the `packages/llm` adapters run in the
+WebView on **every** surface, the adapters depend on an **injected HTTP
+transport** rather than calling the network themselves. On the CLI, the VS Code
+extension host, and the Phase-2 Bun API, that transport is a direct `fetch`/SDK
+call inside the one trusted process, with the key resolved at call time. On the
+**desktop**, the injected transport is the Rust `llm_stream` command: the
+WebView-resident adapter hands Rust the request shape (provider id + key id,
+endpoint, headers, body) plus a `Channel`; Rust reads the provider key from the
+OS keychain, sets the `Authorization` header, performs the streaming HTTPS
+request with `reqwest`, and streams the provider's raw chunks back, which the
+adapter folds into its normalized chunk union. Engine orchestration,
+normalization, fallback, and cost accounting all stay in the WebView; only the
+per-call authenticated HTTP egress is a Rust command. The payoff is that the
+**raw key value never enters the WebView's JS/renderer** — only a non-sensitive
+key reference does. The command shape is canonical in
+[../reference/contracts/ipc-contract.md](../reference/contracts/ipc-contract.md#rust-delegated-llm-egress);
+the key handling is in
+[../reference/desktop/keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md).
 
 ## The IPC bridge: three primitives
 

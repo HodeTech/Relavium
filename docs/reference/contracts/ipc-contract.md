@@ -4,21 +4,24 @@
 - **Scope**: The boundary between the Tauri v2 **Rust backend** and the **React WebView** in the desktop app.
 - **Related**: [sse-event-schema.md](sse-event-schema.md), [../desktop/tauri-plugins.md](../desktop/tauri-plugins.md), [../desktop/database-schema.md](../desktop/database-schema.md), [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md)
 
-The desktop app is split across a Tauri boundary: the Rust backend owns the filesystem, the OS keychain, SQLite, child processes, the system tray, and the `@relavium/core` engine invocation; the React WebView owns the ReactFlow canvas and all UI. They communicate only by message passing — every value crossing the boundary is JSON-serializable. This document is the canonical list of that surface.
+The desktop app is split across a Tauri boundary: the Rust backend owns the filesystem, the OS keychain, SQLite, child processes, the system tray, and the per-call authenticated **LLM HTTP egress**; the React WebView owns the ReactFlow canvas, all UI, **and the `@relavium/core` engine plus agent-node orchestration** (the engine is pure TypeScript and runs in the WebView's JS runtime, identically to every other surface). They communicate only by message passing — every value crossing the boundary is JSON-serializable. This document is the canonical list of that surface.
 
 ```mermaid
 flowchart LR
   subgraph WebView["React WebView"]
     UI[Canvas / panels / stores]
+    ENG["@relavium/core engine<br/>+ agent-node orchestration"]
   end
   subgraph Rust["Tauri Rust backend"]
-    ENG["@relavium/core engine"]
+    EGRESS["LLM HTTP egress<br/>(reqwest, key from keychain)"]
     SQL[SQLite history.db]
     KC[OS keychain]
     HTTP[axum loopback server]
   end
   UI -->|invoke command| Rust
-  Rust -->|Channel RunEvent| UI
+  ENG -->|invoke llm_stream| EGRESS
+  EGRESS -->|read key| KC
+  EGRESS -->|Channel StreamChunk| ENG
   Rust -->|window.emit event| UI
   HTTP -. SSE mirror .-> VSC[VS Code extension]
 ```
@@ -55,12 +58,19 @@ All commands return a `Result`; the WebView receives a resolved value or a typed
 | `set_provider_key` | `{ providerId, keyId, secret }` | `void` | Store a key in the OS keychain (secret never echoed back). |
 | `get_key_status` | `{ providerId }` | `'valid' \| 'invalid' \| 'unchecked'` | Key presence/health — never the key itself. |
 | `list_mcp_servers` | — | `McpServerConfig[]` | Read configured MCP servers. |
+| `llm_stream` | `{ providerId, keyId, endpoint, headers, body }` + a `Channel<StreamChunk>` | `void` (chunks arrive on the channel) | Perform one authenticated streaming LLM HTTPS request on behalf of the WebView-resident engine. Rust reads the provider key from the OS keychain, sets the `Authorization` header, issues the request (`reqwest`), and streams raw provider chunks back. **The raw key value never enters the WebView.** See [Rust-delegated LLM egress](#rust-delegated-llm-egress). |
 
-> Secrets cross the boundary **only inbound** (`set_provider_key`). They are never returned to the WebView. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+> Secrets cross the boundary **only inbound** (`set_provider_key`) — and never even inbound for `llm_stream`, which names the key by `{ providerId, keyId }` and lets Rust resolve it at call time. No key value is ever returned to the WebView. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+
+## Rust-delegated LLM egress
+
+The `@relavium/core` engine and its agent-node orchestration run **in the WebView's JS runtime**, identically to the CLI, the VS Code extension host, and the Phase-2 Bun API — Rust does **not** re-implement workflow execution. The engine and the `@relavium/llm` adapters are pure TypeScript and depend on an **injected HTTP transport**. On Node-style surfaces (CLI, extension host, Bun API) that transport is a direct `fetch`/SDK call inside the one trusted process, with the key resolved at call time and never persisted or logged.
+
+On the **desktop**, the injected transport is the `llm_stream` command above: the WebView-resident adapter hands Rust the request (provider id + key id, endpoint, headers, JSON body) and a `Channel`; Rust reads the key from the OS keychain, sets the `Authorization` header, performs the streaming HTTPS request with `reqwest`, and streams the provider's raw chunks back over the channel. The adapter (still in the WebView) folds those chunks into the normalized `StreamChunk` union. This is the **only** part of the LLM path that is a Rust command — engine orchestration, normalization, fallback, and cost accounting all stay in the WebView. The benefit is that the raw key value **never enters the WebView's JS/renderer**; only a non-sensitive key *reference* does. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md) and [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md).
 
 ## Channel: streaming run events (Rust → WebView)
 
-The engine holds one `Channel<RunEvent>` per run. `start_run` returns the channel id; the frontend subscribes immediately:
+Two kinds of `Channel` carry streams across the boundary: the `Channel<StreamChunk>` for `llm_stream` egress (above), and the `Channel<RunEvent>` for run events. The latter is created and consumed entirely on the WebView side for the desktop case — because the engine runs in the WebView, its `RunEventBus` and the consuming stores share one JS runtime, so most `RunEvent`s never cross the IPC boundary at all. A run-event channel is still surfaced through `start_run` for symmetry with the other surfaces and for events that originate from a Rust service:
 
 ```ts
 import { Channel } from '@tauri-apps/api/core';
@@ -72,10 +82,10 @@ const { runId } = await invoke('start_run', {
 });
 ```
 
-On the Rust side, each agent-node `tokio` task holds a clone of the channel sender. As LLM tokens arrive from the streaming HTTP response (`reqwest` with the `stream` feature) they are parsed and sent as `RunEvent`s through the channel. The channel is closed when the run terminates.
+LLM tokens reach the engine over the `llm_stream` `Channel<StreamChunk>`; the engine re-emits them on its in-WebView `RunEventBus` as `RunEvent`s, which the stores consume directly. The channel is closed when its stream terminates.
 
 - **Event shape**: the full `RunEvent` discriminated union — defined once in [sse-event-schema.md](sse-event-schema.md).
-- **Backpressure**: if the WebView render lags, the channel's internal buffer fills and the Rust sender awaits, throttling token processing without dropping events.
+- **Backpressure**: if the WebView render lags, a channel's internal buffer fills and the sender awaits, throttling without dropping events — true for both the `StreamChunk` egress channel and the `RunEvent` channel.
 - **Routing**: the frontend dispatches each event into `runStore` by `nodeId`, deliberately kept out of the canvas store so ReactFlow does not re-render per token (see [../shared-core/store-shapes.md](../shared-core/store-shapes.md)).
 
 ## Events (Rust → WebView, broadcast)

@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: Run the binding Relavium security pass over a diff/branch — keys never leave the keychain or reach the frontend/logs, SSRF on custom provider base URLs, the run_javascript sandbox, prompt-injection posture, dependency provenance, and never hand-roll crypto. USE FOR: any change touching keys, the keychain bridge, IPC, network/base-URL handling, the JS sandbox, prompt/tool-call construction, the DB encryption path, or a new dependency. DO NOT USE FOR: a general correctness review (use code-review) or implementing the change (use implement-task).
+description: Run the binding Relavium security pass over a diff/branch — keys never leave the keychain or reach the frontend/logs, SSRF on custom provider base URLs, the run_command sandbox, prompt-injection posture, dependency provenance, and never hand-roll crypto. USE FOR: any change touching keys, the keychain bridge, IPC, network/base-URL handling, the command sandbox, prompt/tool-call construction, the DB encryption path, or a new dependency. DO NOT USE FOR: a general correctness review (use code-review) or implementing the change (use implement-task).
 ---
 
 ## Purpose
@@ -16,7 +16,7 @@ not restate it.
 ## When to use
 
 Mandatory for any change to: key handling or the keychain bridge, IPC commands, provider
-base-URL handling, the `run_javascript` sandbox, prompt/tool-call construction, the DB
+base-URL handling, the `run_command` sandbox, prompt/tool-call construction, the DB
 encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run it.
 
 ## When not to use
@@ -66,10 +66,13 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
    engine call an internal address with a real key attached. Confirm TLS verification is not
    disabled and every outbound call carries an `AbortSignal` + timeout.
 
-5. **The `run_javascript` sandbox.** Confirm model-generated code runs with **no ambient
-   authority** — no filesystem, network, process/env, or keychain — under a CPU/memory/time
-   budget that terminates a runaway, and that it never receives a provider key or any secret.
-   Its output is untrusted input. See [built-in-tools.md](../../../docs/reference/shared-core/built-in-tools.md).
+5. **The `run_command` sandbox.** `run_command` spawns model-driven shell execution, so it
+   runs sandboxed: only commands on the workflow's `allowedCommands` allowlist execute (never
+   an unlisted command), under the workflow's filesystem **scope tier** (restricted fs — no
+   reach outside the granted paths), with **no network** authority beyond what an allowed
+   command itself performs, and under a CPU/memory/time budget that terminates a runaway. It
+   never receives a provider key or any secret, and its output (stdout/stderr/exit code) is
+   untrusted input. See [built-in-tools.md](../../../docs/reference/shared-core/built-in-tools.md).
 
 6. **Prompt-injection posture.** Model output and tool results are untrusted *data*, never
    trusted instructions. Confirm: requested tool calls are validated against the declared
@@ -98,7 +101,7 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 - [ ] No plaintext key at rest (config, committed `.env`, `.relavium.yaml`, log, unencrypted DB column).
 - [ ] No key in an error message, `node:error`/`run:error` event, or log line.
 - [ ] Custom base URLs: HTTPS-only, no creds-in-URL, private/loopback/metadata ranges blocked, TLS not disabled, AbortSignal + timeout present.
-- [ ] `run_javascript` sandbox has no ambient authority, a resource budget, and never gets a secret; its output treated as untrusted.
+- [ ] `run_command` sandbox: allowlist-gated, restricted fs (scope tier), no ambient network, a resource budget, and never gets a secret; its output treated as untrusted.
 - [ ] Tool calls validated against schema + allowlist; high-impact effects gated; `system` set by Relavium, not tool output.
 - [ ] No new dependency without an ADR; lockfile committed; no known-CVE dependency added.
 - [ ] No hand-rolled crypto/TLS/keychain — vetted primitives, wrapped.
@@ -115,7 +118,7 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 - [ ] Scoped the security surface(s) the diff touches and framed them with STRIDE-lite.
 - [ ] Verified keys-and-secrets handling (keychain-only, never frontend/log/at-rest/error).
 - [ ] Checked SSRF defenses on any custom base-URL path.
-- [ ] Confirmed the `run_javascript` sandbox has no ambient authority and no secret.
+- [ ] Confirmed the `run_command` sandbox is allowlist-gated with no ambient authority and no secret.
 - [ ] Confirmed prompt-injection posture (untrusted output, allowlist, gated effects, Relavium-owned system prompt).
 - [ ] Checked dependency provenance (ADR-gated) and that no crypto was hand-rolled.
 - [ ] Confirmed logging redaction.

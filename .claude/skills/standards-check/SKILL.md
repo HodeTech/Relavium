@@ -20,10 +20,10 @@ A fast, repeatable screen that catches the project's load-bearing rule violation
 | Input | Description |
 |-------|-------------|
 | Diff / changed files | `git diff` against the base, or the staged set. |
-| Repo root | `/Users/dev/Documents/Projects/Agent-Organizer`. |
+| Repo root | `$(git rev-parse --show-toplevel)` (bound to `R` below). |
 
 ## Workflow
-Run each check against the changed files. Treat any hit as a fail to resolve or justify. `R=/Users/dev/Documents/Projects/Agent-Organizer`.
+Run each check against the changed files. Treat any hit as a fail to resolve or justify. `R=$(git rev-parse --show-toplevel)`.
 
 1. **TS strict / no-`any` / no `@ts-ignore`.** `any` is banned; use `unknown` at boundaries. `@ts-expect-error` needs a one-line justification; `@ts-ignore` is forbidden.
    ```bash
@@ -52,10 +52,10 @@ Run each check against the changed files. Treat any hit as a fail to resolve or 
    git -C "$R" diff -- 'docs/**' | grep -E '^\+' | grep -iE 'sequenceNumber|cost:updated|input_schema|CREATE TABLE'
    ```
    Any spec body in a non-`reference/` doc is a fail — replace with a relative link.
-7. **Conventional Commits, per-package scope.** Last commit must be `type(scope): summary` with a valid scope (`llm|core|shared|db|ui|cli|desktop|vscode|api|portal|docs|repo`) and the canonical Co-Authored-By trailer.
+7. **Conventional Commits, per-package scope.** Last commit must be `type(scope): summary` with a valid scope (`llm|core|shared|db|ui|cli|desktop|vscode|api|portal|docs|repo`) and the canonical Co-Authored-By trailer (the bare `Claude` or the model-versioned `Claude Opus 4.x` form — see [commit-style.md](../../../docs/standards/commit-style.md)).
    ```bash
    git -C "$R" log -1 --pretty=%B | grep -nE '^(feat|fix|refactor|perf|test|docs|chore|build|ci)(\([a-z]+\))?!?: '
-   git -C "$R" log -1 --pretty=%B | grep -n 'Co-Authored-By: Claude <noreply@anthropic.com>'
+   git -C "$R" log -1 --pretty=%B | grep -nE 'Co-Authored-By: Claude.*<noreply@anthropic.com>'
    ```
 8. **Docs hygiene.** New/changed docs: one H1, no YAML front-matter, relative links only, ISO dates, Phase-2 content explicitly marked. Spot-check the changed `.md` files.
 9. **Checkpoint — summarize pass/fail.** List each check as pass or a concrete fail with file:line. A single unresolved fail blocks deeper review until fixed or explicitly justified (e.g. a dep with its ADR linked).

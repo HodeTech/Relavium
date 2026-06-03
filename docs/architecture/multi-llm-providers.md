@@ -60,12 +60,13 @@ just another TypeScript package the engine imports. In Phase 1 the calls go
 [local-first-and-security.md](local-first-and-security.md)); there is no Relavium
 server in the request path.
 
-The provider set is small (four) and well documented, and three of the four
-(OpenAI, DeepSeek, Gemini) are reachable over an OpenAI-compatible wire format. That
-makes an owned abstraction realistic: the happy path per provider is small, and the
-real cost is the *normalization tax* (tool schemas, streaming events, stop reasons,
-usage fields) plus ongoing provider drift — a bounded cost we contain rather than
-rent from a framework.
+The provider set is small (four) and well documented, and two of the four (OpenAI
+and DeepSeek) share one OpenAI-compatible wire format — **Gemini does not** and gets
+its own dedicated adapter (see [the adapter inventory](#what-the-adapters-abstract)).
+That still makes an owned abstraction realistic: the happy path per provider is
+small, and the real cost is the *normalization tax* (tool schemas, streaming events,
+stop reasons, usage fields) plus ongoing provider drift — a bounded cost we contain
+rather than rent from a framework.
 
 ## The seam
 
@@ -79,10 +80,11 @@ outline (the canonical, full definition lives in
   expressed entirely in Relavium types. The `system` prompt is a single top-level
   field; each adapter routes it to the right place (Anthropic top-level `system`,
   OpenAI/DeepSeek a prepended `system` message, Gemini `systemInstruction`).
-- **A normalized chunk stream out** — a discriminated union, the same shape for
-  every provider: `text` (delta) · `tool_call` (`{ id, name, argsDelta }`) ·
-  `usage` (`{ input, output }`) · `finish` (`{ reason }`). Each adapter folds its
-  native event stream into this one union.
+- **A normalized chunk stream out** — a single discriminated union, the same shape
+  for every provider. Each adapter folds its native event stream into this one
+  union; the exact `StreamChunk` variants are the canonical property of the
+  [LLM provider seam](../reference/shared-core/llm-provider-seam.md#the-core-interface)
+  and are not restated here.
 - **A cost record** — computed by our own `CostTracker` from normalized usage and
   the model-pricing catalog, not taken from a provider field that may or may not
   exist.
@@ -98,20 +100,32 @@ behavior into the seam's shape. The normalization is performed by **our adapters
 not delegated to a framework:
 
 - **Streaming** — each adapter folds its provider's native event stream into the one
-  `text`/`tool_call`/`usage`/`finish` chunk union. Token chunks are re-emitted by
+  canonical `StreamChunk` union (defined in the
+  [LLM provider seam](../reference/shared-core/llm-provider-seam.md#the-core-interface)).
+  Token chunks are re-emitted by
   `AgentRunner` on the engine's `RunEventBus` as `agent:token` events
   ([SSE event schema](../reference/contracts/sse-event-schema.md)), which drives the
   live token rendering on each canvas node face
   ([state-management.md](state-management.md)).
 - **Tool schemas** — see [Tool normalization](#tool-normalization) below.
-- **Auth** — the API key is fetched from the OS keychain at call time and attached by
-  the adapter; it never enters the WebView, a checkpoint, or a log line
-  ([keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md)).
+- **Transport (injected)** — the adapters do not call the network directly; they
+  depend on an **injected HTTP transport**, which keeps key handling correct on every
+  surface. On Node-style surfaces (CLI, VS Code extension host, Phase-2 Bun API) the
+  transport is a direct `fetch`/SDK call inside the one trusted process, with the key
+  resolved at call time. On the **desktop** the transport is delegated to a Rust
+  command (`llm_stream`): Rust reads the key from the OS keychain, sets the
+  `Authorization` header, performs the streaming request, and streams chunks back, so
+  the raw key **never enters the WebView**. Either way the key is attached transiently
+  and never lands in a checkpoint or a log line — see
+  [keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md),
+  [local-first-and-security.md](local-first-and-security.md), and the
+  [IPC contract](../reference/contracts/ipc-contract.md#rust-delegated-llm-egress).
 - **Cancellation** — every call is guarded by an `AbortSignal` threaded through the
-  seam. Because the adapters are just `fetch` + async iterators (via the official
-  SDKs), cancellation works identically in a Node worker and inside the Tauri
-  WebView's `fetch` — there is no Node-only or browser-only assumption across the
-  seam (matching `packages/core`'s zero-platform-specific-imports rule).
+  seam. Because the adapters drive async iterators over the injected transport,
+  cancellation works identically whether the transport is a direct `fetch` in a Node
+  process or the Rust-delegated egress under the Tauri WebView — there is no Node-only
+  or browser-only assumption across the seam (matching `packages/core`'s
+  zero-platform-specific-imports rule).
 
 The adapter inventory is three implementations, not four: a dedicated
 **`AnthropicAdapter`** (`@anthropic-ai/sdk`), a dedicated **`GeminiAdapter`**
@@ -197,7 +211,7 @@ the model's per-token price (from the model catalog) and produces a cost figure 
 call — cost is **our** computation from **our** pricing table keyed on the canonical
 model id, never a number we trust a provider to return. Costs are accumulated and
 emitted as `cost:updated` events during the run (payload `{ nodeId, model,
-inputTokens, outputTokens, costUsd, cumulativeCostUsd }`) and persisted to SQLite at
+inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }`) and persisted to SQLite at
 the end ([execution-model.md](execution-model.md#6-finish)). Because cost is
 attributed **per node and per model**, the run history can show a per-node cost
 waterfall — the user sees exactly which agent (and which model) drove spend, and can
@@ -233,7 +247,10 @@ trigger policy.
 ## Local, cloud, and managed
 
 In Phase 1 `packages/llm` runs inside the surface process (Tauri WebView, VS Code
-extension host, or Node CLI) and calls providers directly. In Phase 2 the **same
+extension host, or Node CLI) and reaches providers through its injected transport —
+a direct `fetch`/SDK call on the Node-style surfaces, and the Rust-delegated
+`llm_stream` egress on the desktop (so the desktop key never enters the WebView; see
+[the transport note above](#what-the-adapters-abstract)). In Phase 2 the **same
 package** runs inside cloud workers; the only change is *where* the key comes from (an
 encrypted server-side store instead of the OS keychain) and *where* the process runs.
 The seam, the adapters, tool normalization, fallback, and cost logic are identical in

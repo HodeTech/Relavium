@@ -22,6 +22,8 @@ locked.
 | API key storage | **OS keychain** (`tauri-plugin-keychain`) | macOS Keychain / Windows Credential Manager / libsecret. Never plaintext, never sent to the frontend. |
 | CLI | **TypeScript + commander.js + ink** | Same language as the engine; React for the TUI. |
 | VS Code extension | **Standard VS Code Extension API** | Bundles `@relavium/core` in-process — no desktop app required. |
+| API framework (`apps/api`, Phase 2) | **Hono** | *Phase 2 only.* Lightweight, web-standard `Request`/`Response`, streaming-first; wraps `@relavium/core`, runs on Bun + Node. See [ADR-0016](decisions/0016-api-framework-hono.md). |
+| API runtime (`apps/api`, Phase 2) | **Bun** | *Phase 2 only.* Runtime for the cloud/gateway API; the engine's **zero platform-specific imports** guarantee must hold on Bun (no Bun-only APIs in `packages/core`/`packages/llm`). See [ADR-0017](decisions/0017-cloud-runtime-bun.md). |
 | Auth (portal, Phase 2) | **Better Auth v1** | Framework-agnostic; Drizzle adapter. |
 | State (frontend) | **Zustand v5** | ReactFlow nodes are NOT in React Context — direct Zustand subscriptions prevent O(n) re-renders during streaming. See [ADR-0010](decisions/0010-zustand-direct-subscriptions-for-reactflow.md). |
 | Master-key vault (managed, Phase 2) | **KMS / secrets-manager** (cloud KMS or HashiCorp Vault) | *Phase 2, managed inference only.* Stores Relavium's own provider keys / key pools — never the frontend, never plaintext. See [ADR-0013](decisions/0013-managed-key-vault-and-pools.md). |

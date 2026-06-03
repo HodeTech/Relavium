@@ -204,7 +204,7 @@ the gateway adds three things on top:
   audited.
 
 Each captured event records both the **provider cost** (Relavium's COGS, derived
-from the canonical pricing table — `costUsd` stays *ours*, never read from a
+from the canonical pricing table — `costMicrocents` stays *ours*, never read from a
 provider field, exactly as on the seam) and the **billed cost** (what the tenant
 is charged), so margin is observable per request.
 

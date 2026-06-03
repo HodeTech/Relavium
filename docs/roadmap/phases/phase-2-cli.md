@@ -230,7 +230,7 @@ the JSON path so the two never diverge.
   render `agent:tool_call` / `agent:tool_result` as compact, secret-free lines
   (tool input is already sanitized by the engine).
 - Maintain a running cost/duration footer fed by `cost:updated`
-  (`cumulativeCostUsd`) and node `durationMs`, ending in a final summary panel.
+  (`cumulativeCostMicrocents`) and node `durationMs`, ending in a final summary panel.
 - Throttle/batch high-frequency token events to keep the render smooth without
   dropping events; use `sequenceNumber` to detect a gap and resync from durable
   state if one occurs.
@@ -385,7 +385,7 @@ change is exercised end-to-end. Completes M3 with `2.D` + `2.F`.
 **Acceptance:** a green CI run executes every fixture workflow with no TTY,
 asserting the NDJSON event stream and exit codes, including a gate-pause-then-resume
 scenario; the job is triggered by engine-package changes and is the agreed
-regression gate for Phases 3–5.
+regression gate for Phases 3–6.
 
 ### 2.L — Packaging, distribution, and install verification
 

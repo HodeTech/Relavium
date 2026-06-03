@@ -59,7 +59,7 @@ Server **registrations** also live globally in `~/.relavium/config.toml` under r
 | **Static** | `tools_whitelist` is declared | tools are pre-resolved at workflow load time — fast, deterministic. |
 | **Dynamic** | no whitelist | the engine calls `tools/list` at agent init and registers every available tool. |
 | **Caching** | always | tool lists are cached per `(server_command, args)` hash for ~1 hour to avoid re-spawning. |
-| **Conflict resolution** | two servers expose the same tool name | the engine prefixes with the server id (`github_create_issue` vs `jira_create_issue`); YAML may use either form. |
+| **Conflict resolution** | two servers expose the same tool name | the engine prefixes with the server id (`mcp_github_create_issue` vs `mcp_jira_create_issue`) — the same `mcp_{server}_{tool}` namespacing used everywhere, which is what disambiguates the collision. |
 | **Schema validation** | every call | the engine validates each MCP tool call against the server-reported JSON Schema before sending — malformed calls are rejected early. |
 
 ### Built-in MCP servers

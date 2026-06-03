@@ -17,6 +17,8 @@ scoped to the package it touched.
 <body — what and why, wrapped ~72 cols>
 
 Refs: ADR-XXXX
+
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 - The **summary** is imperative mood, lower-case, no trailing period, ≤ ~72 chars
@@ -53,6 +55,24 @@ the reasoning:
 - A commit that supersedes a decision says so and names the new ADR; it never silently
   contradicts an [Accepted ADR](../decisions/README.md) (that needs an ADR, per
   [architectural-principles.md](architectural-principles.md)).
+
+## Co-Authored-By trailer
+
+This is the **canonical home** for the AI co-author trailer; the skills
+([standards-check](../../.claude/skills/standards-check/SKILL.md),
+[commit-and-pr](../../.claude/skills/commit-and-pr/SKILL.md)) cite this rule rather
+than redefine it. A commit produced with AI assistance ends with a `Co-Authored-By`
+trailer on the last line:
+
+```
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+Either form is accepted: the bare `Claude`, or the model-versioned `Claude Opus 4.x`
+(e.g. `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`) that some tooling
+emits. The email is always `<noreply@anthropic.com>`. Conformance checks match the
+trailer loosely (`Co-Authored-By: Claude.*<noreply@anthropic.com>`) so either form
+passes.
 
 ## Examples
 

@@ -29,7 +29,7 @@ PR, or write an [ADR](../decisions/README.md) that supersedes the standard.
 | [testing.md](testing.md) | Vitest unit tests (`packages/core` + `packages/llm`), per-provider conformance tests (fixtures on PR, live nightly), Playwright desktop e2e, coverage expectations, engine-first test discipline. |
 | [code-review.md](code-review.md) | The review checklist: correctness, security, performance, no new third-party dependency without an ADR, the LLM seam, canonical-home docs. |
 | [commit-style.md](commit-style.md) | Conventional Commits, scope per package, references to the ADR a change implements. |
-| [security-review.md](security-review.md) | The security checklist: keys never leave the keychain / never reach the frontend, no plaintext, SSRF on custom base URLs, the `run_javascript` sandbox, prompt-injection posture, never hand-roll crypto. |
+| [security-review.md](security-review.md) | The security checklist: keys never leave the keychain / never reach the frontend, no plaintext, SSRF on custom base URLs, the `run_command` sandbox, prompt-injection posture, never hand-roll crypto. |
 | [logging-and-observability.md](logging-and-observability.md) | Structured logging, no secrets in logs, the run-event stream as the observability backbone, local-first with no telemetry without consent. |
 
 ## How these relate to the rest of the tree

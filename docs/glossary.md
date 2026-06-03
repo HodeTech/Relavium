@@ -1,5 +1,6 @@
 # Glossary
 
+> Status: draft — to be expanded as reference specs are finalized.
 > Last updated: 2026-06-03
 
 Domain terms used across the Relavium documentation. One canonical definition
@@ -230,5 +231,3 @@ How a workflow run is initiated. Full spec in
   scheduled/webhook triggers whose types are already declarable in Phase 1). See
   [decisions/0012-managed-inference-dual-mode.md](decisions/0012-managed-inference-dual-mode.md)
   and [roadmap/README.md](roadmap/README.md).
-
-> Status: draft — to be expanded as reference specs are finalized.

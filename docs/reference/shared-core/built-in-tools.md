@@ -24,7 +24,7 @@ A tool declaration in YAML has a `type` discriminator:
 | `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }` | Respects FS scope. |
 | `run_command` | Spawn a shell command via the shell plugin. Streams stdout/stderr as events. | `{ exitCode, stdout, stderr, durationMs }` | **Allowlist required** — see below. Never runs unlisted commands. |
 | `http_request` | Outbound HTTP/HTTPS (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | Domain allowlist configurable per workflow. |
-| `search_web` | Web search via the configured provider (e.g. Brave Search / SearXNG). | `{ results: [{ title, url, snippet }] }` | Provider key in the secret store, not the workflow file. |
+| `web_search` | Web search via the configured provider (e.g. Brave Search / SearXNG). | `{ results: [{ title, url, snippet }] }` | Provider key in the secret store, not the workflow file. |
 | `git_status` | Run `git status` / `git log` / `git diff` in the workspace. | structured JSON parsed from git output | Pre-approved in the default git allowlist. |
 | `git_commit` | Stage files and create a commit with a message. | commit result | **Requires a `human_gate` approval** before executing in automated workflows. |
 | `read_clipboard` | Read current clipboard text. | `string` | Powers "process what I just copied" triggers. |
@@ -32,7 +32,7 @@ A tool declaration in YAML has a `type` discriminator:
 | `mcp_call` | Connect to a registered MCP server and invoke one of its tools by name. | the MCP tool result as JSON | Server resolved from config; see [mcp-integration.md](mcp-integration.md). |
 | `invoke_agent` | Call another agent node in the same workflow by node id, with explicit input. | that agent's output | The dynamic-dispatch mechanism used by orchestrator agents to delegate. |
 
-> Two tools have **mandatory guardrails**: `run_command` only ever executes commands on the workflow's `allowedCommands` allowlist, and `git_commit` is gated behind human approval in automated workflows. Both are enforced by the engine, not by convention.
+> Two tools have **mandatory guardrails**: `run_command` only ever executes commands on the workflow's `allowedCommands` allowlist (defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ `run_command` is disabled), and `git_commit` is gated behind human approval in automated workflows. Both are enforced by the engine, not by convention. `run_command` is the **only** sandboxed shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
 ## Tool input/output mapping
 
@@ -48,7 +48,7 @@ Every file-touching tool runs under a per-workflow filesystem **scope tier**. Th
 | **Project-scoped** | workflows that declare an expanded scope | an explicit path allowlist declared in the workflow | user approves on first run via a native permission dialog |
 | **Full access** | power users, per workflow | unrestricted filesystem | granted in the UI; stored as a capability grant in the project config |
 
-The active tier is set in project config (see [../contracts/config-spec.md](../contracts/config-spec.md), `fs_scope`) and can be tightened per workflow. The shell allowlist for `run_command` (`spec.tools.allowedCommands` in the workflow) is independent of the FS tier — a workflow can be sandboxed *and* still have an empty command allowlist.
+The active tier is set in project config (see [../contracts/config-spec.md](../contracts/config-spec.md), `fs_scope`) and can be tightened per workflow. The shell allowlist for `run_command` (`spec.tools.allowedCommands` in the workflow — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools)) is independent of the FS tier — a workflow can be sandboxed *and* still have an empty command allowlist.
 
 ## Where tools run
 

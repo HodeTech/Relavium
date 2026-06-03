@@ -58,10 +58,10 @@ export type RunEvent =
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `toolId`, `toolInput` (sanitized — no secrets) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI) |
-| `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costUsd`, `cumulativeCostUsd` |
+| `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model}`, `durationMs` |
 | `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` |
-| `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
+| `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
 | `run:completed` | The run finished. | `outputs`, `totalTokensUsed`, `durationMs` |
 | `run:failed` | The run failed. | `error: {code, message, nodeId?}`, `partialOutputs` |
@@ -80,11 +80,11 @@ export interface AgentTokenEvent extends BaseEvent {
 export interface CostUpdatedEvent extends BaseEvent {
   type: 'cost:updated';
   nodeId: string;
-  model: string;            // canonical model id the cost was priced against
+  model: string;                  // canonical model id the cost was priced against
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;          // this attempt, from Relavium's pricing table (never the provider)
-  cumulativeCostUsd: number; // running total for the whole run
+  costMicrocents: number;         // integer μ¢ (1e-8 USD); this attempt, from Relavium's pricing table (never the provider)
+  cumulativeCostMicrocents: number; // integer μ¢ running total for the whole run
 }
 
 export interface NodeCompletedEvent extends BaseEvent {
@@ -98,6 +98,7 @@ export interface NodeCompletedEvent extends BaseEvent {
 export interface HumanGatePausedEvent extends BaseEvent {
   type: 'human_gate:paused';
   nodeId: string;
+  gateId: string;           // stable id of this gate instance; required by the resume path — engine.resume(runId, gateId, decision)
   gateType: 'approval' | 'input' | 'review';
   message: string;
   assignee?: string;
@@ -130,8 +131,8 @@ On the desktop, the same events arrive over a Tauri channel rather than an async
 
 A human gate threads two events through the stream around a suspension:
 
-1. Engine reaches a `human_gate` node, persists full run state, emits `human_gate:paused`, and suspends — the process may even exit.
-2. A surface renders the approval UI and the user acts; the surface calls `engine.resume(runId, gateId, decision)`.
+1. Engine reaches a `human_gate` node, persists full run state, emits `human_gate:paused` **carrying the `gateId`**, and suspends — the process may even exit.
+2. A surface renders the approval UI and the user acts; the surface calls `engine.resume(runId, gateId, decision)`, passing back the `gateId` it received on the paused event (it identifies *which* gate is being resolved).
 3. The engine reloads state, emits `human_gate:resumed`, and the run continues.
 
 The gate decision object:

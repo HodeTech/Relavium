@@ -27,7 +27,7 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
 1. **Gate first.** Run ../standards-check/SKILL.md and `pnpm turbo run lint typecheck test`. Do not commit red.
 2. **Branch if on the default branch.** Never commit straight to `main`.
    ```bash
-   git -C /Users/dev/Documents/Projects/Agent-Organizer rev-parse --abbrev-ref HEAD
+   git rev-parse --abbrev-ref HEAD
    # if main: git switch -c feat/<scope>-<short-topic>
    ```
 3. **One scope per commit.** Stage only one package's changes. A change spanning packages is usually two commits; if genuinely atomic, pick the primary scope and name the rest in the body. Do not bundle generated/formatting churn with logic.
@@ -46,9 +46,9 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
    - Types: `feat fix refactor perf test docs chore build ci`. Breaking change appends `!` (`feat(core)!: …`) and explains under a `BREAKING CHANGE:` line.
    - Adapter work names the layer in the summary, not a vendor scope (`feat(llm): add anthropic …`, not `feat(anthropic)`).
    - Use canonical vocabulary in messages too (`cost:updated`, `sequenceNumber`), never legacy dotted names.
-5. **Checkpoint — verify the trailer.** Every commit ends with exactly `Co-Authored-By: Claude <noreply@anthropic.com>`.
+5. **Checkpoint — verify the trailer.** Every commit ends with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer. Either the bare `Claude` or the model-versioned `Claude Opus 4.x` form is accepted — [commit-style.md](../../../docs/standards/commit-style.md#co-authored-by-trailer) is the canonical rule.
    ```bash
-   git -C /Users/dev/Documents/Projects/Agent-Organizer log -1 --pretty=%B | grep 'Co-Authored-By: Claude <noreply@anthropic.com>'
+   git -C "$(git rev-parse --show-toplevel)" log -1 --pretty=%B | grep -E 'Co-Authored-By: Claude.*<noreply@anthropic.com>'
    ```
 6. **Push and open the PR** with `gh`. Title is the Conventional-Commit summary of the headline change.
    ```bash
@@ -84,7 +84,7 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
 - [ ] On a non-default branch.
 - [ ] Each commit is `type(scope): summary`, imperative, ≤ ~72 chars, valid scope.
 - [ ] Body explains why; ADR referenced via `Refs: ADR-NNNN` where applicable.
-- [ ] Every commit ends with `Co-Authored-By: Claude <noreply@anthropic.com>`.
+- [ ] Every commit ends with a `Co-Authored-By: Claude.*<noreply@anthropic.com>` trailer (bare or model-versioned form).
 - [ ] One scope per commit; no bundled formatting/generated churn.
 - [ ] PR body has the conformance checklist and the Claude Code footer.
 

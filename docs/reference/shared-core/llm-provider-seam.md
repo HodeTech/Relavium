@@ -74,7 +74,7 @@ interface Usage {
   outputTokens: number;
   cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
   cacheWriteTokens?: number;
-  costUsd?: number;              // computed by a pricing table keyed on canonical model id
+  costMicrocents?: number;              // integer micro-cents, computed by a pricing table keyed on canonical model id
 }
 
 // Normalized streaming — one discriminated union for ALL providers
@@ -100,6 +100,63 @@ caching, reasoning/thinking, parallel tool calls) are deliberately **out of the
 common path** and reached only through the typed `providerOptions` escape hatch
 and the `supports` capability flags — never by leaking a vendor shape across the
 seam.
+
+### `LlmError` — the normalized error type
+
+`LlmError` is the **one error shape that crosses the seam**: every failure inside
+an adapter is normalized to it before it escapes (no vendor SDK error shape ever
+leaks — same boundary rule as every other type here). The seam **owns** this type;
+[error-handling.md](../../standards/error-handling.md#llmerror-classification--the-contract-the-fallback-chains-depend-on)
+pins how the `withFallback` runner *classifies* it (retryable vs fatal) but defers
+the definition here.
+
+```ts
+interface LlmError {
+  kind: LlmErrorKind;        // stable discriminant callers narrow on — never error.message
+  retryable: boolean;        // the classification the fallback runner acts on
+  code?: string;             // provider/transport code, normalized where possible (e.g. 'rate_limit', 'overloaded')
+  status?: number;           // upstream HTTP status when there was one (429, 5xx, 401, 400, …)
+  provider: LlmProvider['id']; // which adapter produced it
+  message: string;           // human-readable, already redacted of any secret material
+  cause?: unknown;           // original error, for debugging/escape hatch only — never re-thrown across the seam
+}
+
+type LlmErrorKind =
+  // retryable === true
+  | 'rate_limit'             // 429
+  | 'overloaded'             // provider 5xx / capacity
+  | 'timeout'                // request deadline exceeded
+  | 'transport'             // connection reset / DNS / TLS
+  // retryable === false (fatal)
+  | 'auth'                   // 401/403 — bad or missing key
+  | 'bad_request'            // 400 — malformed request, unsupported model id, rejected tool schema
+  | 'content_filter'         // content-policy refusal
+  | 'cancelled'              // AbortSignal
+  | 'unknown';               // unclassifiable — treated as fatal
+```
+
+The `kind`/`retryable` split is the contract the fallback runner depends on: a
+`retryable` `LlmError` advances `withFallback` to the next provider (recording the
+failed attempt's usage so cost stays accurate across the failover); a fatal one is
+surfaced and stops the chain. The per-provider mapping (native status/code →
+`kind`) lives **inside each adapter** and is exercised by the per-provider
+conformance suite — the runner never inspects a provider code directly.
+
+### Adding a provider id is an additive, backwards-compatible amendment
+
+The `LlmProvider.id` union (`'anthropic' | 'openai' | 'gemini' | 'deepseek'`) is
+part of the seam, but **extending it with a new id is an *additive* amendment, not
+a change to the immovable contract.** Adding a value to the union does not alter
+any existing type, method signature, or normalization rule, so it does **not**
+require a superseding ADR — it is recorded as an additive note under
+[ADR-0011](../../decisions/0011-internal-llm-abstraction.md) (the seam ADR). This
+is what lets the add-llm-adapter workflow ship a new adapter (a new `LlmProvider`
+implementation plus its `id`) **without** "changing the immovable seam": the seam's
+*shape* (request/result/stream types, the normalization contract) is what is
+frozen — the *set* of conforming implementations behind it is meant to grow. What
+would require a real (superseding) ADR is changing the seam shape itself: the
+request/result/stream types, the normalization rules, or the `LlmError` contract
+above.
 
 ## What must be normalized
 
@@ -187,9 +244,9 @@ Two streaming subtleties the adapters must handle:
 - **OpenAI** requires `stream_options: { include_usage: true }` to emit a final
   usage chunk; Anthropic puts usage in `message_delta`; Gemini in the final
   chunk.
-- **`costUsd` is ours, never the provider's** — it is computed by a Relavium
+- **`costMicrocents` is ours, never the provider's** — it is computed by a Relavium
   pricing table keyed on the **canonical model id**, not read from any provider
-  response. This is the same `costUsd` that surfaces in the `cost:updated` run
+  response. This is the same `costMicrocents` that surfaces in the `cost:updated` run
   event (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 
 #### Stricter usage-capture rules in managed mode (Phase 2)

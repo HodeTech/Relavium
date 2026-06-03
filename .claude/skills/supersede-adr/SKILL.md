@@ -25,27 +25,29 @@ Change a settled Relavium decision the only sanctioned way: write a **new** ADR 
 | Live references | Files that cite the old ADR as the current rule and must repoint. |
 
 ## Workflow
-1. **Write the new ADR first** with ../write-adr/SKILL.md (next free number, Accepted when settled). In its `Related` line, list the old ADR with a `(supersedes)` note, and in `Context` open by stating it supersedes ADR-XXXX and *why the prior choice is withdrawn* — exactly as 0011 opens against 0004.
-2. **Flip the old ADR's Status — do not touch its body.** Change only the metadata line:
+Throughout, `OLD` is the superseded ADR number and `NEW` is the new one — both read from `docs/decisions/README.md`, never assumed. `R=$(git rev-parse --show-toplevel)`.
+
+1. **Write the new ADR first** with ../write-adr/SKILL.md (it computes the next free number dynamically; Accepted when settled). In its `Related` line, list the old ADR with a `(supersedes)` note, and in `Context` open by stating it supersedes ADR-OLD and *why the prior choice is withdrawn* — exactly as 0011 opens against 0004.
+2. **Flip the old ADR's Status — do not touch its body.** Change only the metadata line (substituting the real OLD/NEW numbers and slug):
    ```
-   - **Status**: Superseded by [ADR-0012](0012-new-slug.md)
+   - **Status**: Superseded by [ADR-NEW](NEW-new-slug.md)
    ```
    Leave Context / Decision / Consequences exactly as they were.
-3. **Add a forward-pointer note** to the old ADR's `Related` line (e.g. `[0012-new-slug.md](0012-new-slug.md) (supersedes this)`) so a reader landing on the old file is sent forward. Do not delete the old cross-links.
-4. **Update the decisions index.** In `docs/decisions/README.md` set the old row's Status to `Superseded by NNNN` and add the new ADR's row.
+3. **Add a forward-pointer note** to the old ADR's `Related` line (e.g. `[NEW-new-slug.md](NEW-new-slug.md) (supersedes this)`) so a reader landing on the old file is sent forward. Do not delete the old cross-links.
+4. **Update the decisions index.** In `docs/decisions/README.md` set the old row's Status to `Superseded by NEW` and add the new ADR's row.
    ```bash
-   grep -rn "0004-vercel-ai-sdk-multi-llm" /Users/dev/Documents/Projects/Agent-Organizer/docs/decisions/README.md
+   grep -rn "OLD-<old-slug>" "$R"/docs/decisions/README.md
    ```
-5. **Repoint live references — surgically.** Find every cite of the old ADR; repoint the ones that present it as the *current rule* (CLAUDE.md, standards, roadmap, architecture) to the new ADR. **Leave historical mentions intact** (the new ADR's own "supersedes 0004" link, and any narrative about how the design evolved).
+5. **Repoint live references — surgically.** Find every cite of the old ADR; repoint the ones that present it as the *current rule* (CLAUDE.md, standards, roadmap, architecture) to the new ADR. **Leave historical mentions intact** (the new ADR's own "supersedes OLD" link, and any narrative about how the design evolved).
    ```bash
-   grep -rn "0004-vercel-ai-sdk-multi-llm\|ADR-0004" /Users/dev/Documents/Projects/Agent-Organizer/docs /Users/dev/Documents/Projects/Agent-Organizer/CLAUDE.md
+   grep -rn "OLD-<old-slug>\|ADR-OLD" "$R"/docs "$R"/CLAUDE.md
    ```
    For each hit decide: live rule (repoint) vs history (keep). When unsure, keep and note it.
 6. **Checkpoint — the old body is byte-for-byte unchanged below its metadata.** Diff to confirm only the Status/Related lines moved.
    ```bash
-   git -C /Users/dev/Documents/Projects/Agent-Organizer diff -- docs/decisions/0004-vercel-ai-sdk-multi-llm.md
+   git -C "$R" diff -- docs/decisions/OLD-<old-slug>.md
    ```
-7. **Run ../standards-check/SKILL.md** then commit with ../commit-and-pr/SKILL.md: `docs(decisions): supersede ADR-0004 with ADR-0012` and a body naming both numbers + a `Refs: ADR-0012` trailer.
+7. **Run ../standards-check/SKILL.md** then commit with ../commit-and-pr/SKILL.md: `docs(decisions): supersede ADR-OLD with ADR-NEW` and a body naming both numbers + a `Refs: ADR-NEW` trailer.
 
 ## Outputs
 - A new Accepted ADR that supersedes the old one.

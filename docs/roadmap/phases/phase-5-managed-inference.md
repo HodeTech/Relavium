@@ -49,8 +49,10 @@ It is built **only after** the R1 precondition gate (provider ToS + merchant-of-
   `usage_event` records both `provider_cost` (COGS) and `billed_cost` (margin).
 - **Quota / budget enforcement** (warn → throttle → hard-stop; per-user/day caps)
   is on by default and bounds runaway spend.
-- **Stripe billing** runs prepaid credits + included usage + metered overage; the
-  **usage dashboard** shows credits, included usage, overage, and per-day budget.
+- **Merchant-of-record billing (prepaid + overage)** runs prepaid credits + included
+  usage + metered overage (the MoR is the primary rail; a direct Stripe integration is
+  the mutually-exclusive alternative — [ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md));
+  the **usage dashboard** shows credits, included usage, overage, and per-day budget.
 - **Cheap-default model routing**, **abuse/fraud controls**, and **no prompt logging
   by default** (meter token counts, not content) are all on by default.
 - **BYOK is unchanged and still first-class** — managed never deprecates it, and the
@@ -81,8 +83,10 @@ It is built **only after** the R1 precondition gate (provider ToS + merchant-of-
   ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)).
 - **Quota / budget enforcement** (5.F): warn / throttle / hard-stop, included-usage
   hard cap, and per-user/day budget caps, enforced at reserve time and mid-stream.
-- **Stripe billing** (5.G): prepaid credits + included usage + metered overage at
-  roughly cost×1.3, with the merchant-of-record absorbing VAT/sales-tax/chargebacks.
+- **Merchant-of-record billing (prepaid + overage)** (5.G): prepaid credits + included
+  usage + metered overage at roughly cost×1.3, with the merchant-of-record (primary
+  rail) absorbing VAT/sales-tax/chargebacks; a direct Stripe integration is the
+  mutually-exclusive alternative ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)).
 - **Cheap-default model routing** (5.H): a cheap default lane + prompt caching to
   hold token COGS down (≈ −46% per the analysis), gating expensive frontier models.
 - **Abuse / fraud controls** (5.I): AUP enforcement, anomaly cutoff, per-account caps,
@@ -124,7 +128,7 @@ flowchart TB
     D --> C
     C --> E["5.E · real-time metering<br/>(reserve→settle, UNIQUE request_id)"]
     E --> F["5.F · quota / budget<br/>(warn/throttle/hard-stop)"]
-    E --> G["5.G · Stripe billing<br/>(prepaid + included + overage)"]
+    E --> G["5.G · merchant-of-record billing<br/>(prepaid + included + overage)"]
     C --> H["5.H · cheap-default<br/>model routing + caching"]
     C --> I["5.I · abuse / fraud<br/>controls + kill switch"]
     F --> J["5.J · usage dashboard<br/>(no prompt logging)"]
@@ -291,16 +295,18 @@ fires at 100% on the next reserve and mid-stream; a per-day budget caps a runawa
 loop within the day's limit; BYOK requests are never gated; switching to BYOK is
 explicit.
 
-### 5.G — Stripe billing (prepaid credits + included usage + overage)
+### 5.G — Merchant-of-record billing (prepaid credits + included usage + overage)
 
-The commercial mechanics, fronted by the merchant-of-record so margin is real and
-tax/chargebacks are absorbed ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)).
+The commercial mechanics, run through the **merchant-of-record as the primary rail**
+so margin is real and tax/chargebacks are absorbed; a direct **Stripe** integration is
+the mutually-exclusive **alternative** rail, used only if not going through an MoR
+(never layered) ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)).
 
 **Tasks:**
-- Integrate **Stripe** behind the merchant-of-record (5.A) for **prepaid credits** (a
-  positive float so revenue precedes COGS), an **included-usage** allotment per tier,
-  and **metered overage** billed at roughly **cost×1.3** — never a flat
-  $20-for-$15 pass-through.
+- Integrate the **merchant-of-record** (5.A) as the primary billing rail — or **Stripe**
+  directly as the alternative if no MoR — for **prepaid credits** (a positive float so
+  revenue precedes COGS), an **included-usage** allotment per tier, and **metered
+  overage** billed at roughly **cost×1.3** — never a flat $20-for-$15 pass-through.
 - Wire credit purchase, balance draw-down (from settled `usage_event`s, 5.E), and
   overage invoicing; the merchant-of-record handles VAT/sales-tax and disputes.
 - Implement the reconciled tier entitlements (5.A): Free / Pro / Enterprise included
@@ -418,7 +424,7 @@ local, BYOK unchanged*, achieved by `5.C + 5.E + 5.K`.
 | 5.M2 | Accounts + device-flow identity; engine selects `managed` from a token (no silent crossing) | 5.B |
 | 5.M3 | Gateway + `ManagedGatewayProvider` proxy LLM egress behind the seam; engine stays local | 5.C, 5.D |
 | 5.M4 | Real-time idempotent metering + nightly reconciliation live | 5.E |
-| 5.M5 | Quota/budget enforcement + Stripe prepaid/included/overage billing working | 5.F, 5.G |
+| 5.M5 | Quota/budget enforcement + merchant-of-record prepaid/included/overage billing working | 5.F, 5.G |
 | 5.M6 | Cheap-default routing, abuse controls + kill switch, usage dashboard (no prompt logging) | 5.H, 5.I, 5.J |
 | **M6** | **Managed inference shipped: `managed` mode behind the seam, engine local, BYOK unchanged** | **5.C, 5.E, 5.K** |
 
@@ -467,8 +473,9 @@ All must be true to consider managed inference shipped (**M6**):
    records both `provider_cost` and `billed_cost`, estimates on interruption, and
    reconciles nightly against provider invoices within tolerance.
 5. **Quota/budget enforcement** (warn / throttle / hard-stop + per-user/day cap) and
-   the **hard included-usage cap** fire correctly; **Stripe** billing runs prepaid
-   credits + included usage + metered overage behind the merchant-of-record.
+   the **hard included-usage cap** fire correctly; **merchant-of-record** billing (the
+   primary rail; Stripe the mutually-exclusive alternative) runs prepaid credits +
+   included usage + metered overage.
 6. **Cheap-default routing**, **abuse controls + kill switch**, and **no prompt
    logging by default** are on by default; the **usage dashboard** shows credits,
    included usage, overage, and the per-day budget (token counts, never content).

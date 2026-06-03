@@ -129,7 +129,7 @@ checkpoint and run-event tables are defined in
 On the last node the engine writes the final output and a cost record to SQLite,
 then emits `run:completed` (or `run:failed` if the run failed). Per-node token counts
 and per-run cost accumulate as `cost:updated` events during the run (payload
-`{ nodeId, model, inputTokens, outputTokens, costUsd, cumulativeCostUsd }`) and are
+`{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }`) and are
 persisted at the end — the source of the per-node cost waterfall in the UI. Cost
 accounting is computed in `packages/llm`; see
 [multi-llm-providers.md](multi-llm-providers.md).

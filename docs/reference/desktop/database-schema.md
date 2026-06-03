@@ -360,16 +360,17 @@ ALTER TABLE provider_key_pool ENABLE ROW LEVEL SECURITY;
 
 #### `subscriptions`
 
-A **mirror of the billing provider's (Stripe) subscription state** — the control plane's source of truth for "what tier is this org on, and is it current." Synced from Stripe webhooks; never authoritative over Stripe.
+A **mirror of the billing provider's subscription state** — the control plane's source of truth for "what tier is this org on, and is it current." Synced from **billing-provider webhooks** (the merchant-of-record is the primary rail; a direct Stripe integration is the mutually-exclusive alternative — [ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md), [tech-stack.md](../../tech-stack.md)); never authoritative over the billing provider. The columns are **provider-neutral**: `billing_provider` records which rail issued the ids, and `billing_customer_id` / `billing_subscription_id` hold that rail's identifiers.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | UUID | PRIMARY KEY DEFAULT `gen_random_uuid()` |
 | `org_id` | UUID | NOT NULL UNIQUE — RLS tenant |
-| `stripe_customer_id` | TEXT | NOT NULL |
-| `stripe_subscription_id` | TEXT | NULL |
+| `billing_provider` | TEXT | NOT NULL — `paddle` / `lemonsqueezy` / `stripe` (MoR primary; Stripe is the alternative rail) |
+| `billing_customer_id` | TEXT | NOT NULL — customer id in the configured billing provider |
+| `billing_subscription_id` | TEXT | NULL — subscription id in the configured billing provider |
 | `tier` | TEXT | NOT NULL — `free` / `pro` / `team` / `enterprise` (see [../portal/api-reference.md](../portal/api-reference.md#licensing-tiers)) |
-| `status` | TEXT | NOT NULL — mirrors Stripe (`active`,`past_due`,`canceled`,`trialing`,…) |
+| `status` | TEXT | NOT NULL — mirrors the billing provider (`active`,`past_due`,`canceled`,`trialing`,…) |
 | `included_usage_microcents` | INTEGER | NOT NULL DEFAULT 0 — the **hard included-usage cap** for the period |
 | `prepaid_credit_microcents` | INTEGER | NOT NULL DEFAULT 0 — remaining prepaid balance |
 | `current_period_start` | TIMESTAMPTZ | NULL |

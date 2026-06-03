@@ -306,14 +306,18 @@ to standalone.
 
 **Tasks:**
 
-- At activation, probe the desktop app's loopback health endpoint on
-  `relavium.desktopAppPort` (default `57210`) with a short timeout, per
-  [ipc-contract.md](../../reference/contracts/ipc-contract.md).
+- At activation, discover the desktop app from `~/.relavium/ipc.json` (dynamic port
+  + bearer token, with `relavium.desktopAppPort` as an optional override) and probe
+  its loopback health endpoint with a short timeout, per
+  [ipc-contract.md](../../reference/contracts/ipc-contract.md#vs-code-mirror-loopback-http).
 - When present, enable `relavium.openWorkflowInDesktop` and the
   `[Open in Designer]` CodeLens affordance; when absent, keep these as graceful
   no-ops with no user-visible degradation.
-- Gate any IPC over the authenticated `.ipc-token`; **never** send API keys to the
-  desktop over IPC (security model).
+- Gate any IPC with the bearer token from the loopback handshake (dynamic port +
+  token in `~/.relavium/ipc.json`, per
+  [ipc-contract.md](../../reference/contracts/ipc-contract.md#vs-code-mirror-loopback-http));
+  **never** send API keys to the desktop over IPC — the extension is standalone for
+  key custody (security model).
 - Make standalone the default and assert the absence of the desktop app does not
   change any execution behavior.
 
