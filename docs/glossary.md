@@ -102,9 +102,18 @@ How a workflow run is initiated. Full spec in
   [reference/contracts/agent-yaml-spec.md](reference/contracts/agent-yaml-spec.md).
 - **Checkpoint** — saved state at a node boundary that allows resuming or
   *retry-from-node* without re-running already-completed upstream nodes.
+- **Cost (micro-cent)** — costs are tracked as integer **micro-cents**
+  (1 micro-cent = 1e-8 USD) to avoid float-rounding error in per-node / per-run
+  cost attribution. Canonical home:
+  [reference/shared-core/llm-provider-seam.md](reference/shared-core/llm-provider-seam.md).
 - **Channel / IPC stream** — in the desktop app, the typed, backpressure-aware
-  Tauri v2 channel used to stream run events from the backend to the canvas.
-  Carries the same events that SSE carries in Phase 2.
+  Tauri v2 `Channel<StreamChunk>` that carries the **Rust-delegated LLM egress**
+  (`llm_stream`) back to the WebView adapter as `StreamChunk` frames. The engine's
+  `RunEventBus` runs **WebView-side**, so most run events (`node:started`,
+  `agent:token`, …) are produced and consumed in the WebView and never cross IPC;
+  only the LLM stream chunks do. The cross-surface run-event union those events
+  belong to is the same one SSE carries in Phase 2. See
+  [decisions/0018-desktop-execution-and-rust-egress.md](decisions/0018-desktop-execution-and-rust-egress.md).
 - **SSE event** — a run event in the streaming event schema, used for HTTP
   streaming in Phase 2 (the desktop app carries the same events over a Tauri
   channel in Phase 1). Every event carries a monotonic `sequenceNumber`. The

@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [tech-stack.md](../tech-stack.md)
 
 ## Context
 
@@ -45,7 +45,7 @@ Provider details and built-in tool wiring are in [architecture/multi-llm-provide
 - Provider-agnostic tool calling: agents declare tools once; the `ToolNormalizer` translates to each wire format, which is what makes cross-provider fallback chains possible.
 - Adding a provider is a contained adapter change in one package; OpenAI and DeepSeek already share one adapter path.
 - The migration story is real, not aspirational: because the seam admits no vendor type, a 3rd-party bridge can be slotted behind it on a named trigger without touching `packages/core`.
-- API keys stay engine-side: read from the OS keychain ([ADR-0006](0006-os-keychain-for-api-keys.md)) and attached by the adapter, never reaching the frontend.
+- API keys stay engine-side: read from the OS keychain ([ADR-0006](0006-os-keychain-for-api-keys.md)) and attached during egress in a host-aware way — directly by the adapter on Node-style hosts (CLI, VS Code extension host, Phase-2 Bun API), and by the Rust backend on desktop where egress is delegated to `llm_stream` (so the key never reaches the WebView-resident adapter, which holds only a key reference). See [ADR-0018](0018-desktop-execution-and-rust-egress.md) and the [IPC contract](../reference/contracts/ipc-contract.md).
 
 ### Negative
 

@@ -22,9 +22,15 @@ managed (KMS-backed key pools) — is
 surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
 
 - **API keys live in the OS keychain** (macOS Keychain / Windows Credential Manager /
-  libsecret), resolved by the backend at call time and attached by the
-  `@relavium/llm` adapter just before the HTTPS request. See
-  [ADR-0006](../decisions/0006-os-keychain-for-api-keys.md).
+  libsecret) and are attached just before the HTTPS request — but *where* the raw key
+  is read and attached is host-specific. On the **desktop**, the egress is delegated to
+  Rust: the `llm_stream` command reads the key from the keychain and attaches the
+  `Authorization` header inside Rust; the WebView-resident `@relavium/llm` adapter holds
+  only a key *reference* and never sees the raw key. On **Node-style hosts** (CLI, VS
+  Code extension host, Phase-2 Bun API) the adapter resolves the key and attaches it
+  in-process, within the one trusted process. See
+  [ADR-0006](../decisions/0006-os-keychain-for-api-keys.md) and
+  [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md).
 - **Keys never leave the keychain boundary and never reach the frontend.** No key in a
   Tauri IPC payload to the WebView, no key in a Zustand store, no key in a React prop, no
   key in localStorage, no key returned from an IPC command. The frontend learns *that* a
@@ -34,6 +40,16 @@ surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
   secrets still belong in the keychain, not a DB column).
 - Keys are never interpolated into error messages or the `node:failed` / `run:failed`
   events (see [error-handling.md](error-handling.md)).
+- **Audit the desktop Rust-delegated egress path.** On the desktop the LLM egress is a
+  Rust command (`llm_stream`) that streams normalized chunks back over a
+  `Channel<StreamChunk>` ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md),
+  [ipc-contract.md](../reference/contracts/ipc-contract.md)). This is a sensitive IPC
+  surface: a review must confirm the WebView passes only a key *reference*
+  (`{ providerId, keyId }`), never the raw key; that the raw key is resolved and the
+  `Authorization` header attached **only inside Rust** and is never persisted or logged;
+  that the `Channel<StreamChunk>` carries **no secrets** (only provider response chunks);
+  and that cancellation (the `AbortSignal`) aborts the Rust request cleanly without
+  leaking key material.
 
 ## Managed mode (Phase 2)
 
@@ -130,7 +146,8 @@ rules live in [logging-and-observability.md](logging-and-observability.md).
 
 ## When a review is mandatory
 
-Any change to: key handling or the keychain bridge, IPC commands, provider base-URL
+Any change to: key handling or the keychain bridge, IPC commands, the desktop
+Rust-delegated egress path (`llm_stream` / `Channel<StreamChunk>`), provider base-URL
 handling, the `run_command` sandbox, prompt/tool-call construction, the DB encryption
 path, or a new dependency. For **managed mode**, also: the gateway authn/z path, key-pool
 selection, the metering/billing path, and the master-key vault. When in doubt, run the

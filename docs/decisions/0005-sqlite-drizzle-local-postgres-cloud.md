@@ -6,7 +6,7 @@
 
 ## Context
 
-Relavium persists run history, the per-run event log, and per-node cost data so the desktop app can show run monitoring and cost tracking, and so the engine can resume paused runs (e.g. after a human gate). The data model is concrete and documented in [reference/desktop/database-schema.md](../reference/desktop/database-schema.md): `runs`, `run_events`, and `run_costs`, plus a per-project metadata store.
+Relavium persists run history, the per-run event log, and per-node cost data so the desktop app can show run monitoring and cost tracking, and so the engine can resume paused runs (e.g. after a human gate). The data model is concrete and documented in [reference/desktop/database-schema.md](../reference/desktop/database-schema.md): run history (`runs`, `step_executions`, `run_events`, `run_costs`, `messages`), catalog tables, and per-project metadata — see [reference/desktop/database-schema.md](../reference/desktop/database-schema.md) for the canonical, fuller set.
 
 Phase 1 is local-first with no cloud dependency and no account (see [ADR-0008](0008-local-first-phase-1-cloud-phase-2.md)), so this store must be **embedded, file-based, and encryptable at rest** — it holds prompts, outputs, and tool I/O that may be sensitive. Phase 2 adds cloud execution where many concurrent workers read and write shared run state, which is a different storage profile entirely. The schema and ORM must serve both without forking the data model.
 

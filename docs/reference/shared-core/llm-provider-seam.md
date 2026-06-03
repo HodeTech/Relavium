@@ -74,7 +74,7 @@ interface Usage {
   outputTokens: number;
   cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
   cacheWriteTokens?: number;
-  costMicrocents?: number;              // integer micro-cents, computed by a pricing table keyed on canonical model id
+  costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by a pricing table keyed on canonical model id
 }
 
 // Normalized streaming — one discriminated union for ALL providers
@@ -93,6 +93,21 @@ interface LlmProvider {
   supports: CapabilityFlags;     // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning }
 }
 ```
+
+> **The `key` parameter is host-aware (its `string` *type* is unchanged).** On the
+> **Node-style surfaces** (CLI, VS Code extension host, Phase-2 Bun API) `key` is the
+> **resolved provider key**, read from the OS keychain at call time inside the one
+> trusted process. On the **desktop** `key` is instead a key **reference** (the
+> keychain account id, e.g. `anthropic:default`): the WebView-resident adapter passes
+> that reference to the Rust `llm_stream` command, and **Rust resolves the real key
+> and attaches the `Authorization` header** — the raw key never enters the WebView.
+> In **managed** mode (Phase 2) `key` carries a managed session/auth token instead of
+> a provider key (see [`ManagedGatewayProvider`](#a-second-implementation-behind-the-same-seam-managedgatewayprovider-phase-2)).
+> In every case it is simply "the credential the implementation needs," so the seam
+> types are identical across hosts and modes. This host-aware handling is the seam
+> side of [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md); the
+> desktop egress wiring is in
+> [../contracts/ipc-contract.md](../contracts/ipc-contract.md#rust-delegated-llm-egress).
 
 The interface exposes a capability-gated lowest-common-denominator surface
 (text + tools + streaming + usage). Provider-specific features (vision, prompt
@@ -248,6 +263,15 @@ Two streaming subtleties the adapters must handle:
   pricing table keyed on the **canonical model id**, not read from any provider
   response. This is the same `costMicrocents` that surfaces in the `cost:updated` run
   event (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
+
+> **Canonical cost unit (the one home).** All cost figures in Relavium — the seam's
+> `Usage.costMicrocents`, the `cost:updated` event's `costMicrocents` /
+> `cumulativeCostMicrocents`, and the persisted cost records — are **integer
+> micro-cents**, where **1 micro-cent = 1e-8 USD = 1e-6 cent**. Costs are always
+> integers (never floats) to avoid precision loss when summing thousands of
+> per-token charges; the SQLite type-mapping detail is in
+> [../desktop/database-schema.md](../desktop/database-schema.md). Every other
+> document links here rather than restating the unit.
 
 #### Stricter usage-capture rules in managed mode (Phase 2)
 

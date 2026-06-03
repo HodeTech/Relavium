@@ -115,7 +115,7 @@ In the engine's `WorkflowDefinition`, a node carries `id`, `type`, `label`, opti
 | Engine config block | Present when `type =` | Notable fields |
 | --- | --- | --- |
 | `agent_config` | `agent` | `agent_id`, `model_override_id`, `system_prompt_append`, `input_mapping`, `output_mapping`, `config_override` |
-| `condition_config` | `condition` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `expression`, `branches[]`, `default_target_node_id` |
+| `condition_config` | `condition` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `expression` (evaluated once), `branches[]` (each `{ when, target_node_id }` — `when` is the value the result is matched against), `default_target_node_id` (taken when no `when` matches) |
 | `tool_config` | `tool` | `tool_name`, `tool_source` (`builtin`/`mcp`), `mcp_server`, `parameters`, `input_mapping`, `output_mapping` |
 | `transform_config` | `transform` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `transformations[]` (`target_key`, `expression`) |
 | `loop_config` | `loop` | `iterate_over`, `item_key`, `body_entry_node_id`, `body_exit_node_id`, `max_iterations`, `collect_results_key` |

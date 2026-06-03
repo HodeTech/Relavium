@@ -65,7 +65,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 
 - `--input k=v` (repeatable) supplies typed workflow inputs (see the `inputs` block in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)).
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
-- On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`.
+- On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` it is on the NDJSON event line, otherwise read it from `relavium status`/`relavium logs`.
 
 ### `relavium list`
 
@@ -81,11 +81,11 @@ Interactive scaffolder (`@clack/prompts`) that writes a new `.relavium.yaml` or 
 
 ### `relavium logs`
 
-Prints the persisted event/log stream for a past run (the same data the desktop run-detail screen replays). Accepts a flag to emit raw [RunEvent](../contracts/sse-event-schema.md) JSON.
+Prints the persisted event/log stream for a past run (the same data the desktop run-detail screen replays). Accepts a flag to emit raw [RunEvent](../contracts/sse-event-schema.md) JSON. For a run paused at a gate, the rendered `human_gate:paused` event surfaces the **`gateId`** so a CI author can copy it into `relavium gate <runId> --gate <gateId>`.
 
 ### `relavium status`
 
-Shows currently active runs and their per-node status. Useful while a long workflow runs in another terminal or was launched detached.
+Shows currently active runs and their per-node status. Useful while a long workflow runs in another terminal or was launched detached. For any run paused at a human gate it also prints the **pending `gateId`(s)** (with gate type and node id), so a CI author can pass the right one to `relavium gate <runId> --gate <gateId>` — required when a run has more than one gate pending at once.
 
 ### `relavium gate`
 
@@ -94,8 +94,12 @@ Resolves a pending human gate from the terminal — the surface-agnostic resume 
 ```bash
 relavium gate <runId> --approve
 relavium gate <runId> --reject --comment "Too risky"
-relavium gate <runId> --input '{"api_key": "..."}'   # for gate_type=input
+relavium gate <runId> --input '{"api_key": "..."}'          # for gate_type=input
+relavium gate <runId> --gate <gateId> --approve            # disambiguate when >1 gate is pending
 ```
+
+- `--gate <gateId>` selects **which** pending gate to resolve. The resume contract is `engine.resume(runId, gateId, decision)` — `gateId` is mandatory on the resume path (it is carried on the `human_gate:paused` event; see [sse-event-schema.md](../contracts/sse-event-schema.md) and `resume_run` in [ipc-contract.md](../contracts/ipc-contract.md)). `--gate` is **optional on the CLI**: when exactly one gate is pending the CLI fills it in automatically; when **more than one** gate is pending it is **required**, and omitting it is an invalid invocation (exit `2`) listing the pending `gateId`s.
+- Get the pending `gateId`(s) from `relavium status` or `relavium logs <runId>` (both print them — see below).
 
 ## Exit codes
 

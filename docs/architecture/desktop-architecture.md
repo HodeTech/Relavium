@@ -1,6 +1,6 @@
 # Desktop architecture (Tauri v2)
 
-> Last updated: 2026-06-03
+> Last updated: 2026-06-04
 
 The desktop app is Relavium's primary surface and an **agent-management center** —
 a visual workflow canvas, agent configuration, run monitoring, and cost tracking.
@@ -117,6 +117,17 @@ key reference does. The command shape is canonical in
 the key handling is in
 [../reference/desktop/keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md).
 
+This resolves an apparent tension: the `LLMProvider` seam's `stream(req, key)`
+signature takes a `key`, yet the raw key must never reach the WebView. The seam's
+`key` parameter is **host-aware** (its *type* is unchanged across hosts): on the
+Node-style surfaces it is the resolved provider key, while on the **desktop** it is a
+key **reference** (the keychain account id), and the Rust `llm_stream` command
+resolves and attaches the actual key inside Rust. So the WebView-resident adapter
+satisfies the seam contract while only ever handling a reference — see
+[ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md) and the
+host-aware `key` note in
+[../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md#the-core-interface).
+
 ## The IPC bridge: three primitives
 
 Communication between the WebView and the Rust core uses three Tauri primitives,
@@ -204,3 +215,4 @@ it does not edit code. The screens it does ship are catalogued in
 - [../reference/contracts/ipc-contract.md](../reference/contracts/ipc-contract.md) — the IPC message contract.
 - [../reference/desktop/tauri-plugins.md](../reference/desktop/tauri-plugins.md) — the plugin inventory and capabilities.
 - [ADR-0001](../decisions/0001-tauri-v2-over-electron.md) · [ADR-0007](../decisions/0007-desktop-is-not-an-ide.md) — the framing decisions.
+- [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md) — engine in the WebView, Rust-delegated LLM egress, host-aware seam `key`.

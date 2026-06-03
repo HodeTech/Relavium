@@ -13,7 +13,10 @@
 ## Proof Points
 
 1. **Every competitor owns at most two surfaces; Relavium owns all four**
-   (desktop, VS Code, CLI, web) with a single workflow runtime.
+   (desktop, VS Code, CLI, web). The **identical engine** runs on the three Phase-1
+   **execution** surfaces — desktop, VS Code, and CLI — so a workflow behaves the
+   same on each; the Phase-2 **web portal** is a browser **control-plane** surface
+   (usage, quota, governance), not a fourth identical-engine runtime.
 2. **No competitor produces version-controllable workflow artifacts.** Relavium
    workflows are first-class git objects (`.relavium.yaml` in `.relavium/`).
 3. **No competitor combines visual design + local execution + multi-model routing

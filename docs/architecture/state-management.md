@@ -13,7 +13,7 @@ this document explains why the model is built the way it is.
 
 ```mermaid
 flowchart TB
-    Engine["packages/core RunEventBus<br/>(via Tauri IPC)"] --> SM["SseManager<br/>(singleton, non-React)"]
+    Engine["packages/core RunEventBus<br/>(WebView-side, in-process)"] --> SM["SseManager<br/>(singleton, non-React)"]
     SM -->|agent:token, batched| RB["rawBuffer"]
     RB -->|16ms RAF flush| TB["tokenBuffer<br/>(runStore)"]
     SM -->|node:started / node:completed / cost:updated| RunStore["runStore<br/>(per-run, per-node status)"]
@@ -97,7 +97,7 @@ double-buffer driven by `requestAnimationFrame`:
 
 ```mermaid
 sequenceDiagram
-    participant Bus as RunEventBus (IPC)
+    participant Bus as RunEventBus (WebView-side)
     participant Raw as rawBuffer
     participant RAF as requestAnimationFrame (~16ms)
     participant TB as tokenBuffer (runStore)
@@ -121,9 +121,15 @@ corrupts output when multiple agent nodes stream in parallel.
 
 ## The realtime pipeline
 
-A non-React **`SseManager` singleton** owns the connection to the engine's event
-stream and routes events into the stores. Keeping it outside React means
-reconnection logic and gap detection do not depend on component lifecycles:
+A non-React **`SseManager` singleton** owns the subscription to the engine's event
+stream and routes events into the stores. On the desktop the engine and its
+`RunEventBus` run **WebView-side** in the same JS runtime, so this subscription is
+in-process and run events **do not cross IPC**
+([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)); the only
+Rust→WebView channel on the LLM hot path is the delegated egress's
+`Channel<StreamChunk>`, which the adapter folds into `agent:token` events on that
+bus. Keeping the manager outside React means reconnection logic and gap detection
+do not depend on component lifecycles:
 
 - Events carry a `sequenceNumber`; the manager detects gaps and re-syncs (in the
   local desktop case this is a state refetch; over HTTP in Phase 2 it is SSE
@@ -137,8 +143,10 @@ reconnection logic and gap detection do not depend on component lifecycles:
   reconnect (see [execution-model.md](execution-model.md#4-human-gate)).
 
 The event shapes are the
-[SSE event schema](../reference/contracts/sse-event-schema.md); locally they are
-delivered over the [IPC contract](../reference/contracts/ipc-contract.md).
+[SSE event schema](../reference/contracts/sse-event-schema.md); on the desktop they
+are produced and consumed WebView-side over the engine's in-process `RunEventBus`
+(they do not cross the [IPC contract](../reference/contracts/ipc-contract.md#run-events-are-webview-side),
+which carries only the `Channel<StreamChunk>` egress on the LLM hot path).
 
 ## Editing-time state: undo/redo
 

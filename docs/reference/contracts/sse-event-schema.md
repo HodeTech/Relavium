@@ -2,8 +2,8 @@
 
 - **Status**: Stable
 - **Canonical type**: `RunEvent` (discriminated union) in `@relavium/core` / re-exported from `@relavium/shared`
-- **Transport**: Phase 1 — Tauri IPC channel (desktop) / in-process `EventEmitter` (CLI, VS Code). Phase 2 — HTTP `text/event-stream` (SSE) from the cloud API.
-- **Related**: [ipc-contract.md](ipc-contract.md), [workflow-yaml-spec.md](workflow-yaml-spec.md), [../shared-core/store-shapes.md](../shared-core/store-shapes.md), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md) (source of the `cost:updated` figures), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/state-management.md](../../architecture/state-management.md)
+- **Transport**: Phase 1 — in-process `RunEventBus` (the engine runs in-process on **every** surface, including the desktop WebView). Phase 2 — HTTP `text/event-stream` (SSE) from the cloud API.
+- **Related**: [ipc-contract.md](ipc-contract.md), [workflow-yaml-spec.md](workflow-yaml-spec.md), [../shared-core/store-shapes.md](../shared-core/store-shapes.md), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md) (canonical `costMicrocents` unit + the `cost:updated` figures), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/state-management.md](../../architecture/state-management.md), [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)
 
 Every workflow run produces a single ordered stream of `RunEvent` objects. This stream is the **one contract** that all surfaces consume to render live progress — streaming tokens on a node face, per-node status rings, cost waterfalls, and human-gate prompts. The events are emitted by `@relavium/core` and are identical regardless of where the engine runs.
 
@@ -11,11 +11,13 @@ The **transport** differs by surface and phase, but the **event shape does not**
 
 ```mermaid
 flowchart LR
-  E["@relavium/core\nRunEventBus"] -->|Tauri Channel| D[Desktop WebView]
-  E -->|EventEmitter| C[CLI ink renderer]
-  E -->|EventEmitter| V[VS Code extension host]
+  E["@relavium/core\nRunEventBus\n(runs in-process on every surface)"] -->|in-process, WebView-side| D[Desktop WebView stores]
+  E -->|in-process EventEmitter| C[CLI ink renderer]
+  E -->|in-process EventEmitter| V[VS Code extension host]
   E -. Phase 2 .->|HTTP SSE| P[Cloud Portal]
 ```
+
+On the desktop the engine runs in the WebView's JS runtime ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)), so its `RunEventBus` and the consuming stores share one runtime — most run events **never cross IPC**. The only Rust→WebView channel on the LLM hot path is the delegated egress's `Channel<StreamChunk>` (the WebView adapter folds those chunks into `agent:token` run events locally); see [ipc-contract.md](ipc-contract.md#run-events-are-webview-side). The cross-surface `RunEvent` union below is the same one HTTP SSE carries in Phase 2.
 
 ## Event envelope
 
@@ -53,12 +55,12 @@ export type RunEvent =
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
-| `run:started` | A run began. | `workflowId`, `inputs`, `executionMode: 'local' \| 'cloud' \| 'managed'` |
+| `run:started` | A run began. | `workflowId`, `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType` |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `toolId`, `toolInput` (sanitized — no secrets) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI) |
-| `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` |
+| `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)) |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model}`, `durationMs` |
 | `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
@@ -83,8 +85,8 @@ export interface CostUpdatedEvent extends BaseEvent {
   model: string;                  // canonical model id the cost was priced against
   inputTokens: number;
   outputTokens: number;
-  costMicrocents: number;         // integer μ¢ (1e-8 USD); this attempt, from Relavium's pricing table (never the provider)
-  cumulativeCostMicrocents: number; // integer μ¢ running total for the whole run
+  costMicrocents: number;         // integer micro-cents (canonical unit defined in llm-provider-seam.md); this attempt, from Relavium's pricing table (never the provider)
+  cumulativeCostMicrocents: number; // integer micro-cents running total for the whole run
 }
 
 export interface NodeCompletedEvent extends BaseEvent {
@@ -107,7 +109,9 @@ export interface HumanGatePausedEvent extends BaseEvent {
 }
 ```
 
-> **Security.** `agent:tool_call.toolInput` is sanitized (no secrets) and `agent:tool_result.outputSummary` is truncated. API keys and other secrets never appear in any event payload — this holds across IPC, SSE, and any persisted run log.
+### Security: event payloads never carry secrets
+
+`agent:tool_call.toolInput` is sanitized (no secrets) and `agent:tool_result.outputSummary` is truncated. `run:started.inputs` carries workflow inputs, but any **secret-typed** input is **masked** — the value is replaced with `{ secret: true, ref }` (the keychain/env reference), never the raw value. API keys and other secrets never appear in any event payload — this holds across the in-process bus, HTTP SSE, and any persisted run log. (On the desktop the raw provider key never even reaches the WebView: egress is Rust-delegated, [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md).)
 
 ## Consuming the stream
 
@@ -125,7 +129,7 @@ for await (const event of handle.events) {
 }
 ```
 
-On the desktop, the same events arrive over a Tauri channel rather than an async iterator — see [ipc-contract.md](ipc-contract.md). On the cloud portal (Phase 2) they arrive over HTTP SSE. In all cases the consumer routes by `nodeId` into the per-node status map in `runStore` (kept deliberately separate from the canvas store to avoid re-rendering ReactFlow on every token — see [../shared-core/store-shapes.md](../shared-core/store-shapes.md)).
+On the desktop the same events are produced and consumed WebView-side over the engine's in-process `RunEventBus` (they do not cross IPC) — see [ipc-contract.md](ipc-contract.md#run-events-are-webview-side). On the cloud portal (Phase 2) they arrive over HTTP SSE. In all cases the consumer routes by `nodeId` into the per-node status map in `runStore` (kept deliberately separate from the canvas store to avoid re-rendering ReactFlow on every token — see [../shared-core/store-shapes.md](../shared-core/store-shapes.md)).
 
 ## Human-gate suspend/resume across the stream
 
@@ -150,9 +154,9 @@ Timeout behavior (`timeout_action` on the node) maps to `decidedBy: 'timeout_esc
 
 ## Transport notes
 
-### Phase 1 — local (IPC / in-process)
+### Phase 1 — local (in-process on every surface)
 
-- **Desktop**: events flow over a typed, backpressure-aware Tauri `Channel<RunEvent>` created per run. If the WebView falls behind, the Rust sender awaits, naturally throttling token processing without dropping events. See [ipc-contract.md](ipc-contract.md).
+- **Desktop**: the engine runs in the WebView's JS runtime ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)), so run events are delivered **WebView-side** over the engine's in-process `RunEventBus` — they do **not** cross IPC as `RunEvent`s. The one Rust→WebView channel on the hot path is the delegated LLM egress's typed, backpressure-aware `Channel<StreamChunk>`: if the WebView consumer lags, the Rust sender awaits, throttling the egress without dropping chunks; the adapter folds those chunks into `agent:token` events on the WebView-side bus. See [ipc-contract.md](ipc-contract.md#run-events-are-webview-side).
 - **CLI / VS Code**: the engine runs in-process; events are delivered via the engine's `RunEventBus` (`EventEmitter`) or the `RunHandle.events` async iterable.
 
 ### Phase 2 — cloud (HTTP SSE)

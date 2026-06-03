@@ -29,10 +29,9 @@ in CLI tests before it ever reaches the desktop.
 - **`packages/core`** — the workflow engine is unit-tested exhaustively: YAML parsing and
   validation, node execution, the run-event sequence, fallback-chain policy,
   checkpoint/resume, and cost accumulation. Run events are asserted against the
-  [canonical SSE event schema](../reference/contracts/sse-event-schema.md) by their
-  colon-namespaced names (`node:started`, `agent:token`, `agent:tool_call`,
-  `agent:tool_result`, `node:completed`, `cost:updated`, `human_gate:paused`,
-  `run:completed`, `run:failed`) and by their `sequenceNumber` ordering — never the legacy
+  [canonical run-event schema](../reference/contracts/sse-event-schema.md) by their
+  colon-namespaced names (the `RunEvent` union — that schema is the one home for the
+  names, not restated here) and by their `sequenceNumber` ordering — never the legacy
   dotted names.
 - **`packages/llm`** — the seam types, the `ToolNormalizer`, the `CostTracker` pricing
   table, the `FallbackChain` runner, and each adapter's normalization logic (system-prompt

@@ -61,6 +61,7 @@ flowchart TD
 | 0015 | [Managed-mode data handling and compliance posture](0015-managed-mode-data-handling-and-compliance.md) | Accepted | 2026-06-03 |
 | 0016 | [Hono as the `apps/api` framework](0016-api-framework-hono.md) | Accepted | 2026-06-04 |
 | 0017 | [Bun as the `apps/api` runtime](0017-cloud-runtime-bun.md) | Accepted | 2026-06-04 |
+| 0018 | [Desktop execution model — engine in WebView, Rust-delegated LLM egress](0018-desktop-execution-and-rust-egress.md) | Accepted | 2026-06-04 |
 
 ## Creating a new ADR
 

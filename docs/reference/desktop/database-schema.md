@@ -47,7 +47,7 @@ Because this schema is adapted from a Postgres-first design (see [../../analysis
 | Structured blob | `JSONB` | `TEXT` (JSON string); query with `json_extract()` |
 | String array (tags) | `TEXT[]` | `TEXT` (JSON array, e.g. `["review","ci"]`); query with `json_each()` |
 | Timestamp | `TIMESTAMPTZ` | `INTEGER` (Unix epoch ms) for reliable ordering; timezone handled in app code |
-| Money / cost | `NUMERIC(14,8)` | `INTEGER` micro-cents (USD x 1,000,000) to avoid IEEE-754 rounding |
+| Money / cost | `NUMERIC(14,8)` | `INTEGER` **micro-cents** (USD x 100,000,000, i.e. cents x 1,000,000 — one micro-cent = 1e-8 USD = 1e-6 cent) to avoid IEEE-754 rounding. The `NUMERIC(14,8)` Postgres form is consistent: 8 fractional digits = 1e-8 USD = one micro-cent. Canonical unit definition: [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage). |
 | Enum | `CREATE TYPE ... AS ENUM` | `TEXT` with a `CHECK` constraint |
 | Soft delete | `deleted_at TIMESTAMPTZ` partial index | `deleted_at INTEGER NULL`; partial indexes supported since SQLite 3.8.9 |
 
@@ -82,7 +82,7 @@ CREATE UNIQUE INDEX idx_llm_providers_name ON llm_providers (name) WHERE deleted
 
 #### `model_catalog`
 
-Models offered by each provider, including pricing used for local cost tracking. Costs are stored as integer micro-cents.
+Models offered by each provider, including pricing used for local cost tracking. The `*_per_mtok_microcents` columns are price **per million tokens, in integer micro-cents** (one micro-cent = 1e-8 USD = cents x 1,000,000; see the [money/cost convention](#sqlite-type-conventions)).
 
 | Column | Type | Constraints |
 |--------|------|-------------|

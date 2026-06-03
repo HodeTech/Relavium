@@ -87,7 +87,7 @@ execution logic; a bug in any surface is treated as a bug in `packages/core`.
 
 | Surface | Shell | How it runs the engine | Role |
 |---------|-------|------------------------|------|
-| **Desktop app** | Tauri v2 (Rust + React WebView) | Engine runs in-process; results stream to the canvas over Tauri IPC | Primary surface — visual canvas, agent config, run monitoring, cost tracking. See [desktop-architecture.md](desktop-architecture.md). |
+| **Desktop app** | Tauri v2 (Rust + React WebView) | Engine runs **in the WebView's JS runtime**; run events are produced and consumed WebView-side (no IPC). Only the authenticated LLM egress is delegated to a Rust command, which streams `StreamChunk` frames back — the raw key never enters the WebView ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)) | Primary surface — visual canvas, agent config, run monitoring, cost tracking. See [desktop-architecture.md](desktop-architecture.md). |
 | **VS Code extension** | VS Code Extension Host (Node) | Engine bundled in-process; no desktop app required | Inline triggering (right-click a file → run), status-bar monitor, sidebar panels. |
 | **CLI** | Node + commander.js + ink | Engine called directly; ink renders the live TUI | `relavium run` / `list` / `create` / `logs` / `gate`; CI/CD and scripting. Doubles as the canonical engine integration-test harness. |
 | **Web portal** | Vite + React SPA (browser) | **Phase 2 only** — talks to `apps/api` over HTTPS; engine runs in cloud workers | Usage, quota, team sharing, cloud-triggered runs. Not where local workflows run. |
@@ -146,6 +146,7 @@ sequenceDiagram
     participant U as User (canvas / CLI / VS Code)
     participant E as packages/core (WorkflowEngine)
     participant L as packages/llm (LLMProvider seam)
+    participant T as injected transport<br/>(direct fetch / Rust llm_stream)
     participant P as LLM provider
     participant DB as SQLite
 
@@ -154,10 +155,13 @@ sequenceDiagram
     E->>E: build DAG RunPlan
     loop per ready node
         E->>L: run agent node (model + messages + tools)
-        L->>P: streaming fetch (AbortController-guarded)
-        P-->>L: token stream
-        L-->>E: tokens on RunEventBus
-        E-->>U: surface renderer paints tokens<br/>(Tauri IPC / WebView postMessage / ink)
+        Note over L,T: Node surfaces: direct fetch (key resolved in-process)<br/>Desktop: Rust llm_stream (request + key ref; Rust reads key, attaches Authorization)
+        L->>T: stream request (AbortController-guarded)
+        T->>P: streaming HTTPS
+        P-->>T: token stream
+        T-->>L: StreamChunk frames
+        L-->>E: tokens on WebView-side RunEventBus
+        E-->>U: surface renderer paints tokens<br/>(WebView-side bus / postMessage / ink)
         E->>DB: checkpoint on node completion
     end
     E->>DB: write final output + cost record
@@ -167,10 +171,16 @@ sequenceDiagram
 Key points:
 
 - Surfaces subscribe to the engine's `RunEventBus` and render events the same way;
-  the event contract is the [SSE event schema](../reference/contracts/sse-event-schema.md)
-  (delivered over Tauri IPC locally, over HTTP SSE in the cloud).
-- LLM calls go **directly** from the user's machine to the provider in Phase 1 —
-  there is no Relavium server in the path.
+  the event contract is the [SSE event schema](../reference/contracts/sse-event-schema.md).
+  On the desktop the engine runs in the WebView, so its bus is WebView-side and run
+  events do **not** cross IPC ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md));
+  in the cloud they are delivered over HTTP SSE.
+- LLM calls go from the user's machine to the provider in Phase 1 with no Relavium
+  server in the path. On the Node-style surfaces the adapter calls the provider
+  directly; on the **desktop** the authenticated egress is delegated to a Rust
+  command that holds the key reference, reads the key from the keychain, and streams
+  `StreamChunk` frames back — so the raw key never enters the WebView
+  ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)).
 - State is checkpointed to SQLite at each node boundary, which is what makes
   resume-after-crash and retry-from-node possible. See
   [execution-model.md](execution-model.md).

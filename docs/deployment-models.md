@@ -51,7 +51,7 @@ replacement and never a paywall in front of BYOK.
 | Segment | Recommended mode | Key model (who holds it / where / who injects) | Recommended tier | Who pays for tokens | Governance | Phase available |
 |---------|------------------|------------------------------------------------|------------------|---------------------|------------|-----------------|
 | **Individual developer** | **BYOK-local** (default); **managed** opt-in if they don't want to manage a key | User's own key, **OS keychain**, injected **on the user's machine** | **Free** (BYOK, $0); **Pro** for backup/history/analytics | The **user** pays the provider directly (managed: prepaid credits to Relavium) | Personal — none required | **Phase 1** (BYOK-local). Managed/Pro: Phase 2 |
-| **Small team (2–20)** | **BYOK-local** per seat (default); **managed** opt-in per seat | Each member's own key in their **OS keychain**; *(Phase 2)* optional **central key vault** for shared keys | **Team** (shared library, central key vault, RBAC, budgets) | Each member pays their provider (or one org provider account); managed billed to the team | Shared agent library, RBAC, per-seat/team budgets | **Phase 1** for BYOK-local + git-shared YAML. Team tier (central vault, RBAC, budgets): Phase 2 |
+| **Small team (2–20)** | **BYOK-local** per seat (default); **managed** opt-in per seat | Each member's own key in their **OS keychain**; *(Phase 2)* optional **central key vault** for shared keys | **Team** (shared library, RBAC, budgets; **default key model BYOK-local-per-seat**, central key vault an optional Phase-2 add-on) | Each member pays their provider (or one org provider account); managed billed to the team | Shared agent library, RBAC, per-seat/team budgets | **Phase 1** for BYOK-local + git-shared YAML. Team tier (RBAC, budgets, optional central vault): Phase 2 |
 | **Large enterprise (e.g. 300 employees)** | **BYOK-central** (org keys, server-side); BYOK-local still available; managed only by negotiated exception | **Org-level** provider keys in a **central server-side vault**, **injected server-side** by the cloud worker — **never issued per-employee** | **Enterprise** (custom annual/seat) | The **enterprise** pays its own provider under its **own provider contract** | SSO/SAML, SOC 2 audit, central key mgmt + rotation, data residency, self-hosted/VPC, SLA | **Phase 2** (central vault + SSO/audit). BYOK-local usable in Phase 1 for pilots |
 
 Mode definitions and the metered/billed column are canonical in
@@ -138,9 +138,14 @@ your own roof → BYOK) and **convenience** (don't want to manage a key → mana
   team. Keys are **org/workspace/project-scoped, never per-employee**.
   See [architecture/key-management.md](architecture/key-management.md).
 - **Recommended tier.** **Team** *(~$30–40/seat, Phase 2, illustrative)* — shared
-  agent library, central key vault, **RBAC**, and per-seat/team **budgets**. Before
-  those are needed, the team can run on **Free/Pro** and share via git.
-  Tiers: [reference/portal/api-reference.md](reference/portal/api-reference.md#licensing-tiers).
+  agent library, **RBAC**, and per-seat/team **budgets**. The Team tier's **default
+  key model is BYOK-local-per-seat** (each member's own key in their own keychain,
+  workflows shared as git-committed YAML); the **central org key vault** is an
+  **optional Phase-2 add-on** for teams that prefer a few shared org keys — *not* the
+  tier default. Before any of this is needed, the team can run on **Free/Pro** and
+  share via git. The tier matrix (and this default-BYOK-local / optional-vault model)
+  is canonical in
+  [reference/portal/api-reference.md](reference/portal/api-reference.md#licensing-tiers).
 - **Who pays for tokens.** Each member pays their provider directly (BYOK), **or**
   one **org provider account** is billed for the shared keys; in managed, usage is
   billed to the team against the tier's included cap + overage. Provider keys are

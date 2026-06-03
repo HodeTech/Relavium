@@ -59,8 +59,8 @@ segment is ever forced into managed — is mapped in
 ### Cloud execution is Phase 2
 
 Do not design Phase 1 to require the cloud. The engine architecture must support
-local, cloud, and (Phase 2) managed modes via a clean interface switch, so that
-Phase 2 adds layers without breaking Phase 1 surfaces. See [roadmap/README.md](roadmap/README.md).
+local (Phase 1) plus cloud and managed (both Phase 2) modes via a clean interface
+switch, so that Phase 2 adds layers without breaking Phase 1 surfaces. See [roadmap/README.md](roadmap/README.md).
 
 > **Managed inference is a separate Phase-2 capability from cloud execution.**
 > Managed inference proxies only **LLM egress** through Relavium's keys/gateway —

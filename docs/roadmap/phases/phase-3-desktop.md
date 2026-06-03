@@ -2,7 +2,7 @@
 
 > Status: Not started (Product Phase 1). Blocked on Phase 2.
 
-- **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-4-vscode.md](phase-4-vscode.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [../../architecture/state-management.md](../../architecture/state-management.md), [../../reference/desktop/routes-and-screens.md](../../reference/desktop/routes-and-screens.md), [../../reference/desktop/tauri-plugins.md](../../reference/desktop/tauri-plugins.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/shared-core/store-shapes.md](../../reference/shared-core/store-shapes.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../decisions/0001-tauri-v2-over-electron.md](../../decisions/0001-tauri-v2-over-electron.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md](../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md)
+- **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-4-vscode.md](phase-4-vscode.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [../../architecture/state-management.md](../../architecture/state-management.md), [../../reference/desktop/routes-and-screens.md](../../reference/desktop/routes-and-screens.md), [../../reference/desktop/tauri-plugins.md](../../reference/desktop/tauri-plugins.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/shared-core/store-shapes.md](../../reference/shared-core/store-shapes.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../decisions/0001-tauri-v2-over-electron.md](../../decisions/0001-tauri-v2-over-electron.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md](../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md), [../../decisions/0018-desktop-execution-and-rust-egress.md](../../decisions/0018-desktop-execution-and-rust-egress.md)
 
 ## Goal
 
@@ -26,9 +26,11 @@ global milestone **M4** (the desktop agent-management center).
   Only the v1.0-authorable set is functional; `LoopNode` (and any Subworkflow node)
   ships as a reserved (forward-compat; not executable/authorable in v1.0) disabled
   placeholder (see [node-types.md](../../reference/shared-core/node-types.md)).
-- The full IPC contract implemented across the Rust/WebView boundary: commands,
-  the per-run `Channel<RunEvent>`, and broadcast events
-  ([ipc-contract.md](../../reference/contracts/ipc-contract.md)).
+- The full IPC contract implemented across the Rust/WebView boundary: commands, the
+  Rust-delegated `llm_stream` egress with its per-call `Channel<StreamChunk>`, and
+  broadcast events ([ipc-contract.md](../../reference/contracts/ipc-contract.md),
+  [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). Run events do
+  **not** cross IPC — the engine's `RunEventBus` runs WebView-side.
 - OS-keychain-backed key storage on macOS Keychain / Windows Credential Manager /
   libsecret, with the SQLCipher passphrase derived before plugin init
   ([keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md)).
@@ -65,9 +67,10 @@ global milestone **M4** (the desktop agent-management center).
   — see [node-types.md](../../reference/shared-core/node-types.md)), right-hand
   config panel (never modals), graph-locked-during-run behavior, and YAML
   serialize-on-save.
-- **Run mode (execution theater)**: live token streaming on node faces via the
-  Tauri IPC channel (not HTTP SSE in Phase 1), per-node status rings, and a live
-  cost accumulator.
+- **Run mode (execution theater)**: live token streaming on node faces driven by the
+  WebView-resident engine's `RunEventBus` (LLM tokens reach the engine over the
+  Rust-delegated `llm_stream` `Channel<StreamChunk>`; not HTTP SSE in Phase 1), per-node
+  status rings, and a live cost accumulator.
 - **Local SQLite history**: `@relavium/db` schema applied via `tauri-plugin-sql`;
   run-detail trace, Gantt timeline, event-log replay, retry-from-node, and the
   90-day prune job.
@@ -75,8 +78,11 @@ global milestone **M4** (the desktop agent-management center).
   always-visible cost on run screens.
 - Workflow YAML import/export (git-committable) and the bundled starter templates.
 - The `file_change` trigger (the only Phase 1 trigger besides manual).
-- `@relavium/core` invoked in the WebView, with the engine's `RunEventBus` bridged
-  to the IPC channel for the privileged-service path.
+- `@relavium/core` invoked in the WebView, with the engine's `RunEventBus` running
+  WebView-side (run events are produced and consumed in one JS runtime and do **not**
+  cross IPC); the only Rust→WebView channel on the LLM hot path is the
+  `Channel<StreamChunk>` from the delegated `llm_stream` egress
+  ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)).
 - Packaging, code-signing, notarization, and a Playwright per-platform e2e suite.
 
 ### Explicitly out of scope
@@ -158,13 +164,20 @@ and receive its event stream.
   [ipc-contract.md](../../reference/contracts/ipc-contract.md): `list_workflows`,
   `load_workflow`, `save_workflow`, `list_agents`, `save_agent`, `start_run`,
   `cancel_run`, `resume_run`, `list_runs`, `get_run_state`, `pick_file`,
-  `set_provider_key`, `get_key_status`, `list_mcp_servers` — each returning a typed
-  `Result` with a typed error.
-- Implement the per-run `tauri::ipc::Channel<RunEvent>`: `start_run` creates the
-  channel and returns `{ runId, channelId }`; the engine's `RunEventBus` is bridged
-  to the channel sender; the channel closes on run termination.
-- Honor backpressure: when the WebView lags, the Rust sender awaits (no dropped
-  events), per the channel semantics in the IPC contract.
+  `set_provider_key`, `get_key_status`, `list_mcp_servers`, `llm_stream` — each
+  returning a typed `Result` with a typed error.
+- Implement the Rust-delegated `llm_stream` egress with its per-call
+  `tauri::ipc::Channel<StreamChunk>`: Rust reads the provider key from the keychain by
+  reference, attaches the `Authorization` header, performs the streaming HTTPS request,
+  and streams provider chunks back over the channel; the channel closes when the call
+  ends ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). This is
+  the **only** Rust→WebView channel on the LLM hot path. `start_run` kicks off the
+  WebView-resident engine run (plus Rust-side bookkeeping: active-run count, checkpoint
+  persistence) and returns `{ runId }`; it does **not** push a `Channel<RunEvent>` — run
+  events stay WebView-side (below).
+- Honor backpressure on the egress channel: when the WebView consumer lags, the
+  `Channel<StreamChunk>` buffer fills and the Rust sender awaits (no dropped chunks),
+  per the channel semantics in the IPC contract.
 - Implement broadcast events: `active-runs-changed`, `mcp-health-changed`,
   `update-available`.
 - Build a typed TS client wrapper in the WebView (`invoke(...)` + `Channel`
@@ -174,15 +187,19 @@ and receive its event stream.
   `get_key_status` returns status only, never the key.
 
 **Tasks (engine bridge):**
-- Run `@relavium/core` + `@relavium/llm` in the WebView JS runtime; route events
-  that need privileged services (DB writes, key reads) through commands while
-  pushing the live stream over the channel.
+- Run `@relavium/core` + `@relavium/llm` in the WebView JS runtime with the engine's
+  `RunEventBus` WebView-side; the stores subscribe to the in-process bus directly (run
+  events never cross IPC). Route operations that need privileged services (DB writes, key
+  reads, LLM egress) through commands — LLM tokens arrive over the `llm_stream`
+  `Channel<StreamChunk>`, which the WebView adapter folds and the engine re-emits as
+  `agent:token` events on its in-WebView bus
+  ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)).
 
 **Acceptance:** a Node-level integration test (or a headless WebView harness) calls
-`start_run` against a 1-node workflow and receives an ordered `RunEvent` stream
-over the channel ending in `run:completed`; `cancel_run` interrupts mid-stream and
-emits `run:cancelled`; round-tripping a `WorkflowDefinition` through
-`save_workflow`/`load_workflow` is byte-stable.
+`start_run` against a 1-node workflow; the WebView-resident engine produces an ordered
+`RunEvent` stream on its in-process `RunEventBus` ending in `run:completed`; `cancel_run`
+interrupts mid-stream and emits `run:cancelled`; round-tripping a `WorkflowDefinition`
+through `save_workflow`/`load_workflow` is byte-stable.
 
 ### 3.C — App shell: Vite + React 19 + TanStack Router + stores
 
@@ -274,14 +291,18 @@ edges, configures the agent in the side panel, and saves — and a synthetic bur
 `agent:token` events into `runStore` re-renders only the streaming node (verified by
 a render-count assertion), never the whole canvas.
 
-### 3.F — Run mode: live execution theater over IPC
+### 3.F — Run mode: live execution theater
 
 Turn the canvas into a live view: streaming tokens on node faces, status rings, and
-a live cost accumulator, all over the Tauri channel. **Critical path.**
+a live cost accumulator, all from the WebView-resident engine's `RunEventBus`. **Critical
+path.**
 
 **Tasks:**
-- On Run, call `start_run`, subscribe to the returned channel, and feed every event
-  into `runStore.handleRunEvent`; render the **token double-buffer** so high-
+- On Run, call `start_run`, then subscribe to the engine's in-WebView `RunEventBus` for
+  that `runId` and feed every event into `runStore.handleRunEvent` (run events do not
+  cross IPC — [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md); LLM
+  tokens reach the engine over the `llm_stream` `Channel<StreamChunk>` and are re-emitted
+  as `agent:token` events on the bus); render the **token double-buffer** so high-
   frequency `agent:token` events do not thrash React.
 - Render per-node status rings (idle / queued / running / done / error) from
   `node:started` / `node:completed` / `node:failed`, and streaming text inside the
@@ -487,7 +508,7 @@ center) and gate Phase 4.
 
 | In-phase milestone | Meaning | Completed by |
 |--------------------|---------|--------------|
-| P3.M1 (shell) | Shell + IPC + stores live; routes navigate; engine reachable over the channel | 3.A, 3.B, 3.C |
+| P3.M1 (shell) | Shell + IPC + stores live; routes navigate; WebView-resident engine running with its `RunEventBus` wired to the stores and the `llm_stream` egress reachable over its `Channel<StreamChunk>` | 3.A, 3.B, 3.C |
 | P3.M2 (manage) | Keychain-backed keys + agent management + test chat working offline | 3.G, 3.D |
 | P3.M3 (canvas) | Canvas with the v1.0-authorable node set functional (LoopNode/Subworkflow reserved, disabled), ADR-0010 subscriptions, YAML save | 3.E, 3.M |
 | P3.M4 (theater) | Live execution theater: streaming node faces, gate overlay, live cost | 3.F, 3.I |
@@ -541,7 +562,7 @@ All must be true to start Phase 4 (VS Code):
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | ReactFlow O(n) re-renders at scale | Canvas janks exactly while the user watches a run | Zustand direct subscriptions + separate `runStore`, per-node `useRunNodeStatus` selectors with shallow equality ([ADR-0010](../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md)); a CI performance gate (3.L) |
-| Tauri IPC streaming throughput | High-frequency `agent:token` events overwhelm the renderer | Channel backpressure (Rust sender awaits) + a WebView token double-buffer; measure early, coalesce token events without changing the engine contract |
+| Tauri IPC streaming throughput | High-frequency LLM chunks on the `llm_stream` `Channel<StreamChunk>` overwhelm the WebView, which re-emits them as `agent:token` events to the renderer | `Channel<StreamChunk>` backpressure (the Rust sender awaits when the WebView lags — [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)) + a WebView token double-buffer; measure early, coalesce token events without changing the engine contract. (Run events themselves never cross IPC — the `RunEventBus` is WebView-side.) |
 | Scope creep toward an IDE | Erodes the agent-management product boundary | Hard constraint in [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md); a scope-regression e2e asserting no editor/file-tree/terminal (3.L) |
 | Cross-platform keychain differences | Keys fail to store/read on one OS | The keychain abstraction in [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md); never hand-roll crypto, wrap vetted OS primitives; opt-in AES-256-GCM file fallback with no silent plaintext path |
 | Cross-platform WebView rendering | The canvas renders subtly differently on WKWebView / WebView2 / WebKitGTK | Per-platform Playwright e2e (3.L); validate the installer on a clean Windows 10 VM for the WebView2 bootstrap |

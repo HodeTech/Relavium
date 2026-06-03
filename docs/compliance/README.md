@@ -41,9 +41,18 @@ The canonical managed-mode data-handling decision is
 
 ## Gate status
 
-All gates are launch-blocking for managed mode and are **not started**: this section is
-documentation of the obligation, not evidence of compliance. Managed mode does not ship
-until every gate below is **cleared**.
+These gates apply to **managed mode only** — BYOK-local needs none of them — and are all
+**not started**: this section is documentation of the obligation, not evidence of
+compliance. They are not all the same kind of gate, so the table's Status column draws
+the line:
+
+- **Hard launch-blockers** — managed mode does **not** ship until these are cleared:
+  the provider ToS / reselling go/no-go (**R1**), the merchant-of-record, the DPA +
+  sub-processor list, and the KVKK / GDPR posture. A managed launch without any one of
+  these is a no-go.
+- **Post-launch trajectory** — **SOC 2 Type II** is required for enterprise sales (a
+  6–12 month runway) and is pursued on a trajectory after the managed launch, not a
+  prerequisite to it.
 
 | Gate | What it requires | Document | Status |
 |------|------------------|----------|--------|

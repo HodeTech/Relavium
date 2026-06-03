@@ -66,11 +66,16 @@ constraint; see [product-constraints.md](product-constraints.md).
 ## Execution Model
 
 - **Phase 1 — local-first (BYOK-local).** Agents run on the user's machine. In
-  this **BYOK-local mode**, LLM API calls go directly from the user's machine to
-  the providers (Anthropic, OpenAI, Gemini, DeepSeek) under the user's own keys.
-  No cloud dependency, no account required, no server to run. In this mode privacy
-  is a guarantee, not an add-on — and it stays a permanently-supported, first-class
-  mode in every later phase (see [product-constraints.md](product-constraints.md)).
+  this **BYOK-local mode**, LLM API calls leave the user's own machine straight to
+  the providers (Anthropic, OpenAI, Gemini, DeepSeek) under the user's own keys;
+  nothing transits a Relavium server. On the desktop the authenticated HTTPS call
+  is performed by the **Tauri Rust core** (`llm_stream`), so the raw key is read
+  from the OS keychain and used only in Rust and never enters the WebView (see
+  [architecture/desktop-architecture.md](architecture/desktop-architecture.md));
+  on CLI/VS Code the same call is a direct in-process fetch. No cloud dependency,
+  no account required, no server to run. In this mode privacy is a guarantee, not
+  an add-on — and it stays a permanently-supported, first-class mode in every later
+  phase (see [product-constraints.md](product-constraints.md)).
 - **Phase 2 — two independent capabilities.** *(Explicitly Phase 2, and separate
   from each other.)*
   - **Managed inference** — an opt-in *convenience* mode and the **first** Phase-2
@@ -87,14 +92,21 @@ constraint; see [product-constraints.md](product-constraints.md).
     inference does not.
 
   Phase 1 is never designed to *require* the cloud; the engine architecture
-  supports local, managed, and cloud modes behind a clean interface switch (the
-  `LLMProvider` seam is unchanged). See [roadmap/README.md](roadmap/README.md).
+  supports all three modes behind two distinct seams. **Local** and **managed**
+  switch behind the `LLMProvider` seam (same engine, different egress/keying).
+  **Cloud** is the separate **`ExecutionHost`** seam: it relocates the whole engine
+  to a server-side worker — it is *not* an `LLMProvider` switch. See
+  [decisions/0018-desktop-execution-and-rust-egress.md](decisions/0018-desktop-execution-and-rust-egress.md)
+  and [roadmap/README.md](roadmap/README.md).
 
 ## Why It Wins
 
-- **Own all four surfaces with one runtime.** Every competitor owns at most two;
-  Relavium runs the identical engine across desktop, VS Code, CLI, and (Phase 2)
-  the cloud.
+- **Own all four surfaces; one engine runs the execution ones.** Every competitor
+  owns at most two surfaces. The **identical engine** runs on the three Phase-1
+  execution surfaces — desktop, VS Code, and CLI — so behavior is the same on each.
+  The Phase-2 **control-plane portal** is a browser surface for usage, quota, and
+  governance, *not* a fourth identical-engine runtime; cloud execution (Phase 2)
+  relocates that same engine to a server-side worker.
 - **Workflows are git objects.** Reviewable, diffable, PR-able, revertable — the
   workflow file is team infrastructure, and it is also the invite: sharing a
   `.relavium.yaml` is how Relavium spreads through a team.

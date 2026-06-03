@@ -80,7 +80,7 @@ inputs:
     default: 'team@example.com'
 ```
 
-`secret`-typed inputs are resolved through the secret store, never written into run logs or the workflow file. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+`secret`-typed inputs are resolved through the secret store, never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
 ## Context and interpolation
 
@@ -135,7 +135,7 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 | `input` | Workflow entry point; emits the resolved inputs. | — |
 | `agent` | Invoke an agent (LLM call with tools). | `agent_ref`, `prompt_template`, `tools`, `model`, `temperature`, `max_tokens`, `timeout_ms`, `retry` |
 | `human_gate` | Pause for human approval / input / review. | `gate_type`, `assignee`, `message_template`, `timeout_ms`, `timeout_action` |
-| `condition` | Branch on a JS expression over run outputs. | `condition`, `branches[]` |
+| `condition` | Branch on a JS expression over run outputs. | `expression`, `branches[]` (`when`, `target_node`), `default` |
 | `transform` | Reshape state without an LLM (JS expression). | `transform` |
 | `parallel` | Fan out to several nodes concurrently. | `parallel_of[]` |
 | `merge` | Fan in / combine parallel results. | `merge_strategy`, `merge_fn` |
@@ -183,19 +183,18 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 ```yaml
 - id: severity-gate
   type: condition
-  condition: 'run.outputs["security-scan-node"].score < 7'
+  expression: 'run.outputs["security-scan-node"].score < 7'
   branches:
-    - label: low_score
-      condition: 'true'
+    - when: true             # taken when the expression evaluates to this value
       target_node: human-approval
-    - label: passing
-      condition: 'false'
+    - when: false
       target_node: synthesize-report
+  default: synthesize-report  # taken when no `when` matches the evaluated result
 ```
 
-A condition node selects a branch by evaluating each branch's `condition` against run state. Branch labels are also referenceable from edges as `nodeId:branchLabel` (see [Edges](#edges)).
+A condition node evaluates `expression` **once** and selects the branch whose `when` value equals the result; if none matches, control flows to `default`. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
 
-A bare `condition:` string is a **sandboxed JavaScript expression** (`expression_type: js`, the default — no I/O, no ambient globals). The other allowed expression languages are `jmespath` and `jsonlogic` (set `expression_type` to opt in). **There is no Python expression evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The full `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
+The `expression:` string is a **sandboxed JavaScript expression** (`expression_type: js`, the default — no I/O, no ambient globals). The other allowed expression languages are `jmespath` and `jsonlogic` (set `expression_type` to opt in). **There is no Python expression evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The full `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
 
 ### `transform` node
 
@@ -258,9 +257,9 @@ edges:
     to: fan-out
   - from: fan-out
     to: security-scan-node
-  - from: severity-gate:low_score   # branch handle on the condition node
+  - from: severity-gate:true        # branch handle (the `when` value) on the condition node
     to: human-approval
-  - from: severity-gate:passing
+  - from: severity-gate:false
     to: synthesize-report
 ```
 
@@ -382,14 +381,13 @@ workflow:
 
     - id: severity-gate
       type: condition
-      condition: 'run.outputs["security-scan-node"].score < 7'
+      expression: 'run.outputs["security-scan-node"].score < 7'
       branches:
-        - label: low_score
-          condition: 'true'
+        - when: true
           target_node: human-approval
-        - label: passing
-          condition: 'false'
+        - when: false
           target_node: synthesize-report
+      default: synthesize-report
 
     - id: human-approval
       type: human_gate
@@ -423,8 +421,8 @@ workflow:
     - { from: security-scan-node, to: merge }
     - { from: style-review-node, to: merge }
     - { from: merge, to: severity-gate }
-    - { from: 'severity-gate:low_score', to: human-approval }
-    - { from: 'severity-gate:passing', to: synthesize-report }
+    - { from: 'severity-gate:true', to: human-approval }
+    - { from: 'severity-gate:false', to: synthesize-report }
     - { from: human-approval, to: synthesize-report }
     - { from: synthesize-report, to: output }
 ```

@@ -103,11 +103,13 @@ These are the *only* substitutions; everything else is shared:
 - **State store.** Local SQLite becomes PostgreSQL 16 with multi-tenancy (an
   `org_id` column and row-level security), so workflows and runs can be shared
   within a team.
-- **Event transport.** Run events that were delivered over Tauri IPC / WebView
-  `postMessage` are delivered over **HTTP SSE backed by Redis Streams**, consumed
-  by the portal's `EventSource` with `Last-Event-ID` resumption. The event *shape*
-  is still the [SSE event schema](../reference/contracts/sse-event-schema.md) — the
-  same schema the desktop app delivers over IPC.
+- **Event transport.** Run events that are produced **in-process** by the engine's
+  WebView-side `RunEventBus` on the desktop (and consumed locally there — see
+  [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)) are, in cloud
+  mode, delivered over **HTTP SSE backed by Redis Streams**, consumed by the portal's
+  `EventSource` with `Last-Event-ID` resumption. The event *shape* is unchanged — the
+  [SSE event schema](../reference/contracts/sse-event-schema.md) is the one canonical
+  union for every surface and transport.
 - **Key storage.** OS keychain (local) becomes the server-side encrypted store
   (cloud). Local runs continue to use the OS keychain.
 - **Triggers.** Webhook and schedule triggers — which need an always-on listener —

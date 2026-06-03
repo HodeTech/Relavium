@@ -36,7 +36,9 @@ stateDiagram-v2
 A run is started identically from any surface — the only difference is the entry
 point and how events are painted:
 
-- **Desktop**: the canvas Run button calls the engine over Tauri IPC.
+- **Desktop**: the canvas Run button starts the engine, which runs **in the WebView's
+  JS runtime** ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)).
+  Only the authenticated LLM egress is delegated to a Rust command.
 - **CLI**: `relavium run <workflow>` calls the engine directly and renders with ink.
 - **VS Code**: a right-click / command runs the engine in the extension host.
 
@@ -83,9 +85,13 @@ As the provider streams tokens back, the `AgentRunner` emits them on the
 `sequenceNumber`. The event names and payloads are defined there, not restated
 here:
 
-- **Desktop** — events cross the Tauri IPC boundary (a Tauri Channel for the
-  high-throughput token stream) and are routed to the matching ReactFlow node by
-  `nodeId`. The IPC surface is defined in
+- **Desktop** — the engine and its `RunEventBus` run **WebView-side**, so run events
+  are produced and consumed in the same JS runtime and routed to the matching
+  ReactFlow node by `nodeId` **without crossing IPC**. The only Rust→WebView channel
+  on the LLM hot path is the delegated egress's `Channel<StreamChunk>`, which the
+  WebView adapter folds into `agent:token` events on that bus
+  ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)). The IPC
+  surface is defined in
   [../reference/contracts/ipc-contract.md](../reference/contracts/ipc-contract.md).
 - **VS Code** — events are posted to the WebviewPanel via `postMessage`.
 - **CLI** — ink re-renders the live node status and token stream in the terminal.
@@ -148,16 +154,27 @@ accounting is computed in `packages/llm`; see
 ## Local vs cloud execution
 
 Everything above describes **local** execution (Phase 1): the engine runs in the
-host process and LLM calls go directly from the machine to the provider. In
-Phase 2 the same lifecycle runs on cloud workers and events stream over HTTP SSE
-instead of IPC — the surfaces see identical `RunEvent` objects either way. The
-transparent switch is described in [cloud-phase-2.md](cloud-phase-2.md).
+host process (the WebView's JS runtime on the desktop) and LLM calls go from the
+machine to the provider — directly on the Node-style surfaces, and via the
+Rust-delegated egress on the desktop
+([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)).
 
-A separate Phase-2 **managed** mode keeps the engine running locally and redirects
-only the LLM egress through the Relavium gateway (an egress-only proxy on
-Relavium's key); the run lifecycle above is unchanged
-([ADR-0012](../decisions/0012-managed-inference-dual-mode.md),
-[managed-inference.md](managed-inference.md)).
+The two Phase-2 modes switch at **different seams**, which is the key framing:
+
+- **Cloud** mode switches the **`ExecutionHost`**: the *whole engine relocates* to a
+  cloud worker, and events stream over HTTP SSE instead of the in-process bus — the
+  surfaces see identical `RunEvent` objects either way. The transparent switch is
+  described in [cloud-phase-2.md](cloud-phase-2.md).
+- **Managed** mode does **not** move the engine; it keeps the engine running locally
+  and switches only behind the **`LLMProvider` seam**, redirecting the LLM egress
+  through the Relavium gateway (an egress-only proxy on Relavium's key). The run
+  lifecycle above is unchanged
+  ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md),
+  [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md),
+  [managed-inference.md](managed-inference.md)).
+
+In short: `cloud` is an `ExecutionHost` switch (engine relocates); `local` and
+`managed` are selected behind the `LLMProvider` seam (engine stays put).
 
 ## Related documents
 

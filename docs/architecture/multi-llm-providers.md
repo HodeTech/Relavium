@@ -29,12 +29,23 @@ flowchart TB
     FB --> OAdapter["OpenAI-compatible adapter<br/>openai SDK (OpenAI + DeepSeek via baseURL)"]
     FB --> GAdapter["GeminiAdapter<br/>@google/genai"]
     Cost -->|cost:updated events| Bus["RunEventBus"]
-    Seam -->|read key at call time| KC[["OS keychain"]]
-    AAdapter --> Anthropic["Anthropic"]
-    OAdapter --> OpenAI["OpenAI"]
-    OAdapter --> DeepSeek["DeepSeek"]
-    GAdapter --> Gemini["Gemini"]
+    AAdapter --> XP["injected HTTP transport"]
+    OAdapter --> XP
+    GAdapter --> XP
+    XP -->|Node surfaces: direct fetch,<br/>key resolved in-process| Direct["fetch / SDK"]
+    XP -->|"Desktop: key reference →<br/>Rust llm_stream"| Rust["Rust egress"]
+    Rust -->|reads key, sets Authorization| KC[["OS keychain"]]
+    Direct --> Anthropic["Anthropic"]
+    Rust --> Anthropic
+    Direct --> OpenAI["OpenAI"]
+    Direct --> DeepSeek["DeepSeek"]
+    Direct --> Gemini["Gemini"]
 ```
+
+> On the **desktop** the adapter passes a key **reference** (the keychain account id),
+> not the raw key — Rust performs the keychain read and the egress, so the raw key
+> never enters the WebView ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)).
+> On the Node-style surfaces the transport resolves the key in-process at call time.
 
 > Status: design — the multi-LLM choice is the internal `@relavium/llm`
 > abstraction per [ADR-0011](../decisions/0011-internal-llm-abstraction.md)
@@ -282,3 +293,4 @@ and reserve→settle metering — is in
 - [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md) · [../reference/shared-core/mcp-integration.md](../reference/shared-core/mcp-integration.md) — the tools the normalizer maps.
 - [../reference/contracts/agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) — where the fallback chain is declared.
 - [ADR-0011](../decisions/0011-internal-llm-abstraction.md) — the internal `@relavium/llm` abstraction decision (supersedes the earlier Vercel AI SDK decision).
+- [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md) — desktop execution model: engine in the WebView, Rust-delegated LLM egress, host-aware `key` parameter.

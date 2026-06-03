@@ -50,9 +50,14 @@ locked.
   ports to PostgreSQL for the Phase 2 cloud layer. See
   [reference/desktop/database-schema.md](reference/desktop/database-schema.md)
   and the SQLite-vs-Postgres porting notes there.
-- **Keys never touch the frontend.** API keys live in the OS keychain and are
-  resolved by the backend at call time. See
-  [reference/desktop/keychain-and-secrets.md](reference/desktop/keychain-and-secrets.md).
+- **Keys never touch the frontend.** API keys live only in the OS keychain,
+  resolved at call time, and never in the WebView renderer or any log/checkpoint.
+  On the **desktop** the keychain read and the LLM HTTPS egress are delegated to
+  the **Rust core** (`llm_stream`), so the raw key is used only in Rust and never
+  enters the WebView; on **CLI / VS Code / Bun** the key is resolved inside the
+  single trusted process at call time. See
+  [reference/desktop/keychain-and-secrets.md](reference/desktop/keychain-and-secrets.md)
+  and [architecture/desktop-architecture.md](architecture/desktop-architecture.md).
 
 ## Supporting Tooling
 

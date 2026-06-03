@@ -42,12 +42,10 @@ This is a hard rule, enforced in [security-review.md](security-review.md):
 ## The run-event stream is the observability backbone
 
 Relavium's primary observability surface is the canonical **run-event stream**, not an
-external APM. Its schema is the [SSE event schema](../reference/contracts/sse-event-schema.md)
-and is cited, not restated, here. Every run emits the colon-namespaced events in order by
-`sequenceNumber`:
-
-`node:started`, `agent:token`, `agent:tool_call`, `agent:tool_result`, `node:completed`,
-`node:failed`, `cost:updated`, `human_gate:paused`, `run:completed`, `run:failed`.
+external APM. The canonical `RunEvent` union — the colon-namespaced event names and their
+payloads — has one home: the [run-event schema](../reference/contracts/sse-event-schema.md).
+It is cited, not restated, here, so the names never drift between docs. Every run emits
+those events in order by `sequenceNumber`.
 
 - `cost:updated` carries `{nodeId, model, inputTokens, outputTokens, costMicrocents,
   cumulativeCostMicrocents}` and is the live cost-accounting signal that the desktop cost view and

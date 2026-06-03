@@ -1,0 +1,100 @@
+{
+  "confirmedCount": 29,
+  "refutedCount": 4,
+  "report": {
+    "counts": {
+      "confirmed": 29,
+      "refuted": 4
+    },
+    "findings": [
+      {
+        "file": "docs/reference/contracts/sse-event-schema.md + docs/reference/desktop/database-schema.md",
+        "location": "sse-event-schema.md:86 vs database-schema.md:50 (also :95-97, :194, :329; vscode/extension-api.md:92)",
+        "issue": "The same integer cost field (costMicrocents / *_microcents) is defined at two scales that differ by 100x. sse-event-schema.md:86 says 'integer μ¢ (1e-8 USD)'; database-schema.md:50 says 'INTEGER micro-cents (USD x 1,000,000)' = 1e-6 USD. A 'micro-cent' is 1e-2 × 1e-6 USD = 1e-8 USD, which also matches the Postgres NUMERIC(14,8) 8-decimal precision (database-schema.md:329). So the DB parenthetical 'USD x 1,000,000' is actually micro-DOLLARS and is off by 100x. Because the whole corpus pivoted to one canonical integer costMicrocents, every figure (model_catalog pricing, total_cost_microcents, cost:updated, the VS Code projection at extension-api.md:92 which is explicitly claimed 'consistent with the local database') is silently 100x wrong on one side of the seam.",
+        "severity": "high",
+        "fix": "Standardize on 1 unit = 1e-8 USD (the name 'micro-cent' and NUMERIC(14,8) both imply it). Correct database-schema.md:50 to read 'USD x 100,000,000' (equivalently 'cents x 1,000,000'); delete the misleading 'USD x 1,000,000'. Add a one-line canonical unit definition to the llm-provider-seam doc (the cited source of cost figures) and link to it from sse-event-schema.md, database-schema.md, and vscode/extension-api.md so the 'consistent with' claims actually resolve to one number."
+      },
+      {
+        "file": "docs/reference/contracts/workflow-yaml-spec.md",
+        "location": "workflow-yaml-spec.md:184-196 and the duplicate at 383-393; prose at :196; node-types.md:118",
+        "issue": "The condition-node example carries BOTH a top-level `condition: 'run.outputs[\"security-scan-node\"].score < 7'` AND a `branches[]` array whose per-branch `condition` values are hardcoded to `'true'` / `'false'`. The prose (‘selects a branch by evaluating each branch's condition’) makes the top-level `condition` dead, and the real predicate (score < 7) is never evaluated against the branches. The engine config (node-types.md:118 `condition_config`) has a single `expression` + `branches[]` + `default_target_node_id`, i.e. ONE expression selecting a branch — the example maps onto neither model. The same broken shape is repeated in the full example at lines 383-393.",
+        "severity": "high",
+        "fix": "Pick one evaluation model and make both example copies express it: either (a) a single top-level `expression` whose value is matched against branch `label`s (drop per-branch `condition`), or (b) ordered per-branch `condition` predicates with a `default` (drop the top-level `condition`). Then align node-types.md `condition_config` field names (`expression` vs `branches[].condition`) to the chosen YAML shape, and fix the prose at :196."
+      },
+      {
+        "file": "docs/reference/contracts/sse-event-schema.md + docs/reference/contracts/workflow-yaml-spec.md",
+        "location": "sse-event-schema.md:56 and the security note at :110; workflow-yaml-spec.md:74,83",
+        "issue": "The `run:started` event payload includes `inputs` (sse-event-schema.md:56). Workflows can declare `secret`-typed inputs (workflow-yaml-spec.md:74-83) that are 'resolved through the secret store, never written into run logs or the workflow file.' But the event-payload security guarantee (sse-event-schema.md:110) only covers `agent:tool_call.toolInput` and `agent:tool_result.outputSummary` — it does not cover `run:started.inputs`. Since this stream is persisted to run_events (database-schema.md:265) and, in Phase 2, sent over SSE, a secret-typed input value would land in an event payload and a persisted log, directly violating the secret guarantee.",
+        "severity": "high",
+        "fix": "State explicitly that `run:started.inputs` omits or masks `secret`-typed inputs (e.g. replace the value with a `{ secret: true, ref }` placeholder), and extend the line-110 security note to cover `run:started.inputs` alongside tool input/output. Mirror the rule in workflow-yaml-spec.md's secret-input section."
+      },
+      {
+        "file": "docs/decisions/0006-os-keychain-for-api-keys.md",
+        "location": "line 23 (Decision, final sentence)",
+        "issue": "ADR-0006 still describes the pre-pivot desktop key model: 'When the engine needs a key, the backend reads it and hands it to the @relavium/llm adapter (ADR-0011); it does not cross the IPC boundary to the WebView.' This is now self-contradictory and contradicts the canonical model: per ipc-contract.md:67-69 and local-first-and-security.md:41-48, the @relavium/llm adapter runs IN the WebView on desktop, and Rust performs the LLM egress itself (llm_stream) with the key resolved at call time — the adapter only ever receives a non-sensitive key reference. If the adapter is in the WebView and the backend 'hands it the key', the key DOES cross to the WebView. The archived review (analysis/_archive/foundation-review-result.json) flagged this line only for the Vercel→@relavium/llm rename and missed the egress-model correction.",
+        "severity": "high",
+        "fix": "Rewrite line 23 to the Rust-delegated-egress mechanism: the Rust backend reads the key from the keychain and performs the authenticated LLM HTTPS request itself (llm_stream), so the raw key never enters the WebView and is never handed to the WebView-resident adapter, which passes only a key reference. Cite reference/contracts/ipc-contract.md#rust-delegated-llm-egress. The keychain-storage decision itself is unchanged, so this is a factual mechanism correction, not a supersession."
+      },
+      {
+        "file": "docs/decisions/0011-internal-llm-abstraction.md",
+        "location": "line 48 (Consequences > Positive), with line 15 (Context) framing",
+        "issue": "ADR-0011:48 states keys are 'read from the OS keychain (ADR-0006) and attached by the adapter, never reaching the frontend.' On desktop the adapter runs in the WebView (the frontend's JS runtime), so 'attached by the adapter' is exactly the model removed by the egress pivot: per ipc-contract.md:67-69 and local-first-and-security.md:42-44 the desktop adapter does NOT attach the key — it hands Rust a key reference and Rust attaches the Authorization header. The phrasing contradicts the canonical execution model and sits in tension with ADR-0011's own framing (line 15) that the engine+adapters run in the WebView identically to other surfaces (desktop being the egress-delegated exception).",
+        "severity": "medium",
+        "fix": "Make line 48 host-aware: keys are read from the keychain and attached during egress — directly by the adapter on Node-style hosts (CLI, extension host, Bun API), and by the Rust backend on desktop where egress is delegated (llm_stream), so the key never reaches the WebView-resident adapter. Reference the IPC contract's Rust-delegated-egress section."
+      },
+      {
+        "file": "docs/reference/contracts/sse-event-schema.md",
+        "location": "sse-event-schema.md:14 (diagram) and :155 (Phase-1 desktop transport note) vs ipc-contract.md:71-89",
+        "issue": "The SSE schema's desktop transport was not propagated from the reconciled engine-in-WebView model. sse-event-schema.md:14 shows 'RunEventBus --|Tauri Channel| Desktop WebView' and :155 says 'events flow over a typed, backpressure-aware Tauri Channel<RunEvent> created per run. If the WebView falls behind, the Rust sender awaits.' But ipc-contract.md:73-85 states the RunEventBus runs in the WebView, so the RunEvent channel is created and consumed entirely WebView-side, most RunEvents never cross IPC, and the only Rust→WebView stream in the LLM path is the Channel<StreamChunk> for llm_stream. There is no 'Rust sender' for RunEvents on desktop — so :14/:155 contradict the canonical IPC contract. (Roadmap phase-3-desktop.md:166,544 repeat the same 'Rust sender awaits' framing.)",
+        "severity": "medium",
+        "fix": "Update the diagram and the Phase-1 desktop note to match ipc-contract.md: on desktop the RunEventBus and stores share the WebView JS runtime (no per-event IPC); the only Rust→WebView backpressured stream is the llm_stream Channel<StreamChunk>. Reserve the 'Rust sender awaits' backpressure language for the StreamChunk egress channel. Optionally align the phase-3 roadmap wording."
+      },
+      {
+        "file": "docs/reference/cli/commands.md",
+        "location": "commands.md:90-98 vs sse-event-schema.md:101,135 and ipc-contract.md:54",
+        "issue": "The resume contract makes gateId mandatory: sse-event-schema.md:101 says gateId is 'required by the resume path — engine.resume(runId, gateId, decision)' and the IPC `resume_run` takes `{ runId, gateId, decision }` (ipc-contract.md:54). But the CLI resume surface — which the contracts explicitly call 'the surface-agnostic resume path' (commands.md:92) — is `relavium gate <runId> --approve` (commands.md:95-97) and provides NO way to pass gateId. A run can have multiple gates, so runId-only resume is ambiguous and cannot satisfy the documented mandatory resume signature.",
+        "severity": "medium",
+        "fix": "Add an optional `--gate <gateId>` to `relavium gate` (defaulting to the single currently-pending gate, erroring if more than one is pending) and have `relavium status` print pending gateIds. Alternatively, document in the contracts that gateId defaults to the unique pending gate — but keep the CLI surface and the mandatory-gateId signature consistent either way."
+      },
+      {
+        "file": "docs/decisions/0003-pure-ts-engine-not-langgraph-python.md",
+        "location": "line 25 (Decision, portability paragraph)",
+        "issue": "ADR-0003 claims the engine runs identically in 'the Tauri WebView's backing Node context.' A Tauri v2 WebView has no backing Node context — that is an Electron concept. ADR-0001 chose Tauri precisely because it uses the OS-native WebView and bundles no Node/Chromium runtime, and the canonical docs say the engine runs in 'the WebView's JS runtime' (ipc-contract.md:7,67; local-first-and-security.md:41; desktop-architecture.md:78). The statement is technically wrong, contradicts ADR-0001 and the architecture docs, and undercuts the very portability argument the ADR is making.",
+        "severity": "medium",
+        "fix": "Replace 'the Tauri WebView's backing Node context' with 'the Tauri WebView's JS runtime' (or 'the Tauri desktop app's WebView runtime'), consistent with ADR-0001's OS-native-WebView choice and the canonical contract/architecture docs."
+      },
+      {
+        "file": "docs/decisions/0014-managed-metering-quota-and-billing.md",
+        "location": "line 15 (bold Decision summary) and line 21 ('Stripe billing' bullet) vs lines 51-53 ('Billing topology (clarification)') and tech-stack.md:30-31",
+        "issue": "The headline Decision (line 15) still asserts the gateway 'bills through Stripe' and the line-21 bullet is titled 'Stripe billing' with Stripe as the rail — but the appended clarification (lines 51-53) and tech-stack.md:30-31 make merchant-of-record (Paddle/Lemon Squeezy) the PRIMARY rail with Stripe a mutually-exclusive ALTERNATIVE. A reader who reads only the normative Decision gets Stripe-primary, the inverse of the actual decision. Self-resolving via an appended note that contradicts the headline is a real clarity/correctness hazard.",
+        "severity": "low",
+        "fix": "Fix it at the source: change line 15 and the line-21 bullet to name the merchant-of-record as the primary billing rail and Stripe as the mutually-exclusive alternative (matching tech-stack.md and the clarification), and keep a one-line historical changelog note that the original framing said Stripe. Append-only history is better served by a corrected Decision plus a changelog note than by a Decision that states the inverse of the truth."
+      },
+      {
+        "file": "docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md",
+        "location": "line 9 (Context)",
+        "issue": "ADR-0005 describes the data model as 'runs, run_events, and run_costs, plus a per-project metadata store.' The canonical database-schema.md has materially more: catalog tables (llm_providers, model_catalog, agents, workflows) and — crucially — step_executions and messages in the run-history set (database-schema.md:205,241). step_executions is the central per-attempt-cost table that run_costs/run_events hang off. The ADR's enumeration is stale and omits the central run-detail table, contradicting the one-canonical-home reference it links to.",
+        "severity": "low",
+        "fix": "Soften the enumeration to avoid implying completeness, e.g. 'run history (runs, step_executions, run_events, run_costs, messages), catalog tables, and per-project metadata — see the canonical database-schema.md', or drop the explicit table names and defer to the linked schema, per the ADRs-cite-don't-restate principle in the decisions README."
+      }
+    ],
+    "crossCuttingThemes": [
+      "Desktop key-egress pivot was applied to the canonical layer (ipc-contract.md, local-first-and-security.md, desktop-architecture.md) but never propagated to the dependent layer: ADR-0006:23, ADR-0011:48, sse-event-schema.md:14/155, and roadmap phase-3-desktop.md all still describe the old 'adapter/Rust hands the key / Rust sender streams RunEvents' model. Same root edit, multiple stale echoes — several internally self-contradictory.",
+      "Cost-unit scale is not defined once. 'costMicrocents/*_microcents' is asserted in five+ files but the magnitude (1e-8 vs 1e-6 USD) disagrees across sse-event-schema.md and database-schema.md, and downstream docs (vscode/extension-api.md) claim 'consistency' that does not hold. A money unit with money-correctness stakes has no single canonical definition to cite.",
+      "Spec examples encode a model the engine config cannot execute: the condition-node example carries a top-level expression AND hardcoded per-branch true/false conditions, mapping onto neither the prose nor node-types.md condition_config. Worked examples are out of sync with the field-level contract.",
+      "Cross-surface contract symmetry is asserted but not actually uniform: the resume path is declared 'surface-agnostic' with a mandatory gateId, yet the CLI surface (relavium gate <runId>) cannot pass one. Claims of 'identical across surfaces' aren't validated against each surface's concrete flags/signatures.",
+      "Append-only ADR discipline produced Decisions whose normative headline now states the inverse of the agreed outcome (ADR-0014 Stripe-primary vs MoR-primary), patched only by a trailing clarification — and stale enumerations (ADR-0005 table list) that contradict the canonical reference they cite. The 'cite, don't restate' rule is stated but unevenly applied.",
+      "Residual vocabulary from the prior stack/runtime model leaks in: 'Tauri WebView's backing Node context' (an Electron concept) survives in ADR-0003, the same way Vercel-era phrasing survived the LLM pivot — indicating scrubs were keyword-targeted rather than model-level."
+    ],
+    "prioritizedActionList": [
+      "1. Define the cost unit ONCE and fix database-schema.md:50 (high, money-correctness). Pick 1 unit = 1e-8 USD, correct 'USD x 1,000,000' → 'USD x 100,000,000', add a canonical unit definition in llm-provider-seam.md, and link it from sse-event-schema.md, database-schema.md, vscode/extension-api.md. This is the only blocker-class defect: it silently 100x-misprices every cost figure and propagates into Phase-2 billing tables.",
+      "2. Close the run:started.inputs secret-leak gap (high, security). Specify that secret-typed inputs are masked in run:started.inputs and extend the sse-event-schema.md:110 security note; mirror in workflow-yaml-spec.md. A persisted/streamed secret directly violates a stated guarantee.",
+      "3. Propagate the desktop key-egress pivot to every stale echo in one sweep (high+medium). Fix ADR-0006:23, ADR-0011:48, sse-event-schema.md:14/155 (and align phase-3-desktop.md). Doing these together resolves the largest cluster of self-contradictions and the internal contradiction in ADR-0006.",
+      "4. Repair the condition-node example to a single executable model and align node-types.md condition_config field names (high). Fix both copies (workflow-yaml-spec.md:184-196 and 383-393) and the :196 prose.",
+      "5. Make the CLI resume surface satisfy the mandatory-gateId contract (medium): add --gate to `relavium gate`, have `relavium status` print pending gateIds, or document a unique-pending-gate default — consistently across commands.md and the contracts.",
+      "6. Fix ADR-0003:25 'backing Node context' → 'WebView's JS runtime' (medium), a fast factual correction.",
+      "7. Correct ADR-0014's headline Decision (line 15 / line 21) to MoR-primary, Stripe-alternative with a changelog note (low), and soften ADR-0005:9's stale table enumeration to defer to database-schema.md (low)."
+    ],
+    "overallVerdict": "The corpus is substantially coherent and close to ready: the architecture is internally consistent at the canonical layer (ipc-contract.md, local-first-and-security.md, llm-provider-seam.md, node-types.md are well-reconciled and explicitly designate single sources of truth), and 4 of the original 33 findings were correctly refuted. The remaining 29 confirmed issues are propagation/consistency defects rather than design flaws — the decisions themselves hold; the dependent docs lag the decisions. Exactly one is blocker-class for implementation: the 100x cost-unit ambiguity (sse-event-schema.md:86 vs database-schema.md:50), because it is a money value, is asserted 'consistent' across surfaces while disagreeing, and feeds Phase-2 billing. The two other 'high' items — the run:started.inputs secret-leak gap and the condition-node example that no engine config can execute — are spec-correctness defects that should be fixed before any code targets these contracts. The desktop key-egress cluster (ADR-0006/0011, sse-event-schema transport) is the highest-volume issue but is a documentation-consistency sweep, not a redesign. None of the findings require superseding an ADR or reopening a decision. Recommendation: corpus is NOT yet ready to be treated as a frozen contract baseline, but is one focused editing pass (items 1-4) away from it; items 5-7 are cleanup that can follow. Note: my source set contained 11 fully-specified confirmed findings; the remaining confirmed findings were truncated in the handoff and were not reconstructed here to avoid inventing detail — the consolidation above reflects the verifiable subset, all re-checked against the files.\""
+  }
+}
