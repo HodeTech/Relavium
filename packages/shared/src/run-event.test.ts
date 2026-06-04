@@ -27,6 +27,7 @@ const valid: Record<string, Record<string, unknown>> = {
     type: 'agent:tool_call',
     ...env,
     nodeId: 'n',
+    model: 'claude-sonnet-4-6',
     toolId: 'read_file',
     toolInput: { path: 'x' },
   },
@@ -82,6 +83,7 @@ const valid: Record<string, Record<string, unknown>> = {
     ...env,
     outputs: {},
     totalTokensUsed: { input: 1, output: 2 },
+    totalCostMicrocents: 999,
     durationMs: 100,
   },
   'run:failed': {
@@ -108,6 +110,14 @@ const reject: Record<string, Record<string, unknown>> = {
     type: 'agent:tool_call',
     ...env,
     nodeId: 'n',
+    model: 'm',
+    toolInput: {},
+  },
+  'agent:tool_call (missing model)': {
+    type: 'agent:tool_call',
+    ...env,
+    nodeId: 'n',
+    toolId: 'read_file',
     toolInput: {},
   },
   'agent:tool_result (missing success)': {
@@ -145,6 +155,14 @@ const reject: Record<string, Record<string, unknown>> = {
   'run:completed (missing outputs)': {
     type: 'run:completed',
     ...env,
+    totalTokensUsed: { input: 1, output: 2 },
+    totalCostMicrocents: 0,
+    durationMs: 100,
+  },
+  'run:completed (missing totalCostMicrocents)': {
+    type: 'run:completed',
+    ...env,
+    outputs: {},
     totalTokensUsed: { input: 1, output: 2 },
     durationMs: 100,
   },
@@ -202,6 +220,12 @@ describe('cost:updated and sequenceNumber invariants', () => {
     expect(CostUpdatedEventSchema.safeParse({ ...ok, cumulativeCostMicrocents: -1 }).success).toBe(
       false,
     );
+  });
+
+  it('accepts an optional 1-based attemptNumber on cost:updated, rejects non-positive', () => {
+    const ok = valid['cost:updated'];
+    expect(CostUpdatedEventSchema.safeParse({ ...ok, attemptNumber: 2 }).success).toBe(true);
+    expect(CostUpdatedEventSchema.safeParse({ ...ok, attemptNumber: 0 }).success).toBe(false);
   });
 
   it('accepts sequenceNumber 0 but rejects negative / fractional', () => {

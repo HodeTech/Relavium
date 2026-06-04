@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { nonEmptyString, nonNegativeInt } from './common.js';
+import { nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
 import { EXECUTION_MODES } from './constants.js';
 import { GateTypeSchema } from './node.js';
 
@@ -57,6 +57,7 @@ export const AgentToolCallEventSchema = z.object({
   type: z.literal('agent:tool_call'),
   ...baseFields,
   nodeId: nonEmptyString,
+  model: nonEmptyString, // the invoking model — attributable across a fallover
   toolId: nonEmptyString,
   toolInput: z.unknown(), // sanitized — no secrets
 });
@@ -79,6 +80,7 @@ export const CostUpdatedEventSchema = z.object({
   outputTokens: nonNegativeInt,
   costMicrocents: nonNegativeInt, // integer micro-cents (canonical unit), from our pricing table
   cumulativeCostMicrocents: nonNegativeInt,
+  attemptNumber: positiveInt.optional(), // 1-based retry attempt this cost belongs to
 });
 export type CostUpdatedEvent = z.infer<typeof CostUpdatedEventSchema>;
 
@@ -129,6 +131,7 @@ export const RunCompletedEventSchema = z.object({
   ...baseFields,
   outputs: z.record(z.unknown()),
   totalTokensUsed: z.object({ input: nonNegativeInt, output: nonNegativeInt }),
+  totalCostMicrocents: nonNegativeInt, // integer micro-cents closing total for the run
   durationMs: nonNegativeInt,
 });
 

@@ -6,6 +6,7 @@ const run = {
   id: '3a398e0e-0000-4000-8000-000000000000',
   workflowId: 'code-review-pipeline',
   status: 'running',
+  executionMode: 'local',
   triggerType: 'manual',
   inputs: { file_path: 'src/x.ts' },
   totalInputTokens: 0,
@@ -33,6 +34,10 @@ describe('RunSchema', () => {
 
   it('rejects an unknown status', () => {
     expect(RunSchema.safeParse({ ...run, status: 'frozen' }).success).toBe(false);
+  });
+
+  it('rejects an unknown execution mode', () => {
+    expect(RunSchema.safeParse({ ...run, executionMode: 'turbo' }).success).toBe(false);
   });
 
   it('rejects a fractional token count (integers only)', () => {

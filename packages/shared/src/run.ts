@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
+import { EXECUTION_MODES } from './constants.js';
 import { TriggerTypeSchema } from './workflow.js';
 
 /**
@@ -34,9 +35,11 @@ export const RunSchema = z.object({
   id: z.string().uuid(), // run id (UUID, generated in application code)
   workflowId: kebabIdSchema,
   status: RunStatusSchema,
-  // What triggered this run — the canonical trigger vocabulary. The runs table sets no
-  // strict CHECK on trigger_type; the execution mode is carried on the `run:started`
-  // event (sse-event-schema.md), not on the persisted run record, so it is not modeled here.
+  // Which mode the run used — persisted (`runs.execution_mode`) for cost/billing
+  // attribution and history, matching the `run:started` event's `executionMode`.
+  executionMode: z.enum(EXECUTION_MODES),
+  // What triggered this run — the canonical trigger vocabulary (the runs table sets no
+  // strict CHECK on trigger_type, so all five values are valid).
   triggerType: TriggerTypeSchema,
   inputs: z.record(z.unknown()),
   outputs: z.record(z.unknown()).optional(),

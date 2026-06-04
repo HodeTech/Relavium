@@ -184,6 +184,7 @@ One row per workflow execution. `workflow_definition_snapshot` freezes the exact
 | `project_root` | TEXT | NULL — workspace that owned the run |
 | `workflow_definition_snapshot` | TEXT (JSON) | NOT NULL |
 | `status` | TEXT | NOT NULL DEFAULT `'pending'` — `CHECK (status IN ('pending','running','paused','completed','failed','cancelled'))` |
+| `execution_mode` | TEXT | NOT NULL DEFAULT `'local'` — `CHECK (execution_mode IN ('local','cloud','managed'))`; which mode the run used (cost/billing attribution + history) |
 | `trigger_type` | TEXT | NOT NULL DEFAULT `'manual'` (`manual`, `file_change`; `webhook`/`schedule` are Phase 2) |
 | `trigger_metadata` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` |
 | `input_json` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` |
