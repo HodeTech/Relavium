@@ -20,8 +20,13 @@ target/
 !.env.example
 *.local
 
-# Local Relavium state (run history, keys live in the OS keychain, never here)
-.relavium/runs.db
+# Local Relavium state (run history, keys live in the OS keychain, never here).
+# Ignore SQLite databases by extension so a stray/encrypted db (any name/dir) is never
+# committable — the tracked migrations under packages/db/drizzle are *.sql, not *.db.
+.relavium/
+*.db
+*.sqlite
+*.sqlite3
 *.db-wal
 *.db-shm
 

@@ -21,10 +21,11 @@ on:
     branches: [main, development]
   pull_request:
 
-# Cancel superseded runs on the same ref so CI tracks the latest push.
+# Cancel superseded runs on the same ref so CI tracks the latest push — but never cancel a
+# run on `main` (its history is the merge record and must complete).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -38,6 +39,7 @@ jobs:
   ci:
     name: lint · typecheck · test
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # a hung step fails fast instead of inheriting the 360-min default
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -45,7 +47,7 @@ jobs:
 
       - name: Set up pnpm
         # pnpm version comes from the root package.json `packageManager`.
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -73,9 +75,22 @@ jobs:
       - name: Build
         run: pnpm turbo run build
 
-      # Formatting is run, not argued (code-style-typescript.md).
+      # Drift gate: the committed migration must match src/schema.ts. If a schema change
+      # (or an upstream @relavium/shared enum change the CHECKs derive from) wasn't
+      # regenerated via `pnpm --filter @relavium/db db:generate`, regenerating here produces
+      # an uncommitted diff and fails — turning a silent stale-migration into a red check.
+      - name: DB migration is in sync with the schema
+        run: |
+          pnpm --filter @relavium/db db:generate
+          if [ -n "$(git status --porcelain packages/db/drizzle)" ]; then
+            echo "::error::src/schema.ts changed but the migration was not regenerated. Run: pnpm --filter @relavium/db db:generate"
+            git status --porcelain packages/db/drizzle
+            exit 1
+          fi
+
+      # Formatting is run, not argued (code-style-typescript.md). Via turbo so it caches.
       - name: Format check
-        run: pnpm format:check
+        run: pnpm turbo run format:check
 
       # Prove the no-vendor-type-across-the-@relavium/llm-seam fence is live (0.F).
       - name: Seam fence is enforced
@@ -87,11 +102,12 @@ jobs:
   peer-dep-gate:
     name: strict peer-dependency check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
