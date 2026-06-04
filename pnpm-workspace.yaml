@@ -1,0 +1,17 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+
+# Single source of truth for shared dev-tool versions (pnpm catalog). Every package
+# references these with `catalog:` instead of pinning its own range, so the toolchain
+# version can never drift across the workspace and bumps happen in one place.
+catalog:
+  '@eslint/js': ^9.17.0
+  '@vitest/coverage-v8': ^3.0.0
+  eslint: ^9.17.0
+  eslint-config-prettier: ^9.1.0
+  prettier: ^3.4.2
+  turbo: ^2.3.3
+  typescript: ^5.7.2
+  typescript-eslint: ^8.18.1
+  vitest: ^3.0.0

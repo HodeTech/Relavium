@@ -1,0 +1,18 @@
+# Build output, caches, deps
+**/dist/**
+**/.turbo/**
+**/coverage/**
+**/node_modules/**
+
+# Lockfile
+pnpm-lock.yaml
+
+# The docs/ tree is governed by docs/standards/documentation-style.md, not Prettier
+# (and docs/analysis/_archive/* are FROZEN provenance — never reformat them).
+docs/**
+
+# Markdown anywhere else (root README, CLAUDE.md, AGENTS.md, package READMEs).
+**/*.md
+
+# Agent scaffolding (own conventions)
+.claude/**

@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
+    // `types: []` is the platform-type boundary — no ambient @types/node here, so a
+    // stray `process`/`Buffer` is a TS error (this, not ESLint globals, is the guard).
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Relavium strict base — every package extends this and never loosens it.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+
+    // NodeNext is the strict default: the repo is ESM end-to-end ("type": "module"),
+    // and `@relavium/shared`/`db` are compiled with `tsc` and consumed as real ESM, so
+    // relative imports MUST carry explicit `.js` extensions or Node throws
+    // ERR_MODULE_NOT_FOUND at runtime. NodeNext enforces that at compile time (TS2835)
+    // — `bundler` silently allows extensionless imports that only a bundler can resolve.
+    // Bundler-built surfaces (packages/ui, apps/desktop frontend, apps/portal — all Vite)
+    // override `module`/`moduleResolution` to `bundler` in their own tsconfig at 0.H+.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    "skipLibCheck": true
+  }
+}

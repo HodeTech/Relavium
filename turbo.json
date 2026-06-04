@@ -1,0 +1,40 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "eslint.config.mjs",
+    ".prettierrc.json",
+    ".prettierignore",
+    "vitest.config.ts",
+    ".npmrc",
+    ".nvmrc",
+    "pnpm-workspace.yaml"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "lint": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#format:check": {
+      "inputs": [
+        "**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,json,yaml,yml}",
+        ".prettierrc.json",
+        ".prettierignore"
+      ],
+      "outputs": []
+    }
+  }
+}
