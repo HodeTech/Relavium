@@ -1,6 +1,6 @@
 # Phase 0 — Foundations
 
-> Status: Active — this is where the project stands now (Product Phase 1). Achieves global milestone **M0**.
+> Status: ✅ **Complete** — all workstreams (0.A–0.I) landed and merged (PR #1–#3, 2026-06-04), achieving global milestone **M0**. [Phase 1 — engine and LLM](phase-1-engine-and-llm.md) is next. Confirmed-but-deferred review findings are tracked in [../deferred-tasks.md](../deferred-tasks.md).
 
 - **Related**: [../README.md](../README.md), [../current.md](../current.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [../../project-structure.md](../../project-structure.md), [../../tech-stack.md](../../tech-stack.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../reference/contracts/agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../standards/code-style-typescript.md](../../standards/code-style-typescript.md), [../../standards/testing.md](../../standards/testing.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -262,6 +262,11 @@ achieves the schema half of **M0**.
 
 ### 0.F — No-vendor-type-across-the-seam lint zone (scaffold)
 
+> **✅ Done** — landed in PR #3 (merged 2026-06-04). Hardened by the comprehensive review
+> to cover 9 import syntaxes (static incl. re-exports + `import type`, dynamic, computed
+> `import(expr)`, the `import('…').T` type query, and `require`) on **both** TS and JS, with
+> a self-checking fixture (`assert-fence.mjs`) asserting exact per-rule counts.
+
 Wire the import-zone fence from the in-house LLM decision now, so Phase 1's first
 adapter import is policed from line one. The rule has nothing to forbid yet — that is
 the point: the fence exists before the wall.
@@ -285,6 +290,13 @@ Phase 1 inherits.
 
 ### 0.G — GitHub Actions CI + Turborepo remote cache
 
+> **✅ Done** — landed in PR #3 (merged 2026-06-04). `ci.yml` runs lint/typecheck/test/build
+> + format + the seam fence-check + a **schema↔migration drift gate**, with a frozen lockfile,
+> SHA-pinned actions, job timeouts, and a CI-only strict-peer gate. The always-on GitHub
+> Actions `.turbo` cache hits on no-change re-runs; the Vercel-style remote cache is opt-in via
+> `TURBO_TOKEN`/`TURBO_TEAM` secrets. *(Maintainer follow-up: mark the `ci` job a required check
+> in branch protection.)*
+
 The green gate every PR must pass. Lint, typecheck, and test every workspace, fast and
 deterministically, with remote caching.
 
@@ -306,6 +318,11 @@ re-run. This achieves the CI half of **M0**.
 
 ### 0.H — Docs and standards wiring
 
+> **✅ Done** — landed in PR #3 (merged 2026-06-04). Docs ship in-repo with resolving links;
+> the binding standards are committed, linked, and CI-enforced; the contract docs were
+> reconciled with the code (ADR-0021/0022/0023, the driver/UUID/strict notes) and this page +
+> [../current.md](../current.md) reflect the post-Phase-0 state.
+
 Make the docs tree ship in-repo with resolving links and the binding standards in
 force, so Phase 1 inherits born-compliant docs and a governed CI.
 
@@ -324,6 +341,12 @@ force, so Phase 1 inherits born-compliant docs and a governed CI.
 standards govern the CI gate; `current.md` reflects the post-Phase-0 state.
 
 ### 0.I — `packages/db` (`@relavium/db`) scaffold
+
+> **✅ Done** — landed in PR #3 (merged 2026-06-04). The Drizzle schema for the 9 Phase-1
+> tables (byte-faithful to the DDL, CHECK enums reused from `@relavium/shared`), the
+> `drizzle-kit` migration set, a `better-sqlite3` client (WAL + `foreign_keys`/`busy_timeout`/
+> `synchronous`) + migration runner, and a **10-test** smoke suite (migrations, cascades,
+> partial-unique behavior, CHECK-no-drift). Driver pinned by [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md).
 
 Stand up the database package — the Drizzle schema, the migration set, and the local
 SQLite client — so the **single Drizzle schema, two dialects** invariant
@@ -366,7 +389,7 @@ spine milestone **M0** for this phase.
 |--------------------|-------|--------------|
 | **0.M1 — Toolchain green ✅** | `pnpm install` + `turbo run lint typecheck test` pass on the empty scaffold | 0.A, 0.B, 0.C *(done, PR #1)* |
 | **0.M2 — Schemas round-trip ✅** | `@relavium/shared` exports the full schema set and round-trips the reference example with no drift; run-event names pinned | 0.D, 0.E *(done)* |
-| 0.M3 — **M0: Foundations green** | CI green on push with remote cache; the seam lint fence and the standards are enforced; docs wired; `@relavium/db` scaffolded (schema + migrations + SQLite client) | 0.F, 0.G, 0.H, 0.I |
+| **0.M3 — M0: Foundations green ✅** | CI green on push with cache hitting; the seam lint fence and the standards are enforced; docs wired; `@relavium/db` scaffolded (schema + migrations + SQLite client) | 0.F, 0.G, 0.H, 0.I *(done, PR #3)* |
 
 ## Dependencies
 
@@ -414,8 +437,9 @@ All must be true to start [Phase 1 — engine and LLM](phase-1-engine-and-llm.md
    standards index, and enforced by the CI gate.
 7. `@relavium/db` is **scaffolded** — the Drizzle schema for the Phase-1 local table
    set, a `drizzle-kit` migration set, and a SQLite client factory — and a Vitest smoke
-   test applies every migration to a fresh DB and round-trips a row; it depends only on
-   `@relavium/shared` + Drizzle and is not yet wired into a running engine (0.I).
+   test applies every migration to a fresh DB and round-trips a row; it depends on
+   `@relavium/shared`, `drizzle-orm`, and the `better-sqlite3` driver ([ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md))
+   and is not yet wired into a running engine (0.I).
 
 ## Risks & mitigations
 

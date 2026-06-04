@@ -13,16 +13,18 @@ actions. The full phase plan and the global milestone spine are in
 
 ## Where we are
 
-**Documentation and design: complete. Phase 0 workstreams 0.A–0.E have landed and are
-green — the toolchain (M1) and the shared schemas (M2).** The repository
-(`github.com/HodeTech/Relavium`) now holds the `docs/` tree **plus** the Turborepo +
-pnpm workspace, the strict `tsconfig` bases, the root ESLint/Prettier/Vitest spine, and
-`@relavium/shared` with the **full Zod schema set** (`WorkflowSchema`, `AgentSchema`,
-`NodeSchema`, `EdgeSchema`, the colon-namespaced `RunEvent` union, `RunSchema`, config —
-114 tests, reference round-trip with no drift). `pnpm install && pnpm turbo run lint
-typecheck test build` is green and `format:check` is clean. The remaining Phase-0
-workstreams (0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still open before
-**M0**. The foundation is settled and recorded:
+**Phase 0 — Foundations is complete: all workstreams 0.A–0.I landed and merged (PR #1–#3,
+2026-06-04), achieving global milestone M0.** The repository
+(`github.com/HodeTech/Relavium`) holds the `docs/` tree **plus** the Turborepo + pnpm
+workspace, the strict `tsconfig` bases, the root ESLint/Prettier/Vitest spine,
+`@relavium/shared` with the **full Zod schema set** (123 tests, reference round-trip with no
+drift, authored YAML `.strict()`, run-event names pinned), the no-vendor-type **seam fence**
+(live across 9 import syntaxes, TS + JS, self-checking), **GitHub Actions CI**
+(lint/typecheck/test/build + format + a schema↔migration drift gate, SHA-pinned actions),
+and **`@relavium/db`** (the Drizzle schema + `drizzle-kit` migrations + a `better-sqlite3`
+client, 10 tests). `pnpm install && pnpm turbo run lint typecheck test build` is green,
+`format:check` is clean, and CI is green on push. Confirmed-but-deferred review findings are
+parked in [deferred-tasks.md](deferred-tasks.md). The foundation is settled and recorded:
 
 - Product vision, UVP, and hard constraints (desktop is agent-management, not an
   IDE; local-first Product Phase 1; git-native workflow YAML).
@@ -57,94 +59,45 @@ workstreams (0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still ope
 
 ## What is active now
 
-The project is in **build-order step 1: foundations** — the toolchain (0.A–0.C, M1) and
-the critical-path shared schemas (0.D–0.E, M2) are **done and green**; the next work is
-the **M0 close-out** (0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`). This is
-**[Phase 0 — foundations](phases/phase-0-foundations.md)** (Product Phase 1). Phase 0
-ships **types and tooling, not features**; its job is to make
-[Phase 1 — the engine critical path](phases/phase-1-engine-and-llm.md) safe to start
-against a frozen contract and a green CI gate. Until Phase 0's
-[exit criteria](phases/phase-0-foundations.md#exit-criteria-go--no-go) pass, no
-engine or surface code begins.
+**Phase 0 is done (M0 reached); the active phase is now
+[Phase 1 — engine and LLM](phases/phase-1-engine-and-llm.md)** (Product Phase 1, the
+critical path). With a frozen contract and a green CI gate in place, Phase 1 builds the two
+core packages: **`@relavium/llm`** (the `LLMProvider` seam + thin hand-rolled adapters over
+the official provider SDKs — the seam fence's first real consumer) and **`@relavium/core`**
+(the engine: YAML→DAG parse, runner, checkpoint/resume, retry — zero platform imports,
+consuming `@relavium/db` for run persistence).
 
-The next checkpoint is global milestone **M0 — Foundations green** (see the
+The next checkpoint is global milestone **M1 — core engine** (see the
 [milestone spine](README.md#global-milestone-spine)).
+
+> **One Phase-0 follow-up lives outside the code:** a maintainer should mark the CI `ci`
+> job a **required check** in GitHub branch protection (optionally adding `TURBO_TOKEN`/
+> `TURBO_TEAM` secrets for the cross-runner remote cache).
 
 ## Immediate next steps
 
-The first workstreams of Phase 0, in order. `0.A → 0.B → 0.C → 0.D` are sequential
-(each needs the prior); `0.E` is the critical-path schema work that feeds M0. Full
-task lists and acceptance criteria are in
-[phase-0-foundations.md](phases/phase-0-foundations.md#work-breakdown).
+Phase 0's workstreams (0.A–0.I) are all complete and merged — kept for the record in
+[phase-0-foundations.md](phases/phase-0-foundations.md#work-breakdown). Work now moves to
+[Phase 1 — engine and LLM](phases/phase-1-engine-and-llm.md); see that phase doc for the
+ordered workstreams and acceptance criteria. In brief:
 
-> **✅ 0.A–0.E are landed and green** (the monorepo + toolchain spine **and** the full
-> `@relavium/shared` Zod schema set with reference round-trip + event-name pins). The
-> active focus is now **[0.F → 0.I]** — the seam-fence lint zone, GitHub Actions CI, docs
-> wiring, and the `@relavium/db` scaffold — to close out **M0**. Items 1–4 below are kept
-> for the record with their acceptance met.
+1. **[1.x] `@relavium/llm`** — the `LLMProvider` seam (Relavium/Zod types only — **no vendor
+   type crosses it**) + thin hand-rolled adapters over the official Anthropic/OpenAI/Gemini
+   SDKs ([ADR-0011](../decisions/0011-internal-llm-abstraction.md)). The seam fence (0.F)
+   polices the first adapter import from line one.
+2. **[1.x] `@relavium/core`** — the pure-TypeScript engine: parse authored YAML → DAG, the
+   runner, checkpoint/resume (persisted via `@relavium/db`), and retry/fallback. **Zero
+   platform-specific imports**, so it runs identically on every surface.
 
-1. **[0.A] Scaffold the Turborepo + pnpm workspace** per
-   [../project-structure.md](../project-structure.md): a `private` root
-   `package.json` (tooling only) with a pinned `packageManager`, `pnpm-workspace.yaml`
-   declaring `packages/*` + `apps/*`, `turbo.json` with `build/lint/typecheck/test`
-   pipelines, `.npmrc`, Node/pnpm pins, and the `packages/{shared,llm,core,db,ui}` +
-   `apps/{cli,desktop,vscode-extension}` directory skeleton — building out
-   **`packages/shared`** and **`packages/db`** (both have Phase-1/2 consumers) now and
-   leaving the rest as minimal placeholders.
-   *Done when:* `pnpm install` succeeds from a clean checkout and the workspace graph
-   resolves with no peer-dep errors.
-
-2. **[0.B] Add the shared strict `tsconfig` bases.** A root `tsconfig.base.json`
-   with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
-   `noImplicitOverride`, `verbatimModuleSyntax`, `isolatedModules`, and
-   `moduleResolution: "bundler"` that every package extends and none loosens without
-   a justified comment ([code-style-typescript.md](../standards/code-style-typescript.md)).
-   *Done when:* `pnpm turbo run typecheck` is green and deleting a strict flag in a
-   package produces a real type error.
-
-3. **[0.C] Wire the tooling spine once at the root.** A single ESLint flat config
-   (`no-explicit-any` as an **error**, `no-floating-promises`, plus the import-zone
-   plugin used by 0.F), root Prettier, and a workspace-aware Vitest config with
-   branch coverage — all wired into `turbo.json`.
-   *Done when:* `pnpm turbo run lint typecheck test` is green on the scaffold and an
-   introduced `any` or floating promise fails lint.
-
-4. **[0.D → 0.E] Land `packages/shared` (`@relavium/shared`) — the source of truth.**
-   Scaffold the package with **zod as the only runtime dependency**, then author the
-   Zod schemas straight from the frozen reference contracts: `WorkflowSchema`,
-   `AgentSchema`, `NodeSchema`, `EdgeSchema`, `RunSchema`, the **`RunEvent` union**
-   with the `BaseEvent` envelope, and `CostUpdatedEvent` / `HumanGateEvent`. Align
-   every event name to the canonical **colon-namespaced** schema
-   (`node:started`, `agent:token`, `cost:updated`, …) with `sequenceNumber` — never
-   the legacy dotted names, never `seqNo`
-   ([sse-event-schema.md](../reference/contracts/sse-event-schema.md)). Add Vitest
-   accept/reject suites plus a round-trip test of the reference workflow/agent YAML
-   and a type-level + runtime test pinning the event names and the `cost:updated`
-   shape. **This is the critical-path schema half of M0.**
-   *Done when:* all schema tests pass, the reference YAML round-trips with no drift,
-   and the event names + `cost:updated` payload are pinned by test.
-
-5. **[0.F → 0.I] Close out the gate: seam fence, CI, docs, and `@relavium/db`.**
-   Scaffold the no-vendor-type-across-the-seam ESLint zone (with a quarantined
-   forbidden-import fixture proving it actively fails), stand up the GitHub Actions CI
-   that runs `pnpm turbo run lint typecheck test` on every push/PR with the Turborepo
-   remote cache, confirm the `docs/` tree ships in-repo with resolving links and the
-   binding standards enforced, and scaffold **`packages/db`** — the Drizzle schema +
-   `drizzle-kit` migrations + the SQLite client for the
-   [database-schema.md](../reference/desktop/database-schema.md) table set, with a smoke
-   test that applies every migration and round-trips a row (no engine wiring yet; its
-   Phase-1/2 consumers come later).
-   *Done when:* CI is green on push, the seam fence is demonstrably live, and the
-   [Phase 0 exit criteria](phases/phase-0-foundations.md#exit-criteria-go--no-go) all
-   pass — achieving **M0**. Then update this page and move work to
-   [Phase 1 — engine and LLM](phases/phase-1-engine-and-llm.md).
+Carry-over hardening that did **not** block M0 is tracked as discrete tasks in
+[deferred-tasks.md](deferred-tasks.md) — pick them up as Phase 1 first touches each file.
 
 ## Not started yet
 
-Everything from Phase 1 onward: `@relavium/llm`, `@relavium/core`, the CLI, the
-desktop app, the VS Code extension, and **Product Phase 2** — first **managed
-inference** ([phase-5-managed-inference.md](phases/phase-5-managed-inference.md), the
-opt-in `managed` gateway, engine still local), then the **cloud execution layer and
-web portal** ([phase-6-cloud-execution-portal.md](phases/phase-6-cloud-execution-portal.md)),
+The surfaces and the cloud — everything after the engine critical path: the CLI, the
+desktop app, and the VS Code extension (Phases 2–4), then **Product Phase 2** — first
+**managed inference** ([phase-5-managed-inference.md](phases/phase-5-managed-inference.md),
+the opt-in `managed` gateway, engine still local), then the **cloud execution layer and web
+portal** ([phase-6-cloud-execution-portal.md](phases/phase-6-cloud-execution-portal.md)),
 the two decoupled per Option B. See the [phase index](README.md#phase-index) and the
-[milestone spine](README.md#global-milestone-spine) (M1 onward).
+[milestone spine](README.md#global-milestone-spine) (M3 onward).
