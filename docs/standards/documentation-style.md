@@ -65,7 +65,7 @@ axis** (shared-core, desktop, cli, vscode, portal).
 
 | Folder | Answers |
 |--------|---------|
-| `README.md`, `glossary.md`, and the flat product docs (`vision.md`, `product-constraints.md`, `uvp.md`, `tech-stack.md`, `project-structure.md`, `roadmap/README.md`) | What is Relavium and why? |
+| `README.md`, `glossary.md`, and the flat product docs (`vision.md`, `product-constraints.md`, `uvp.md`, `tech-stack.md`, `project-structure.md`, `deployment-models.md`, `roadmap/README.md`) | What is Relavium and why? |
 | [architecture/](../architecture/README.md) | How is it built? Topology, flow, the security and execution models. |
 | [reference/](../reference/README.md) | Exact specs: YAML schemas, SSE events, IPC contract, DB DDL, node types, tools, routes. The one canonical home for every artifact. |
 | [tutorials/](../tutorials/README.md) | Learning-oriented walkthroughs ("build your first workflow"). |
@@ -73,6 +73,7 @@ axis** (shared-core, desktop, cli, vscode, portal).
 | [decisions/](../decisions/README.md) | Why a choice was made. Numbered ADRs in MADR format. |
 | [standards/](README.md) | How things must be written and built. Binding rules. |
 | [analysis/](../analysis/README.md) | Research, competitive analysis, and the frozen `_archive/` provenance. |
+| [compliance/](../compliance/README.md) | Legal/regulatory posture for managed mode: provider ToS, data protection (KVKK/GDPR), tax & billing, security / SOC 2. *(Phase 2.)* |
 | [ideas/](../ideas/README.md) | Out-of-scope or future idea notes, explicitly not committed work. |
 | [reviews/](../reviews/README.md) | Timestamped review records. |
 
@@ -150,6 +151,14 @@ Rules:
 - ADRs cross-link sibling and superseding ADRs. Superseded ADRs are never deleted or
   rewritten — the historical reasoning is the point. Mark them
   `Superseded by [ADR-XXXX](...)` and link forward.
+- **Amend vs. supersede.** ADR history is append-only (CLAUDE.md rule 9). An **Accepted**
+  ADR may be **amended in place** only for a change that *refines, clarifies, corrects, or
+  reconciles* it **without reversing the decision** (e.g. a later ADR refines its mechanism):
+  record the change as a dated `> Amended YYYY-MM-DD: …` blockquote note that points to the
+  driving ADR, and keep the original text annotated — never silently rewritten. A change that
+  **reverses or replaces** a decision is not an amendment — write a new ADR and mark the old
+  one `Superseded by [ADR-XXXX](...)`. The dated note is what keeps an in-place edit
+  honest history rather than a quiet rewrite.
 - ADRs reference [tech-stack.md](../tech-stack.md) for pinned versions instead of
   restating version numbers, so versions have one home.
 - ADR numbers are stable history and are never renumbered.
@@ -190,6 +199,7 @@ blockquote:
 | A "how do I set up / operate X" procedure | `runbooks/` |
 | A "learn by doing X end-to-end" walkthrough | `tutorials/<surface>/` |
 | Dated research or a competitor comparison | `analysis/` |
+| A managed-mode legal/regulatory posture (provider ToS, data protection, tax & billing, SOC 2) | `compliance/` *(Phase 2)* |
 | A future / out-of-scope idea | `ideas/` |
 | A binding rule | `standards/` |
 | A review record | `reviews/` (timestamped filename) |

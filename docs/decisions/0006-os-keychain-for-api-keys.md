@@ -14,6 +14,13 @@ Two non-negotiable rules apply: keys are **never stored in plaintext**, and keys
 
 **API keys are stored in the OS keychain** — macOS Keychain (Security.framework), Windows Credential Manager, or libsecret / GNOME Keyring on Linux — accessed from the Tauri Rust backend. A passphrase-protected encrypted file is the explicit, opt-in fallback for headless/CI environments only.
 
+> Amended 2026-06-04: the desktop key-*delivery* mechanism is clarified by
+> [ADR-0018](0018-desktop-execution-and-rust-egress.md) — on the desktop the raw key is never
+> handed to the WebView-resident adapter; Rust reads the key from the keychain and performs
+> the authenticated egress itself (`llm_stream`), so the adapter holds only a key *reference*.
+> This refines the *mechanism* described below; the keychain-storage decision itself is
+> unchanged.
+
 Considered options:
 
 1. **OS keychain, per-platform, accessed from the Rust backend** — hardware-backed where available, integrated with the OS lock screen. *Chosen as default.*

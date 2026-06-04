@@ -14,7 +14,7 @@ The `relavium` CLI is the terminal surface of the platform and the fastest way t
 - **Package**: published to npm as `relavium`, installed globally.
 - **Build**: TypeScript bundled with `tsup` to a single ESM bundle.
 - **Stack**: `commander.js` for argument parsing, `ink` (React for terminals) for the interactive TUI, `@clack/prompts` for setup wizards.
-- **API keys**: stored in the OS keychain via `keytar` (macOS Keychain / Windows Credential Manager / Linux libsecret) — never plaintext (see [add-a-provider-key.md](../../runbooks/add-a-provider-key.md)).
+- **API keys**: stored in the OS keychain via `@napi-rs/keyring` (macOS Keychain / Windows Credential Manager / Linux libsecret) — never plaintext, and never the archived `keytar` (see [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) and [add-a-provider-key.md](../../runbooks/add-a-provider-key.md)).
 - **Workflow discovery**: reads workflows from the `.relavium/` directory in the project root, or from an explicit path argument.
 
 ```bash

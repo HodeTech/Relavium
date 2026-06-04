@@ -31,7 +31,7 @@ out.
 ```ts
 // Normalized request — provider-agnostic
 interface LlmRequest {
-  model: string;                 // canonical id, e.g. "claude-sonnet-4", mapped per adapter
+  model: string;                 // canonical id, e.g. "claude-sonnet-4-6", mapped per adapter
   system?: string;               // ALWAYS a top-level field; adapters place it correctly
   messages: LlmMessage[];        // role: 'user'|'assistant'|'tool'
   tools?: ToolDef[];             // JSON-Schema params, normalized
@@ -39,7 +39,7 @@ interface LlmRequest {
   temperature?: number;
   maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
   stopSequences?: string[];
-  signal?: AbortSignal;          // cancellation, works in Node + Tauri WebView fetch
+  signal?: AbortSignal;          // cancellation; host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
   providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)
 }
 

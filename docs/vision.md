@@ -40,12 +40,14 @@ flowchart TD
     Desktop["Desktop app (Tauri v2)<br/>visual canvas + agent management"]
     VSCode["VS Code extension<br/>inline triggering, standalone"]
     CLI["CLI (relavium)<br/>scripting + CI/CD"]
-    Portal["Web portal (Phase 2)<br/>usage, quota, governance"]
+    API["Cloud API + workers (Phase 2)<br/>run the engine server-side"]
+    Portal["Web portal (Phase 2)<br/>usage, quota, governance — control plane"]
 
     Core --> Desktop
     Core --> VSCode
     Core --> CLI
-    Core --> Portal
+    Core --> API
+    API --> Portal
 
     Files[".relavium.yaml<br/>.agent.yaml<br/>(git-committable)"]
     Files -.read/write.-> Desktop

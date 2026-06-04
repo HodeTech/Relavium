@@ -54,11 +54,11 @@ typecheck catch format and types; this review catches the rest. It applies the b
      canvas updates, no blocking IO on the run path.
 
 4. **Run the non-negotiable grep checks** (these are blockers, not nits):
-   - Seam: `grep -rn "@anthropic-ai/sdk\|from 'openai'\|@google/genai" packages/core packages/shared packages/db apps/` — a hit outside `packages/llm/src/adapters/*` is a leaked vendor type ([ADR-0011](../../../docs/decisions/0011-internal-llm-abstraction.md)).
+   - Seam: `grep -rn "@anthropic-ai/sdk\|from 'openai'\|@google/genai" packages apps | grep -v 'packages/llm/src/adapters/'` — any remaining hit is a leaked vendor type ([ADR-0011](../../../docs/decisions/0011-internal-llm-abstraction.md)); same scope as the standards-check skill.
    - Engine purity: `grep -rn "node:\|from 'fs'\|@tauri-apps\|window\.\|document\." packages/core/src` — a platform import in the engine breaks portability.
    - `any` / unsafe escape hatches: `grep -rn ": any\|as any\|@ts-ignore" $changed_files`.
    - New dependency: inspect the `package.json` diff — a new runtime dependency needs an ADR.
-   - Secrets: scan for a key in a log, an error string, an IPC payload, a store, or a `node:error`/`run:error` event.
+   - Secrets: scan for a key in a log, an error string, an IPC payload, a store, or a `node:failed`/`run:failed` event.
    - Canonical names: legacy dotted run-event names or `seqNo` instead of `sequenceNumber`.
 
 5. **Canonical-home docs.** A change that alters a spec (YAML schema, SSE events, IPC, DB

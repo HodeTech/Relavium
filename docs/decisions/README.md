@@ -62,6 +62,7 @@ flowchart TD
 | 0016 | [Hono as the `apps/api` framework](0016-api-framework-hono.md) | Accepted | 2026-06-04 |
 | 0017 | [Bun as the `apps/api` runtime](0017-cloud-runtime-bun.md) | Accepted | 2026-06-04 |
 | 0018 | [Desktop execution model — engine in WebView, Rust-delegated LLM egress](0018-desktop-execution-and-rust-egress.md) | Accepted | 2026-06-04 |
+| 0019 | [Node-side OS-keychain access for the CLI — a maintained library, not the archived keytar](0019-cli-node-keychain-library.md) | Accepted | 2026-06-04 |
 
 ## Creating a new ADR
 
@@ -69,3 +70,4 @@ flowchart TD
 2. Fill in the H1, bold **Status** / **Date** / **Related** lines, then `## Context`, `## Decision`, `## Consequences` (`### Positive` / `### Negative`).
 3. Start at status `Accepted` once the decision is settled; cross-link sibling ADRs and reference [tech-stack.md](../tech-stack.md) for versions.
 4. If a later ADR overrides this one, mark the old one `Superseded by NNNN` and link forward. Do **not** delete or rewrite the old ADR — the historical reasoning is the point.
+5. To **refine, clarify, or reconcile** an Accepted ADR *without reversing it* (e.g. a later ADR refines its mechanism), amend it **in place** with a dated `> Amended YYYY-MM-DD: …` note that points to the driving ADR — never a silent rewrite. Reversing a decision is a supersession (step 4), not an amendment. The rule is in [documentation-style.md](../standards/documentation-style.md) §7.

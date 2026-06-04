@@ -20,7 +20,7 @@ file is the posture; the canonical decision is
 ```
 Customer (data controller)
    └─ Relavium gateway (data PROCESSOR)         ← managed mode only
-        └─ LLM provider (SUB-PROCESSOR)         ← Anthropic / OpenAI / Google / DeepSeek (opt-in, excluded from EU/regulated data)
+        └─ LLM provider (SUB-PROCESSOR)         ← Anthropic / OpenAI / Google / DeepSeek (all opt-in; DeepSeek alone is excluded from EU/regulated data — see below)
 ```
 
 - The **customer** is the **controller** — they decide what prompts to send.

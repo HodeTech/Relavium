@@ -130,7 +130,7 @@ cloud code. This is a deliberate checkpoint, not a formality.
   evidence (active surfaces, real run volume, the workflows/triggers users
   actually ask for).
 - Confirm the engine's hosting boundary is genuinely swappable: the Phase-1
-  surfaces already call `engine.run()` against an interface, with no
+  surfaces already call `WorkflowEngine.start(workflowId, input)` against an interface, with no
   platform-specific imports in `@relavium/core` (the invariant verified since
   Phase 1).
 - Provision dev/staging infra: Postgres 16, Redis 7, object storage for large
@@ -138,7 +138,9 @@ cloud code. This is a deliberate checkpoint, not a formality.
 - Stand up IaC + CI/CD for `apps/api` and `apps/portal` (build, migrate, deploy),
   and a private staging environment.
 - **Reuse the Phase-5 managed foundations where they exist**: the accounts/identity
-  (device-flow auth), Stripe billing, and the reconciled tier model already stood up
+  (device-flow auth), the billing rail (merchant-of-record primary; Stripe only as the
+  mutually-exclusive alternative, per [ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)),
+  and the reconciled tier model already stood up
   for managed inference ([phase-5-managed-inference.md](phase-5-managed-inference.md))
   carry forward; this phase extends them with the org/team/RBAC model, not from
   scratch. (If cloud ships without managed, reconcile the tier sketches in the
@@ -415,7 +417,7 @@ achieved by `6.J + 6.G + 6.K`.
 
 - **All of Product Phase 1 (Phases 0–4)** shipped and battle-tested by real users —
   the hard gate that starts this phase ([ADR-0008](../../decisions/0008-local-first-phase-1-cloud-phase-2.md)).
-- The engine's clean hosting boundary (`engine.run()` against an interface, zero
+- The engine's clean hosting boundary (`WorkflowEngine.start()` against an interface, zero
   platform-specific imports in `@relavium/core`), designed in Phase 1 and exercised
   locally through Phase 4.
 - The canonical **`RunEvent` union** ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md))

@@ -92,8 +92,14 @@ focus_area = "security and type safety"
 No config file contains plaintext secrets. Keys resolve at call time from:
 
 - **Desktop** — OS keychain (`tauri-plugin-keychain`), with an optional `secrets.enc` fallback.
-- **CLI** — OS keychain via `keytar`.
+- **CLI** — OS keychain via `@napi-rs/keyring` (not the archived `keytar`; see [ADR-0019](../../decisions/0019-cli-node-keychain-library.md)).
 - **VS Code** — `vscode.SecretStorage`.
+
+Non-key secrets (e.g. an MCP server's `GITHUB_TOKEN`) are stored the same way and referenced
+from workflow/agent/MCP-server fields by name with **`{{secrets.<name>}}`** interpolation,
+resolved from the store at run time — never written into the workflow file, a checkpoint, or
+any event payload (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)
+and the masking rule in [sse-event-schema.md](sse-event-schema.md)).
 
 This is covered in full in [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md) and [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md).
 

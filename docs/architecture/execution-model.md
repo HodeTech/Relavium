@@ -17,7 +17,7 @@ stateDiagram-v2
     Running --> Running: next ready node
     Running --> AwaitingGate: human_gate reached
     AwaitingGate --> Running: decision received
-    AwaitingGate --> Failed: gate timeout (on_timeout=fail)
+    AwaitingGate --> Failed: gate timeout (on_timeout=reject)
     Running --> Checkpointing: node completed
     Checkpointing --> Running
     Running --> Completed: all nodes done
@@ -115,8 +115,10 @@ that can reach the run:
 When a decision arrives the engine reloads state, emits `human_gate:resumed`, and
 the run continues. Because the gate state is checkpointed, resolving it is
 idempotent across a reconnect — re-delivering the same decision does not advance
-the run twice. A gate may carry a timeout with an `on_timeout` policy (fail, or
-take a default branch); this prevents a forgotten gate from blocking a run forever.
+the run twice. A gate may carry a timeout with an `on_timeout` policy (`reject` /
+`approve` / `escalate` — the canonical enum, authored in YAML as `timeout_action`; see
+[workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md#human_gate-node)); this
+prevents a forgotten gate from blocking a run forever.
 The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the
 [IPC contract](../reference/contracts/ipc-contract.md).

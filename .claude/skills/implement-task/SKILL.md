@@ -74,13 +74,13 @@ cites the standards and delegates committing — it does not restate either.
    - **The seam holds:** no vendor SDK type (`@anthropic-ai/sdk`, `openai`, `@google/genai`)
      imported outside `packages/llm/src/adapters/*`; the engine pattern-matches only on
      Relavium/Zod types ([ADR-0011](../../../docs/decisions/0011-internal-llm-abstraction.md)).
-     `grep -rn "@anthropic-ai/sdk\|from 'openai'\|@google/genai" packages/core packages/shared`
-     should be empty.
+     `grep -rn "@anthropic-ai/sdk\|from 'openai'\|@google/genai" packages apps | grep -v 'packages/llm/src/adapters/'`
+     should be empty (same scope as the standards-check skill — all packages + apps minus the adapters folder).
    - **Engine purity:** `packages/core` has zero platform-specific imports (no `node:*`,
      no Tauri, no DOM) — it runs in Node, the Tauri WebView, and the extension host alike.
    - **No new dependency without an ADR:** check the `package.json` diff.
    - **Secrets:** no key in a log, an error message, an IPC payload to the WebView, a
-     Zustand store, or a `node:error`/`run:error` event.
+     Zustand store, or a `node:failed`/`run:failed` event.
    - **Canonical names:** colon-namespaced run events and `sequenceNumber`, never the
      legacy dotted names.
 

@@ -14,13 +14,19 @@ Relavium is multi-model by definition: an agent node names a model from Anthropi
 - **Cross-provider tool normalization.** Tool/function-calling schemas differ per provider; the engine presents one canonical tool model and translates to each wire format.
 - **Usage + cost accounting**, **per-agent fallback chains**, and execution on **both a Node worker (CLI/engine) and inside a Tauri desktop context**.
 
-This layer lives in `packages/llm` and is consumed by the pure-TypeScript engine from [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md). It must run in every host the engine runs in (desktop, CLI, VS Code extension, Phase-2 cloud workers), so it cannot pull in a separate runtime. API keys are read from the OS keychain per [ADR-0006](0006-os-keychain-for-api-keys.md) and never exposed to the frontend. The target provider set is small (four) and well documented, and three of the four (OpenAI, DeepSeek, Gemini) are reachable over an OpenAI-compatible wire format.
+This layer lives in `packages/llm` and is consumed by the pure-TypeScript engine from [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md). It must run in every host the engine runs in (desktop, CLI, VS Code extension, Phase-2 cloud workers), so it cannot pull in a separate runtime. API keys are read from the OS keychain per [ADR-0006](0006-os-keychain-for-api-keys.md) and never exposed to the frontend. The target provider set is small (four) and well documented: two of the four (OpenAI and DeepSeek) share an OpenAI-compatible wire format, while Anthropic and Gemini each need a dedicated adapter (consistent with the Decision below).
 
 ## Decision
 
 **We build an internal, Relavium-owned multi-LLM abstraction in `packages/llm` (`@relavium/llm`).** Its centre is a single provider-agnostic seam — an `LLMProvider` interface expressed only in Relavium/Zod types — implemented by thin hand-rolled adapters over each provider's official TypeScript SDK. We do **not** adopt the Vercel AI SDK, LangChain.js, or any other multi-LLM framework, and we do **not** run a Python sidecar (LiteLLM).
 
 The seam is the immovable contract; the adapter implementation behind it is deliberately reversible. `AgentRunner` (in `packages/core`) hands `packages/llm` a model id, a message list, and tools, and gets back a normalized chunk stream (`text` / `tool_call` / `usage` / `finish`) plus a cost record. **No vendor SDK type ever crosses that seam.** Anthropic and Gemini get dedicated adapters; OpenAI and DeepSeek share one OpenAI-compatible adapter (DeepSeek via a custom baseURL).
+
+> Amended 2026-06-04: per-host egress + key handling is clarified by
+> [ADR-0018](0018-desktop-execution-and-rust-egress.md) — the seam's `key` parameter is a
+> *resolved key* on Node-style hosts (CLI, VS Code host, Phase-2 Bun API) and a key
+> *reference* on the desktop, where Rust performs the egress via `llm_stream`. The seam's
+> **types and contract are unchanged**; only the per-host transport wiring is refined.
 
 Considered options:
 

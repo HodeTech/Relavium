@@ -118,7 +118,7 @@ export interface HumanGatePausedEvent extends BaseEvent {
 The consumer pattern is identical for every surface, local or cloud:
 
 ```ts
-const handle = engine.run(workflow, inputs);
+const handle = engine.start(workflowId, inputs);
 for await (const event of handle.events) {
   switch (event.type) {
     case 'agent:token':        renderStreamingToken(event.nodeId, event.token); break;

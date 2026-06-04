@@ -28,7 +28,7 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 
 - The diff/branch and which security surface(s) it touches.
 - [security-review.md](../../../docs/standards/security-review.md), the keychain reference,
-  and the relevant ADRs (0006 keychain, 0011 seam).
+  and the relevant ADRs (0006 keychain, 0011 seam, 0018 desktop Rust-delegated egress).
 
 ## Workflow
 
@@ -46,17 +46,28 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
      instruction, or can sandboxed code reach ambient authority?
    - **Denial of service** — can a hung provider or runaway sandbox pin a worker open?
 
-3. **Keys and secrets.** Confirm keys live only in the OS keychain, resolved at call time
-   and attached by the `@relavium/llm` adapter just before the HTTPS request:
+3. **Keys and secrets.** Confirm keys live only in the OS keychain and are resolved at call
+   time, **host-aware** per [ADR-0018](../../../docs/decisions/0018-desktop-execution-and-rust-egress.md):
+   on the **desktop**, the WebView adapter passes only a key *reference* to the Rust
+   `llm_stream` command, which reads the actual key from the keychain and attaches the
+   `Authorization` header inside Rust — the raw key never enters the WebView's JS runtime; on
+   the **Node-style surfaces** (CLI, VS Code host, Phase-2 Bun API) the adapter resolves the
+   key and attaches it just before the HTTPS request inside the one trusted process.
    - No key in a Tauri IPC payload to the WebView, a Zustand store, a React prop,
      localStorage, or an IPC return value — the frontend learns only *that* a provider is
-     configured.
+     configured, and the WebView adapter holds only a key *reference*, never the raw key.
    - No plaintext at rest: no key in a config file, a committed `.env`, a `.relavium.yaml`,
      a log, or an unencrypted DB column (the DB is SQLCipher; secrets still belong in the
      keychain).
-   - No key interpolated into an error message or a `node:error`/`run:error` event.
+   - No key interpolated into an error message or a `node:failed`/`run:failed` event.
+   - **Desktop Rust egress (ADR-0018).** If the diff touches the `llm_stream` Tauri command
+     or the WebView adapter's transport, confirm: the WebView passes a `{ providerId, keyId }`
+     key reference (never the raw key); Rust resolves the key from the keychain, attaches the
+     header, and never logs or persists it; and only `Channel<StreamChunk>` frames cross back —
+     no raw key and no `RunEvent` cross IPC (the `RunEventBus` is WebView-side). See
+     [ipc-contract.md](../../../docs/reference/contracts/ipc-contract.md#rust-delegated-llm-egress).
    - Grep: `grep -rni "apikey\|api_key\|secret\|token" $changed_files` then trace each hit
-     to confirm it never crosses to the frontend, a log, or a payload.
+     to confirm it never crosses to the frontend (as a raw key), a log, or a payload.
 
 4. **SSRF on custom base URLs.** For any code reaching a user-supplied `baseURL` (DeepSeek /
    any OpenAI-compatible provider): HTTPS only; reject non-HTTP(S) schemes and
@@ -97,9 +108,10 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 
 ## Checklist
 
-- [ ] Keys only in the OS keychain; none in IPC payload, store, prop, localStorage, or IPC return.
+- [ ] Keys only in the OS keychain; none in IPC payload, store, prop, localStorage, or IPC return. The WebView adapter holds a key *reference*, never a raw key (ADR-0018).
+- [ ] Desktop egress (ADR-0018): the WebView passes a key *reference* to `llm_stream`; the key is read, attached, and used only inside Rust; only `Channel<StreamChunk>` crosses IPC (no raw key, no `RunEvent`).
 - [ ] No plaintext key at rest (config, committed `.env`, `.relavium.yaml`, log, unencrypted DB column).
-- [ ] No key in an error message, `node:error`/`run:error` event, or log line.
+- [ ] No key in an error message, `node:failed`/`run:failed` event, or log line.
 - [ ] Custom base URLs: HTTPS-only, no creds-in-URL, private/loopback/metadata ranges blocked, TLS not disabled, AbortSignal + timeout present.
 - [ ] `run_command` sandbox: allowlist-gated, restricted fs (scope tier), no ambient network, a resource budget, and never gets a secret; its output treated as untrusted.
 - [ ] Tool calls validated against schema + allowlist; high-impact effects gated; `system` set by Relavium, not tool output.
@@ -136,7 +148,9 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
   needs an ADR.
 - **Re-implementing crypto** to avoid a dependency — the carve-out is explicit: never
   hand-roll crypto/TLS/keychain.
-- **A key in an error message** that then lands in a log or a `run:error` event.
+- **A key in an error message** that then lands in a log or a `run:failed` event.
+- **A raw key crossing into the WebView on desktop** — the WebView adapter holds only a key
+  *reference*; the raw key is read and attached inside the Rust `llm_stream` command (ADR-0018).
 
 ## Related
 
@@ -146,5 +160,6 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 - [../../../docs/standards/security-review.md](../../../docs/standards/security-review.md)
 - [../../../docs/standards/error-handling.md](../../../docs/standards/error-handling.md)
 - [../../../docs/decisions/0006-os-keychain-for-api-keys.md](../../../docs/decisions/0006-os-keychain-for-api-keys.md)
+- [../../../docs/decisions/0018-desktop-execution-and-rust-egress.md](../../../docs/decisions/0018-desktop-execution-and-rust-egress.md) — desktop Rust-delegated egress + key reference.
 - [../../../docs/reference/desktop/keychain-and-secrets.md](../../../docs/reference/desktop/keychain-and-secrets.md)
 - [../../../docs/reference/shared-core/built-in-tools.md](../../../docs/reference/shared-core/built-in-tools.md)

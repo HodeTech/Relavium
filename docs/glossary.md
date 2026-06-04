@@ -13,8 +13,11 @@ this glossary links to rather than duplicates.
   documentation describes. Tagline: *Design agents. Ship workflows. Own every
   run.* See [vision.md](vision.md).
 - **Surface** — one of the four ways to reach Relavium: the **desktop app**, the
-  **VS Code extension**, the **CLI**, and (Phase 2) the **web portal**. All
-  surfaces drive the same engine, so a workflow behaves identically on each.
+  **VS Code extension**, the **CLI**, and (Phase 2) the **web portal**. The three
+  local surfaces each run the same `@relavium/core` engine in-process, so a workflow
+  behaves identically on each; the web portal is a **control plane**, not an execution
+  surface — it drives runs through the cloud API rather than embedding the engine. See
+  [architecture/cloud-phase-2.md](architecture/cloud-phase-2.md).
 - **Workflow** — a directed graph of nodes (agents, control flow, human gates)
   defined as a git-committable YAML file (`.relavium.yaml`). The unit of value in
   Relavium. Spec: [reference/contracts/workflow-yaml-spec.md](reference/contracts/workflow-yaml-spec.md).
@@ -114,10 +117,19 @@ How a workflow run is initiated. Full spec in
   only the LLM stream chunks do. The cross-surface run-event union those events
   belong to is the same one SSE carries in Phase 2. See
   [decisions/0018-desktop-execution-and-rust-egress.md](decisions/0018-desktop-execution-and-rust-egress.md).
-- **SSE event** — a run event in the streaming event schema, used for HTTP
-  streaming in Phase 2 (the desktop app carries the same events over a Tauri
-  channel in Phase 1). Every event carries a monotonic `sequenceNumber`. The
-  canonical field-by-field schema is the one home:
+- **Run event (`RunEvent`)** — one item in a run's event stream: the discriminated
+  union (`node:started`, `agent:token`, `agent:tool_call`, `agent:tool_result`,
+  `node:completed`, `node:failed`, `cost:updated`, `human_gate:paused`,
+  `human_gate:resumed`, `run:completed`, `run:failed`) that every surface consumes,
+  each carrying a monotonic `sequenceNumber`. One canonical home:
+  [reference/contracts/sse-event-schema.md](reference/contracts/sse-event-schema.md).
+  Often called an *SSE event* after its Phase-2 cloud transport (below).
+- **SSE event** — the same `RunEvent` (above) seen through its transport. The schema
+  is one canonical union for every surface; **how it travels differs**: on the desktop
+  the events are produced and consumed in-process by the WebView-side `RunEventBus` and
+  never cross IPC ([ADR-0018](decisions/0018-desktop-execution-and-rust-egress.md) —
+  see *Channel / IPC stream* above), while Phase-2 cloud mode delivers them over HTTP
+  SSE. Every event carries a monotonic `sequenceNumber`. Canonical schema:
   [reference/contracts/sse-event-schema.md](reference/contracts/sse-event-schema.md).
 - **sequenceNumber** — the monotonic per-run counter on each run event; a gap
   signals a missed event and triggers a full state resync (lossless reconnect).
@@ -232,8 +244,14 @@ How a workflow run is initiated. Full spec in
   required. In that mode privacy is a guarantee; BYOK-local stays a first-class,
   permanently-supported mode in every phase. See
   [product-constraints.md](product-constraints.md).
-- **Phase 1** — the local-first product: desktop + VS Code + CLI, BYOK-local, no cloud.
-- **Phase 2** — *(explicitly later)* adds two **independent** capabilities:
+- **Phase 1** — the local-first **product** phase: desktop + VS Code + CLI, BYOK-local, no cloud.
+- **Build phase (0–6)** — the *engineering* phase axis (Phase 0 Foundations …
+  Phase 6 Cloud execution + portal), **distinct from** the product Phase 1/2 sense
+  above. Product Phase 1 spans build phases 0–4; product Phase 2 spans build phase 5
+  (managed inference) and build phase 6 (cloud execution + portal). Never conflate the
+  two senses — the canonical disambiguation and the full plan live in
+  [roadmap/README.md](roadmap/README.md).
+- **Phase 2** — *(explicitly later)* the **product** phase that adds two **independent** capabilities:
   **managed inference** (the first Phase-2 deliverable — a metered LLM gateway;
   engine stays local) and, separately, the **cloud layer** (web portal, cloud
   execution workers, team sharing, automatic cloud-hosted firing of

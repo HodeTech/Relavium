@@ -19,8 +19,8 @@ locked.
 | Orchestration engine | **Pure TypeScript** (`packages/core`) | No LangGraph-Python; the same concepts are implementable in TS. Engine is framework-agnostic and runs identically on every surface. |
 | Database (local, Phase 1) | **SQLite + Drizzle ORM** (SQLCipher) | Tauri plugin available; encrypted at rest with SQLCipher. |
 | Database (cloud, Phase 2) | **PostgreSQL 16 + Redis 7 + BullMQ** | *Phase 2 only.* Same Drizzle schema, different driver. |
-| API key storage | **OS keychain** (`tauri-plugin-keychain`) | macOS Keychain / Windows Credential Manager / libsecret. Never plaintext, never sent to the frontend. |
-| CLI | **TypeScript + commander.js + ink** | Same language as the engine; React for the TUI. |
+| API key storage | **OS keychain**, one `KeychainStore` interface with a per-surface accessor — desktop `tauri-plugin-keychain` (Rust), **CLI `@napi-rs/keyring`** (Node; *not* the archived `keytar`, see [ADR-0019](decisions/0019-cli-node-keychain-library.md)), VS Code `vscode.SecretStorage` | macOS Keychain / Windows Credential Manager / libsecret. Never plaintext, never sent to the frontend. See [ADR-0006](decisions/0006-os-keychain-for-api-keys.md). |
+| CLI | **TypeScript + commander.js + ink** (`@clack/prompts` setup wizards; bundled to a single ESM bundle with `tsup`) | Same language as the engine; React for the TUI. |
 | VS Code extension | **Standard VS Code Extension API** | Bundles `@relavium/core` in-process — no desktop app required. |
 | API framework (`apps/api`, Phase 2) | **Hono** | *Phase 2 only.* Lightweight, web-standard `Request`/`Response`, streaming-first; wraps `@relavium/core`, runs on Bun + Node. See [ADR-0016](decisions/0016-api-framework-hono.md). |
 | API runtime (`apps/api`, Phase 2) | **Bun** | *Phase 2 only.* Runtime for the cloud/gateway API; the engine's **zero platform-specific imports** guarantee must hold on Bun (no Bun-only APIs in `packages/core`/`packages/llm`). See [ADR-0017](decisions/0017-cloud-runtime-bun.md). |

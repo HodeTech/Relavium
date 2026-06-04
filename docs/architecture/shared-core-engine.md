@@ -47,9 +47,13 @@ end-to-end before any UI is added (see
 
 ## What the engine exports
 
-`packages/core` exposes a small, surface-agnostic API surface (exact TypeScript
-signatures are documented in
-[../reference/contracts/](../reference/contracts/)):
+`packages/core` exposes a small, surface-agnostic API surface — summarized here as
+its canonical home (every surface binds to `WorkflowEngine.start` / `resume` /
+`cancel`). The artifact contracts it consumes and produces live in
+[../reference/contracts/](../reference/contracts/): the
+[workflow YAML spec](../reference/contracts/workflow-yaml-spec.md), the
+[run-event schema](../reference/contracts/sse-event-schema.md), and the
+[IPC contract](../reference/contracts/ipc-contract.md).
 
 - **`WorkflowEngine`** — `start(workflowId, input)` / resume / cancel. Parses the
   workflow, builds the run plan, executes nodes, and owns checkpointing.
@@ -58,8 +62,11 @@ signatures are documented in
   [workflow YAML spec](../reference/contracts/workflow-yaml-spec.md).
 - **`AgentRunner`** — executes a single agent node: assembles the prompt, calls
   the provider via `packages/llm`, handles tool calls, and applies retry/fallback.
-- **`ToolNormalizer` / `ToolRegistry`** — converts provider-specific tool schemas
-  and dispatches built-in and MCP tools. See
+- **`ToolRegistry`** — the engine-side registry and dispatcher for built-in and MCP
+  tools. (The canonical-tool ↔ provider-wire reshape is the **`ToolNormalizer`**, which
+  lives in `packages/llm` behind the seam, not in the engine — see
+  [multi-llm-providers.md](multi-llm-providers.md) and
+  [../standards/architectural-principles.md](../standards/architectural-principles.md).) See
   [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md)
   and [../reference/shared-core/mcp-integration.md](../reference/shared-core/mcp-integration.md).
 - **`RunEventBus`** — an `EventEmitter` that carries the typed run events

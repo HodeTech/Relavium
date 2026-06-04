@@ -10,5 +10,5 @@ Part of [reference/](../README.md).
 |------|-----------|
 | [database-schema.md](database-schema.md) | The local SQLite (Drizzle) run-history and catalog schema. |
 | [keychain-and-secrets.md](keychain-and-secrets.md) | OS keychain storage for API keys + encrypted-file fallback. |
-| [tauri-plugins.md](tauri-plugins.md) | The Tauri v2 plugins used (fs, shell, sql, tray, global-shortcut, keychain, notification). |
+| [tauri-plugins.md](tauri-plugins.md) | The Tauri v2 plugins used (fs, shell, sql, keychain, tray, global-shortcut, notification, dialog, http, clipboard). |
 | [routes-and-screens.md](routes-and-screens.md) | The desktop app's screens/routes (dashboard, workflows, canvas, agents, runs, settings). |

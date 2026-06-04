@@ -40,3 +40,7 @@ pnpm-debug.log*
 # Test / coverage
 coverage/
 .vitest/
+
+# Claude Code transient state (skills/agents ARE committed; runtime locks are not)
+.claude/scheduled_tasks.lock
+.claude/**/*.lock

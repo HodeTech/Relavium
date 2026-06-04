@@ -33,7 +33,7 @@ flowchart TB
         CLI["CLI"]
     end
     subgraph Cloud["Relavium Cloud (Phase 2)"]
-        Portal["apps/portal<br/>Vite + React SPA<br/>(same canvas UX, in a browser)"]
+        Portal["apps/portal<br/>Vite + React SPA<br/>(control plane, in a browser)"]
         API["apps/api<br/>Hono on Bun + auth"]
         Queue["BullMQ on Redis 7<br/>orchestrator / node / system pools"]
         Workers["Workers<br/>run packages/core"]
@@ -77,16 +77,18 @@ The whole point is that the engine does not change. `packages/core` and
 `packages/llm` run in cloud workers exactly as they run on a user's machine
 (see [shared-core-engine.md](shared-core-engine.md) and
 [multi-llm-providers.md](multi-llm-providers.md)). Surfaces call
-`engine.run()` and consume the same `RunEvent` objects regardless of mode — they do
-not branch on local-versus-cloud. The workflow YAML, the node-type catalog, the
+`WorkflowEngine.start(workflowId, input)` and consume the same `RunEvent` objects
+regardless of mode — they do not branch on local-versus-cloud. The workflow YAML, the node-type catalog, the
 checkpoint shape, fallback chains, and cost accounting are all identical.
 
 ## What the cloud layer adds
 
 | Component | Role |
 |-----------|------|
-| **`apps/api`** | A **Hono** REST API on Bun that wraps `packages/core` with job dispatch, multi-tenant auth, and cloud state. It does not re-implement execution — it enqueues it. |
-| **`apps/portal`** | A **Vite + React SPA** with the same canvas UX as the desktop app, running in a browser instead of a Tauri WebView. This is a *control plane* (usage, quota, team, runs, gates), not a new execution engine. |
+| **`apps/api`** | A **Hono** REST API on Bun that wraps `packages/core` with job dispatch, multi-tenant auth, and cloud state. It does not re-implement execution — it enqueues it. (The engine's entry point is the same
+`WorkflowEngine.start(workflowId, input)` every surface calls — see
+[shared-core-engine.md](shared-core-engine.md).) |
+| **`apps/portal`** | A **Vite + React SPA** that reuses Relavium's shared UI components (`packages/ui`) in a browser instead of a Tauri WebView, for *viewing and managing* runs. It is a *control plane* (usage, quota, team, runs, gates), **not** a second canvas or a new execution engine — it does not embed `@relavium/core`; it drives runs through the cloud API. |
 | **PostgreSQL 16** | Replaces SQLite for cloud runs. The Drizzle schema is ~90% shared with the local SQLite schema; see [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md) and the SQLite-vs-Postgres differences it records. |
 | **Redis 7 + BullMQ** | Job queues (orchestrator / node / system worker pools) plus Redis Streams for SSE log delivery and a sliding-window rate limiter. |
 | **Cloud workers** | Worker processes that pull jobs and run `packages/core`, one worker thread per agent node. |

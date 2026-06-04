@@ -15,6 +15,7 @@ Change a settled Relavium decision the only sanctioned way: write a **new** ADR 
 ## When not to use
 - Recording a brand-new decision with no prior ADR — use ../write-adr/SKILL.md.
 - Fixing a typo or broken link in an old ADR — that is a docs fix, but never alter the *decision content* of a superseded ADR.
+- **Refining, clarifying, correcting, or reconciling** an Accepted ADR *without reversing its decision* (e.g. a later ADR refines its mechanism) — that is an **in-place amendment**, not a supersession. Add a dated `> Amended YYYY-MM-DD: …` blockquote note that points to the driving ADR, per [documentation-style.md](../../../docs/standards/documentation-style.md) §7, and leave the original text annotated. Supersede only when the decision is actually reversed or replaced.
 - The change is to a spec, not a decision — that lives in `docs/reference/`.
 
 ## Inputs

@@ -103,7 +103,7 @@ your own roof → BYOK) and **convenience** (don't want to manage a key → mana
   Nothing transits Relavium. Mechanics: [architecture/key-management.md](architecture/key-management.md);
   keychain handling: [reference/desktop/keychain-and-secrets.md](reference/desktop/keychain-and-secrets.md).
 - **Recommended tier.** **Free** ($0) for unlimited BYOK on every surface; **Pro**
-  *(~$19/seat, Phase 2, illustrative)* adds cloud backup, full run history, and usage
+  *(~$20/seat, Phase 2, illustrative)* adds cloud backup, full run history, and usage
   analytics. Tiers: [reference/portal/api-reference.md](reference/portal/api-reference.md#licensing-tiers).
 - **Who pays for tokens.** The **developer pays the provider directly** under their
   own account — Relavium carries **zero token COGS** in BYOK (the ~90%+ software

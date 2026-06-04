@@ -74,7 +74,8 @@ checkpoint/resume, retry, and provider failover all demonstrated.
   colon-namespaced run events through a `RunEventBus`.
 - Checkpoint/resume and node-level retry, with the fallback chain wired to
   `@relavium/llm`.
-- A `ToolNormalizer` / `ToolRegistry` for built-in tools
+- A `ToolRegistry` (engine-side dispatch in `@relavium/core`) plus the `ToolNormalizer`
+  (in `@relavium/llm`, behind the seam) for built-in tools
   ([built-in-tools.md](../../reference/shared-core/built-in-tools.md)) and a clean
   execution-mode interface so the same engine runs local (Phase 1) and cloud
   (Product Phase 2) unchanged.
@@ -476,8 +477,10 @@ The gate that suspends a run for an external decision and resumes idempotently.
   `human_gate:resumed`, and continuing the run.
 - Make re-delivering the same decision idempotent (do not advance twice) because the
   gate state is checkpointed.
-- Implement `timeout_action` (`fail` / `continue_default` / `cancel`) mapping a
-  timeout to `decidedBy: 'timeout_escalation'`.
+- Implement `timeout_action` (`reject` / `approve` / `escalate` — the canonical enum from
+  [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md#human_gate-node);
+  the engine config block names it `on_timeout`) mapping a timeout to
+  `decidedBy: 'timeout_escalation'`.
 
 **Acceptance:** a run pauses at a gate, persists state, resumes on a decision and
 completes; re-applying the same decision is a no-op; a timeout resolves per the
@@ -508,9 +511,9 @@ Layer node-level retry above the provider fallback chain so reliability composes
 correctly.
 
 **Tasks:**
-- Implement node-level retry from `retry_config` (`max_attempts`, `backoff_seconds`,
-  `retry_on[]`), with backoff and optional input adjustment, never silently skipping
-  a required node.
+- Implement node-level retry from `retry_config` (`max_attempts`, `backoff_ms`,
+  `backoff_strategy`, `retry_on[]`), with backoff and optional input adjustment, never
+  silently skipping a required node.
 - Wire the ordering: the engine considers a node failed only after the **whole
   fallback chain** (1.K) is exhausted within an attempt, then applies the node retry
   budget above that.

@@ -36,6 +36,17 @@ decision to build the internal `@relavium/llm` abstraction (recorded live in
 review findings that drove the fixes. Both are meta-provenance, useful if the tree or a
 core decision is ever revisited, and follow the same frozen, one-way rules.
 
+Three more frozen files are **review snapshots** — the raw outputs of the multi-agent
+review rounds the corpus was hardened against, kept as audit provenance, never living
+docs: `deep-review-result.json` and `deep-review-gap-result.json` are the first deep
+multi-agent review and its gap pass (whose dominant finding became
+[ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md) and the propagation
+sweep), and `final-review-result.json` is the final comprehensive review (the keytar /
+ADR-amendment / canonical-home findings, which became
+[ADR-0019](../../decisions/0019-cli-node-keychain-library.md), the §7 amend rule, and the
+seam/engine-entry-point reconciliations). They record *what the reviews found and when*;
+the living docs already carry the fixes, so cite these only to trace a fix's origin.
+
 ## Provenance — `deep-analysis-raw.json` → living docs
 
 This is the earlier analysis. **Only its cross-cutting, still-true artifacts** flowed

@@ -20,8 +20,8 @@ settled and recorded:
 - Product vision, UVP, and hard constraints (desktop is agent-management, not an
   IDE; local-first Product Phase 1; git-native workflow YAML).
 - The full architecture set (overview, shared core engine, execution model, state
-  management, local-first security, desktop architecture, multi-LLM providers, the
-  Phase-2 cloud design, and the Phase-2 managed-inference design).
+  management, local-first security, desktop architecture, multi-LLM providers, key
+  management, the Phase-2 cloud design, and the Phase-2 managed-inference design).
 - The canonical reference contracts (workflow/agent YAML specs, the SSE/run-event
   schema, the IPC contract, config, database schema, CLI commands, the VS Code
   extension API).
@@ -36,6 +36,12 @@ settled and recorded:
   Phase-2 deliverable, decoupled from and ahead of cloud execution
   ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md), with
   [ADR-0013](../decisions/0013-managed-key-vault-and-pools.md)/[0014](../decisions/0014-managed-metering-quota-and-billing.md)/[0015](../decisions/0015-managed-mode-data-handling-and-compliance.md)).
+  Later ADRs pin the Phase-2 API stack ([ADR-0016](../decisions/0016-api-framework-hono.md) Hono,
+  [ADR-0017](../decisions/0017-cloud-runtime-bun.md) Bun), the **desktop execution model**
+  ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md) — engine in the WebView,
+  Rust-delegated LLM egress), and the CLI's Node-side keychain library
+  ([ADR-0019](../decisions/0019-cli-node-keychain-library.md) — `@napi-rs/keyring`, not the
+  archived `keytar`).
 - The full seven-phase roadmap: the [phase index](README.md#phase-index), the
   [global milestone spine](README.md#global-milestone-spine) (M0–M7), and the
   [cross-phase invariants](README.md#cross-phase-invariants). Per Option B, Product

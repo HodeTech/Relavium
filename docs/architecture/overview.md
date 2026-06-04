@@ -58,6 +58,13 @@ flowchart TB
     API -.->|HTTPS| Providers
 ```
 
+> This is a **logical package-dependency** map, not a per-host data flow. On the
+> desktop the keychain read and the authenticated provider egress do **not** happen
+> in the WebView: `@relavium/llm` hands a request shape + key *reference* to the Rust
+> `llm_stream` command, which reads the key and makes the HTTPS call (the raw key
+> never enters the WebView). See [local-first-and-security.md](local-first-and-security.md)
+> for the desktop trust-boundary diagram and [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md).
+
 ## Context
 
 The shape of Relavium is fixed by a small set of decisions, recorded as ADRs and

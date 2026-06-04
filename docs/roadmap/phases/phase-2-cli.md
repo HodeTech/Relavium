@@ -43,7 +43,8 @@ the [config resolution order](../../reference/contracts/config-spec.md), and the
 - Two-level **config resolution** (`~/.relavium/` global → project `.relavium/`)
   with CLI flag / env override, exactly per
   [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md).
-- **Provider/key commands** that store API keys in the OS keychain via `keytar`
+- **Provider/key commands** that store API keys in the OS keychain via `@napi-rs/keyring`
+  ([ADR-0019](../../decisions/0019-cli-node-keychain-library.md) — not the archived `keytar`)
   under the `service=relavium`, `account={providerId}:{keyId}` naming from
   [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md),
   with the headless `secrets.enc` / env-var fallback for CI.
@@ -68,7 +69,7 @@ the [config resolution order](../../reference/contracts/config-spec.md), and the
 - Scheduled / webhook triggers; only `manual` (and the engine's `file_change`)
   triggers exist in Phase 1, and `file_change` is exercised by later surfaces.
 - SQLCipher-encrypted history and the Tauri keychain plugin — those are desktop
-  concerns; the CLI uses `keytar` and an in-process engine bus, not Tauri IPC.
+  concerns; the CLI uses `@napi-rs/keyring` and an in-process engine bus, not Tauri IPC.
 - Any engine behavior change made as a CLI workaround. Gaps found here are folded
   back into Phase 1 packages and re-tested (see Risks).
 
@@ -154,7 +155,7 @@ the exact precedence in [config-spec.md](../../reference/contracts/config-spec.m
 file-attributed error and exit `2`; a project with no `.relavium/` is reported
 clearly; no secret is ever read from or written to a config file.
 
-### 2.C — Provider and key commands (OS keychain via `keytar`)
+### 2.C — Provider and key commands (OS keychain via `@napi-rs/keyring`)
 
 Add the `relavium provider` subcommands so a user can register providers and store
 API keys in the OS keychain — the CLI's secret seam, equivalent to the desktop
@@ -164,7 +165,7 @@ keychain and VS Code `SecretStorage`.
 
 - Implement `provider list`, `provider add`, `provider set-key`, `provider
   remove-key`, `provider test` (a minimal live ping through `@relavium/llm`).
-- Store each key with `keytar` under `service=relavium`,
+- Store each key with `@napi-rs/keyring` under `service=relavium`,
   `account={providerId}:{keyId}` (one entry per key so keys rotate/revoke
   independently), per [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md).
 - Persist only the **non-secret** provider row (`name`, `base_url`,

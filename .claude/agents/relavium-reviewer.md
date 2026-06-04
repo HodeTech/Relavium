@@ -33,7 +33,7 @@ finding, and you list what you verified as clean.
    `packages/llm/src/adapters/*`. The seam exposes only Relavium/Zod types; the engine never
    pattern-matches a vendor chunk or re-exports a vendor enum (a `raw` payload is carried as
    `unknown`, never typed as a vendor shape).
-   - Signal: `grep -rn "@anthropic-ai/sdk\|from 'openai'\|@google/genai" packages/core packages/shared packages/db packages/ui apps/` — any hit is a leak.
+   - Signal: `grep -rn "@anthropic-ai/sdk\|from 'openai'\|@google/genai" packages apps | grep -v 'packages/llm/src/adapters/'` — any remaining hit is a leak (same scope as the standards-check skill).
    - Source: [llm-provider-seam.md](../../docs/reference/shared-core/llm-provider-seam.md), [ADR-0011](../../docs/decisions/0011-internal-llm-abstraction.md)
 
 3. **Engine purity — `packages/core` has zero platform-specific imports.** No `node:*`, no
@@ -50,15 +50,17 @@ finding, and you list what you verified as clean.
 
 5. **Secrets never in plaintext, logs, or the frontend.** Keys live only in the OS keychain;
    none in an IPC payload to the WebView, a Zustand store, a React prop, localStorage, a log,
-   an unencrypted DB column, or an error/`node:error`/`run:error` event.
+   an unencrypted DB column, or an error/`node:failed`/`run:failed` event. On the **desktop**
+   the WebView adapter holds only a key *reference*; the raw key is read and attached inside
+   the Rust `llm_stream` command and never crosses into the WebView (ADR-0018).
    - Signal: `grep -rni "apikey\|api_key\|secret\|process.env.*KEY" $changed_files` then trace each hit.
-   - Source: [security-review.md](../../docs/standards/security-review.md), [ADR-0006](../../docs/decisions/0006-os-keychain-for-api-keys.md)
+   - Source: [security-review.md](../../docs/standards/security-review.md), [ADR-0006](../../docs/decisions/0006-os-keychain-for-api-keys.md), [ADR-0018](../../docs/decisions/0018-desktop-execution-and-rust-egress.md)
 
 6. **One canonical home for specs.** A change to a schema (workflow/agent YAML, SSE/run
    events, IPC, DB DDL, node types, tools, routes) updates its one
    [docs/reference/](../../docs/reference/) file — no pasted copy elsewhere. Run-event names
    are the canonical colon-namespaced form with `sequenceNumber`.
-   - Signal: `grep -rn "node\.\(started\|completed\)\|agent\.token\|\bseqNo\b" $changed_files` — legacy dotted names / `seqNo` are wrong.
+   - Signal: `grep -rn "node\.\(started\|completed\)\|agent\.token\|\bseqNo\b\|node:error\|run:error\|human_gate:pending" $changed_files` — legacy dotted names, `seqNo`, and the non-canonical `node:error`/`run:error`/`human_gate:pending` are all wrong (canonical: `node:failed`/`run:failed`/`human_gate:paused`, field `sequenceNumber`).
 
 7. **Desktop is an agent-management center, not an IDE.** A change under `apps/desktop`
    adding a code editor, file browser, or terminal is out of scope; code-adjacent work
