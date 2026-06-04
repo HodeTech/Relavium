@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-03
+> Last updated: 2026-06-04
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -13,9 +13,14 @@ actions. The full phase plan and the global milestone spine are in
 
 ## Where we are
 
-**Documentation and design: complete. No code written yet.** The repository
-(`github.com/HodeTech/Relavium`) holds the `docs/` tree only. The foundation is
-settled and recorded:
+**Documentation and design: complete. The monorepo scaffold (Phase 0 workstreams
+0.A–0.C) has landed and is green.** The repository (`github.com/HodeTech/Relavium`)
+now holds the `docs/` tree **plus** the Turborepo + pnpm workspace, the strict
+`tsconfig` bases, the root ESLint/Prettier/Vitest spine, and a buildable
+`@relavium/shared` scaffold — `pnpm install && pnpm turbo run lint typecheck test build`
+is green and `format:check` is clean. The remaining Phase-0 workstreams (0.D/0.E
+schemas, 0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still open before
+**M0**. The foundation is settled and recorded:
 
 - Product vision, UVP, and hard constraints (desktop is agent-management, not an
   IDE; local-first Product Phase 1; git-native workflow YAML).
@@ -50,9 +55,10 @@ settled and recorded:
 
 ## What is active now
 
-The project is at the **start of build-order step 1: scaffolding the monorepo.**
-This is **[Phase 0 — foundations](phases/phase-0-foundations.md)** (Product Phase 1).
-Phase 0 ships **types and tooling, not features**; its job is to make
+The project is in **build-order step 1: scaffolding the monorepo** — the toolchain
+half (0.A–0.C) is **done and green**, and the next work is the critical-path schemas
+(0.D/0.E). This is **[Phase 0 — foundations](phases/phase-0-foundations.md)** (Product
+Phase 1). Phase 0 ships **types and tooling, not features**; its job is to make
 [Phase 1 — the engine critical path](phases/phase-1-engine-and-llm.md) safe to start
 against a frozen contract and a green CI gate. Until Phase 0's
 [exit criteria](phases/phase-0-foundations.md#exit-criteria-go--no-go) pass, no
@@ -67,6 +73,10 @@ The first workstreams of Phase 0, in order. `0.A → 0.B → 0.C → 0.D` are se
 (each needs the prior); `0.E` is the critical-path schema work that feeds M0. Full
 task lists and acceptance criteria are in
 [phase-0-foundations.md](phases/phase-0-foundations.md#work-breakdown).
+
+> **✅ 0.A / 0.B / 0.C are landed and green** (the monorepo + toolchain spine). The
+> active focus is now **[0.D → 0.E]** — `@relavium/shared`'s Zod schemas. Items 1–3
+> below are kept for the record with their acceptance met.
 
 1. **[0.A] Scaffold the Turborepo + pnpm workspace** per
    [../project-structure.md](../project-structure.md): a `private` root

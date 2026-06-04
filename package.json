@@ -1,0 +1,33 @@
+{
+  "name": "relavium",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Relavium — multi-surface, local-first AI agent workflow platform (HodeTech). Monorepo root (tooling only).",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=20.11.0",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "ci": "turbo run lint typecheck test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^3.0.0"
+  }
+}
