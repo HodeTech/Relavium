@@ -62,7 +62,9 @@ export const ConditionNodeSchema = z.object({
   type: z.literal('condition'),
   expression: nonEmptyString,
   expression_type: ExpressionTypeSchema.optional(),
-  branches: z.array(ConditionBranchSchema),
+  branches: z
+    .array(ConditionBranchSchema)
+    .min(1, 'a condition node must declare at least one branch'),
   default: kebabIdSchema.optional(),
 });
 

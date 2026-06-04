@@ -260,4 +260,25 @@ describe('WorkflowSchema', () => {
     };
     expect(accepts(withWorkflow({ agents: [agent, { ...agent }] }))).toBe(false);
   });
+
+  it('accepts a minimal workflow with only required fields', () => {
+    // No version/name/tags/trigger/inputs/context/agents/tools — exercises the optional
+    // paths and the `?? []` fallbacks in the uniqueness checks.
+    expect(
+      accepts({
+        schema_version: '1.0',
+        workflow: { id: 'min', nodes: [{ id: 'only', type: 'input' }], edges: [] },
+      }),
+    ).toBe(true);
+  });
+
+  it('strips the handle when checking fan-out vs parallel_of agreement', () => {
+    // `fan-out:x` must resolve to the `fan-out` node before the parallel_of check;
+    // `output` is not a branch, so it still rejects.
+    expect(
+      accepts(
+        withWorkflow({ edges: [...base.workflow.edges, { from: 'fan-out:x', to: 'output' }] }),
+      ),
+    ).toBe(false);
+  });
 });

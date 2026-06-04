@@ -65,4 +65,17 @@ describe('RunSchema', () => {
     expect(RunSchema.safeParse({ ...run, createdAt: 2000, updatedAt: 1000 }).success).toBe(false);
     expect(RunSchema.safeParse({ ...run, startedAt: 1000, completedAt: 2000 }).success).toBe(true);
   });
+
+  it('accepts the optional completion fields (error, startedAt, completedAt) when present', () => {
+    // Absence is covered by the base `run` fixture (a running run with none of them).
+    expect(
+      RunSchema.safeParse({
+        ...run,
+        status: 'failed',
+        error: { code: 'E_FAIL', message: 'boom', nodeId: 'scan' },
+        startedAt: 1717459210000,
+        completedAt: 1717459260000,
+      }).success,
+    ).toBe(true);
+  });
 });

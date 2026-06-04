@@ -57,20 +57,57 @@ describe('NodeSchema', () => {
     ).toBe(false);
   });
 
-  it('rejects nodes missing their required per-type fields', () => {
-    const invalid: unknown[] = [
-      { id: 'g', type: 'human_gate' }, // missing gate_type
-      { id: 'c', type: 'condition', branches: [] }, // missing expression
-      { id: 'c', type: 'condition', expression: 'x' }, // missing branches
-      { id: 't', type: 'transform' }, // missing transform
-      { id: 'p', type: 'parallel' }, // missing parallel_of
-      { id: 'p', type: 'parallel', parallel_of: [] }, // empty parallel_of
-      { id: 'm', type: 'merge' }, // missing merge_strategy
-      { id: 'm', type: 'merge', merge_strategy: 'best_of_n' }, // reserved, not v1.0
-    ];
-    for (const node of invalid) {
-      expect(NodeSchema.safeParse(node).success).toBe(false);
-    }
+  // Each case omits exactly one required field; the error must land on THAT field, so a
+  // reject can't pass for an unrelated reason.
+  const missingRequired: [string, unknown][] = [
+    ['gate_type', { id: 'g', type: 'human_gate' }],
+    ['expression', { id: 'c', type: 'condition', branches: [{ when: true, target_node: 'a' }] }],
+    ['branches', { id: 'c', type: 'condition', expression: 'x > 1' }],
+    ['transform', { id: 't', type: 'transform' }],
+    ['parallel_of', { id: 'p', type: 'parallel' }],
+    ['merge_strategy', { id: 'm', type: 'merge' }],
+    ['agent_ref', { id: 'a', type: 'agent' }],
+  ];
+  it.each(missingRequired)(
+    'rejects a node missing required %s, with the error on that field',
+    (field, node) => {
+      const result = NodeSchema.safeParse(node);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some((issue) => issue.path.includes(field))).toBe(true);
+      }
+    },
+  );
+
+  it('rejects empty / reserved control-node values', () => {
+    // condition needs >= 1 branch; parallel needs >= 1 branch; best_of_n is reserved.
+    expect(
+      NodeSchema.safeParse({ id: 'c', type: 'condition', expression: 'x', branches: [] }).success,
+    ).toBe(false);
+    expect(NodeSchema.safeParse({ id: 'p', type: 'parallel', parallel_of: [] }).success).toBe(
+      false,
+    );
+    expect(
+      NodeSchema.safeParse({ id: 'm', type: 'merge', merge_strategy: 'best_of_n' }).success,
+    ).toBe(false);
+  });
+
+  it('accepts an agent node with optional overrides, and a minimal one without', () => {
+    expect(NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'ag' }).success).toBe(true);
+    expect(
+      NodeSchema.safeParse({
+        id: 'a',
+        type: 'agent',
+        agent_ref: 'ag',
+        prompt_template: 'p',
+        model: 'gpt-4o',
+        temperature: 0.5,
+        max_tokens: 500,
+        tools: ['read_file'],
+        timeout_ms: 30000,
+        retry: { max: 2, backoff: 'linear' },
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects a condition branch with a non-kebab target_node', () => {

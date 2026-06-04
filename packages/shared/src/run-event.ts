@@ -21,14 +21,16 @@ const baseFields = {
 export const BaseEventSchema = z.object({ type: z.string(), ...baseFields });
 export type BaseEvent = z.infer<typeof BaseEventSchema>;
 
-const TokensUsedSchema = z.object({
+export const TokensUsedSchema = z.object({
   input: nonNegativeInt,
   output: nonNegativeInt,
   model: nonEmptyString,
 });
+export type TokensUsed = z.infer<typeof TokensUsedSchema>;
 
 /** A gate decision value, shared by the resumed event and `GateDecision`. */
 export const GateDecisionValueSchema = z.enum(['approved', 'rejected', 'input_provided']);
+export type GateDecisionValue = z.infer<typeof GateDecisionValueSchema>;
 
 export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
@@ -164,6 +166,18 @@ export const RunEventSchema = z.discriminatedUnion('type', [
   RunCancelledEventSchema,
 ]);
 export type RunEvent = z.infer<typeof RunEventSchema>;
+
+// Per-variant inferred types, for consumers that handle a specific event.
+export type RunStartedEvent = z.infer<typeof RunStartedEventSchema>;
+export type NodeStartedEvent = z.infer<typeof NodeStartedEventSchema>;
+export type AgentTokenEvent = z.infer<typeof AgentTokenEventSchema>;
+export type AgentToolCallEvent = z.infer<typeof AgentToolCallEventSchema>;
+export type AgentToolResultEvent = z.infer<typeof AgentToolResultEventSchema>;
+export type NodeCompletedEvent = z.infer<typeof NodeCompletedEventSchema>;
+export type NodeFailedEvent = z.infer<typeof NodeFailedEventSchema>;
+export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
+export type RunFailedEvent = z.infer<typeof RunFailedEventSchema>;
+export type RunCancelledEvent = z.infer<typeof RunCancelledEventSchema>;
 
 /** The decision applied to resume a human gate (`engine.resume(runId, gateId, decision)`). */
 export const GateDecisionSchema = z.object({

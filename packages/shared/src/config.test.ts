@@ -69,4 +69,12 @@ describe('config schemas', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('rejects a malformed url in an http MCP registration', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'r', transport: 'http', url: 'not-a-url' }],
+      }).success,
+    ).toBe(false);
+  });
 });

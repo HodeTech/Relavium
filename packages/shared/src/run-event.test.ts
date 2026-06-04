@@ -237,6 +237,21 @@ describe('cost:updated and sequenceNumber invariants', () => {
     expect(RunEventSchema.safeParse({ ...cancelled, sequenceNumber: 1.5 }).success).toBe(false);
   });
 
+  it('accepts the human-gate events with their optional fields present', () => {
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['human_gate:paused'],
+        assignee: 'reviewer@example.com',
+        timeoutMs: 1000,
+        expiresAt: '2026-06-04T01:00:00.000Z',
+      }).success,
+    ).toBe(true);
+    expect(
+      RunEventSchema.safeParse({ ...valid['human_gate:resumed'], payload: { input: 'yes' } })
+        .success,
+    ).toBe(true);
+  });
+
   it('rejects a non-ISO-8601 timestamp', () => {
     expect(
       RunEventSchema.safeParse({ ...env, type: 'run:cancelled', timestamp: 'June 4 2026' }).success,

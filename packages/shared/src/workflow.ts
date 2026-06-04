@@ -9,8 +9,9 @@ import { EdgeSchema } from './edge.js';
 /**
  * Workflow YAML schema v1.0 (workflow-yaml-spec.md). A workflow is a
  * git-committable directed graph of nodes; it is a **public API**, so `WorkflowSchema`
- * is the migration anchor (`schema_version`) and unknown extra keys are tolerated
- * (forward-compatible parsing) rather than rejected.
+ * is the migration anchor (`schema_version`) and unknown extra keys are **silently
+ * stripped** (Zod's default `z.object` behavior) rather than rejected — so a newer
+ * file's added optional fields never break an older parser (forward-compatible parsing).
  */
 
 /** How a run is initiated. */
