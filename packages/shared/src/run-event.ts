@@ -35,7 +35,7 @@ export type GateDecisionValue = z.infer<typeof GateDecisionValueSchema>;
 export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
   ...baseFields,
-  workflowId: nonEmptyString,
+  workflowId: z.string().uuid(), // FK to workflows.id (surrogate UUID), matching RunSchema — ADR-0022
   inputs: z.record(z.string(), z.unknown()), // secret-typed inputs are masked at emit time
   executionMode: z.enum(EXECUTION_MODES),
 });

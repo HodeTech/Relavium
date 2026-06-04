@@ -86,6 +86,21 @@ describe('AgentSchema', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('rejects an unknown / typo key — strict authored YAML (ADR-0023)', () => {
+    // `temprature` is a typo for `temperature`; strict rejects it instead of dropping it.
+    expect(AgentSchema.safeParse({ ...summarizer, temprature: 0.3 }).success).toBe(false);
+  });
+
+  it('rejects a non-finite or out-of-range temperature', () => {
+    const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
+    expect(AgentSchema.safeParse({ ...min, temperature: Infinity }).success).toBe(false);
+    expect(AgentSchema.safeParse({ ...min, temperature: Number.NaN }).success).toBe(false);
+    expect(AgentSchema.safeParse({ ...min, temperature: -0.1 }).success).toBe(false);
+    expect(AgentSchema.safeParse({ ...min, temperature: 2.5 }).success).toBe(false);
+    expect(AgentSchema.safeParse({ ...min, temperature: 0 }).success).toBe(true);
+    expect(AgentSchema.safeParse({ ...min, temperature: 2 }).success).toBe(true);
+  });
 });
 
 describe('MemorySchema', () => {
@@ -137,5 +152,16 @@ describe('McpServerRefSchema', () => {
     expect(
       McpServerRefSchema.safeParse({ id: 'd', transport: 'sse', url: 'not-a-url' }).success,
     ).toBe(false);
+  });
+
+  it('rejects an unsafe url scheme (SSRF guard — file:/javascript: etc.)', () => {
+    expect(
+      McpServerRefSchema.safeParse({ id: 'x', transport: 'sse', url: 'file:///etc/passwd' })
+        .success,
+    ).toBe(false);
+    expect(
+      McpServerRefSchema.safeParse({ id: 'x', transport: 'websocket', url: 'wss://host/mcp' })
+        .success,
+    ).toBe(true);
   });
 });

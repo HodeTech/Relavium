@@ -281,4 +281,19 @@ describe('WorkflowSchema', () => {
       ),
     ).toBe(false);
   });
+
+  it('rejects an unknown / typo key — strict authored YAML, not silent-strip (ADR-0023)', () => {
+    // Unknown top-level key.
+    expect(accepts({ ...base, surprise: 1 })).toBe(false);
+    // Unknown key in the workflow body (e.g. a misspelled `triggers`).
+    expect(accepts(withWorkflow({ triggers: {} }))).toBe(false);
+    // Unknown key inside a node.
+    expect(
+      accepts(
+        withWorkflow({
+          nodes: base.workflow.nodes.map((n) => (n.id === 'input' ? { ...n, oops: 1 } : n)),
+        }),
+      ),
+    ).toBe(false);
+  });
 });

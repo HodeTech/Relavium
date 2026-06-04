@@ -9,6 +9,8 @@ An **agent** is a named, reusable LLM configuration: which model, which provider
 
 Agents are **git-committable** and shareable. An agent may live as its own `.agent.yaml` file (so it can be reused across workflows) or be declared inline inside a workflow's `agents:` array. Both forms validate against the same schema.
 
+> **Strict validation.** `AgentSchema` rejects unknown/mistyped keys (e.g. `temprature`) rather than silently dropping them ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). `temperature` is bounded to a finite `[0, 2]`, and a declared MCP `url` must use an `http(s)`/`ws(s)` scheme.
+
 ## Schema
 
 ```yaml

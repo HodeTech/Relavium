@@ -11,7 +11,7 @@ const valid: Record<string, Record<string, unknown>> = {
   'run:started': {
     type: 'run:started',
     ...env,
-    workflowId: 'wf',
+    workflowId: 'b1a2c3d4-0000-4000-8000-000000000000', // workflows.id UUID (ADR-0022)
     inputs: {},
     executionMode: 'local',
   },

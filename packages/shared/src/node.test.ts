@@ -120,4 +120,18 @@ describe('NodeSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects an unknown / typo key on a node — strict authored YAML (ADR-0023)', () => {
+    expect(NodeSchema.safeParse({ id: 'in', type: 'input', extra: 1 }).success).toBe(false);
+    expect(
+      NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'ag', temprature: 0.5 }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a non-finite / out-of-range agent-node temperature', () => {
+    const node = { id: 'a', type: 'agent', agent_ref: 'ag' };
+    expect(NodeSchema.safeParse({ ...node, temperature: Infinity }).success).toBe(false);
+    expect(NodeSchema.safeParse({ ...node, temperature: 3 }).success).toBe(false);
+    expect(NodeSchema.safeParse({ ...node, temperature: 0.5 }).success).toBe(true);
+  });
 });

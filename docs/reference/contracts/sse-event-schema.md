@@ -55,7 +55,7 @@ export type RunEvent =
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
-| `run:started` | A run began. | `workflowId`, `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
+| `run:started` | A run began. | `workflowId` (the `workflows.id` **UUID** FK, not the authored slug — [ADR-0022](../../decisions/0022-run-references-workflow-by-uuid.md)), `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType` |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets) |

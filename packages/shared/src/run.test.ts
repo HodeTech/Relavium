@@ -4,7 +4,7 @@ import { RunSchema, RunStatusSchema } from './run.js';
 
 const run = {
   id: '3a398e0e-0000-4000-8000-000000000000',
-  workflowId: 'code-review-pipeline',
+  workflowId: 'b1a2c3d4-0000-4000-8000-000000000000', // workflows.id surrogate UUID (ADR-0022)
   status: 'running',
   executionMode: 'local',
   triggerType: 'manual',
@@ -46,6 +46,10 @@ describe('RunSchema', () => {
 
   it('requires a UUID run id', () => {
     expect(RunSchema.safeParse({ ...run, id: 'not-a-uuid' }).success).toBe(false);
+  });
+
+  it('requires a UUID workflowId (FK to workflows.id, not the kebab slug) — ADR-0022', () => {
+    expect(RunSchema.safeParse({ ...run, workflowId: 'code-review-pipeline' }).success).toBe(false);
   });
 
   it('accepts a completed run with outputs, and a running run without', () => {

@@ -10,6 +10,9 @@ import { LLM_PROVIDERS } from './constants.js';
  *
  * Agents never contain API keys — provider credentials resolve from the secret
  * store at call time and are never schema-representable.
+ *
+ * Every authored object is `.strict()`: an unknown or mistyped key is a validation
+ * error, not a silently stripped field (ADR-0023).
  */
 
 /** The supported provider id (the `LLMProvider` seam's closed set). */
@@ -19,14 +22,19 @@ export const ProviderSchema = z.enum(LLM_PROVIDERS);
 export const BackoffStrategySchema = z.enum(['linear', 'exponential']);
 
 /** Transient-error retry on the *same* model. */
-export const RetrySchema = z.object({
-  max: positiveInt,
-  backoff: BackoffStrategySchema,
-});
+export const RetrySchema = z
+  .object({
+    max: positiveInt,
+    backoff: BackoffStrategySchema,
+  })
+  .strict();
 export type Retry = z.infer<typeof RetrySchema>;
 
 /** Transport for an agent-declared MCP server (mcp-integration.md). */
 export const McpTransportSchema = z.enum(['stdio', 'sse', 'websocket']);
+
+/** Allowed URL schemes for a network MCP server — never file:/javascript:/etc. */
+const SAFE_MCP_URL = /^(https?|wss?):\/\//i;
 
 /**
  * A reference to an MCP server an agent consumes (`McpServerRef`). The transport
@@ -49,6 +57,7 @@ export const McpServerRefSchema = z
     url: z.string().url().optional(),
     tools_allowlist: z.array(nonEmptyString).optional(),
   })
+  .strict()
   .superRefine((ref, ctx) => {
     if (ref.transport === 'stdio' && !ref.command) {
       ctx.addIssue({
@@ -64,6 +73,14 @@ export const McpServerRefSchema = z
         path: ['url'],
       });
     }
+    // SSRF guard: a declared MCP url must be http(s)/ws(s) — reject file:, javascript:, etc.
+    if (ref.url !== undefined && !SAFE_MCP_URL.test(ref.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must use http(s) or ws(s) — other schemes are rejected',
+        path: ['url'],
+      });
+    }
   });
 export type McpServerRef = z.infer<typeof McpServerRefSchema>;
 
@@ -73,18 +90,20 @@ export type McpServerRef = z.infer<typeof McpServerRefSchema>;
  * `none`/`summary` carry no depth; `window` must specify one.
  */
 export const MemorySchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('none') }),
-  z.object({ type: z.literal('summary') }),
-  z.object({ type: z.literal('window'), window_size: positiveInt }),
+  z.object({ type: z.literal('none') }).strict(),
+  z.object({ type: z.literal('summary') }).strict(),
+  z.object({ type: z.literal('window'), window_size: positiveInt }).strict(),
 ]);
 export type Memory = z.infer<typeof MemorySchema>;
 
 /** One ordered alternate tried after the primary model is exhausted. */
-export const FallbackChainEntrySchema = z.object({
-  model: nonEmptyString,
-  provider: ProviderSchema,
-  max_attempts: positiveInt,
-});
+export const FallbackChainEntrySchema = z
+  .object({
+    model: nonEmptyString,
+    provider: ProviderSchema,
+    max_attempts: positiveInt,
+  })
+  .strict();
 export type FallbackChainEntry = z.infer<typeof FallbackChainEntrySchema>;
 
 /** A reusable agent definition (`.agent.yaml` or an inline `agents:` entry). */
@@ -96,7 +115,9 @@ export const AgentSchema = z
     model: nonEmptyString,
     provider: ProviderSchema,
     system_prompt: nonEmptyString,
-    temperature: z.number().optional(),
+    // A finite generation temperature in the provider-agnostic [0, 2] envelope — never
+    // NaN/Infinity/negative (those can never reach an adapter).
+    temperature: z.number().finite().min(0).max(2).optional(),
     max_tokens: positiveInt.optional(),
     tools: z.array(nonEmptyString).optional(),
     mcp_servers: z.array(McpServerRefSchema).optional(),
@@ -104,6 +125,7 @@ export const AgentSchema = z
     retry: RetrySchema.optional(),
     fallback_chain: z.array(FallbackChainEntrySchema).optional(),
   })
+  .strict()
   .superRefine((agent, ctx) => {
     // MCP server ids must be unique within an agent (they namespace the registered tools).
     const ids = (agent.mcp_servers ?? []).map((server) => server.id);

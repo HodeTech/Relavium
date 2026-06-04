@@ -13,6 +13,9 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 /** Filesystem permission tier (built-in-tools.md). */
 export const FsScopeSchema = z.enum(['sandboxed', 'project', 'full']);
 
+/** A registered `http` MCP server must use http(s) — never file:/javascript:/etc. */
+const SAFE_HTTP_URL = /^https?:\/\//i;
+
 /**
  * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required
  * connection field: `stdio` needs a `command`; `http` needs a `url`.
@@ -39,6 +42,14 @@ export const McpServerRegistrationSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "url is required for the 'http' transport",
+        path: ['url'],
+      });
+    }
+    // SSRF guard: a registered url must be http(s) — reject file:, javascript:, etc.
+    if (server.url !== undefined && !SAFE_HTTP_URL.test(server.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must use http or https',
         path: ['url'],
       });
     }
