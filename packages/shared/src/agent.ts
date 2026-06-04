@@ -82,12 +82,10 @@ export const McpServerRefSchema = z
     if (ref.url !== undefined) {
       // Per-transport scheme: `sse` is HTTP(S), `websocket` is WS(S) (stdio carries no url).
       // This also blocks file:/javascript:/etc. as a side effect.
-      const schemeOk =
-        ref.transport === 'websocket'
-          ? /^wss?:\/\//i.test(ref.url)
-          : ref.transport === 'sse'
-            ? /^https?:\/\//i.test(ref.url)
-            : SAFE_MCP_URL.test(ref.url);
+      let schemeOk: boolean;
+      if (ref.transport === 'websocket') schemeOk = /^wss?:\/\//i.test(ref.url);
+      else if (ref.transport === 'sse') schemeOk = /^https?:\/\//i.test(ref.url);
+      else schemeOk = SAFE_MCP_URL.test(ref.url);
       if (!schemeOk) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
