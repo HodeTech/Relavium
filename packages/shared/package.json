@@ -21,6 +21,9 @@
     "lint": "eslint src",
     "test": "vitest run"
   },
+  "dependencies": {
+    "zod": "catalog:"
+  },
   "devDependencies": {
     "eslint": "catalog:",
     "typescript": "catalog:",

@@ -174,6 +174,8 @@ CREATE INDEX idx_workflows_active      ON workflows (is_active, updated_at DESC)
 
 One row per workflow execution. `workflow_definition_snapshot` freezes the exact graph that ran, so a run can be replayed or inspected even after the YAML file changes. Cost is stored as integer micro-cents.
 
+> **Logical `Run` vs persisted `RunRow`.** `@relavium/shared` exports `RunSchema` — the **narrow, engine-/surface-facing** view of a run (status, trigger, inputs/outputs, token + cost totals, timestamps). This `runs` table is the **persistence** shape and carries additional columns that are a database concern, modeled by `@relavium/db` as a distinct `RunRow` mirroring the DDL below: `workflow_definition_snapshot` (the frozen graph for replay/resume), `trigger_metadata`, `workflow_path`/`project_root`, and the `deleted_at` soft-delete cursor. Those are intentionally absent from the logical `RunSchema`; a consumer that needs them reads the `RunRow`. The split keeps the engine view free of storage details while `@relavium/db` owns the row ↔ column mapping.
+
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | TEXT | PRIMARY KEY (UUID) |
@@ -182,7 +184,8 @@ One row per workflow execution. `workflow_definition_snapshot` freezes the exact
 | `project_root` | TEXT | NULL — workspace that owned the run |
 | `workflow_definition_snapshot` | TEXT (JSON) | NOT NULL |
 | `status` | TEXT | NOT NULL DEFAULT `'pending'` — `CHECK (status IN ('pending','running','paused','completed','failed','cancelled'))` |
-| `trigger_type` | TEXT | NOT NULL DEFAULT `'manual'` (`manual`, `file_change`; `webhook`/`schedule` are Phase 2) |
+| `execution_mode` | TEXT | NOT NULL DEFAULT `'local'` — `CHECK (execution_mode IN ('local','cloud','managed'))`; which mode the run used (cost/billing attribution + history) |
+| `trigger_type` | TEXT | NOT NULL DEFAULT `'manual'` (`manual`, `file_change`, `mcp_call`; `webhook`/`schedule` are Phase 2) |
 | `trigger_metadata` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` |
 | `input_json` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` |
 | `output_json` | TEXT (JSON) | NULL |

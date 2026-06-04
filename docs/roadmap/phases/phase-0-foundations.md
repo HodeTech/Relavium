@@ -113,6 +113,8 @@ flowchart TD
 
 ### 0.A — Turborepo + pnpm workspace skeleton
 
+> **✅ Done** — landed in PR #1 (merged 2026-06-04).
+
 Create the empty-but-correct monorepo so every later package has a home and a
 consistent toolchain. Tooling-only at the root; no app/package logic yet.
 
@@ -138,6 +140,10 @@ peer-dep errors.
 
 ### 0.B — Shared `tsconfig` bases
 
+> **✅ Done** — landed in PR #1 (merged 2026-06-04). Base is **`NodeNext`** so ESM
+> relative imports must carry explicit `.js` extensions (Vite surfaces override to
+> `bundler` at their phase).
+
 One strict TypeScript base every package extends, so strictness can never silently
 drift per package ([../../standards/code-style-typescript.md](../../standards/code-style-typescript.md#strictness)).
 
@@ -159,6 +165,10 @@ package produces a real type error somewhere (the strictness is load-bearing, no
 cosmetic).
 
 ### 0.C — ESLint + Prettier + Vitest (root, shared)
+
+> **✅ Done** — landed in PR #1 (merged 2026-06-04). `format:check` runs as a turbo
+> root task; a `coverage` script wires V8 branch coverage; dev-tool versions are a
+> single-source pnpm `catalog`.
 
 Configure formatting, linting, and the test runner **once** at the root and share
 them across every package — Prettier owns formatting, ESLint owns correctness.
@@ -182,6 +192,10 @@ introducing an `any` or a floating promise fails lint locally and would fail CI.
 
 ### 0.D — `packages/shared` package scaffold
 
+> **✅ Done** — `@relavium/shared` ships `zod` (catalog, the sole runtime dep) and a
+> `src/` laid out by contract (`constants`, `common`, `node`, `edge`, `agent`,
+> `workflow`, `run-event`, `run`, `config`, curated `index`).
+
 Create the `@relavium/shared` package shell — the first real, fully built-out
 package and the dependency root of the whole graph.
 
@@ -200,6 +214,14 @@ package and the dependency root of the whole graph.
 workspace package with full types; its only runtime dependency is `zod`.
 
 ### 0.E — Shared Zod schemas + round-trip tests
+
+> **✅ Done** — `WorkflowSchema`, `AgentSchema`, `NodeSchema`, `EdgeSchema`, the 13-variant
+> colon-namespaced `RunEvent` union (+ `CostUpdatedEvent`, gate events, `GateDecision`),
+> `RunSchema`, and the config schemas, with inferred types. **114 tests** cover accept +
+> reject per schema, the canonical reference workflow/agent round-trip with no drift, and
+> a type-level + runtime pin of the event names and the `cost:updated` payload.
+> The reference example is round-tripped as a parsed **object** (YAML→object parsing is
+> `@relavium/core`'s job, Phase 1), so shared's only runtime dep stays `zod`.
 
 The heart of the phase: encode the frozen reference contracts as Zod schemas and
 prove they round-trip the canonical example YAML with zero drift. **Critical path.**
@@ -342,8 +364,8 @@ spine milestone **M0** for this phase.
 
 | In-phase milestone | Means | Completed by |
 |--------------------|-------|--------------|
-| 0.M1 — Toolchain green | `pnpm install` + `turbo run lint typecheck test` pass on the empty scaffold | 0.A, 0.B, 0.C |
-| 0.M2 — Schemas round-trip | `@relavium/shared` exports the full schema set and round-trips the reference YAML with no drift; run-event names pinned | 0.D, 0.E |
+| **0.M1 — Toolchain green ✅** | `pnpm install` + `turbo run lint typecheck test` pass on the empty scaffold | 0.A, 0.B, 0.C *(done, PR #1)* |
+| **0.M2 — Schemas round-trip ✅** | `@relavium/shared` exports the full schema set and round-trips the reference example with no drift; run-event names pinned | 0.D, 0.E *(done)* |
 | 0.M3 — **M0: Foundations green** | CI green on push with remote cache; the seam lint fence and the standards are enforced; docs wired; `@relavium/db` scaffolded (schema + migrations + SQLite client) | 0.F, 0.G, 0.H, 0.I |
 
 ## Dependencies

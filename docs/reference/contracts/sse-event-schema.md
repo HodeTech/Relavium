@@ -58,18 +58,24 @@ export type RunEvent =
 | `run:started` | A run began. | `workflowId`, `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType` |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
-| `agent:tool_call` | An agent invoked a tool. | `nodeId`, `toolId`, `toolInput` (sanitized — no secrets) |
+| `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI) |
-| `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)) |
+| `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model}`, `durationMs` |
 | `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
-| `run:completed` | The run finished. | `outputs`, `totalTokensUsed`, `durationMs` |
+| `run:completed` | The run finished. | `outputs`, `totalTokensUsed`, `totalCostMicrocents` (integer micro-cents closing total for the whole run), `durationMs` |
 | `run:failed` | The run failed. | `error: {code, message, nodeId?}`, `partialOutputs` |
 | `run:cancelled` | The run was cancelled. | (base only) |
 
 ### Selected definitions
+
+> These TypeScript shapes are **illustrative**. The enforced, runtime-validated source
+> of truth is the Zod schema set in `@relavium/shared` (`run-event.ts`), from which the
+> TS types are inferred ([ADR-0020](../../decisions/0020-zod-runtime-schema-library.md)).
+> This document remains the canonical **contract** (the human-readable spec the schema
+> implements); if the two ever diverge, this spec wins and the schema is corrected to it.
 
 ```ts
 export interface AgentTokenEvent extends BaseEvent {
@@ -87,6 +93,7 @@ export interface CostUpdatedEvent extends BaseEvent {
   outputTokens: number;
   costMicrocents: number;         // integer micro-cents (canonical unit defined in llm-provider-seam.md); this attempt, from Relavium's pricing table (never the provider)
   cumulativeCostMicrocents: number; // integer micro-cents running total for the whole run
+  attemptNumber?: number;         // 1-based retry attempt this cost belongs to (per-attempt cost attribution)
 }
 
 export interface NodeCompletedEvent extends BaseEvent {
