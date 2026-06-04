@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
@@ -35,9 +37,23 @@ export interface DbClient {
  * connection by default — the CASCADE rules in the schema depend on it).
  */
 export function createClient(path = ':memory:'): DbClient {
-  const sqlite = new Database(path);
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('foreign_keys = ON');
+  if (path !== ':memory:') {
+    // Create the parent directory so a first-run open doesn't fail on a missing folder.
+    mkdirSync(dirname(path), { recursive: true });
+  }
+  let sqlite: Database.Database;
+  try {
+    sqlite = new Database(path);
+  } catch (err) {
+    // Rethrow with the resolved path + the driver's reason (locked/corrupt/permission),
+    // preserving the original via `cause` — a bare driver error has no path context.
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`failed to open SQLite database at '${path}': ${reason}`, { cause: err });
+  }
+  sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
+  sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
+  sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
+  sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
   const db = drizzle(sqlite, { schema });
   return { db, sqlite };
 }
