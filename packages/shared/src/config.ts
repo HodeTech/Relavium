@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { nonEmptyString } from './common.js';
+import { URL_HAS_CREDENTIALS, nonEmptyString } from './common.js';
 
 /**
  * Configuration schemas (config-spec.md). Validation only — no file IO. The global
@@ -50,6 +50,14 @@ export const McpServerRegistrationSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'url must use http or https',
+        path: ['url'],
+      });
+    }
+    // Secret hygiene: no credentials embedded in a git-committed url.
+    if (server.url !== undefined && URL_HAS_CREDENTIALS.test(server.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
         path: ['url'],
       });
     }

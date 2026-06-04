@@ -37,12 +37,19 @@ export interface DbClient {
  * connection by default — the CASCADE rules in the schema depend on it).
  */
 export function createClient(path = ':memory:'): DbClient {
+  // SQLite URI filenames (`file:…`) are NOT supported: better-sqlite3 needs `{ uri: true }` to
+  // interpret them and otherwise silently creates a literal file of that name. Reject up front
+  // rather than open the wrong database — pass ':memory:' or a plain filesystem path.
+  if (path.startsWith('file:')) {
+    throw new Error(
+      `SQLite URI paths are not supported by createClient — pass ':memory:' or a filesystem path (got '${path}')`,
+    );
+  }
   let sqlite: Database.Database;
   try {
     // Create the parent directory for a real file path so a first-run open doesn't fail on a
-    // missing folder. Skip ':memory:' and `file:` URIs, whose `dirname` is not a real dir.
-    // Inside the try so a filesystem error (EACCES/EPERM) gets the same path-rich message.
-    if (path !== ':memory:' && !path.startsWith('file:')) {
+    // missing folder (inside the try so a filesystem error gets the same path-rich message).
+    if (path !== ':memory:') {
       mkdirSync(dirname(path), { recursive: true });
     }
     sqlite = new Database(path);

@@ -282,7 +282,7 @@ The append-only event log for a run — the persistent record of the [SSE/RunEve
 | `ts` | INTEGER | NOT NULL |
 
 ```sql
-CREATE INDEX idx_run_events_run_seq    ON run_events (run_id, seq ASC);
+CREATE UNIQUE INDEX idx_run_events_run_seq ON run_events (run_id, seq ASC);  -- seq is monotonic per run: (run_id, seq) is unique
 CREATE INDEX idx_run_events_step        ON run_events (step_execution_id, ts ASC) WHERE step_execution_id IS NOT NULL;
 CREATE INDEX idx_run_events_run_type    ON run_events (run_id, event_type, ts ASC);
 ```

@@ -166,4 +166,25 @@ describe('McpServerRefSchema', () => {
         .success,
     ).toBe(true);
   });
+
+  it('rejects a url scheme that mismatches the transport', () => {
+    // websocket must be ws(s), not http(s); sse must be http(s), not ws(s).
+    expect(
+      McpServerRefSchema.safeParse({ id: 'x', transport: 'websocket', url: 'https://host/mcp' })
+        .success,
+    ).toBe(false);
+    expect(
+      McpServerRefSchema.safeParse({ id: 'x', transport: 'sse', url: 'wss://host/mcp' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a url that embeds credentials (secret hygiene)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'x',
+        transport: 'sse',
+        url: 'https://user:pass@host/mcp',
+      }).success,
+    ).toBe(false);
+  });
 });

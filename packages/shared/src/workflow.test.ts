@@ -296,4 +296,22 @@ describe('WorkflowSchema', () => {
       ),
     ).toBe(false);
   });
+
+  it('rejects a schedule trigger with an empty cron expression', () => {
+    expect(accepts(withWorkflow({ trigger: { type: 'schedule', schedule: '' } }))).toBe(false);
+    expect(accepts(withWorkflow({ trigger: { type: 'schedule', schedule: '0 9 * * 1' } }))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a workflow with zero nodes', () => {
+    expect(
+      accepts({ schema_version: '1.0', workflow: { id: 'empty', nodes: [], edges: [] } }),
+    ).toBe(false);
+  });
+
+  it('rejects an empty-string entry in a tool-policy allowlist', () => {
+    expect(accepts(withWorkflow({ tools: { allowedCommands: [''] } }))).toBe(false);
+    expect(accepts(withWorkflow({ tools: { allowedCommands: ['git status'] } }))).toBe(true);
+  });
 });

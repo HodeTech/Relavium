@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a6902f81-890b-4dcc-a83c-7f496ee1fb5d",
+  "id": "e3adefeb-1981-42fa-a3f5-f3306d288d9a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "agents": {
@@ -757,7 +757,7 @@
             "run_id",
             "seq"
           ],
-          "isUnique": false
+          "isUnique": true
         },
         "idx_run_events_step": {
           "name": "idx_run_events_step",

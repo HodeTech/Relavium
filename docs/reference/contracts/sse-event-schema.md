@@ -61,7 +61,7 @@ export type RunEvent =
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI) |
 | `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
-| `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model}`, `durationMs` |
+| `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model?}` (`model` only for LLM nodes), `durationMs` |
 | `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
@@ -100,7 +100,10 @@ export interface NodeCompletedEvent extends BaseEvent {
   type: 'node:completed';
   nodeId: string;
   output: unknown;
-  tokensUsed: { input: number; output: number; model: string };
+  // `model` is present only when an LLM produced the tokens. A non-agent node (condition,
+  // transform, merge, parallel, input, output, human_gate) completes with input/output 0 and
+  // no model — so `model` is optional.
+  tokensUsed: { input: number; output: number; model?: string };
   durationMs: number;
 }
 

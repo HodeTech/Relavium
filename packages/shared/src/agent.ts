@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-import { kebabIdSchema, nonEmptyString, positiveInt, temperatureSchema } from './common.js';
+import {
+  URL_HAS_CREDENTIALS,
+  kebabIdSchema,
+  nonEmptyString,
+  positiveInt,
+  temperatureSchema,
+} from './common.js';
 import { LLM_PROVIDERS } from './constants.js';
 
 /**
@@ -73,13 +79,30 @@ export const McpServerRefSchema = z
         path: ['url'],
       });
     }
-    // SSRF guard: a declared MCP url must be http(s)/ws(s) — reject file:, javascript:, etc.
-    if (ref.url !== undefined && !SAFE_MCP_URL.test(ref.url)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'url must use http(s) or ws(s) — other schemes are rejected',
-        path: ['url'],
-      });
+    if (ref.url !== undefined) {
+      // Per-transport scheme: `sse` is HTTP(S), `websocket` is WS(S) (stdio carries no url).
+      // This also blocks file:/javascript:/etc. as a side effect.
+      const schemeOk =
+        ref.transport === 'websocket'
+          ? /^wss?:\/\//i.test(ref.url)
+          : ref.transport === 'sse'
+            ? /^https?:\/\//i.test(ref.url)
+            : SAFE_MCP_URL.test(ref.url);
+      if (!schemeOk) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `url scheme is invalid for the '${ref.transport}' transport (sse → http(s), websocket → ws(s))`,
+          path: ['url'],
+        });
+      }
+      // Secret hygiene: no credentials embedded in a git-committed url.
+      if (URL_HAS_CREDENTIALS.test(ref.url)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
+          path: ['url'],
+        });
+      }
     }
   });
 export type McpServerRef = z.infer<typeof McpServerRefSchema>;

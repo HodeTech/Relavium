@@ -265,6 +265,14 @@ describe('cost:updated and sequenceNumber invariants', () => {
     ).toBe(false);
   });
 
+  it('accepts node:completed from a non-agent node (tokensUsed without a model)', () => {
+    // A condition/transform/merge node has no LLM model — tokensUsed.model is optional.
+    expect(
+      RunEventSchema.safeParse({ ...valid['node:completed'], tokensUsed: { input: 0, output: 0 } })
+        .success,
+    ).toBe(true);
+  });
+
   it('rejects legacy dotted and non-canonical event names', () => {
     expect(
       RunEventSchema.safeParse({ ...valid['cost:updated'], type: 'cost.update' }).success,

@@ -24,7 +24,9 @@ export type BaseEvent = z.infer<typeof BaseEventSchema>;
 export const TokensUsedSchema = z.object({
   input: nonNegativeInt,
   output: nonNegativeInt,
-  model: nonEmptyString,
+  // Present only when an LLM produced the tokens. A non-agent node (condition, transform,
+  // merge, …) completes with input/output 0 and no model — so `model` is optional here.
+  model: nonEmptyString.optional(),
 });
 export type TokensUsed = z.infer<typeof TokensUsedSchema>;
 

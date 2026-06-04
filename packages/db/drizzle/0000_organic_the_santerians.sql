@@ -106,7 +106,7 @@ CREATE TABLE `run_events` (
 	FOREIGN KEY (`run_id`) REFERENCES `runs`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `idx_run_events_run_seq` ON `run_events` (`run_id`,`seq`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_run_events_run_seq` ON `run_events` (`run_id`,`seq`);--> statement-breakpoint
 CREATE INDEX `idx_run_events_step` ON `run_events` (`step_execution_id`,`ts`) WHERE "run_events"."step_execution_id" is not null;--> statement-breakpoint
 CREATE INDEX `idx_run_events_run_type` ON `run_events` (`run_id`,`event_type`,`ts`);--> statement-breakpoint
 CREATE TABLE `runs` (

@@ -17,6 +17,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## Decisions needed (maintainer call)
 
+- [ ] **Workflow `agents:` `$ref` support** — workflow-yaml-spec.md (line 37) says
+  `agents: AgentRef[]  # inline agents, or $ref to .agent.yaml files`, but
+  `WorkflowSpecSchema.agents` is `z.array(AgentSchema)` (inline only); a `{ $ref: … }` entry
+  is rejected (and `.strict()` makes that definite). Resolve the spec↔schema gap: either (a)
+  accept `z.union([AgentSchema, z.object({ $ref: nonEmptyString }).strict()])` and handle the
+  `$ref` form in the duplicate-id `superRefine` (ref-resolution stays the engine's job), or
+  (b) amend the spec to drop `$ref` and resolve external agents only via a node's `agent_ref`
+  + the workspace registry. A product/contract decision. *(major→decision · workflow.ts:103,
+  workflow-yaml-spec.md:37)*
 - [ ] **Branded id types** — `runId`/`nodeId`/`gateId`/`workflowId`/`agentId` are all plain
   `string`, mutually assignable across the platform. Introduce `z.string().brand<'RunId'>()`
   etc. for ids that cross APIs, or record an ADR/code-style note that plain strings are a

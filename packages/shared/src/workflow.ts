@@ -37,7 +37,7 @@ export const TriggerSchema = z.discriminatedUnion('type', [
       webhook: z.object({ path: nonEmptyString, secret_env: nonEmptyString }).strict(),
     })
     .strict(),
-  z.object({ type: z.literal('schedule'), schedule: z.string() }).strict(), // cron expression
+  z.object({ type: z.literal('schedule'), schedule: nonEmptyString }).strict(), // cron expression
   z
     .object({
       type: z.literal('file_change'),
@@ -81,8 +81,8 @@ export type ContextEntry = z.infer<typeof ContextEntrySchema>;
 /** Workflow-wide tool guardrails (the canonical home for the command allowlist). */
 export const ToolPolicySchema = z
   .object({
-    allowedCommands: z.array(z.string()).optional(),
-    allowedDomains: z.array(z.string()).optional(),
+    allowedCommands: z.array(nonEmptyString).optional(),
+    allowedDomains: z.array(nonEmptyString).optional(),
   })
   .strict();
 export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
@@ -100,7 +100,7 @@ export const WorkflowSpecSchema = z
     context: z.array(ContextEntrySchema).optional(),
     agents: z.array(AgentSchema).optional(),
     tools: ToolPolicySchema.optional(),
-    nodes: z.array(NodeSchema),
+    nodes: z.array(NodeSchema).min(1, 'a workflow must declare at least one node'),
     edges: z.array(EdgeSchema),
   })
   .strict();

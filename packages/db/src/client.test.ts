@@ -308,4 +308,39 @@ describe('@relavium/db migration + constraint invariants', () => {
       ).not.toThrow();
     }
   });
+
+  it('rejects a SQLite URI path (file:…) instead of silently opening a literal file', () => {
+    expect(() => createClient('file::memory:?cache=shared')).toThrow(
+      /URI paths are not supported/i,
+    );
+  });
+
+  it('rejects a duplicate (run_id, seq) in run_events (the unique gap-detection invariant)', () => {
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    client.db
+      .insert(workflows)
+      .values({
+        id: workflowId,
+        name: 'U',
+        slug: 'uniq-seq',
+        definition: '{}',
+        createdAt: TS,
+        updatedAt: TS,
+      })
+      .run();
+    client.db
+      .insert(runs)
+      .values({
+        id: runId,
+        workflowId,
+        workflowDefinitionSnapshot: '{}',
+        createdAt: TS,
+        updatedAt: TS,
+      })
+      .run();
+    const ev = () => ({ id: randomUUID(), runId, seq: 5, eventType: 'agent:token', ts: TS });
+    client.db.insert(runEvents).values(ev()).run();
+    expect(() => client.db.insert(runEvents).values(ev()).run()).toThrow(/UNIQUE/i);
+  });
 });
