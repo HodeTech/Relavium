@@ -15,5 +15,16 @@ catalog:
   typescript: ^5.7.2
   typescript-eslint: ^8.18.1
   vitest: ^3.0.0
+  # Type packages (dev): @types/node is pinned to the `engines` runtime FLOOR
+  # (node >=20.11.0), NOT .nvmrc's dev/CI version (22), so a Node-22-only API (e.g.
+  # `node:sqlite`, which ADR-0021 rejects for needing >=22.5) is a type error rather than
+  # a runtime break on the supported floor.
+  '@types/better-sqlite3': ^7.6.13
+  '@types/node': ^20.11.0
+  drizzle-kit: ^0.31.10
   # Runtime
   zod: ^3.23.0
+  # @relavium/db persistence stack — Drizzle ORM (ADR-0005) over better-sqlite3,
+  # the pinned Node-side SQLite driver (ADR-0021).
+  drizzle-orm: ^0.45.2
+  better-sqlite3: ^12.10.0

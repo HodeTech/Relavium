@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
+    // Unlike `@relavium/shared` (`types: []`), this package is Node-side persistence:
+    // it imports `node:*` builtins and the `better-sqlite3` driver, so `@types/node`
+    // is the platform boundary here. The driver's own types resolve via
+    // `@types/better-sqlite3` through normal module resolution (explicit import).
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

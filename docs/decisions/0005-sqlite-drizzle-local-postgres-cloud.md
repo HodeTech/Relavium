@@ -2,7 +2,13 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0021-node-sqlite-driver-better-sqlite3.md](0021-node-sqlite-driver-better-sqlite3.md), [tech-stack.md](../tech-stack.md)
+
+> Amended 2026-06-04: this ADR fixed "SQLite + Drizzle" and the desktop's encrypted
+> `tauri-plugin-sql` path but left the **Node-side** SQLite driver open. That gap is now
+> closed by [ADR-0021](0021-node-sqlite-driver-better-sqlite3.md): `@relavium/db` uses
+> `better-sqlite3` for its Node consumers (the migration runner, tests, and the Phase-2
+> CLI). The decision here is unchanged.
 
 ## Context
 
