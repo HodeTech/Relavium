@@ -13,13 +13,15 @@ actions. The full phase plan and the global milestone spine are in
 
 ## Where we are
 
-**Documentation and design: complete. The monorepo scaffold (Phase 0 workstreams
-0.A–0.C) has landed and is green.** The repository (`github.com/HodeTech/Relavium`)
-now holds the `docs/` tree **plus** the Turborepo + pnpm workspace, the strict
-`tsconfig` bases, the root ESLint/Prettier/Vitest spine, and a buildable
-`@relavium/shared` scaffold — `pnpm install && pnpm turbo run lint typecheck test build`
-is green and `format:check` is clean. The remaining Phase-0 workstreams (0.D/0.E
-schemas, 0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still open before
+**Documentation and design: complete. Phase 0 workstreams 0.A–0.E have landed and are
+green — the toolchain (M1) and the shared schemas (M2).** The repository
+(`github.com/HodeTech/Relavium`) now holds the `docs/` tree **plus** the Turborepo +
+pnpm workspace, the strict `tsconfig` bases, the root ESLint/Prettier/Vitest spine, and
+`@relavium/shared` with the **full Zod schema set** (`WorkflowSchema`, `AgentSchema`,
+`NodeSchema`, `EdgeSchema`, the colon-namespaced `RunEvent` union, `RunSchema`, config —
+38 tests, reference round-trip with no drift). `pnpm install && pnpm turbo run lint
+typecheck test build` is green and `format:check` is clean. The remaining Phase-0
+workstreams (0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still open before
 **M0**. The foundation is settled and recorded:
 
 - Product vision, UVP, and hard constraints (desktop is agent-management, not an
@@ -55,10 +57,11 @@ schemas, 0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still open be
 
 ## What is active now
 
-The project is in **build-order step 1: scaffolding the monorepo** — the toolchain
-half (0.A–0.C) is **done and green**, and the next work is the critical-path schemas
-(0.D/0.E). This is **[Phase 0 — foundations](phases/phase-0-foundations.md)** (Product
-Phase 1). Phase 0 ships **types and tooling, not features**; its job is to make
+The project is in **build-order step 1: foundations** — the toolchain (0.A–0.C, M1) and
+the critical-path shared schemas (0.D–0.E, M2) are **done and green**; the next work is
+the **M0 close-out** (0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`). This is
+**[Phase 0 — foundations](phases/phase-0-foundations.md)** (Product Phase 1). Phase 0
+ships **types and tooling, not features**; its job is to make
 [Phase 1 — the engine critical path](phases/phase-1-engine-and-llm.md) safe to start
 against a frozen contract and a green CI gate. Until Phase 0's
 [exit criteria](phases/phase-0-foundations.md#exit-criteria-go--no-go) pass, no
@@ -74,9 +77,11 @@ The first workstreams of Phase 0, in order. `0.A → 0.B → 0.C → 0.D` are se
 task lists and acceptance criteria are in
 [phase-0-foundations.md](phases/phase-0-foundations.md#work-breakdown).
 
-> **✅ 0.A / 0.B / 0.C are landed and green** (the monorepo + toolchain spine). The
-> active focus is now **[0.D → 0.E]** — `@relavium/shared`'s Zod schemas. Items 1–3
-> below are kept for the record with their acceptance met.
+> **✅ 0.A–0.E are landed and green** (the monorepo + toolchain spine **and** the full
+> `@relavium/shared` Zod schema set with reference round-trip + event-name pins). The
+> active focus is now **[0.F → 0.I]** — the seam-fence lint zone, GitHub Actions CI, docs
+> wiring, and the `@relavium/db` scaffold — to close out **M0**. Items 1–4 below are kept
+> for the record with their acceptance met.
 
 1. **[0.A] Scaffold the Turborepo + pnpm workspace** per
    [../project-structure.md](../project-structure.md): a `private` root
