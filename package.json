@@ -16,6 +16,7 @@
     "test": "turbo run test",
     "coverage": "vitest run --coverage",
     "ci": "turbo run lint typecheck test",
+    "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

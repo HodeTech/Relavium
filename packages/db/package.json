@@ -1,9 +1,9 @@
 {
-  "name": "@relavium/shared",
+  "name": "@relavium/db",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Zod schemas + inferred types — the single source of truth for every Relavium package.",
+  "description": "Drizzle schema + migrations + the local SQLite client — one schema, two dialects (ADR-0005).",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -14,18 +14,25 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "drizzle"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "zod": "catalog:"
+    "@relavium/shared": "workspace:*",
+    "better-sqlite3": "catalog:",
+    "drizzle-orm": "catalog:"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "catalog:",
+    "@types/node": "catalog:",
+    "drizzle-kit": "catalog:",
     "eslint": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

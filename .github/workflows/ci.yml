@@ -1,0 +1,139 @@
+# Relavium CI — the green gate every push and PR must pass (Phase 0 · 0.G).
+#
+# Runs lint + typecheck + test across every workspace in dependency order with the
+# Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
+#
+# Branch protection (set in the GitHub repo settings, not here): the `ci` job below is the
+# REQUIRED status check to merge into `main`. The `peer-dep-gate` job is advisory until the
+# surface packages land their peers in Phase 1.
+#
+# Caching: the always-on layer is the GitHub Actions `.turbo` cache (restored/saved below),
+# which makes a no-change re-run a Turborepo cache hit — the M0 "demonstrably hitting"
+# criterion. The Vercel-style Turborepo REMOTE cache (cross-runner sharing) is opt-in: add
+# repo secrets `TURBO_TOKEN` and `TURBO_TEAM` and Turbo picks them up automatically below.
+#
+# Third-party actions are pinned to a full commit SHA (the `# vX.Y.Z` comment tracks the
+# human-readable release) so a moved tag can't inject unreviewed code; bumps are deliberate.
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+# Cancel superseded runs on the same ref so CI tracks the latest push.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Picked up by Turbo for remote caching when the secrets are configured; harmless if empty.
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+
+jobs:
+  ci:
+    name: lint · typecheck · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        # pnpm version comes from the root package.json `packageManager`.
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore Turborepo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      # The required gate: lint, typecheck, and test every workspace, then build.
+      - name: Lint, typecheck, test
+        run: pnpm turbo run lint typecheck test
+      # Not redundant with typecheck: `build` runs each package's emit (tsconfig.build.json
+      # → dist), which `typecheck` (tsconfig.json --noEmit) does not — it catches
+      # emit-only failures and proves the published artifact compiles.
+      - name: Build
+        run: pnpm turbo run build
+
+      # Formatting is run, not argued (code-style-typescript.md).
+      - name: Format check
+        run: pnpm format:check
+
+      # Prove the no-vendor-type-across-the-@relavium/llm-seam fence is live (0.F).
+      - name: Seam fence is enforced
+        run: pnpm lint:fence-check
+
+  # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
+  # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
+  # peer drift here without breaking local dev.
+  peer-dep-gate:
+    name: strict peer-dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install with strict peers
+        run: pnpm install --frozen-lockfile --config.strict-peer-dependencies=true
+
+# --- Reserved Phase-1 lanes (TODO: enable with the first provider adapter) ------------
+# The per-provider conformance suite and the nightly live-API lane land WITH the adapters
+# in Phase 1 (testing.md); only their CI slots are reserved here so the testing standard
+# maps cleanly onto lanes from day one. Do not enable until `packages/llm` exists — and
+# pin each action to a commit SHA (as above) when uncommenting.
+#
+#  conformance:
+#    name: provider conformance (fixtures)
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@<sha>   # pin on enable
+#      - uses: pnpm/action-setup@<sha>
+#      - uses: actions/setup-node@<sha>
+#        with: { node-version-file: .nvmrc, cache: pnpm }
+#      - run: pnpm install --frozen-lockfile
+#      - run: pnpm turbo run test:conformance   # fixture mode — no network, no keys
+#
+# Nightly live-API lane — runs the conformance suite against real providers using keys
+# from CI secrets. Separate workflow trigger so it never gates a PR:
+#  # on:
+#  #   schedule:
+#  #     - cron: '0 7 * * *'   # 07:00 UTC nightly
+#  live-api:
+#    name: provider conformance (live, nightly)
+#    if: github.event_name == 'schedule'
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@<sha>   # pin on enable
+#      - uses: pnpm/action-setup@<sha>
+#      - uses: actions/setup-node@<sha>
+#        with: { node-version-file: .nvmrc, cache: pnpm }
+#      - run: pnpm install --frozen-lockfile
+#      - run: pnpm turbo run test:conformance:live
+#        env:
+#          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+# --------------------------------------------------------------------------------------
