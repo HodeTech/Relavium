@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AgentSchema } from './agent.js';
+import { AgentSchema, McpServerRefSchema, MemorySchema } from './agent.js';
 
 /** The reference agent example from docs/reference/contracts/agent-yaml-spec.md. */
 const summarizer = {
@@ -45,5 +45,51 @@ describe('AgentSchema', () => {
 
   it('rejects an empty system_prompt', () => {
     expect(AgentSchema.safeParse({ ...summarizer, system_prompt: '' }).success).toBe(false);
+  });
+});
+
+describe('MemorySchema', () => {
+  it('accepts none and summary without a window_size', () => {
+    expect(MemorySchema.safeParse({ type: 'none' }).success).toBe(true);
+    expect(MemorySchema.safeParse({ type: 'summary' }).success).toBe(true);
+  });
+
+  it('requires window_size only when type is window', () => {
+    expect(MemorySchema.safeParse({ type: 'window', window_size: 10 }).success).toBe(true);
+    expect(MemorySchema.safeParse({ type: 'window' }).success).toBe(false);
+    expect(MemorySchema.safeParse({ type: 'window', window_size: 0 }).success).toBe(false);
+  });
+
+  it('rejects an unknown memory type', () => {
+    expect(MemorySchema.safeParse({ type: 'episodic' }).success).toBe(false);
+  });
+});
+
+describe('McpServerRefSchema', () => {
+  it('requires command for stdio transport', () => {
+    expect(
+      McpServerRefSchema.safeParse({ id: 'github', transport: 'stdio', command: 'npx' }).success,
+    ).toBe(true);
+    expect(McpServerRefSchema.safeParse({ id: 'github', transport: 'stdio' }).success).toBe(false);
+  });
+
+  it('requires url for sse / websocket transports', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'sse',
+        url: 'http://localhost:4000/mcp',
+      }).success,
+    ).toBe(true);
+    expect(McpServerRefSchema.safeParse({ id: 'docs', transport: 'sse' }).success).toBe(false);
+    expect(McpServerRefSchema.safeParse({ id: 'docs', transport: 'websocket' }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects an unknown transport', () => {
+    expect(
+      McpServerRefSchema.safeParse({ id: 'x', transport: 'grpc', url: 'http://x' }).success,
+    ).toBe(false);
   });
 });

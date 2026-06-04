@@ -4,10 +4,19 @@ import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
 import { TriggerTypeSchema } from './workflow.js';
 
 /**
- * The logical run record (`RunSchema`). This is the engine-/surface-facing shape of a
- * workflow execution; its persistence (column types, indexes) is the canonical
- * property of database-schema.md, which `@relavium/db` implements. Timestamps are
- * epoch-milliseconds; money is integer micro-cents.
+ * The logical run record (`RunSchema`) — the **engine-/surface-facing** shape of a
+ * workflow execution.
+ *
+ * **Boundary (logical vs persisted).** `RunSchema` is deliberately the *narrow* view.
+ * The persisted row carries additional columns that are a **persistence concern owned
+ * by `@relavium/db`** (workstream 0.I), modeled there as a distinct `RunRow` mirroring
+ * the canonical DDL in
+ * [database-schema.md](../../../docs/reference/desktop/database-schema.md): notably
+ * `workflow_definition_snapshot` (the frozen graph for replay/resume — an engine
+ * deliverable), `trigger_metadata`, `workflow_path`/`project_root`, and the
+ * `deleted_at` soft-delete cursor. Those do not belong on the logical run view and are
+ * intentionally absent here; a consumer that needs them reads the `RunRow` from
+ * `@relavium/db`. Timestamps are epoch-milliseconds; money is integer micro-cents.
  */
 
 /** Run lifecycle status (matches the `runs.status` CHECK in database-schema.md). */
@@ -22,7 +31,7 @@ export const RunStatusSchema = z.enum([
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 export const RunSchema = z.object({
-  id: nonEmptyString, // run id (UUID)
+  id: z.string().uuid(), // run id (UUID, generated in application code)
   workflowId: kebabIdSchema,
   status: RunStatusSchema,
   // What triggered this run — the canonical trigger vocabulary. The runs table sets no

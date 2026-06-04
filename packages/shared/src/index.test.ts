@@ -28,4 +28,11 @@ describe('@relavium/shared public surface', () => {
       expect(shared[name]).toBeDefined();
     }
   });
+
+  it('does not leak internal primitives from common.ts', () => {
+    const exported = Object.keys(shared);
+    for (const internal of ['kebabIdSchema', 'nonEmptyString', 'positiveInt', 'nonNegativeInt']) {
+      expect(exported).not.toContain(internal);
+    }
+  });
 });

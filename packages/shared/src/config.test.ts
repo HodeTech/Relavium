@@ -44,4 +44,29 @@ describe('config schemas', () => {
     expect(GlobalConfigSchema.safeParse({}).success).toBe(true);
     expect(ProjectConfigSchema.safeParse({}).success).toBe(true);
   });
+
+  it('accepts an http MCP registration with a url', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'remote', transport: 'http', url: 'http://localhost:4000' }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('enforces transport-specific required fields on MCP registrations', () => {
+    expect(
+      GlobalConfigSchema.safeParse({ mcp_servers: [{ name: 'x', transport: 'stdio' }] }).success,
+    ).toBe(false); // stdio needs command
+    expect(
+      GlobalConfigSchema.safeParse({ mcp_servers: [{ name: 'x', transport: 'http' }] }).success,
+    ).toBe(false); // http needs url
+  });
+
+  it('accepts project-scoped MCP registrations (merge with global)', () => {
+    expect(
+      ProjectConfigSchema.safeParse({
+        mcp_servers: [{ name: 'local-fs', transport: 'stdio', command: 'npx' }],
+      }).success,
+    ).toBe(true);
+  });
 });

@@ -192,4 +192,30 @@ describe('WorkflowSchema', () => {
   it('rejects a non-kebab-case workflow id', () => {
     expect(accepts(withWorkflow({ id: 'Code_Review_Pipeline' }))).toBe(false);
   });
+
+  it('rejects an unknown trigger type', () => {
+    expect(accepts(withWorkflow({ trigger: { type: 'cron' } }))).toBe(false);
+  });
+
+  it('rejects a webhook trigger missing its required sub-fields', () => {
+    expect(accepts(withWorkflow({ trigger: { type: 'webhook', webhook: { path: '/x' } } }))).toBe(
+      false,
+    );
+    expect(
+      accepts(
+        withWorkflow({ trigger: { type: 'webhook', webhook: { path: '/x', secret_env: 'S' } } }),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects an unknown input type', () => {
+    expect(accepts(withWorkflow({ inputs: [{ name: 'when', type: 'datetime' }] }))).toBe(false);
+  });
+
+  it('rejects an explicit fan-out edge that contradicts parallel_of', () => {
+    // `output` is not in the fan-out node's parallel_of.
+    expect(
+      accepts(withWorkflow({ edges: [...base.workflow.edges, { from: 'fan-out', to: 'output' }] })),
+    ).toBe(false);
+  });
 });

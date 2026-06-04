@@ -28,23 +28,51 @@ export type Retry = z.infer<typeof RetrySchema>;
 /** Transport for an agent-declared MCP server (mcp-integration.md). */
 export const McpTransportSchema = z.enum(['stdio', 'sse', 'websocket']);
 
-/** A reference to an MCP server an agent consumes (`McpServerRef`). */
-export const McpServerRefSchema = z.object({
-  id: kebabIdSchema,
-  transport: McpTransportSchema,
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  url: z.string().url().optional(),
-  tools_allowlist: z.array(nonEmptyString).optional(),
-});
+/**
+ * A reference to an MCP server an agent consumes (`McpServerRef`). The transport
+ * dictates which connection field is required (mcp-integration.md): `stdio` needs a
+ * `command`; `sse`/`websocket` need a `url`. Enforced at the contract boundary so a
+ * mis-declared server is rejected at parse time, not at engine connect time.
+ */
+export const McpServerRefSchema = z
+  .object({
+    id: kebabIdSchema,
+    transport: McpTransportSchema,
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+    url: z.string().url().optional(),
+    tools_allowlist: z.array(nonEmptyString).optional(),
+  })
+  .superRefine((ref, ctx) => {
+    if (ref.transport === 'stdio' && !ref.command) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "command is required for the 'stdio' transport",
+        path: ['command'],
+      });
+    }
+    if ((ref.transport === 'sse' || ref.transport === 'websocket') && !ref.url) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `url is required for the '${ref.transport}' transport`,
+        path: ['url'],
+      });
+    }
+  });
 export type McpServerRef = z.infer<typeof McpServerRefSchema>;
 
-/** Conversational memory policy. */
-export const MemorySchema = z.object({
-  type: z.enum(['none', 'window', 'summary']),
-  window_size: positiveInt.optional(),
-});
+/**
+ * Conversational memory policy. Modeled as a discriminated union so that the retention
+ * depth (`window_size`) is required exactly when `type` is `window` (agent-yaml-spec.md):
+ * `none`/`summary` carry no depth; `window` must specify one.
+ */
+export const MemorySchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('none') }),
+  z.object({ type: z.literal('summary') }),
+  z.object({ type: z.literal('window'), window_size: positiveInt }),
+]);
+export type Memory = z.infer<typeof MemorySchema>;
 
 /** One ordered alternate tried after the primary model is exhausted. */
 export const FallbackChainEntrySchema = z.object({

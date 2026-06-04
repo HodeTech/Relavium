@@ -38,4 +38,20 @@ describe('RunSchema', () => {
   it('rejects a fractional token count (integers only)', () => {
     expect(RunSchema.safeParse({ ...run, totalInputTokens: 1.5 }).success).toBe(false);
   });
+
+  it('requires a UUID run id', () => {
+    expect(RunSchema.safeParse({ ...run, id: 'not-a-uuid' }).success).toBe(false);
+  });
+
+  it('accepts a completed run with outputs, and a running run without', () => {
+    expect(RunSchema.safeParse(run).success).toBe(true); // no outputs
+    expect(
+      RunSchema.safeParse({
+        ...run,
+        status: 'completed',
+        outputs: { report: 'done' },
+        completedAt: 1717459260000,
+      }).success,
+    ).toBe(true);
+  });
 });

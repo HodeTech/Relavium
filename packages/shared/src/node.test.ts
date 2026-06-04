@@ -54,4 +54,31 @@ describe('NodeSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects nodes missing their required per-type fields', () => {
+    const invalid: unknown[] = [
+      { id: 'g', type: 'human_gate' }, // missing gate_type
+      { id: 'c', type: 'condition', branches: [] }, // missing expression
+      { id: 'c', type: 'condition', expression: 'x' }, // missing branches
+      { id: 't', type: 'transform' }, // missing transform
+      { id: 'p', type: 'parallel' }, // missing parallel_of
+      { id: 'p', type: 'parallel', parallel_of: [] }, // empty parallel_of
+      { id: 'm', type: 'merge' }, // missing merge_strategy
+      { id: 'm', type: 'merge', merge_strategy: 'best_of_n' }, // reserved, not v1.0
+    ];
+    for (const node of invalid) {
+      expect(NodeSchema.safeParse(node).success).toBe(false);
+    }
+  });
+
+  it('rejects a condition branch with a non-kebab target_node', () => {
+    expect(
+      NodeSchema.safeParse({
+        id: 'c',
+        type: 'condition',
+        expression: 'x > 1',
+        branches: [{ when: true, target_node: 'Not Kebab' }],
+      }).success,
+    ).toBe(false);
+  });
 });

@@ -28,6 +28,7 @@ export const TriggerSchema = z.object({
   schedule: z.string().optional(), // cron expression
   file_change: z.object({ glob: nonEmptyString, debounce_ms: nonNegativeInt }).optional(),
 });
+export type Trigger = z.infer<typeof TriggerSchema>;
 
 /** A typed workflow input declaration. */
 export const InputTypeSchema = z.enum([
@@ -46,18 +47,21 @@ export const WorkflowInputSchema = z.object({
   default: z.unknown().optional(),
   description: z.string().optional(),
 });
+export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
 
 /** A shared variable exposed as `{{ctx.key}}`. */
 export const ContextEntrySchema = z.object({
   key: nonEmptyString,
   value: z.string(),
 });
+export type ContextEntry = z.infer<typeof ContextEntrySchema>;
 
 /** Workflow-wide tool guardrails (the canonical home for the command allowlist). */
 export const ToolPolicySchema = z.object({
   allowedCommands: z.array(z.string()).optional(),
   allowedDomains: z.array(z.string()).optional(),
 });
+export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
 
 /** The body under the top-level `workflow:` key. */
 export const WorkflowSpecSchema = z.object({
@@ -110,5 +114,29 @@ export const WorkflowSchema = z
         path: ['workflow', 'nodes'],
       });
     }
+
+    // `parallel_of` is authoritative for branch membership: an explicit edge out of a
+    // `parallel` node must target a node listed in that node's `parallel_of`
+    // (workflow-yaml-spec.md). Explicit fan-out edges are redundant with `parallel_of`,
+    // but if present they must not contradict it.
+    const branchesByParallelId = new Map<string, readonly string[]>();
+    for (const node of nodes) {
+      if (node.type === 'parallel') branchesByParallelId.set(node.id, node.parallel_of);
+    }
+    doc.workflow.edges.forEach((edge, i) => {
+      const fromId = edge.from.split(':')[0] ?? edge.from;
+      const branches = branchesByParallelId.get(fromId);
+      if (branches && !branches.includes(edge.to)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `edge from parallel node '${fromId}' targets '${edge.to}', which is not in its parallel_of`,
+          path: ['workflow', 'edges', i, 'to'],
+        });
+      }
+    });
+
+    // Note: `agent_ref` → agent resolution and `agents` presence are NOT validated here.
+    // An agent node's agent may be declared inline, in a sibling `.agent.yaml`, or in the
+    // workspace agent registry — only the engine, with the full registry, can resolve it.
   });
 export type Workflow = z.infer<typeof WorkflowSchema>;
