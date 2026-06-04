@@ -55,7 +55,7 @@ const boolFlag = (name: string, def: boolean) =>
  * `as const` constants (never user input); the single-quote escape is belt-and-suspenders
  * so the helper is safe even if a value with a quote is ever passed. */
 const inList = (values: readonly string[]) =>
-  sql.raw(values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', '));
+  sql.raw(values.map((v) => `'${v.replaceAll("'", "''")}'`).join(', '));
 
 // --- 1. llm_providers (no FKs) ---
 

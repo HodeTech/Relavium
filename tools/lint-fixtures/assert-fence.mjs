@@ -12,6 +12,8 @@
  * Exits non-zero so CI fails loudly the moment any seam path stops being policed. Run from
  * the repo root:  node tools/lint-fixtures/assert-fence.mjs
  */
+import { basename } from 'node:path';
+
 import { ESLint } from 'eslint';
 
 const MAIN = 'tools/lint-fixtures/forbidden-vendor-import.ts';
@@ -24,7 +26,9 @@ const EXPECT_SYNTAX = 4;
 
 const eslint = new ESLint();
 const results = await eslint.lintFiles([MAIN, CONFIG_NAMED]);
-const resultFor = (suffix) => results.find((r) => r.filePath.endsWith(suffix));
+// Match by basename (not an `endsWith('/…')` suffix) so it works on Windows, where
+// `filePath` uses `\` separators.
+const resultFor = (name) => results.find((r) => basename(r.filePath) === name);
 const seamErrors = (res, ruleId) =>
   (res?.messages ?? []).filter((m) => m.ruleId === ruleId && m.severity === 2).length;
 
@@ -37,7 +41,7 @@ const fail = (msg, res) => {
 };
 
 // 1. The main fixture must fire EXACTLY the expected counts.
-const main = resultFor('/forbidden-vendor-import.ts');
+const main = resultFor('forbidden-vendor-import.ts');
 const staticHits = seamErrors(main, STATIC_RULE);
 const syntaxHits = seamErrors(main, SYNTAX_RULE);
 if (staticHits !== EXPECT_STATIC || syntaxHits !== EXPECT_SYNTAX) {
@@ -50,7 +54,7 @@ if (staticHits !== EXPECT_STATIC || syntaxHits !== EXPECT_SYNTAX) {
 }
 
 // 2. The config-named SOURCE file must NOT be ignored — the seam rule must still fire.
-const cfg = resultFor('/forbidden-in-name.config.ts');
+const cfg = resultFor('forbidden-in-name.config.ts');
 if (!cfg || seamErrors(cfg, STATIC_RULE) < 1) {
   fail(
     `Config-named source file ${CONFIG_NAMED} escaped the seam fence — the config-file ` +

@@ -18,7 +18,7 @@ later. The package ships:
   `better-sqlite3` ([ADR-0021](../../docs/decisions/0021-node-sqlite-driver-better-sqlite3.md)).
 - A **smoke test** that applies every migration to a fresh DB and round-trips a row.
 
-It depends only on `@relavium/shared` (the contract enums its CHECKs reuse) and Drizzle.
+It depends only on `@relavium/shared` (the contract enums that its CHECKs reuse) and Drizzle.
 
 ## Conventions (from the canonical DDL)
 
