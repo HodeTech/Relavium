@@ -33,6 +33,11 @@ export const McpTransportSchema = z.enum(['stdio', 'sse', 'websocket']);
  * dictates which connection field is required (mcp-integration.md): `stdio` needs a
  * `command`; `sse`/`websocket` need a `url`. Enforced at the contract boundary so a
  * mis-declared server is rejected at parse time, not at engine connect time.
+ *
+ * Intentionally distinct from the **config-level** `McpServerRegistrationSchema`
+ * (config.ts), which *registers* a server by `name` with a `stdio | http` transport
+ * (config-spec.md). These are separate contracts (agent consumption vs global
+ * registration) and are kept apart on purpose rather than factored together.
  */
 export const McpServerRefSchema = z
   .object({
@@ -40,7 +45,7 @@ export const McpServerRefSchema = z
     transport: McpTransportSchema,
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
-    env: z.record(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
     url: z.string().url().optional(),
     tools_allowlist: z.array(nonEmptyString).optional(),
   })
@@ -83,19 +88,32 @@ export const FallbackChainEntrySchema = z.object({
 export type FallbackChainEntry = z.infer<typeof FallbackChainEntrySchema>;
 
 /** A reusable agent definition (`.agent.yaml` or an inline `agents:` entry). */
-export const AgentSchema = z.object({
-  id: kebabIdSchema,
-  name: z.string().optional(),
-  description: z.string().optional(),
-  model: nonEmptyString,
-  provider: ProviderSchema,
-  system_prompt: nonEmptyString,
-  temperature: z.number().optional(),
-  max_tokens: positiveInt.optional(),
-  tools: z.array(nonEmptyString).optional(),
-  mcp_servers: z.array(McpServerRefSchema).optional(),
-  memory: MemorySchema.optional(),
-  retry: RetrySchema.optional(),
-  fallback_chain: z.array(FallbackChainEntrySchema).optional(),
-});
+export const AgentSchema = z
+  .object({
+    id: kebabIdSchema,
+    name: z.string().optional(),
+    description: z.string().optional(),
+    model: nonEmptyString,
+    provider: ProviderSchema,
+    system_prompt: nonEmptyString,
+    temperature: z.number().optional(),
+    max_tokens: positiveInt.optional(),
+    tools: z.array(nonEmptyString).optional(),
+    mcp_servers: z.array(McpServerRefSchema).optional(),
+    memory: MemorySchema.optional(),
+    retry: RetrySchema.optional(),
+    fallback_chain: z.array(FallbackChainEntrySchema).optional(),
+  })
+  .superRefine((agent, ctx) => {
+    // MCP server ids must be unique within an agent (they namespace the registered tools).
+    const ids = (agent.mcp_servers ?? []).map((server) => server.id);
+    const duplicates = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `duplicate mcp_servers id(s): ${duplicates.join(', ')}`,
+        path: ['mcp_servers'],
+      });
+    }
+  });
 export type Agent = z.infer<typeof AgentSchema>;

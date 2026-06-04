@@ -201,8 +201,10 @@ describe('RunEvent union — every variant', () => {
       'run:failed',
       'run:cancelled',
     ];
-    const unionTypes = RunEventSchema.options.map((o) => o.shape.type.value);
-    expect(new Set(unionTypes)).toEqual(new Set(CONTRACT_NAMES));
+    // The matrix above proves each canonical name's valid payload parses (so a
+    // renamed/missing variant fails there); the union member count catches an *extra*
+    // variant — without reaching into Zod's internal schema representation.
+    expect(RunEventSchema.options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
     expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 13
   });
@@ -233,6 +235,12 @@ describe('cost:updated and sequenceNumber invariants', () => {
     expect(RunEventSchema.safeParse({ ...cancelled, sequenceNumber: 0 }).success).toBe(true);
     expect(RunEventSchema.safeParse({ ...cancelled, sequenceNumber: -1 }).success).toBe(false);
     expect(RunEventSchema.safeParse({ ...cancelled, sequenceNumber: 1.5 }).success).toBe(false);
+  });
+
+  it('rejects a non-ISO-8601 timestamp', () => {
+    expect(
+      RunEventSchema.safeParse({ ...env, type: 'run:cancelled', timestamp: 'June 4 2026' }).success,
+    ).toBe(false);
   });
 
   it('rejects legacy dotted and non-canonical event names', () => {

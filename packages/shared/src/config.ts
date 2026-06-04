@@ -25,7 +25,7 @@ export const McpServerRegistrationSchema = z
     args: z.array(z.string()).optional(),
     autostart: z.boolean().optional(),
     url: z.string().url().optional(),
-    env: z.record(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((server, ctx) => {
     if (server.transport === 'stdio' && !server.command) {
@@ -65,7 +65,7 @@ export const ProjectConfigSchema = z.object({
       fs_scope: FsScopeSchema.optional(),
     })
     .optional(),
-  variables: z.record(z.string()).optional(),
+  variables: z.record(z.string(), z.string()).optional(),
   // Project-scoped MCP registrations merge with the global ones (config-spec.md §resolution).
   mcp_servers: z.array(McpServerRegistrationSchema).optional(),
 });

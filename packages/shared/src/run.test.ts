@@ -59,4 +59,10 @@ describe('RunSchema', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('enforces temporal invariants (completedAt >= startedAt, updatedAt >= createdAt)', () => {
+    expect(RunSchema.safeParse({ ...run, startedAt: 2000, completedAt: 1000 }).success).toBe(false);
+    expect(RunSchema.safeParse({ ...run, createdAt: 2000, updatedAt: 1000 }).success).toBe(false);
+    expect(RunSchema.safeParse({ ...run, startedAt: 1000, completedAt: 2000 }).success).toBe(true);
+  });
 });

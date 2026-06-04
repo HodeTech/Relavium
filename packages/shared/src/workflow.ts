@@ -22,12 +22,23 @@ export const TriggerTypeSchema = z.enum([
   'mcp_call',
 ]);
 
-export const TriggerSchema = z.object({
-  type: TriggerTypeSchema,
-  webhook: z.object({ path: nonEmptyString, secret_env: nonEmptyString }).optional(),
-  schedule: z.string().optional(), // cron expression
-  file_change: z.object({ glob: nonEmptyString, debounce_ms: nonNegativeInt }).optional(),
-});
+// `TriggerTypeSchema` above is the flat enum (used by the run record's `triggerType`).
+// `TriggerSchema` is the *authored* form: a discriminated union so each type carries
+// exactly its required payload (e.g. `webhook` must include `{ path, secret_env }`,
+// `manual`/`mcp_call` carry none).
+export const TriggerSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('manual') }),
+  z.object({
+    type: z.literal('webhook'),
+    webhook: z.object({ path: nonEmptyString, secret_env: nonEmptyString }),
+  }),
+  z.object({ type: z.literal('schedule'), schedule: z.string() }), // cron expression
+  z.object({
+    type: z.literal('file_change'),
+    file_change: z.object({ glob: nonEmptyString, debounce_ms: nonNegativeInt }),
+  }),
+  z.object({ type: z.literal('mcp_call') }),
+]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 
 /** A typed workflow input declaration. */
@@ -100,20 +111,44 @@ export const WorkflowSchema = z
       }
     });
 
-    // Node ids must be unique within a workflow.
-    const seen = new Set<string>();
-    const duplicates = new Set<string>();
-    for (const node of nodes) {
-      if (seen.has(node.id)) duplicates.add(node.id);
-      seen.add(node.id);
-    }
-    if (duplicates.size > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `duplicate node id(s): ${[...duplicates].join(', ')}`,
-        path: ['workflow', 'nodes'],
-      });
-    }
+    // Referenced identifiers must be unique within a workflow — node ids, input names,
+    // context keys, and agent ids are each addressed by reference (edges, `{{inputs.*}}`,
+    // `{{ctx.*}}`, `agent_ref`), so a duplicate is an ambiguity, not a forward-compat field.
+    const reportDuplicates = (values: string[], label: string, path: (string | number)[]) => {
+      const seen = new Set<string>();
+      const duplicates = new Set<string>();
+      for (const value of values) {
+        if (seen.has(value)) duplicates.add(value);
+        seen.add(value);
+      }
+      if (duplicates.size > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate ${label}: ${[...duplicates].join(', ')}`,
+          path,
+        });
+      }
+    };
+    reportDuplicates(
+      nodes.map((n) => n.id),
+      'node id(s)',
+      ['workflow', 'nodes'],
+    );
+    reportDuplicates(
+      (doc.workflow.inputs ?? []).map((i) => i.name),
+      'input name(s)',
+      ['workflow', 'inputs'],
+    );
+    reportDuplicates(
+      (doc.workflow.context ?? []).map((c) => c.key),
+      'context key(s)',
+      ['workflow', 'context'],
+    );
+    reportDuplicates(
+      (doc.workflow.agents ?? []).map((a) => a.id),
+      'agent id(s)',
+      ['workflow', 'agents'],
+    );
 
     // `parallel_of` is authoritative for branch membership: an explicit edge out of a
     // `parallel` node must target a node listed in that node's `parallel_of`

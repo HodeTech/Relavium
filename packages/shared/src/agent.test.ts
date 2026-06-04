@@ -46,6 +46,13 @@ describe('AgentSchema', () => {
   it('rejects an empty system_prompt', () => {
     expect(AgentSchema.safeParse({ ...summarizer, system_prompt: '' }).success).toBe(false);
   });
+
+  it('rejects duplicate mcp_servers ids within an agent', () => {
+    const server = { id: 'gh', transport: 'stdio', command: 'npx' };
+    expect(
+      AgentSchema.safeParse({ ...summarizer, mcp_servers: [server, { ...server }] }).success,
+    ).toBe(false);
+  });
 });
 
 describe('MemorySchema', () => {

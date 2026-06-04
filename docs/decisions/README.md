@@ -63,6 +63,7 @@ flowchart TD
 | 0017 | [Bun as the `apps/api` runtime](0017-cloud-runtime-bun.md) | Accepted | 2026-06-04 |
 | 0018 | [Desktop execution model — engine in WebView, Rust-delegated LLM egress](0018-desktop-execution-and-rust-egress.md) | Accepted | 2026-06-04 |
 | 0019 | [Node-side OS-keychain access for the CLI — a maintained library, not the archived keytar](0019-cli-node-keychain-library.md) | Accepted | 2026-06-04 |
+| 0020 | [Zod as the runtime schema and validation library](0020-zod-runtime-schema-library.md) | Accepted | 2026-06-04 |
 
 ## Creating a new ADR
 

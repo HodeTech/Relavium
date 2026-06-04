@@ -4,9 +4,11 @@ import { WORKFLOW_NODE_TYPES } from './constants.js';
 import { NodeSchema } from './node.js';
 
 describe('NodeSchema', () => {
-  it('the union covers exactly the eight authored node types', () => {
-    const unionTypes = NodeSchema.options.map((o) => o.shape.type.value).sort();
-    expect(unionTypes).toEqual([...WORKFLOW_NODE_TYPES].sort());
+  it('the union has exactly the eight authored node types', () => {
+    // Each type's acceptance is proven by "accepts a minimal valid node of each type"
+    // below (so a rename fails there); the count catches an extra/missing variant without
+    // reading Zod internals.
+    expect(NodeSchema.options).toHaveLength(WORKFLOW_NODE_TYPES.length);
   });
 
   it('accepts a minimal valid node of each authored type', () => {

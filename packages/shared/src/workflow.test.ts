@@ -218,4 +218,46 @@ describe('WorkflowSchema', () => {
       accepts(withWorkflow({ edges: [...base.workflow.edges, { from: 'fan-out', to: 'output' }] })),
     ).toBe(false);
   });
+
+  it('rejects a trigger type whose required payload is absent', () => {
+    expect(accepts(withWorkflow({ trigger: { type: 'webhook' } }))).toBe(false);
+    expect(accepts(withWorkflow({ trigger: { type: 'file_change' } }))).toBe(false);
+    expect(accepts(withWorkflow({ trigger: { type: 'manual' } }))).toBe(true);
+  });
+
+  it('rejects duplicate input names', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [
+            { name: 'x', type: 'string' },
+            { name: 'x', type: 'number' },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects duplicate context keys', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          context: [
+            { key: 'k', value: 'a' },
+            { key: 'k', value: 'b' },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects duplicate agent ids', () => {
+    const agent = {
+      id: 'dup',
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      system_prompt: 'p',
+    };
+    expect(accepts(withWorkflow({ agents: [agent, { ...agent }] }))).toBe(false);
+  });
 });

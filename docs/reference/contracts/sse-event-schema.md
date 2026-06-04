@@ -58,7 +58,7 @@ export type RunEvent =
 | `run:started` | A run began. | `workflowId`, `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType` |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
-| `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a fallover), `toolId`, `toolInput` (sanitized — no secrets) |
+| `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI) |
 | `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model}`, `durationMs` |

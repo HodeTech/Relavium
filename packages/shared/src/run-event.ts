@@ -13,7 +13,7 @@ import { GateTypeSchema } from './node.js';
 /** Fields every event carries (the `BaseEvent` envelope), minus the discriminator. */
 const baseFields = {
   runId: nonEmptyString,
-  timestamp: z.string(), // ISO 8601
+  timestamp: z.string().datetime({ offset: true }), // ISO 8601 (UTC `Z` or an offset)
   sequenceNumber: nonNegativeInt,
 };
 
@@ -34,7 +34,7 @@ export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
   ...baseFields,
   workflowId: nonEmptyString,
-  inputs: z.record(z.unknown()), // secret-typed inputs are masked at emit time
+  inputs: z.record(z.string(), z.unknown()), // secret-typed inputs are masked at emit time
   executionMode: z.enum(EXECUTION_MODES),
 });
 
@@ -57,7 +57,7 @@ export const AgentToolCallEventSchema = z.object({
   type: z.literal('agent:tool_call'),
   ...baseFields,
   nodeId: nonEmptyString,
-  model: nonEmptyString, // the invoking model — attributable across a fallover
+  model: nonEmptyString, // the invoking model — attributable across a failover
   toolId: nonEmptyString,
   toolInput: z.unknown(), // sanitized — no secrets
 });
@@ -109,7 +109,7 @@ export const HumanGatePausedEventSchema = z.object({
   message: z.string(),
   assignee: z.string().optional(),
   timeoutMs: nonNegativeInt.optional(),
-  expiresAt: z.string().optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
 });
 export type HumanGatePausedEvent = z.infer<typeof HumanGatePausedEventSchema>;
 
@@ -129,7 +129,7 @@ export type HumanGateEvent = HumanGatePausedEvent | HumanGateResumedEvent;
 export const RunCompletedEventSchema = z.object({
   type: z.literal('run:completed'),
   ...baseFields,
-  outputs: z.record(z.unknown()),
+  outputs: z.record(z.string(), z.unknown()),
   totalTokensUsed: z.object({ input: nonNegativeInt, output: nonNegativeInt }),
   totalCostMicrocents: nonNegativeInt, // integer micro-cents closing total for the run
   durationMs: nonNegativeInt,
@@ -139,7 +139,7 @@ export const RunFailedEventSchema = z.object({
   type: z.literal('run:failed'),
   ...baseFields,
   error: z.object({ code: nonEmptyString, message: z.string(), nodeId: z.string().optional() }),
-  partialOutputs: z.record(z.unknown()),
+  partialOutputs: z.record(z.string(), z.unknown()),
 });
 
 export const RunCancelledEventSchema = z.object({

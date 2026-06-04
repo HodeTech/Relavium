@@ -6,13 +6,20 @@ import { z } from 'zod';
  * (the public surface is the named domain schemas, not these helpers).
  */
 
-/** kebab-case identifier: lowercase alphanumerics in dash-separated segments. */
-const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/**
+ * The kebab-case body pattern (lowercase alphanumerics in dash-separated segments).
+ * Exported so the edge schema can build the `nodeId(:handle)?` form from the same
+ * source of truth rather than duplicating the regex.
+ */
+export const KEBAB_PATTERN = '[a-z0-9]+(?:-[a-z0-9]+)*';
 
 /** A kebab-case id (`workflow.id`, `node.id`, `agent.id`, `agent_ref`). */
 export const kebabIdSchema = z
   .string()
-  .regex(KEBAB_CASE, 'must be kebab-case (lowercase alphanumerics, dash-separated)');
+  .regex(
+    new RegExp(`^${KEBAB_PATTERN}$`),
+    'must be kebab-case (lowercase alphanumerics, dash-separated)',
+  );
 
 /** A non-empty string. */
 export const nonEmptyString = z.string().min(1);
