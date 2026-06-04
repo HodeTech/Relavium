@@ -19,7 +19,7 @@ green — the toolchain (M1) and the shared schemas (M2).** The repository
 pnpm workspace, the strict `tsconfig` bases, the root ESLint/Prettier/Vitest spine, and
 `@relavium/shared` with the **full Zod schema set** (`WorkflowSchema`, `AgentSchema`,
 `NodeSchema`, `EdgeSchema`, the colon-namespaced `RunEvent` union, `RunSchema`, config —
-38 tests, reference round-trip with no drift). `pnpm install && pnpm turbo run lint
+114 tests, reference round-trip with no drift). `pnpm install && pnpm turbo run lint
 typecheck test build` is green and `format:check` is clean. The remaining Phase-0
 workstreams (0.F seam fence, 0.G CI, 0.H docs, 0.I `@relavium/db`) are still open before
 **M0**. The foundation is settled and recorded:

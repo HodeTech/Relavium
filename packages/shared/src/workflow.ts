@@ -160,6 +160,9 @@ export const WorkflowSchema = z
       if (node.type === 'parallel') branchesByParallelId.set(node.id, node.parallel_of);
     }
     doc.workflow.edges.forEach((edge, i) => {
+      // Strip an optional `:handle` to the base node id. `split` always yields >= 1
+      // element at runtime; the `?? edge.from` satisfies `noUncheckedIndexedAccess`
+      // (which types `[0]` as `string | undefined`) so `fromId` is a plain `string`.
       const fromId = edge.from.split(':')[0] ?? edge.from;
       const branches = branchesByParallelId.get(fromId);
       if (branches && !branches.includes(edge.to)) {

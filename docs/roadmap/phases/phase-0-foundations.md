@@ -217,7 +217,7 @@ workspace package with full types; its only runtime dependency is `zod`.
 
 > **✅ Done** — `WorkflowSchema`, `AgentSchema`, `NodeSchema`, `EdgeSchema`, the 13-variant
 > colon-namespaced `RunEvent` union (+ `CostUpdatedEvent`, gate events, `GateDecision`),
-> `RunSchema`, and the config schemas, with inferred types. **38 tests** cover accept +
+> `RunSchema`, and the config schemas, with inferred types. **114 tests** cover accept +
 > reject per schema, the canonical reference workflow/agent round-trip with no drift, and
 > a type-level + runtime pin of the event names and the `cost:updated` payload.
 > The reference example is round-tripped as a parsed **object** (YAML→object parsing is

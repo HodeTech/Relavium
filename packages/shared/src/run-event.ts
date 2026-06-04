@@ -80,7 +80,7 @@ export const CostUpdatedEventSchema = z.object({
   model: nonEmptyString,
   inputTokens: nonNegativeInt,
   outputTokens: nonNegativeInt,
-  costMicrocents: nonNegativeInt, // integer micro-cents (canonical unit), from our pricing table
+  costMicrocents: nonNegativeInt, // integer micro-cents (canonical unit); from Relavium's pricing table, never the provider
   cumulativeCostMicrocents: nonNegativeInt,
   attemptNumber: positiveInt.optional(), // 1-based retry attempt this cost belongs to
 });
