@@ -4,45 +4,78 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@eslint/js':
+      specifier: ^9.17.0
+      version: 9.39.4
+    '@vitest/coverage-v8':
+      specifier: ^3.0.0
+      version: 3.2.6
+    eslint:
+      specifier: ^9.17.0
+      version: 9.39.4
+    eslint-config-prettier:
+      specifier: ^9.1.0
+      version: 9.1.2
+    prettier:
+      specifier: ^3.4.2
+      version: 3.8.3
+    turbo:
+      specifier: ^2.3.3
+      version: 2.9.16
+    typescript:
+      specifier: ^5.7.2
+      version: 5.9.3
+    typescript-eslint:
+      specifier: ^8.18.1
+      version: 8.60.1
+    vitest:
+      specifier: ^3.0.0
+      version: 3.2.6
+
 importers:
 
   .:
     devDependencies:
       '@eslint/js':
-        specifier: ^9.17.0
+        specifier: 'catalog:'
         version: 9.39.4
       '@vitest/coverage-v8':
-        specifier: ^3.0.0
+        specifier: 'catalog:'
         version: 3.2.6(vitest@3.2.6)
       eslint:
-        specifier: ^9.17.0
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-prettier:
-        specifier: ^9.1.0
+        specifier: 'catalog:'
         version: 9.1.2(eslint@9.39.4)
-      globals:
-        specifier: ^15.14.0
-        version: 15.15.0
       prettier:
-        specifier: ^3.4.2
+        specifier: 'catalog:'
         version: 3.8.3
       turbo:
-        specifier: ^2.3.3
+        specifier: 'catalog:'
         version: 2.9.16
       typescript:
-        specifier: ^5.7.2
+        specifier: 'catalog:'
         version: 5.9.3
       typescript-eslint:
-        specifier: ^8.18.1
+        specifier: 'catalog:'
         version: 8.60.1(eslint@9.39.4)(typescript@5.9.3)
       vitest:
-        specifier: ^3.0.0
+        specifier: 'catalog:'
         version: 3.2.6
 
   packages/shared:
     devDependencies:
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
       vitest:
-        specifier: ^3.0.0
+        specifier: 'catalog:'
         version: 3.2.6
 
 packages:
@@ -814,10 +847,6 @@ packages:
 
   globals@14.0.0:
     resolution: {integrity: sha512-oahGvuMGQlPw/ivIYBjVSrWAfWLBeku5tpPE2fOPLi+WHffIWbuh2tCjhyQhTBPMf5E9jDEH4FOmTYgYwbKwtQ==}
-    engines: {node: '>=18'}
-
-  globals@15.15.0:
-    resolution: {integrity: sha512-7ACyT3wmyp3I61S4fG682L0VA2RGD9otkqGJIwNUMF1SWUombIIk+af1unuDYgMm082aHYwD+mzJvv9Iu8dsgg==}
     engines: {node: '>=18'}
 
   has-flag@4.0.0:
@@ -1936,8 +1965,6 @@ snapshots:
       path-scurry: 1.11.1
 
   globals@14.0.0: {}
-
-  globals@15.15.0: {}
 
   has-flag@4.0.0: {}
 

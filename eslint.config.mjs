@@ -1,6 +1,5 @@
 // @ts-check
 import js from '@eslint/js';
-import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
 
@@ -38,9 +37,13 @@ export default tseslint.config(
         projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
-      globals: {
-        ...globals.node,
-      },
+      // No ambient platform globals here on purpose. Type-aware linting disables
+      // `no-undef` for TS, so globals don't gate undefined names — each package's
+      // tsconfig `types`/`lib` is the real platform boundary (e.g. `@relavium/shared`
+      // sets `types: []`, so `process` is a TS error). Platform globals are added per
+      // surface at its phase: `globals.node` for apps/cli + apps/api + Node tooling;
+      // `globals.browser` for packages/ui + apps/desktop frontend + apps/portal; the
+      // pure engine (`@relavium/core`) and libraries use neither.
     },
     rules: {
       // CLAUDE.md non-negotiables, pinned as errors across the whole TS family.
