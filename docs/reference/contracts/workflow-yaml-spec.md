@@ -10,6 +10,8 @@ A Relavium workflow is a **git-committable YAML file** describing a directed gra
 
 The same file parses and runs **identically** on every surface — desktop canvas, CLI, VS Code extension, and (Phase 2) cloud — because all surfaces load it through the one shared engine, `@relavium/core`. See [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md).
 
+> **Strict validation.** `WorkflowSchema` rejects unknown/mistyped keys rather than silently dropping them — a typo in a committed workflow fails at parse time with the offending path ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). Forward-compatible additions ride the `schema_version` + a migration path.
+
 ## Why YAML
 
 - Multiline strings (system prompts, message templates) are readable without escape sequences.

@@ -324,7 +324,9 @@ export const runEvents = sqliteTable(
     ts: epochMs('ts').notNull(),
   },
   (t) => [
-    index('idx_run_events_run_seq').on(t.runId, t.seq),
+    // UNIQUE: `seq` is monotonic per run, so (run_id, seq) must be unique — this enforces
+    // the gap-detection invariant at the DB level (a double-write can't reuse a sequence).
+    uniqueIndex('idx_run_events_run_seq').on(t.runId, t.seq),
     index('idx_run_events_step')
       .on(t.stepExecutionId, t.ts)
       .where(sql`${t.stepExecutionId} is not null`),

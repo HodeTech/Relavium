@@ -24,7 +24,9 @@ export type BaseEvent = z.infer<typeof BaseEventSchema>;
 export const TokensUsedSchema = z.object({
   input: nonNegativeInt,
   output: nonNegativeInt,
-  model: nonEmptyString,
+  // Present only when an LLM produced the tokens. A non-agent node (condition, transform,
+  // merge, …) completes with input/output 0 and no model — so `model` is optional here.
+  model: nonEmptyString.optional(),
 });
 export type TokensUsed = z.infer<typeof TokensUsedSchema>;
 
@@ -35,7 +37,7 @@ export type GateDecisionValue = z.infer<typeof GateDecisionValueSchema>;
 export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
   ...baseFields,
-  workflowId: nonEmptyString,
+  workflowId: z.string().uuid(), // FK to workflows.id (surrogate UUID), matching RunSchema — ADR-0022
   inputs: z.record(z.string(), z.unknown()), // secret-typed inputs are masked at emit time
   executionMode: z.enum(EXECUTION_MODES),
 });

@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
@@ -35,9 +37,32 @@ export interface DbClient {
  * connection by default — the CASCADE rules in the schema depend on it).
  */
 export function createClient(path = ':memory:'): DbClient {
-  const sqlite = new Database(path);
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('foreign_keys = ON');
+  // SQLite URI filenames (`file:…`) are NOT supported: better-sqlite3 needs `{ uri: true }` to
+  // interpret them and otherwise silently creates a literal file of that name. Reject up front
+  // rather than open the wrong database — pass ':memory:' or a plain filesystem path.
+  if (path.startsWith('file:')) {
+    throw new Error(
+      `SQLite URI paths are not supported by createClient — pass ':memory:' or a filesystem path (got '${path}')`,
+    );
+  }
+  let sqlite: Database.Database;
+  try {
+    // Create the parent directory for a real file path so a first-run open doesn't fail on a
+    // missing folder (inside the try so a filesystem error gets the same path-rich message).
+    if (path !== ':memory:') {
+      mkdirSync(dirname(path), { recursive: true });
+    }
+    sqlite = new Database(path);
+  } catch (err) {
+    // Rethrow with the resolved path + reason (locked/corrupt/permission/missing dir),
+    // preserving the original via `cause` — a bare fs/driver error has no path context.
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`failed to open SQLite database at '${path}': ${reason}`, { cause: err });
+  }
+  sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
+  sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
+  sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
+  sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
   const db = drizzle(sqlite, { schema });
   return { db, sqlite };
 }

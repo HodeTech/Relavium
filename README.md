@@ -24,6 +24,10 @@ section answers*.
 
 ## Status
 
-Pre-implementation. The documentation, architecture decisions, and phased roadmap
-are complete; engineering begins at
-[Phase 0 — Foundations](docs/roadmap/phases/phase-0-foundations.md).
+**Phase 0 — Foundations complete (milestone M0, 2026-06-04).** The Turborepo + pnpm
+monorepo, the strict toolchain + GitHub Actions CI, `@relavium/shared` (the full Zod
+contract set), the no-vendor-type seam fence, and `@relavium/db` (Drizzle schema +
+migrations + SQLite client) are all in place and green. Work is now on
+[Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md): the
+`@relavium/llm` provider seam and the `@relavium/core` engine. See
+[docs/roadmap/current.md](docs/roadmap/current.md) for live status.

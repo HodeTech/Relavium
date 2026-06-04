@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { nonEmptyString } from './common.js';
+import { URL_HAS_CREDENTIALS, nonEmptyString } from './common.js';
 
 /**
  * Configuration schemas (config-spec.md). Validation only — no file IO. The global
@@ -12,6 +12,9 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 
 /** Filesystem permission tier (built-in-tools.md). */
 export const FsScopeSchema = z.enum(['sandboxed', 'project', 'full']);
+
+/** A registered `http` MCP server must use http(s) — never file:/javascript:/etc. */
+const SAFE_HTTP_URL = /^https?:\/\//i;
 
 /**
  * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required
@@ -39,6 +42,22 @@ export const McpServerRegistrationSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "url is required for the 'http' transport",
+        path: ['url'],
+      });
+    }
+    // SSRF guard: a registered url must be http(s) — reject file:, javascript:, etc.
+    if (server.url !== undefined && !SAFE_HTTP_URL.test(server.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must use http or https',
+        path: ['url'],
+      });
+    }
+    // Secret hygiene: no credentials embedded in a git-committed url.
+    if (server.url !== undefined && URL_HAS_CREDENTIALS.test(server.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
         path: ['url'],
       });
     }

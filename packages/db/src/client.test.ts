@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { EXECUTION_MODES, RunStatusSchema } from '@relavium/shared';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -220,5 +221,126 @@ describe('@relavium/db migrations + client', () => {
         .values({ ...base, id: randomUUID(), executionMode: 'turbo' })
         .run(),
     ).toThrow(/CHECK constraint failed: runs_execution_mode_check/i);
+  });
+});
+
+describe('@relavium/db migration + constraint invariants', () => {
+  const tableCount = () =>
+    client.db.all<{ n: number }>(
+      sql`select count(*) as n from sqlite_master where type = 'table'`,
+    )[0]?.n ?? 0;
+
+  it('runMigrations is idempotent — re-running is a no-op', () => {
+    const before = tableCount();
+    expect(() => runMigrations(client.db)).not.toThrow();
+    expect(tableCount()).toBe(before);
+  });
+
+  it('opens an in-memory database and applies every migration', () => {
+    const mem = createClient(); // default ':memory:'
+    runMigrations(mem.db);
+    const tables = mem.db
+      .all<{ name: string }>(sql`select name from sqlite_master where type = 'table'`)
+      .map((r) => r.name);
+    for (const t of EXPECTED_TABLES) expect(tables).toContain(t);
+    mem.sqlite.close();
+  });
+
+  it('enforces the partial-unique slug index only on non-deleted rows', () => {
+    const mk = (deletedAt: number | null) => ({
+      id: randomUUID(),
+      name: 'P',
+      slug: 'puniq',
+      definition: '{}',
+      deletedAt,
+      createdAt: TS,
+      updatedAt: TS,
+    });
+    client.db.insert(workflows).values(mk(null)).run();
+    // A second non-deleted row with the same slug violates the partial unique index.
+    expect(() => client.db.insert(workflows).values(mk(null)).run()).toThrow(/UNIQUE/i);
+    // Soft-delete the live row, and the same slug is free again (the index excludes it).
+    client.db.update(workflows).set({ deletedAt: TS }).where(eq(workflows.slug, 'puniq')).run();
+    expect(() => client.db.insert(workflows).values(mk(null)).run()).not.toThrow();
+  });
+
+  it('the runs CHECKs accept exactly the @relavium/shared enum value sets (no drift)', () => {
+    const workflowId = randomUUID();
+    client.db
+      .insert(workflows)
+      .values({
+        id: workflowId,
+        name: 'C',
+        slug: 'chk-nodrift',
+        definition: '{}',
+        createdAt: TS,
+        updatedAt: TS,
+      })
+      .run();
+    for (const status of RunStatusSchema.options) {
+      expect(() =>
+        client.db
+          .insert(runs)
+          .values({
+            id: randomUUID(),
+            workflowId,
+            workflowDefinitionSnapshot: '{}',
+            status,
+            createdAt: TS,
+            updatedAt: TS,
+          })
+          .run(),
+      ).not.toThrow();
+    }
+    for (const executionMode of EXECUTION_MODES) {
+      expect(() =>
+        client.db
+          .insert(runs)
+          .values({
+            id: randomUUID(),
+            workflowId,
+            workflowDefinitionSnapshot: '{}',
+            executionMode,
+            createdAt: TS,
+            updatedAt: TS,
+          })
+          .run(),
+      ).not.toThrow();
+    }
+  });
+
+  it('rejects a SQLite URI path (file:…) instead of silently opening a literal file', () => {
+    expect(() => createClient('file::memory:?cache=shared')).toThrow(
+      /URI paths are not supported/i,
+    );
+  });
+
+  it('rejects a duplicate (run_id, seq) in run_events (the unique gap-detection invariant)', () => {
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    client.db
+      .insert(workflows)
+      .values({
+        id: workflowId,
+        name: 'U',
+        slug: 'uniq-seq',
+        definition: '{}',
+        createdAt: TS,
+        updatedAt: TS,
+      })
+      .run();
+    client.db
+      .insert(runs)
+      .values({
+        id: runId,
+        workflowId,
+        workflowDefinitionSnapshot: '{}',
+        createdAt: TS,
+        updatedAt: TS,
+      })
+      .run();
+    const ev = () => ({ id: randomUUID(), runId, seq: 5, eventType: 'agent:token', ts: TS });
+    client.db.insert(runEvents).values(ev()).run();
+    expect(() => client.db.insert(runEvents).values(ev()).run()).toThrow(/UNIQUE/i);
   });
 });

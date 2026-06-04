@@ -281,4 +281,37 @@ describe('WorkflowSchema', () => {
       ),
     ).toBe(false);
   });
+
+  it('rejects an unknown / typo key — strict authored YAML, not silent-strip (ADR-0023)', () => {
+    // Unknown top-level key.
+    expect(accepts({ ...base, surprise: 1 })).toBe(false);
+    // Unknown key in the workflow body (e.g. a misspelled `triggers`).
+    expect(accepts(withWorkflow({ triggers: {} }))).toBe(false);
+    // Unknown key inside a node.
+    expect(
+      accepts(
+        withWorkflow({
+          nodes: base.workflow.nodes.map((n) => (n.id === 'input' ? { ...n, oops: 1 } : n)),
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects a schedule trigger with an empty cron expression', () => {
+    expect(accepts(withWorkflow({ trigger: { type: 'schedule', schedule: '' } }))).toBe(false);
+    expect(accepts(withWorkflow({ trigger: { type: 'schedule', schedule: '0 9 * * 1' } }))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a workflow with zero nodes', () => {
+    expect(
+      accepts({ schema_version: '1.0', workflow: { id: 'empty', nodes: [], edges: [] } }),
+    ).toBe(false);
+  });
+
+  it('rejects an empty-string entry in a tool-policy allowlist', () => {
+    expect(accepts(withWorkflow({ tools: { allowedCommands: [''] } }))).toBe(false);
+    expect(accepts(withWorkflow({ tools: { allowedCommands: ['git status'] } }))).toBe(true);
+  });
 });

@@ -65,6 +65,8 @@ flowchart TD
 | 0019 | [Node-side OS-keychain access for the CLI — a maintained library, not the archived keytar](0019-cli-node-keychain-library.md) | Accepted | 2026-06-04 |
 | 0020 | [Zod as the runtime schema and validation library](0020-zod-runtime-schema-library.md) | Accepted | 2026-06-04 |
 | 0021 | [better-sqlite3 as the Node-side SQLite driver for `@relavium/db`](0021-node-sqlite-driver-better-sqlite3.md) | Accepted | 2026-06-04 |
+| 0022 | [Run records reference the workflow by surrogate UUID, not the authored slug](0022-run-references-workflow-by-uuid.md) | Accepted | 2026-06-04 |
+| 0023 | [Authored workflow/agent YAML is strictly validated — unknown keys rejected](0023-strict-authored-yaml-validation.md) | Accepted | 2026-06-04 |
 
 ## Creating a new ADR
 

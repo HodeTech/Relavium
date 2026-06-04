@@ -42,8 +42,9 @@ const seamImportOptions = {
 const seamImportEntry = /** @type {const} */ (['error', seamImportOptions]);
 
 // A regex matching each vendor specifier and any subpath (slashes escaped for the esquery
-// attribute literal). Drives the AST selectors that catch the non-static import forms.
-const SEAM_SPECIFIER_RE = '^(@anthropic-ai\\/sdk|openai|@google\\/genai)(\\/.*)?$';
+// attribute literal). `String.raw` keeps the backslashes literal so it reads like the
+// regex it is. Drives the AST selectors that catch the non-static import forms.
+const SEAM_SPECIFIER_RE = String.raw`^(@anthropic-ai\/sdk|openai|@google\/genai)(\/.*)?$`;
 const seamSyntaxRules = /** @type {const} */ ([
   'error',
   // dynamic import of a vendor specifier: `import('openai')`

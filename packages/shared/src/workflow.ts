@@ -9,9 +9,11 @@ import { EdgeSchema } from './edge.js';
 /**
  * Workflow YAML schema v1.0 (workflow-yaml-spec.md). A workflow is a
  * git-committable directed graph of nodes; it is a **public API**, so `WorkflowSchema`
- * is the migration anchor (`schema_version`) and unknown extra keys are **silently
- * stripped** (Zod's default `z.object` behavior) rather than rejected — so a newer
- * file's added optional fields never break an older parser (forward-compatible parsing).
+ * is the migration anchor (`schema_version`). Authored objects are `.strict()`: an
+ * unknown or mistyped key is a validation error, not a silently stripped field — a typo
+ * in a committed YAML fails loudly rather than doing nothing (ADR-0023). Evolution
+ * across `schema_version`s is handled by the version literal and a migration path, not by
+ * tolerating stray keys.
  */
 
 /** How a run is initiated. */
@@ -28,17 +30,21 @@ export const TriggerTypeSchema = z.enum([
 // exactly its required payload (e.g. `webhook` must include `{ path, secret_env }`,
 // `manual`/`mcp_call` carry none).
 export const TriggerSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('manual') }),
-  z.object({
-    type: z.literal('webhook'),
-    webhook: z.object({ path: nonEmptyString, secret_env: nonEmptyString }),
-  }),
-  z.object({ type: z.literal('schedule'), schedule: z.string() }), // cron expression
-  z.object({
-    type: z.literal('file_change'),
-    file_change: z.object({ glob: nonEmptyString, debounce_ms: nonNegativeInt }),
-  }),
-  z.object({ type: z.literal('mcp_call') }),
+  z.object({ type: z.literal('manual') }).strict(),
+  z
+    .object({
+      type: z.literal('webhook'),
+      webhook: z.object({ path: nonEmptyString, secret_env: nonEmptyString }).strict(),
+    })
+    .strict(),
+  z.object({ type: z.literal('schedule'), schedule: nonEmptyString }).strict(), // cron expression
+  z
+    .object({
+      type: z.literal('file_change'),
+      file_change: z.object({ glob: nonEmptyString, debounce_ms: nonNegativeInt }).strict(),
+    })
+    .strict(),
+  z.object({ type: z.literal('mcp_call') }).strict(),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 
@@ -52,44 +58,52 @@ export const InputTypeSchema = z.enum([
   'secret',
 ]);
 
-export const WorkflowInputSchema = z.object({
-  name: nonEmptyString,
-  type: InputTypeSchema,
-  required: z.boolean().optional(),
-  default: z.unknown().optional(),
-  description: z.string().optional(),
-});
+export const WorkflowInputSchema = z
+  .object({
+    name: nonEmptyString,
+    type: InputTypeSchema,
+    required: z.boolean().optional(),
+    default: z.unknown().optional(),
+    description: z.string().optional(),
+  })
+  .strict();
 export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
 
 /** A shared variable exposed as `{{ctx.key}}`. */
-export const ContextEntrySchema = z.object({
-  key: nonEmptyString,
-  value: z.string(),
-});
+export const ContextEntrySchema = z
+  .object({
+    key: nonEmptyString,
+    value: z.string(),
+  })
+  .strict();
 export type ContextEntry = z.infer<typeof ContextEntrySchema>;
 
 /** Workflow-wide tool guardrails (the canonical home for the command allowlist). */
-export const ToolPolicySchema = z.object({
-  allowedCommands: z.array(z.string()).optional(),
-  allowedDomains: z.array(z.string()).optional(),
-});
+export const ToolPolicySchema = z
+  .object({
+    allowedCommands: z.array(nonEmptyString).optional(),
+    allowedDomains: z.array(nonEmptyString).optional(),
+  })
+  .strict();
 export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
 
 /** The body under the top-level `workflow:` key. */
-export const WorkflowSpecSchema = z.object({
-  id: kebabIdSchema,
-  version: z.string().optional(),
-  name: z.string().optional(),
-  description: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  trigger: TriggerSchema.optional(),
-  inputs: z.array(WorkflowInputSchema).optional(),
-  context: z.array(ContextEntrySchema).optional(),
-  agents: z.array(AgentSchema).optional(),
-  tools: ToolPolicySchema.optional(),
-  nodes: z.array(NodeSchema),
-  edges: z.array(EdgeSchema),
-});
+export const WorkflowSpecSchema = z
+  .object({
+    id: kebabIdSchema,
+    version: z.string().optional(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    trigger: TriggerSchema.optional(),
+    inputs: z.array(WorkflowInputSchema).optional(),
+    context: z.array(ContextEntrySchema).optional(),
+    agents: z.array(AgentSchema).optional(),
+    tools: ToolPolicySchema.optional(),
+    nodes: z.array(NodeSchema).min(1, 'a workflow must declare at least one node'),
+    edges: z.array(EdgeSchema),
+  })
+  .strict();
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 
 /** The complete workflow document: `schema_version` + `workflow`. */
@@ -98,6 +112,7 @@ export const WorkflowSchema = z
     schema_version: z.literal(SCHEMA_VERSION),
     workflow: WorkflowSpecSchema,
   })
+  .strict()
   .superRefine((doc, ctx) => {
     const { nodes } = doc.workflow;
 

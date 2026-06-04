@@ -23,6 +23,10 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: './coverage',
+      // Scope the denominator to real package source so the Phase-1 >= 90% threshold is
+      // measured against source, not test files, fixtures, configs, dist, or migrations.
+      include: ['packages/*/src/**/*.ts'],
+      exclude: ['**/*.test.ts'],
     },
   },
 });

@@ -3,11 +3,16 @@
 - **Status**: Version-of-record
 - **Related**: [project-structure.md](project-structure.md), [decisions/README.md](decisions/README.md)
 
-This is the single source of truth for Relavium's pinned technology choices.
+This is the single source of truth for Relavium's pinned technology **choices**.
 Architecture Decision Records ([decisions/](decisions/README.md)) reference this
-file for versions rather than restating them, so a version bump happens in one
-place. The stack was adversarially reviewed by a 10-agent workflow before being
-locked.
+file rather than restating choices, so a change happens in one place. The stack was
+adversarially reviewed by a 10-agent workflow before being locked.
+
+> **Where the numeric version pins live.** Exact dependency versions are pinned in the
+> pnpm **`catalog:`** in [`pnpm-workspace.yaml`](../pnpm-workspace.yaml) (the single place
+> every package's `catalog:` range resolves from), not in this file — this page is the
+> version-of-record for the *choices*, the catalog for the *numbers*. A bump is a one-line
+> catalog edit.
 
 ## Final Stack
 

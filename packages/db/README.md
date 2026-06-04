@@ -18,7 +18,11 @@ later. The package ships:
   `better-sqlite3` ([ADR-0021](../../docs/decisions/0021-node-sqlite-driver-better-sqlite3.md)).
 - A **smoke test** that applies every migration to a fresh DB and round-trips a row.
 
-It depends only on `@relavium/shared` (the contract enums that its CHECKs reuse) and Drizzle.
+Its runtime dependencies are `@relavium/shared` (the contract enums its CHECKs reuse),
+`drizzle-orm` ([ADR-0005](../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md)),
+and the `better-sqlite3` Node driver
+([ADR-0021](../../docs/decisions/0021-node-sqlite-driver-better-sqlite3.md)); `drizzle-kit`
+is a dev dependency.
 
 ## Conventions (from the canonical DDL)
 

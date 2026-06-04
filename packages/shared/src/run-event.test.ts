@@ -11,7 +11,7 @@ const valid: Record<string, Record<string, unknown>> = {
   'run:started': {
     type: 'run:started',
     ...env,
-    workflowId: 'wf',
+    workflowId: 'b1a2c3d4-0000-4000-8000-000000000000', // workflows.id UUID (ADR-0022)
     inputs: {},
     executionMode: 'local',
   },
@@ -100,9 +100,16 @@ const reject: Record<string, Record<string, unknown>> = {
   'run:started (bad executionMode)': {
     type: 'run:started',
     ...env,
-    workflowId: 'wf',
+    workflowId: 'b1a2c3d4-0000-4000-8000-000000000000', // valid UUID — isolate the executionMode failure
     inputs: {},
     executionMode: 'turbo',
+  },
+  'run:started (bad workflowId)': {
+    type: 'run:started',
+    ...env,
+    workflowId: 'wf', // not a UUID (ADR-0022) — isolate the workflowId failure
+    inputs: {},
+    executionMode: 'local',
   },
   'node:started (missing nodeType)': { type: 'node:started', ...env, nodeId: 'n' },
   'agent:token (missing model)': { type: 'agent:token', ...env, nodeId: 'n', token: 'hi' },
@@ -256,6 +263,14 @@ describe('cost:updated and sequenceNumber invariants', () => {
     expect(
       RunEventSchema.safeParse({ ...env, type: 'run:cancelled', timestamp: 'June 4 2026' }).success,
     ).toBe(false);
+  });
+
+  it('accepts node:completed from a non-agent node (tokensUsed without a model)', () => {
+    // A condition/transform/merge node has no LLM model — tokensUsed.model is optional.
+    expect(
+      RunEventSchema.safeParse({ ...valid['node:completed'], tokensUsed: { input: 0, output: 0 } })
+        .success,
+    ).toBe(true);
   });
 
   it('rejects legacy dotted and non-canonical event names', () => {

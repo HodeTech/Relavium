@@ -77,4 +77,20 @@ describe('config schemas', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects an unsafe url scheme in an http MCP registration (SSRF guard)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'r', transport: 'http', url: 'file:///etc/passwd' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a url that embeds credentials in an http MCP registration', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'r', transport: 'http', url: 'https://user:pass@host' }],
+      }).success,
+    ).toBe(false);
+  });
 });

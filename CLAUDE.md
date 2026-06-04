@@ -32,9 +32,11 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md)..[ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status: pre-implementation.** The documentation, architecture decisions, and
-phased roadmap are complete; engineering begins at
-[Phase 0 — Foundations](docs/roadmap/phases/phase-0-foundations.md). See
+**Status: Phase 0 complete (milestone M0, 2026-06-04).** The monorepo skeleton, the strict
+toolchain + CI, `@relavium/shared` (the full Zod contract set), the no-vendor-type seam
+fence, and `@relavium/db` are all landed and green. Active work is
+[Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md) (`@relavium/llm`
+seam + `@relavium/core` engine); see [docs/roadmap/current.md](docs/roadmap/current.md). See
 [README.md](README.md) for the public overview.
 
 ## Non-negotiable rules for AI agents

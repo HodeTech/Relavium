@@ -23,10 +23,12 @@ const toSchema = z
   .string()
   .regex(new RegExp(`^${KEBAB_PATTERN}$`), 'to must be a kebab-case node id');
 
-export const EdgeSchema = z.object({
-  from: fromSchema,
-  to: toSchema,
-  label: z.string().optional(),
-  condition: z.string().optional(),
-});
+export const EdgeSchema = z
+  .object({
+    from: fromSchema,
+    to: toSchema,
+    label: z.string().optional(),
+    condition: z.string().optional(),
+  })
+  .strict(); // authored YAML: an unknown/typo'd key is rejected, not silently stripped (ADR-0023)
 export type Edge = z.infer<typeof EdgeSchema>;

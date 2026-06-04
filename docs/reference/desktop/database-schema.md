@@ -179,7 +179,7 @@ One row per workflow execution. `workflow_definition_snapshot` freezes the exact
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | TEXT | PRIMARY KEY (UUID) |
-| `workflow_id` | TEXT | NOT NULL REFERENCES `workflows(id)` |
+| `workflow_id` | TEXT | NOT NULL REFERENCES `workflows(id)` — the surrogate **UUID** PK, **not** the authored kebab id (that lives in `workflows.slug`). `RunSchema.workflowId` mirrors this UUID FK ([ADR-0022](../../decisions/0022-run-references-workflow-by-uuid.md)). |
 | `workflow_path` | TEXT | NULL — source `.relavium.yaml` path |
 | `project_root` | TEXT | NULL — workspace that owned the run |
 | `workflow_definition_snapshot` | TEXT (JSON) | NOT NULL |
@@ -282,12 +282,14 @@ The append-only event log for a run — the persistent record of the [SSE/RunEve
 | `ts` | INTEGER | NOT NULL |
 
 ```sql
-CREATE INDEX idx_run_events_run_seq    ON run_events (run_id, seq ASC);
+CREATE UNIQUE INDEX idx_run_events_run_seq ON run_events (run_id, seq ASC);  -- seq is monotonic per run: (run_id, seq) is unique
 CREATE INDEX idx_run_events_step        ON run_events (step_execution_id, ts ASC) WHERE step_execution_id IS NOT NULL;
 CREATE INDEX idx_run_events_run_type    ON run_events (run_id, event_type, ts ASC);
 ```
 
 > `token`-level events are high volume. They are stored to support full replay but are the primary target of the 90-day pruning job; `runs`/`step_executions` metadata is retained longer.
+
+> **Timestamp unit at the persistence boundary.** The wire `RunEvent.timestamp` is an **ISO-8601 string** ([sse-event-schema.md](../contracts/sse-event-schema.md) envelope), but it is persisted here as `run_events.ts` = **epoch-milliseconds `INTEGER`** (the table convention, for reliable ordering). The conversion ISO ↔ epoch-ms happens at the `@relavium/db` write/read boundary; the logical `RunSchema` timestamps (`createdAt`/`startedAt`/…) are already epoch-ms and pass through unchanged.
 
 #### `run_costs`
 

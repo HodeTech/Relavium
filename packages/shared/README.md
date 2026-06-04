@@ -2,16 +2,26 @@
 
 Zod schemas + inferred TypeScript types — the **single source of truth** for the
 workflow/agent YAML, the run-event union, and config. Every other package depends on
-this one; its only runtime dependency is `zod` (added with the schemas in 0.E).
+this one; its only runtime dependency is `zod` ([ADR-0020](../../docs/decisions/0020-zod-runtime-schema-library.md)).
 
 ## Status
 
-**Phase 0 scaffold.** The package builds, type-checks, lints, and tests as the
-dependency root of the graph, exporting `SCHEMA_VERSION` for now. The full schema set
-(`WorkflowSchema`, `AgentSchema`, `NodeSchema`, `EdgeSchema`, the colon-namespaced
-`RunEvent` union, `CostUpdatedEvent`, the human-gate events, `RunSchema`, config) lands
-in [Phase 0 workstream 0.E](../../docs/roadmap/phases/phase-0-foundations.md), driven
-from the frozen contracts in [docs/reference/contracts/](../../docs/reference/contracts/README.md).
+**Implemented (v1.0 contracts).** The full schema set is in place, driven directly from
+the frozen contracts in [docs/reference/contracts/](../../docs/reference/contracts/README.md)
+and exercised by accept/reject + reference round-trip tests:
+
+- **Workflow YAML** — `WorkflowSchema` (document + `workflow` body), the 8-type `NodeSchema`
+  discriminated union, `EdgeSchema`, `TriggerSchema`, inputs/context/tool-policy.
+- **Agent YAML** — `AgentSchema`, `McpServerRefSchema`, `MemorySchema`, `RetrySchema`,
+  `FallbackChainEntrySchema`.
+- **Run-event stream** — the colon-namespaced `RunEvent` union (incl. `CostUpdatedEvent`,
+  the human-gate events, `GateDecision`) and the logical `RunSchema`.
+- **Config** — `GlobalConfigSchema` / `ProjectConfigSchema`.
+
+Authored workflow/agent objects are **`.strict()`**: an unknown/typo'd key is rejected, not
+silently stripped ([ADR-0023](../../docs/decisions/0023-strict-authored-yaml-validation.md)).
+A run references its workflow by the surrogate **UUID** (`workflows.id`), not the authored
+slug ([ADR-0022](../../docs/decisions/0022-run-references-workflow-by-uuid.md)).
 
 ## Conventions
 

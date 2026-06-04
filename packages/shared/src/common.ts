@@ -29,3 +29,18 @@ export const positiveInt = z.number().int().positive();
 
 /** A non-negative integer (>= 0). */
 export const nonNegativeInt = z.number().int().nonnegative();
+
+/**
+ * Matches a URL that embeds credentials in its authority (`scheme://user:pass@host`).
+ * Secrets must never live in a git-committed URL — auth belongs in env/keychain. Linear,
+ * no backtracking (the `@` must precede any `/?#`), so no ReDoS. Used by the MCP url guards.
+ */
+export const URL_HAS_CREDENTIALS = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
+
+/**
+ * A generation temperature: a finite number in the provider-agnostic `[0, 2]` envelope
+ * (no NaN/Infinity/negative). Shared by `AgentSchema` and the agent node override so the
+ * bound lives in one place. Per-provider limits (e.g. Anthropic's `[0, 1]`) are enforced in
+ * the `@relavium/llm` adapter, not here — the contract stays provider-agnostic.
+ */
+export const temperatureSchema = z.number().finite().min(0).max(2);
