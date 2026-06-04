@@ -64,7 +64,7 @@ locked.
 - **Monorepo**: Turborepo + pnpm workspaces (see [project-structure.md](project-structure.md))
 - **UI**: shadcn/ui + Radix on Tailwind, shared via `packages/ui`
 - **Canvas**: ReactFlow (custom node types in `packages/ui`)
-- **Schemas / types**: Zod (shared via `packages/shared`; its only runtime dep) — see [ADR-0020](decisions/0020-zod-runtime-schema-library.md)
+- **Schemas / types**: Zod (shared via `packages/shared` — `@relavium/shared`'s only runtime dependency) — see [ADR-0020](decisions/0020-zod-runtime-schema-library.md)
 - **Testing**: Vitest (unit), Playwright (e2e)
 
 > Phase-2-only rows (PostgreSQL/Redis/BullMQ, Better Auth) are marked explicitly.
