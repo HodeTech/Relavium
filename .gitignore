@@ -49,3 +49,6 @@ coverage/
 # Claude Code transient state (skills/agents ARE committed; runtime locks are not)
 .claude/scheduled_tasks.lock
 .claude/**/*.lock
+
+# Private analysis — never commit, never reference from tracked files
+docs/analysis/private/
