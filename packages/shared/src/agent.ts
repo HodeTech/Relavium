@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { kebabIdSchema, nonEmptyString, positiveInt } from './common.js';
+import { kebabIdSchema, nonEmptyString, positiveInt, temperatureSchema } from './common.js';
 import { LLM_PROVIDERS } from './constants.js';
 
 /**
@@ -115,9 +115,7 @@ export const AgentSchema = z
     model: nonEmptyString,
     provider: ProviderSchema,
     system_prompt: nonEmptyString,
-    // A finite generation temperature in the provider-agnostic [0, 2] envelope — never
-    // NaN/Infinity/negative (those can never reach an adapter).
-    temperature: z.number().finite().min(0).max(2).optional(),
+    temperature: temperatureSchema.optional(), // provider-agnostic [0, 2] (common.ts)
     max_tokens: positiveInt.optional(),
     tools: z.array(nonEmptyString).optional(),
     mcp_servers: z.array(McpServerRefSchema).optional(),

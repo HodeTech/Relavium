@@ -93,7 +93,9 @@ describe('AgentSchema', () => {
   });
 
   it('rejects a non-finite or out-of-range temperature', () => {
-    const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
+    // provider: 'openai' genuinely supports the full [0, 2] envelope (Anthropic caps at 1;
+    // that provider-specific limit is the adapter's job, not the schema's).
+    const min = { id: 'a', model: 'm', provider: 'openai', system_prompt: 'p' };
     expect(AgentSchema.safeParse({ ...min, temperature: Infinity }).success).toBe(false);
     expect(AgentSchema.safeParse({ ...min, temperature: Number.NaN }).success).toBe(false);
     expect(AgentSchema.safeParse({ ...min, temperature: -0.1 }).success).toBe(false);

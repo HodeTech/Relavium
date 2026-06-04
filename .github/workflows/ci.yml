@@ -83,7 +83,7 @@ jobs:
         run: |
           pnpm --filter @relavium/db db:generate
           if [ -n "$(git status --porcelain packages/db/drizzle)" ]; then
-            echo "::error::src/schema.ts changed but the migration was not regenerated. Run: pnpm --filter @relavium/db db:generate"
+            echo "::error::The committed @relavium/db migration is out of sync with src/schema.ts (or an upstream @relavium/shared enum the CHECKs derive from). Regenerate and commit: pnpm --filter @relavium/db db:generate"
             git status --porcelain packages/db/drizzle
             exit 1
           fi

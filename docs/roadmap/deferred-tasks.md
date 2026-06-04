@@ -50,6 +50,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **O(n²) duplicate-id check in `AgentSchema`** — uses `indexOf`-in-`filter` while
   `workflow.ts` uses an O(n) `Set`. Reuse a shared `reportDuplicates` helper so both schemas
   share the single O(n) implementation. *(nit · agent.ts:109-110)*
+- [ ] **Per-provider temperature ranges** — the shared `temperatureSchema` is the
+  provider-agnostic `[0, 2]` envelope, but Anthropic accepts only `[0, 1]`. Enforce/clamp the
+  provider's real range in the `@relavium/llm` adapter (Phase 1, where request validation
+  lives) so a `provider: anthropic` + `temperature > 1` agent fails fast — without coupling the
+  shared contract to a provider's current API limit. *(review · agent.ts, common.ts)*
 
 ## Test depth
 

@@ -37,16 +37,18 @@ export interface DbClient {
  * connection by default — the CASCADE rules in the schema depend on it).
  */
 export function createClient(path = ':memory:'): DbClient {
-  if (path !== ':memory:') {
-    // Create the parent directory so a first-run open doesn't fail on a missing folder.
-    mkdirSync(dirname(path), { recursive: true });
-  }
   let sqlite: Database.Database;
   try {
+    // Create the parent directory for a real file path so a first-run open doesn't fail on a
+    // missing folder. Skip ':memory:' and `file:` URIs, whose `dirname` is not a real dir.
+    // Inside the try so a filesystem error (EACCES/EPERM) gets the same path-rich message.
+    if (path !== ':memory:' && !path.startsWith('file:')) {
+      mkdirSync(dirname(path), { recursive: true });
+    }
     sqlite = new Database(path);
   } catch (err) {
-    // Rethrow with the resolved path + the driver's reason (locked/corrupt/permission),
-    // preserving the original via `cause` — a bare driver error has no path context.
+    // Rethrow with the resolved path + reason (locked/corrupt/permission/missing dir),
+    // preserving the original via `cause` — a bare fs/driver error has no path context.
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`failed to open SQLite database at '${path}': ${reason}`, { cause: err });
   }

@@ -100,9 +100,16 @@ const reject: Record<string, Record<string, unknown>> = {
   'run:started (bad executionMode)': {
     type: 'run:started',
     ...env,
-    workflowId: 'wf',
+    workflowId: 'b1a2c3d4-0000-4000-8000-000000000000', // valid UUID — isolate the executionMode failure
     inputs: {},
     executionMode: 'turbo',
+  },
+  'run:started (bad workflowId)': {
+    type: 'run:started',
+    ...env,
+    workflowId: 'wf', // not a UUID (ADR-0022) — isolate the workflowId failure
+    inputs: {},
+    executionMode: 'local',
   },
   'node:started (missing nodeType)': { type: 'node:started', ...env, nodeId: 'n' },
   'agent:token (missing model)': { type: 'agent:token', ...env, nodeId: 'n', token: 'hi' },
