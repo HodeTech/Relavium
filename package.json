@@ -14,6 +14,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "coverage": "vitest run --coverage",
     "ci": "turbo run lint typecheck test",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

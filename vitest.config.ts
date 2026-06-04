@@ -12,9 +12,12 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    // Use Vitest's default include (`**/*.test.ts`, with node_modules/dist excluded).
-    // Vitest searches ancestors for this config, so one root config governs every
-    // package and the glob resolves correctly whether run from the root or a package.
+    // Pin tests to `*.test.ts` only — the project convention (docs/standards/testing.md).
+    // Vitest's *default* include also matches `*.spec.ts`, which the build tsconfig does
+    // not exclude, so a stray `*.spec.ts` could leak into dist/; restricting the runner
+    // here keeps the runner and the build in lock-step. The `**/` prefix matches whether
+    // Vitest runs from the repo root or inside a package (one ancestor-resolved config).
+    include: ['**/*.test.ts'],
     passWithNoTests: true,
     coverage: {
       provider: 'v8',
