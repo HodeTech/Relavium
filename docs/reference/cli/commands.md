@@ -7,7 +7,7 @@
 - **Scope**: Phase 1, local-first. Same `@relavium/core` engine as every other surface.
 - **Related**: [../vscode/extension-api.md](../vscode/extension-api.md), [../desktop/routes-and-screens.md](../desktop/routes-and-screens.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../../tutorials/cli/run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md)
 
-The `relavium` CLI is the terminal surface of the platform and the fastest way to run a workflow non-interactively (scripts, CI/CD). It embeds the **same** `@relavium/core` engine as the desktop app and VS Code extension — there is no separate "CLI engine," so behavior is identical across surfaces (see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)). The CLi is built **second** (right after the engine) and serves as the engine's canonical integration-test harness.
+The `relavium` CLI is the terminal surface of the platform and the fastest way to run a workflow non-interactively (scripts, CI/CD). It embeds the **same** `@relavium/core` engine as the desktop app and VS Code extension — there is no separate "CLI engine," so behavior is identical across surfaces (see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)). The CLI is built **second** (right after the engine) and serves as the engine's canonical integration-test harness.
 
 ## Install & distribution
 
@@ -40,6 +40,11 @@ The command set below is the confirmed surface. Subcommands marked _(planned)_ a
 | Command | Purpose |
 |---------|---------|
 | `relavium run <workflow> [--input k=v]` | Execute a workflow. Streams progress; resolves with the workflow output. |
+| `relavium chat [--agent <ref>]` | Start an interactive [agent session](../contracts/agent-session-spec.md) (the agent-first REPL). See [chat-session.md](chat-session.md). |
+| `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
+| `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
+| `relavium chat-export <sessionId>` | Export a session to a `.relavium.yaml` scaffold for review ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
+| `relavium agent run <agent> [--input k=v]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — a chat session with one turn, then exit. |
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create` | Scaffold a new workflow or agent YAML via an interactive wizard. |
 | `relavium import <path>` | Import an external `.relavium.yaml` / `.agent.yaml` into the project. |
@@ -47,6 +52,7 @@ The command set below is the confirmed surface. Subcommands marked _(planned)_ a
 | `relavium logs <runId>` | Print the persisted event/log stream for a past run. |
 | `relavium status` | Show active runs and their per-node status. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
+| `relavium gate list [<runId>]` | List pending human gates (all active runs, or one run) — the multi-gate subcommand for resolving one of several concurrently-pending gates. |
 | `relavium init` _(planned)_ | Initialize a `.relavium/` directory in the current project. |
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
 | `relavium provider <subcommand>` _(planned)_ | Manage providers and API keys in the OS keychain. |
@@ -111,8 +117,11 @@ CI relies on deterministic exit codes:
 | `1` | Workflow failed (a node errored and exhausted retries/fallbacks) |
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
+| `4` | A chat session ended via `/exit` (a clean, user-initiated end of an interactive `relavium chat` REPL) — see [chat-session.md](chat-session.md) |
 
 > Exit code `3` lets CI distinguish a pause-for-approval (a `human_gate:paused` event in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
+>
+> Exit code `4` is the canonical **chat-session-ended** code: it marks a deliberate `/exit` (or its `--json` equivalent, a final `session:cancelled`/end event) from the `relavium chat` REPL, kept distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user quit the chat" apart from either. Other docs reference it as `4`.
 
 ## CI/CD usage
 
