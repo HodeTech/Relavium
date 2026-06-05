@@ -53,6 +53,7 @@ The command set below is the confirmed surface. Subcommands marked _(planned)_ a
 | `relavium status` | Show active runs and their per-node status. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
 | `relavium gate list [<runId>]` | List pending human gates (all active runs, or one run) — the multi-gate subcommand for resolving one of several concurrently-pending gates. |
+| `relavium budget resume <runId> [--approve\|--abort]` | Resume a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval`) — approve to continue or abort. The non-interactive operator path for [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
 | `relavium init` _(planned)_ | Initialize a `.relavium/` directory in the current project. |
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
 | `relavium provider <subcommand>` _(planned)_ | Manage providers and API keys in the OS keychain. |

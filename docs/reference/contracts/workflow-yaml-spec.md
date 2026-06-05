@@ -29,6 +29,7 @@ workflow:
   name: string
   description: string
   tags: string[]
+  metadata: map              # optional free-form provenance (e.g. an exported session's transcript) — a schema field, preserved across save/round-trip (unlike YAML comments)
 
   trigger: Trigger           # what initiates this workflow (default: manual)
   inputs: Input[]            # typed input declarations
@@ -49,11 +50,12 @@ workflow:
 | `workflow.id` | yes | Unique, kebab-case. |
 | `workflow.version` | recommended | Semver of the workflow itself, for human change tracking. |
 | `workflow.name` / `description` / `tags` | no | Display + filtering metadata. |
+| `workflow.metadata` | no | Free-form provenance map — a real schema field, so it **survives parse → serialize round-trips** (unlike comments). Used by session export to carry the source transcript ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
 | `trigger` | no | Defaults to `manual`. |
 | `inputs` | no | Typed declarations validated before a run starts. |
 | `context` | no | Named values (possibly interpolated) available as `{{ctx.key}}`. |
 | `agents` | yes (if any agent node) | Inline definitions or refs to agent files. |
-| `tools` | required to use `run_command` | Workflow-wide tool guardrails — `allowedCommands` (and optional `allowedDomains`). See [Tool policy](#tool-policy-spectools). |
+| `tools` | required to use `run_command` / `http_request` | Workflow-wide tool guardrails — exact-match `allowedCommands` and exact-FQDN `allowedDomains` (each empty/absent ⇒ that tool is disabled). See [Tool policy](#tool-policy-spectools). |
 | `budget` / `timeout_ms` / `max_parallel` | no | Resource guardrails — a pre-egress cost cap, a whole-run timeout, and a concurrency cap. See [Resource governance](#resource-governance-specbudget) and [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
 | `nodes` | yes | The graph. |
 | `edges` | yes | The connections. |

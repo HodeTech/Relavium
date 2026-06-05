@@ -26,11 +26,14 @@ Every event extends a common base:
 ```ts
 interface BaseEvent {
   type: string;             // discriminator (see table below)
-  runId: string;
+  runId?: string;           // correlation key on a workflow RUN (omitted on a session)
+  sessionId?: string;       // correlation key on an agent SESSION (omitted on a run)
   timestamp: string;        // ISO 8601
-  sequenceNumber: number;   // monotonically increasing per run
+  sequenceNumber: number;   // monotonic per run OR per session
 }
 ```
+
+> **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` events carry `runId` on a run and `sessionId` on a session; consumers route on whichever is present.
 
 `sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless.
 
@@ -192,7 +195,7 @@ export type SessionEvent =
 
 A turn that fails (provider error, rate limit, cancellation) still emits `session:turn_completed` with an `error?: { code, message, retryable }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy as run events — so a surface can render the failure rather than a silent stall.
 
-Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)).
+Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)). So the **complete typed event stream for a session** is the five `session:*` lifecycle events (the `SessionEvent` union above) **plus** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` carrying `sessionId` — this full set is exactly what `relavium chat --json` emits.
 
 ## Workflow governance and reserved events
 

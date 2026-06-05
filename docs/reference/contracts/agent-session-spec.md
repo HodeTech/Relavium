@@ -140,7 +140,7 @@ Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session ex
 
 - the session's assistant turns become a **linear chain of `agent` nodes**, in order, carrying the
   agent binding, resolved prompts, and the tools used;
-- the **full transcript is preserved as YAML comments/metadata** (with secrets already excluded by
+- the **full transcript is preserved in the workflow's durable `metadata` field** — a schema field that survives parse → serialize round-trips (not fragile comments), with secrets already excluded by
   the no-interpolation rule above);
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 

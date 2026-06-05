@@ -23,7 +23,7 @@ metadata — never an auto-inferred parallel/conditional/looping graph.**
 - The export reconstructs the session's agent turns as a **linear sequence of `agent` nodes** in the
   order they occurred, carrying the agent binding, the resolved prompts, and the tools that were
   used.
-- The **complete transcript is preserved as comments/metadata** so the authored file is
+- The **complete transcript is preserved in the workflow's durable `metadata` field** (a schema field that survives parse → serialize, not fragile comments) so the authored file is
   self-documenting and the human can see exactly what the agent did.
 - Export is an **explicit, user-initiated action presented for review before commit** — it is never
   silent and never auto-commits. It produces a *starting scaffold* the author then refines on the

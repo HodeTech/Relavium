@@ -69,7 +69,7 @@ parked in [deferred-tasks.md](deferred-tasks.md). The foundation is settled and 
 > [0028](../decisions/0028-workflow-resource-governance.md) resource governance,
 > [0029](../decisions/0029-tool-policy-hardening.md) tool-policy). Phase 1 gains an **additive, parallel**
 > agent-first sub-spine (1.V–1.AA), the QuickJS-wasm sandbox (1.AB — on the critical path inside 1.P),
-> and the pre-egress budget governor (1.AC); the pivot **adds no work to the M1/M2 critical path** (the agent-first sub-spine runs in parallel; the sandbox folds into 1.P inside M2). Phases 2–4 add
+> and the pre-egress budget governor (1.AC). The **agent-first sub-spine (1.V–1.AA) adds no work to the M1/M2 critical path** (it runs in parallel and is proven by its own harness); the hardening sandbox **1.AB *is* new M2-critical-path work** — it folds into 1.P and raises the 1.m4 cost. Phases 2–4 add
 > non-critical chat workstreams; phases 5–6 are largely unaffected (sessions inherit managed/cloud via
 > the existing seams). All decisions/specs are landed at the docs/ADR layer — no engine code yet
 > (Phase 1 has not started).

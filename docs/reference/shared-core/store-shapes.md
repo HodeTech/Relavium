@@ -84,8 +84,7 @@ interface RunStore {
   runId: string | null;
   status: RunStatus;
   nodeStatuses: Record<NodeId, NodeRunStatus>;
-  streamingNodeId: string | null;
-  tokenBuffer: string;
+  tokenBuffers: Record<NodeId, string>;    // per-node streaming buffers — a single global buffer corrupts output when parallel agent nodes stream at once (see state-management.md)
   costAccumulator: CostBreakdown;
   sseState: 'connecting' | 'open' | 'closed' | 'error';
 }

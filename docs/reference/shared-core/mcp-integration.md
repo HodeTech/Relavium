@@ -99,6 +99,7 @@ This is also how the `mcp_call` workflow **trigger** works: a workflow with `tri
 
 ## Security
 
+- **MCP server URLs are SSRF-guarded ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** A declared MCP `url` is validated against the **same** vetted range-block as a provider base URL and the `http_request` tool — private/loopback/link-local/metadata ranges (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`) are rejected, and remote hosts must use `https`/`wss`, **unless the user explicitly opts into a local endpoint**. The `http://localhost:4000` examples in this doc are exactly such a local endpoint and require that explicit opt-in. The one SSRF primitive is reused, never re-implemented — see [security-review.md](../../standards/security-review.md).
 - MCP server credentials are injected from the secret store via the server's `env` (e.g. `{{secrets.github_token}}`) and are **never** written into the workflow file or any event payload. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 - Outbound (workflow-as-MCP) exposure is opt-in per workflow (only those listed in the adapter config are published).
 - All inbound MCP tool calls are schema-validated before dispatch, and tool inputs in events are sanitized — see [built-in-tools.md](built-in-tools.md) and [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md).
