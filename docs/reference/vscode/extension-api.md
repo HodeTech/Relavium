@@ -51,7 +51,7 @@ The extension declares a minimal `activationEvents` set — it activates only wh
 
 This is the extension's core trust boundary. When a workflow emits an output of type `file_patch`:
 
-1. A `filePatchProposed` event fires with `{ runId, nodeId, patches: FilePatch[] }` where `FilePatch = { uri, unifiedDiff }`.
+1. The canonical `agent:file_patch_proposed` event ([sse-event-schema.md](../contracts/sse-event-schema.md)) fires with `{ runId|sessionId, nodeId, patches: [{ uri, unifiedDiff }] }`.
 2. The proposed content is built in an in-memory document by applying the unified diff to the current file (the `diff` package is already in the engine).
 3. `vscode.diff(original, proposed, 'Agent Proposal: <file>', { preview: true })` opens the native diff editor.
 4. A CodeLens provider injects `[Accept] [Reject]` (and `[Open in Designer]` when the desktop app is present) above each changed hunk.
@@ -64,7 +64,7 @@ Agent-proposed writes are **never** applied automatically — they always go thr
 
 The chat panel is the editor projection of an `AgentSession`; the persistence and export behavior is not invented per-surface — it is **inherited** from the one shared engine entry point, so the editor, CLI, and desktop share identical session semantics. For *why* sessions auto-persist, resume, and export to a reviewable scaffold rather than living in volatile webview state, see [agent-sessions.md](../../architecture/agent-sessions.md); the exact runtime contract (lifecycle, message shape, context, export mapping) is canonical in [agent-session-spec.md](../contracts/agent-session-spec.md).
 
-- **Persist + resume.** Every turn is written to the global encrypted `history.db` (`agent_sessions` / `session_messages`, canonical in [database-schema.md](../desktop/database-schema.md)) as it happens. Re-opening the panel resumes the active session; `relavium.resumeChatSession` reloads any past one by id. There is no separate `sessions.db` and no extension-host session store — the panel is a thin view over the durable session.
+- **Persist + resume.** Every turn is written to the global encrypted `history.db` (`agent_sessions` / `session_messages`, canonical in [database-schema.md](../desktop/database-schema.md)) as it happens. Re-opening the panel resumes the active session; `relavium.resumeChatSession` reloads any past one by id. There is no separate `sessions.db` and no extension-host session store — the panel is a thin view over the durable session. The extension host opens the SQLCipher `history.db` via a **wasm SQLite** build (no native module — respects [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)); the cross-host open/decrypt path is in [database-schema.md](../desktop/database-schema.md) (see the "Cross-host access" note).
 - **Export to a scaffold.** `relavium.exportChatSession` serializes the session to a `.relavium.yaml` **scaffold** — a linear chain of `agent` nodes plus the transcript as metadata — opened for review (via the [inline diff review flow](#inline-diff-review-flow)) before it is written into `.relavium/`. This is the exact contract owned by [ADR-0026](../../decisions/0026-session-export-to-workflow.md) and produced identically by the [CLI `relavium chat-export`](../cli/commands.md). Parallel/condition/loop topologies are **not** auto-extracted.
 - **One agent per session.** A chat session binds a single agent and its fallback chain for the whole conversation; there is no mid-session agent switching in Phase 1 (matching every surface).
 

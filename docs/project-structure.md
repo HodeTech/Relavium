@@ -54,7 +54,7 @@ flowchart TD
 |------|------|
 | `apps/desktop` | Tauri v2 desktop app. `src-tauri/` holds Rust commands + plugin config; `src/` holds the React + Vite frontend (canvas, ReactFlow nodes, Zustand stores, run UI). Calls `@relavium/core` via Tauri IPC, OS APIs (keychain, fs, tray) via Tauri plugins. |
 | `apps/vscode-extension` | VS Code extension. `src/extension.ts` is the activation entry; `src/engine/` bundles the in-process engine (imports `@relavium/core`); `src/panels/` holds WebviewPanel React UIs. Published as `relavium.relavium`. |
-| `apps/cli` | Terminal CLI. `commander.js` entry with `run / list / create / import / export / status / logs / gate` (and `chat / chat-resume / chat-list / chat-export` *(Phase 2)*) subcommands; `ink` for streaming TUI. Installed via `npm i -g relavium`. |
+| `apps/cli` | Terminal CLI. `commander.js` entry with `run / list / create / import / export / status / logs / gate` (and `chat / chat-resume / chat-list / chat-export` *(build phase 2 — still Product Phase 1)*) subcommands; `ink` for streaming TUI. Installed via `npm i -g relavium`. |
 | `apps/portal` | **Phase 2.** Cloud web portal — Vite + React SPA, TanStack Router routes. A **control plane** (dashboards, usage, quota, governance, run history, gate inbox); it uses `packages/ui` components but **not** the workflow-designer canvas — workflow authoring stays on the desktop/VS Code surfaces. Calls `apps/api` over HTTPS. |
 | `apps/api` | **Phase 2.** Cloud backend — Hono on Bun, wraps `@relavium/core` with BullMQ dispatch + Redis-stream SSE, Postgres via Drizzle. Holds BullMQ worker pools. |
 

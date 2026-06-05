@@ -13,7 +13,7 @@ and links to them rather than restating them (see
 
 | If you are… | Start here |
 |-------------|-----------|
-| Just want to start talking to an agent | [Start a chat session](cli/start-a-chat-session.md) *(planned, Phase 2)* |
+| Just want to start talking to an agent | [Start a chat session](cli/start-a-chat-session.md) *(planned, build phase 2 — Product Phase 1)* |
 | Designing visually on the desktop canvas | [Build your first workflow](desktop/build-your-first-workflow.md) |
 | Automating in CI / the terminal | [Run a workflow in CI](cli/run-a-workflow-in-ci.md) |
 | Living inside VS Code | [Trigger a workflow from VS Code](vscode/trigger-from-vscode.md) |
@@ -25,7 +25,7 @@ ship the workflow, own every run.** You begin in a conversation, turn that conve
 into a committed workflow, then watch the same workflow run identically on every surface.
 
 1. [Start a chat session (CLI)](cli/start-a-chat-session.md) — talk to an agent, watch
-   it use tools, no YAML up front. *(planned, Phase 2)*
+   it use tools, no YAML up front. *(planned, build phase 2 — Product Phase 1)*
 2. **Export the session to a workflow** — turn the conversation into a reviewable
    `.relavium.yaml` scaffold (see [ADR-0026](../decisions/0026-session-export-to-workflow.md)).
    *(tutorial planned)*

@@ -216,6 +216,14 @@ Relavium's chat is the same low-left starting point with a route out.
   repo — including one that *began* as a chat export — is the invite: every teammate who
   pulls the repo encounters it, installs the extension to run it, and becomes a user.
   Value compounds with team size in a way no session-based tool can match.
+- **Risk — chat is the most contested surface, and we compete on the *continuum*, not parity.**
+  Conversational parity with Claude Code / Cursor / Cline / Copilot is a high bar against
+  deeply-resourced incumbents, and Relavium's chat surfaces arrive *after* the engine (build phases
+  2–4) on a deliberately minimal `LLMProvider` seam. So the bet is made with eyes open: the defensible
+  moat is **not** out-chatting the category leaders — it is the **chat → workflow continuum + the
+  git-native, portable workflow artifact + local-first**, which none of them produce. Relavium wins as
+  the *familiar on-ramp that graduates into something they can't*, not by winning the conversational
+  surface head-on. Treating "conversational parity" as the headline would be the strategic error to avoid.
 - **Local-first is a Phase-1 trust moat.** Until a competitor offers conversational entry
   + visual design + local execution + multi-model routing + multi-agent orchestration in
   one product with zero data leaving the machine, Relavium owns the security-conscious

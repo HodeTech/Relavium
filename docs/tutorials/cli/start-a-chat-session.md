@@ -1,6 +1,6 @@
 # Start a Chat Session (CLI)
 
-> Status: planned (Phase 2) — to be expanded
+> Status: planned (build phase 2 — Product Phase 1; the first user-facing `AgentSession` surface) — to be expanded
 
 This is the **fastest** way into Relavium: open a conversation with an agent, watch it use
 tools on your machine, and get useful work done — **no YAML up front**. It is the

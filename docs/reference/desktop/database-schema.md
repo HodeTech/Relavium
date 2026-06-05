@@ -385,6 +385,15 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 > at parse, so they never reach a message body. The user's own conversational content is stored here
 > and is protected by `history.db`'s SQLCipher encryption at rest.
 
+> **Cross-host access (CLI / VS Code) — how a session resumes across surfaces.** The same encrypted
+> `history.db` is opened by the non-Tauri hosts: the **CLI** uses the `better-sqlite3` path
+> ([ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)); the **VS Code extension host**
+> uses a **wasm SQLite** build (no native module — respects
+> [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)'s no-arbitrary-native-modules
+> constraint). Both derive the SQLCipher key the same way as the desktop
+> ([keychain-and-secrets.md](keychain-and-secrets.md)), so a session written on one surface opens on
+> another — there is no per-surface session store.
+
 ## Common query patterns
 
 | Pattern | Where it's used | Index relied on |

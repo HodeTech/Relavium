@@ -431,7 +431,7 @@ The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-ag
 | Authoring lifecycle (`create`/`import`/`export`) | 2.J | — |
 | CLI adopted as the engine regression harness | 2.D, 2.F, 2.K | **M3** |
 | Published, installable binary verified on all OSes | 2.L | — |
-| `relavium chat` + agent-session commands (chat / resume / list / export / `agent run` / `gate list`) | 2.M, 2.N, 2.O, 2.P, 2.Q | — (non-critical to M3) |
+| **Agent-first CLI** — `relavium chat` + session commands (resume / list / export / `agent run` / `gate list`): the **first user-facing `AgentSession` surface**, a committed build-phase-2 deliverable (off the M3 critical path, but a phase exit item — the agent-first headline is demonstrable here) | 2.M, 2.N, 2.O, 2.P, 2.Q | — |
 
 ## Dependencies
 

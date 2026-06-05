@@ -78,7 +78,7 @@ flowchart TD
 |---------|-----------|------------------|
 | **Desktop app** | **Agent-management center** with **co-equal Chat and Canvas tabs**: hold a coding session in Chat, visually design workflows on the Canvas, configure agents, monitor runs, track cost. The operational home stays the neutral/last-used landing; the canvas remains the signature surface. Built on Tauri v2. | NOT an IDE, NOT a code editor, NOT a terminal. |
 | **VS Code extension** | A coding-assistant chat panel plus inline workflow triggering inside the editor (right-click a file → run a workflow), status-bar run monitor, sidebar panels. Bundles the engine — works standalone with no desktop app required. | NOT a replacement for the desktop canvas; code-adjacent work lives here. |
-| **CLI** | `relavium run`, `relavium list`, and friends for scripting and CI/CD integration; `relavium chat` *(Phase 2)* for an interactive coding session. Fastest path to a first run and the engine's integration-test harness. | NOT a long-running daemon in Phase 1. |
+| **CLI** | `relavium run`, `relavium list`, and friends for scripting and CI/CD integration; `relavium chat` for an interactive coding session — a **Product-Phase-1** surface (built in build phase 2, after the engine), the first user-facing `AgentSession`. Fastest path to a first run and the engine's integration-test harness. | NOT a long-running daemon in Phase 1. |
 | **Web portal** *(Phase 2)* | Usage metrics, quota, licensing, team governance, enterprise features. A control plane. | NOT where workflows execute — it is not an execution plane. |
 
 The desktop app's scope boundary (management center, not IDE) is a hard
@@ -149,7 +149,9 @@ The full positioning and competitor matrix lives in [uvp.md](uvp.md).
   [decisions/0026-session-export-to-workflow.md](decisions/0026-session-export-to-workflow.md).
 - **Persistent, resumable agent sessions** — every conversation is auto-saved to
   the encrypted local history and resumable on any surface; no run is ever
-  ephemeral. See
+  ephemeral. *(The `AgentSession` engine lands in build Phase 1; the first
+  user-facing surface is CLI `relavium chat` in build phase 2 — all within Product
+  Phase 1.)* See
   [decisions/0024-agent-first-entry-point-agentsession.md](decisions/0024-agent-first-entry-point-agentsession.md).
 - **Live canvas execution theater** — tokens stream inside individual node faces
   on the canvas as the workflow runs; parallel branches stream simultaneously.

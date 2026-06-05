@@ -90,6 +90,8 @@ focus_area = "security and type safety"
 default_model = "claude-sonnet-4-6"   # model for a chat session that names none
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
 max_messages = 200                 # session-history cap before older turns are trimmed/summarized
+max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress cost cap (the same governor as a workflow budget — ADR-0028)
+on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
 ```
 
 > The `[chat]` block sets defaults for the **agent-first** chat entry point
@@ -97,7 +99,7 @@ max_messages = 200                 # session-history cap before older turns are 
 > distinct from `[defaults]` (which governs **workflow** runs). It does **not** define its own command
 > allowlist: a chat session reuses the workflow `allowedCommands` policy whose canonical home is
 > [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools) (empty/absent ⇒ `run_command`
-> disabled). Session history persists in the existing `history.db` — there is no separate `sessions.db`.
+> disabled). Session history persists in the existing `history.db` — there is no separate `sessions.db`. A chat session may carry its own **pre-egress cost cap** (`max_cost_microcents` + `on_exceed`), enforced by the **same** governor as a workflow `budget` ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) — so an open-ended chat that loops on tool calls fails safe, and "both entry points inherit resource governance" holds literally.
 
 ## Secrets are out of band
 

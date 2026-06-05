@@ -76,8 +76,10 @@ interface SessionContext {
 `fsScopeTier` and the command allowlist are the **same** filesystem-scope tiers and `allowedCommands`
 policy a workflow uses (see [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers)
 and [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools)); the chat-mode **defaults**
-(`fs_scope`, the command allowlist, `default_model`, `max_messages`) live in the `[chat]` block of
-[config-spec.md](config-spec.md) and reference those canonical homes — they are not re-declared here.
+(`fs_scope`, the command allowlist, `default_model`, `max_messages`, and an optional pre-egress cost
+cap `max_cost_microcents` / `on_exceed` — the same [ADR-0028](../../decisions/0028-workflow-resource-governance.md)
+governor a workflow budget uses) live in the `[chat]` block of [config-spec.md](config-spec.md) and
+reference those canonical homes — they are not re-declared here.
 
 ## Session messages
 

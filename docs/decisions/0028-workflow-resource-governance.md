@@ -36,9 +36,15 @@ cap; the budget is enforced *pre-egress* — estimate-and-block, not count-after
 - **Concurrency cap.** A configurable maximum number of in-flight provider calls bounds a wide
   fan-out so it cannot trigger a rate-limit/cost storm.
 - **Events.** New `budget:warning`, `budget:paused` (human-gate-shaped, resumable via the
-  `resume_budget` IPC command), and `run:timeout` events join the canonical stream
+  `resume_budget` IPC command + the `relavium budget resume` CLI / `relavium.resumeBudget` VS Code
+  paths), and `run:timeout` events join the canonical stream
   ([sse-event-schema.md](../reference/contracts/sse-event-schema.md)). The authored fields live in
   [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md).
+- **Sessions, too.** An `AgentSession` (which has no workflow YAML) carries the **same** pre-egress
+  cost cap via the `[chat]` config's `max_cost_microcents` + `on_exceed`
+  ([config-spec.md](../reference/contracts/config-spec.md)), enforced by the identical governor — so
+  "both entry points inherit resource governance" ([ADR-0024](0024-agent-first-entry-point-agentsession.md))
+  is literally true, and an open-ended multi-turn chat cannot run away on cost.
 
 Considered: **(A)** count-after only (the status quo) — *rejected*: detects the overspend after the
 money is gone. **(B)** reuse ADR-0014's managed quota engine — *rejected*: that is a cloud,
