@@ -290,7 +290,7 @@ The trust-boundary surface: approve/deny a `human_gate:paused` gate in a
 - On Approve/Reject/Input, post a `GateDecision` to the host, which calls
   `engine.resume(runId, gateId, decision)`; the run continues and emits
   `human_gate:resumed`.
-- Honor the node `timeout_action` on expiry (`decidedBy: 'timeout_escalation'`)
+- Honor the node `timeout_action` on expiry (`decidedBy: 'timeout'`)
   and play the gate sound when `relavium.humanGateNotificationSound` is on.
 - Route the same decision whether triggered from the webview or the sidebar inline
   buttons (single resume path).
@@ -365,15 +365,28 @@ Package, sign, and publish `relavium.relavium` to the VS Code Marketplace.
 machine with no desktop app, the install-to-completion smoke test passes on all
 three OSes; CI publishes on tag.
 
+### 4.L — Full chat-assistant panel (agent-first)
+
+Upgrade the existing trigger-only chat panel into a full conversational AI coding assistant ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md), [agent-sessions.md](../../architecture/agent-sessions.md)): active-file / selection auto-context, multi-turn conversation over `AgentSession`, streaming with tool-call annotations, a `relavium.openChat` command.
+
+**Acceptance:** a multi-turn chat in the panel uses the active editor context and streams through the bundled engine; the same FS-scope / allowlist rules apply.
+
+### 4.M — Chat export + session persistence
+
+`relavium.exportChatSession` (session → `.relavium.yaml` scaffold, [ADR-0026](../../decisions/0026-session-export-to-workflow.md)) plus session persistence to the **shared encrypted `history.db`** — the same store as CLI/desktop, so a session started anywhere resumes here. There is **no** extension-host session store; the extension host opens the SQLCipher DB via a **wasm SQLite** build (no native module — respects [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). See the cross-host note in [database-schema.md](../../reference/desktop/database-schema.md).
+
+**Acceptance:** a chat session started in the CLI/desktop resumes in the editor (same `history.db`) and exports to a reviewable workflow; the extension host opens the DB with no native module.
+
 ## Milestones
 
 | In-phase milestone | Completed by | Maps to global |
 | --- | --- | --- |
-| 4.M1 — Engine bundled and runs in the extension host | 4.A + 4.B | (foundation for M5) |
-| 4.M2 — Right-click run works standalone | 4.C + 4.D + 4.E | **M5** (right-click run) |
-| 4.M3 — Live monitoring (sidebar + status bar + output) | 4.F + 4.G | M5 |
-| 4.M4 — Human gate blocks and resumes in a webview | 4.H | **M5** (gate webview) |
-| 4.M5 — Published to the marketplace | 4.K | **M5** (marketplace publish) |
+| P4.M1 — Engine bundled and runs in the extension host | 4.A + 4.B | (foundation for M5) |
+| P4.M2 — Right-click run works standalone | 4.C + 4.D + 4.E | **M5** (right-click run) |
+| P4.M3 — Live monitoring (sidebar + status bar + output) | 4.F + 4.G | M5 |
+| P4.M4 — Human gate blocks and resumes in a webview | 4.H | **M5** (gate webview) |
+| P4.M5 — Published to the marketplace | 4.K | **M5** (marketplace publish) |
+| P4.M6 — Full chat-assistant panel + chat export (agent-first parity) | 4.L + 4.M | — (non-critical to M5) |
 
 > Milestone **M5 — Product Phase 1 complete: standalone VS Code extension
 > shipped** is achieved by **4.E + 4.H + 4.K**.

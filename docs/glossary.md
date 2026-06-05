@@ -1,7 +1,7 @@
 # Glossary
 
 > Status: draft — to be expanded as reference specs are finalized.
-> Last updated: 2026-06-03
+> Last updated: 2026-06-05
 
 Domain terms used across the Relavium documentation. One canonical definition
 each; concrete specs live in their [reference/](reference/README.md) file, which
@@ -10,20 +10,42 @@ this glossary links to rather than duplicates.
 ## Core Concepts
 
 - **Relavium** — the multi-surface, local-first AI agent workflow platform this
-  documentation describes. Tagline: *Design agents. Ship workflows. Own every
-  run.* See [vision.md](vision.md).
+  documentation describes. Tagline: *Start as an agent. Ship the workflow. Own
+  every run.* See [vision.md](vision.md).
 - **Surface** — one of the four ways to reach Relavium: the **desktop app**, the
   **VS Code extension**, the **CLI**, and (Phase 2) the **web portal**. The three
-  local surfaces each run the same `@relavium/core` engine in-process, so a workflow
-  behaves identically on each; the web portal is a **control plane**, not an execution
-  surface — it drives runs through the cloud API rather than embedding the engine. See
-  [architecture/cloud-phase-2.md](architecture/cloud-phase-2.md).
+  local surfaces each run the same `@relavium/core` engine in-process, so behavior is
+  identical on each; the web portal is a **control plane**, not an execution surface — it
+  drives runs through the cloud API rather than embedding the engine. Each local surface
+  offers **two co-equal entry modes on the one engine** — *Agent mode* and *Workflow mode*
+  (below). See [architecture/cloud-phase-2.md](architecture/cloud-phase-2.md).
 - **Workflow** — a directed graph of nodes (agents, control flow, human gates)
-  defined as a git-committable YAML file (`.relavium.yaml`). The unit of value in
-  Relavium. Spec: [reference/contracts/workflow-yaml-spec.md](reference/contracts/workflow-yaml-spec.md).
+  defined as a git-committable YAML file (`.relavium.yaml`). Relavium's **automation
+  unit**: the reusable, committable artifact a *Run* (below) executes — complemented by the
+  conversational *Agent session* (below), the interactive entry point a workflow can be
+  exported from. Spec: [reference/contracts/workflow-yaml-spec.md](reference/contracts/workflow-yaml-spec.md).
 - **Agent** — a configured LLM caller: a model, a system prompt, a tool set, and
   optional fallback chain, defined as a YAML file (`.agent.yaml`). Spec:
   [reference/contracts/agent-yaml-spec.md](reference/contracts/agent-yaml-spec.md).
+- **Agent session (`AgentSession`)** — an ongoing, multi-turn conversation between a
+  user and one agent: Relavium's **agent-first entry point** and a first-class peer of a
+  *Run* (below). It reuses the same engine substrate (tools, the `LLMProvider` seam, the
+  event bus) and is auto-persisted and resumable across restarts (its own tables, beside
+  *Run history*). Unlike a run, a session is conversational, not a workflow execution; it
+  can be **exported** to a workflow. Spec:
+  [reference/contracts/agent-session-spec.md](reference/contracts/agent-session-spec.md);
+  decision: [decisions/0024-agent-first-entry-point-agentsession.md](decisions/0024-agent-first-entry-point-agentsession.md).
+- **Agent mode / Workflow mode** — the two co-equal entry modes every local surface
+  offers on the one engine: **agent mode** is an interactive *Agent session* (chat);
+  **workflow mode** is authoring/running a *Workflow*. Both share the engine, tools, the
+  seam, and the event bus.
+- **Chat-to-workflow export** — the explicit, user-reviewed action that serializes an
+  *Agent session* into a `.relavium.yaml` **scaffold** (a linear chain of agent nodes plus
+  the transcript as metadata), turning a conversation into a committable workflow. Decision:
+  [decisions/0026-session-export-to-workflow.md](decisions/0026-session-export-to-workflow.md).
+- **Chat-to-workflow continuum** — Relavium's positioning thesis: the same tool is where
+  you **start** (an *Agent session*) and where you **ship** (a committed, CI-runnable
+  *Workflow*), connected by *Chat-to-workflow export*. See [vision.md](vision.md).
 - **Orchestrator** — an agent that coordinates other agents, delegating sub-tasks
   to them as tools and deciding the next step at runtime. Used for dynamic
   (non-static) workflow control.
@@ -93,8 +115,10 @@ How a workflow run is initiated. Full spec in
   events. See [architecture/shared-core-engine.md](architecture/shared-core-engine.md).
 - **Human gate** — a node that pauses a run and requires a real human decision
   (approve / reject / provide input) before continuing. Supports a timeout with
-  an auto-approve, auto-reject, or escalate fallback. Enables compliance-sensitive
-  workflows.
+  an auto-approve or auto-reject fallback (an `escalate` action is **reserved** for a
+  future phase — see [reference/contracts/workflow-yaml-spec.md](reference/contracts/workflow-yaml-spec.md)).
+  Enables compliance-sensitive workflows. The same gate seam also backs a workflow
+  **budget** pause ([decisions/0028-workflow-resource-governance.md](decisions/0028-workflow-resource-governance.md)).
 - **Fan-out** — splitting execution into multiple branches that run in parallel
   (via a FanOutNode).
 - **Aggregator** — the node that joins parallel branches and merges their results.
@@ -124,6 +148,11 @@ How a workflow run is initiated. Full spec in
   each carrying a monotonic `sequenceNumber`. One canonical home:
   [reference/contracts/sse-event-schema.md](reference/contracts/sse-event-schema.md).
   Often called an *SSE event* after its Phase-2 cloud transport (below).
+- **Session event (`SessionEvent`)** — the `session:*`-namespaced counterpart to a *Run
+  event* for an *Agent session* (session lifecycle, a conversational turn, a tool
+  round-trip), carried on the same bus and **disjoint** from the `run:*` namespace. One
+  canonical home, beside `RunEvent`:
+  [reference/contracts/sse-event-schema.md](reference/contracts/sse-event-schema.md).
 - **SSE event** — the same `RunEvent` (above) seen through its transport. The schema
   is one canonical union for every surface; **how it travels differs**: on the desktop
   the events are produced and consumed in-process by the WebView-side `RunEventBus` and

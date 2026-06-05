@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [product-constraints.md](../product-constraints.md), [vision.md](../vision.md)
+- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md), [0025-agent-surface-refines-desktop-scope.md](0025-agent-surface-refines-desktop-scope.md), [product-constraints.md](../product-constraints.md), [vision.md](../vision.md)
 
 ## Context
 
@@ -31,6 +31,14 @@ Considered options:
 The agent-management framing wins because it gives the desktop app a sharp, defensible job — the visual workflow canvas and the run/cost view that no other surface owns — without re-implementing an editor that VS Code already does better. The surfaces compose by responsibility: design and monitor in the desktop app, edit and trigger inline in the editor (the extension), automate in the CLI. Because workflows and agents are git-native YAML files (see [ADR-0009](0009-git-native-workflow-yaml.md)), the desktop app can edit them visually while the VS Code extension edits the same files as text — one source of truth, two editing modalities, no conflict. A full IDE (Option 2) would be a far larger build competing with VS Code; a thin launcher (Option 3) would throw away the canvas, which is the product's signature surface.
 
 This decision also keeps the desktop shell small and focused, which is consistent with the lightweight Tauri choice in [ADR-0001](0001-tauri-v2-over-electron.md).
+
+> Amended 2026-06-05: the agent-first pivot adds a conversational **chat panel** to the desktop. A
+> chat panel is an *agent capability*, not an IDE feature, so it is **in scope**; the no-code-editor /
+> no-file-browser / no-integrated-terminal boundary above is **unchanged**.
+> [ADR-0025](0025-agent-surface-refines-desktop-scope.md) draws the precise
+> agent-capability-vs-IDE-shell line and is the record of this refinement, and
+> [ADR-0024](0024-agent-first-entry-point-agentsession.md) is the pivot it serves. Chat and Canvas are
+> co-equal tabs and the canvas remains the signature surface — this decision is refined, not reversed.
 
 ## Consequences
 

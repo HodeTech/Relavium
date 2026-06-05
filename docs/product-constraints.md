@@ -13,6 +13,9 @@ constraint here, the constraint wins.
 
 The desktop app is a pure **agent-management center**. Its scope is exactly:
 
+- Conversational agent sessions — managing agents *by talking to them* (a chat
+  panel as a co-equal tab), never editing code (refines this scope; see
+  [decisions/0025-agent-surface-refines-desktop-scope.md](decisions/0025-agent-surface-refines-desktop-scope.md))
 - Workflow canvas design
 - Agent creation and configuration
 - Run monitoring and history

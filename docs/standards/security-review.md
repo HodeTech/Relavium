@@ -87,20 +87,69 @@ restated, here.
   row-level security (RLS) so one account can never read another's keys, metering, or
   billing rows.
 
-## Network and custom base URLs
+## Chat mode (`AgentSession`) and security scope
 
-- **SSRF on custom base URLs.** DeepSeek (and any OpenAI-compatible provider) is reached
-  via a user-supplied `baseURL`. Validate it: HTTPS only, reject non-HTTP(S) schemes and
-  credentials-in-URL, and **block private/loopback/link-local/metadata ranges**
-  (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` incl. the cloud
-  metadata IP `169.254.169.254`) unless the user has explicitly opted into a local
-  endpoint. Never let an agent-config URL cause the engine to call an internal address
-  with a real key attached.
+A conversational [`AgentSession`](../reference/contracts/agent-session-spec.md) is a
+first-class engine entry point ([ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md)),
+not a separate trust domain. It runs on the **same** substrate and therefore inherits this
+entire checklist with **no chat-specific exception**: provider keys stay in the keychain
+and are attached exactly as above (the chat surface holds only a key reference), the
+session runs under the same filesystem **scope tier**, `run_command` uses the same
+`allowedCommands` allowlist (exact-match, below), and no secret ever reaches the frontend.
+A chat-only relaxation of any rule here is a security violation, not a feature.
+
+- **Conversational content is the user's data, not a managed secret.** What the user types
+  into a session and the model's replies are persisted **encrypted in `history.db`**
+  (SQLCipher) — that is user data under the user's control, not a key-custody concern, and
+  it is **not** a violation of
+  [secrets-never-touch-the-frontend](architectural-principles.md#6-secrets-never-touch-disk-or-the-frontend).
+- **The real leak is a `secret`-typed input in a prompt.** non-negotiable #6 targets
+  *managed* secrets — keychain keys and `secret`-typed inputs — which live below the seam
+  and must never enter message history. The P0 leak closed by
+  [ADR-0029](../decisions/0029-tool-policy-hardening.md) is a `secret`-typed **input
+  interpolated into a prompt** (event-payload masking does not save you once it is in the
+  prompt body); see the parse-time rejection rule under
+  [Sandbox and tool policy](#sandbox-and-tool-policy-run_command-node-tools-secret-inputs).
+
+## Network and outbound URLs (SSRF — three egress paths)
+
+There are **three** user-supplied outbound-URL paths, and they share **one** vetted
+SSRF range-primitive — never a second hand-rolled parser. The same validation
+(HTTPS only, reject non-HTTP(S) schemes and credentials-in-URL, and **block
+private/loopback/link-local/metadata ranges** — `127.0.0.0/8`, `::1`, `10/8`,
+`172.16/12`, `192.168/16`, `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
+unless the user has explicitly opted into a local endpoint) applies to all three:
+
+- **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
+  user-supplied `baseURL`. Never let an agent-config URL cause the engine to call an
+  internal address with a real key attached.
+- **The `http_request` tool.** *(Security tightening — ADR-0029(d), a public
+  workflow-API tightening: cheap now, no workflow exists yet.)* Model-driven outbound HTTP
+  runs the same range-block; in addition it is **HTTPS-only with exact-FQDN matching**
+  against the tool's `allowedDomains`, and an **empty or absent `allowedDomains` ⇒
+  deny-all** (symmetry with `run_command`'s `allowedCommands` "empty ⇒ disabled"). It
+  carries no provider key or secret. `built-in-tools.md` stays a one-line pointer to this
+  binding rule — not a second home. See
+  [ADR-0029](../decisions/0029-tool-policy-hardening.md) and
+  [built-in-tools.md](../reference/shared-core/built-in-tools.md).
+- **MCP server URLs.** *(Security tightening — ADR-0029(d).)* An MCP `sse`/`websocket`
+  server URL is a second egress path that **injects secrets** into headers, so leaving it
+  scheme-checked-only while hardening `http_request` would be strictly worse. MCP server
+  URLs run the **same** SSRF range-primitive (no second parser). See
+  [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
+  and [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
 - All provider calls are HTTPS; we do not disable TLS verification.
 - Outbound requests carry the AbortSignal and a timeout; a hung provider must not pin a
   worker open.
 
-## Sandbox for `run_command`
+## Sandbox and tool policy (`run_command`, node tools, secret inputs)
+
+This is the **binding home** for the tool-policy rules; the rationale is
+[ADR-0029](../decisions/0029-tool-policy-hardening.md) and the authored fields live in
+[built-in-tools.md](../reference/shared-core/built-in-tools.md) and
+[workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) (cited, not
+restated). Three of the four rules below are **security tightenings** — public
+workflow-API tightenings, cheap now because no workflow exists yet, never sold as additive.
 
 - The `run_command` built-in tool spawns **model-driven shell execution** and runs
   sandboxed: only commands on the workflow's `allowedCommands` allowlist execute (an
@@ -108,9 +157,45 @@ restated, here.
   fs — no reach outside the granted paths), with **no network** authority beyond what an
   allowed command itself performs, and a CPU/memory/time budget that terminates a runaway.
   It never receives a provider key or any secret. Treat its output (stdout/stderr/exit code)
-  as untrusted input. See
-  [built-in-tools.md](../reference/shared-core/built-in-tools.md) for the canonical tool
-  contract.
+  as untrusted input.
+- **`run_command` matches exactly by default.** *(Security tightening — ADR-0029(a).)* An
+  `allowedCommands` entry is matched **exactly** against the resolved command — not as a
+  prefix or substring — so `git` does not authorize `git push --force` or `gitleaks`.
+  Glob/wildcard matching is **opt-in** via `allowedCommandGlobs`; the plain list is
+  exact-only.
+- **Node `tools:` narrow-only, never escalate.** *(Security tightening — ADR-0029(b).)* A
+  workflow agent-node's `tools:` may only **restrict** the agent's granted toolset, never
+  add to it. A node listing a tool the agent was not granted is a **parse/validation
+  error** (validator-enforced, bound to [ADR-0023](../decisions/0023-strict-authored-yaml-validation.md)),
+  so a node can never silently widen a tool grant.
+- **`secret`-typed inputs never interpolate into prompts or tool text.** *(Security
+  tightening — ADR-0029(c); this closes the real P0 leak.)* A `secret`-typed input may feed
+  **only** credential/header fields (e.g. an auth header), and is **rejected at parse** from
+  `prompt_template` or any tool argument text — **transitively** (taint-tracked through `context`
+  entries and any derived value, so it cannot be laundered through an intermediate variable).
+  Event-payload masking is not enough on its
+  own — a secret interpolated into a prompt has already left the boundary before any mask
+  applies. The user's own conversational content in a chat session is the user's data
+  (encrypted in `history.db`), **not** a managed secret; the leak this rule closes is a
+  `secret`-typed *input* reaching prompt/tool text.
+
+### Expression sandbox (`condition` / `transform` / `merge_fn`)
+
+`condition`, `transform`, and a custom `merge_fn` evaluate author-supplied JavaScript. Per
+[ADR-0027](../decisions/0027-expression-sandbox.md) the sandbox is **security-sensitive** (rule #3:
+never hand-roll a security primitive; rule #2: a new runtime dependency needs an ADR) and these are
+**binding** invariants a review must confirm:
+
+- **QuickJS-wasm, instantiated only via the standard `WebAssembly` global from embedded wasm bytes.**
+  Never loaded via `node:fs`, `fetch`, or the DOM — that would break `@relavium/core`'s zero
+  platform-specific imports ([ADR-0003](../decisions/0003-pure-ts-engine-not-langgraph-python.md)).
+  `new Function()` / `eval` / the Node `vm` module are **forbidden** (none is a security boundary).
+- **No ambient globals, no I/O.** Only an explicit, audited allow-list is injected (e.g. `JSON`,
+  `Math` *without* `Math.random`, pure `Array`/`Object`/`String`/`Number`).
+- **Deterministic.** No wall-clock and no random source, so the same inputs always produce the same
+  result — which is what keeps checkpoint/resume and retry-from-node reproducible.
+- **Resource-capped.** Every evaluation runs under a CPU/instruction budget, a memory cap, and a
+  wall-clock timeout; a runaway expression is terminated with a typed, secret-free error.
 
 ## Prompt-injection posture
 
@@ -148,7 +233,8 @@ rules live in [logging-and-observability.md](logging-and-observability.md).
 
 Any change to: key handling or the keychain bridge, IPC commands, the desktop
 Rust-delegated egress path (`llm_stream` / `Channel<StreamChunk>`), provider base-URL
-handling, the `run_command` sandbox, prompt/tool-call construction, the DB encryption
-path, or a new dependency. For **managed mode**, also: the gateway authn/z path, key-pool
-selection, the metering/billing path, and the master-key vault. When in doubt, run the
-checklist.
+handling, the `http_request` tool or MCP server-URL handling (the other two SSRF egress
+paths), the `run_command` sandbox, node `tools:` narrowing or `secret`-typed input
+handling, prompt/tool-call construction, the DB encryption path, or a new dependency. For
+**managed mode**, also: the gateway authn/z path, key-pool selection, the metering/billing
+path, and the master-key vault. When in doubt, run the checklist.

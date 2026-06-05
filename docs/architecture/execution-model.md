@@ -8,6 +8,11 @@ covers the engine's structure. Concrete contracts (the event schema, the YAML
 format, the IPC surface) are cited from [../reference/](../reference/) rather than
 restated here.
 
+> **Scope.** This document covers a **workflow run** (the `WorkflowEngine` entry
+> point). A *chat session* — the engine's other entry point — runs on the same node,
+> tool, and streaming machinery but has its own lifecycle; it is detailed in
+> [agent-sessions.md](agent-sessions.md).
+
 ```mermaid
 stateDiagram-v2
     [*] --> Parsing
@@ -42,8 +47,10 @@ point and how events are painted:
 - **CLI**: `relavium run <workflow>` calls the engine directly and renders with ink.
 - **VS Code**: a right-click / command runs the engine in the extension host.
 
-All three call `WorkflowEngine.start(workflowId, input)`. There is no Relavium
-server involved in Phase 1.
+All three call `WorkflowEngine.start(workflowId, input)`. A chat session instead
+enters through the `AgentSession` entry point, which shares the same node, tool,
+and streaming machinery described below (see [agent-sessions.md](agent-sessions.md)).
+There is no Relavium server involved in Phase 1.
 
 ## Phases of a run
 
@@ -115,8 +122,10 @@ that can reach the run:
 When a decision arrives the engine reloads state, emits `human_gate:resumed`, and
 the run continues. Because the gate state is checkpointed, resolving it is
 idempotent across a reconnect — re-delivering the same decision does not advance
-the run twice. A gate may carry a timeout with an `on_timeout` policy (`reject` /
-`approve` / `escalate` — the canonical enum, authored in YAML as `timeout_action`; see
+the run twice. **Parallel branches may each reach a gate, so multiple gates can be pending at
+once** — each resolves independently with its own timeout (a `run:paused` aggregate reflects that
+≥1 gate is pending). A gate may carry a timeout with an `on_timeout` policy (`reject` /
+`approve`; `escalate` is **reserved** in v1.0 — authored in YAML as `timeout_action`; see
 [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md#human_gate-node)); this
 prevents a forgotten gate from blocking a run forever.
 The gate event/decision shapes are part of the
@@ -128,8 +137,9 @@ The gate event/decision shapes are part of the
 After every node completes, the engine writes a checkpoint to local SQLite — run
 status, per-node states, completed and pending node IDs, and (for an orchestrator)
 its message history. This is the foundation for resume and retry; see
-[shared-core-engine.md](shared-core-engine.md#checkpoint-and-resume). The
-checkpoint and run-event tables are defined in
+[shared-core-engine.md](shared-core-engine.md#checkpoint-and-resume). There is **no separate
+checkpoint table** — the checkpoint is reconstructed (by a `Checkpointer`) from `step_executions`
++ `run_events` (+ `messages` for an orchestrator's history), all defined in
 [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
 
 ### 6. Finish
@@ -152,6 +162,10 @@ accounting is computed in `packages/llm`; see
   last checkpoint rather than losing them.
 - **Retry-from-node** — a user can re-run from any node; the stable idempotency
   key (`runId + nodeId + retryCount`) prevents double-applied side effects.
+  *Forward-compatibility:* Phase 1 is DAG-only, so a node executes at most once per
+  run. When loops land (a future ADR), a node may execute multiple times within one
+  run, so the key gains an `iterationIndex` to keep each iteration's side effects
+  distinct.
 
 ## Local vs cloud execution
 

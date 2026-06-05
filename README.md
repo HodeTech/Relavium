@@ -2,10 +2,12 @@
 
 > Multi-surface AI agent workflow platform — a product of [HodeTech](https://github.com/HodeTech).
 
-Relavium lets you design multi-agent, multi-model LLM workflows as git-committable
-YAML and run them across a Tauri desktop app, a VS Code extension, and a CLI —
+With Relavium you can **start as a conversational agent, graduate to workflows, or
+author workflows directly** — a chat session and a git-committable multi-agent,
+multi-model `.relavium.yaml` workflow are two entry points to the **same** engine.
+Run them across a Tauri desktop app, a VS Code extension, and a CLI —
 **local-first** in Phase 1, with cloud execution and a control-plane portal in
-Phase 2. The workflow engine is a pure-TypeScript package shared by every surface,
+Phase 2. The engine is a pure-TypeScript package shared by every surface,
 and multi-provider LLM access goes through Relavium's own `@relavium/llm`
 abstraction over the official provider SDKs (no Vercel, no LangChain).
 
@@ -29,5 +31,7 @@ monorepo, the strict toolchain + GitHub Actions CI, `@relavium/shared` (the full
 contract set), the no-vendor-type seam fence, and `@relavium/db` (Drizzle schema +
 migrations + SQLite client) are all in place and green. Work is now on
 [Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md): the
-`@relavium/llm` provider seam and the `@relavium/core` engine. See
+`@relavium/llm` provider seam and the `@relavium/core` engine — which now also adds
+the **AgentSession** runtime, persistence, and export-to-workflow workstream
+alongside the workflow runner. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

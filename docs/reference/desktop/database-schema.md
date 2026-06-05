@@ -55,7 +55,7 @@ A full 14-item porting table lives in [../../architecture/cloud-phase-2.md](../.
 
 ## Tables
 
-The local schema is the Postgres 13-table design reduced to what a single-user, local-first app needs. The two LangGraph checkpoint tables are **dropped** (the engine is pure TypeScript — no LangGraph; see [decision 0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). `workflow_schedules` is **Phase 2 only** (schedule/webhook triggers require a cloud listener; see [../../ideas/scheduled-and-webhook-triggers.md](../../ideas/scheduled-and-webhook-triggers.md)). The `*_versions` tables are unnecessary locally because version history is provided by git on the YAML files.
+The local schema is the Postgres 13-table design reduced to what a single-user, local-first app needs. The two LangGraph checkpoint tables are **dropped** (the engine is pure TypeScript — no LangGraph; see [decision 0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)); checkpoint/resume needs no dedicated table — engine state is **reconstructed from `step_executions` + `run_events`** (+ `messages` for an orchestrator's history), per [execution-model.md](../../architecture/execution-model.md#5-checkpoint-each-node-boundary). `workflow_schedules` is **Phase 2 only** (schedule/webhook triggers require a cloud listener; see [../../ideas/scheduled-and-webhook-triggers.md](../../ideas/scheduled-and-webhook-triggers.md)). The `*_versions` tables are unnecessary locally because version history is provided by git on the YAML files.
 
 ### Catalog tables
 
@@ -309,6 +309,90 @@ Denormalized per-node cost rows for fast cost-waterfall rendering without re-agg
 ```sql
 CREATE INDEX idx_run_costs_run ON run_costs (run_id);
 ```
+
+### Agent-session tables
+
+These two tables persist **agent sessions** (the agent-first chat entry point —
+[ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md),
+[agent-session-spec.md](../contracts/agent-session-spec.md)). They live in the **same
+`~/.relavium/history.db`** (SQLCipher-encrypted) as run history — there is **no** separate
+`sessions.db`. They are **bound to a session**, deliberately **distinct** from the per-step run
+[`messages`](#messages) table (which is bound to `step_executions` within a workflow run); the two
+share a shape family but must not be merged, because a session and a run have different lifecycles.
+
+#### `agent_sessions`
+
+One row per chat session. `context_json` freezes the `SessionContext` (active file, selection,
+session variables); `agent_snapshot` freezes the agent config the session ran against.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY (UUID) |
+| `agent_id` | TEXT | NULL REFERENCES `agents(id)` |
+| `agent_slug` | TEXT | NOT NULL — the authored `agent_ref` the session is bound to |
+| `agent_snapshot` | TEXT (JSON) | NULL — frozen agent config for reproducibility |
+| `title` | TEXT | NULL — display title (derived from the first message or user-set) |
+| `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the session's **configured primary** model (resolved at start); the actual per-turn model, which may differ under fallback, is `session_messages.model_id` |
+| `working_dir` | TEXT | NULL — session-context workspace root |
+| `git_ref` | TEXT | NULL — branch/commit at session start, for provenance |
+| `fs_scope_tier` | TEXT | NOT NULL DEFAULT `'sandboxed'` — `CHECK (fs_scope_tier IN ('sandboxed','project','full'))` (the same tier enum as workflows; see [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers)) |
+| `status` | TEXT | NOT NULL DEFAULT `'active'` — `CHECK (status IN ('active','idle','exported','ended'))` |
+| `context_json` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` — the frozen `SessionContext` |
+| `total_input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `total_output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `total_cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
+| `exported_workflow_path` | TEXT | NULL — set when the session is exported to a `.relavium.yaml` |
+| `deleted_at` | INTEGER | NULL |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+```sql
+CREATE INDEX idx_agent_sessions_status ON agent_sessions (status, updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_agent_sessions_agent  ON agent_sessions (agent_id, created_at DESC) WHERE agent_id IS NOT NULL;
+```
+
+#### `session_messages`
+
+The **append-only** conversation transcript for a session — the session-scoped counterpart of the
+run `messages` table. Never updated or deleted in normal operation (mirrors the run-event-log
+pattern). Cascades from `agent_sessions`.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY (UUID) |
+| `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
+| `sequence_number` | INTEGER | NOT NULL — monotonic per session (append-only) |
+| `role` | TEXT | NOT NULL (`system`, `user`, `assistant`, `tool`) |
+| `content` | TEXT | NULL |
+| `content_parts` | TEXT (JSON) | NULL — multimodal/structured parts |
+| `tool_calls` | TEXT (JSON) | NULL |
+| `tool_call_id` | TEXT | NULL |
+| `name` | TEXT | NULL |
+| `finish_reason` | TEXT | NULL |
+| `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the model that produced an assistant turn (**fallback-aware**, so the transcript shows which model answered; NULL for non-assistant rows) |
+| `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
+| `created_at` | INTEGER | NOT NULL |
+
+```sql
+CREATE UNIQUE INDEX idx_session_messages_seq ON session_messages (session_id, sequence_number);
+CREATE INDEX idx_session_messages_session    ON session_messages (session_id, created_at ASC);
+```
+
+> A `secret`-typed value is never persisted into `session_messages` — per
+> [ADR-0029](../../decisions/0029-tool-policy-hardening.md) secrets are rejected from prompt/tool text
+> at parse, so they never reach a message body. The user's own conversational content is stored here
+> and is protected by `history.db`'s SQLCipher encryption at rest.
+
+> **Cross-host access (CLI / VS Code) — how a session resumes across surfaces.** The same encrypted
+> `history.db` is opened by the non-Tauri hosts: the **CLI** uses the `better-sqlite3` path
+> ([ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)); the **VS Code extension host**
+> uses a **wasm SQLite** build (no native module — respects
+> [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)'s no-arbitrary-native-modules
+> constraint). Both derive the SQLCipher key the same way as the desktop
+> ([keychain-and-secrets.md](keychain-and-secrets.md)), so a session written on one surface opens on
+> another — there is no per-surface session store.
 
 ## Common query patterns
 

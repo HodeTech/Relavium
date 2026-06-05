@@ -60,7 +60,7 @@ The core execution node. Renders the agent name, a model badge (e.g. `claude-son
 
 ### `ConditionNode`
 
-Branching node with one input and two labeled output handles (`true` / `false`). The condition is a JS expression over the previous node's output (e.g. `output.sentiment === 'positive'`). Rendered as a diamond (CSS `clip-path`). During a run the taken branch is highlighted and the untaken branch dimmed.
+Branching node with one input and two labeled output handles (`true` / `false`). The condition is a JS expression over the run scope, evaluated in the expression sandbox ([ADR-0027](../../decisions/0027-expression-sandbox.md)) — e.g. `run.outputs["classify"].sentiment === 'positive'` (upstream outputs are keyed by node id; never a bare `output`). Rendered as a diamond (CSS `clip-path`). During a run the taken branch is highlighted and the untaken branch dimmed.
 
 - **Key props**: `conditionExpression`, `trueLabel`, `falseLabel`, `nodeRunStatus`, `evaluatedBranch`
 
@@ -114,20 +114,20 @@ In the engine's `WorkflowDefinition`, a node carries `id`, `type`, `label`, opti
 
 | Engine config block | Present when `type =` | Notable fields |
 | --- | --- | --- |
-| `agent_config` | `agent` | `agent_id`, `model_override_id`, `system_prompt_append`, `input_mapping`, `output_mapping`, `config_override` |
-| `condition_config` | `condition` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `expression` (evaluated once), `branches[]` (each `{ when, target_node_id }` — `when` is the value the result is matched against), `default_target_node_id` (taken when no `when` matches) |
+| `agent_config` | `agent` | `agent_id`, `model_override_id`, `system_prompt_append`, `input_mapping`, `output_mapping`, `output_schema` (optional; validated on completion), `config_override` |
+| `condition_config` | `condition` | `expression_type` (`js` in v1.0; `jmespath`/`jsonlogic` reserved — [ADR-0027](../../decisions/0027-expression-sandbox.md)), `expression` (evaluated once), `branches[]` (each `{ when, target_node_id }` — `when` is **strictly** matched, `===`, against the result), `default_target_node_id` (taken when no `when` matches) |
 | `tool_config` | `tool` | `tool_name`, `tool_source` (`builtin`/`mcp`), `mcp_server`, `parameters`, `input_mapping`, `output_mapping` |
-| `transform_config` | `transform` | `expression_type` (`js`/`jmespath`/`jsonlogic`), `transformations[]` (`target_key`, `expression`) |
+| `transform_config` | `transform` | `expression_type` (`js` in v1.0; `jmespath`/`jsonlogic` reserved — [ADR-0027](../../decisions/0027-expression-sandbox.md)), `transformations[]` (`target_key`, `expression`), `output_schema` (optional) |
 | `loop_config` | `loop` | `iterate_over`, `item_key`, `body_entry_node_id`, `body_exit_node_id`, `max_iterations`, `collect_results_key` |
 | `fan_out_config` | `fan_out` | `branch_node_ids[]`, the split fan-out half of an authored `parallel` block |
 | `fan_in_config` | `fan_in` | `join_strategy` (`wait_all`/`wait_first`/`wait_n`) — *when* to fire — plus `wait_n`; and `merge_strategy` (`concat`/`object_merge`/`first`/`custom`) — *how* to combine, named identically to the authored YAML value (see the [merge-strategy reconciliation table](#merge-strategy-reconciliation)); the aggregating join half |
-| `human_in_the_loop_config` | `human_in_the_loop` | `prompt_template`, `timeout_ms`, `on_timeout` (`reject`/`approve`/`escalate` — same enum as the authored YAML `timeout_action`; see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#human_gate-node)), `input_schema` |
+| `human_in_the_loop_config` | `human_in_the_loop` | `prompt_template`, `timeout_ms`, `on_timeout` (`reject`/`approve`; `escalate` is **reserved** in v1.0 — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#human_gate-node)), `input_schema` |
 | `subworkflow_config` | `subworkflow` | `workflow_id`, `input_mapping`, `output_mapping` |
 | `retry_config` | any | `max_attempts`, `backoff_ms` (base delay), `backoff_strategy` (`linear`/`exponential`, from the authored YAML `retry.backoff`), `retry_on[]` (error types) |
 
 > The authored YAML uses friendlier field names (e.g. `parallel_of`, `merge_strategy`, `timeout_action`) that map onto the engine config blocks above. The YAML is the user contract — see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md). **Durations are milliseconds on both sides** (`timeout_ms`, `backoff_ms`) — the mapping renames fields but never converts units, so there is no hidden ms↔s boundary. The mapping itself is owned by `@relavium/core` and is exercised on parse against the `WorkflowSchema` Zod definition.
-
-> **Expression languages (condition / transform).** The only `expression_type` values are `js` (the default — a **sandboxed JavaScript expression**, no I/O, no ambient globals), `jmespath`, and `jsonlogic`. **There is no Python expression evaluator** — per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) the engine is pure TypeScript and ships no Python runtime. `workflow-yaml-spec.md` exposes the same set; its bare `condition:` / `transform:` strings are `js` expressions by default.
+>
+> **Expression languages (condition / transform).** In v1.0 the only `expression_type` is **`js`** — a **sandboxed JavaScript expression** evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared runtime dependency) and deferred to a future ADR. **There is no Python evaluator** — per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) the engine is pure TypeScript and ships no Python runtime. `workflow-yaml-spec.md` exposes the same set; its bare `condition:` / `transform:` strings are `js` expressions.
 
 ### Merge-strategy reconciliation
 
@@ -145,4 +145,4 @@ A fan-in / aggregator node combines N branch results with **one** named strategy
 
 ## Edges
 
-Edges connect nodes by `source_node_id` → `target_node_id`, with an optional `label`, an optional `condition` (the edge is followed only when truthy; null means unconditional), and an optional `data_mapping` that remaps state keys as execution traverses the edge. Branch handles on a `condition`/`fan_out` node are referenced from edges as `nodeId:handleName`. See [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#edges).
+Edges connect nodes by `source_node_id` → `target_node_id`, with an optional `label`, an optional `condition` (the edge is followed only when truthy; null means unconditional), and an optional `data_mapping` that remaps state keys as execution traverses the edge. **`data_mapping` is engine-internal / reserved in v1.0** — it is not an authored YAML field; reshape state via a `transform` node or a `merge_fn` instead. Branch handles on a `condition`/`fan_out` node are referenced from edges as `nodeId:handleName`. See [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#edges).

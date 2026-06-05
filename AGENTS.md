@@ -7,9 +7,14 @@ tooling in mind, but its rules apply to **every** AI agent regardless of model o
 runner. This file is the open-standard (`AGENTS.md`) entry point and a condensed
 mirror; CLAUDE.md is the source of truth.
 
-**Relavium** is a multi-surface, local-first AI agent workflow platform (a HodeTech
-product): a pure-TypeScript workflow engine shared by a Tauri desktop app, a VS Code
-extension, and a CLI, with workflows authored as git-committable YAML. It is a
+**Relavium** is a multi-surface, local-first AI agent platform (a HodeTech product):
+*start as an agent, ship the workflow, own every run.* You begin in a conversational
+**agent session** — a first-class engine entry point on every surface (CLI `relavium chat`,
+a desktop chat tab, a VS Code coding-assistant) — and graduate it into a multi-agent,
+multi-model **workflow** authored as git-committable YAML. Both entry points (`AgentSession`
+and `WorkflowEngine`) sit on one pure-TypeScript engine shared by a Tauri desktop app, a VS
+Code extension, and a CLI ([ADR-0024](docs/decisions/0024-agent-first-entry-point-agentsession.md),
+[ADR-0026](docs/decisions/0026-session-export-to-workflow.md)). It is a
 Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 `packages/db`, `packages/ui`; `apps/desktop`, `apps/cli`, `apps/vscode-extension`;
 `apps/api` + the control-plane `apps/portal` are Phase 2). A run executes in one of three
@@ -17,8 +22,9 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status: pre-implementation** — engineering begins at
-[Phase 0](docs/roadmap/phases/phase-0-foundations.md).
+**Status: Phase 0 complete (milestone M0, 2026-06-04).** Active work is
+[Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md); see
+[docs/roadmap/current.md](docs/roadmap/current.md).
 
 ## The non-negotiable rules
 
@@ -32,7 +38,10 @@ phase 6 (cloud execution + portal); the engine is identical across all three (AD
    plaintext, never in logs, never sent to the frontend (ADR-0006). *(Phase-2 managed
    mode)* Relavium's own keys live in a KMS-backed master-key vault + key pools, attached
    only inside the gateway and never crossing the seam (ADR-0013).
-6. **The desktop app is an agent-management center, not an IDE** (ADR-0007).
+6. **The desktop app is an agent-management center, not an IDE.** A conversational
+   chat tab (an agent *capability*) is allowed and co-equal with the canvas; the
+   forbidden boundary is the IDE shell — no code editor, file-tree, or terminal
+   (ADR-0007, refined not reversed by ADR-0025).
 7. **One canonical home per artifact** — specs live in [docs/reference/](docs/reference/); link, don't restate.
 8. **Decisions are ADRs** in [docs/decisions/](docs/decisions/), condensed MADR,
    **append-only** (supersede, never rewrite).

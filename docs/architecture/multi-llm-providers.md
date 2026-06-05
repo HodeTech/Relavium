@@ -53,8 +53,9 @@ flowchart TB
 > per-provider adapters over the official SDKs, fallback chains, and cost tracking
 > are grounded in that decision. Exact seam signatures are the canonical property
 > of [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md);
-> the model-pricing catalog is canonical in
-> [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
+> the model-pricing catalog is canonical in-code in `packages/llm/src/pricing.ts`, seeded
+> into the `model_catalog` display projection
+> ([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
 > Both are cited, not restated, here.
 
 ## Context
@@ -143,10 +144,13 @@ The adapter inventory is three implementations, not four: a dedicated
 (`@google/genai`), and **one shared OpenAI-compatible adapter** (the `openai` SDK)
 serving both OpenAI and DeepSeek — DeepSeek via a custom `baseURL`.
 
-The set of supported models, their context windows, and their per-token pricing live
-in the model catalog (canonical in
-[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)
-and surfaced to the UI via `providerStore`).
+The canonical **supported-model matrix** — canonical model ids, context windows, per-token micro-cent
+prices, and the canonical-id ↔ provider-native-id mapping — lives in-code in
+`packages/llm/src/pricing.ts` (authored and verified against each provider's pricing page at **1.B**),
+and is **seeded into** the `model_catalog` table
+([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)) and surfaced to the
+UI via `providerStore`. `model_catalog` is the display projection; `pricing.ts` is the source of truth
+the adapters and `CostTracker` read.
 
 ## Capabilities and the escape hatch
 

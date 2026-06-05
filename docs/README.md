@@ -2,7 +2,7 @@
 
 > Repository: [github.com/HodeTech/Relavium](https://github.com/HodeTech/Relavium) · a product under the **HodeTech** org.
 
-This is the canonical documentation tree for **Relavium**, a local-first platform for building, running, and monitoring multi-agent LLM workflows across several surfaces: a Tauri desktop agent-management center, a VS Code extension, a CLI, and (Phase 2) a cloud web portal. The workflow engine is a pure-TypeScript package shared by every surface, workflows and agents are git-committable YAML files, and multi-provider LLM access runs through Relavium's own `@relavium/llm` abstraction over the official provider SDKs.
+This is the canonical documentation tree for **Relavium**, a local-first platform that is both a **conversational AI coding assistant** and a **multi-agent workflow platform**: you start as an agent in a chat session and graduate to a committed workflow, or author workflows directly. It runs across several surfaces: a Tauri desktop agent-management center, a VS Code extension, a CLI, and (Phase 2) a cloud web portal. The same pure-TypeScript engine powers both entry points — conversational [AgentSessions](reference/contracts/agent-session-spec.md) and the workflow runner — on every surface; workflows and agents are git-committable YAML files, and multi-provider LLM access runs through Relavium's own `@relavium/llm` abstraction over the official provider SDKs.
 
 The tree is organized by the *kind of question each section answers*, not by which subsystem the answer touches. When you have a question, you should know which folder to open before you know which part of the system is involved.
 
@@ -11,7 +11,7 @@ The tree is organized by the *kind of question each section answers*, not by whi
 | Folder / File | Answers the question |
 |---------------|----------------------|
 | [vision.md](vision.md) | **What are we building, and why?** The product vision and the problem Relavium solves. |
-| [product-constraints.md](product-constraints.md) | **What are the hard rules?** Non-negotiable scope and behavior — desktop is agent-management (not an IDE), local-first in Phase 1, cloud in Phase 2. |
+| [product-constraints.md](product-constraints.md) | **What are the hard rules?** Non-negotiable scope and behavior — desktop is agent-management (conversational, not an IDE), local-first in Phase 1, cloud in Phase 2. |
 | [uvp.md](uvp.md) | **Why this over the alternatives?** The unique value proposition and positioning. |
 | [deployment-models.md](deployment-models.md) | **How does each customer segment adopt it?** End-to-end deployment per segment (individual / small team / enterprise): execution mode, key model, tier, who pays for tokens, onboarding, governance, and the upgrade path. |
 | [tech-stack.md](tech-stack.md) | **What is it built with?** The pinned, canonical technology choices and versions. |
@@ -32,7 +32,7 @@ The tree is organized by the *kind of question each section answers*, not by whi
 ## Reading order for newcomers
 
 1. [glossary.md](glossary.md) — the terms used throughout the project; read this first so the rest makes sense.
-2. [vision.md](vision.md) — what Relavium is and the problem it solves.
+2. [vision.md](vision.md) — what Relavium is and the problem it solves; read here why Relavium is *both* a conversational coding assistant and a workflow platform, and how the two entry points connect.
 3. [product-constraints.md](product-constraints.md) — the hard rules that shape every decision.
 4. [tech-stack.md](tech-stack.md) — the canonical technology choices and pinned versions.
 5. [decisions/](decisions/) — the numbered ADRs, in order. These capture the reasoning behind the design and are the fastest way to get oriented on *why* things are the way they are.

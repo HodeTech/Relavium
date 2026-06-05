@@ -14,11 +14,15 @@ flowchart LR
     YAML[".relavium.yaml<br/>workflow file"] --> Parser["WorkflowYAMLParser<br/>(Zod validate)"]
     Parser --> Plan["RunPlan builder<br/>(topological sort)"]
     Plan --> Runner["WorkflowEngine<br/>run loop"]
+    Chat["chat turn<br/>(CLI / desktop / VS Code)"] --> Session["AgentSession<br/>(conversational entry)"]
     Runner --> AR["AgentRunner<br/>(per node)"]
+    Session --> AR
     AR --> LLM["packages/llm<br/>ProviderAdapter"]
     AR --> Tools["ToolRegistry"]
     Runner --> CP["Checkpointer<br/>(SQLite)"]
+    Session --> CP
     Runner --> Bus["RunEventBus"]
+    Session -->|session:* events| Bus
     Bus --> Surfaces["surfaces<br/>(IPC / postMessage / ink)"]
     Orchestrator["Orchestrator node<br/>(LLM-as-router)"] -.->|invoke_agent| AR
     Runner --> Orchestrator
@@ -48,15 +52,27 @@ end-to-end before any UI is added (see
 ## What the engine exports
 
 `packages/core` exposes a small, surface-agnostic API surface — summarized here as
-its canonical home (every surface binds to `WorkflowEngine.start` / `resume` /
-`cancel`). The artifact contracts it consumes and produces live in
+its canonical home. It has **two** entry points: every surface binds either to
+`WorkflowEngine.start` / `resume` / `cancel` (the DAG runner) or to
+`AgentSession.start` / `resume` / `cancel` (the conversational entry point). Both
+drive the *same* substrate — see [Why one engine, shared by all surfaces](#why-one-engine-shared-by-all-surfaces).
+The artifact contracts it consumes and produces live in
 [../reference/contracts/](../reference/contracts/): the
 [workflow YAML spec](../reference/contracts/workflow-yaml-spec.md), the
-[run-event schema](../reference/contracts/sse-event-schema.md), and the
-[IPC contract](../reference/contracts/ipc-contract.md).
+[run-event schema](../reference/contracts/sse-event-schema.md), the
+[IPC contract](../reference/contracts/ipc-contract.md), and the
+[AgentSession spec](../reference/contracts/agent-session-spec.md).
 
 - **`WorkflowEngine`** — `start(workflowId, input)` / resume / cancel. Parses the
   workflow, builds the run plan, executes nodes, and owns checkpointing.
+- **`AgentSession`** — the second, co-equal entry point: `start` / `resume` /
+  `cancel` for a multi-turn conversation. It wraps the same `AgentRunner` and reuses
+  `ToolRegistry`, the `packages/llm` seam, and `RunEventBus` (on a separate
+  `session:*` namespace), auto-persisting to `history.db` and resumable from it. Its
+  runtime contract — including `SessionMessage` and the one-way export-to-workflow
+  scaffold — is canonical in the
+  [AgentSession spec](../reference/contracts/agent-session-spec.md) (see also
+  [ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md)).
 - **`WorkflowYAMLParser`** — parses and validates a `.relavium.yaml` file against
   the Zod schema from `packages/shared`. The accepted shape is the
   [workflow YAML spec](../reference/contracts/workflow-yaml-spec.md).
@@ -147,10 +163,14 @@ This is what enables:
 - **Idempotency** — re-executing a node uses a stable idempotency key derived from
   `runId + nodeId + retryCount`, so a retry never double-applies side effects.
 
-In Phase 1 checkpoints land in local SQLite (schema in
+In Phase 1 there is **no separate checkpoint table**: the checkpoint is **reconstructed** by a
+`Checkpointer` (`load(runId) → CheckpointState`) from the per-node `step_executions` rows
+(`status` / `attempt_number` / `output_json` / `error_json`) and the ordered, replayable `run_events`
+log, with the orchestrator's message history in `messages` (schema in
 [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
-The same checkpoint shape is what the Phase-2 cloud layer uses for durable
-execution — see [cloud-phase-2.md](cloud-phase-2.md).
+`CheckpointState = { runStatus, nodeStates, completedNodeIds, pendingNodeIds, orchestratorMessages? }`
+is **derived**, never a stored blob. The same derivation is what the Phase-2 cloud layer uses for
+durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 
 ## Retry and fallback
 
@@ -180,10 +200,58 @@ imported by every surface, Turborepo rebuilds when core changes, and integration
 tests that exercise core directly (not through any UI). Any surface-specific
 workaround is a bug in core, not a surface patch.
 
+### One substrate, two entry points
+
+The same lever applies *across* the two entry points. `WorkflowEngine` (the DAG
+runner) and `AgentSession` (the conversational entry,
+[ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md)) are not two
+engines — they are two front doors onto **one** substrate:
+
+- **`AgentRunner`** — the single unit that assembles a prompt, calls a provider, and
+  resolves tool calls. A workflow agent node and a chat turn run *the same* runner.
+- **`packages/llm` seam** — both entry points reach every model through the one
+  `LLMProvider` contract, with the same fallback chain and cost accounting.
+- **`ToolRegistry`** — one registry and dispatcher of built-in and MCP tools, shared
+  by both. A tool wired for a workflow node behaves identically when a session calls
+  it.
+- **`RunEventBus`** — one typed bus; the DAG runner emits `run:*`/`node:*` and a
+  session emits `session:*` (one events spec, two namespaces — see the
+  [SSE event schema](../reference/contracts/sse-event-schema.md)).
+- **`Checkpointer`** — one persistence shape; workflow runs checkpoint per node,
+  sessions auto-persist per turn and resume the same way.
+
+This is the platform's core economy: **harden the substrate once, and both entry
+points inherit it.** Three shared primitives, decided in this pass, sit *inside* the
+substrate rather than at either entry point, so neither chat nor a workflow can route
+around them:
+
+- **Expression sandbox** ([ADR-0027](../decisions/0027-expression-sandbox.md)) —
+  `condition` / `transform` / `merge_fn` expressions execute in a deterministic,
+  capped, ambient-globals-free sandbox (no `new Function()`/`eval`), preserving the
+  zero-platform-imports purity above.
+- **Resource governance** ([ADR-0028](../decisions/0028-workflow-resource-governance.md)) —
+  a pre-egress, estimate-and-block budget gate plus a run timeout and a parallel
+  concurrency cap, applied before every provider call regardless of which entry point
+  triggered it.
+- **Tool-policy hardening** ([ADR-0029](../decisions/0029-tool-policy-hardening.md)) —
+  command match, node tool-narrowing, secret-interpolation rejection, and SSRF
+  defenses live in the shared `ToolRegistry` path, so both a chat turn and a workflow
+  node get the same guarantees.
+
+Because the substrate is the single home for execution, the LLM seam, tools, events,
+checkpointing, and these three primitives, adding the conversational entry point
+*widened the front door without forking the engine*. The narrative of how a session
+layers its steering channel and per-surface UI on top of this substrate lives in
+[agent-sessions.md](agent-sessions.md), which cites this section rather than
+restating it.
+
 ## Related documents
 
 - [execution-model.md](execution-model.md) — the run lifecycle in detail.
+- [agent-sessions.md](agent-sessions.md) — the conversational entry point on this substrate (steering channel + per-surface UI).
 - [multi-llm-providers.md](multi-llm-providers.md) — the provider layer the runner calls.
+- [../decisions/0024-agent-first-entry-point-agentsession.md](../decisions/0024-agent-first-entry-point-agentsession.md) — why `AgentSession` is a second engine entry point.
+- [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md) — the AgentSession runtime contract.
 - [../reference/contracts/workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) — the input format.
 - [../reference/contracts/sse-event-schema.md](../reference/contracts/sse-event-schema.md) — the event contract.
 - [../reference/shared-core/node-types.md](../reference/shared-core/node-types.md) — the node catalog.

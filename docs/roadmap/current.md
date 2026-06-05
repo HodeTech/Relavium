@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-04
+> Last updated: 2026-06-05
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -59,6 +59,21 @@ parked in [deferred-tasks.md](deferred-tasks.md). The foundation is settled and 
 
 ## What is active now
 
+> **Agent-first pivot (2026-06-05).** Relavium has pivoted from workflow-first to **agent-first +
+> workflow**: a conversational `AgentSession` becomes a first-class engine entry point alongside
+> `WorkflowEngine`, with a chat → workflow export
+> ([ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md) /
+> [0025](../decisions/0025-agent-surface-refines-desktop-scope.md) /
+> [0026](../decisions/0026-session-export-to-workflow.md)). A workflow-system hardening pass adds three
+> security/robustness ADRs ([0027](../decisions/0027-expression-sandbox.md) expression sandbox,
+> [0028](../decisions/0028-workflow-resource-governance.md) resource governance,
+> [0029](../decisions/0029-tool-policy-hardening.md) tool-policy). Phase 1 gains an **additive, parallel**
+> agent-first sub-spine (1.V–1.AA), the QuickJS-wasm sandbox (1.AB — on the critical path inside 1.P),
+> and the pre-egress budget governor (1.AC). The **agent-first sub-spine (1.V–1.AA) adds no work to the M1/M2 critical path** (it runs in parallel and is proven by its own harness); the hardening sandbox **1.AB *is* new M2-critical-path work** — it folds into 1.P and raises the 1.m4 cost. Phases 2–4 add
+> non-critical chat workstreams; phases 5–6 are largely unaffected (sessions inherit managed/cloud via
+> the existing seams). All decisions/specs are landed at the docs/ADR layer — no engine code yet
+> (Phase 1 has not started).
+
 **Phase 0 is done (M0 reached); the active phase is now
 [Phase 1 — engine and LLM](phases/phase-1-engine-and-llm.md)** (Product Phase 1, the
 critical path). With a frozen contract and a green CI gate in place, Phase 1 builds the two
@@ -67,7 +82,7 @@ the official provider SDKs — the seam fence's first real consumer) and **`@rel
 (the engine: YAML→DAG parse, runner, checkpoint/resume, retry — zero platform imports,
 consuming `@relavium/db` for run persistence).
 
-The next checkpoint is global milestone **M1 — core engine** (see the
+The next checkpoint is global milestone **M1 — LLM seam proven** (see the
 [milestone spine](README.md#global-milestone-spine)).
 
 > **One Phase-0 follow-up lives outside the code:** a maintainer should mark the CI `ci`

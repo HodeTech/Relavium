@@ -126,7 +126,10 @@ flowchart TD
   I --> K
   M --> K
   K --> L[3.L Playwright per-platform e2e + perf gate]
-  L --> N[3.N M4 sign-off + Phase 4 handoff]
+  L --> P[3.P M4 sign-off + Phase 4 handoff]
+  C --> CN[3.N Chat panel + steering]
+  CN --> CX[3.O Export-to-Canvas]
+  CX --> P
 ```
 
 ### 3.A — Tauri v2 shell scaffold + capability manifest
@@ -485,7 +488,29 @@ Git-native interoperability and a fast first-run experience.
 canvas, and exporting produces a diff limited to the intended edit; a starter
 template opens and runs from a fresh install.
 
-### 3.N — M4 sign-off + Phase 4 handoff
+### 3.N — Chat panel (`/chat` + `/chat/:sessionId`)
+
+The agent-first conversational surface on the desktop — a **co-equal top-level tab** beside Canvas (the default landing stays the neutral/operational home; the canvas remains the signature surface — see [ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)). Consumes the WebView-resident `AgentSession` entry point ([agent-sessions.md](../../architecture/agent-sessions.md)).
+
+**Tasks:**
+- Build the `/chat` and `/chat/:sessionId` routes: agent picker, context input (auto-detected workspace / active file / git, overridable), a streaming transcript with tool-call annotations, multi-turn input.
+- Wire to `AgentSession` via the session IPC commands ([ipc-contract.md](../../reference/contracts/ipc-contract.md)); session events are consumed WebView-side like run events.
+- Persist + resume sessions from `history.db` (`agent_sessions` / `session_messages`); a session list with resume.
+- Implement the steering affordance — inject a directive into a running/paused agent (`agent:directive_injected`, non-blocking or blocking); a completed turn is immutable.
+
+**Acceptance:** a multi-turn chat streams tokens and tool calls, persists, and resumes after an app restart; the panel honors the FS-scope tier and command allowlist; no editor / file-tree / terminal is present (the agent-capability-vs-IDE-shell line of [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md) / [ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)).
+
+### 3.O — Export-to-Canvas (chat → workflow)
+
+The one-click "graduate this conversation to a workflow" affordance ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)).
+
+**Tasks:**
+- Add an "Export to Canvas" action on the chat panel / session-history screen that calls `export_session` and opens the resulting `.relavium.yaml` scaffold on the canvas for review before save.
+- Surface the linear-chain-plus-transcript result honestly as a *scaffold* (not a finished graph).
+
+**Acceptance:** exporting a session opens a valid, reviewable workflow on the canvas whose agent nodes mirror the session's turns; no secret value is serialized into the export.
+
+### 3.P — M4 sign-off + Phase 4 handoff
 
 Verify the exit criteria and hand the IPC/loopback contract to the VS Code phase.
 
@@ -513,7 +538,8 @@ center) and gate Phase 4.
 | P3.M3 (canvas) | Canvas with the v1.0-authorable node set functional (LoopNode/Subworkflow reserved, disabled), ADR-0010 subscriptions, YAML save | 3.E, 3.M |
 | P3.M4 (theater) | Live execution theater: streaming node faces, gate overlay, live cost | 3.F, 3.I |
 | P3.M5 (history) | Durable SQLite history with replay, Gantt, retry-from-node | 3.H, 3.J |
-| **M4** | Signed build; execution theater; replay/Gantt; per-platform e2e green | **3.K, 3.L, 3.N** |
+| P3.M6 (chat) | Agent chat panel (co-equal tab) + steering + Export-to-Canvas, on the WebView-resident `AgentSession` | 3.N, 3.O |
+| **M4** | Signed build; execution theater; replay/Gantt; per-platform e2e green | **3.K, 3.L, 3.P** |
 
 ## Dependencies
 
@@ -567,5 +593,5 @@ All must be true to start Phase 4 (VS Code):
 | Cross-platform keychain differences | Keys fail to store/read on one OS | The keychain abstraction in [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md); never hand-roll crypto, wrap vetted OS primitives; opt-in AES-256-GCM file fallback with no silent plaintext path |
 | Cross-platform WebView rendering | The canvas renders subtly differently on WKWebView / WebView2 / WebKitGTK | Per-platform Playwright e2e (3.L); validate the installer on a clean Windows 10 VM for the WebView2 bootstrap |
 | SQLCipher passphrase ordering | DB open fails or prompts the user on every launch | Derive from a stable machine secret + keychain entry and set it in `setup()` **before** `plugin-sql` init (3.G) |
-| Secret leakage across the boundary | A key reaches the WebView, a log, or a YAML export | Secrets cross only inbound (`set_provider_key`); status-only `get_key_status`; export placeholdering; verified by the no-secret exit criterion (3.N) |
-| Engine ergonomics gaps surface in the UI | Tempting to patch in the desktop layer | Treat as Phase 1 amendments re-tested in the CLI harness, never desktop-only workarounds (3.N) |
+| Secret leakage across the boundary | A key reaches the WebView, a log, or a YAML export | Secrets cross only inbound (`set_provider_key`); status-only `get_key_status`; export placeholdering; verified by the no-secret exit criterion (3.P) |
+| Engine ergonomics gaps surface in the UI | Tempting to patch in the desktop layer | Treat as Phase 1 amendments re-tested in the CLI harness, never desktop-only workarounds (3.P) |

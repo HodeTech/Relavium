@@ -13,6 +13,14 @@ pieces into one customer-facing narrative: the **three execution modes** (the
 and the **licensing tiers** (canonical in
 [reference/portal/api-reference.md](reference/portal/api-reference.md#licensing-tiers)).
 
+Independently of execution mode, every segment chooses one of **two entry points to
+the same engine**: a **conversational agent session** (chat) or a **workflow** (the
+runner plus authoring). A session can be **exported to a workflow**, so a customer
+can start in chat and graduate to a committed `.relavium.yaml` — see the
+[AgentSession contract](reference/contracts/agent-session-spec.md). The execution
+mode (where the key lives) and the entry point (chat vs. workflow) are orthogonal:
+both entry points run identically in every mode.
+
 This is a routing/strategy doc — it **cites** the canonical homes for modes, keys,
 tiers, and economics rather than restating them. For the secret-handling mechanics
 behind each key model, see [architecture/key-management.md](architecture/key-management.md).
@@ -113,8 +121,11 @@ your own roof → BYOK) and **convenience** (don't want to manage a key → mana
 - **Onboarding flow.** *Discovery* (a shared `.relavium.yaml`, the VS Code
   marketplace, or the CLI) → *install* the desktop app / extension / `npm i -g`
   the CLI (**no sign-in required**) → *key setup* (paste a provider key into the
-  keychain) → *first run* (Run button, `relavium run`, or VS Code right-click;
-  target install-to-value under 3 minutes per [vision.md](vision.md)).
+  keychain) → *first value via either entry point* — **start a chat session** (the
+  Chat tab, `relavium chat`, or the VS Code coding-assistant) **or** run a workflow
+  (Run button, `relavium run`, or VS Code right-click); target install-to-value under
+  3 minutes per [vision.md](vision.md). A productive chat session can be **exported
+  to a workflow** when it is worth committing.
 - **Collaboration / governance.** None required — this is a single user. Sharing a
   `.relavium.yaml` over git is the only "collaboration," and it is free.
 - **How they graduate.** The moment a teammate runs their shared workflow, they have
@@ -152,8 +163,11 @@ your own roof → BYOK) and **convenience** (don't want to manage a key → mana
   **org-level**, not issued per employee.
 - **Onboarding flow.** *Discovery* (a teammate's workflow file) → *install* per
   member → *key setup* (each member's own key, or pull shared org keys from the
-  central vault in Phase 2) → *first run* of the shared workflow → *governance opt-in*
-  (sign in on the portal to enable the shared library, RBAC, and budgets).
+  central vault in Phase 2) → *first value* via the shared workflow **or** an
+  individual chat session → *governance opt-in* (sign in on the portal to enable the
+  shared library, RBAC, and budgets). A member's chat session can be **exported to a
+  workflow** and shared with the team as git-committed YAML — turning ad-hoc agent
+  work into a reusable shared asset.
 - **Collaboration / governance.** Shared/published **agent library**, **RBAC**
   (viewer / runner / editor / admin), per-seat and team **budgets/quota**, and a
   unified human-gate inbox. These gate on **scale**, not capability — capability is

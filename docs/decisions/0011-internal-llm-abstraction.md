@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [tech-stack.md](../tech-stack.md)
+- **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md) (seam reused by chat-mode agents), [tech-stack.md](../tech-stack.md)
 
 ## Context
 
@@ -28,6 +28,11 @@ The seam is the immovable contract; the adapter implementation behind it is deli
 > *reference* on the desktop, where Rust performs the egress via `llm_stream`. The seam's
 > **types and contract are unchanged**; only the per-host transport wiring is refined.
 
+> Amended 2026-06-05: the same `LLMProvider` seam is reused **unchanged** by the agent-first
+> `AgentSession` entry point ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) — chat-mode
+> agents call providers through the identical contract, so no vendor SDK type crosses the seam for
+> sessions either. The seam's types and contract are unchanged.
+
 Considered options:
 
 1. **Internal abstraction over official provider SDKs (`@relavium/llm`)** — owned seam, thin per-provider adapters, no framework. *Chosen.*
@@ -52,7 +57,6 @@ Provider details and built-in tool wiring are in [architecture/multi-llm-provide
 - Adding a provider is a contained adapter change in one package; OpenAI and DeepSeek already share one adapter path.
 - The migration story is real, not aspirational: because the seam admits no vendor type, a 3rd-party bridge can be slotted behind it on a named trigger without touching `packages/core`.
 - API keys stay engine-side: read from the OS keychain ([ADR-0006](0006-os-keychain-for-api-keys.md)) and attached during egress in a host-aware way — directly by the adapter on Node-style hosts (CLI, VS Code extension host, Phase-2 Bun API), and by the Rust backend on desktop where egress is delegated to `llm_stream` (so the key never reaches the WebView-resident adapter, which holds only a key reference). See [ADR-0018](0018-desktop-execution-and-rust-egress.md) and the [IPC contract](../reference/contracts/ipc-contract.md).
-
 ### Negative
 
 - We own the normalization tax and ongoing provider drift (tool schemas, streaming events, stop reasons, usage fields) that a framework would otherwise absorb. Mitigated by a frozen lowest-common-denominator interface, a typed `providerOptions` escape hatch, and a conformance suite (recorded fixtures on PR, live nightly in CI).

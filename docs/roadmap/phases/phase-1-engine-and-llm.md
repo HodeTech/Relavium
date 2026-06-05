@@ -29,6 +29,15 @@ checkpoint/resume, retry, and provider failover all demonstrated.
 - A Node harness runs a 3-node workflow end-to-end with live streaming,
   checkpoint/resume, node retry, and provider failover, with cost recorded
   correctly per attempt (**M2**, the critical-path milestone).
+- `condition` / `transform` / `merge_fn` evaluate in the **deterministic, resource-capped
+  QuickJS-wasm sandbox** (no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)),
+  and the **pre-egress budget governor** ([ADR-0028](../../decisions/0028-workflow-resource-governance.md))
+  caps cost before each LLM call — both proven by their own unit tests plus dedicated harness scenarios (1.AB, 1.AC).
+- The **agent-first sub-spine** is implemented and **proven by its own Node harness (1.AA)**: a
+  multi-turn `AgentSession` with a tool round-trip, a `session:*` event stream, persistence + resume,
+  and export-to-workflow ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md),
+  [ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Additive and parallel — it does not
+  gate **M2**, but it is a Phase-1 deliverable that the Phase-2 `relavium chat` surface builds on.
 - Both packages have zero platform-specific imports and meet the engine coverage
   bar (≥ 90% line **and** branch) from [testing.md](../../standards/testing.md).
 
@@ -127,12 +136,17 @@ flowchart TB
     N --> O["1.O AgentRunner"]
     K --> O
     O --> P["1.P node-type handlers"]
+    AB["1.AB expression sandbox"] --> P
+    O --> AC["1.AC resource governor"]
+    Q --> AC
+    AC --> U
     P --> Q["1.Q human gate suspend/resume"]
     N --> R["1.R Checkpointer + resume"]
     O --> S["1.S retry + fallback wiring"]
     R --> S
     E --> T["1.T built-in ToolRegistry"]
-    O --> T
+    T --> O
+    P --> U
     S --> U["1.U end-to-end Node harness (M2)"]
     Q --> U
     R --> U
@@ -173,9 +187,12 @@ The cost computation Relavium owns, keyed on the canonical model id — never re
 from a provider field.
 
 **Tasks:**
-- Build the pricing table keyed on canonical model id (input/output per-token, plus
-  cache-read/write where the provider exposes it), sourced from the model catalog in
-  [database-schema.md](../../reference/desktop/database-schema.md).
+- Build the canonical price table **and** the canonical-id ↔ provider-native-id mapping in
+  **`packages/llm/src/pricing.ts`** — the in-code source the adapters (1.C/1.G/1.H) and this tracker
+  share — keyed on canonical model id (input/output per-token, plus cache-read **and cache-write**
+  where the provider exposes it), verified against each provider's pricing page and **seeded into** the
+  `model_catalog` table ([database-schema.md](../../reference/desktop/database-schema.md)) for UI display.
+  (`model_catalog` ships empty; `pricing.ts` is the source of truth.)
 - Implement `CostTracker.cost(modelId, usage) -> costMicrocents` and the accumulator that
   produces `{ inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }` for the
   `cost:updated` event ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)).
@@ -184,7 +201,7 @@ from a provider field.
 - Surface **per-attempt** usage so cost stays accurate across a failover (consumed
   by 1.K).
 
-**Acceptance:** unit tests price each catalog model from a fixed usage object to the
+**Acceptance:** unit tests price each supported model in `pricing.ts` from a fixed usage object to the
 expected micro-cents; an unknown model id raises a typed, user-facing error rather
 than silently pricing at zero.
 
@@ -365,10 +382,47 @@ budgets. Adapters stay dumb; this owns the policy.
 to the next provider and the run succeeds; a fatal error stops the chain; and
 per-attempt cost is summed across a failover.
 
+### 1.L.0 — Reconcile `@relavium/shared` to the 2026-06-05 contract — *critical path, do first*
+
+`@relavium/shared` was frozen in Phase 0 (2026-06-04); the agent-first + hardening ADRs
+([0026](../../decisions/0026-session-export-to-workflow.md)/[0027](../../decisions/0027-expression-sandbox.md)/[0028](../../decisions/0028-workflow-resource-governance.md)/[0029](../../decisions/0029-tool-policy-hardening.md))
+landed the next day and **the shared Zod schemas have not caught up**. Every workstream below that parses
+authored YAML, emits events, or reads config binds to these schemas, so this reconciliation **runs first** —
+before 1.L/1.N/1.O/1.Q/1.W/1.AC/1.Z. (1.A only re-exports `@relavium/shared`, so the types must exist before
+the seam consumes them.) The canonical shapes are owned by the contracts; this workstream makes the **code**
+match them — it adds no new behavior.
+
+**Tasks:**
+- **Authored-YAML fields** the strict (`.strict()`, [ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md))
+  schemas reject today: `workflow.metadata` (free-form map, round-trip per [ADR-0026](../../decisions/0026-session-export-to-workflow.md)),
+  workflow-level `budget` / `timeout_ms` / `max_parallel` ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)),
+  `AgentNode.system_prompt_append` + `output_schema` (also on transform/agent nodes),
+  `ToolPolicy.allowedCommandGlobs` ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)), and
+  `WorkflowInput.validation` — per [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
+- **Run-event + session-event union** ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)):
+  add the 5 missing variants — `run:paused`, `run:timeout`, `budget:warning`, `budget:paused`,
+  `agent:file_patch_proposed` — and the `SessionEvent` union (the 5 `session:*` variants). Switch the base
+  event to the discriminated run/session envelope defined in the spec — **exactly one of `runId` /
+  `sessionId` present**, `sequenceNumber` monotonic **per run or per session** — and **audit every
+  `BaseEventSchema` / `baseFields` usage**
+  that assumed a required `runId`. Add `attemptNumber?` to `agent:tool_call` / `agent:tool_result` /
+  `node:completed` (matching `cost:updated`); add the closed **`ErrorCode`** enum and bind
+  `node:failed` / `run:failed` / `RunSchema.code` to it; add `retryable` to `run:failed.error` + `RunSchema.error`.
+- **Config** ([config-spec.md](../../reference/contracts/config-spec.md)): add `[defaults].max_tokens_estimate`
+  and the full `[chat]` block to `ProjectConfigSchema`.
+- Update `RUN_EVENT_TYPES` + the **count-pinned** test (`run-event.test.ts`) to the new total; drop the
+  reserved enum members (`escalate` / `jmespath` / `jsonlogic`) or `superRefine`-reject them; fix the stale
+  `decidedBy` `'timeout_escalation'` comment → `'timeout'`.
+
+**Acceptance:** the reference example workflows **and a session fixture** round-trip through the updated strict
+schemas; the run-event count-test is green at the new total; `tsc` + the seam fence stay green. (Enforcement
+today is the count-pinned unit test, **not** the DB-migration drift gate — `run_events.event_type` is
+unconstrained text — so the test total must be updated deliberately.)
+
 ### 1.L — `WorkflowYAMLParser` (parse + validate) — *critical path*
 
 The engine entry point: load a `.relavium.yaml` and validate it against the
-`@relavium/shared` `WorkflowSchema` before any LLM call.
+`@relavium/shared` `WorkflowSchema` (post-1.L.0) before any LLM call.
 
 **Tasks:**
 - Parse the file and validate with the shared Zod schema; map the friendly authored
@@ -384,6 +438,28 @@ The engine entry point: load a `.relavium.yaml` and validate it against the
 **Acceptance:** valid reference example workflows parse to a typed
 `WorkflowDefinition`; a battery of malformed files each fail with a field-named,
 secret-free error; round-trip (parse → object) preserves all node config blocks.
+
+### 1.L2 — Interpolation / templating engine (the `{{ … }}` runtime resolver) — *critical path*
+
+1.L resolves interpolation references to a **structured, unevaluated** representation; this workstream owns
+the **runtime resolver** every node's input flows through. (No other workstream owns it — it sits on the path
+of every node, so it is sequenced before 1.M/1.O/1.P.) It is distinct from the JS **expression sandbox**
+(1.AB): `{{ … }}` is string templating; `condition`/`transform`/`merge_fn` are JS evaluated in the sandbox.
+
+**Tasks:**
+- Evaluate `{{ … }}` against the run scope — `inputs`, `ctx`, `run.outputs` (keyed by node id), `secrets` —
+  with the pipe-filter registry (`| read_file`, `| json`, `| length`, `| default`, …) per
+  [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
+- **Eager-once, immutable cached context:** a node's inputs are resolved once into a frozen snapshot, so a
+  re-run/replay is deterministic (aligned with the checkpoint + idempotency model, 1.R).
+- Enforce the **transitive parse-time secret taint** [ADR-0029(c)](../../decisions/0029-tool-policy-hardening.md)
+  mandates "by the parser": a `secret`-typed value (or anything derived from one) is rejected from
+  `prompt_template` / tool text, allowed only in credential/header fields. Raise a typed `InterpolationError`
+  (key + workspace-relative location + node id; no absolute paths, no secret values) per
+  [error-handling.md](../../standards/error-handling.md).
+
+**Acceptance:** interpolation resolves refs + filters correctly; a secret routed into prompt/tool text is
+rejected at parse with a field-named, secret-free error; re-resolving a node yields an identical frozen scope.
 
 ### 1.M — DAG builder + `RunPlan` (topological order) — *critical path*
 
@@ -477,10 +553,12 @@ The gate that suspends a run for an external decision and resumes idempotently.
   `human_gate:resumed`, and continuing the run.
 - Make re-delivering the same decision idempotent (do not advance twice) because the
   gate state is checkpointed.
-- Implement `timeout_action` (`reject` / `approve` / `escalate` — the canonical enum from
+- Implement `timeout_action` (`reject` / `approve`; `escalate` is **reserved** in v1.0 — see
   [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md#human_gate-node);
-  the engine config block names it `on_timeout`) mapping a timeout to
-  `decidedBy: 'timeout_escalation'`.
+  the engine config block names it `on_timeout`) mapping a timeout to `decidedBy: 'timeout'`.
+- Support **multiple concurrent gates** (independent parallel branches may each reach a gate):
+  each carries its own timeout and resolves independently, with a `run:paused` aggregate while
+  ≥1 gate is pending.
 
 **Acceptance:** a run pauses at a gate, persists state, resumes on a decision and
 completes; re-applying the same decision is a no-op; a timeout resolves per the
@@ -491,11 +569,14 @@ configured `on_timeout` policy.
 Persist state at every node boundary and reconstruct a run from it.
 
 **Tasks:**
-- Define the `Checkpointer` interface (SQLite-shaped per
-  [database-schema.md](../../reference/desktop/database-schema.md)) with an in-memory
-  reference implementation for tests; real SQLite is wired in Phase 2 (CLI).
-- After every node completes, write a checkpoint: run status, per-node states,
-  completed/pending node ids, and (for an orchestrator) message history.
+- Define the `Checkpointer` interface — `load(runId) → CheckpointState` — with an in-memory
+  reference implementation for tests; real persistence (the `step_executions` + `run_events` rows it
+  reads, per [database-schema.md](../../reference/desktop/database-schema.md) and
+  [execution-model.md](../../architecture/execution-model.md#5-checkpoint-each-node-boundary)) is wired
+  in Phase 2 (CLI). There is **no separate checkpoint table/blob**.
+- After every node completes, persist its `step_executions` row + the ordered `run_events`; the
+  checkpoint state (`runStatus`, `nodeStates`, `completedNodeIds`, `pendingNodeIds`, and an
+  orchestrator's message history) is **reconstructed** from those rows.
 - Implement resume-from-checkpoint and crash reconciliation (on startup, restore
   in-flight runs from their last checkpoint rather than losing them).
 - Use a stable idempotency key (`runId + nodeId + retryCount`) so a retry never
@@ -563,6 +644,29 @@ The proof that the engine works before any surface exists.
 then fallback with the run still completing; resume from a mid-run checkpoint
 reproduces the same final output — **M2 achieved**.
 
+### Agent-first sub-spine (1.V–1.AA) — additive, parallel to the M2 critical path
+
+These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). They run **parallel** to 1.L–1.U and do **not** feed the 1.U workflow harness — each is proven by its own harness (1.AA). The `WorkflowEngine` is unchanged; `AgentSession` is an additional entry point on the same substrate.
+
+- **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses.
+- **1.W — `session:*` event namespace.** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
+- **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate).
+- **1.Y — Session checkpoint/resume.** Reuse the idempotency-key logic so a session resumes after a restart.
+- **1.Z — Export-to-workflow serializer.** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Includes a **`WorkflowDefinition` → YAML emitter** (deterministic key ordering, the `metadata` transcript block, secret exclusion) — 1.L is parse-only, so this workstream owns serialization. *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; **parse → serialize round-trips** (including `metadata`); no `secret` value is serialized.
+- **1.AA — Node-harness chat regression.** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI.
+
+### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P
+
+Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, resource-capped QuickJS-wasm sandbox for `condition` / `transform` / `merge_fn`, instantiated via the `WebAssembly` global from embedded bytes (no `node:fs`/`fetch`/DOM, no wall-clock/RNG, no `new Function()`). **On the M2 critical path** — the 1.P node handlers must not ship an unspecified evaluator, so this is sequenced into 1.P (it raises the 1.m4 cost). **First task — a perf spike:** select and benchmark the QuickJS-wasm package (candidate `quickjs-emscripten`) on the expression hot path and pin it in the `catalog:` ([tech-stack.md](../../tech-stack.md)); the rest of 1.AB builds on the confirmed package.
+
+**Acceptance:** `condition`/`transform` evaluate in the sandbox; a non-deterministic or resource-exhausting expression is rejected/terminated with a typed, secret-free error; a dedicated `condition`/`transform` scenario in the harness suite — alongside 1.AB's own unit tests — asserts sandbox behavior (the 3-node 1.U happy-path does not itself exercise it).
+
+### 1.AC — Resource governor (pre-egress budget) — folds into 1.O
+
+Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-egress** budget check, a run `timeout_ms`, and a parallel concurrency cap, with `pause_for_approval` reusing the human-gate seam and emitting `budget:warning` / `budget:paused` / `run:timeout`. The cost formula and `on_exceed` semantics are owned by ADR-0028; this workstream wires them into 1.O.
+
+**Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
+
 ## Milestones
 
 In-phase milestones map to the workstreams that complete them. The two global-spine
@@ -574,19 +678,24 @@ the latter being the critical-path milestone for the whole product.
 | 1.m1 | Seam frozen; first adapter + conformance harness green (Anthropic) | 1.A, 1.C, 1.E, 1.F |
 | **M1** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR, live nightly; no vendor type across the seam)** | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 | Policy layers complete: fallback runner + cost tracker | 1.B, 1.K |
-| 1.m3 | Parse → DAG → run loop emits the canonical event stream | 1.L, 1.M, 1.N |
-| 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T |
+| 1.m3 | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
+| 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
+| 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
 
 ## Dependencies
 
 ```mermaid
 flowchart LR
     P0["Phase 0 exit<br/>monorepo + @relavium/shared + CI"] --> LLM["@relavium/llm<br/>(1.A–1.K)"]
-    P0 --> CORE["@relavium/core<br/>(1.L–1.T)"]
-    LLM --> U["1.U end-to-end harness"]
+    P0 --> CORE["@relavium/core<br/>(1.L–1.T + 1.AB sandbox + 1.AC budget)"]
+    LLM --> U["1.U end-to-end harness (M2)"]
     CORE --> U
-    U --> P2["Phase 2 — CLI"]
+    LLM --> SUB["AgentSession sub-spine<br/>(1.V–1.AA)"]
+    CORE --> SUB
+    SUB --> SUBH["1.AA session harness"]
+    U --> P2["Phase 2 — CLI (run + chat)"]
+    SUBH --> P2
 ```
 
 - **Phase 0 complete** (M0): the Turborepo + pnpm monorepo, `@relavium/shared` Zod
@@ -597,14 +706,28 @@ flowchart LR
   [run-event schema](../../reference/contracts/sse-event-schema.md), the
   [node-types catalog](../../reference/shared-core/node-types.md), the
   [built-in tools catalog](../../reference/shared-core/built-in-tools.md), the
-  workflow/agent YAML specs, and the model-pricing catalog in
-  [database-schema.md](../../reference/desktop/database-schema.md).
+  workflow/agent YAML specs, and the `model_catalog` table in
+  [database-schema.md](../../reference/desktop/database-schema.md) — the display projection seeded
+  from the canonical `packages/llm/src/pricing.ts` (the source of truth for model ids, context
+  windows, and pricing) — plus the
+  [agent-session contract](../../reference/contracts/agent-session-spec.md) and the `[chat]` defaults in
+  [config-spec.md](../../reference/contracts/config-spec.md).
 - **The multi-LLM decision** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md))
   and the binding [testing](../../standards/testing.md) /
   [error-handling](../../standards/error-handling.md) /
   [code-style](../../standards/code-style-typescript.md) standards.
 - The official provider SDKs at pinned versions (`@anthropic-ai/sdk`, `openai`,
   `@google/genai`) — imported only inside `packages/llm/src/adapters/*`.
+- **The pivot + hardening decisions** implemented this phase:
+  [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) (AgentSession),
+  [ADR-0026](../../decisions/0026-session-export-to-workflow.md) (session export),
+  [ADR-0027](../../decisions/0027-expression-sandbox.md) (expression sandbox),
+  [ADR-0028](../../decisions/0028-workflow-resource-governance.md) (resource governance), and
+  [ADR-0029](../../decisions/0029-tool-policy-hardening.md) (tool-policy hardening).
+- **QuickJS-wasm** — the expression-sandbox runtime ([ADR-0027](../../decisions/0027-expression-sandbox.md))
+  and the engine's **first runtime dependency**, instantiated via the `WebAssembly` global from embedded
+  bytes (candidate package `quickjs-emscripten`, pinned in the `catalog:` and confirmed by the 1.AB perf
+  spike). See [tech-stack.md](../../tech-stack.md).
 
 ## Exit criteria (go / no-go)
 
@@ -625,6 +748,15 @@ All must be true to start Phase 2 (CLI):
    [code-style-typescript.md](../../standards/code-style-typescript.md#module-boundaries--no-vendor-type-across-the-llm-seam).
 5. Engine packages have **zero platform-specific imports** and meet the ≥ 90% line
    **and** branch coverage bar from [testing.md](../../standards/testing.md).
+6. The **expression sandbox (1.AB)** evaluates `condition`/`transform`/`merge_fn` in the
+   deterministic, resource-capped QuickJS-wasm runtime; a non-deterministic or resource-exhausting
+   expression is rejected/terminated with a typed, secret-free error
+   ([ADR-0027](../../decisions/0027-expression-sandbox.md)).
+7. The **pre-egress budget governor (1.AC)** stops or pauses a run *before* it exceeds its cap, and the
+   parallel concurrency cap bounds a wide fan-out ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)).
+8. The **agent-first sub-spine (1.V–1.AA)** passes its Node harness (1.AA): a multi-turn `AgentSession`
+   with a tool round-trip, `session:*` events, persistence + resume, and export-to-workflow — so the
+   Phase-2 `relavium chat` surface has a proven foundation. *(Additive — does not gate M2.)*
 
 ## Risks & mitigations
 
@@ -636,3 +768,5 @@ All must be true to start Phase 2 (CLI):
 | **Checkpoint/resume correctness** — partial-run recovery is subtle. | Dedicated resume + crash-reconciliation tests, the `runId + nodeId + retryCount` idempotency key, and gap detection aligned to `sequenceNumber`. |
 | **Gemini schema/id edge cases** — restricted OpenAPI subset and missing tool-call ids. | The `ToolNormalizer` (1.E) owns the reshape and id synthesis with dedicated tests; the Gemini conformance fixtures (1.H) exercise both. |
 | **Fallback masking real bugs** — a fatal error silently falling through the chain. | The `LlmError` retryable/fatal classification (1.I) stops the chain on fatal errors; conformance tests assert auth/cancel are fatal. |
+| **Expression-sandbox perf / determinism** — a WASM interpreter on the engine hot path; a non-deterministic expression would break checkpoint/resume reproducibility. | A start-of-1.AB **perf spike** on the chosen QuickJS-wasm package (candidate `quickjs-emscripten`); the determinism ban (no wall-clock/RNG, no `new Function()`) is enforced and asserted by the 1.U/1.AA harness ([ADR-0027](../../decisions/0027-expression-sandbox.md)). |
+| **New session lifecycle + persistence** — `AgentSession` + the `agent_sessions`/`session_messages` tables add a second lifecycle. | The 1.AA harness proves multi-turn + persistence/resume + export; the schema-migration **drift gate** guards the new tables when 1.X lands; sessions reuse the same substrate + security envelope as runs ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). |

@@ -59,6 +59,15 @@ All commands return a `Result`; the WebView receives a resolved value or a typed
 | `get_key_status` | `{ providerId }` | `'valid' \| 'invalid' \| 'unchecked'` | Key presence/health — never the key itself. |
 | `list_mcp_servers` | — | `McpServerConfig[]` | Read configured MCP servers. |
 | `llm_stream` | `{ providerId, keyId, endpoint, headers, body }` + a `Channel<StreamChunk>` | `void` (chunks arrive on the channel) | Perform one authenticated streaming LLM HTTPS request on behalf of the WebView-resident engine. Rust reads the provider key from the OS keychain, sets the `Authorization` header, issues the request (`reqwest`), and streams raw provider chunks back. **The raw key value never enters the WebView.** See [Rust-delegated LLM egress](#rust-delegated-llm-egress). |
+| `start_session` | `{ agentRef, context }` | `{ sessionId }` | Open a chat agent session ([agent-session-spec.md](agent-session-spec.md)). |
+| `send_message` | `{ sessionId, text }` | `void` (events arrive on the in-WebView bus) | Run one assistant turn; tokens/tool-calls surface as `session:*` + reused `agent:*` events. |
+| `cancel_session` | `{ sessionId }` | `void` | Abort the in-flight turn; the session stays resumable. |
+| `resume_session` | `{ sessionId }` | `SessionState` | Reload a persisted session to continue it. |
+| `list_sessions` | `{ filter? }` | `SessionSummary[]` | Read session history from `history.db`. |
+| `get_session_state` | `{ sessionId }` | `SessionState` | Durable session snapshot. |
+| `delete_session` | `{ sessionId }` | `void` | Soft-delete a session. |
+| `export_session` | `{ sessionId }` | `{ workflowPath }` | Export the session to a `.relavium.yaml` scaffold ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
+| `resume_budget` | `{ runId, decision }` | `void` | Resolve a `budget:paused` suspension ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)). |
 
 > Secrets cross the boundary **only inbound** (`set_provider_key`) — and never even inbound for `llm_stream`, which names the key by `{ providerId, keyId }` and lets Rust resolve it at call time. No key value is ever returned to the WebView. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 

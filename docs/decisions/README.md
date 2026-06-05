@@ -67,6 +67,12 @@ flowchart TD
 | 0021 | [better-sqlite3 as the Node-side SQLite driver for `@relavium/db`](0021-node-sqlite-driver-better-sqlite3.md) | Accepted | 2026-06-04 |
 | 0022 | [Run records reference the workflow by surrogate UUID, not the authored slug](0022-run-references-workflow-by-uuid.md) | Accepted | 2026-06-04 |
 | 0023 | [Authored workflow/agent YAML is strictly validated — unknown keys rejected](0023-strict-authored-yaml-validation.md) | Accepted | 2026-06-04 |
+| 0024 | [Agent-first entry point — `AgentSession` alongside `WorkflowEngine`](0024-agent-first-entry-point-agentsession.md) | Accepted | 2026-06-05 |
+| 0025 | [The conversational agent surface — a refinement of ADR-0007's desktop scope](0025-agent-surface-refines-desktop-scope.md) | Accepted | 2026-06-05 |
+| 0026 | [Session export to workflow YAML — the chat-to-workflow continuum](0026-session-export-to-workflow.md) | Accepted | 2026-06-05 |
+| 0027 | [Expression sandbox for `condition` / `transform` / `merge_fn`](0027-expression-sandbox.md) | Accepted | 2026-06-05 |
+| 0028 | [Workflow resource governance — pre-egress budget, run timeout, concurrency cap](0028-workflow-resource-governance.md) | Accepted | 2026-06-05 |
+| 0029 | [Tool-policy hardening — command match, tool narrowing, secret interpolation, SSRF](0029-tool-policy-hardening.md) | Accepted | 2026-06-05 |
 
 ## Creating a new ADR
 

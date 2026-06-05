@@ -19,7 +19,7 @@ flowchart TB
     end
 
     subgraph Packages["Shared packages (TypeScript, surface-agnostic)"]
-        Core["packages/core<br/>WorkflowEngine · DAG runner ·<br/>checkpoint/resume · RunEventBus"]
+        Core["packages/core<br/>WorkflowEngine (workflow runs) +<br/>AgentSession (chat) — two entry points ·<br/>DAG runner · checkpoint/resume · RunEventBus"]
         LLM["packages/llm<br/>LLMProvider seam · adapters over official SDKs<br/>fallback chains · cost · tool normalize"]
         Shared["packages/shared<br/>Zod schemas + types"]
         DB["packages/db<br/>Drizzle schema (SQLite + Postgres)"]
@@ -64,6 +64,15 @@ flowchart TB
 > `llm_stream` command, which reads the key and makes the HTTPS call (the raw key
 > never enters the WebView). See [local-first-and-security.md](local-first-and-security.md)
 > for the desktop trust-boundary diagram and [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md).
+
+> **Two engine entry points.** `packages/core` exposes `WorkflowEngine` (the DAG
+> runner for a committed workflow) **and** `AgentSession` (a multi-turn chat that
+> wraps the agent runner) as co-equal entry points on the *same* substrate — the
+> `RunEventBus`, the `ToolRegistry`, and the `@relavium/llm` seam. A workflow run
+> enters through one, a chat session through the other; both reuse the same node,
+> tool, and streaming machinery. The session contract is in
+> [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md)
+> and the surface story is in [agent-sessions.md](agent-sessions.md).
 
 ## Context
 
@@ -145,8 +154,10 @@ In Phase 1 the user's machine is the entire backend:
 
 ## End-to-end data flow
 
-A run follows the same path no matter which surface starts it (sourced from the
-synthesis `dataFlow` trace):
+A *workflow run* follows the same path no matter which surface starts it (sourced
+from the synthesis `dataFlow` trace). A *chat session* enters through `AgentSession`
+instead of `WorkflowEngine` but shares this same provider-streaming and event path;
+its lifecycle is detailed in [agent-sessions.md](agent-sessions.md):
 
 ```mermaid
 sequenceDiagram
