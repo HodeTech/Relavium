@@ -332,7 +332,7 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 | `agent_slug` | TEXT | NOT NULL — the authored `agent_ref` the session is bound to |
 | `agent_snapshot` | TEXT (JSON) | NULL — frozen agent config for reproducibility |
 | `title` | TEXT | NULL — display title (derived from the first message or user-set) |
-| `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the resolved model |
+| `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the session's **configured primary** model (resolved at start); the actual per-turn model, which may differ under fallback, is `session_messages.model_id` |
 | `working_dir` | TEXT | NULL — session-context workspace root |
 | `git_ref` | TEXT | NULL — branch/commit at session start, for provenance |
 | `fs_scope_tier` | TEXT | NOT NULL DEFAULT `'sandboxed'` — `CHECK (fs_scope_tier IN ('sandboxed','project','full'))` (the same tier enum as workflows; see [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers)) |

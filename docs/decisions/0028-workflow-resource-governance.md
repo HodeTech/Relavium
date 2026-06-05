@@ -27,7 +27,8 @@ cap; the budget is enforced *pre-egress* — estimate-and-block, not count-after
   - `pause_for_approval` — **reuse the human-gate seam** to suspend and ask the user to continue
     (the gate carries the spent/limit figures);
   - `warn` — emit a warning and proceed.
-  - **No `maxTokens` on the node?** the estimate uses a **configured per-call default**, not the
+  - **No `maxTokens` on the node?** the estimate uses a **configured per-call default**
+    (`[defaults].max_tokens_estimate` — [config-spec.md](../reference/contracts/config-spec.md)), not the
     model's absolute max output (which would over-block — e.g. trip a small budget on the first turn);
     a workflow that declares a `budget` may additionally require `maxTokens` on its agent nodes for a
     tighter estimate.

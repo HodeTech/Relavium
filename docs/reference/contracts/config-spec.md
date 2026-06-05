@@ -82,6 +82,7 @@ autostart = true
 [defaults]
 model = "claude-sonnet-4-6"        # default model for agents that omit one
 fs_scope = "sandboxed"             # sandboxed | project | full (see filesystem tiers)
+max_tokens_estimate = 4096         # per-call output-token estimate the pre-egress budget governor uses when a node/session omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block
 
 [variables]                        # available to all workflows in this workspace
 focus_area = "security and type safety"

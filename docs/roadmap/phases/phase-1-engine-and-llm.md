@@ -29,6 +29,15 @@ checkpoint/resume, retry, and provider failover all demonstrated.
 - A Node harness runs a 3-node workflow end-to-end with live streaming,
   checkpoint/resume, node retry, and provider failover, with cost recorded
   correctly per attempt (**M2**, the critical-path milestone).
+- `condition` / `transform` / `merge_fn` evaluate in the **deterministic, resource-capped
+  QuickJS-wasm sandbox** (no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)),
+  and the **pre-egress budget governor** ([ADR-0028](../../decisions/0028-workflow-resource-governance.md))
+  caps cost before each LLM call — both exercised by the harness (1.AB, 1.AC).
+- The **agent-first sub-spine** is implemented and **proven by its own Node harness (1.AA)**: a
+  multi-turn `AgentSession` with a tool round-trip, a `session:*` event stream, persistence + resume,
+  and export-to-workflow ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md),
+  [ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Additive and parallel — it does not
+  gate **M2**, but it is a Phase-1 deliverable that the Phase-2 `relavium chat` surface builds on.
 - Both packages have zero platform-specific imports and meet the engine coverage
   bar (≥ 90% line **and** branch) from [testing.md](../../standards/testing.md).
 
@@ -581,7 +590,7 @@ These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agen
 
 ### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P
 
-Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, resource-capped QuickJS-wasm sandbox for `condition` / `transform` / `merge_fn`, instantiated via the `WebAssembly` global from embedded bytes (no `node:fs`/`fetch`/DOM, no wall-clock/RNG, no `new Function()`). **On the M2 critical path** — the 1.P node handlers must not ship an unspecified evaluator, so this is sequenced into 1.P (it raises the 1.m4 cost).
+Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, resource-capped QuickJS-wasm sandbox for `condition` / `transform` / `merge_fn`, instantiated via the `WebAssembly` global from embedded bytes (no `node:fs`/`fetch`/DOM, no wall-clock/RNG, no `new Function()`). **On the M2 critical path** — the 1.P node handlers must not ship an unspecified evaluator, so this is sequenced into 1.P (it raises the 1.m4 cost). **First task — a perf spike:** select and benchmark the QuickJS-wasm package (candidate `quickjs-emscripten`) on the expression hot path and pin it in the `catalog:` ([tech-stack.md](../../tech-stack.md)); the rest of 1.AB builds on the confirmed package.
 
 **Acceptance:** `condition`/`transform` evaluate in the sandbox; a non-deterministic or resource-exhausting expression is rejected/terminated with a typed, secret-free error; the 1.U/1.AA harness asserts sandbox behavior.
 
@@ -612,10 +621,14 @@ the latter being the critical-path milestone for the whole product.
 ```mermaid
 flowchart LR
     P0["Phase 0 exit<br/>monorepo + @relavium/shared + CI"] --> LLM["@relavium/llm<br/>(1.A–1.K)"]
-    P0 --> CORE["@relavium/core<br/>(1.L–1.T)"]
-    LLM --> U["1.U end-to-end harness"]
+    P0 --> CORE["@relavium/core<br/>(1.L–1.T + 1.AB sandbox + 1.AC budget)"]
+    LLM --> U["1.U end-to-end harness (M2)"]
     CORE --> U
-    U --> P2["Phase 2 — CLI"]
+    LLM --> SUB["AgentSession sub-spine<br/>(1.V–1.Z)"]
+    CORE --> SUB
+    SUB --> SUBH["1.AA session harness"]
+    U --> P2["Phase 2 — CLI (run + chat)"]
+    SUBH --> P2
 ```
 
 - **Phase 0 complete** (M0): the Turborepo + pnpm monorepo, `@relavium/shared` Zod
@@ -627,13 +640,25 @@ flowchart LR
   [node-types catalog](../../reference/shared-core/node-types.md), the
   [built-in tools catalog](../../reference/shared-core/built-in-tools.md), the
   workflow/agent YAML specs, and the model-pricing catalog in
-  [database-schema.md](../../reference/desktop/database-schema.md).
+  [database-schema.md](../../reference/desktop/database-schema.md), plus the
+  [agent-session contract](../../reference/contracts/agent-session-spec.md) and the `[chat]` defaults in
+  [config-spec.md](../../reference/contracts/config-spec.md).
 - **The multi-LLM decision** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md))
   and the binding [testing](../../standards/testing.md) /
   [error-handling](../../standards/error-handling.md) /
   [code-style](../../standards/code-style-typescript.md) standards.
 - The official provider SDKs at pinned versions (`@anthropic-ai/sdk`, `openai`,
   `@google/genai`) — imported only inside `packages/llm/src/adapters/*`.
+- **The pivot + hardening decisions** implemented this phase:
+  [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) (AgentSession),
+  [ADR-0026](../../decisions/0026-session-export-to-workflow.md) (session export),
+  [ADR-0027](../../decisions/0027-expression-sandbox.md) (expression sandbox),
+  [ADR-0028](../../decisions/0028-workflow-resource-governance.md) (resource governance), and
+  [ADR-0029](../../decisions/0029-tool-policy-hardening.md) (tool-policy hardening).
+- **QuickJS-wasm** — the expression-sandbox runtime ([ADR-0027](../../decisions/0027-expression-sandbox.md))
+  and the engine's **first runtime dependency**, instantiated via the `WebAssembly` global from embedded
+  bytes (candidate package `quickjs-emscripten`, pinned in the `catalog:` and confirmed by the 1.AB perf
+  spike). See [tech-stack.md](../../tech-stack.md).
 
 ## Exit criteria (go / no-go)
 
@@ -654,6 +679,15 @@ All must be true to start Phase 2 (CLI):
    [code-style-typescript.md](../../standards/code-style-typescript.md#module-boundaries--no-vendor-type-across-the-llm-seam).
 5. Engine packages have **zero platform-specific imports** and meet the ≥ 90% line
    **and** branch coverage bar from [testing.md](../../standards/testing.md).
+6. The **expression sandbox (1.AB)** evaluates `condition`/`transform`/`merge_fn` in the
+   deterministic, resource-capped QuickJS-wasm runtime; a non-deterministic or resource-exhausting
+   expression is rejected/terminated with a typed, secret-free error
+   ([ADR-0027](../../decisions/0027-expression-sandbox.md)).
+7. The **pre-egress budget governor (1.AC)** stops or pauses a run *before* it exceeds its cap, and the
+   parallel concurrency cap bounds a wide fan-out ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)).
+8. The **agent-first sub-spine (1.V–1.AA)** passes its Node harness (1.AA): a multi-turn `AgentSession`
+   with a tool round-trip, `session:*` events, persistence + resume, and export-to-workflow — so the
+   Phase-2 `relavium chat` surface has a proven foundation. *(Additive — does not gate M2.)*
 
 ## Risks & mitigations
 
@@ -665,3 +699,5 @@ All must be true to start Phase 2 (CLI):
 | **Checkpoint/resume correctness** — partial-run recovery is subtle. | Dedicated resume + crash-reconciliation tests, the `runId + nodeId + retryCount` idempotency key, and gap detection aligned to `sequenceNumber`. |
 | **Gemini schema/id edge cases** — restricted OpenAPI subset and missing tool-call ids. | The `ToolNormalizer` (1.E) owns the reshape and id synthesis with dedicated tests; the Gemini conformance fixtures (1.H) exercise both. |
 | **Fallback masking real bugs** — a fatal error silently falling through the chain. | The `LlmError` retryable/fatal classification (1.I) stops the chain on fatal errors; conformance tests assert auth/cancel are fatal. |
+| **Expression-sandbox perf / determinism** — a WASM interpreter on the engine hot path; a non-deterministic expression would break checkpoint/resume reproducibility. | A start-of-1.AB **perf spike** on the chosen QuickJS-wasm package (candidate `quickjs-emscripten`); the determinism ban (no wall-clock/RNG, no `new Function()`) is enforced and asserted by the 1.U/1.AA harness ([ADR-0027](../../decisions/0027-expression-sandbox.md)). |
+| **New session lifecycle + persistence** — `AgentSession` + the `agent_sessions`/`session_messages` tables add a second lifecycle. | The 1.AA harness proves multi-turn + persistence/resume + export; the schema-migration **drift gate** guards the new tables when 1.X lands; sessions reuse the same substrate + security envelope as runs ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). |
