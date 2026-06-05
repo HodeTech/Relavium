@@ -61,12 +61,15 @@ interface WorkflowStore {
 
 ### `uiStore`
 
-Global, run-independent UI chrome: sidebar, active tab, theme, the modal stack, and the toast queue.
+Global, run-independent UI chrome: sidebar, active tab, theme, the modal stack, and the toast queue. `TabId` is a **closed** union — Chat and Canvas are co-equal top-level tabs (see [ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md) and [../desktop/routes-and-screens.md](../desktop/routes-and-screens.md)). `activeSessionId` is the **only** session state held in a global store — the transient handle to the open chat session; the session itself is DB-first, living in `history.db` (see [../desktop/database-schema.md](../desktop/database-schema.md)) and contracted by [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md).
 
 ```ts
+type TabId = 'dashboard' | 'canvas' | 'chat' | 'runs' | 'settings';
+
 interface UiStore {
   sidebarOpen: boolean;
   activeTab: TabId;
+  activeSessionId: string | null;          // transient handle only; the session is DB-first (history.db)
   modals: ModalEntry[];                    // stack of open modal ids + their props
   toasts: Toast[];
 }
@@ -107,6 +110,7 @@ ReactFlow nodes and edges are held in `useNodesState` / `useEdgesState` inside a
 - `agentStore` and `workflowStore` (metadata) persist locally between sessions; the source of truth on disk is the `.relavium/` files (see [../contracts/config-spec.md](../contracts/config-spec.md)).
 - `runStore` is ephemeral per run; durable run history is the SQLite database, queried via IPC, not held entirely in the store. See [../desktop/database-schema.md](../desktop/database-schema.md).
 - `providerStore` holds only key **status**; raw keys are never persisted to web storage.
+- **Chat sessions are DB-first, not a store.** A session is auto-persisted and resumable in `history.db` (the `agent_sessions`/`session_messages` tables; see [../desktop/database-schema.md](../desktop/database-schema.md)); transcripts are queried via IPC, not held entirely in memory. The only session state in a global store is `uiStore.activeSessionId` — there is **no** sixth store. The runtime contract is [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md).
 
 ## Phase 2 note
 

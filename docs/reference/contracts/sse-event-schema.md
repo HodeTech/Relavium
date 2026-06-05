@@ -50,23 +50,30 @@ export type RunEvent =
   | HumanGateResumedEvent
   | RunCompletedEvent
   | RunFailedEvent
-  | RunCancelledEvent;
+  | RunCancelledEvent
+  | RunPausedEvent
+  | RunTimeoutEvent
+  | BudgetWarningEvent
+  | BudgetPausedEvent;
 ```
+
+> `RunPausedEvent` is the multi-gate aggregate (below); `RunTimeoutEvent` / `BudgetWarningEvent` / `BudgetPausedEvent` are the resource-governance events defined in [Workflow governance and reserved events](#workflow-governance-and-reserved-events).
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
 | `run:started` | A run began. | `workflowId` (the `workflows.id` **UUID** FK, not the authored slug — [ADR-0022](../../decisions/0022-run-references-workflow-by-uuid.md)), `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType` |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
-| `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets) |
-| `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI) |
+| `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets), `attemptNumber?` (1-based, matches `cost:updated`) |
+| `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI), `attemptNumber?` |
 | `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
-| `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model?}` (`model` only for LLM nodes), `durationMs` |
-| `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` |
+| `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model?}` (`model` only for LLM nodes), `durationMs`, `attemptNumber?` |
+| `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` (`code` is an [`ErrorCode`](#error-code-taxonomy)) |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
+| `run:paused` | The run is suspended with **≥1 gate pending** — the multi-gate aggregate that backs the pending-gate queue (parallel branches may each reach a gate). | `pendingGateCount`, `gateIds[]` |
 | `run:completed` | The run finished. | `outputs`, `totalTokensUsed`, `totalCostMicrocents` (integer micro-cents closing total for the whole run), `durationMs` |
-| `run:failed` | The run failed. | `error: {code, message, nodeId?}`, `partialOutputs` |
+| `run:failed` | The run failed. | `error: {code, message, retryable, nodeId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `nodeId` is the root-cause node), `partialOutputs` |
 | `run:cancelled` | The run was cancelled. | (base only) |
 
 ### Selected definitions
@@ -105,6 +112,7 @@ export interface NodeCompletedEvent extends BaseEvent {
   // no model — so `model` is optional.
   tokensUsed: { input: number; output: number; model?: string };
   durationMs: number;
+  attemptNumber?: number;   // 1-based retry attempt this completion belongs to (matches cost:updated)
 }
 
 export interface HumanGatePausedEvent extends BaseEvent {
@@ -154,13 +162,67 @@ The gate decision object:
 ```ts
 export interface GateDecision {
   decision: 'approved' | 'rejected' | 'input_provided';
-  decidedBy: string;        // user id or 'timeout_escalation'
+  decidedBy: string;        // user id, or 'timeout' when a gate auto-resolves on timeout
   payload?: unknown;        // for gate_type = input
   comment?: string;
 }
 ```
 
-Timeout behavior (`timeout_action` on the node) maps to `decidedBy: 'timeout_escalation'` when a gate auto-resolves. See [workflow-yaml-spec.md](workflow-yaml-spec.md#human_gate-node).
+Timeout behavior (`timeout_action` on the node) maps to `decidedBy: 'timeout'` when a gate auto-resolves. The `timeout_action: escalate` value is **reserved** in v1.0 (a timeout resolves only as `approve` or `reject`); see [workflow-yaml-spec.md](workflow-yaml-spec.md#human_gate-node).
+
+## Session event namespace
+
+An [agent session](agent-session-spec.md) ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)) is driven on the **same** `RunEventBus`, but emits a **disjoint `session:*` namespace** keyed by `sessionId` instead of `runId`. Consumers route purely on the `type` discriminant, so the two namespaces never collide.
+
+```ts
+interface BaseSessionEvent {
+  type: string;             // 'session:*' (see below)
+  sessionId: string;
+  timestamp: string;        // ISO 8601
+  sequenceNumber: number;   // monotonic per session — same gap-detection/resync rule as a run
+}
+
+export type SessionEvent =
+  | SessionStartedEvent       // 'session:started'   — { agentRef, model, context }
+  | SessionTurnStartedEvent   // 'session:turn_started'   — a user message began an assistant turn
+  | SessionTurnCompletedEvent // 'session:turn_completed' — { stopReason, tokensUsed }
+  | SessionCancelledEvent     // 'session:cancelled' — the in-flight turn was aborted
+  | SessionExportedEvent;     // 'session:exported'  — { workflowPath } (chat-to-workflow export)
+```
+
+Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)).
+
+## Workflow governance and reserved events
+
+`@relavium/core` resource governance ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) adds three run events:
+
+| `type` | Meaning | Key payload fields |
+| --- | --- | --- |
+| `budget:warning` | Spend crossed the warning threshold. | `spentMicrocents`, `limitMicrocents`, `thresholdPct` |
+| `budget:paused` | Spend would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via the `resume_budget` IPC command. | `spentMicrocents`, `limitMicrocents` |
+| `run:timeout` | The run hit its `timeout_ms`. | `elapsedMs`, `timeoutMs` |
+
+**Reserved (declared, but emitted by no Phase-1 code):**
+
+- **Loops** ([loops ADR, 0030+](../../decisions/README.md)): `iteration:started` / `iteration:completed`, and an optional `iterationIndex?` / `iterationTotal?` on node-level events. Reserved so the schema is future-proof without Phase-1 bloat.
+- **Steering** ([agent-sessions.md](../../architecture/agent-sessions.md)): `agent:directive_injected` (`mode: 'non_blocking' | 'blocking'`, **`directiveLength` — not the content**, so no secret/PII enters the stream), `agent:context_compacted`, `agent:context_cleared`. Security envelope: a directive applies **only** to a running or paused agent; completed nodes are immutable.
+
+## Error-code taxonomy
+
+`node:failed.error.code` and `run:failed.error.code` are a closed **`ErrorCode`** enum (not a free string), so surfaces can branch on cause and `retryable` is unambiguous:
+
+`validation` · `provider_auth` · `provider_rate_limit` · `provider_unavailable` · `tool_denied` · `tool_failed` · `budget_exceeded` · `run_timeout` · `cancelled` · `sandbox_error` · `internal`
+
+The retryable/fatal mapping is owned by [error-handling.md](../../standards/error-handling.md) (e.g. `provider_rate_limit`/`provider_unavailable` retryable; `provider_auth`/`validation`/`tool_denied`/`cancelled` fatal). Messages remain user-safe and secret-free.
+
+## Forward-compatibility
+
+This schema is **versioned by additive evolution**, not a version field. The following are always v1.0-legal and never a breaking change, provided consumers **ignore unknown `type`s and unknown fields** and treat an **absent optional field as omitted (not `null`)**:
+
+- adding a **new optional field** to an existing event;
+- adding a **new event `type`** (including activating any reserved type above).
+
+Removing or repurposing an existing field/type is a breaking change and is not done within the contract.
 
 ## Transport notes
 

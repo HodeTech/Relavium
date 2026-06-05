@@ -14,6 +14,7 @@ The wire- and file-level agreements between surfaces, the engine, and the user's
 | --- | --- |
 | [contracts/workflow-yaml-spec.md](contracts/workflow-yaml-spec.md) | The canonical `.relavium.yaml` workflow file format (v1.0) — fields, node types, edges, triggers, interpolation, full example. |
 | [contracts/agent-yaml-spec.md](contracts/agent-yaml-spec.md) | The `.agent.yaml` / inline agent schema — model, provider, system prompt, retry, fallback chain. |
+| [contracts/agent-session-spec.md](contracts/agent-session-spec.md) | The `AgentSession` runtime contract — the agent-first entry point: lifecycle, message shape, context, and export-to-workflow contract. |
 | [contracts/sse-event-schema.md](contracts/sse-event-schema.md) | The run event stream contract (`RunEvent`) — every surface consumes the same events; Phase 1 over IPC, Phase 2 over HTTP SSE. |
 | [contracts/ipc-contract.md](contracts/ipc-contract.md) | Tauri IPC surface between the Rust backend and the React WebView — commands, channels, events. |
 | [contracts/config-spec.md](contracts/config-spec.md) | Global `~/.relavium/` and per-project `.relavium/` config files and their resolution order. |

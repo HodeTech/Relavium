@@ -36,6 +36,9 @@ workflow:
 
   agents: AgentRef[]         # inline agents, or $ref to .agent.yaml files
   tools: ToolPolicy          # workflow-wide tool guardrails (command/domain allowlists)
+  budget: Budget             # optional cost/time/concurrency guardrails (see Resource governance)
+  timeout_ms: number         # optional whole-run wall-clock cap
+  max_parallel: number       # optional cap on concurrent in-flight LLM calls
   nodes: Node[]              # execution-graph nodes
   edges: Edge[]              # directed connections between nodes
 ```
@@ -51,6 +54,7 @@ workflow:
 | `context` | no | Named values (possibly interpolated) available as `{{ctx.key}}`. |
 | `agents` | yes (if any agent node) | Inline definitions or refs to agent files. |
 | `tools` | required to use `run_command` | Workflow-wide tool guardrails — `allowedCommands` (and optional `allowedDomains`). See [Tool policy](#tool-policy-spectools). |
+| `budget` / `timeout_ms` / `max_parallel` | no | Resource guardrails — a pre-egress cost cap, a whole-run timeout, and a concurrency cap. See [Resource governance](#resource-governance-specbudget) and [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
 | `nodes` | yes | The graph. |
 | `edges` | yes | The connections. |
 
@@ -84,6 +88,20 @@ inputs:
 
 `secret`-typed inputs are resolved through the secret store, never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
+An input may carry an optional **`validation`** object the engine checks before a run starts; a violating input fails fast and the run never begins:
+
+```yaml
+inputs:
+  - name: reviewer_email
+    type: string
+    validation: { format: email, max_length: 100 }   # format | pattern | enum | min | max | min_length | max_length
+  - name: severity
+    type: number
+    validation: { min: 0, max: 10 }
+```
+
+> **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
+
 ## Context and interpolation
 
 `context` declares named values available throughout the workflow as `{{ctx.key}}`. Interpolation uses `{{ ... }}` syntax everywhere (inputs, context, prompt templates, message templates, edge/condition expressions).
@@ -102,6 +120,8 @@ Common interpolation namespaces:
 - `{{ctx.<key>}}` — context entries.
 - `{{run.outputs["<node-id>"]}}` — a completed node's output (used in conditions, templates, and merges).
 - Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`.
+
+> **Evaluation timing.** `context` entries are evaluated **eagerly, exactly once, before any node runs**, and the resolved values are immutable and cached for the whole run. A pipe-filter failure (e.g. `read_file` on a missing path) is a **validation error** that fails the run before it starts (CLI exit code 2), never a mid-run surprise. A `context` value may reference `{{inputs.*}}` but **not** `{{run.outputs[...]}}` (no node has run yet) — doing so is a parse error.
 
 ## Agents
 
@@ -151,18 +171,32 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 - id: security-scan-node
   type: agent
   agent_ref: security-scanner       # references agents[] by id
+  system_prompt_append: |            # optional: appended to the agent's system_prompt for THIS node
+    For this task, focus only on authentication and injection issues.
   prompt_template: |
     Review this TypeScript file for security issues:
     ```typescript
     {{ctx.code_content}}
     ```
-  model: claude-sonnet-4-6           # optional per-node override
+  model: claude-sonnet-4-6           # optional per-node override (resolved against the catalog at parse)
   temperature: 0.1                   # optional override
   max_tokens: 1024                   # optional override
-  tools: [read_file, web_search]     # tool ids available to this node
+  tools: [read_file]                 # NARROWS the agent's tools for this node (never widens — see note)
+  output_schema:                     # optional: validate the node's output (JSON-Schema subset)
+    type: object
+    required: [score]
+    properties: { score: { type: number } }
   timeout_ms: 60000
   retry: { max: 3, backoff: linear } # linear | exponential
 ```
+
+> **Node overrides narrow, they never escalate.** A node may override `model` / `temperature` /
+> `max_tokens` / `system_prompt_append`, and its `tools:` list may only **narrow** the agent's granted
+> tools — it can never add a tool the agent lacks (validator-enforced; [ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
+> A `model` override is **resolved against the model catalog at parse time**; an unknown model id fails
+> parse with the list of valid options — never a silent fallback. The optional `output_schema` (also on
+> `transform` / `condition`) validates the node's output and powers type-safe downstream interpolation
+> and VS Code completion ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)).
 
 ### `human_gate` node
 
@@ -175,10 +209,10 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
     Security scan flagged issues in {{inputs.file_path}}.
     Score: {{run.outputs["security-scan-node"].score}}/10.
   timeout_ms: 86400000               # 24h
-  timeout_action: reject             # reject | approve | escalate
+  timeout_action: reject             # reject | approve  (escalate is reserved — see note)
 ```
 
-`timeout_action: approve` auto-approves on timeout — dangerous; use sparingly. `escalate` notifies fallback assignees and extends the timeout. The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
+`timeout_action: approve` auto-approves on timeout — dangerous; use sparingly. **`escalate` is reserved in v1.0**: real escalation needs a Phase-2 notification system, so the validator rejects it for now (use `reject` or `approve`); a timeout then resolves with `decidedBy: 'timeout'`. Because parallel branches may each reach a gate, **multiple gates can be pending at once** — each carries an independent timeout and the surfaces show a pending-gate queue (`relavium gate list`). The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
 
 ### `condition` node
 
@@ -194,9 +228,9 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
   default: synthesize-report  # taken when no `when` matches the evaluated result
 ```
 
-A condition node evaluates `expression` **once** and selects the branch whose `when` value equals the result; if none matches, control flows to `default`. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
+A condition node evaluates `expression` **once** and selects the branch whose `when` value **strictly equals** (`===`, no type coercion) the result; `when` values must be a boolean, string, or number. If no `when` matches and no `default` is set, the run fails with a typed "no branch matched" error rather than stalling. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
 
-The `expression:` string is a **sandboxed JavaScript expression** (`expression_type: js`, the default — no I/O, no ambient globals). The other allowed expression languages are `jmespath` and `jsonlogic` (set `expression_type` to opt in). **There is no Python expression evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The full `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
+The `expression:` string is a **sandboxed JavaScript expression** — in v1.0 the only `expression_type` is **`js`**, evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared dependency) and deferred to a future ADR. **There is no Python evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
 
 ### `transform` node
 
@@ -206,7 +240,7 @@ The `expression:` string is a **sandboxed JavaScript expression** (`expression_t
   transform: '{ files: run.outputs["scan"].issues.map(i => i.line) }'
 ```
 
-A sandboxed JavaScript expression (`expression_type: js`, the default) whose result becomes the node's output. No LLM call. As with `condition`, `jmespath` / `jsonlogic` are the only other allowed `expression_type` values, and there is no Python evaluator — see [node-types.md](../shared-core/node-types.md#per-type-engine-config).
+A sandboxed JavaScript expression (`expression_type: js`) whose result becomes the node's output. No LLM call. As with `condition`, v1.0 ships **`js` only** (jmespath/jsonlogic reserved; [ADR-0027](../../decisions/0027-expression-sandbox.md)), evaluated in the deterministic sandbox, and there is no Python evaluator — see [node-types.md](../shared-core/node-types.md#per-type-engine-config). A `transform` may carry an optional `output_schema` to validate its reshaped result.
 
 ### `parallel` and `merge` nodes
 
@@ -234,20 +268,41 @@ Workflow-wide tool guardrails live under a top-level `tools:` block. This is the
 workflow:
   # …
   tools:
-    allowedCommands:            # allowlist for the `run_command` built-in tool
-      - 'npm test'              # matched against the resolved command string
+    allowedCommands:            # EXACT-match allowlist for `run_command` (the whole resolved command)
+      - 'npm test'              # matched exactly — 'npm test --coverage' would NOT match
       - 'npm run lint'
       - 'git diff'
-    allowedDomains:             # optional allowlist for the `http_request` built-in tool
+    allowedCommandGlobs:        # optional, opt-in pattern matching (riskier — use sparingly)
+      - 'npm run *'
+    allowedDomains:             # exact-FQDN allowlist for `http_request` (HTTPS only, SSRF-guarded)
       - 'api.github.com'
 ```
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `tools.allowedCommands` | required to use `run_command` | An explicit allowlist of permitted shell commands. **Empty or absent ⇒ `run_command` is disabled** (it never runs an unlisted command). Enforced by the engine, not by convention — see [built-in-tools.md](../shared-core/built-in-tools.md#the-built-in-tools). |
-| `tools.allowedDomains` | no | Per-workflow domain allowlist for `http_request`. |
+| `tools.allowedCommands` | required to use `run_command` | **Exact-match** allowlist of permitted shell commands — the full resolved command must equal an entry (`'git'` does **not** permit `git push`). **Empty or absent ⇒ `run_command` is disabled.** Engine-enforced ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)). |
+| `tools.allowedCommandGlobs` | no | Opt-in glob patterns for `run_command` (e.g. `'npm run *'`). Riskier than exact match; off by default. |
+| `tools.allowedDomains` | required to use `http_request` | Exact-FQDN allowlist for `http_request`. **HTTPS only**, and private/loopback/link-local/metadata ranges are blocked (the same SSRF guard as a provider base URL and MCP server URLs — [security-review.md](../../standards/security-review.md), [ADR-0029](../../decisions/0029-tool-policy-hardening.md)). **Empty or absent ⇒ `http_request` is disabled** (deny-all, symmetric with `allowedCommands`). |
 
 The command allowlist is **independent of the filesystem scope tier** (a workflow can be FS-sandboxed *and* still carry an empty command allowlist). The FS tier itself is set in project config (`fs_scope`), not here — see [config-spec.md](config-spec.md) and [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers).
+
+> **Public workflow-API tightening ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** Exact-match `allowedCommands`, deny-all-when-empty `allowedDomains`, the SSRF range-block on `http_request` (and MCP server URLs), and node-`tools:` narrow-only are deliberate **behavior changes**, not additive options — cheap to land now because no authored workflow exists yet. The binding security rules live in [security-review.md](../../standards/security-review.md).
+
+## Resource governance (`spec.budget`)
+
+Optional, author-declared guardrails that bound a run's **cost**, **time**, and **concurrency**, enforced by the engine ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)).
+
+```yaml
+workflow:
+  # …
+  budget:
+    max_cost_microcents: 5000000     # ~$0.05 cap (integer micro-cents)
+    on_exceed: pause_for_approval    # fail | pause_for_approval | warn
+  timeout_ms: 300000                 # whole-run wall-clock cap
+  max_parallel: 4                    # max concurrent in-flight LLM calls (bounds a wide fan-out)
+```
+
+The cost cap is **pre-egress**: before each LLM call the engine checks `cumulative + worstCaseNextEstimate(maxTokens)` against `max_cost_microcents` and applies `on_exceed` — `fail` stops the run, `pause_for_approval` suspends it like a human gate (resumed via `resume_budget`), `warn` proceeds after a `budget:warning` event. This is a **BYOK-local** safety rail, distinct from Phase-2 managed-mode billing ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)). The `budget:warning` / `budget:paused` / `run:timeout` events are defined in [sse-event-schema.md](sse-event-schema.md).
 
 ## Edges
 
@@ -271,6 +326,7 @@ edges:
 | `to` | yes | Target node id. |
 | `label` | no | Display label. |
 | `condition` | no | JS expression; the edge is followed only when truthy. Omit for unconditional. |
+| `data_mapping` | — | **Reserved / engine-internal in v1.0** — not an authored field; reshape state via a `transform` node or a custom `merge_fn` instead. |
 
 ## Complete example
 

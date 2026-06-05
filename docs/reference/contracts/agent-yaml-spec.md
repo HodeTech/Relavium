@@ -25,6 +25,9 @@ system_prompt: string       # required; supports {{variable}} interpolation
 temperature: number         # optional, default per-provider
 max_tokens: number          # optional output cap
 
+input_schema: object        # optional JSON Schema for the agent's expected input shape
+output_schema: object       # optional JSON Schema for the agent's produced output shape
+
 tools: string[]             # tool ids this agent may call (built-in, mcp, plugin)
 mcp_servers: McpServerRef[] # optional MCP servers this agent consumes
 memory:                     # optional conversational memory policy
@@ -51,6 +54,8 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `system_prompt` | yes | Multiline YAML scalar; `{{ctx.*}}` / `{{inputs.*}}` interpolation supported. |
 | `temperature` | no | Sampling temperature. |
 | `max_tokens` | no | Output token cap. |
+| `input_schema` | no | JSON Schema describing the input this agent expects. Purely additive metadata — it drives type-safe node chaining and editor (VS Code) completion; it does not change run-time execution. |
+| `output_schema` | no | JSON Schema describing the output this agent produces. Same role as `input_schema` for the downstream side of a node chain. |
 | `tools` | no | Tool ids — see [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md). |
 | `mcp_servers` | no | See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md). |
 | `memory` | no | `none` (default), `window` (last N turns), or `summary` (rolling summary). |

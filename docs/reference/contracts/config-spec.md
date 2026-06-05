@@ -85,7 +85,19 @@ fs_scope = "sandboxed"             # sandboxed | project | full (see filesystem 
 
 [variables]                        # available to all workflows in this workspace
 focus_area = "security and type safety"
+
+[chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
+default_model = "claude-sonnet-4-6"   # model for a chat session that names none
+fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
+max_messages = 200                 # session-history cap before older turns are trimmed/summarized
 ```
+
+> The `[chat]` block sets defaults for the **agent-first** chat entry point
+> ([agent-session-spec.md](agent-session-spec.md), [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),
+> distinct from `[defaults]` (which governs **workflow** runs). It does **not** define its own command
+> allowlist: a chat session reuses the workflow `allowedCommands` policy whose canonical home is
+> [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools) (empty/absent ⇒ `run_command`
+> disabled). Session history persists in the existing `history.db` — there is no separate `sessions.db`.
 
 ## Secrets are out of band
 
