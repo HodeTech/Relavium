@@ -91,6 +91,7 @@ interface SessionMessage {
   sequenceNumber: number;                 // monotonic per session
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: ContentPart[];                 // text | tool_call | tool_result parts
+  modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   timestamp: string;                      // ISO 8601
 }
 ```

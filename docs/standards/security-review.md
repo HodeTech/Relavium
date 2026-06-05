@@ -171,7 +171,9 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
 - **`secret`-typed inputs never interpolate into prompts or tool text.** *(Security
   tightening — ADR-0029(c); this closes the real P0 leak.)* A `secret`-typed input may feed
   **only** credential/header fields (e.g. an auth header), and is **rejected at parse** from
-  `prompt_template` or any tool argument text. Event-payload masking is not enough on its
+  `prompt_template` or any tool argument text — **transitively** (taint-tracked through `context`
+  entries and any derived value, so it cannot be laundered through an intermediate variable).
+  Event-payload masking is not enough on its
   own — a secret interpolated into a prompt has already left the boundary before any mask
   applies. The user's own conversational content in a chat session is the user's data
   (encrypted in `history.db`), **not** a managed secret; the leak this rule closes is a

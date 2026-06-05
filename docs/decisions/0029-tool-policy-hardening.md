@@ -42,7 +42,10 @@ workflow-API tightening" migration note:**
   granted tools; it can never add a tool the agent lacks. Enforced by the parser
   ([ADR-0023](0023-strict-authored-yaml-validation.md)).
 - **(c) No secret interpolation into agent text.** `secret`-typed inputs are **rejected at parse**
-  from `prompt_template` and any tool text field; they may feed only credential/header fields. (User
+  from `prompt_template` and any tool text field; they may feed only credential/header fields. The
+  rejection is **transitive (taint-tracked)** — a `secret` assigned to a `context` entry, or any value
+  derived from one, is equally tainted and rejected from prompt/tool text, so it cannot be laundered
+  through an intermediate variable. (User
   *conversational* content is the user's own data, encrypted in `history.db`, and is out of scope of
   this rule.)
 - **(d) One SSRF policy, three egress paths.** The existing provider-`baseURL` range-block is the

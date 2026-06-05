@@ -369,6 +369,7 @@ pattern). Cascades from `agent_sessions`.
 | `tool_call_id` | TEXT | NULL |
 | `name` | TEXT | NULL |
 | `finish_reason` | TEXT | NULL |
+| `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the model that produced an assistant turn (**fallback-aware**, so the transcript shows which model answered; NULL for non-assistant rows) |
 | `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |

@@ -587,7 +587,7 @@ Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, res
 
 ### 1.AC — Resource governor (pre-egress budget) — folds into 1.O
 
-Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): a pre-egress cost check (`cumulative + worstCaseNextEstimate(maxTokens) > max_cost_microcents → on_exceed`), a run `timeout_ms`, and a parallel concurrency cap; `pause_for_approval` reuses the human-gate seam; emits `budget:warning` / `budget:paused` / `run:timeout`.
+Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-egress** budget check, a run `timeout_ms`, and a parallel concurrency cap, with `pause_for_approval` reusing the human-gate seam and emitting `budget:warning` / `budget:paused` / `run:timeout`. The cost formula and `on_exceed` semantics are owned by ADR-0028; this workstream wires them into 1.O.
 
 **Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
 

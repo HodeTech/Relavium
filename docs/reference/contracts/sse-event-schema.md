@@ -185,10 +185,12 @@ interface BaseSessionEvent {
 export type SessionEvent =
   | SessionStartedEvent       // 'session:started'   — { agentRef, model, context }
   | SessionTurnStartedEvent   // 'session:turn_started'   — a user message began an assistant turn
-  | SessionTurnCompletedEvent // 'session:turn_completed' — { stopReason, tokensUsed }
+  | SessionTurnCompletedEvent // 'session:turn_completed' — { stopReason, tokensUsed, error? }
   | SessionCancelledEvent     // 'session:cancelled' — the in-flight turn was aborted
   | SessionExportedEvent;     // 'session:exported'  — { workflowPath } (chat-to-workflow export)
 ```
+
+A turn that fails (provider error, rate limit, cancellation) still emits `session:turn_completed` with an `error?: { code, message, retryable }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy as run events — so a surface can render the failure rather than a silent stall.
 
 Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)).
 

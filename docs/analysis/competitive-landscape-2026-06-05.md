@@ -34,7 +34,7 @@ or a *completion*. Relavium's structural bets are different:
    (`ToolRegistry`, the `@relavium/llm` seam, the event bus); see
    [ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md).
 3. **The workflow is a git-committable file**, not a session or a vendor database row.
-   A `.relavium.yaml` is reviewable, diffable, revertable, and shareable through the same
+   A `.relavium.yaml` is reviewable, diffable, reversible, and shareable through the same
    git workflow as code.
 4. **A one-way chat → workflow continuum.** A chat session is auto-persisted and
    resumable, and can be **exported to a workflow scaffold** that is reviewed before

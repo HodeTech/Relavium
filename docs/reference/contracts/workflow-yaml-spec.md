@@ -100,7 +100,7 @@ inputs:
     validation: { min: 0, max: 10 }
 ```
 
-> **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
+> **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. The rejection is **transitive** (taint-tracked through `context` entries and any derived value — a secret cannot be laundered through an intermediate variable). This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
 
 ## Context and interpolation
 

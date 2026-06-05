@@ -35,7 +35,7 @@ It is a **Turborepo + pnpm monorepo**:
 A run executes in one of **three execution modes** behind the one `LLMProvider` seam —
 **local** (BYOK, the Phase-1 default), **cloud** (BYOK-central, Phase 2), and **managed**
 (Relavium's own keys via a metered egress gateway; engine still runs locally, Phase 2). The
-engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md)..[ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
+engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
 **Status: Phase 0 complete (milestone M0, 2026-06-04).** The monorepo skeleton, the strict

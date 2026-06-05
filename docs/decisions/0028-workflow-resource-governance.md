@@ -27,6 +27,10 @@ cap; the budget is enforced *pre-egress* — estimate-and-block, not count-after
   - `pause_for_approval` — **reuse the human-gate seam** to suspend and ask the user to continue
     (the gate carries the spent/limit figures);
   - `warn` — emit a warning and proceed.
+  - **No `maxTokens` on the node?** the estimate uses a **configured per-call default**, not the
+    model's absolute max output (which would over-block — e.g. trip a small budget on the first turn);
+    a workflow that declares a `budget` may additionally require `maxTokens` on its agent nodes for a
+    tighter estimate.
 - **Run timeout.** `timeout_ms` bounds total wall-clock; on expiry the run ends with a typed timeout
   outcome.
 - **Concurrency cap.** A configurable maximum number of in-flight provider calls bounds a wide

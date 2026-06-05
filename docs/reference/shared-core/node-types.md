@@ -126,7 +126,7 @@ In the engine's `WorkflowDefinition`, a node carries `id`, `type`, `label`, opti
 | `retry_config` | any | `max_attempts`, `backoff_ms` (base delay), `backoff_strategy` (`linear`/`exponential`, from the authored YAML `retry.backoff`), `retry_on[]` (error types) |
 
 > The authored YAML uses friendlier field names (e.g. `parallel_of`, `merge_strategy`, `timeout_action`) that map onto the engine config blocks above. The YAML is the user contract — see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md). **Durations are milliseconds on both sides** (`timeout_ms`, `backoff_ms`) — the mapping renames fields but never converts units, so there is no hidden ms↔s boundary. The mapping itself is owned by `@relavium/core` and is exercised on parse against the `WorkflowSchema` Zod definition.
-
+>
 > **Expression languages (condition / transform).** In v1.0 the only `expression_type` is **`js`** — a **sandboxed JavaScript expression** evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared runtime dependency) and deferred to a future ADR. **There is no Python evaluator** — per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) the engine is pure TypeScript and ships no Python runtime. `workflow-yaml-spec.md` exposes the same set; its bare `condition:` / `transform:` strings are `js` expressions.
 
 ### Merge-strategy reconciliation
