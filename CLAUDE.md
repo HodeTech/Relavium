@@ -6,11 +6,17 @@ action. Other AI agents should read [AGENTS.md](AGENTS.md), which points back he
 
 ## What this project is
 
-**Relavium** is a multi-surface, **local-first** AI agent workflow platform — a
+**Relavium** is a multi-surface, **local-first** AI agent platform — a
 product of **HodeTech** ([github.com/HodeTech/Relavium](https://github.com/HodeTech/Relavium)).
-You design multi-agent, multi-model LLM workflows as **git-committable YAML** and
-run them across a Tauri desktop app, a VS Code extension, and a CLI. The workflow
-engine is a **pure-TypeScript package shared by every surface**.
+*Start as an agent. Ship the workflow. Own every run.* You begin in a conversational
+**agent session** — a first-class engine entry point on every surface (CLI `relavium chat`,
+a desktop chat tab, a VS Code coding-assistant) — and graduate that session into a
+multi-agent, multi-model **workflow** authored as **git-committable YAML**, run across a
+Tauri desktop app, a VS Code extension, and a CLI. Both entry points — `AgentSession` and
+`WorkflowEngine` — sit on one **pure-TypeScript engine shared by every surface**, reusing the
+same tool registry, `@relavium/llm` seam, and event bus. See
+[ADR-0024](docs/decisions/0024-agent-first-entry-point-agentsession.md) and
+[ADR-0026](docs/decisions/0026-session-export-to-workflow.md).
 
 It is a **Turborepo + pnpm monorepo**:
 
@@ -66,8 +72,11 @@ These apply to every AI agent in this repo, regardless of model, runner, or tool
    managed mode)* Relavium's own provider keys live in a KMS-backed master-key vault and
    per-provider key pools, attached only inside the gateway on the outbound request — they
    never cross the `LLMProvider` seam either ([ADR-0013](docs/decisions/0013-managed-key-vault-and-pools.md)).
-7. **The desktop app is an agent-management center, NOT an IDE** — no code editor,
-   file browser, or terminal. See [ADR-0007](docs/decisions/0007-desktop-is-not-an-ide.md).
+7. **The desktop app is an agent-management center, NOT an IDE.** A conversational
+   chat tab — an agent *capability* — is allowed and co-equal with the canvas; the
+   forbidden boundary is the **IDE shell**: no code editor, no file-tree browser, no
+   terminal. See [ADR-0007](docs/decisions/0007-desktop-is-not-an-ide.md), refined (not
+   reversed) by [ADR-0025](docs/decisions/0025-agent-surface-refines-desktop-scope.md).
 8. **One canonical home per artifact.** Concrete specs (workflow/agent YAML,
    run-event schema, IPC, config, node types, DB schema) live only in their
    [docs/reference/](docs/reference/) file; everything else links to it, never

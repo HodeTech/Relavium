@@ -63,6 +63,26 @@ It has **no** code editor, file browser, or terminal — that is the VS Code ext
 job. Any feature proposal for the desktop app must stay within agent-management scope.
 Code-adjacent work belongs to the extension.
 
+## 4a. A conversational agent is a first-class engine entry point
+
+A multi-turn chat **`AgentSession`** is a first-class entry point into the engine —
+**alongside** `WorkflowEngine`, never a second code path bolted on. It **reuses** the
+same substrate: the planned `AgentRunner`, the `ToolRegistry`, the `@relavium/llm` seam,
+the `RunEventBus`, and the engine's security envelope (keychain custody, fs-scope tiers,
+the tool allowlist). It does **not** fork the core for "chat vs workflow"; a session is a
+conversation that wraps the same runner a workflow agent node uses, so a hardening or fix
+in the substrate is inherited by both entries with no second implementation to keep in
+sync. The session runtime contract has one canonical home in
+[agent-session-spec.md](../reference/contracts/agent-session-spec.md).
+
+**Applied rule:** never branch the runner, tool-dispatch, or security checks on whether
+the caller is a session or a workflow. New conversational behavior is built on the shared
+substrate, not on a parallel chat-only path; a chat-only fork of `AgentRunner`,
+`ToolRegistry`, or the event bus is a design violation. See
+[ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md) and
+[ADR-0025](../decisions/0025-agent-surface-refines-desktop-scope.md) (which refines, not
+reverses, principle 4 and [ADR-0007](../decisions/0007-desktop-is-not-an-ide.md)).
+
 ## 5. Git-native, version-controllable workflows
 
 Workflows and agents are YAML files (`.relavium.yaml` / `.agent.yaml`) designed to be
