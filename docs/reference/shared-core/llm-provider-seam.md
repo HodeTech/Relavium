@@ -254,6 +254,14 @@ All native stop reasons map onto the five-value `StopReason` enum
 | Gemini | `usageMetadata { promptTokenCount, candidatesTokenCount }` | `inputTokens` / `outputTokens` |
 | DeepSeek | mirrors OpenAI + `prompt_cache_hit_tokens` | `inputTokens` / `outputTokens` / `cacheReadTokens` |
 
+> **`inputTokens` is net of cache (each token billed once).** `inputTokens`, `cacheReadTokens`,
+> and `cacheWriteTokens` are **disjoint** counts — the `CostTracker` bills each at its own rate, so
+> `inputTokens` must exclude cache reads/writes. Anthropic's native `input_tokens` is already net,
+> so it maps straight across. **OpenAI / DeepSeek `prompt_tokens` is *gross*** (it includes
+> `cached_tokens` / `prompt_cache_hit_tokens`), so that adapter sets `inputTokens = prompt_tokens −
+> cached_tokens` (the cached subset moves to `cacheReadTokens`). Gemini exposes no cache split, so
+> `inputTokens` is simply the prompt count.
+
 Two streaming subtleties the adapters must handle:
 
 - **OpenAI** requires `stream_options: { include_usage: true }` to emit a final
