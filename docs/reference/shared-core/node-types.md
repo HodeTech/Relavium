@@ -60,7 +60,7 @@ The core execution node. Renders the agent name, a model badge (e.g. `claude-son
 
 ### `ConditionNode`
 
-Branching node with one input and two labeled output handles (`true` / `false`). The condition is a JS expression over the previous node's output (e.g. `output.sentiment === 'positive'`). Rendered as a diamond (CSS `clip-path`). During a run the taken branch is highlighted and the untaken branch dimmed.
+Branching node with one input and two labeled output handles (`true` / `false`). The condition is a JS expression over the run scope, evaluated in the expression sandbox ([ADR-0027](../../decisions/0027-expression-sandbox.md)) — e.g. `run.outputs["classify"].sentiment === 'positive'` (upstream outputs are keyed by node id; never a bare `output`). Rendered as a diamond (CSS `clip-path`). During a run the taken branch is highlighted and the untaken branch dimmed.
 
 - **Key props**: `conditionExpression`, `trueLabel`, `falseLabel`, `nodeRunStatus`, `evaluatedBranch`
 

@@ -137,8 +137,9 @@ The gate event/decision shapes are part of the
 After every node completes, the engine writes a checkpoint to local SQLite — run
 status, per-node states, completed and pending node IDs, and (for an orchestrator)
 its message history. This is the foundation for resume and retry; see
-[shared-core-engine.md](shared-core-engine.md#checkpoint-and-resume). The
-checkpoint and run-event tables are defined in
+[shared-core-engine.md](shared-core-engine.md#checkpoint-and-resume). There is **no separate
+checkpoint table** — the checkpoint is reconstructed (by a `Checkpointer`) from `step_executions`
++ `run_events` (+ `messages` for an orchestrator's history), all defined in
 [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
 
 ### 6. Finish

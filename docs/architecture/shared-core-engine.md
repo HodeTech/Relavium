@@ -163,10 +163,14 @@ This is what enables:
 - **Idempotency** — re-executing a node uses a stable idempotency key derived from
   `runId + nodeId + retryCount`, so a retry never double-applies side effects.
 
-In Phase 1 checkpoints land in local SQLite (schema in
+In Phase 1 there is **no separate checkpoint table**: the checkpoint is **reconstructed** by a
+`Checkpointer` (`load(runId) → CheckpointState`) from the per-node `step_executions` rows
+(`status` / `attempt_number` / `output_json` / `error_json`) and the ordered, replayable `run_events`
+log, with the orchestrator's message history in `messages` (schema in
 [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
-The same checkpoint shape is what the Phase-2 cloud layer uses for durable
-execution — see [cloud-phase-2.md](cloud-phase-2.md).
+`CheckpointState = { runStatus, nodeStates, completedNodeIds, pendingNodeIds, orchestratorMessages? }`
+is **derived**, never a stored blob. The same derivation is what the Phase-2 cloud layer uses for
+durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 
 ## Retry and fallback
 

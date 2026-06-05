@@ -38,10 +38,21 @@ The sandbox guarantees:
 - **Resource caps.** Every evaluation runs under a CPU/instruction budget, a memory cap, and a
   wall-clock timeout; a runaway expression is terminated with a typed, secret-free error.
 
+**The expression scope (one canonical binding).** `condition`, `transform`, and `merge_fn` values are
+**bare JS expressions** — *not* `{{ … }}`-wrapped (that is string interpolation, a separate mechanism owned by
+the templating engine) — evaluated against a single frozen, injected scope: `inputs` (this node's resolved
+inputs), `ctx` (the workflow context/variables), and `run.outputs` (a map of **upstream node outputs keyed by
+node id**, e.g. `run.outputs["classify"].sentiment`); `merge_fn` additionally receives the branch results to
+combine. **Secrets are never injected** (the [ADR-0029](0029-tool-policy-hardening.md) taint rule). This is the
+*only* canonical binding — `node-types.md` and `workflow-yaml-spec.md` reference `run.outputs[...]`, never a
+bare `output`. A **syntactically invalid** expression surfaces as a sandbox error at evaluation (1.AB), not as
+a parse-time (1.L) validation error (1.L's Zod validation does not parse JS).
+
 In Phase 1 the authored **`expression_type` is `js` only.** `jmespath` and `jsonlogic` (named in the
 draft specs) would each be an undeclared runtime dependency, so they are **reserved** — like `loop`
 and `subworkflow` — and their adoption is deferred to a future ADR that ratifies their deps. The
-QuickJS-wasm dependency and its pinned version live in [tech-stack.md](../tech-stack.md).
+QuickJS-wasm dependency lives in [tech-stack.md](../tech-stack.md); its exact package and version are
+pinned by the 1.AB perf spike (candidate `quickjs-emscripten`).
 
 Considered: **(A)** `isolated-vm` (V8 isolates) — *rejected*: Node-only native addon, cannot run in
 the WebView, violates the zero-platform-import invariant. **(B)** the Node `vm` module / `new
