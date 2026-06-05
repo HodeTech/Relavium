@@ -13,17 +13,33 @@ import { RetrySchema } from './agent.js';
  * validation error, not a silently stripped field (ADR-0023).
  */
 
-/** Expression language for `condition` / `transform` (default `js`, engine-side). */
-export const ExpressionTypeSchema = z.enum(['js', 'jmespath', 'jsonlogic']);
+/**
+ * Expression language for `condition` / `transform` / `merge_fn`. v1.0 ships **`js` only**
+ * (the deterministic QuickJS sandbox, ADR-0027); `jmespath` / `jsonlogic` are reserved for a
+ * future ADR — each would add an undeclared dependency — so an authored value of either is
+ * rejected at parse, not silently accepted.
+ */
+export const ExpressionTypeSchema = z.enum(['js']);
 
 /** Human-gate kind. */
 export const GateTypeSchema = z.enum(['approval', 'input', 'review']);
 
-/** What a human gate does when its timeout elapses (canonical enum). */
-export const TimeoutActionSchema = z.enum(['reject', 'approve', 'escalate']);
+/**
+ * What a human gate does when its timeout elapses. `escalate` is **reserved in v1.0** (real
+ * escalation needs the Phase-2 notification system), so the validator accepts only `reject` /
+ * `approve`; a timeout then resolves with `decidedBy: 'timeout'` (workflow-yaml-spec.md).
+ */
+export const TimeoutActionSchema = z.enum(['reject', 'approve']);
 
 /** How a `merge` node combines its inputs (`best_of_n` is reserved, not v1.0). */
 export const MergeStrategySchema = z.enum(['concat', 'object_merge', 'first', 'custom']);
+
+/**
+ * An optional `output_schema` on `agent` / `transform` nodes — a JSON-Schema-subset object the
+ * engine validates the node's output against (workflow-yaml-spec.md). Modeled as a permissive
+ * object map here; the deep JSON-Schema-subset validation is an engine concern (1.L/1.P).
+ */
+export const OutputSchemaSchema = z.record(z.string(), z.unknown());
 
 export const InputNodeSchema = z
   .object({
@@ -38,11 +54,13 @@ export const AgentNodeSchema = z
     id: kebabIdSchema,
     type: z.literal('agent'),
     agent_ref: kebabIdSchema,
+    system_prompt_append: z.string().optional(), // appended to the agent's system_prompt for THIS node
     prompt_template: z.string().optional(),
-    tools: z.array(nonEmptyString).optional(),
+    tools: z.array(nonEmptyString).optional(), // NARROWS the agent's tools (never widens — ADR-0029)
     model: nonEmptyString.optional(),
     temperature: temperatureSchema.optional(), // provider-agnostic [0, 2] (common.ts)
     max_tokens: positiveInt.optional(),
+    output_schema: OutputSchemaSchema.optional(),
     timeout_ms: positiveInt.optional(),
     retry: RetrySchema.optional(),
   })
@@ -87,6 +105,7 @@ export const TransformNodeSchema = z
     type: z.literal('transform'),
     transform: nonEmptyString,
     expression_type: ExpressionTypeSchema.optional(),
+    output_schema: OutputSchemaSchema.optional(),
   })
   .strict();
 

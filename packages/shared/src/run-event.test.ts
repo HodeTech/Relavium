@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { RUN_EVENT_TYPES } from './constants.js';
-import { CostUpdatedEventSchema, RunEventSchema } from './run-event.js';
+import { RUN_EVENT_TYPES, SESSION_EVENT_TYPES } from './constants.js';
+import { CostUpdatedEventSchema, RunEventSchema, SessionEventSchema } from './run-event.js';
 import type { RunEvent, RunEventType } from './index.js';
 
 const env = { runId: 'run-1', timestamp: '2026-06-04T00:00:00.000Z', sequenceNumber: 7 };
@@ -39,6 +39,12 @@ const valid: Record<string, Record<string, unknown>> = {
     success: true,
     outputSummary: 'ok',
   },
+  'agent:file_patch_proposed': {
+    type: 'agent:file_patch_proposed',
+    ...env,
+    nodeId: 'n',
+    patches: [{ uri: 'file:///x.ts', unifiedDiff: '@@ -1 +1 @@' }],
+  },
   'cost:updated': {
     type: 'cost:updated',
     ...env,
@@ -61,7 +67,7 @@ const valid: Record<string, Record<string, unknown>> = {
     type: 'node:failed',
     ...env,
     nodeId: 'n',
-    error: { code: 'E_X', message: 'boom', retryable: false },
+    error: { code: 'tool_failed', message: 'boom', retryable: false },
   },
   'human_gate:paused': {
     type: 'human_gate:paused',
@@ -89,10 +95,25 @@ const valid: Record<string, Record<string, unknown>> = {
   'run:failed': {
     type: 'run:failed',
     ...env,
-    error: { code: 'E_X', message: 'boom' },
+    error: { code: 'internal', message: 'boom', retryable: false },
     partialOutputs: {},
   },
   'run:cancelled': { type: 'run:cancelled', ...env },
+  'run:paused': { type: 'run:paused', ...env, pendingGateCount: 2, gateIds: ['g1', 'g2'] },
+  'run:timeout': { type: 'run:timeout', ...env, elapsedMs: 1000, timeoutMs: 500 },
+  'budget:warning': {
+    type: 'budget:warning',
+    ...env,
+    spentMicrocents: 900,
+    limitMicrocents: 1000,
+    thresholdPct: 90,
+  },
+  'budget:paused': {
+    type: 'budget:paused',
+    ...env,
+    spentMicrocents: 1000,
+    limitMicrocents: 1000,
+  },
 };
 
 /** One targeted invalid payload per variant (a missing/invalid required field). */
@@ -190,7 +211,7 @@ describe('RunEvent union — every variant', () => {
     expect(RunEventSchema.safeParse(reject[name]).success).toBe(false);
   });
 
-  it('covers exactly the 13 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 18 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -199,6 +220,7 @@ describe('RunEvent union — every variant', () => {
       'agent:token',
       'agent:tool_call',
       'agent:tool_result',
+      'agent:file_patch_proposed',
       'cost:updated',
       'node:completed',
       'node:failed',
@@ -207,13 +229,17 @@ describe('RunEvent union — every variant', () => {
       'run:completed',
       'run:failed',
       'run:cancelled',
+      'run:paused',
+      'run:timeout',
+      'budget:warning',
+      'budget:paused',
     ];
     // The matrix above proves each canonical name's valid payload parses (so a
     // renamed/missing variant fails there); the union member count catches an *extra*
     // variant — without reaching into Zod's internal schema representation.
     expect(RunEventSchema.options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 13
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 18
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -281,5 +307,101 @@ describe('cost:updated and sequenceNumber invariants', () => {
       false,
     );
     expect(RunEventSchema.safeParse({ ...env, type: 'run:error' }).success).toBe(false);
+  });
+});
+
+const senv = { sessionId: 'sess-1', timestamp: '2026-06-04T00:00:00.000Z', sequenceNumber: 3 };
+
+/** One canonical valid payload per `session:*` lifecycle variant (sse-event-schema.md). */
+const validSession: Record<string, Record<string, unknown>> = {
+  'session:started': {
+    type: 'session:started',
+    ...senv,
+    agentRef: 'my-agent',
+    model: 'claude-sonnet-4-6',
+    context: { workingDir: '/w', fsScopeTier: 'sandboxed' },
+  },
+  'session:turn_started': { type: 'session:turn_started', ...senv },
+  'session:turn_completed': {
+    type: 'session:turn_completed',
+    ...senv,
+    stopReason: 'stop',
+    tokensUsed: { input: 1, output: 2, model: 'm' },
+  },
+  'session:cancelled': { type: 'session:cancelled', ...senv },
+  'session:exported': { type: 'session:exported', ...senv, workflowPath: '/w/x.relavium.yaml' },
+};
+
+describe('SessionEvent union — the agent-first namespace', () => {
+  it.each(Object.keys(validSession))('accepts a valid %s', (name) => {
+    expect(SessionEventSchema.safeParse(validSession[name]).success).toBe(true);
+  });
+
+  it('covers exactly the five session:* names, pinned to a literal list', () => {
+    const CONTRACT_NAMES = [
+      'session:started',
+      'session:turn_started',
+      'session:turn_completed',
+      'session:cancelled',
+      'session:exported',
+    ];
+    expect(SessionEventSchema.options).toHaveLength(CONTRACT_NAMES.length);
+    expect(new Set(SESSION_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
+    expect(Object.keys(validSession)).toEqual(CONTRACT_NAMES);
+  });
+
+  it('requires sessionId (a session event without it is rejected)', () => {
+    // `...env` carries runId but no sessionId — the wrong correlation key for a session event.
+    expect(SessionEventSchema.safeParse({ type: 'session:turn_started', ...env }).success).toBe(
+      false,
+    );
+  });
+
+  it('accepts a failed turn (session:turn_completed carries an ErrorCode error)', () => {
+    expect(
+      SessionEventSchema.safeParse({
+        ...validSession['session:turn_completed'],
+        error: { code: 'provider_rate_limit', message: 'slow down', retryable: true },
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe('event envelope + ErrorCode + attemptNumber invariants', () => {
+  it('carries a reused agent:* / cost:updated event on the session envelope (sessionId, no runId)', () => {
+    // The four dual-envelope events validate against RunEventSchema with sessionId instead of runId.
+    const sessionToken = {
+      type: 'agent:token',
+      sessionId: 'sess-1',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 4,
+      nodeId: 'n',
+      token: 'hi',
+      model: 'm',
+    };
+    expect(RunEventSchema.safeParse(sessionToken).success).toBe(true);
+  });
+
+  it('binds node:failed / run:failed error.code to the closed ErrorCode enum', () => {
+    // A free-string code is rejected now that the taxonomy is closed.
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['node:failed'],
+        error: { code: 'totally_made_up', message: 'x', retryable: false },
+      }).success,
+    ).toBe(false);
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['node:failed'],
+        error: { code: 'sandbox_error', message: 'x', retryable: false },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts an optional 1-based attemptNumber on tool-call / tool-result / node:completed', () => {
+    for (const name of ['agent:tool_call', 'agent:tool_result', 'node:completed']) {
+      expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 2 }).success).toBe(true);
+      expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 0 }).success).toBe(false);
+    }
   });
 });

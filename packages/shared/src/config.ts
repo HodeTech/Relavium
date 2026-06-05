@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { URL_HAS_CREDENTIALS, nonEmptyString } from './common.js';
+import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import { FS_SCOPE_TIERS, ON_EXCEED_ACTIONS } from './constants.js';
 
 /**
  * Configuration schemas (config-spec.md). Validation only — no file IO. The global
@@ -10,8 +11,8 @@ import { URL_HAS_CREDENTIALS, nonEmptyString } from './common.js';
 
 export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 
-/** Filesystem permission tier (built-in-tools.md). */
-export const FsScopeSchema = z.enum(['sandboxed', 'project', 'full']);
+/** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
+export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
 
 /** A registered `http` MCP server must use http(s) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
@@ -76,15 +77,35 @@ export const GlobalConfigSchema = z.object({
 });
 export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
 
-/** `project.toml` / `workspace.toml` — project defaults, variables, project-scoped MCP. */
+/**
+ * Chat-mode (`[chat]`) defaults for the agent-first entry point (config-spec.md, ADR-0024).
+ * Distinct from `[defaults]` (which governs workflow runs); a chat session reuses the workflow
+ * `allowedCommands` policy (not re-declared here) and may carry its own pre-egress cost cap
+ * (`max_cost_microcents` + `on_exceed`) enforced by the same governor as a workflow budget (ADR-0028).
+ */
+export const ChatConfigSchema = z
+  .object({
+    default_model: z.string().optional(),
+    fs_scope: FsScopeSchema.optional(),
+    max_messages: positiveInt.optional(), // session-history cap before older turns are trimmed
+    max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
+    on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
+  })
+  .optional();
+
+/** `project.toml` / `workspace.toml` — project defaults, variables, project-scoped MCP, chat defaults. */
 export const ProjectConfigSchema = z.object({
   defaults: z
     .object({
       model: z.string().optional(),
       fs_scope: FsScopeSchema.optional(),
+      // Per-call output-token estimate the pre-egress budget governor uses when a node/session
+      // omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block.
+      max_tokens_estimate: positiveInt.optional(),
     })
     .optional(),
   variables: z.record(z.string(), z.string()).optional(),
+  chat: ChatConfigSchema,
   // Project-scoped MCP registrations merge with the global ones (config-spec.md §resolution).
   mcp_servers: z.array(McpServerRegistrationSchema).optional(),
 });

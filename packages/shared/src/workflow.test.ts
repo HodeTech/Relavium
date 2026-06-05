@@ -314,4 +314,65 @@ describe('WorkflowSchema', () => {
     expect(accepts(withWorkflow({ tools: { allowedCommands: [''] } }))).toBe(false);
     expect(accepts(withWorkflow({ tools: { allowedCommands: ['git status'] } }))).toBe(true);
   });
+
+  it('accepts and round-trips workflow.metadata (the session-export transcript anchor, ADR-0026)', () => {
+    const exported = withWorkflow({
+      metadata: {
+        source: 'agent-session',
+        transcript: [
+          { role: 'user', text: 'review this' },
+          { role: 'assistant', text: 'done' },
+        ],
+      },
+    });
+    // metadata is a real schema field — it survives parse → serialize unchanged (unlike comments).
+    expect(WorkflowSchema.parse(exported)).toEqual(exported);
+  });
+
+  it('accepts the resource-governance fields and rejects a bad/strict budget (ADR-0028)', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          budget: { max_cost_microcents: 5000000, on_exceed: 'pause_for_approval' },
+          timeout_ms: 300000,
+          max_parallel: 4,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      accepts(withWorkflow({ budget: { max_cost_microcents: 1, on_exceed: 'explode' } })),
+    ).toBe(false);
+    // budget is strict — an unknown key fails.
+    expect(
+      accepts(withWorkflow({ budget: { max_cost_microcents: 1, on_exceed: 'warn', oops: 1 } })),
+    ).toBe(false);
+  });
+
+  it('accepts an opt-in allowedCommandGlobs in the tool policy (ADR-0029)', () => {
+    expect(accepts(withWorkflow({ tools: { allowedCommandGlobs: ['npm run *'] } }))).toBe(true);
+    expect(accepts(withWorkflow({ tools: { allowedCommandGlobs: [''] } }))).toBe(false);
+  });
+
+  it('accepts an input validation object and rejects an unknown validation key', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [
+            {
+              name: 'reviewer_email',
+              type: 'string',
+              validation: { format: 'email', max_length: 100 },
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [{ name: 'sev', type: 'number', validation: { min: 0, max: 10, oops: 1 } }],
+        }),
+      ),
+    ).toBe(false);
+  });
 });

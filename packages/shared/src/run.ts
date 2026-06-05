@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
-import { nonEmptyString, nonNegativeInt } from './common.js';
+import { nonNegativeInt } from './common.js';
 import { EXECUTION_MODES } from './constants.js';
+import { ErrorCodeSchema } from './run-event.js';
 import { TriggerTypeSchema } from './workflow.js';
 
 /**
@@ -53,7 +54,12 @@ export const RunSchema = z
     inputs: z.record(z.string(), z.unknown()),
     outputs: z.record(z.string(), z.unknown()).optional(),
     error: z
-      .object({ code: nonEmptyString, message: z.string(), nodeId: z.string().optional() })
+      .object({
+        code: ErrorCodeSchema, // closed ErrorCode taxonomy (sse-event-schema.md), matching run:failed
+        message: z.string(),
+        retryable: z.boolean(),
+        nodeId: z.string().optional(),
+      })
       .optional(),
     startedAt: nonNegativeInt.optional(), // epoch ms
     completedAt: nonNegativeInt.optional(),
