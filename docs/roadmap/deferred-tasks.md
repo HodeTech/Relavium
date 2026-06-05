@@ -63,6 +63,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   provider's real range in the `@relavium/llm` adapter (Phase 1, where request validation
   lives) so a `provider: anthropic` + `temperature > 1` agent fails fast — without coupling the
   shared contract to a provider's current API limit. *(review · agent.ts, common.ts)*
+- [ ] **Config-schema strictness parity** — `GlobalConfigSchema` / `ProjectConfigSchema` /
+  `ChatConfigSchema` are **not** `.strict()`, so a typo in a committed `config.toml` /
+  `project.toml` key is silently dropped — asymmetric with the authored-YAML strictness
+  ([ADR-0023](../decisions/0023-strict-authored-yaml-validation.md)). Decide whether the
+  committed config formats should fail loudly on an unknown key (cheap to land pre-coding, no
+  config files exist yet) and apply `.strict()` if so, or record the leniency as deliberate.
+  Pre-existing; out of 1.L.0's additive scope. *(minor · packages/shared/src/config.ts)*
+- [ ] **Codify `ContentPart`'s canonical home (at 1.V/1.X)** — when `SessionMessageSchema` /
+  `AgentSessionSchema` land (they reference `ContentPart`), `ContentPart` must be **owned by
+  `@relavium/shared`** and re-exported by the `@relavium/llm` seam (the `StopReason` precedent),
+  never imported by shared from llm — which would invert the package dependency. The seam doc
+  ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)) currently shows
+  `ContentPart` only as a TS shape with no ownership statement; codify it there so the code
+  comment in `run-event.ts` and the spec stay aligned. *(nit → 1.V/1.X · llm-provider-seam.md)*
 
 ## Test depth
 

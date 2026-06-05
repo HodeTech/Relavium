@@ -197,8 +197,9 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 > tools — it can never add a tool the agent lacks (validator-enforced; [ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
 > A `model` override is **resolved against the model catalog at parse time**; an unknown model id fails
 > parse with the list of valid options — never a silent fallback. The optional `output_schema` (also on
-> `transform` / `condition`) validates the node's output and powers type-safe downstream interpolation
-> and VS Code completion ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)).
+> `transform`) validates the node's output and powers type-safe downstream interpolation
+> and VS Code completion ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). A
+> `condition` node selects a branch rather than producing shaped data, so it carries no `output_schema`.
 
 ### `human_gate` node
 

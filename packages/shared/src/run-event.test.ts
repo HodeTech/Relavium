@@ -237,7 +237,8 @@ describe('RunEvent union — every variant', () => {
     // The matrix above proves each canonical name's valid payload parses (so a
     // renamed/missing variant fails there); the union member count catches an *extra*
     // variant — without reaching into Zod's internal schema representation.
-    expect(RunEventSchema.options).toHaveLength(CONTRACT_NAMES.length);
+    // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
+    expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
     expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 18
   });
@@ -368,18 +369,28 @@ describe('SessionEvent union — the agent-first namespace', () => {
 });
 
 describe('event envelope + ErrorCode + attemptNumber invariants', () => {
-  it('carries a reused agent:* / cost:updated event on the session envelope (sessionId, no runId)', () => {
-    // The four dual-envelope events validate against RunEventSchema with sessionId instead of runId.
-    const sessionToken = {
+  it('enforces exactly one of runId / sessionId on the four dual-envelope events', () => {
+    // A reused event carries runId on a run and sessionId on a session — never neither, never both.
+    const dual = {
       type: 'agent:token',
-      sessionId: 'sess-1',
       timestamp: '2026-06-04T00:00:00.000Z',
       sequenceNumber: 4,
       nodeId: 'n',
       token: 'hi',
       model: 'm',
     };
-    expect(RunEventSchema.safeParse(sessionToken).success).toBe(true);
+    // exactly one → accepted (run-flavored, then session-flavored)
+    expect(RunEventSchema.safeParse({ ...dual, runId: 'run-1' }).success).toBe(true);
+    expect(RunEventSchema.safeParse({ ...dual, sessionId: 'sess-1' }).success).toBe(true);
+    // neither / both → rejected, with the error on the correlation key (not an unrelated field)
+    const onCorrelationKey = (doc: unknown): boolean => {
+      const result = RunEventSchema.safeParse(doc);
+      return (
+        !result.success && result.error.issues.some((i) => i.message.includes('runId / sessionId'))
+      );
+    };
+    expect(onCorrelationKey(dual)).toBe(true); // neither
+    expect(onCorrelationKey({ ...dual, runId: 'run-1', sessionId: 'sess-1' })).toBe(true); // both
   });
 
   it('binds node:failed / run:failed error.code to the closed ErrorCode enum', () => {

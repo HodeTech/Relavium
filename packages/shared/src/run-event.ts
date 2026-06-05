@@ -30,9 +30,10 @@ const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
 /**
  * The dual envelope for the four events reused across both streams (`agent:token` /
  * `agent:tool_call` / `agent:tool_result` / `cost:updated`): they carry `runId` on a run and
- * `sessionId` on a session. "Exactly one present" is an **emit-time invariant** the engine
- * upholds — it is deliberately not Zod-enforced here, because a `discriminatedUnion` member
- * cannot carry a cross-field refinement and these events stay lenient (non-strict).
+ * `sessionId` on a session. A `discriminatedUnion` *member* can't carry a cross-field
+ * refinement, so the "exactly one of runId / sessionId" invariant is enforced at the **union**
+ * level (see `RunEventSchema`). Run-only / session-only events satisfy it by construction (the
+ * other key isn't declared, so it is stripped on parse), so the check only constrains these four.
  */
 const dualBase = {
   runId: nonEmptyString.optional(),
@@ -78,9 +79,11 @@ const eventErrorFields = {
 
 /**
  * The workspace situation a session runs against (agent-session-spec.md). Self-contained (no
- * seam types), so it lands here with the `SessionEvent` union; the `SessionMessage` /
- * `AgentSession` schemas — which depend on the seam's `ContentPart` — land with the
- * agent-first sub-spine (1.V/1.X).
+ * cross-package types), so it lands here with the `SessionEvent` union. The `SessionMessage` /
+ * `AgentSession` schemas land with the agent-first sub-spine (1.V/1.X): they reference
+ * `ContentPart`, which must be **owned by `@relavium/shared`** and re-exported by the seam
+ * (the `StopReason` precedent above) — never imported by shared from `@relavium/llm`, which
+ * would invert the package dependency.
  */
 export const SessionContextSchema = z.object({
   workingDir: nonEmptyString,
@@ -255,8 +258,8 @@ export const BudgetPausedEventSchema = z.object({
   limitMicrocents: nonNegativeInt,
 });
 
-/** The full run-event discriminated union every surface consumes. */
-export const RunEventSchema = z.discriminatedUnion('type', [
+/** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */
+const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
   NodeStartedEventSchema,
   AgentTokenEventSchema,
@@ -276,6 +279,26 @@ export const RunEventSchema = z.discriminatedUnion('type', [
   BudgetWarningEventSchema,
   BudgetPausedEventSchema,
 ]);
+
+/**
+ * The full run-event schema every surface consumes: the discriminated union plus the
+ * **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md
+ * §"Correlation key"). Run-only / session-only events satisfy it by construction — a stray
+ * opposite key is stripped by their `z.object` before this refine runs, so the parsed output
+ * stays compliant (the deliberate non-strict, forward-compatible posture). The four
+ * dual-envelope events declare both keys as optional, so this is where neither/both is rejected.
+ */
+export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
+  const hasRunId = 'runId' in event && event.runId !== undefined;
+  const hasSessionId = 'sessionId' in event && event.sessionId !== undefined;
+  if (hasRunId === hasSessionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'exactly one of runId / sessionId must be present',
+      path: [hasRunId ? 'sessionId' : 'runId'],
+    });
+  }
+});
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
 // --- Session events (sse-event-schema.md §"Session event namespace") --------------------------
