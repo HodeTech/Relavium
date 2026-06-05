@@ -14,10 +14,10 @@ import { RetrySchema } from './agent.js';
  */
 
 /**
- * Expression language for `condition` / `transform` / `merge_fn`. v1.0 ships **`js` only**
- * (the deterministic QuickJS sandbox, ADR-0027); `jmespath` / `jsonlogic` are reserved for a
- * future ADR — each would add an undeclared dependency — so an authored value of either is
- * rejected at parse, not silently accepted.
+ * Expression language for `condition` / `transform`. v1.0 ships **`js` only** (the deterministic
+ * QuickJS sandbox, ADR-0027); `jmespath` / `jsonlogic` are reserved for a future ADR — each would
+ * add an undeclared dependency — so an authored value of either is rejected at parse, not silently
+ * accepted. (A custom `merge_fn` is always `js` and carries no `expression_type` selector.)
  */
 export const ExpressionTypeSchema = z.enum(['js']);
 

@@ -100,5 +100,12 @@ describe('RunSchema', () => {
         error: { code: 'run_timeout', message: 'x', retryable: true },
       }).success,
     ).toBe(true);
+    // a root-cause nodeId, when present, is never empty
+    expect(
+      RunSchema.safeParse({
+        ...base,
+        error: { code: 'internal', message: 'x', retryable: false, nodeId: '' },
+      }).success,
+    ).toBe(false);
   });
 });

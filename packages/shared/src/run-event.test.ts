@@ -200,6 +200,11 @@ const reject: Record<string, Record<string, unknown>> = {
     error: { code: 'internal', message: 'm', retryable: false }, // compliant — isolate the missing partialOutputs
   },
   'run:cancelled (negative sequenceNumber)': { type: 'run:cancelled', ...env, sequenceNumber: -1 },
+  'run:paused (empty gateIds)': { ...valid['run:paused'], gateIds: [] },
+  'run:paused (pendingGateCount 0)': { ...valid['run:paused'], pendingGateCount: 0 },
+  'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
+  'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },
+  'budget:paused (negative spentMicrocents)': { ...valid['budget:paused'], spentMicrocents: -1 },
 };
 
 describe('RunEvent union — every variant', () => {
@@ -376,6 +381,34 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(withSelection({ file: 'a.ts', startLine: 1, endLine: 5 })).toBe(true);
     expect(withSelection({ file: 'a.ts', startLine: 5, endLine: 1 })).toBe(false);
   });
+
+  it('binds session:turn_completed.stopReason to the closed StopReason enum', () => {
+    const ok = validSession['session:turn_completed'];
+    expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'tool_use' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'banana' }).success).toBe(false);
+  });
+
+  it('rejects session variants missing/emptying a required field', () => {
+    // session:exported needs a non-empty workflowPath
+    expect(
+      SessionEventSchema.safeParse({ ...validSession['session:exported'], workflowPath: '' })
+        .success,
+    ).toBe(false);
+    // session:started needs model (agentRef + context present)
+    expect(
+      SessionEventSchema.safeParse({
+        type: 'session:started',
+        ...senv,
+        agentRef: 'a',
+        context: { workingDir: '/w', fsScopeTier: 'sandboxed' },
+      }).success,
+    ).toBe(false);
+    // session:turn_completed needs tokensUsed (stopReason present)
+    expect(
+      SessionEventSchema.safeParse({ type: 'session:turn_completed', ...senv, stopReason: 'stop' })
+        .success,
+    ).toBe(false);
+  });
 });
 
 describe('event envelope + ErrorCode + attemptNumber invariants', () => {
@@ -419,8 +452,14 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     ).toBe(true);
   });
 
-  it('accepts an optional 1-based attemptNumber on tool-call / tool-result / node:completed', () => {
-    for (const name of ['agent:tool_call', 'agent:tool_result', 'node:completed']) {
+  it('accepts an optional 1-based attemptNumber on every carrier event', () => {
+    for (const name of [
+      'agent:tool_call',
+      'agent:tool_result',
+      'node:completed',
+      'cost:updated',
+      'agent:file_patch_proposed',
+    ]) {
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 2 }).success).toBe(true);
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 0 }).success).toBe(false);
     }

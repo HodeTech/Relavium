@@ -70,13 +70,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   committed config formats should fail loudly on an unknown key (cheap to land pre-coding, no
   config files exist yet) and apply `.strict()` if so, or record the leniency as deliberate.
   Pre-existing; out of 1.L.0's additive scope. *(minor · packages/shared/src/config.ts)*
-- [ ] **Codify `ContentPart`'s canonical home (at 1.V/1.X)** — when `SessionMessageSchema` /
-  `AgentSessionSchema` land (they reference `ContentPart`), `ContentPart` must be **owned by
-  `@relavium/shared`** and re-exported by the `@relavium/llm` seam (the `StopReason` precedent),
-  never imported by shared from llm — which would invert the package dependency. The seam doc
-  ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)) currently shows
-  `ContentPart` only as a TS shape with no ownership statement; codify it there so the
-  `run-event.ts` comment stays aligned with the spec. *(nit → 1.V/1.X · llm-provider-seam.md)*
+- [ ] **Codify `ContentPart` / `StopReason` canonical home in the seam doc** — both are intended
+  to be **owned by `@relavium/shared`** and re-exported by the `@relavium/llm` seam, never imported
+  by shared from llm (which would invert the package dependency). `StopReason` already lives in
+  `@relavium/shared` (constants.ts, used by `session:turn_completed`); `ContentPart` lands when
+  `SessionMessageSchema` / `AgentSessionSchema` do (1.V/1.X). The seam doc
+  ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)) still shows both only as
+  local TS shapes with no ownership/re-export statement — annotate them there so the seam doc and
+  the `constants.ts` / `run-event.ts` comments stay aligned. *(nit → 1.A/1.V · llm-provider-seam.md)*
+- [ ] **`AgentSchema` `input_schema` / `output_schema`** — agent-yaml-spec.md lists both as optional
+  agent-level fields ("purely additive metadata"), and names `AgentSchema` as their validator, but
+  `AgentSchema` is `.strict()` and declares neither — so an authored agent using a spec-sanctioned
+  `output_schema` is rejected at parse. Pre-existing (agent.ts untouched by 1.L.0, which scopes
+  `output_schema` to the agent/transform *nodes* only); add both as `OutputSchemaSchema.optional()`
+  (the node.ts JSON-Schema-subset map) + a test, or amend the spec. *(low · agent.ts,
+  agent-yaml-spec.md)*
 - [ ] **Input-validation type-compatibility** — `WorkflowInput.validation` accepts any key
   regardless of the input `type` (e.g. `format`/`max_length` on a `number`, `min`/`max` on a
   `string`). Bound-ordering (`min ≤ max`, `min_length ≤ max_length`) is enforced; the per-type

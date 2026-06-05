@@ -809,7 +809,7 @@ flowchart LR
 
 | WS | Lane | Depends on | Enables | M2 |
 | --- | --- | --- | --- | --- |
-| **1.L.0** | Gate | Phase 0 (frozen `@relavium/shared`) | 1.A, 1.L, 1.L2, 1.N, 1.O, 1.Q, 1.AC, 1.W, 1.Z | ✅ first |
+| **1.L.0** | Gate | Phase 0 (frozen `@relavium/shared`) | 1.A, 1.L, 1.W (direct; **gates Lanes A/B/C transitively**) | ✅ first |
 | 1.A | A | 1.L.0 | 1.B, 1.E, 1.I, 1.C | ✅ |
 | 1.B | A | 1.A | 1.K | ⬤ |
 | 1.E | A | 1.A | 1.C, 1.H, 1.T | ✅ |
@@ -840,6 +840,11 @@ flowchart LR
 | 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
 | 1.Z | C | 1.V, 1.L | 1.AA | ◇ |
 | 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
+
+> The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`
+> and `1.L.0 → 1.W` into Lane C). The waves Mermaid above draws lane-internal edges plus the `1.O`
+> join and the gate fan-out, omitting those Lane-C feeders to stay readable — so where the diagram
+> and this table differ on a Lane-C predecessor, the table wins.
 
 ### Solo vs. multi-track
 

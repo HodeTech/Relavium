@@ -11,9 +11,10 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
 /**
  * The canonical, **colon-namespaced** run-event type names (sse-event-schema.md).
  * Never the legacy dotted names (`node.started`), never `node:error`/`run:error`,
- * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors
- * the `RunEvent` union in the spec (the governance events — `run:paused`, `run:timeout`,
- * `budget:warning`, `budget:paused`, ADR-0028 — and `agent:file_patch_proposed` close it).
+ * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
+ * `RunEvent` union in the spec: `agent:file_patch_proposed` sits after `agent:tool_result`, and
+ * the four governance events (`run:paused`, `run:timeout`, `budget:warning`, `budget:paused`;
+ * ADR-0028) close the list.
  */
 export const RUN_EVENT_TYPES = [
   'run:started',
@@ -75,9 +76,10 @@ export const ERROR_CODES = [
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 /**
- * The five-value LLM **stop reason** vocabulary. Canonical home for `StopReason`:
- * the `@relavium/llm` seam re-exports this rather than redefining it (single
- * canonical home — llm-provider-seam.md). Used today by `session:turn_completed`.
+ * The five-value LLM **stop reason** vocabulary, used today by `session:turn_completed`.
+ * Intended canonical home: `@relavium/shared`, with the `@relavium/llm` seam re-exporting it
+ * rather than redefining it. (The seam doc still defines it locally; codifying the re-export is
+ * tracked in deferred-tasks alongside `ContentPart`.)
  */
 export const STOP_REASONS = ['stop', 'length', 'tool_use', 'content_filter', 'error'] as const;
 export type StopReason = (typeof STOP_REASONS)[number];

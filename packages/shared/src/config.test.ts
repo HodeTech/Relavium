@@ -118,5 +118,7 @@ describe('config schemas', () => {
       }).success,
     ).toBe(true);
     expect(ProjectConfigSchema.safeParse({ chat: { on_exceed: 'explode' } }).success).toBe(false);
+    // 0 = unbounded here (nonNegativeInt) — deliberately unlike the workflow budget's positiveInt.
+    expect(ProjectConfigSchema.safeParse({ chat: { max_cost_microcents: 0 } }).success).toBe(true);
   });
 });
