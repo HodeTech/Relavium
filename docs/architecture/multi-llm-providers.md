@@ -53,8 +53,9 @@ flowchart TB
 > per-provider adapters over the official SDKs, fallback chains, and cost tracking
 > are grounded in that decision. Exact seam signatures are the canonical property
 > of [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md);
-> the model-pricing catalog is canonical in
-> [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
+> the model-pricing catalog is canonical in-code in `packages/llm/src/pricing.ts`, seeded
+> into the `model_catalog` display projection
+> ([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
 > Both are cited, not restated, here.
 
 ## Context

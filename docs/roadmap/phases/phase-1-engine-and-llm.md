@@ -401,10 +401,10 @@ match them — it adds no new behavior.
   `WorkflowInput.validation` — per [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
 - **Run-event + session-event union** ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)):
   add the 5 missing variants — `run:paused`, `run:timeout`, `budget:warning`, `budget:paused`,
-  `agent:file_patch_proposed` — and the `SessionEvent` union (the 5 `session:*` variants). Model the envelope
-  so **exactly one of `runId` / `sessionId` is present** (a discriminated `RunEnvelope { runId } |
-  SessionEnvelope { sessionId }`; add `sessionId` to the base shape and make `runId` optional there), with
-  `sequenceNumber` monotonic **per run or per session**; **audit every `BaseEventSchema` / `baseFields` usage**
+  `agent:file_patch_proposed` — and the `SessionEvent` union (the 5 `session:*` variants). Switch the base
+  event to the discriminated run/session envelope defined in the spec — **exactly one of `runId` /
+  `sessionId` present**, `sequenceNumber` monotonic **per run or per session** — and **audit every
+  `BaseEventSchema` / `baseFields` usage**
   that assumed a required `runId`. Add `attemptNumber?` to `agent:tool_call` / `agent:tool_result` /
   `node:completed` (matching `cost:updated`); add the closed **`ErrorCode`** enum and bind
   `node:failed` / `run:failed` / `RunSchema.code` to it; add `retryable` to `run:failed.error` + `RunSchema.error`.
@@ -706,8 +706,10 @@ flowchart LR
   [run-event schema](../../reference/contracts/sse-event-schema.md), the
   [node-types catalog](../../reference/shared-core/node-types.md), the
   [built-in tools catalog](../../reference/shared-core/built-in-tools.md), the
-  workflow/agent YAML specs, and the model-pricing catalog in
-  [database-schema.md](../../reference/desktop/database-schema.md), plus the
+  workflow/agent YAML specs, and the `model_catalog` table in
+  [database-schema.md](../../reference/desktop/database-schema.md) — the display projection seeded
+  from the canonical `packages/llm/src/pricing.ts` (the source of truth for model ids, context
+  windows, and pricing) — plus the
   [agent-session contract](../../reference/contracts/agent-session-spec.md) and the `[chat]` defaults in
   [config-spec.md](../../reference/contracts/config-spec.md).
 - **The multi-LLM decision** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md))
