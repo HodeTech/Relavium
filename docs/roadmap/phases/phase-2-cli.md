@@ -117,9 +117,10 @@ flags) every command inherits.
   `CI=true` (per the Output modes table in the command reference).
 - Implement the deterministic **exit-code map** as a single shared helper:
   `0` success, `1` workflow failed, `2` invalid invocation / not found / schema
-  error, and **exit `3`** for **gate-paused** (a non-interactive run suspended at a
-  human gate). The canonical home for this value is
-  [commands.md](../../reference/cli/commands.md); use `3` consistently here.
+  error, **exit `3`** for **gate-paused** (a non-interactive run suspended at a
+  human gate), and **exit `4`** for a **chat session ended** by the user (`/exit` in an
+  interactive `relavium chat` — implemented in 2.M). The canonical home for these values is
+  [commands.md](../../reference/cli/commands.md); use them consistently here.
 - Centralize error rendering: human-readable to a TTY, structured `RunEvent`-shaped
   error object to stdout under `--json`; never leak a stack trace as the primary
   output.
@@ -127,7 +128,7 @@ flags) every command inherits.
 **Acceptance:** `relavium --help` and every subcommand's `--help` print the
 documented surface; `relavium <bogus>` exits `2`; output mode is correctly
 selected across a TTY, a piped stdout, and `CI=true`; the exit-code helper is unit
-tested for all four codes.
+tested for codes 0–3 here (the chat `/exit` code 4 is exercised in 2.M).
 
 ### 2.B — Config resolution (`~/.relavium` + project `.relavium`)
 
@@ -290,7 +291,7 @@ resume command.
 - Make resume **idempotent**: re-delivering the same decision must not advance the
   run twice (rely on the checkpoint/gate-state idempotency from the engine).
 - Surface the node's `timeout_action` outcome (a timed-out gate resolves with
-  `decidedBy: 'timeout_escalation'`); render it consistently in both modes.
+  `decidedBy: 'timeout'`); render it consistently in both modes.
 
 **Acceptance:** an interactive run pauses at a gate, prompts, and resumes on
 approval to completion; a non-interactive run exits with the gate-paused code `3`
@@ -406,6 +407,18 @@ Make the CLI installable and verify the published artifact behaves like local de
 that runs a fixture workflow with `--json` and the correct exit code; install/CI
 docs match the shipped flags.
 
+### 2.M–2.Q — `relavium chat` and agent-session commands (agent-first CLI)
+
+The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md), [chat-session.md](../../reference/cli/chat-session.md)). **Non-critical to M3** — these ride behind the regression-harness spine.
+
+- **2.M — `relavium chat` REPL.** An `ink` multi-turn terminal chat over `AgentSession`: streaming tokens, tool-call annotations, FS-scope tier + command allowlist honored. `/exit` ends the session with **exit code 4**.
+- **2.N — `relavium chat-resume <sessionId>`.** Reload + continue a persisted session from `history.db`.
+- **2.O — `relavium chat-list`.** List session history (id, agent, title, last activity).
+- **2.P — `relavium chat-export <sessionId>`.** Export a session to a `.relavium.yaml` scaffold ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)).
+- **2.Q — `relavium chat --json` + `relavium agent run` + `relavium gate list`.** A deterministic `--json` `session:*` stream (CI-friendly); a one-shot `relavium agent run <agent> --input … [--json] [--fixture …]` on the same `AgentSession` infra; and `relavium gate list` / `gate <id>` to resolve one of possibly-several pending gates.
+
+**Acceptance:** an interactive `relavium chat` streams a multi-turn conversation with a tool call, persists, and resumes; `chat --json` emits a deterministic `session:*` stream; `agent run` invokes a single agent headlessly; chat `/exit` returns exit code 4.
+
 ## Milestones
 
 | In-phase milestone | Completed by | Global milestone |
@@ -418,6 +431,7 @@ docs match the shipped flags.
 | Authoring lifecycle (`create`/`import`/`export`) | 2.J | — |
 | CLI adopted as the engine regression harness | 2.D, 2.F, 2.K | **M3** |
 | Published, installable binary verified on all OSes | 2.L | — |
+| `relavium chat` + agent-session commands (chat / resume / list / export / `agent run` / `gate list`) | 2.M, 2.N, 2.O, 2.P, 2.Q | — (non-critical to M3) |
 
 ## Dependencies
 

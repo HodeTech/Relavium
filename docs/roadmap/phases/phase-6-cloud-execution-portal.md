@@ -302,7 +302,7 @@ exist with a server.
   with a deep link; the unified gate inbox lists pending gates across surfaces.
 - Gate fulfillment is **idempotent — first valid decision wins** across any channel
   (`POST /runs/{runId}/gates/{gateId}/decide`); a decision emits `human_gate:resumed`
-  and the run continues; `timeout_action` maps to `decidedBy: 'timeout_escalation'`.
+  and the run continues; `timeout_action` maps to `decidedBy: 'timeout'`.
 - Notifications carry **no transcript content** — only metadata + the decision link.
 
 **Acceptance:** a scheduled run fires on cron; a webhook enqueues a run; a paused

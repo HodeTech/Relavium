@@ -127,6 +127,9 @@ flowchart TB
     N --> O["1.O AgentRunner"]
     K --> O
     O --> P["1.P node-type handlers"]
+    AB["1.AB expression sandbox"] --> P
+    O --> AC["1.AC resource governor"]
+    AC --> U
     P --> Q["1.Q human gate suspend/resume"]
     N --> R["1.R Checkpointer + resume"]
     O --> S["1.S retry + fallback wiring"]
@@ -477,10 +480,12 @@ The gate that suspends a run for an external decision and resumes idempotently.
   `human_gate:resumed`, and continuing the run.
 - Make re-delivering the same decision idempotent (do not advance twice) because the
   gate state is checkpointed.
-- Implement `timeout_action` (`reject` / `approve` / `escalate` — the canonical enum from
+- Implement `timeout_action` (`reject` / `approve`; `escalate` is **reserved** in v1.0 — see
   [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md#human_gate-node);
-  the engine config block names it `on_timeout`) mapping a timeout to
-  `decidedBy: 'timeout_escalation'`.
+  the engine config block names it `on_timeout`) mapping a timeout to `decidedBy: 'timeout'`.
+- Support **multiple concurrent gates** (independent parallel branches may each reach a gate):
+  each carries its own timeout and resolves independently, with a `run:paused` aggregate while
+  ≥1 gate is pending.
 
 **Acceptance:** a run pauses at a gate, persists state, resumes on a decision and
 completes; re-applying the same decision is a no-op; a timeout resolves per the
@@ -563,6 +568,29 @@ The proof that the engine works before any surface exists.
 then fallback with the run still completing; resume from a mid-run checkpoint
 reproduces the same final output — **M2 achieved**.
 
+### Agent-first sub-spine (1.V–1.AA) — additive, parallel to the M2 critical path
+
+These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). They run **parallel** to 1.L–1.U and do **not** feed the 1.U workflow harness — each is proven by its own harness (1.AA). The `WorkflowEngine` is unchanged; `AgentSession` is an additional entry point on the same substrate.
+
+- **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses.
+- **1.W — `session:*` event namespace.** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
+- **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate).
+- **1.Y — Session checkpoint/resume.** Reuse the idempotency-key logic so a session resumes after a restart.
+- **1.Z — Export-to-workflow serializer.** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; no `secret` value is serialized.
+- **1.AA — Node-harness chat regression.** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI.
+
+### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P
+
+Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, resource-capped QuickJS-wasm sandbox for `condition` / `transform` / `merge_fn`, instantiated via the `WebAssembly` global from embedded bytes (no `node:fs`/`fetch`/DOM, no wall-clock/RNG, no `new Function()`). **On the M2 critical path** — the 1.P node handlers must not ship an unspecified evaluator, so this is sequenced into 1.P (it raises the 1.m4 cost).
+
+**Acceptance:** `condition`/`transform` evaluate in the sandbox; a non-deterministic or resource-exhausting expression is rejected/terminated with a typed, secret-free error; the 1.U/1.AA harness asserts sandbox behavior.
+
+### 1.AC — Resource governor (pre-egress budget) — folds into 1.O
+
+Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): a pre-egress cost check (`cumulative + worstCaseNextEstimate(maxTokens) > max_cost_microcents → on_exceed`), a run `timeout_ms`, and a parallel concurrency cap; `pause_for_approval` reuses the human-gate seam; emits `budget:warning` / `budget:paused` / `run:timeout`.
+
+**Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
+
 ## Milestones
 
 In-phase milestones map to the workstreams that complete them. The two global-spine
@@ -575,8 +603,9 @@ the latter being the critical-path milestone for the whole product.
 | **M1** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR, live nightly; no vendor type across the seam)** | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 | Policy layers complete: fallback runner + cost tracker | 1.B, 1.K |
 | 1.m3 | Parse → DAG → run loop emits the canonical event stream | 1.L, 1.M, 1.N |
-| 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T |
+| 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
+| 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
 
 ## Dependencies
 
