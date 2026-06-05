@@ -71,8 +71,10 @@ parked in [deferred-tasks.md](deferred-tasks.md). The foundation is settled and 
 > agent-first sub-spine (1.V–1.AA), the QuickJS-wasm sandbox (1.AB — on the critical path inside 1.P),
 > and the pre-egress budget governor (1.AC). The **agent-first sub-spine (1.V–1.AA) adds no work to the M1/M2 critical path** (it runs in parallel and is proven by its own harness); the hardening sandbox **1.AB *is* new M2-critical-path work** — it folds into 1.P and raises the 1.m4 cost. Phases 2–4 add
 > non-critical chat workstreams; phases 5–6 are largely unaffected (sessions inherit managed/cloud via
-> the existing seams). All decisions/specs are landed at the docs/ADR layer — no engine code yet
-> (Phase 1 has not started).
+> the existing seams). All decisions/specs are landed at the docs/ADR layer. **Phase 1 has begun:**
+> 1.L.0 — the `@relavium/shared` reconciliation to these agent-first + hardening contracts (the new
+> events, `ErrorCode`/`StopReason`, the authored budget/validation/output_schema fields, the `[chat]`
+> config) — merged in **PR #6** (2026-06-05). No engine code yet; the seam + parser come next.
 
 **Phase 0 is done (M0 reached); the active phase is now
 [Phase 1 — engine and LLM](phases/phase-1-engine-and-llm.md)** (Product Phase 1, the
@@ -91,21 +93,26 @@ The next checkpoint is global milestone **M1 — LLM seam proven** (see the
 
 ## Immediate next steps
 
-Phase 0's workstreams (0.A–0.I) are all complete and merged — kept for the record in
-[phase-0-foundations.md](phases/phase-0-foundations.md#work-breakdown). Work now moves to
-[Phase 1 — engine and LLM](phases/phase-1-engine-and-llm.md); see that phase doc for the
-ordered workstreams and acceptance criteria. In brief:
+Phase 1 has started. **Wave 0 — 1.L.0** (`@relavium/shared` reconciliation) is **✅ done and
+merged (PR #6)**: +44 schema tests (167 total), three independent reviews + adversarial
+verification, all green. Per the
+[sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), **Wave 1** opens
+two parallel lanes (both unblocked by 1.L.0):
 
-1. **[1.x] `@relavium/llm`** — the `LLMProvider` seam (Relavium/Zod types only — **no vendor
-   type crosses it**) + thin hand-rolled adapters over the official Anthropic/OpenAI/Gemini
-   SDKs ([ADR-0011](../decisions/0011-internal-llm-abstraction.md)). The seam fence (0.F)
-   polices the first adapter import from line one.
-2. **[1.x] `@relavium/core`** — the pure-TypeScript engine: parse authored YAML → DAG, the
-   runner, checkpoint/resume (persisted via `@relavium/db`), and retry/fallback. **Zero
-   platform-specific imports**, so it runs identically on every surface.
+1. **1.A — freeze the `LLMProvider` seam types** *(critical path)* — scaffold `packages/llm` and
+   declare the immovable seam in `packages/llm/src/types.ts` (Relavium/Zod types only — **no vendor
+   type crosses it**: `LlmRequest`/`LlmMessage`/`ContentPart`/`ToolDef`/`LlmResult`/`StopReason`/
+   `Usage`/`StreamChunk`/`CapabilityFlags`/`LlmError`), re-exporting the run-event types from
+   `@relavium/shared` ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
+   [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)). The seam fence (0.F)
+   polices it from line one.
+2. **1.L — `WorkflowYAMLParser`** *(critical path, engine lane)* — scaffold `packages/core` and
+   parse+validate a `.relavium.yaml` against the (now-reconciled) `WorkflowSchema`, with typed,
+   field-named errors. **Zero platform-specific imports.**
 
-Carry-over hardening that did **not** block M0 is tracked as discrete tasks in
-[deferred-tasks.md](deferred-tasks.md) — pick them up as Phase 1 first touches each file.
+The engine lane then runs 1.L → 1.L2 → 1.M → 1.N → 1.R concurrently with the seam lane and waits
+at the **1.O join** for the fallback runner (1.K). Carry-over hardening is tracked in
+[deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1 first touches each file.
 
 ## Not started yet
 
