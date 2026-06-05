@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0007-desktop-is-not-an-ide.md](0007-desktop-is-not-an-ide.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [product-constraints.md](../product-constraints.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [0007-desktop-is-not-an-ide.md](0007-desktop-is-not-an-ide.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md), [0026-session-export-to-workflow.md](0026-session-export-to-workflow.md), [product-constraints.md](../product-constraints.md), [tech-stack.md](../tech-stack.md)
 
 ## Context
 
@@ -35,6 +35,8 @@ Critically, **the YAML schema is treated as a public API from day one**. Because
 - One source of truth for two editing modalities — the visual canvas ([ADR-0007](0007-desktop-is-not-an-ide.md)) and the VS Code text editor edit the very same files.
 - No database-of-record and no server needed to define or share a workflow, reinforcing the local-first model of [ADR-0008](0008-local-first-phase-1-cloud-phase-2.md).
 - A clean separation of shared definitions (committed `.relavium/`) from machine-local secrets and preferences (`~/.relavium/`, keychain per [ADR-0006](0006-os-keychain-for-api-keys.md)).
+
+> Amended 2026-06-05: the git-native model now extends to interactive conversations — an `AgentSession` ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) can be **exported** to a committed `.relavium.yaml` ([ADR-0026](0026-session-export-to-workflow.md)), so a chat graduates into the same reviewable, diffable, PR-able artifact as any authored workflow. This is an additive consequence; the decision text above is unchanged.
 
 ### Negative
 
