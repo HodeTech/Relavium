@@ -346,6 +346,10 @@ describe('WorkflowSchema', () => {
     expect(
       accepts(withWorkflow({ budget: { max_cost_microcents: 1, on_exceed: 'warn', oops: 1 } })),
     ).toBe(false);
+    // a declared budget caps at a positive value — 0 is rejected (omit `budget` for no cap).
+    expect(accepts(withWorkflow({ budget: { max_cost_microcents: 0, on_exceed: 'warn' } }))).toBe(
+      false,
+    );
   });
 
   it('accepts an opt-in allowedCommandGlobs in the tool policy (ADR-0029)', () => {
@@ -371,6 +375,23 @@ describe('WorkflowSchema', () => {
       accepts(
         withWorkflow({
           inputs: [{ name: 'sev', type: 'number', validation: { min: 0, max: 10, oops: 1 } }],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects contradictory validation bounds (min > max, min_length > max_length)', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [{ name: 'sev', type: 'number', validation: { min: 10, max: 5 } }],
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [{ name: 'n', type: 'string', validation: { min_length: 5, max_length: 2 } }],
         }),
       ),
     ).toBe(false);

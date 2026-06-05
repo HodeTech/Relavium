@@ -72,7 +72,20 @@ export const InputValidationSchema = z
     min_length: nonNegativeInt.optional(),
     max_length: nonNegativeInt.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    // Reject contradictory bounds at parse (ADR-0023: an authored mistake fails loudly).
+    if (v.min !== undefined && v.max !== undefined && v.min > v.max) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'min must be <= max', path: ['min'] });
+    }
+    if (v.min_length !== undefined && v.max_length !== undefined && v.min_length > v.max_length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'min_length must be <= max_length',
+        path: ['min_length'],
+      });
+    }
+  });
 export type InputValidation = z.infer<typeof InputValidationSchema>;
 
 export const WorkflowInputSchema = z
@@ -118,7 +131,9 @@ export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
  */
 export const BudgetSchema = z
   .object({
-    max_cost_microcents: nonNegativeInt,
+    // A declared budget caps at a positive value; omit the `budget` block for no cap. (This
+    // differs from `[chat].max_cost_microcents`, an always-present default where 0 = unbounded.)
+    max_cost_microcents: positiveInt,
     on_exceed: z.enum(ON_EXCEED_ACTIONS),
   })
   .strict();

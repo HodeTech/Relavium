@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { nonNegativeInt } from './common.js';
+import { nonEmptyString, nonNegativeInt } from './common.js';
 import { EXECUTION_MODES } from './constants.js';
 import { ErrorCodeSchema } from './run-event.js';
 import { TriggerTypeSchema } from './workflow.js';
@@ -58,7 +58,7 @@ export const RunSchema = z
         code: ErrorCodeSchema, // closed ErrorCode taxonomy (sse-event-schema.md), matching run:failed
         message: z.string(),
         retryable: z.boolean(),
-        nodeId: z.string().optional(),
+        nodeId: nonEmptyString.optional(), // a node id is never empty (matches event nodeId fields)
       })
       .optional(),
     startedAt: nonNegativeInt.optional(), // epoch ms

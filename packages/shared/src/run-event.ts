@@ -90,6 +90,10 @@ export const SessionContextSchema = z.object({
   activeFile: nonEmptyString.optional(),
   selection: z
     .object({ file: nonEmptyString, startLine: nonNegativeInt, endLine: nonNegativeInt })
+    .refine((sel) => sel.startLine <= sel.endLine, {
+      message: 'startLine must be <= endLine',
+      path: ['endLine'],
+    })
     .optional(),
   gitRef: nonEmptyString.optional(),
   fsScopeTier: z.enum(FS_SCOPE_TIERS),
@@ -147,7 +151,8 @@ export const AgentFilePatchProposedEventSchema = z.object({
   ...runBase,
   nodeId: nonEmptyString,
   // Gated — no write until the user accepts (e.g. the VS Code inline-diff review).
-  patches: z.array(z.object({ uri: nonEmptyString, unifiedDiff: z.string() })),
+  // At least one patch — an empty proposal is meaningless (mirrors run:paused.gateIds).
+  patches: z.array(z.object({ uri: nonEmptyString, unifiedDiff: z.string() })).min(1),
   attemptNumber: positiveInt.optional(),
 });
 
@@ -219,7 +224,7 @@ export const RunCompletedEventSchema = z.object({
 export const RunFailedEventSchema = z.object({
   type: z.literal('run:failed'),
   ...runBase,
-  error: z.object({ ...eventErrorFields, nodeId: z.string().optional() }), // nodeId = root-cause node
+  error: z.object({ ...eventErrorFields, nodeId: nonEmptyString.optional() }), // nodeId = root-cause node
   partialOutputs: z.record(z.string(), z.unknown()),
 });
 

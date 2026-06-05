@@ -197,7 +197,7 @@ const reject: Record<string, Record<string, unknown>> = {
   'run:failed (missing partialOutputs)': {
     type: 'run:failed',
     ...env,
-    error: { code: 'E', message: 'm' },
+    error: { code: 'internal', message: 'm', retryable: false }, // compliant — isolate the missing partialOutputs
   },
   'run:cancelled (negative sequenceNumber)': { type: 'run:cancelled', ...env, sequenceNumber: -1 },
 };
@@ -366,6 +366,16 @@ describe('SessionEvent union — the agent-first namespace', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('rejects a session:started selection whose startLine exceeds endLine', () => {
+    const withSelection = (sel: { file: string; startLine: number; endLine: number }) =>
+      SessionEventSchema.safeParse({
+        ...validSession['session:started'],
+        context: { workingDir: '/w', fsScopeTier: 'sandboxed', selection: { ...sel } },
+      }).success;
+    expect(withSelection({ file: 'a.ts', startLine: 1, endLine: 5 })).toBe(true);
+    expect(withSelection({ file: 'a.ts', startLine: 5, endLine: 1 })).toBe(false);
+  });
 });
 
 describe('event envelope + ErrorCode + attemptNumber invariants', () => {
@@ -414,5 +424,20 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 2 }).success).toBe(true);
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 0 }).success).toBe(false);
     }
+  });
+
+  it('rejects an agent:file_patch_proposed with an empty patches array', () => {
+    expect(
+      RunEventSchema.safeParse({ ...valid['agent:file_patch_proposed'], patches: [] }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an empty root-cause nodeId on run:failed.error', () => {
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['run:failed'],
+        error: { code: 'internal', message: 'x', retryable: false, nodeId: '' },
+      }).success,
+    ).toBe(false);
   });
 });

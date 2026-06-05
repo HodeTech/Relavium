@@ -75,8 +75,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `@relavium/shared`** and re-exported by the `@relavium/llm` seam (the `StopReason` precedent),
   never imported by shared from llm — which would invert the package dependency. The seam doc
   ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)) currently shows
-  `ContentPart` only as a TS shape with no ownership statement; codify it there so the code
-  comment in `run-event.ts` and the spec stay aligned. *(nit → 1.V/1.X · llm-provider-seam.md)*
+  `ContentPart` only as a TS shape with no ownership statement; codify it there so the
+  `run-event.ts` comment stays aligned with the spec. *(nit → 1.V/1.X · llm-provider-seam.md)*
+- [ ] **Input-validation type-compatibility** — `WorkflowInput.validation` accepts any key
+  regardless of the input `type` (e.g. `format`/`max_length` on a `number`, `min`/`max` on a
+  `string`). Bound-ordering (`min ≤ max`, `min_length ≤ max_length`) is enforced; the per-type
+  key matrix is not, because the contract (workflow-yaml-spec.md) only shows two examples and
+  doesn't define which keys are legal per `InputType`. Specify that matrix, then add a
+  `WorkflowInputSchema.superRefine((type, validation) => …)`. *(minor · workflow.ts,
+  workflow-yaml-spec.md)*
 
 ## Test depth
 
