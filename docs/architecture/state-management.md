@@ -58,10 +58,18 @@ in summary:
 | Store | Holds | Notes |
 |-------|-------|-------|
 | `providerStore` | configured providers, model catalog | keys themselves never live here — only references; see [local-first-and-security.md](local-first-and-security.md) |
-| `agentStore` | agent definitions, test-chat state | mirrors `*.agent.yaml` files |
+| `agentStore` | agent definitions, selected agent | mirrors `*.agent.yaml` files |
 | `workflowStore` | the open workflow, undo/redo history | serialized to YAML on save |
-| `uiStore` | panel open/closed, theme, selection | pure view state |
+| `uiStore` | panel open/closed, theme, selection, active tab, `activeSessionId` | pure view state; Chat and Canvas are co-equal tabs |
 | `runStore` | live run status, per-node status, token buffers, cost | the hot path during a run |
+
+Chat sessions are **DB-first, not a store**: a session is auto-persisted and
+resumable in `history.db` and queried via IPC, so the only session state in a
+global store is the transient `uiStore.activeSessionId`. There is **no** sixth
+store — the five-store split above is the whole set. See
+[agent-sessions.md](agent-sessions.md) for the session model and
+[../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md)
+for the runtime contract.
 
 ### The critical separation: canvas state vs run state
 
