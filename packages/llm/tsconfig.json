@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
+    // `types: []` is the platform-type boundary — no ambient @types/node, so a stray
+    // `process`/`Buffer`/`AbortSignal` is a TS error. The seam is platform-free: it runs in
+    // Node, the Tauri WebView, the VS Code extension host, and (Phase 2) a Bun worker alike.
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
