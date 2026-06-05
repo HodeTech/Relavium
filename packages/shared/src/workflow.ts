@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
-import { SCHEMA_VERSION } from './constants.js';
+import { kebabIdSchema, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import { ON_EXCEED_ACTIONS, SCHEMA_VERSION } from './constants.js';
 import { AgentSchema } from './agent.js';
 import { NodeSchema } from './node.js';
 import { EdgeSchema } from './edge.js';
@@ -58,6 +58,36 @@ export const InputTypeSchema = z.enum([
   'secret',
 ]);
 
+/**
+ * An optional pre-run check on a declared input (workflow-yaml-spec.md). The engine validates
+ * the resolved value before the run starts; a violation fails fast and the run never begins.
+ */
+export const InputValidationSchema = z
+  .object({
+    format: nonEmptyString.optional(), // e.g. 'email'
+    pattern: nonEmptyString.optional(), // a regex source
+    enum: z.array(z.unknown()).optional(),
+    min: z.number().optional(),
+    max: z.number().optional(),
+    min_length: nonNegativeInt.optional(),
+    max_length: nonNegativeInt.optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    // Reject contradictory bounds at parse (ADR-0023: an authored mistake fails loudly).
+    if (v.min !== undefined && v.max !== undefined && v.min > v.max) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'min must be <= max', path: ['min'] });
+    }
+    if (v.min_length !== undefined && v.max_length !== undefined && v.min_length > v.max_length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'min_length must be <= max_length',
+        path: ['min_length'],
+      });
+    }
+  });
+export type InputValidation = z.infer<typeof InputValidationSchema>;
+
 export const WorkflowInputSchema = z
   .object({
     name: nonEmptyString,
@@ -65,6 +95,7 @@ export const WorkflowInputSchema = z
     required: z.boolean().optional(),
     default: z.unknown().optional(),
     description: z.string().optional(),
+    validation: InputValidationSchema.optional(),
   })
   .strict();
 export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
@@ -78,14 +109,35 @@ export const ContextEntrySchema = z
   .strict();
 export type ContextEntry = z.infer<typeof ContextEntrySchema>;
 
-/** Workflow-wide tool guardrails (the canonical home for the command allowlist). */
+/**
+ * Workflow-wide tool guardrails (the canonical home for the command allowlist). `allowedCommands`
+ * is exact-match; `allowedCommandGlobs` is the opt-in pattern form (riskier); `allowedDomains` is
+ * exact-FQDN for `http_request`. Each empty/absent ⇒ that tool is disabled (ADR-0029).
+ */
 export const ToolPolicySchema = z
   .object({
     allowedCommands: z.array(nonEmptyString).optional(),
+    allowedCommandGlobs: z.array(nonEmptyString).optional(),
     allowedDomains: z.array(nonEmptyString).optional(),
   })
   .strict();
 export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
+
+/**
+ * Optional resource-governance guardrails (ADR-0028). The cost cap is **pre-egress**: before each
+ * LLM call the engine checks `cumulative + worstCaseNextEstimate` against `max_cost_microcents`
+ * (integer micro-cents) and applies `on_exceed`. The whole-run `timeout_ms` and the concurrency
+ * cap `max_parallel` live alongside `budget` on the workflow spec.
+ */
+export const BudgetSchema = z
+  .object({
+    // A declared budget caps at a positive value; omit the `budget` block for no cap. (This
+    // differs from `[chat].max_cost_microcents`, an always-present default where 0 = unbounded.)
+    max_cost_microcents: positiveInt,
+    on_exceed: z.enum(ON_EXCEED_ACTIONS),
+  })
+  .strict();
+export type Budget = z.infer<typeof BudgetSchema>;
 
 /** The body under the top-level `workflow:` key. */
 export const WorkflowSpecSchema = z
@@ -95,11 +147,17 @@ export const WorkflowSpecSchema = z
     name: z.string().optional(),
     description: z.string().optional(),
     tags: z.array(z.string()).optional(),
+    // Free-form provenance map — a real schema field, so it survives parse → serialize
+    // round-trips (unlike YAML comments). Carries an exported session's transcript (ADR-0026).
+    metadata: z.record(z.string(), z.unknown()).optional(),
     trigger: TriggerSchema.optional(),
     inputs: z.array(WorkflowInputSchema).optional(),
     context: z.array(ContextEntrySchema).optional(),
     agents: z.array(AgentSchema).optional(),
     tools: ToolPolicySchema.optional(),
+    budget: BudgetSchema.optional(), // pre-egress cost cap (ADR-0028)
+    timeout_ms: positiveInt.optional(), // whole-run wall-clock cap
+    max_parallel: positiveInt.optional(), // cap on concurrent in-flight LLM calls
     nodes: z.array(NodeSchema).min(1, 'a workflow must declare at least one node'),
     edges: z.array(EdgeSchema),
   })

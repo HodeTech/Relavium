@@ -70,7 +70,7 @@ export type RunEvent =
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets), `attemptNumber?` (1-based, matches `cost:updated`) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI), `attemptNumber?` |
-| `agent:file_patch_proposed` | An agent proposed a file change (**gated — no write until the user accepts**; e.g. the VS Code inline-diff review). | `nodeId`, `patches: [{ uri, unifiedDiff }]`, `attemptNumber?` |
+| `agent:file_patch_proposed` | An agent proposed a file change (**gated — no write until the user accepts**; e.g. the VS Code inline-diff review). | `nodeId`, `patches: [{ uri, unifiedDiff }]` (≥1 — an empty proposal is meaningless), `attemptNumber?` |
 | `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model?}` (`model` only for LLM nodes), `durationMs`, `attemptNumber?` |
 | `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` (`code` is an [`ErrorCode`](#error-code-taxonomy)) |

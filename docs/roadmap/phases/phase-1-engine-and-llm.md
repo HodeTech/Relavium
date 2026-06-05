@@ -683,6 +683,186 @@ the latter being the critical-path milestone for the whole product.
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
 
+## Sequencing & parallelization
+
+The [Work breakdown](#work-breakdown) above is the per-workstream *logical* DAG (the
+rationale for each edge lives in each workstream's prose); this section is the
+*scheduling* view — the order to build in, what blocks what, and what can run
+concurrently. It is the single home for the execution plan; the work-breakdown DAG
+and the [Milestones](#milestones) table are its inputs, not duplicates.
+
+### Three lanes behind one gate
+
+After the shared gate, work splits into three lanes that progress concurrently:
+
+- **Gate — 1.L.0 (do first, alone).** Reconciles `@relavium/shared` to the 2026-06-05
+  contracts. Every lane binds to these schemas (1.A re-exports the run-event types; the
+  whole engine parses authored YAML and emits events against them), so **nothing else
+  starts until 1.L.0 lands.** Small, mechanical, no new behavior — but a hard prerequisite.
+- **Lane A — `@relavium/llm` (the seam).** 1.A → adapters → conformance → policy. This is
+  the **binding critical path to M2**: the engine's `AgentRunner` (1.O) cannot make a real
+  call until the `FallbackChain` (1.K) exists, and 1.K needs M1 (all adapters green).
+- **Lane B — `@relavium/core` (the engine).** 1.L → … → 1.N → 1.R runs **fully concurrent
+  with Lane A** (they share only the 1.L.0 gate). Lane B reaches the run loop and
+  checkpointer early, then **blocks at the join (1.O)** waiting for Lane A's 1.K.
+- **Lane C — agent-first sub-spine (additive).** Opens once 1.O exists; **never gates M2**,
+  proven by its own harness (1.AA).
+
+### The one scheduling insight: the join at 1.O
+
+Lane B sprints ahead independently (parser → DAG → run loop → checkpointer) and then
+**idles at `1.O AgentRunner` until Lane A delivers `1.K FallbackChain`** (which itself
+waits on M1). So the wall-clock to M2 is dominated by **Lane A's** length, not Lane B's.
+Front-load Lane A; let Lane B's slack absorb 1.AB (sandbox) and 1.T (tool registry), which
+fold in later without extending the path.
+
+### Ordered waves (each wave is internally parallel; waves are gated left-to-right)
+
+```mermaid
+flowchart LR
+    L0["1.L.0<br/>reconcile shared"]:::gate
+
+    subgraph SEAM["Lane A — @relavium/llm"]
+        direction TB
+        A["1.A seam types"] --> Bx["1.B CostTracker"]
+        A --> E["1.E ToolNormalizer"]
+        A --> I["1.I LlmError class."]
+        A --> C["1.C Anthropic"]
+        E --> C
+        C --> D["1.D capabilities"]
+        C --> F["1.F conformance"]
+        F --> G["1.G OpenAI+DeepSeek"]
+        F --> H["1.H Gemini"]
+        E --> H
+        G --> J["1.J — M1"]:::ms
+        H --> J
+        I --> J
+        J --> K["1.K FallbackChain"]
+        Bx --> K
+        I --> K
+    end
+
+    subgraph CORE["Lane B — @relavium/core"]
+        direction TB
+        Lp["1.L parser"] --> L2["1.L2 interpolation"]
+        L2 --> Mn["1.M DAG + RunPlan"]
+        Mn --> N["1.N engine + bus"]
+        N --> R["1.R Checkpointer"]
+        T["1.T ToolRegistry"]
+        AB["1.AB sandbox"]
+        N --> O["1.O AgentRunner"]
+        R --> O
+        T --> O
+        O --> P["1.P node handlers"]
+        AB --> P
+        O --> S["1.S retry+fallback"]
+        R --> S
+        P --> Q["1.Q human gate"]
+        R --> Q
+        O --> AC["1.AC budget governor"]
+        Q --> AC
+        P --> U["1.U — M2"]:::ms
+        S --> U
+        Q --> U
+        R --> U
+        T --> U
+        AC --> U
+    end
+
+    subgraph CHAT["Lane C — agent-first sub-spine (additive)"]
+        direction TB
+        V["1.V AgentSession"] --> W["1.W session:*"]
+        V --> X["1.X persistence"]
+        V --> Z["1.Z export"]
+        X --> Y["1.Y session resume"]
+        W --> AA["1.AA chat harness"]
+        X --> AA
+        Y --> AA
+        Z --> AA
+    end
+
+    L0 --> A
+    L0 --> Lp
+    E -. enables .-> T
+    K ==>|JOIN| O
+    O --> V
+
+    classDef gate fill:#e0e7ff,stroke:#3730a3;
+    classDef ms fill:#fde68a,stroke:#b45309;
+```
+
+| Wave | Goal (milestone) | Lane A — seam | Lane B — engine | Lane C — sub-spine |
+| --- | --- | --- | --- | --- |
+| **W0** | shared gate | — | — | — |
+| | | 1.L.0 (alone — blocks W1) | | |
+| **W1** | freeze + first proof (**1.m1**) | 1.A → {1.B ‖ 1.E ‖ 1.I} → 1.C → {1.D ‖ 1.F} | 1.L → 1.L2 → 1.M → 1.N → 1.R **‖ 1.AB** (perf spike first) | — |
+| **W2** | seam proven + policy (**M1**, 1.m2) | {1.G ‖ 1.H} → **1.J (M1)** → 1.K | 1.T (needs only 1.E); lane idles at the 1.O join | — |
+| **W3** | run-loop convergence (**1.m4**) | — | **1.O (join)** → 1.P (+1.AB) → {1.S ‖ 1.Q} → 1.AC | 1.V opens (needs 1.O) |
+| **W4** | end-to-end (**M2**) | — | **1.U (M2)** | — |
+| **L-C** | sub-spine (**1.m5**, parallel from W3) | — | — | 1.V → {1.W ‖ 1.X ‖ 1.Z} → 1.Y → 1.AA |
+
+### Dependency matrix
+
+`✅` = on the binding path to M2 (or gates a [go/no-go exit criterion](#exit-criteria-go--no-go));
+`⬤` = parallel feeder (a hard predecessor, but short — slack absorbs it);
+`◇` = additive (Lane C — never gates M2).
+
+| WS | Lane | Depends on | Enables | M2 |
+| --- | --- | --- | --- | --- |
+| **1.L.0** | Gate | Phase 0 (frozen `@relavium/shared`) | 1.A, 1.L, 1.W (direct; **gates Lanes A/B/C transitively**) | ✅ first |
+| 1.A | A | 1.L.0 | 1.B, 1.E, 1.I, 1.C | ✅ |
+| 1.B | A | 1.A | 1.K | ⬤ |
+| 1.E | A | 1.A | 1.C, 1.H, 1.T | ✅ |
+| 1.I | A | 1.A | 1.J, 1.K | ⬤ |
+| 1.C | A | 1.A, 1.E | 1.D, 1.F | ✅ |
+| 1.D | A | 1.C | (capability completeness) | ⬤ |
+| 1.F | A | 1.C | 1.G, 1.H | ✅ |
+| 1.G | A | 1.F | 1.J | ✅ |
+| 1.H | A | 1.E, 1.F | 1.J | ✅ |
+| 1.J | A | 1.G, 1.H, 1.I | 1.K (**M1**) | ✅ |
+| 1.K | A | 1.B, 1.I, 1.J | 1.O | ✅ |
+| 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ |
+| 1.L2 | B | 1.L | 1.M | ✅ |
+| 1.M | B | 1.L2 | 1.N | ✅ |
+| 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ |
+| 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
+| 1.T | B | 1.E | 1.O, 1.U | ⬤ |
+| 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P |
+| 1.O | B | **1.K, 1.N, 1.T** (the join) | 1.P, 1.S, 1.AC, 1.V | ✅ |
+| 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
+| 1.S | B | 1.O, 1.R | 1.U | ✅ |
+| 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ⬤ |
+| 1.AC | B | 1.O, 1.Q | 1.U | ✅ folds into 1.O |
+| 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ |
+| 1.V | C | 1.O | 1.W, 1.X, 1.Z | ◇ |
+| 1.W | C | 1.V, 1.N, 1.L.0 | 1.AA | ◇ |
+| 1.X | C | 1.V, `@relavium/db` (new migration) | 1.Y, 1.AA | ◇ |
+| 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
+| 1.Z | C | 1.V, 1.L | 1.AA | ◇ |
+| 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
+
+> The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`
+> and `1.L.0 → 1.W` into Lane C). The waves Mermaid above draws lane-internal edges plus the `1.O`
+> join and the gate fan-out, omitting those Lane-C feeders to stay readable — so where the diagram
+> and this table differ on a Lane-C predecessor, the table wins.
+
+### Solo vs. multi-track
+
+- **One builder:** walk Lane A as the spine (1.L.0 → 1.A → 1.E → 1.C → 1.F → 1.G/1.H → 1.J →
+  1.K → 1.O → 1.P → 1.U), and slot the `⬤` feeders (1.B, 1.I, 1.T, 1.D) and the parallel
+  Lane-B prefix (1.L → 1.N → 1.R) and 1.AB into the gaps — most naturally **right before**
+  the workstream that consumes them.
+- **Two tracks:** Track 1 = Lane A, Track 2 = Lane B's prefix (1.L → 1.R) + 1.AB + 1.T. They
+  meet at the **1.O join**; from there one track drives 1.O → 1.U while the other opens
+  **Lane C** (the sub-spine) — which can run on a third track at any time after 1.O and is
+  cut from the M2 schedule entirely if capacity is tight.
+
+> **Reconciliation note.** The inline `*critical path*` tags on individual workstream
+> headers above are the per-workstream callouts; the `✅` column here is the *consolidated*
+> binding path to M2 plus the workstreams that gate a go/no-go exit criterion (so it also
+> marks 1.A, 1.E, 1.J, and the hardening folds 1.AB/1.AC). Where the two differ, this
+> section is the scheduling source of truth.
+
 ## Dependencies
 
 ```mermaid

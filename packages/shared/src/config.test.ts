@@ -93,4 +93,32 @@ describe('config schemas', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('accepts defaults.max_tokens_estimate (ADR-0028 pre-egress estimate)', () => {
+    expect(
+      ProjectConfigSchema.safeParse({ defaults: { model: 'gpt-4o', max_tokens_estimate: 4096 } })
+        .success,
+    ).toBe(true);
+    // It is a positive integer.
+    expect(ProjectConfigSchema.safeParse({ defaults: { max_tokens_estimate: 0 } }).success).toBe(
+      false,
+    );
+  });
+
+  it('accepts a [chat] block (agent-session defaults) and rejects a bad on_exceed', () => {
+    expect(
+      ProjectConfigSchema.safeParse({
+        chat: {
+          default_model: 'claude-sonnet-4-6',
+          fs_scope: 'sandboxed',
+          max_messages: 200,
+          max_cost_microcents: 5000000,
+          on_exceed: 'pause_for_approval',
+        },
+      }).success,
+    ).toBe(true);
+    expect(ProjectConfigSchema.safeParse({ chat: { on_exceed: 'explode' } }).success).toBe(false);
+    // 0 = unbounded here (nonNegativeInt) — deliberately unlike the workflow budget's positiveInt.
+    expect(ProjectConfigSchema.safeParse({ chat: { max_cost_microcents: 0 } }).success).toBe(true);
+  });
 });

@@ -134,4 +134,47 @@ describe('NodeSchema', () => {
     expect(NodeSchema.safeParse({ ...node, temperature: 3 }).success).toBe(false);
     expect(NodeSchema.safeParse({ ...node, temperature: 0.5 }).success).toBe(true);
   });
+
+  it('rejects the reserved timeout_action escalate (v1.0 allows only reject / approve)', () => {
+    const gate = { id: 'g', type: 'human_gate', gate_type: 'approval' };
+    expect(NodeSchema.safeParse({ ...gate, timeout_action: 'escalate' }).success).toBe(false);
+    expect(NodeSchema.safeParse({ ...gate, timeout_action: 'reject' }).success).toBe(true);
+    expect(NodeSchema.safeParse({ ...gate, timeout_action: 'approve' }).success).toBe(true);
+  });
+
+  it('rejects the reserved expression_type jmespath / jsonlogic (v1.0 allows only js)', () => {
+    const cond = {
+      id: 'c',
+      type: 'condition',
+      expression: 'x > 1',
+      branches: [{ when: true, target_node: 'a' }],
+    };
+    expect(NodeSchema.safeParse({ ...cond, expression_type: 'jmespath' }).success).toBe(false);
+    expect(NodeSchema.safeParse({ ...cond, expression_type: 'jsonlogic' }).success).toBe(false);
+    expect(NodeSchema.safeParse({ ...cond, expression_type: 'js' }).success).toBe(true);
+  });
+
+  it('accepts system_prompt_append + output_schema on an agent node, and output_schema on transform', () => {
+    expect(
+      NodeSchema.safeParse({
+        id: 'a',
+        type: 'agent',
+        agent_ref: 'ag',
+        system_prompt_append: 'Focus on auth issues.',
+        output_schema: {
+          type: 'object',
+          required: ['score'],
+          properties: { score: { type: 'number' } },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      NodeSchema.safeParse({
+        id: 't',
+        type: 'transform',
+        transform: '{ x: 1 }',
+        output_schema: { type: 'object' },
+      }).success,
+    ).toBe(true);
+  });
 });

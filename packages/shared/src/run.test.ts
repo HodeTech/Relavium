@@ -76,10 +76,36 @@ describe('RunSchema', () => {
       RunSchema.safeParse({
         ...run,
         status: 'failed',
-        error: { code: 'E_FAIL', message: 'boom', nodeId: 'scan' },
+        error: { code: 'internal', message: 'boom', retryable: false, nodeId: 'scan' },
         startedAt: 1717459210000,
         completedAt: 1717459260000,
       }).success,
     ).toBe(true);
+  });
+
+  it('binds error.code to the closed ErrorCode taxonomy and requires retryable', () => {
+    const base = { ...run, status: 'failed' };
+    // A free-string code is rejected now that the taxonomy is closed (matches run:failed).
+    expect(
+      RunSchema.safeParse({ ...base, error: { code: 'E_FAIL', message: 'x', retryable: false } })
+        .success,
+    ).toBe(false);
+    // `retryable` is required when an error is present.
+    expect(
+      RunSchema.safeParse({ ...base, error: { code: 'internal', message: 'x' } }).success,
+    ).toBe(false);
+    expect(
+      RunSchema.safeParse({
+        ...base,
+        error: { code: 'run_timeout', message: 'x', retryable: true },
+      }).success,
+    ).toBe(true);
+    // a root-cause nodeId, when present, is never empty
+    expect(
+      RunSchema.safeParse({
+        ...base,
+        error: { code: 'internal', message: 'x', retryable: false, nodeId: '' },
+      }).success,
+    ).toBe(false);
   });
 });
