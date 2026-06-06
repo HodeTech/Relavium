@@ -31,7 +31,7 @@ monorepo, the strict toolchain + GitHub Actions CI, `@relavium/shared` (the full
 contract set), the no-vendor-type seam fence, and `@relavium/db` (Drizzle schema +
 migrations + SQLite client) are all in place and green. Work is now on
 [Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md): the
-`@relavium/llm` provider seam and the `@relavium/core` engine — which now also adds
-the **AgentSession** runtime, persistence, and export-to-workflow workstream
-alongside the workflow runner. See
+`@relavium/llm` provider seam (1.A/1.B/1.E in review under **PR #7**, 2026-06-05) and the
+`@relavium/core` engine — which now also adds the **AgentSession** runtime, persistence, and
+export-to-workflow workstream alongside the workflow runner. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

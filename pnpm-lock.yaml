@@ -12,6 +12,9 @@ catalogs:
     '@types/better-sqlite3':
       specifier: ^7.6.13
       version: 7.6.13
+    '@types/json-schema':
+      specifier: ^7.0.15
+      version: 7.0.15
     '@types/node':
       specifier: ^20.11.0
       version: 20.19.41
@@ -114,6 +117,28 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.6(@types/node@20.19.41)(tsx@4.22.4)
+
+  packages/llm:
+    dependencies:
+      '@relavium/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: 'catalog:'
+        version: 3.25.76
+    devDependencies:
+      '@types/json-schema':
+        specifier: 'catalog:'
+        version: 7.0.15
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@22.19.19)(tsx@4.22.4)
 
   packages/shared:
     dependencies:

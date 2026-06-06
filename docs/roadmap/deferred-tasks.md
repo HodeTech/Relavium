@@ -92,6 +92,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   doesn't define which keys are legal per `InputType`. Specify that matrix, then add a
   `WorkflowInputSchema.superRefine((type, validation) => …)`. *(minor · workflow.ts,
   workflow-yaml-spec.md)*
+- [ ] **Verify the non-Anthropic prices in `pricing.ts` (at 1.G/1.H)** — the OpenAI / Gemini /
+  DeepSeek rows are best-known **placeholders** (Anthropic is confirmed via claude-api). Verify
+  each against the provider's pricing page when its adapter lands, and replace Gemini's flat
+  ≤128K-tier figures if context-tiered pricing matters. *(low → 1.G/1.H · packages/llm/src/pricing.ts)*
+- [ ] **`model_catalog` cache-write column (at the seeder)** — `ModelPricing` carries
+  `cacheWritePerMtokMicrocents` (Anthropic charges one), but `model_catalog`
+  ([database-schema.md](../reference/desktop/database-schema.md)) has only
+  `input/output/cached_input_*_per_mtok_microcents`. When the catalog seeder lands, either add a
+  `cache_write_cost_per_mtok_microcents` column or knowingly drop the cache-write price from the DB
+  projection (`pricing.ts` stays the source of truth either way). *(nit · database-schema.md)*
 
 ## Test depth
 

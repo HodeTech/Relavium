@@ -20,6 +20,9 @@ catalog:
   # `node:sqlite`, which ADR-0021 rejects for needing >=22.5) is a type error rather than
   # a runtime break on the supported floor.
   '@types/better-sqlite3': ^7.6.13
+  # Dev/type-only: the `JSONSchema7` type for the `@relavium/llm` seam's `ToolDef.parameters`
+  # (a type-only import, erased at build — no runtime dependency, so no ADR needed).
+  '@types/json-schema': ^7.0.15
   '@types/node': ^20.11.0
   drizzle-kit: ^0.31.10
   # Runtime

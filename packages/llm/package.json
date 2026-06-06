@@ -1,0 +1,35 @@
+{
+  "name": "@relavium/llm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Relavium's provider-agnostic LLMProvider seam + (later) thin hand-rolled adapters over the official provider SDKs (ADR-0011). No vendor SDK type crosses the seam.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@relavium/shared": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/json-schema": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
