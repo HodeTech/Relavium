@@ -23,6 +23,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "catalog:",
     "@relavium/shared": "workspace:*",
     "zod": "catalog:"
   },

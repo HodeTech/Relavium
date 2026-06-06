@@ -44,6 +44,9 @@ export type { ContentPart, StopReason, AbortSignalLike } from '@relavium/shared'
 export { LlmConfigError, UnknownModelError, ToolSchemaError } from './errors.js';
 export type { LlmConfigErrorCode } from './errors.js';
 
+// LlmError classification — the fallback contract (1.I).
+export { RETRYABLE_KINDS, isRetryable, kindFromHttpStatus, makeLlmError } from './llm-error.js';
+
 // CostTracker + the canonical model-pricing table (1.B).
 export { MODEL_PRICING, KNOWN_MODEL_IDS } from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
