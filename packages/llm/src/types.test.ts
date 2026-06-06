@@ -36,6 +36,19 @@ describe('seam request/message/tool schemas', () => {
         },
       }).success,
     ).toBe(true); // a structurally valid AbortSignalLike passes
+    // The tightening must also reject a PARTIAL object (missing the listeners) and a wrong-typed
+    // `aborted` — not just a fully-invalid scalar.
+    expect(LlmRequestSchema.safeParse({ ...req, signal: { aborted: false } }).success).toBe(false);
+    expect(
+      LlmRequestSchema.safeParse({
+        ...req,
+        signal: {
+          aborted: 'yes',
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+        },
+      }).success,
+    ).toBe(false); // `aborted` must be a boolean
   });
 
   it('accepts a request with tools, toolChoice, and the providerOptions escape hatch', () => {

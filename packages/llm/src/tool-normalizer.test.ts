@@ -22,6 +22,25 @@ const parameters: JSONSchema7 = {
 
 const toolDef: ToolDef = { name: 'read_file', description: 'Read a file', parameters };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Narrow a reshaped property to a record at runtime — fails the test (no unsafe `as`) if it isn't. */
+function recordAt(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  if (!isRecord(value)) {
+    throw new Error(`expected '${key}' to be a record, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/**
+ * Parse a schema the way a tool's YAML/JSON would actually arrive. Needed where an object literal
+ * can't express the input: an own `__proto__` key (a literal `__proto__:` sets the prototype) or a
+ * non-JSON-Schema-7 keyword like OpenAPI `nullable`. The JSON.parse boundary cast is the canonical use.
+ */
+const parseSchema = (json: string): JSONSchema7 => JSON.parse(json) as JSONSchema7;
+
 describe('toWire — one canonical ToolDef, three native shapes', () => {
   it('shapes the Anthropic input_schema form (parameters passed through)', () => {
     const wire = toWire(toolDef, 'anthropic');
@@ -75,7 +94,7 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
     );
     expect(reshaped).not.toHaveProperty('additionalProperties');
     expect(reshaped).not.toHaveProperty('patternProperties');
-    const props = reshaped['properties'] as Record<string, Record<string, unknown>>;
+    const props = recordAt(reshaped, 'properties');
     expect(props['when']).toEqual({ type: 'string', format: 'date-time' });
     expect(props['email']).toEqual({ type: 'string' }); // format dropped
   });
@@ -95,7 +114,7 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
       } satisfies JSONSchema7,
       'demo',
     );
-    const value = (reshaped['properties'] as Record<string, Record<string, unknown>>)['value'];
+    const value = recordAt(reshaped, 'properties')['value'];
     // The union survives with both branches and their (supported) bound keywords intact.
     expect(value).toEqual({
       anyOf: [
@@ -116,7 +135,7 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
       } satisfies JSONSchema7,
       'demo',
     );
-    const props = reshaped['properties'] as Record<string, Record<string, unknown>>;
+    const props = recordAt(reshaped, 'properties');
     expect(props['age']).toEqual({ type: 'integer', minimum: 0, maximum: 120 });
     expect(props['name']).toEqual({
       type: 'string',
@@ -156,7 +175,7 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
       },
       'demo',
     );
-    const props = reshaped['properties'] as Record<string, Record<string, unknown>>;
+    const props = recordAt(reshaped, 'properties');
     expect(props['opt']).toEqual({ type: 'string', nullable: true });
   });
 
@@ -167,6 +186,51 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
         'demo',
       ),
     ).toThrowError(ToolSchemaError);
+  });
+
+  it('defaults a no-argument tool (typeless {} root) to an object schema', () => {
+    // Valid for the other providers; Gemini requires the explicit object type, so default it.
+    expect(reshapeForGemini({}, 'demo')).toEqual({ type: 'object' });
+  });
+
+  it('keeps a __proto__-named property as an own key without mutating the prototype', () => {
+    const reshaped = reshapeForGemini(
+      parseSchema(
+        '{"type":"object","properties":{"__proto__":{"type":"string"},"keep":{"type":"number"}}}',
+      ),
+      'demo',
+    );
+    const props = recordAt(reshaped, 'properties');
+    expect(Object.getPrototypeOf(props)).toBe(Object.prototype); // own key, not a prototype mutation
+    expect(Object.prototype.hasOwnProperty.call(props, '__proto__')).toBe(true);
+    expect(recordAt(props, '__proto__')).toEqual({ type: 'string' });
+    expect(recordAt(props, 'keep')).toEqual({ type: 'number' });
+  });
+
+  it('lets a type-union null win over a contradictory verbatim nullable:false', () => {
+    const reshaped = reshapeForGemini(
+      parseSchema(
+        '{"type":"object","properties":{"opt":{"type":["string","null"],"nullable":false}}}',
+      ),
+      'demo',
+    );
+    expect(recordAt(reshaped, 'properties')['opt']).toEqual({ type: 'string', nullable: true });
+  });
+
+  it('keeps a boolean (primitive) items schema verbatim', () => {
+    const reshaped = reshapeForGemini(
+      { type: 'object', properties: { arr: { type: 'array', items: true } } },
+      'demo',
+    );
+    expect(recordAt(reshaped, 'properties')['arr']).toEqual({ type: 'array', items: true });
+  });
+
+  it('throws a typed ToolSchemaError when nesting exceeds the depth cap (DoS guard)', () => {
+    let schema: JSONSchema7 = { type: 'object' };
+    for (let i = 0; i < 200; i += 1) {
+      schema = { type: 'object', properties: { n: schema } };
+    }
+    expect(() => reshapeForGemini(schema, 'deep')).toThrowError(ToolSchemaError);
   });
 });
 

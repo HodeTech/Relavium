@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CostTracker, cost, priceModel } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
-import { KNOWN_MODEL_IDS } from './pricing.js';
+import { KNOWN_MODEL_IDS, MODEL_PRICING, type ModelPricing } from './pricing.js';
 
 describe('priceModel', () => {
   it('returns pricing for a known canonical model id', () => {
@@ -76,5 +76,28 @@ describe('CostTracker', () => {
     expect(b.costMicrocents).toBe(250_000);
     expect(b.cumulativeCostMicrocents).toBe(2_000_000); // 1_750_000 + 250_000
     expect(tracker.cumulativeCostMicrocents).toBe(2_000_000);
+  });
+});
+
+describe('MODEL_PRICING table invariants (the values seeded into model_catalog)', () => {
+  it('keys match KNOWN_MODEL_IDS and every catalog-projection field is complete + integer', () => {
+    expect(Object.keys(MODEL_PRICING).sort()).toEqual([...KNOWN_MODEL_IDS].sort());
+    const rows: Array<[string, ModelPricing]> = Object.entries(MODEL_PRICING);
+    for (const [id, row] of rows) {
+      expect(row.nativeId.length, id).toBeGreaterThan(0);
+      expect(row.displayName.length, id).toBeGreaterThan(0);
+      expect(row.contextWindowTokens, id).toBeGreaterThan(0);
+      expect(row.maxOutputTokens, id).toBeGreaterThan(0);
+      // Prices are integer micro-cents per MTok — never a float, and never negative.
+      for (const price of [
+        row.inputPerMtokMicrocents,
+        row.outputPerMtokMicrocents,
+        row.cachedInputPerMtokMicrocents,
+        row.cacheWritePerMtokMicrocents ?? 0,
+      ]) {
+        expect(Number.isInteger(price), id).toBe(true);
+        expect(price, id).toBeGreaterThanOrEqual(0);
+      }
+    }
   });
 });
