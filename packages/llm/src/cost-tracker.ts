@@ -1,5 +1,10 @@
 import { UnknownModelError } from './errors.js';
-import { KNOWN_MODEL_IDS, MODEL_PRICING, type ModelPricing } from './pricing.js';
+import {
+  isCanonicalModelId,
+  KNOWN_MODEL_IDS,
+  MODEL_PRICING,
+  type ModelPricing,
+} from './pricing.js';
 import type { Usage } from './types.js';
 
 /**
@@ -10,13 +15,10 @@ import type { Usage } from './types.js';
 
 /** Look up pricing for a canonical model id; throws `UnknownModelError` (never a silent zero). */
 export function priceModel(modelId: string): ModelPricing {
-  const pricing: ModelPricing | undefined = (MODEL_PRICING as Record<string, ModelPricing>)[
-    modelId
-  ];
-  if (pricing === undefined) {
+  if (!isCanonicalModelId(modelId)) {
     throw new UnknownModelError(modelId, KNOWN_MODEL_IDS);
   }
-  return pricing;
+  return MODEL_PRICING[modelId];
 }
 
 const TOKENS_PER_MTOK = 1_000_000;

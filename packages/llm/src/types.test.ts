@@ -25,6 +25,17 @@ describe('seam request/message/tool schemas', () => {
     expect(LlmRequestSchema.safeParse(req).success).toBe(true);
     expect(LlmRequestSchema.safeParse({ ...req, model: '' }).success).toBe(false);
     expect(LlmRequestSchema.safeParse({ ...req, maxTokens: 0 }).success).toBe(false); // positive
+    expect(LlmRequestSchema.safeParse({ ...req, signal: 123 }).success).toBe(false); // not AbortSignalLike
+    expect(
+      LlmRequestSchema.safeParse({
+        ...req,
+        signal: {
+          aborted: false,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+        },
+      }).success,
+    ).toBe(true); // a structurally valid AbortSignalLike passes
   });
 
   it('accepts a request with tools, toolChoice, and the providerOptions escape hatch', () => {
@@ -59,6 +70,7 @@ describe('seam request/message/tool schemas', () => {
       true,
     );
     expect(ToolDefSchema.safeParse({ name: 'f', parameters: 'nope' }).success).toBe(false);
+    expect(ToolDefSchema.safeParse({ name: 'f', parameters: [] }).success).toBe(false); // an array is not an object schema
     expect(ToolDefSchema.safeParse({ name: '', parameters: {} }).success).toBe(false); // non-empty name
   });
 

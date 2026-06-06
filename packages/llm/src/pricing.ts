@@ -5,7 +5,9 @@ import type { ProviderId } from './types.js';
  * and the `CostTracker` (1.B) share, keyed on canonical model id. `model_catalog`
  * ([database-schema.md](../../../docs/reference/desktop/database-schema.md)) ships empty and is a
  * display projection *seeded from here*. Prices are **integer micro-cents per million tokens**
- * (1 micro-cent = 1e-8 USD), matching the DB's `*_per_mtok_microcents` columns — no float, ever.
+ * (1 micro-cent = 1e-8 USD) — no float, ever. The `input` / `output` / `cachedInput` prices map to
+ * the DB's `*_per_mtok_microcents` columns; `cacheWrite` (Anthropic-only) is **in-code only** —
+ * there is no `model_catalog` cache-write column, so it is never seeded or persisted.
  *
  * USD/MTok → micro-cents/MTok is `usd × 1e8` (e.g. $5.00 → 500_000_000).
  *
@@ -142,5 +144,16 @@ export const MODEL_PRICING = {
 /** The canonical model ids the pricing table covers. */
 export type CanonicalModelId = keyof typeof MODEL_PRICING;
 
+const CANONICAL_MODEL_IDS = new Set<string>(Object.keys(MODEL_PRICING));
+
+/**
+ * Type guard: is `value` a canonical model id the pricing table covers? Backed by a `Set` of own
+ * keys, so it is immune to prototype-chain keys (`'toString'`, `'constructor'`, …) — unlike `in`.
+ */
+export function isCanonicalModelId(value: string): value is CanonicalModelId {
+  return CANONICAL_MODEL_IDS.has(value);
+}
+
 /** Every canonical model id, for diagnostics (e.g. the unknown-model error). */
-export const KNOWN_MODEL_IDS = Object.keys(MODEL_PRICING) as readonly CanonicalModelId[];
+export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
+  Object.keys(MODEL_PRICING).filter(isCanonicalModelId);

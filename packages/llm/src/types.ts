@@ -34,9 +34,10 @@ export type ProviderId = LlmProviderId;
 export const ToolDefSchema = z.object({
   name: nonEmptyString,
   description: z.string().optional(),
-  parameters: z.custom<JSONSchema7>((value) => typeof value === 'object' && value !== null, {
-    message: 'parameters must be a JSON-Schema object',
-  }),
+  parameters: z.custom<JSONSchema7>(
+    (value) => typeof value === 'object' && value !== null && !Array.isArray(value),
+    { message: 'parameters must be a JSON-Schema object' },
+  ),
 });
 export type ToolDef = z.infer<typeof ToolDefSchema>;
 
@@ -119,7 +120,24 @@ export const LlmRequestSchema = z.object({
   maxTokens: z.number().int().positive().optional(), // required downstream for Anthropic — adapters default it
   stopSequences: z.array(z.string()).optional(),
   // Host-injected cancellation; the raw key/transport is host-aware (ADR-0018), the type is not.
-  signal: z.custom<AbortSignalLike>().optional(),
+  // Validated structurally so a non-signal value is rejected at the seam, not later when it is observed.
+  signal: z
+    .custom<AbortSignalLike>(
+      (v: unknown) =>
+        typeof v === 'object' &&
+        v !== null &&
+        'aborted' in v &&
+        typeof v.aborted === 'boolean' &&
+        'addEventListener' in v &&
+        typeof v.addEventListener === 'function' &&
+        'removeEventListener' in v &&
+        typeof v.removeEventListener === 'function',
+      {
+        message:
+          'signal must be an AbortSignalLike (aborted: boolean; add/removeEventListener: function)',
+      },
+    )
+    .optional(),
   providerOptions: z.record(z.string(), z.unknown()).optional(), // typed escape hatch
 });
 export type LlmRequest = z.infer<typeof LlmRequestSchema>;

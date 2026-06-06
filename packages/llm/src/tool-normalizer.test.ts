@@ -8,7 +8,6 @@ import {
   reshapeForGemini,
   toWire,
 } from './tool-normalizer.js';
-import type { AnthropicToolWire, GeminiToolWire, OpenAiToolWire } from './tool-normalizer.js';
 import type { ToolDef } from './types.js';
 
 const parameters: JSONSchema7 = {
@@ -25,7 +24,7 @@ const toolDef: ToolDef = { name: 'read_file', description: 'Read a file', parame
 
 describe('toWire — one canonical ToolDef, three native shapes', () => {
   it('shapes the Anthropic input_schema form (parameters passed through)', () => {
-    const wire = toWire(toolDef, 'anthropic') as AnthropicToolWire;
+    const wire = toWire(toolDef, 'anthropic');
     expect(wire).toEqual({
       name: 'read_file',
       description: 'Read a file',
@@ -34,7 +33,7 @@ describe('toWire — one canonical ToolDef, three native shapes', () => {
   });
 
   it('shapes the OpenAI / DeepSeek function form (one adapter, both ids)', () => {
-    const openai = toWire(toolDef, 'openai') as OpenAiToolWire;
+    const openai = toWire(toolDef, 'openai');
     expect(openai).toEqual({
       type: 'function',
       function: { name: 'read_file', description: 'Read a file', parameters },
@@ -43,7 +42,10 @@ describe('toWire — one canonical ToolDef, three native shapes', () => {
   });
 
   it('shapes the Gemini functionDeclarations form with the reshaped schema', () => {
-    const wire = toWire(toolDef, 'gemini') as GeminiToolWire;
+    const wire = toWire(toolDef, 'gemini');
+    if (!('functionDeclarations' in wire)) {
+      throw new Error('expected a Gemini functionDeclarations wire shape');
+    }
     const decl = wire.functionDeclarations[0];
     expect(decl?.name).toBe('read_file');
     // additionalProperties is stripped by the Gemini reshape; the kept keys survive.
@@ -140,6 +142,31 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
         expect(err.toolName).toBe('demo');
       }
     }
+  });
+
+  it('rejects a primitive-root schema — Gemini parameters must be an object root', () => {
+    expect(() => reshapeForGemini({ type: 'string' }, 'demo')).toThrowError(ToolSchemaError);
+  });
+
+  it('collapses a nullable union type:["string","null"] to a scalar type + nullable:true', () => {
+    const reshaped = reshapeForGemini(
+      {
+        type: 'object',
+        properties: { opt: { type: ['string', 'null'] } },
+      },
+      'demo',
+    );
+    const props = reshaped['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['opt']).toEqual({ type: 'string', nullable: true });
+  });
+
+  it('throws on an inexpressible non-null type union like ["string","number"]', () => {
+    expect(() =>
+      reshapeForGemini(
+        { type: 'object', properties: { bad: { type: ['string', 'number'] } } },
+        'demo',
+      ),
+    ).toThrowError(ToolSchemaError);
   });
 });
 

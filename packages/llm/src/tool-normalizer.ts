@@ -92,7 +92,7 @@ const GEMINI_ALLOWED_KEYWORDS = new Set([
 ]);
 
 /** `format` values Gemini accepts; an unsupported format is dropped, not sent. */
-const GEMINI_SAFE_FORMATS = new Set(['enum', 'date-time', 'int32', 'int64', 'float', 'double']);
+const GEMINI_SAFE_FORMATS = new Set(['date-time', 'int32', 'int64', 'float', 'double']);
 
 function reshapeNode(node: unknown, toolName: string): unknown {
   if (Array.isArray(node)) {
@@ -120,6 +120,25 @@ function reshapeNode(node: unknown, toolName: string): unknown {
       }
       continue; // drop an unsupported format value
     }
+    if (key === 'type' && Array.isArray(value)) {
+      // JSON-Schema permits `type: [...]`; Gemini wants a scalar type + the separate `nullable` flag.
+      // Collapse `['string', 'null']` → `type: 'string'` + `nullable: true`; an inexpressible union throws.
+      const members: unknown[] = value;
+      const hasNull = members.includes('null');
+      const nonNull = members.filter((member) => member !== 'null');
+      if (nonNull.length !== 1) {
+        throw new ToolSchemaError(
+          'gemini',
+          toolName,
+          `type union ${JSON.stringify(value)} is not expressible (need exactly one non-null type)`,
+        );
+      }
+      out['type'] = nonNull[0];
+      if (hasNull) {
+        out['nullable'] = true;
+      }
+      continue;
+    }
     if (key === 'properties' && isRecord(value)) {
       const properties: Record<string, unknown> = {};
       for (const [propName, propSchema] of Object.entries(value)) {
@@ -145,7 +164,7 @@ function reshapeNode(node: unknown, toolName: string): unknown {
  */
 export function reshapeForGemini(schema: JSONSchema7, toolName: string): Record<string, unknown> {
   const reshaped = reshapeNode(schema, toolName);
-  if (!isRecord(reshaped)) {
+  if (!isRecord(reshaped) || reshaped['type'] !== 'object') {
     throw new ToolSchemaError('gemini', toolName, 'tool parameters must be an object schema');
   }
   return reshaped;
@@ -159,6 +178,9 @@ type ToolCallPart = Extract<ContentPart, { type: 'tool_call' }>;
  * Synthesizes and tracks tool-call ids for Gemini, which exposes **no native tool-call id**. An id
  * is minted by call order on the `functionCall`, then matched back (FIFO per name) when the
  * `functionResponse` — which references by name only — arrives. So callers always see stable ids.
+ *
+ * **Lifetime:** construct one instance per Gemini request/stream; never reuse or share it across
+ * requests — a shared instance would interleave the per-name queues and mis-pair ids.
  */
 export class GeminiToolCallIds {
   #counter = 0;
