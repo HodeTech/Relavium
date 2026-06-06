@@ -18,18 +18,47 @@ export interface RecordedResponse {
 /** The provider-SDK `fetch` shape (matches `@anthropic-ai/sdk`'s `Fetch`, and the OpenAI/Gemini ones). */
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-/** A `fetch` that replays one recorded response — drives an adapter offline, deterministically. */
+/** Secret-shaped patterns a cassette body must not contain (API keys / bearer tokens). */
+const SECRET_PATTERNS: readonly RegExp[] = [
+  /sk-[a-zA-Z0-9_-]{16,}/, // OpenAI / Anthropic style keys
+  /\bBearer\s+[a-zA-Z0-9._-]{16,}/i, // bearer tokens
+  /AIza[0-9A-Za-z_-]{20,}/, // Google API keys
+  /\bxox[baprs]-[0-9A-Za-z-]{10,}/, // Slack tokens
+];
+
+/** True if `text` looks like it embeds a secret — used to refuse recording an unsafe fixture. */
+export function looksLikeSecret(text: string): boolean {
+  return SECRET_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * A `fetch` that replays one recorded response — drives an adapter offline, deterministically. It
+ * fails loud on a malformed request (a body that isn't valid JSON) rather than serving the canned
+ * response blind; full recorded-request body-matching lands with the on-disk recorder.
+ */
 export function replayFetch(recorded: RecordedResponse): FetchLike {
-  return () =>
-    Promise.resolve(
+  return (_input, init) => {
+    if (typeof init?.body === 'string' && init.body.length > 0) {
+      try {
+        JSON.parse(init.body);
+      } catch {
+        return Promise.reject(new Error('replayFetch: the request body is not valid JSON'));
+      }
+    }
+    return Promise.resolve(
       new Response(recorded.body, {
         status: recorded.status,
         headers: { 'content-type': recorded.contentType ?? 'application/json' },
       }),
     );
+  };
 }
 
-/** Wrap a real `fetch` to capture each response as a `RecordedResponse` — the live-mode recorder. */
+/**
+ * Wrap a real `fetch` to capture each response as a `RecordedResponse` — the live-mode recorder. It
+ * **refuses to record** a body that looks like it contains a secret, so a captured fixture can never
+ * carry a key into version control (security-review.md).
+ */
 export function recordFetch(realFetch: FetchLike): {
   readonly fetch: FetchLike;
   readonly recordings: readonly RecordedResponse[];
@@ -38,11 +67,16 @@ export function recordFetch(realFetch: FetchLike): {
   const fetch: FetchLike = async (input, init) => {
     const response = await realFetch(input, init);
     const body = await response.clone().text();
+    if (looksLikeSecret(body)) {
+      throw new Error(
+        'recordFetch: refusing to record a fixture whose body looks like it contains a secret',
+      );
+    }
     const contentType = response.headers.get('content-type');
     recordings.push(
-      contentType !== null
-        ? { status: response.status, contentType, body }
-        : { status: response.status, body },
+      contentType === null
+        ? { status: response.status, body }
+        : { status: response.status, contentType, body },
     );
     return response;
   };

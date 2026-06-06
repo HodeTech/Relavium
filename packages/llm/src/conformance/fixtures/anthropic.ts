@@ -174,7 +174,7 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   expected: {
     textGenerate: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
-    textStream: { stopReason: 'stop', outputTokens: 7 },
+    textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
   },

@@ -20,7 +20,7 @@ import type { RecordedResponse } from './replay.js';
 export interface ConformanceExpectations {
   readonly textGenerate: { stopReason: StopReason; inputTokens: number; outputTokens: number };
   readonly toolGenerate: { toolName: string; stopReason: StopReason };
-  readonly textStream: { stopReason: StopReason; outputTokens: number };
+  readonly textStream: { stopReason: StopReason; inputTokens: number; outputTokens: number };
   readonly toolStream: { toolName: string; stopReason: StopReason };
   /** The classified kind a mid-stream `error` event should yield. */
   readonly streamErrorKind: LlmErrorKind;
@@ -117,6 +117,7 @@ export function defineConformanceSuite(
       expect(last?.type).toBe('stop');
       if (last?.type === 'stop') {
         expect(last.stopReason).toBe(expected.textStream.stopReason);
+        expect(last.usage.inputTokens).toBe(expected.textStream.inputTokens);
         expect(last.usage.outputTokens).toBe(expected.textStream.outputTokens);
       }
     });
@@ -140,6 +141,11 @@ export function defineConformanceSuite(
         expect(start.id.length).toBeGreaterThan(0);
         expect(delta.id).toBe(start.id); // a stable id across the streamed turn
         expect(end.id).toBe(start.id);
+      }
+      const stop = chunks.at(-1);
+      expect(stop?.type).toBe('stop');
+      if (stop?.type === 'stop') {
+        expect(stop.stopReason).toBe(expected.toolStream.stopReason);
       }
     });
 

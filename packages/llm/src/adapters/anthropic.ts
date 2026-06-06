@@ -58,11 +58,10 @@ export function mapStopReason(reason: Anthropic.StopReason | null): StopReason {
     case 'pause_turn':
     case null:
       return 'stop';
-    /* v8 ignore next 4 -- defensive: the switch is exhaustive over Anthropic.StopReason | null */
-    default: {
-      const unreachable: never = reason;
-      throw new Error(`unhandled Anthropic stop reason: ${String(unreachable)}`);
-    }
+    default:
+      // A stop_reason the pinned SDK's union doesn't cover (the live API can outpace the SDK)
+      // degrades to 'stop' rather than throwing and crashing the run.
+      return 'stop';
   }
 }
 
@@ -125,6 +124,31 @@ function kindFromErrorType(type: string): LlmErrorKind | undefined {
 }
 
 /**
+ * Normalize an SDK `APIError` (the only branch with status/code logic) into an `LlmError`. Typed by
+ * the structural subset it reads, so the SDK's `APIError<any, …>` generics don't leak in as `any`.
+ */
+function mapAnthropicApiError(err: {
+  status?: unknown;
+  type?: unknown;
+  message: string;
+}): LlmError {
+  const status = typeof err.status === 'number' ? err.status : undefined;
+  const code = typeof err.type === 'string' && err.type.length > 0 ? err.type : undefined;
+  // Prefer the provider's own error `type` (set even on a mid-stream `error` event that carries no
+  // HTTP status), then fall back to the status, then `unknown`.
+  const kind =
+    (code === undefined ? undefined : kindFromErrorType(code)) ??
+    (status === undefined ? 'unknown' : kindFromHttpStatus(status));
+  return makeLlmError({
+    provider: PROVIDER,
+    kind,
+    message: err.message,
+    ...(status === undefined ? {} : { status }),
+    ...(code === undefined ? {} : { code }),
+  });
+}
+
+/**
  * Classify any SDK throwable into a normalized `LlmError` — no vendor error shape escapes. The raw
  * SDK error is deliberately **not** attached as `cause`: the `LlmError` crosses the seam (into run
  * events / persistence), and a raw provider object there is both a vendor-shape leak and a latent
@@ -142,20 +166,7 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
     return makeLlmError({ provider: PROVIDER, kind: 'transport', message: err.message });
   }
   if (err instanceof Anthropic.APIError) {
-    const status = typeof err.status === 'number' ? err.status : undefined;
-    const code = typeof err.type === 'string' && err.type.length > 0 ? err.type : undefined;
-    // Prefer the provider's own error `type` (set even on a mid-stream `error` event that carries no
-    // HTTP status), then fall back to the status, then `unknown`.
-    const kind =
-      (code !== undefined ? kindFromErrorType(code) : undefined) ??
-      (status !== undefined ? kindFromHttpStatus(status) : 'unknown');
-    return makeLlmError({
-      provider: PROVIDER,
-      kind,
-      message: err.message,
-      ...(status !== undefined ? { status } : {}),
-      ...(code !== undefined ? { code } : {}),
-    });
+    return mapAnthropicApiError(err);
   }
   return makeLlmError({
     provider: PROVIDER,
@@ -264,9 +275,14 @@ function buildCommonBody(
   return { ...req.providerOptions, ...body };
 }
 
+/** True for a real `AbortSignal` (the host passes one; it structurally satisfies AbortSignalLike). */
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
+}
+
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */
 function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
-  return req.signal !== undefined ? { signal: req.signal as AbortSignal } : {};
+  return isAbortSignal(req.signal) ? { signal: req.signal } : {};
 }
 
 // --- The adapter -----------------------------------------------------------------------------
@@ -282,78 +298,120 @@ export interface AnthropicAdapterDeps {
   readonly maxRetries?: number;
 }
 
+/** Merge a streamed `message_delta` usage (whose token fields are cumulative) over the accumulated
+ * usage, field by field — so the final cache/input counts the SDK delivers on the delta are kept. */
+function mergeDeltaUsage(
+  prev: Usage,
+  delta: {
+    input_tokens: number | null;
+    output_tokens: number;
+    cache_read_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+  },
+): Usage {
+  const merged: Usage = {
+    inputTokens: delta.input_tokens ?? prev.inputTokens,
+    outputTokens: delta.output_tokens,
+  };
+  const cacheRead = delta.cache_read_input_tokens ?? prev.cacheReadTokens;
+  if (cacheRead != null) {
+    merged.cacheReadTokens = cacheRead;
+  }
+  const cacheWrite = delta.cache_creation_input_tokens ?? prev.cacheWriteTokens;
+  if (cacheWrite != null) {
+    merged.cacheWriteTokens = cacheWrite;
+  }
+  return merged;
+}
+
+/**
+ * Fold one content-block stream event into the `StreamChunk` to emit (or `undefined`), tracking the
+ * Anthropic tool-call id by content-block index so delta/stop chunks carry the matching id.
+ */
+function contentBlockToChunk(
+  event:
+    | Anthropic.RawContentBlockStartEvent
+    | Anthropic.RawContentBlockDeltaEvent
+    | Anthropic.RawContentBlockStopEvent,
+  toolIdByIndex: Map<number, string>,
+): StreamChunk | undefined {
+  if (event.type === 'content_block_start') {
+    if (event.content_block.type === 'tool_use') {
+      toolIdByIndex.set(event.index, event.content_block.id);
+      return {
+        type: 'tool_call_start',
+        id: event.content_block.id,
+        name: event.content_block.name,
+      };
+    }
+    return undefined;
+  }
+  if (event.type === 'content_block_delta') {
+    if (event.delta.type === 'text_delta') {
+      return { type: 'text_delta', text: event.delta.text };
+    }
+    if (event.delta.type === 'input_json_delta') {
+      const id = toolIdByIndex.get(event.index);
+      return id === undefined
+        ? undefined
+        : { type: 'tool_call_delta', id, argsJsonDelta: event.delta.partial_json };
+    }
+    return undefined;
+  }
+  // content_block_stop
+  const id = toolIdByIndex.get(event.index);
+  return id === undefined ? undefined : { type: 'tool_call_end', id };
+}
+
+/** Fold the Anthropic SSE event stream into the canonical `StreamChunk` sequence. */
+async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
+  const toolIdByIndex = new Map<number, string>();
+  let usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  let stopReason: StopReason = 'stop';
+  let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
+  try {
+    sdkStream = await client.messages.create(
+      { ...buildCommonBody(req), stream: true },
+      buildRequestOptions(req),
+    );
+  } catch (err) {
+    yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    return;
+  }
+  try {
+    for await (const event of sdkStream) {
+      if (event.type === 'message_start') {
+        usage = mapUsage(event.message.usage);
+      } else if (event.type === 'message_delta') {
+        stopReason = mapStopReason(event.delta.stop_reason);
+        usage = mergeDeltaUsage(usage, event.usage);
+      } else if (
+        event.type === 'content_block_start' ||
+        event.type === 'content_block_delta' ||
+        event.type === 'content_block_stop'
+      ) {
+        const chunk = contentBlockToChunk(event, toolIdByIndex);
+        if (chunk !== undefined) {
+          yield chunk;
+        }
+      }
+      // message_stop (and any other event) emits nothing.
+    }
+  } catch (err) {
+    yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    return;
+  }
+  yield { type: 'stop', stopReason, usage };
+}
+
 /** Build an Anthropic `LlmProvider`. Exposed as `anthropicAdapter`; the factory enables DI for 1.F. */
 export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProvider {
   const createClient = (key: string): Anthropic =>
     new Anthropic({
       apiKey: key,
-      ...(deps.fetch !== undefined ? { fetch: deps.fetch } : {}),
-      ...(deps.maxRetries !== undefined ? { maxRetries: deps.maxRetries } : {}),
+      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+      ...(deps.maxRetries === undefined ? {} : { maxRetries: deps.maxRetries }),
     });
-
-  async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
-    const toolIdByIndex = new Map<number, string>();
-    let usage: Usage = { inputTokens: 0, outputTokens: 0 };
-    let stopReason: StopReason = 'stop';
-    let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
-    try {
-      sdkStream = await client.messages.create(
-        { ...buildCommonBody(req), stream: true },
-        buildRequestOptions(req),
-      );
-    } catch (err) {
-      yield { type: 'error', error: anthropicErrorToLlmError(err) };
-      return;
-    }
-    try {
-      for await (const event of sdkStream) {
-        switch (event.type) {
-          case 'message_start':
-            usage = mapUsage(event.message.usage);
-            break;
-          case 'content_block_start':
-            if (event.content_block.type === 'tool_use') {
-              toolIdByIndex.set(event.index, event.content_block.id);
-              yield {
-                type: 'tool_call_start',
-                id: event.content_block.id,
-                name: event.content_block.name,
-              };
-            }
-            break;
-          case 'content_block_delta':
-            if (event.delta.type === 'text_delta') {
-              yield { type: 'text_delta', text: event.delta.text };
-            } else if (event.delta.type === 'input_json_delta') {
-              const id = toolIdByIndex.get(event.index);
-              if (id !== undefined) {
-                yield { type: 'tool_call_delta', id, argsJsonDelta: event.delta.partial_json };
-              }
-            }
-            break;
-          case 'content_block_stop': {
-            const id = toolIdByIndex.get(event.index);
-            if (id !== undefined) {
-              yield { type: 'tool_call_end', id };
-            }
-            break;
-          }
-          case 'message_delta':
-            stopReason = mapStopReason(event.delta.stop_reason);
-            usage = { ...usage, outputTokens: event.usage.output_tokens };
-            break;
-          case 'message_stop':
-            break;
-          default:
-            break;
-        }
-      }
-    } catch (err) {
-      yield { type: 'error', error: anthropicErrorToLlmError(err) };
-      return;
-    }
-    yield { type: 'stop', stopReason, usage };
-  }
 
   return {
     id: PROVIDER,

@@ -12,6 +12,27 @@ import {
   mapUsage,
 } from './anthropic.js';
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Parse a captured request body into a record at runtime — no unsafe `as`. */
+function parseJsonBody(init: RequestInit | undefined): Record<string, unknown> {
+  const raw = typeof init?.body === 'string' ? init.body : '{}';
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed)) {
+    throw new Error('expected a JSON object request body');
+  }
+  return parsed;
+}
+
+async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+  const chunks: StreamChunk[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
 describe('AnthropicAdapter', () => {
   it('exposes the anthropic id and the full capability surface', () => {
     expect(anthropicAdapter.id).toBe('anthropic');
@@ -33,6 +54,8 @@ describe('AnthropicAdapter', () => {
     expect(mapStopReason('max_tokens')).toBe('length');
     expect(mapStopReason('tool_use')).toBe('tool_use');
     expect(mapStopReason('refusal')).toBe('content_filter');
+    // A future/unknown reason the pinned SDK doesn't type degrades to 'stop' instead of throwing.
+    expect(mapStopReason('future_reason' as Anthropic.StopReason)).toBe('stop');
   });
 
   it('maps usage with input net of cache, surfacing cache tokens only when present', () => {
@@ -72,8 +95,7 @@ describe('AnthropicAdapter', () => {
     let sentBody: Record<string, unknown> = {};
     const adapter = createAnthropicAdapter({
       fetch: (_input, init) => {
-        const raw = typeof init?.body === 'string' ? init.body : '{}';
-        sentBody = JSON.parse(raw) as Record<string, unknown>;
+        sentBody = parseJsonBody(init);
         return Promise.resolve(
           new Response(
             JSON.stringify({
@@ -170,10 +192,7 @@ describe('AnthropicAdapter — request building + secret safety', () => {
     let sent: Record<string, unknown> = {};
     const adapter = createAnthropicAdapter({
       fetch: (_input, init) => {
-        sent = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as Record<
-          string,
-          unknown
-        >;
+        sent = parseJsonBody(init);
         return Promise.resolve(okResponse());
       },
       maxRetries: 0,
@@ -266,13 +285,6 @@ describe('AnthropicAdapter — stream edge cases', () => {
     `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   const sse = (body: string): Response =>
     new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of stream) {
-      chunks.push(chunk);
-    }
-    return chunks;
-  }
 
   it('yields a single error chunk when the stream fails to start (429)', async () => {
     const adapter = createAnthropicAdapter({
@@ -348,10 +360,7 @@ describe('AnthropicAdapter — stream edge cases', () => {
     let sent: Record<string, unknown> = {};
     const adapter = createAnthropicAdapter({
       fetch: (_input, init) => {
-        sent = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as Record<
-          string,
-          unknown
-        >;
+        sent = parseJsonBody(init);
         return Promise.resolve(
           new Response(
             JSON.stringify({
@@ -373,6 +382,62 @@ describe('AnthropicAdapter — stream edge cases', () => {
     await adapter.generate({ ...REQ, temperature: 0.5, stopSequences: ['STOP'] }, 'k');
     expect(sent['temperature']).toBe(0.5);
     expect(sent['stop_sequences']).toEqual(['STOP']);
+  });
+
+  it('merges the cumulative cache/input usage the message_delta carries into the stop chunk', async () => {
+    const body =
+      ev('message_start', {
+        type: 'message_start',
+        message: {
+          id: 'm',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 1 },
+        },
+      }) +
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }) +
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hi' },
+      }) +
+      ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
+      ev('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        // cumulative usage the SDK delivers on the delta — must reach the stop chunk
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 8,
+          cache_creation_input_tokens: 3,
+        },
+      }) +
+      ev('message_stop', { type: 'message_stop' }) +
+      '\n';
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(sse(body)),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const stop = chunks.at(-1);
+    expect(stop?.type).toBe('stop');
+    if (stop?.type === 'stop') {
+      expect(stop.usage).toEqual({
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 8,
+        cacheWriteTokens: 3,
+      });
+    }
   });
 });
 

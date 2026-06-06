@@ -33,7 +33,10 @@ export function kindFromHttpStatus(status: number): LlmErrorKind {
   if (status === 408) return 'timeout';
   if (status >= 500) return 'overloaded'; // 5xx — a transient server/overload condition
   if (status === 401 || status === 403) return 'auth';
-  if (status === 400 || status === 404 || status === 422) return 'bad_request';
+  // 400 bad request · 404 not found · 409 conflict · 413 too large · 422 unprocessable — all fatal.
+  if (status === 400 || status === 404 || status === 409 || status === 413 || status === 422) {
+    return 'bad_request';
+  }
   return 'unknown';
 }
 

@@ -29,6 +29,8 @@ describe('LlmError classification (the fallback contract)', () => {
     expect(kindFromHttpStatus(401)).toBe('auth');
     expect(kindFromHttpStatus(403)).toBe('auth');
     expect(kindFromHttpStatus(400)).toBe('bad_request');
+    expect(kindFromHttpStatus(409)).toBe('bad_request');
+    expect(kindFromHttpStatus(413)).toBe('bad_request');
     expect(kindFromHttpStatus(418)).toBe('unknown');
     expect(isRetryable(kindFromHttpStatus(429))).toBe(true);
     expect(isRetryable(kindFromHttpStatus(401))).toBe(false);
