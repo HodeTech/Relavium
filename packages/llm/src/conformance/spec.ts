@@ -18,7 +18,12 @@ import type { RecordedResponse } from './replay.js';
 
 /** The canonical values a provider's fixtures should normalize to — asserted concretely. */
 export interface ConformanceExpectations {
-  readonly textGenerate: { stopReason: StopReason; inputTokens: number; outputTokens: number };
+  readonly textGenerate: {
+    stopReason: StopReason;
+    text: string;
+    inputTokens: number;
+    outputTokens: number;
+  };
   readonly toolGenerate: { toolName: string; stopReason: StopReason };
   readonly textStream: { stopReason: StopReason; inputTokens: number; outputTokens: number };
   readonly toolStream: { toolName: string; stopReason: StopReason };
@@ -89,7 +94,8 @@ export function defineConformanceSuite(
   describe(`${name} — conformance (replay)`, () => {
     it('generate: returns text content with the exact usage and canonical stop reason', async () => {
       const result = await makeReplayAdapter(fixtures.textGenerate).generate(TEXT_REQUEST, KEY);
-      expect(result.content.some((part) => part.type === 'text')).toBe(true);
+      const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+      expect(text).toBe(expected.textGenerate.text); // exact value, not just presence
       expect(result.usage.inputTokens).toBe(expected.textGenerate.inputTokens);
       expect(result.usage.outputTokens).toBe(expected.textGenerate.outputTokens);
       expect(result.stopReason).toBe(expected.textGenerate.stopReason);

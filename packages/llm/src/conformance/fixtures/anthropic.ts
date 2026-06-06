@@ -172,7 +172,7 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 200, contentType: 'text/event-stream', body: streamError },
   expected: {
-    textGenerate: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
+    textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
     textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
