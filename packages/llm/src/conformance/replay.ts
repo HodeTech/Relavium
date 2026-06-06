@@ -21,7 +21,7 @@ export type FetchLike = (input: string | URL | Request, init?: RequestInit) => P
 /** Secret-shaped patterns a cassette body must not contain (API keys / bearer tokens). */
 const SECRET_PATTERNS: readonly RegExp[] = [
   /sk-[a-zA-Z0-9_-]{16,}/, // OpenAI / Anthropic style keys
-  /\bBearer\s+[a-zA-Z0-9._-]{16,}/i, // bearer tokens
+  /\bBearer\s+[a-z0-9._-]{16,}/i, // bearer tokens (case-insensitive, so a-z covers both cases)
   /AIza[0-9A-Za-z_-]{20,}/, // Google API keys
   /\bxox[baprs]-[0-9A-Za-z-]{10,}/, // Slack tokens
 ];
