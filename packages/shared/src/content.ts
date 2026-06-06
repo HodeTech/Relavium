@@ -35,10 +35,12 @@ export type ContentPart = z.infer<typeof ContentPartSchema>;
 
 /**
  * The minimal structural cancellation handle the seam and the engine thread through. A real
- * `AbortSignal` (Node ≥15, browsers, Bun) structurally satisfies it, so the platform-free
- * packages (`shared` / `llm` / `core`) need neither the DOM lib nor `@types/node` — the strict
- * base's `lib: ["ES2023"]` has no `AbortSignal`. The surface passes a real signal; engine code
- * only observes `aborted` and (de)registers an abort listener.
+ * `AbortSignal` (Node ≥15, browsers, Bun) structurally satisfies it, so the platform-free code —
+ * `shared`, `core`, and the `@relavium/llm` **seam** — needs neither the DOM lib nor `@types/node`
+ * (the strict base's `lib: ["ES2023"]` has no `AbortSignal`); cancellation is expressed in this type
+ * instead. (`@relavium/llm`'s *adapters* import the provider SDKs and so do pull in `@types/node`,
+ * but the seam types never name a Node/DOM type — enforced by tsconfig.seam.json.) The surface
+ * passes a real signal; engine code only observes `aborted` and (de)registers an abort listener.
  */
 export interface AbortSignalLike {
   readonly aborted: boolean;

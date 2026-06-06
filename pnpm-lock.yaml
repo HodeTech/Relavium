@@ -136,6 +136,9 @@ importers:
       '@types/json-schema':
         specifier: 'catalog:'
         version: 7.0.15
+      '@types/node':
+        specifier: 'catalog:'
+        version: 20.19.41
       eslint:
         specifier: 'catalog:'
         version: 9.39.4
@@ -144,7 +147,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 'catalog:'
-        version: 3.2.6(@types/node@22.19.19)(tsx@4.22.4)
+        version: 3.2.6(@types/node@20.19.41)(tsx@4.22.4)
 
   packages/shared:
     dependencies:

@@ -1,4 +1,7 @@
 {
+  // Builds the whole package (seam + adapters + conformance) with Node types available, so the
+  // adapters compile. The platform-free guard on the seam is tsconfig.seam.json (`types: []`), run
+  // separately by `typecheck`.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,

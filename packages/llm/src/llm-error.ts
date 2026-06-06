@@ -37,6 +37,21 @@ export function kindFromHttpStatus(status: number): LlmErrorKind {
   return 'unknown';
 }
 
+/**
+ * The `Error` a provider's `generate` rejects with, carrying the normalized `LlmError`. The
+ * `FallbackChain` (1.K) catches this and narrows on `.llmError` for its retry/fatal decision. A
+ * `stream` surfaces the same `LlmError` in an `error` `StreamChunk` instead of throwing.
+ */
+export class LlmProviderError extends Error {
+  readonly llmError: LlmError;
+
+  constructor(llmError: LlmError) {
+    super(llmError.message);
+    this.name = 'LlmProviderError';
+    this.llmError = llmError;
+  }
+}
+
 interface MakeLlmErrorArgs {
   readonly provider: ProviderId;
   readonly kind: LlmErrorKind;

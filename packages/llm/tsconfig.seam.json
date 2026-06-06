@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The platform-free GUARD on the seam: it must compile with NO ambient Node/DOM types, so a
+    // stray `process` / `Buffer` / `AbortSignal` in seam code is a TS error. The seam runs in Node,
+    // the Tauri WebView, the VS Code extension host, and (Phase 2) a Bun worker alike. The
+    // platform-COUPLED zones — `src/adapters/**` (provider SDKs) and `src/conformance/**` (the
+    // SDK-driven harness) — are excluded here; they are typed by tsconfig.json (`types: ["node"]`)
+    // and reached only via the separate `@relavium/llm/adapters` entry point, never from the seam.
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/adapters/**", "src/conformance/**"]
+}
