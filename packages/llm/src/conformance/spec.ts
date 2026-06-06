@@ -29,6 +29,10 @@ export interface ConformanceExpectations {
   readonly toolStream: { toolName: string; stopReason: StopReason };
   /** The classified kind a mid-stream `error` event should yield. */
   readonly streamErrorKind: LlmErrorKind;
+  /** Reasoning a thinking model streams (ADR-0030) — only providers that emit reasoning supply this. */
+  readonly reasoningStream?: { text: string };
+  /** The JSON text a model returns under `responseFormat: json` (ADR-0030) — providers that support it. */
+  readonly structuredOutput?: { text: string };
 }
 
 /** The recorded provider responses a conformance run needs — one per canonical scenario. */
@@ -45,6 +49,10 @@ export interface ConformanceFixtures {
   readonly rateLimit: RecordedResponse;
   /** A stream that emits a mid-stream `error` event after starting. */
   readonly streamError: RecordedResponse;
+  /** A streamed reply that includes reasoning (ADR-0030) — omit for providers that emit no reasoning. */
+  readonly reasoningStream?: RecordedResponse;
+  /** A non-streaming reply produced under `responseFormat: json` (ADR-0030) — omit if unsupported. */
+  readonly structuredOutput?: RecordedResponse;
   /** The canonical values the above should normalize to. */
   readonly expected: ConformanceExpectations;
 }
@@ -73,6 +81,15 @@ const TOOL_REQUEST: LlmRequest = {
     },
   ],
   toolChoice: 'auto',
+};
+
+const JSON_REQUEST: LlmRequest = {
+  model: 'conformance-model',
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'Return JSON.' }] }],
+  responseFormat: {
+    type: 'json',
+    schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+  },
 };
 
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
@@ -182,5 +199,47 @@ export function defineConformanceSuite(
         expect(errorChunk.error.provider).toBe(name);
       }
     });
+
+    it.skipIf(fixtures.reasoningStream === undefined)(
+      'reasoning: reasoning_start/delta(s)/end arrive and close before the terminal stop (ADR-0030)',
+      async () => {
+        const recorded = fixtures.reasoningStream;
+        if (recorded === undefined) {
+          return; // narrow for skipIf
+        }
+        const chunks = await collect(makeReplayAdapter(recorded).stream(TEXT_REQUEST, KEY));
+        expect(chunks.find((chunk) => chunk.type === 'reasoning_start')?.type).toBe(
+          'reasoning_start',
+        );
+        expect(chunks.find((chunk) => chunk.type === 'reasoning_delta')?.type).toBe(
+          'reasoning_delta',
+        );
+        const types = chunks.map((chunk) => chunk.type);
+        expect(types.lastIndexOf('reasoning_end')).toBeGreaterThanOrEqual(0);
+        expect(types.lastIndexOf('reasoning_end')).toBeLessThan(types.indexOf('stop'));
+        if (expected.reasoningStream !== undefined) {
+          const text = chunks
+            .map((chunk) => (chunk.type === 'reasoning_delta' ? chunk.text : ''))
+            .join('');
+          expect(text).toBe(expected.reasoningStream.text);
+        }
+      },
+    );
+
+    it.skipIf(fixtures.structuredOutput === undefined)(
+      'structured output: responseFormat json returns parseable JSON text (ADR-0030)',
+      async () => {
+        const recorded = fixtures.structuredOutput;
+        if (recorded === undefined) {
+          return; // narrow for skipIf
+        }
+        const result = await makeReplayAdapter(recorded).generate(JSON_REQUEST, KEY);
+        const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+        expect(() => JSON.parse(text) as unknown).not.toThrow();
+        if (expected.structuredOutput !== undefined) {
+          expect(text).toBe(expected.structuredOutput.text);
+        }
+      },
+    );
   });
 }

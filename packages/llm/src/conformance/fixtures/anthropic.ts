@@ -164,6 +164,82 @@ const streamError = sse([
   ['error', { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
 ]);
 
+// A stream with a thinking block (thinking + signature deltas) then text — exercises the reasoning
+// channel (ADR-0030): thinking_delta → reasoning_delta, signature_delta → reasoning_end signature.
+const reasoningStream = sse([
+  [
+    'message_start',
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_reasoning',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-8',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 6, output_tokens: 1 },
+      },
+    },
+  ],
+  [
+    'content_block_start',
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'thinking', thinking: '', signature: '' },
+    },
+  ],
+  [
+    'content_block_delta',
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: 'let me think' },
+    },
+  ],
+  [
+    'content_block_delta',
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'signature_delta', signature: 'sig-xyz' },
+    },
+  ],
+  ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+  [
+    'content_block_start',
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+  ],
+  [
+    'content_block_delta',
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Done.' } },
+  ],
+  ['content_block_stop', { type: 'content_block_stop', index: 1 }],
+  [
+    'message_delta',
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 9 },
+    },
+  ],
+  ['message_stop', { type: 'message_stop' }],
+]);
+
+// A non-streaming reply produced under responseFormat: json — the content is a JSON document.
+const structuredOutput = JSON.stringify({
+  id: 'msg_json',
+  type: 'message',
+  role: 'assistant',
+  model: 'claude-opus-4-8',
+  content: [{ type: 'text', text: '{"ok":true}' }],
+  stop_reason: 'end_turn',
+  stop_sequence: null,
+  usage: { input_tokens: 8, output_tokens: 4 },
+});
+
 export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textMessage },
   toolGenerate: { status: 200, body: toolMessage },
@@ -171,11 +247,15 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   toolStream: { status: 200, contentType: 'text/event-stream', body: toolStream },
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 200, contentType: 'text/event-stream', body: streamError },
+  reasoningStream: { status: 200, contentType: 'text/event-stream', body: reasoningStream },
+  structuredOutput: { status: 200, body: structuredOutput },
   expected: {
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
     textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
+    reasoningStream: { text: 'let me think' },
+    structuredOutput: { text: '{"ok":true}' },
   },
 };

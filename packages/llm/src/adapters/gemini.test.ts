@@ -82,13 +82,13 @@ describe('Gemini adapter', () => {
     expect(mapUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 
-  it('mapContent synthesizes tool-call ids, skips thought parts', () => {
+  it('mapContent maps thought parts → reasoning, text, and a synthesized tool call', () => {
     const response: GeminiResponse = {
       candidates: [
         {
           content: {
             parts: [
-              { text: 'thinking...', thought: true },
+              { text: 'thinking...', thought: true, thoughtSignature: 'sig' },
               { text: 'here' },
               { functionCall: { name: 'get_weather', args: { city: 'Paris' } } },
             ],
@@ -97,14 +97,15 @@ describe('Gemini adapter', () => {
       ],
     };
     const parts = mapContent(response, new GeminiToolCallIds());
-    expect(parts[0]).toEqual({ type: 'text', text: 'here' });
-    expect(parts[1]).toMatchObject({
+    expect(parts[0]).toEqual({ type: 'reasoning', text: 'thinking...', signature: 'sig' }); // ADR-0030
+    expect(parts[1]).toEqual({ type: 'text', text: 'here' });
+    expect(parts[2]).toMatchObject({
       type: 'tool_call',
       name: 'get_weather',
       args: { city: 'Paris' },
     });
-    if (parts[1]?.type === 'tool_call') {
-      expect(parts[1].id.length).toBeGreaterThan(0); // synthesized
+    if (parts[2]?.type === 'tool_call') {
+      expect(parts[2].id.length).toBeGreaterThan(0); // synthesized
     }
   });
 });
@@ -343,5 +344,82 @@ describe('Gemini adapter — remaining branches', () => {
       ],
     });
     expect(request.contents).toEqual([{ role: 'user', parts: [{ text: 'hi' }] }]);
+  });
+});
+
+describe('Gemini adapter — reasoning + structured output (ADR-0030)', () => {
+  it('lowers responseFormat json to responseMimeType + responseJsonSchema', () => {
+    const request = buildGeminiRequest({
+      ...REQ,
+      responseFormat: { type: 'json', schema: { type: 'object' } },
+    });
+    expect(request.config['responseMimeType']).toBe('application/json');
+    expect(request.config['responseJsonSchema']).toEqual({ type: 'object' });
+  });
+
+  it('mapUsage surfaces thoughtsTokenCount as reasoningTokens', () => {
+    expect(
+      mapUsage({ promptTokenCount: 10, candidatesTokenCount: 20, thoughtsTokenCount: 6 }),
+    ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 6 });
+  });
+
+  it('stream folds thought parts into reasoning_start/delta/end (signature) then text', async () => {
+    const response: GeminiResponse = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: 'pondering', thought: true, thoughtSignature: 'sig' },
+              { text: 'final answer' },
+            ],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 4, thoughtsTokenCount: 2 },
+    };
+    const adapter = createGeminiAdapter({ transport: fakeTransport(response, [response]) });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.find((c) => c.type === 'reasoning_start')).toMatchObject({ id: 'reasoning-0' });
+    expect(chunks.find((c) => c.type === 'reasoning_delta')).toMatchObject({ text: 'pondering' });
+    expect(chunks.find((c) => c.type === 'reasoning_end')).toMatchObject({ signature: 'sig' });
+    const types = chunks.map((c) => c.type);
+    expect(types.indexOf('reasoning_end')).toBeLessThan(types.indexOf('text_delta'));
+    const stop = chunks.at(-1);
+    if (stop?.type === 'stop') {
+      expect(stop.usage.reasoningTokens).toBe(2);
+    }
+  });
+});
+
+describe('Gemini adapter — reasoning close edges', () => {
+  it('closes reasoning before a tool call', async () => {
+    const r: GeminiResponse = {
+      candidates: [
+        {
+          content: {
+            parts: [{ text: 'think', thought: true }, { functionCall: { name: 'f', args: {} } }],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    };
+    const types = (
+      await collect(createGeminiAdapter({ transport: fakeTransport(r, [r]) }).stream(REQ, 'k'))
+    ).map((c) => c.type);
+    expect(types.indexOf('reasoning_end')).toBeLessThan(types.indexOf('tool_call_start'));
+  });
+
+  it('closes reasoning after a thought-only stream (before stop)', async () => {
+    const r: GeminiResponse = {
+      candidates: [
+        { content: { parts: [{ text: 'just thinking', thought: true }] }, finishReason: 'STOP' },
+      ],
+    };
+    const chunks = await collect(
+      createGeminiAdapter({ transport: fakeTransport(r, [r]) }).stream(REQ, 'k'),
+    );
+    expect(chunks.some((c) => c.type === 'reasoning_end')).toBe(true);
+    expect(chunks.at(-1)?.type).toBe('stop');
   });
 });

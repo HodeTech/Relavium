@@ -4,9 +4,15 @@
 > **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
 > — landed in **PR #7**; the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
 > **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — landed in **PR #8**
-> (2026-06-06): the seam is proven end-to-end against a real provider. Next: the remaining adapters
-> **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini) → **1.J** (conformance green = **M1**), with **1.K**
-> (FallbackChain); ‖ the **1.L** engine parser.
+> (2026-06-06): the seam is proven end-to-end against a real provider. **In flight (PR after #8):** the
+> remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the **seam-shape
+> amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
+> (reasoning channel + `responseFormat` + `providerExecuted`) — decided **before the M1 freeze** while
+> the only consumers were the adapters; reasoning + structured output are wired in every adapter that
+> supports them, with conformance scenarios. Then **1.J** (conformance green = **M1**) and **1.K**
+> (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral reasoning signature when
+> failing over** to another provider); ‖ the **1.L** engine parser. *(Session persistence, 1.X/1.Z,
+> must exclude the reasoning signature — non-persisting.)*
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 

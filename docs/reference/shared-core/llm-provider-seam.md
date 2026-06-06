@@ -173,6 +173,34 @@ would require a real (superseding) ADR is changing the seam shape itself: the
 request/result/stream types, the normalization rules, or the `LlmError` contract
 above.
 
+### Seam-shape amendments ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md))
+
+Three cross-provider shape additions were made under ADR-0030 (a real amendment to
+ADR-0011, decided before the seam froze at M1, while the only consumers were the
+adapters):
+
+- **Reasoning channel.** `ContentPart` gains a `reasoning` arm
+  (`{ type: 'reasoning', text, signature?, redacted? }`); `StreamChunk` gains
+  `reasoning_start` / `reasoning_delta` / `reasoning_end` (mirroring the
+  `tool_call_*` triad; `reasoning_end` carries the optional `signature`); `Usage`
+  gains an optional `reasoningTokens` (**observability only** — already inside
+  `outputTokens` for billing). **Reasoning is ephemeral:** a provider-signed
+  `signature` is never persisted to a session, never replayed across a provider
+  boundary on fallback, and never written to a run event or log — the engine does
+  not interpret it; only the originating adapter feeds it back.
+- **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
+  one canonical JSON-Schema each adapter lowers to the provider's native
+  structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,
+  Anthropic `output_config`). This is the seam mechanism that realizes a node's
+  `output_schema`. (The opencode `{ type: 'tool' }` variant is deliberately not
+  adopted — `toolChoice: { name }` already forces a specific tool.)
+- **`providerExecuted`** — an optional flag on `ContentPart` `tool_call`/`tool_result`
+  plus a provider-executed `tool_result` `StreamChunk` arm, distinguishing a tool
+  the **provider** ran on its own side (server-side/built-in) from one the engine
+  runs. The engine `ToolDispatcher` skips `providerExecuted` calls (no
+  double-execution, and the allowlist applies only to engine-run calls). Phase-1
+  adapters reserve the shape but emit no server-tool calls (off the common path).
+
 ## What must be normalized
 
 The seam's value is entirely in the normalization the adapters perform. Each of

@@ -131,6 +131,25 @@ const streamError = JSON.stringify({
   error: { message: 'The server is overloaded', type: 'server_error', code: null },
 });
 
+// A non-streaming reply produced under responseFormat: json — the content is a JSON document.
+const structuredOutput = JSON.stringify({
+  id: 'chatcmpl_json',
+  object: 'chat.completion',
+  created: 0,
+  model: 'gpt-4o',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: '{"ok":true}', refusal: null },
+      finish_reason: 'stop',
+      logprobs: null,
+    },
+  ],
+  usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 },
+});
+
+// No reasoningStream fixture: OpenAI chat.completions emits no reasoning output (the conformance
+// reasoning scenario is skipped for this provider).
 export const OPENAI_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textMessage },
   toolGenerate: { status: 200, body: toolMessage },
@@ -138,11 +157,13 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
   toolStream: { status: 200, contentType: 'text/event-stream', body: toolStream },
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 503, body: streamError },
+  structuredOutput: { status: 200, body: structuredOutput },
   expected: {
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
     textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
+    structuredOutput: { text: '{"ok":true}' },
   },
 };

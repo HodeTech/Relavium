@@ -58,12 +58,36 @@ export const ToolChoiceSchema = z.union([
 ]);
 export type ToolChoice = z.infer<typeof ToolChoiceSchema>;
 
+/**
+ * How the model should shape its output (ADR-0030). `json` carries one canonical JSON-Schema; each
+ * adapter lowers it to the provider's **native** structured-output mode (OpenAI `response_format`,
+ * Gemini `responseJsonSchema`, Anthropic `output_config`/forced tool) — native-vs-forced is the
+ * adapter's concern. This is the seam mechanism that realizes a node's `output_schema`.
+ */
+export const ResponseFormatSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text') }),
+  z.object({
+    type: z.literal('json'),
+    schema: z.custom<JSONSchema7>(
+      (value) => typeof value === 'object' && value !== null && !Array.isArray(value),
+      { message: 'responseFormat.schema must be a JSON-Schema object' },
+    ),
+    name: nonEmptyString.optional(), // schema name some providers require (OpenAI); adapters default it
+    strict: z.boolean().optional(), // strict/exact-schema adherence where the provider supports it
+  }),
+]);
+export type ResponseFormat = z.infer<typeof ResponseFormatSchema>;
+
 /** Normalized token usage. `costMicrocents` is Relavium's, computed from the pricing table. */
 export const UsageSchema = z.object({
   inputTokens: nonNegativeInt,
   outputTokens: nonNegativeInt,
   cacheReadTokens: nonNegativeInt.optional(),
   cacheWriteTokens: nonNegativeInt.optional(),
+  // Reasoning ("thinking") tokens — OBSERVABILITY only (ADR-0030). Already counted inside
+  // `outputTokens` for billing, so the CostTracker bills `outputTokens` whole; this is not a new
+  // cost class, just visibility into how much of the output was reasoning.
+  reasoningTokens: nonNegativeInt.optional(),
   costMicrocents: nonNegativeInt.optional(),
 });
 export type Usage = z.infer<typeof UsageSchema>;
@@ -116,6 +140,7 @@ export const LlmRequestSchema = z.object({
   messages: z.array(LlmMessageSchema),
   tools: z.array(ToolDefSchema).optional(),
   toolChoice: ToolChoiceSchema.optional(),
+  responseFormat: ResponseFormatSchema.optional(), // structured-output request (ADR-0030)
   temperature: z.number().optional(),
   maxTokens: z.number().int().positive().optional(), // required downstream for Anthropic — adapters default it
   stopSequences: z.array(z.string()).optional(),
@@ -157,6 +182,26 @@ export const StreamChunkSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tool_call_start'), id: nonEmptyString, name: nonEmptyString }),
   z.object({ type: z.literal('tool_call_delta'), id: nonEmptyString, argsJsonDelta: z.string() }),
   z.object({ type: z.literal('tool_call_end'), id: nonEmptyString }),
+  // Reasoning channel (ADR-0030) — mirrors the tool_call_* triad; `id` correlates the deltas to the
+  // terminating reasoning_end, which carries the optional ephemeral provider signature.
+  z.object({ type: z.literal('reasoning_start'), id: nonEmptyString }),
+  z.object({ type: z.literal('reasoning_delta'), id: nonEmptyString, text: z.string() }),
+  z.object({
+    type: z.literal('reasoning_end'),
+    id: nonEmptyString,
+    signature: z.string().optional(),
+    redacted: z.boolean().optional(),
+  }),
+  // A provider-executed (server-side) tool result carried inline (ADR-0030) — distinct from the
+  // engine-executed tool_call_* triad. Reserved shape; the engine dispatcher records it, never runs it.
+  z.object({
+    type: z.literal('tool_result'),
+    id: nonEmptyString,
+    name: nonEmptyString,
+    result: z.unknown(),
+    isError: z.boolean().optional(),
+    providerExecuted: z.literal(true),
+  }),
   z.object({ type: z.literal('stop'), stopReason: StopReasonSchema, usage: UsageSchema }),
   z.object({ type: z.literal('error'), error: LlmErrorSchema }),
 ]);

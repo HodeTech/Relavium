@@ -60,6 +60,31 @@ const overloadedError = JSON.stringify({
   error: { code: 503, message: 'The model is overloaded', status: 'UNAVAILABLE' },
 });
 
+// Streamed thought parts (thought: true) then the answer — exercises the reasoning channel (ADR-0030).
+const reasoningStream = JSON.stringify([
+  {
+    candidates: [
+      {
+        content: {
+          role: 'model',
+          parts: [{ text: 'let me think', thought: true, thoughtSignature: 'sig-g' }],
+        },
+      },
+    ],
+  },
+  {
+    candidates: [{ content: { role: 'model', parts: [{ text: 'Done.' }] }, finishReason: 'STOP' }],
+    usageMetadata: { promptTokenCount: 6, candidatesTokenCount: 5, thoughtsTokenCount: 2 },
+  },
+]);
+
+const structuredOutput = JSON.stringify({
+  candidates: [
+    { content: { role: 'model', parts: [{ text: '{"ok":true}' }] }, finishReason: 'STOP' },
+  ],
+  usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 4, totalTokenCount: 12 },
+});
+
 export const GEMINI_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textResponse },
   toolGenerate: { status: 200, body: toolResponse },
@@ -67,11 +92,15 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
   toolStream: { status: 200, body: toolStream },
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 503, body: overloadedError },
+  reasoningStream: { status: 200, body: reasoningStream },
+  structuredOutput: { status: 200, body: structuredOutput },
   expected: {
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
     textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
+    reasoningStream: { text: 'let me think' },
+    structuredOutput: { text: '{"ok":true}' },
   },
 };

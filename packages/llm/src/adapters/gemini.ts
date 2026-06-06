@@ -58,6 +58,7 @@ interface GeminiFunctionCall {
 interface GeminiPart {
   text?: string;
   thought?: boolean;
+  thoughtSignature?: string;
   functionCall?: GeminiFunctionCall;
 }
 
@@ -68,6 +69,7 @@ export interface GeminiResponse {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     cachedContentTokenCount?: number;
+    thoughtsTokenCount?: number;
   };
 }
 
@@ -117,6 +119,7 @@ export function mapUsage(usage: {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
   cachedContentTokenCount?: number;
+  thoughtsTokenCount?: number;
 }): Usage {
   const cached = usage.cachedContentTokenCount ?? 0;
   const out: Usage = {
@@ -125,6 +128,11 @@ export function mapUsage(usage: {
   };
   if (cached > 0) {
     out.cacheReadTokens = cached;
+  }
+  // Thinking tokens are already inside candidatesTokenCount (billing unchanged); surface only (ADR-0030).
+  const thinking = usage.thoughtsTokenCount ?? 0;
+  if (thinking > 0) {
+    out.reasoningTokens = thinking;
   }
   return out;
 }
@@ -142,8 +150,17 @@ export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): Co
           args: part.functionCall.args ?? {},
         }),
       );
-    } else if (part.text !== undefined && part.text.length > 0 && part.thought !== true) {
-      parts.push({ type: 'text', text: part.text });
+    } else if (part.text !== undefined && part.text.length > 0) {
+      if (part.thought === true) {
+        // Reasoning (ADR-0030); thoughtSignature is the ephemeral same-provider continuity token.
+        parts.push(
+          part.thoughtSignature !== undefined && part.thoughtSignature.length > 0
+            ? { type: 'reasoning', text: part.text, signature: part.thoughtSignature }
+            : { type: 'reasoning', text: part.text },
+        );
+      } else {
+        parts.push({ type: 'text', text: part.text });
+      }
     }
   }
   return parts;
@@ -227,10 +244,11 @@ function toGeminiParts(
       parts.push({ text: part.text });
     } else if (part.type === 'tool_call') {
       parts.push({ functionCall: { name: part.name, args: part.args } });
-    } else {
+    } else if (part.type === 'tool_result') {
       const name = nameById.get(part.toolCallId) ?? part.toolCallId;
       parts.push({ functionResponse: { name, response: toResponseObject(part.result) } });
     }
+    // reasoning parts are ephemeral (ADR-0030) — dropped here, never replayed to the provider.
   }
   return parts;
 }
@@ -256,6 +274,11 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   if (req.toolChoice !== undefined) {
     config['toolConfig'] = toGeminiToolChoice(req.toolChoice);
+  }
+  if (req.responseFormat?.type === 'json') {
+    // Native structured output (ADR-0030): JSON mime type + the canonical schema as responseJsonSchema.
+    config['responseMimeType'] = 'application/json';
+    config['responseJsonSchema'] = req.responseFormat.schema;
   }
   if (req.temperature !== undefined) {
     config['temperature'] = req.temperature;
@@ -292,6 +315,15 @@ const sdkTransport: GeminiTransport = {
 
 // --- Streaming fold --------------------------------------------------------------------------
 
+const REASONING_ID = 'reasoning-0';
+
+/** A `reasoning_end` chunk carrying the accumulated ephemeral signature when one was seen. */
+function reasoningEnd(signature: string | undefined): StreamChunk {
+  return signature === undefined
+    ? { type: 'reasoning_end', id: REASONING_ID }
+    : { type: 'reasoning_end', id: REASONING_ID, signature };
+}
+
 async function* streamChunks(
   transport: GeminiTransport,
   request: GeminiRequest,
@@ -301,6 +333,8 @@ async function* streamChunks(
   let usage: Usage = ZERO_USAGE;
   let finishReason: string | undefined;
   let hasToolCalls = false;
+  let reasoningOpen = false;
+  let reasoningSignature: string | undefined;
   let sdkStream: AsyncIterable<GeminiResponse>;
   try {
     sdkStream = await transport.stream(request, key);
@@ -319,6 +353,10 @@ async function* streamChunks(
       }
       for (const part of candidate?.content?.parts ?? []) {
         if (part.functionCall !== undefined) {
+          if (reasoningOpen) {
+            yield reasoningEnd(reasoningSignature);
+            reasoningOpen = false;
+          }
           const name = part.functionCall.name ?? '';
           const id = ids.synthesize(name);
           // Gemini delivers the whole args object in one event — emit start/delta/end together.
@@ -330,14 +368,32 @@ async function* streamChunks(
           };
           yield { type: 'tool_call_end', id };
           hasToolCalls = true;
-        } else if (part.text !== undefined && part.text.length > 0 && part.thought !== true) {
-          yield { type: 'text_delta', text: part.text };
+        } else if (part.text !== undefined && part.text.length > 0) {
+          if (part.thought === true) {
+            if (!reasoningOpen) {
+              yield { type: 'reasoning_start', id: REASONING_ID };
+              reasoningOpen = true;
+            }
+            if (part.thoughtSignature !== undefined && part.thoughtSignature.length > 0) {
+              reasoningSignature = part.thoughtSignature;
+            }
+            yield { type: 'reasoning_delta', id: REASONING_ID, text: part.text };
+          } else {
+            if (reasoningOpen) {
+              yield reasoningEnd(reasoningSignature);
+              reasoningOpen = false;
+            }
+            yield { type: 'text_delta', text: part.text };
+          }
         }
       }
     }
   } catch (err) {
     yield { type: 'error', error: geminiErrorToLlmError(err) };
     return;
+  }
+  if (reasoningOpen) {
+    yield reasoningEnd(reasoningSignature);
   }
   yield { type: 'stop', stopReason: mapStopReason(finishReason, hasToolCalls), usage };
 }

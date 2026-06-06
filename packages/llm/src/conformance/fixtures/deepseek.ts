@@ -134,6 +134,36 @@ const streamError = JSON.stringify({
   error: { message: 'Service overloaded', type: 'server_error', code: null },
 });
 
+// DeepSeek-R1 streams reasoning_content first (content null), then the answer — exercises the
+// reasoning channel over the OpenAI-compatible wire (ADR-0030).
+const reasoningStream = sse([
+  chunk([
+    {
+      index: 0,
+      delta: { role: 'assistant', reasoning_content: 'let me think' },
+      finish_reason: null,
+    },
+  ]),
+  chunk([{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }]),
+  chunk([], { prompt_tokens: 6, completion_tokens: 5, total_tokens: 11 }),
+]);
+
+const structuredOutput = JSON.stringify({
+  id: 'chatcmpl_ds_json',
+  object: 'chat.completion',
+  created: 0,
+  model: 'deepseek-chat',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: '{"ok":true}' },
+      finish_reason: 'stop',
+      logprobs: null,
+    },
+  ],
+  usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 },
+});
+
 export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textMessage },
   toolGenerate: { status: 200, body: toolMessage },
@@ -141,6 +171,8 @@ export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
   toolStream: { status: 200, contentType: 'text/event-stream', body: toolStream },
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 503, body: streamError },
+  reasoningStream: { status: 200, contentType: 'text/event-stream', body: reasoningStream },
+  structuredOutput: { status: 200, body: structuredOutput },
   expected: {
     // 4 of 12 prompt tokens cached → net input 8, cacheRead 4.
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 8, outputTokens: 7 },
@@ -148,5 +180,7 @@ export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
     textStream: { stopReason: 'stop', inputTokens: 8, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
+    reasoningStream: { text: 'let me think' },
+    structuredOutput: { text: '{"ok":true}' },
   },
 };

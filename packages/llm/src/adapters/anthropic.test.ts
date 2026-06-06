@@ -442,15 +442,18 @@ describe('AnthropicAdapter — stream edge cases', () => {
 });
 
 describe('AnthropicAdapter — content mapping + cancellation', () => {
-  it('mapContent keeps text + tool_use and skips off-common-path blocks (thinking)', () => {
+  it('mapContent maps thinking → reasoning (with signature) + text + tool_use', () => {
     // A fixture of the vendor content-block union (ToolUseBlock has extra fields) — cast at the
-    // test boundary; mapContent only reads type/text/id/name/input.
+    // test boundary; mapContent reads type/text/id/name/input + thinking/signature.
     const parts = mapContent([
       { type: 'thinking', thinking: 'hmm', signature: 'sig' },
+      { type: 'redacted_thinking', data: 'opaque' },
       { type: 'text', text: 'hi', citations: null },
       { type: 'tool_use', id: 't1', name: 'f', input: { a: 1 } },
     ] as Anthropic.ContentBlock[]);
     expect(parts).toEqual([
+      { type: 'reasoning', text: 'hmm', signature: 'sig' }, // ADR-0030
+      { type: 'reasoning', text: '', redacted: true },
       { type: 'text', text: 'hi' },
       { type: 'tool_call', id: 't1', name: 'f', args: { a: 1 } },
     ]);
@@ -512,5 +515,128 @@ describe('anthropicErrorToLlmError — error-type table (status-less)', () => {
     // billing_error is a valid ErrorType that kindFromErrorType doesn't map → unknown.
     const err = new Anthropic.APIError(undefined, undefined, 'm', undefined, 'billing_error');
     expect(anthropicErrorToLlmError(err).kind).toBe('unknown');
+  });
+});
+
+describe('AnthropicAdapter — reasoning + structured output (ADR-0030)', () => {
+  const REQ2 = {
+    model: 'm',
+    maxTokens: 8,
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const ev = (type: string, data: unknown): string =>
+    `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  const sse = (body: string): Response =>
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+    const out: StreamChunk[] = [];
+    for await (const c of stream) out.push(c);
+    return out;
+  }
+
+  it('folds thinking blocks into reasoning_start/delta/end carrying the signature', async () => {
+    const body =
+      ev('message_start', {
+        type: 'message_start',
+        message: {
+          id: 'm',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 1 },
+        },
+      }) +
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      }) +
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'let me think' },
+      }) +
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'sig-abc' },
+      }) +
+      ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'text', text: '' },
+      }) +
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'text_delta', text: 'answer' },
+      }) +
+      ev('content_block_stop', { type: 'content_block_stop', index: 1 }) +
+      ev('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 9 },
+      }) +
+      ev('message_stop', { type: 'message_stop' }) +
+      '\n';
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(sse(body)),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ2, 'k'));
+    expect(chunks.find((c) => c.type === 'reasoning_start')).toMatchObject({ id: 'reasoning-0' });
+    expect(chunks.find((c) => c.type === 'reasoning_delta')).toMatchObject({
+      id: 'reasoning-0',
+      text: 'let me think',
+    });
+    const end = chunks.find((c) => c.type === 'reasoning_end');
+    expect(end).toMatchObject({ id: 'reasoning-0', signature: 'sig-abc' });
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+  });
+
+  it('mapUsage surfaces thinking tokens as reasoningTokens (billing unchanged)', () => {
+    expect(
+      mapUsage({
+        input_tokens: 10,
+        output_tokens: 20,
+        output_tokens_details: { thinking_tokens: 8 },
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 8 });
+  });
+
+  it('lowers responseFormat json to output_config', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'm',
+              content: [{ type: 'text', text: '{}' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      { ...REQ2, responseFormat: { type: 'json', schema: { type: 'object' } } },
+      'k',
+    );
+    expect(sent['output_config']).toEqual({
+      format: { type: 'json_schema', schema: { type: 'object' } },
+    });
   });
 });

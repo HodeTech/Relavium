@@ -466,3 +466,139 @@ describe('OpenAI-compatible adapter — additional fold + generate branches', ()
     expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 });
+
+describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)', () => {
+  const REQ = {
+    model: 'deepseek-chat',
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const sse = (chunks: readonly unknown[]): Response =>
+    new Response(
+      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
+      {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      },
+    );
+  const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
+    id: 's',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: 'deepseek-chat',
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+
+  it('folds DeepSeek reasoning_content into reasoning_start/delta/end before the text', async () => {
+    const adapter = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: () =>
+        Promise.resolve(
+          sse([
+            dchunk({ role: 'assistant', reasoning_content: 'let me think' }),
+            dchunk({ reasoning_content: ' more' }),
+            dchunk({ content: 'answer' }, 'stop'),
+          ]),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const types = chunks.map((c) => c.type);
+    expect(types.indexOf('reasoning_start')).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf('reasoning_end')).toBeLessThan(types.indexOf('text_delta')); // reasoning closes before text
+    expect(chunks.filter((c) => c.type === 'reasoning_delta')).toHaveLength(2);
+  });
+
+  it('mapContent emits a reasoning part from reasoning_content', () => {
+    const parts = mapContent({ content: 'answer', reasoning_content: 'because' }, 'deepseek');
+    expect(parts[0]).toEqual({ type: 'reasoning', text: 'because' });
+    expect(parts[1]).toEqual({ type: 'text', text: 'answer' });
+  });
+
+  it('mapUsage surfaces reasoning_tokens as reasoningTokens', () => {
+    expect(
+      mapUsage({
+        prompt_tokens: 10,
+        completion_tokens: 20,
+        completion_tokens_details: { reasoning_tokens: 12 },
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 12 });
+  });
+
+  it('lowers responseFormat json to response_format json_schema', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o',
+        responseFormat: { type: 'json', schema: { type: 'object' }, name: 'out' },
+        messages: REQ.messages,
+      },
+      'k',
+    );
+    expect(sent['response_format']).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'out', schema: { type: 'object' }, strict: true },
+    });
+  });
+});
+
+describe('OpenAI-compatible adapter — reasoning close edges', () => {
+  const REQ = {
+    model: 'deepseek-chat',
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const sse = (chunks: readonly unknown[]): Response =>
+    new Response(
+      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
+      {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      },
+    );
+  const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
+    id: 's',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: 'deepseek-chat',
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+
+  it('closes reasoning before a tool call', async () => {
+    const adapter = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: () =>
+        Promise.resolve(
+          sse([
+            dchunk({ reasoning_content: 'think' }),
+            dchunk({
+              tool_calls: [
+                { index: 0, id: 't1', type: 'function', function: { name: 'f', arguments: '{}' } },
+              ],
+            }),
+            dchunk({}, 'tool_calls'),
+          ]),
+        ),
+      maxRetries: 0,
+    });
+    const types = (await collect(adapter.stream(REQ, 'k'))).map((c) => c.type);
+    expect(types.indexOf('reasoning_end')).toBeLessThan(types.indexOf('tool_call_start'));
+  });
+
+  it('closes reasoning at finish when no content follows', async () => {
+    const adapter = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: () =>
+        Promise.resolve(sse([dchunk({ reasoning_content: 'think' }), dchunk({}, 'stop')])),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.some((c) => c.type === 'reasoning_end')).toBe(true);
+    expect(chunks.at(-1)?.type).toBe('stop');
+  });
+});

@@ -86,6 +86,7 @@ export function mapUsage(usage: {
   completion_tokens?: number | null;
   prompt_tokens_details?: { cached_tokens?: number | null } | null;
   prompt_cache_hit_tokens?: number | null;
+  completion_tokens_details?: { reasoning_tokens?: number | null } | null;
 }): Usage {
   const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
   const gross = usage.prompt_tokens ?? 0;
@@ -95,6 +96,12 @@ export function mapUsage(usage: {
   };
   if (cached > 0) {
     out.cacheReadTokens = cached;
+  }
+  // Reasoning tokens are already counted inside completion_tokens (billing unchanged); surface for
+  // observability only (ADR-0030).
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens ?? 0;
+  if (reasoning > 0) {
+    out.reasoningTokens = reasoning;
   }
   return out;
 }
@@ -108,6 +115,9 @@ function parseToolArgs(raw: string): unknown {
 export function mapContent(
   message: {
     content: string | null;
+    // DeepSeek-R1 / Kimi return reasoning as a top-level field the OpenAI SDK does not type; the SDK
+    // passes unknown response fields through, so it is present at runtime when the model emits it.
+    reasoning_content?: string | null;
     tool_calls?:
       | ReadonlyArray<{ id: string; function?: { name: string; arguments: string } }>
       | undefined;
@@ -115,6 +125,13 @@ export function mapContent(
   provider: ProviderId,
 ): ContentPart[] {
   const parts: ContentPart[] = [];
+  if (
+    message.reasoning_content !== null &&
+    message.reasoning_content !== undefined &&
+    message.reasoning_content.length > 0
+  ) {
+    parts.push({ type: 'reasoning', text: message.reasoning_content });
+  }
   if (message.content !== null && message.content.length > 0) {
     parts.push({ type: 'text', text: message.content });
   }
@@ -273,6 +290,17 @@ function buildCommonBody(
   if (req.toolChoice !== undefined) {
     body.tool_choice = toOpenAiToolChoice(req.toolChoice);
   }
+  if (req.responseFormat?.type === 'json') {
+    // Native structured output (ADR-0030). The canonical JSON-Schema bridges to OpenAI's at the boundary.
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: {
+        name: req.responseFormat.name ?? 'response',
+        schema: req.responseFormat.schema as Record<string, unknown>,
+        strict: req.responseFormat.strict ?? true,
+      },
+    };
+  }
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
   }
@@ -330,6 +358,17 @@ function foldToolCallDelta(
   return chunks;
 }
 
+/** Read a DeepSeek/Kimi `reasoning_content` delta the OpenAI SDK does not type (present at runtime). */
+function readReasoningContent(delta: unknown): string | undefined {
+  if (typeof delta === 'object' && delta !== null && 'reasoning_content' in delta) {
+    const value = (delta as { reasoning_content?: unknown }).reasoning_content;
+    return typeof value === 'string' ? value : undefined;
+  }
+  return undefined;
+}
+
+const REASONING_ID = 'reasoning-0';
+
 /** Fold the OpenAI chat-completion event stream into the canonical `StreamChunk` sequence. */
 async function* streamChunks(
   client: OpenAI,
@@ -339,6 +378,7 @@ async function* streamChunks(
   const toolIdByIndex = new Map<number, string>();
   let usage: Usage = ZERO_USAGE;
   let stopReason: StopReason = 'stop';
+  let reasoningOpen = false;
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
     sdkStream = await client.chat.completions.create(
@@ -358,15 +398,36 @@ async function* streamChunks(
       if (choice === undefined) {
         continue;
       }
+      // DeepSeek-R1 / Kimi stream reasoning first (content null) — open the ephemeral reasoning channel.
+      const reasoning = readReasoningContent(choice.delta);
+      if (reasoning !== undefined && reasoning.length > 0) {
+        if (!reasoningOpen) {
+          yield { type: 'reasoning_start', id: REASONING_ID };
+          reasoningOpen = true;
+        }
+        yield { type: 'reasoning_delta', id: REASONING_ID, text: reasoning };
+      }
       if (choice.delta.content !== null && choice.delta.content !== undefined) {
+        if (reasoningOpen) {
+          yield { type: 'reasoning_end', id: REASONING_ID };
+          reasoningOpen = false;
+        }
         yield { type: 'text_delta', text: choice.delta.content };
       }
       for (const toolCall of choice.delta.tool_calls ?? []) {
+        if (reasoningOpen) {
+          yield { type: 'reasoning_end', id: REASONING_ID };
+          reasoningOpen = false;
+        }
         for (const out of foldToolCallDelta(toolCall, toolIdByIndex)) {
           yield out;
         }
       }
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
+        if (reasoningOpen) {
+          yield { type: 'reasoning_end', id: REASONING_ID };
+          reasoningOpen = false;
+        }
         stopReason = mapStopReason(choice.finish_reason);
         // OpenAI has no per-tool end event — every tracked tool finalizes at finish_reason.
         for (const id of toolIdByIndex.values()) {
