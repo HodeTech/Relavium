@@ -29,7 +29,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "catalog:",
+    "@google/genai": "catalog:",
     "@relavium/shared": "workspace:*",
+    "openai": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

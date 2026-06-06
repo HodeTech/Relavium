@@ -1,0 +1,468 @@
+import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
+import { describe, expect, it } from 'vitest';
+
+import type { StreamChunk } from '../types.js';
+import {
+  createOpenAiAdapter,
+  deepseekAdapter,
+  mapContent,
+  mapStopReason,
+  mapUsage,
+  openaiAdapter,
+  openaiErrorToLlmError,
+} from './openai.js';
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function parseJsonBody(init: RequestInit | undefined): Record<string, unknown> {
+  const raw = typeof init?.body === 'string' ? init.body : '{}';
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed)) {
+    throw new Error('expected a JSON object request body');
+  }
+  return parsed;
+}
+
+async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+  const chunks: StreamChunk[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
+const completion = (message: unknown, finishReason = 'stop'): string =>
+  JSON.stringify({
+    id: 'c',
+    object: 'chat.completion',
+    created: 0,
+    model: 'gpt-4o',
+    choices: [{ index: 0, message, finish_reason: finishReason, logprobs: null }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  });
+
+const okResponse = (): Response =>
+  new Response(completion({ role: 'assistant', content: 'ok', refusal: null }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+describe('OpenAI-compatible adapter', () => {
+  it('exposes openai + deepseek ids with their capability surfaces', () => {
+    expect(openaiAdapter.id).toBe('openai');
+    expect(deepseekAdapter.id).toBe('deepseek');
+    expect(openaiAdapter.supports.vision).toBe(true);
+    expect(openaiAdapter.supports.reasoning).toBe(false);
+    expect(deepseekAdapter.supports.reasoning).toBe(true);
+    expect(deepseekAdapter.supports.vision).toBe(false);
+  });
+
+  it('maps finish reasons to the canonical enum (incl. graceful unknown → stop)', () => {
+    expect(mapStopReason('stop')).toBe('stop');
+    expect(mapStopReason('length')).toBe('length');
+    expect(mapStopReason('tool_calls')).toBe('tool_use');
+    expect(mapStopReason('function_call')).toBe('tool_use');
+    expect(mapStopReason('content_filter')).toBe('content_filter');
+    expect(mapStopReason(null)).toBe('stop');
+    expect(mapStopReason(undefined)).toBe('stop');
+    expect(mapStopReason('future_reason')).toBe('stop');
+  });
+
+  it('maps usage to NET, subtracting cache from gross prompt_tokens', () => {
+    // OpenAI: prompt_tokens_details.cached_tokens
+    expect(
+      mapUsage({
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        prompt_tokens_details: { cached_tokens: 30 },
+      }),
+    ).toEqual({ inputTokens: 70, outputTokens: 20, cacheReadTokens: 30 });
+    // DeepSeek: top-level prompt_cache_hit_tokens
+    expect(
+      mapUsage({ prompt_tokens: 50, completion_tokens: 5, prompt_cache_hit_tokens: 10 }),
+    ).toEqual({
+      inputTokens: 40,
+      outputTokens: 5,
+      cacheReadTokens: 10,
+    });
+    // No cache → no cacheReadTokens key; clamps at 0.
+    expect(mapUsage({ prompt_tokens: 10, completion_tokens: 5 })).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+    expect(mapUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
+  });
+
+  it('mapContent keeps text + function tool_calls and skips custom (non-function) tool calls', () => {
+    const parts = mapContent(
+      {
+        content: 'hi',
+        tool_calls: [
+          { id: 't1', function: { name: 'f', arguments: '{"a":1}' } },
+          { id: 'c1' }, // a custom tool call (no function) — skipped
+        ],
+      },
+      'openai',
+    );
+    expect(parts).toEqual([
+      { type: 'text', text: 'hi' },
+      { type: 'tool_call', id: 't1', name: 'f', args: { a: 1 } },
+    ]);
+  });
+
+  it('mapContent treats empty tool arguments as {}', () => {
+    const parts = mapContent(
+      { content: null, tool_calls: [{ id: 't1', function: { name: 'f', arguments: '' } }] },
+      'openai',
+    );
+    expect(parts).toEqual([{ type: 'tool_call', id: 't1', name: 'f', args: {} }]);
+  });
+});
+
+describe('openaiErrorToLlmError — classification', () => {
+  it('classifies the connection/abort error classes', () => {
+    expect(openaiErrorToLlmError(new APIUserAbortError(), 'openai')).toMatchObject({
+      kind: 'cancelled',
+      retryable: false,
+      provider: 'openai',
+    });
+    expect(openaiErrorToLlmError(new APIConnectionTimeoutError(), 'openai')).toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+    });
+    expect(
+      openaiErrorToLlmError(new APIConnectionError({ message: 'down' }), 'deepseek'),
+    ).toMatchObject({ kind: 'transport', retryable: true, provider: 'deepseek' });
+  });
+
+  it('classifies an APIError by HTTP status; status-less → unknown', () => {
+    expect(
+      openaiErrorToLlmError(new APIError(429, undefined, 'rate limited', undefined), 'openai'),
+    ).toMatchObject({ kind: 'rate_limit', retryable: true, status: 429 });
+    expect(
+      openaiErrorToLlmError(new APIError(401, undefined, 'unauthorized', undefined), 'openai'),
+    ).toMatchObject({ kind: 'auth', retryable: false, status: 401 });
+    expect(
+      openaiErrorToLlmError(new APIError(undefined, undefined, 'mystery', undefined), 'openai'),
+    ).toMatchObject({ kind: 'unknown', retryable: false });
+  });
+
+  it('falls back to unknown for a non-Error throwable', () => {
+    expect(openaiErrorToLlmError('boom', 'openai')).toMatchObject({
+      kind: 'unknown',
+      retryable: false,
+    });
+  });
+});
+
+describe('OpenAI-compatible adapter — request building + secret safety', () => {
+  it('prepends system, splits tool results, and maps tool_choice + tools onto the body', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      providerId: 'openai',
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o',
+        system: 'be terse',
+        toolChoice: 'required',
+        tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_call', id: 'c1', name: 'get_weather', args: { city: 'Paris' } },
+            ],
+          },
+          {
+            role: 'tool',
+            content: [{ type: 'tool_result', toolCallId: 'c1', result: { tempC: 18 } }],
+          },
+        ],
+      },
+      'k',
+    );
+    const messages = sent['messages'] as Array<{
+      role: string;
+      content?: unknown;
+      tool_calls?: unknown[];
+      tool_call_id?: string;
+    }>;
+    expect(messages[0]).toMatchObject({ role: 'system', content: 'be terse' });
+    expect(messages[1]).toMatchObject({ role: 'assistant' });
+    expect((messages[1]?.tool_calls as Array<{ id: string }>)[0]).toMatchObject({
+      id: 'c1',
+      type: 'function',
+    });
+    expect(messages[2]).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'c1',
+      content: JSON.stringify({ tempC: 18 }),
+    });
+    expect(sent['tool_choice']).toBe('required');
+    expect(sent['tools']).toMatchObject([{ type: 'function', function: { name: 'get_weather' } }]);
+  });
+
+  it('forwards temperature/stopSequences and lets providerOptions only ADD (mapped fields win)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o',
+        temperature: 0.5,
+        stopSequences: ['STOP'],
+        providerOptions: { seed: 42, model: 'attacker-override' },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      },
+      'k',
+    );
+    expect(sent['temperature']).toBe(0.5);
+    expect(sent['stop']).toEqual(['STOP']);
+    expect(sent['seed']).toBe(42); // escape-hatch field reached the wire
+    expect(sent['model']).toBe('gpt-4o'); // mapped field wins over providerOptions
+  });
+
+  it('maps tool_choice {name} to a named function choice', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o',
+        toolChoice: { name: 'get_weather' },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      },
+      'k',
+    );
+    expect(sent['tool_choice']).toEqual({ type: 'function', function: { name: 'get_weather' } });
+  });
+
+  it('never leaks the API key into the surfaced LlmError', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: 'unauthorized', type: 'invalid_request_error' } }),
+            {
+              status: 401,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        ),
+      maxRetries: 0,
+    });
+    let caught: unknown;
+    try {
+      await adapter.generate(
+        { model: 'gpt-4o', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] },
+        'sk-SECRET-KEY-123',
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(JSON.stringify(caught)).not.toContain('SECRET');
+  });
+});
+
+describe('OpenAI-compatible adapter — stream edge cases', () => {
+  const REQ = {
+    model: 'gpt-4o',
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const sse = (chunks: readonly unknown[]): Response =>
+    new Response(
+      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
+      {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      },
+    );
+
+  it('yields a single error chunk when the stream fails to start (429)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: { message: 'rl', type: 'rate_limit_exceeded' } }), {
+            status: 429,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.type).toBe('error');
+    if (chunks[0]?.type === 'error') {
+      expect(chunks[0].error.kind).toBe('rate_limit');
+    }
+  });
+
+  it('ignores a tool_calls delta with no id/name on first delta (defensive)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          sse([
+            {
+              id: 's',
+              object: 'chat.completion.chunk',
+              created: 0,
+              model: 'gpt-4o',
+              // a fragment with no preceding id+name for index 0 — can't start a tool, skipped
+              choices: [
+                {
+                  index: 0,
+                  delta: { tool_calls: [{ index: 0, function: { arguments: '{}' } }] },
+                  finish_reason: null,
+                },
+              ],
+            },
+            {
+              id: 's',
+              object: 'chat.completion.chunk',
+              created: 0,
+              model: 'gpt-4o',
+              choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: 'stop' }],
+            },
+          ]),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.some((c) => c.type === 'tool_call_start')).toBe(false);
+    expect(chunks.some((c) => c.type === 'tool_call_delta')).toBe(false);
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+    expect(chunks.at(-1)?.type).toBe('stop');
+  });
+
+  it('threads an AbortSignal to the request options', async () => {
+    let sawSignal = false;
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sawSignal = init?.signal instanceof AbortSignal;
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    const controller = new AbortController();
+    await adapter.generate({ ...REQ, signal: controller.signal }, 'k');
+    expect(sawSignal).toBe(true);
+  });
+});
+
+describe('OpenAI-compatible adapter — additional fold + generate branches', () => {
+  const REQ = {
+    model: 'gpt-4o',
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const sse = (chunks: readonly unknown[]): Response =>
+    new Response(
+      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
+      {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      },
+    );
+  const streamChunk = (choices: readonly unknown[]): Record<string, unknown> => ({
+    id: 's',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: 'gpt-4o',
+    choices,
+  });
+
+  it('emits a tool_call_delta when the first tool delta already carries arguments', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          sse([
+            streamChunk([
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_1',
+                      type: 'function',
+                      function: { name: 'f', arguments: '{"a":1}' },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ]),
+            streamChunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]),
+          ]),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const start = chunks.find((c) => c.type === 'tool_call_start');
+    const delta = chunks.find((c) => c.type === 'tool_call_delta');
+    const end = chunks.find((c) => c.type === 'tool_call_end');
+    expect(start).toMatchObject({ type: 'tool_call_start', id: 'call_1', name: 'f' });
+    expect(delta).toMatchObject({
+      type: 'tool_call_delta',
+      id: 'call_1',
+      argsJsonDelta: '{"a":1}',
+    });
+    expect(end).toMatchObject({ type: 'tool_call_end', id: 'call_1' });
+  });
+
+  it('folds a mid-stream error into an error chunk', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          sse([
+            streamChunk([{ index: 0, delta: { content: 'partial' }, finish_reason: null }]),
+            { error: { message: 'mid-stream failure', type: 'server_error', code: null } },
+          ]),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+    expect(chunks.at(-1)?.type).toBe('error');
+  });
+
+  it('generate tolerates an empty-choices completion (no content, zero usage)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'c',
+              object: 'chat.completion',
+              created: 0,
+              model: 'gpt-4o',
+              choices: [],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      maxRetries: 0,
+    });
+    const result = await adapter.generate(REQ, 'k');
+    expect(result.content).toEqual([]);
+    expect(result.stopReason).toBe('stop');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+  });
+});
