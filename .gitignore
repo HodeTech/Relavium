@@ -44,6 +44,7 @@ pnpm-debug.log*
 
 # Test / coverage
 coverage/
+coverage-tmp/
 .vitest/
 
 # Claude Code transient state (skills/agents ARE committed; runtime locks are not)

@@ -93,26 +93,28 @@ The next checkpoint is global milestone **M1 — LLM seam proven** (see the
 
 ## Immediate next steps
 
-Phase 1 has started. **Wave 0 — 1.L.0** (`@relavium/shared` reconciliation) is **✅ done and
-merged (PR #6)**: +44 schema tests (167 total), three independent reviews + adversarial
-verification, all green. Per the
-[sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), **Wave 1** opens
-two parallel lanes (both unblocked by 1.L.0):
+Phase 1 is underway. **Wave 0 — 1.L.0** (`@relavium/shared` reconciliation) merged in **PR #6**,
+and the **Wave-1 seam trio — 1.A** (seam types), **1.B** (CostTracker + pricing), **1.E**
+(ToolNormalizer) — merged in **PR #7** (2026-06-06): the frozen `LLMProvider` contract, the
+integer-micro-cent cost table, and the canonical tool↔wire normalizer — all pure-TS behind the seam
+(no provider SDK yet). Per the
+[sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the next work runs
+two parallel lanes:
 
-1. **1.A — freeze the `LLMProvider` seam types** *(critical path)* — scaffold `packages/llm` and
-   declare the immovable seam in `packages/llm/src/types.ts` (Relavium/Zod types only — **no vendor
-   type crosses it**: `LlmRequest`/`LlmMessage`/`ContentPart`/`ToolDef`/`LlmResult`/`StopReason`/
-   `Usage`/`StreamChunk`/`CapabilityFlags`/`LlmError`), re-exporting the run-event types from
-   `@relavium/shared` ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
-   [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)). The seam fence (0.F)
-   polices it from line one.
-2. **1.L — `WorkflowYAMLParser`** *(critical path, engine lane)* — scaffold `packages/core` and
-   parse+validate a `.relavium.yaml` against the (now-reconciled) `WorkflowSchema`, with typed,
-   field-named errors. **Zero platform-specific imports.**
+1. **Adapter lane (seam)** — **1.C — `AnthropicAdapter`** *(critical path)*, the first adapter and
+   the seam fence's **first real consumer** (`@anthropic-ai/sdk` lands in
+   `packages/llm/src/adapters/`), with **1.I — `LlmError` classification** (the fallback contract),
+   then **1.F — conformance harness** ‖ **1.D — capabilities + `providerOptions`**. This proves the
+   seam end-to-end and opens 1.G/1.H → **M1**
+   ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
+   [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)).
+2. **Engine lane** — **1.L — `WorkflowYAMLParser`** *(critical path)* — scaffold `packages/core` and
+   parse+validate a `.relavium.yaml` against the reconciled `WorkflowSchema`, with typed,
+   field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, waiting at the
+   **1.O join** for the fallback runner (1.K).
 
-The engine lane then runs 1.L → 1.L2 → 1.M → 1.N → 1.R concurrently with the seam lane and waits
-at the **1.O join** for the fallback runner (1.K). Carry-over hardening is tracked in
-[deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1 first touches each file.
+Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
+first touches each file.
 
 ## Not started yet
 

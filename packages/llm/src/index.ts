@@ -40,9 +40,32 @@ export type {
 export { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
 export type { ContentPart, StopReason, AbortSignalLike } from '@relavium/shared';
 
-// Typed config/validation errors (1.B/1.E).
-export { LlmConfigError, UnknownModelError, ToolSchemaError } from './errors.js';
+// Typed config/validation errors (1.B/1.E/1.D).
+export {
+  LlmConfigError,
+  UnknownModelError,
+  ToolSchemaError,
+  UnsupportedCapabilityError,
+} from './errors.js';
 export type { LlmConfigErrorCode } from './errors.js';
+
+// Capability gating + the providerOptions escape hatch (1.D).
+export {
+  requiredCapabilities,
+  supportsRequest,
+  assertSupported,
+  assertStreamable,
+} from './capabilities.js';
+export type { Capability } from './capabilities.js';
+
+// LlmError classification — the fallback contract (1.I).
+export {
+  RETRYABLE_KINDS,
+  isRetryable,
+  kindFromHttpStatus,
+  makeLlmError,
+  LlmProviderError,
+} from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
 export { MODEL_PRICING, KNOWN_MODEL_IDS } from './pricing.js';

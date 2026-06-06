@@ -1,9 +1,9 @@
 # Phase 1 — Engine and LLM
 
-> Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**, the
-> `@relavium/shared` reconciliation) landed in **PR #6** (2026-06-05); Wave 1 is **in progress** —
-> the seam workstreams **1.A** (types), **1.B** (CostTracker), and **1.E** (ToolNormalizer) are in
-> review under **PR #7** (2026-06-05), alongside the **1.L** parser.
+> Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**) landed in
+> **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
+> — landed in **PR #7** (2026-06-06). Next: the adapter lane (**1.C** → {**1.D** ‖ **1.F**}, with
+> **1.I**) ‖ the **1.L** parser.
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -156,7 +156,7 @@ flowchart TB
     T --> U
 ```
 
-### 1.A — `LLMProvider` seam types (freeze the contract)
+### 1.A — `LLMProvider` seam types (freeze the contract) — ✅ **Done (PR #7)**
 
 Define the immovable seam in `packages/llm/src/types.ts` exactly as
 [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md) specifies.
@@ -184,7 +184,7 @@ the runner build against a stable shape.
 and a type-level test proves no exported type references a vendor SDK type; the
 import-zone lint rule fails a deliberate violating import in CI.
 
-### 1.B — `CostTracker` + the model-pricing table
+### 1.B — `CostTracker` + the model-pricing table — ✅ **Done (PR #7)**
 
 The cost computation Relavium owns, keyed on the canonical model id — never read
 from a provider field.
@@ -250,7 +250,7 @@ Keep the common path narrow and stable; push provider-specific features off it.
 unsupported-capability request raises a typed error; no escape-hatch field leaks a
 vendor type across the seam.
 
-### 1.E — `ToolNormalizer` (canonical tool ↔ wire shape)
+### 1.E — `ToolNormalizer` (canonical tool ↔ wire shape) — ✅ **Done (PR #7)**
 
 One canonical `ToolDef` in, three native shapes out, and the response folded back
 into one shape. Lives on the Relavium side of the seam; built before adapters lean
