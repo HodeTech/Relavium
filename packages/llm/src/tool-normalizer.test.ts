@@ -202,7 +202,7 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
     );
     const props = recordAt(reshaped, 'properties');
     expect(Object.getPrototypeOf(props)).toBe(Object.prototype); // own key, not a prototype mutation
-    expect(Object.prototype.hasOwnProperty.call(props, '__proto__')).toBe(true);
+    expect(Object.hasOwn(props, '__proto__')).toBe(true);
     expect(recordAt(props, '__proto__')).toEqual({ type: 'string' });
     expect(recordAt(props, 'keep')).toEqual({ type: 'number' });
   });

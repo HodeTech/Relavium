@@ -81,7 +81,8 @@ describe('CostTracker', () => {
 
 describe('MODEL_PRICING table invariants (the values seeded into model_catalog)', () => {
   it('keys match KNOWN_MODEL_IDS and every catalog-projection field is complete + integer', () => {
-    expect(Object.keys(MODEL_PRICING).sort()).toEqual([...KNOWN_MODEL_IDS].sort());
+    const byLocale = (a: string, b: string): number => a.localeCompare(b);
+    expect(Object.keys(MODEL_PRICING).sort(byLocale)).toEqual([...KNOWN_MODEL_IDS].sort(byLocale));
     const rows: Array<[string, ModelPricing]> = Object.entries(MODEL_PRICING);
     for (const [id, row] of rows) {
       expect(row.nativeId.length, id).toBeGreaterThan(0);
