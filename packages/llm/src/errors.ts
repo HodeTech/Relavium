@@ -1,4 +1,4 @@
-import type { ProviderId } from './types.js';
+import type { CapabilityFlags, ProviderId } from './types.js';
 
 /**
  * Typed, discriminated config/validation errors thrown on the Relavium side of the seam (cost
@@ -8,7 +8,10 @@ import type { ProviderId } from './types.js';
  * (docs/standards/error-handling.md).
  */
 
-export type LlmConfigErrorCode = 'unknown_model' | 'unsupported_tool_schema';
+export type LlmConfigErrorCode =
+  | 'unknown_model'
+  | 'unsupported_tool_schema'
+  | 'unsupported_capability';
 
 /** Base for the seam's thrown config errors — narrow on `code`, never on `message`. */
 export abstract class LlmConfigError extends Error {
@@ -49,5 +52,22 @@ export class ToolSchemaError extends LlmConfigError {
     this.provider = provider;
     this.toolName = toolName;
     this.reason = reason;
+  }
+}
+
+/**
+ * A request needs a capability the chosen provider lacks (e.g. tools on a tools-less provider) —
+ * surfaced rather than silently dropping the feature (1.D).
+ */
+export class UnsupportedCapabilityError extends LlmConfigError {
+  readonly code = 'unsupported_capability';
+  readonly provider: ProviderId;
+  readonly capability: keyof CapabilityFlags;
+
+  constructor(provider: ProviderId, capability: keyof CapabilityFlags) {
+    super(`provider '${provider}' does not support the '${capability}' capability`);
+    this.name = 'UnsupportedCapabilityError';
+    this.provider = provider;
+    this.capability = capability;
   }
 }

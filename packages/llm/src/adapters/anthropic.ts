@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import type { ContentPart, StopReason } from '@relavium/shared';
 
+import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -227,7 +228,12 @@ function buildCommonBody(
   if (req.stopSequences !== undefined) {
     body.stop_sequences = req.stopSequences;
   }
-  return body;
+  if (req.providerOptions === undefined) {
+    return body;
+  }
+  // The typed escape hatch (1.D): merge caller-supplied Anthropic-specific params (e.g. `thinking`,
+  // `metadata`) the common path doesn't model. Off the common path, so the caller owns their validity.
+  return { ...body, ...req.providerOptions };
 }
 
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */
@@ -237,16 +243,25 @@ function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
 
 // --- The adapter -----------------------------------------------------------------------------
 
-/** Dependencies the conformance replayer / tests inject; production uses the real client. */
+/**
+ * Dependencies the conformance replayer / tests inject. They override the transport, not the client,
+ * so the provider SDK stays imported only here — the conformance harness never imports a vendor SDK.
+ */
 export interface AnthropicAdapterDeps {
-  /** Construct the SDK client for a key (override to inject a recorded-fetch client). */
-  readonly createClient?: (key: string) => Anthropic;
+  /** Inject a `fetch` (the replayer/recorder) in place of the network. */
+  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  /** Override the SDK retry count (the replayer sets 0 for deterministic, fast tests). */
+  readonly maxRetries?: number;
 }
 
 /** Build an Anthropic `LlmProvider`. Exposed as `anthropicAdapter`; the factory enables DI for 1.F. */
 export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProvider {
-  const createClient =
-    deps.createClient ?? ((key: string): Anthropic => new Anthropic({ apiKey: key }));
+  const createClient = (key: string): Anthropic =>
+    new Anthropic({
+      apiKey: key,
+      ...(deps.fetch !== undefined ? { fetch: deps.fetch } : {}),
+      ...(deps.maxRetries !== undefined ? { maxRetries: deps.maxRetries } : {}),
+    });
 
   async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
     const toolIdByIndex = new Map<number, string>();
@@ -316,6 +331,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     id: PROVIDER,
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+      assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
@@ -334,6 +350,8 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       };
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+      assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
+      assertStreamable(PROVIDER, SUPPORTS);
       return streamChunks(createClient(key), req);
     },
   };
