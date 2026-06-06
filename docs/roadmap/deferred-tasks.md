@@ -105,6 +105,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## Test depth
 
+- [ ] **Coverage glob is cwd-sensitive + no enforced threshold** — `vitest.config.ts`'s
+  `coverage.include: ['packages/*/src/**/*.ts']` is repo-root-relative, so a package-scoped run
+  (`pnpm --filter @relavium/llm exec vitest --coverage`) reports a false **0%**; coverage is only
+  accurate from the repo root. Make the glob cwd-tolerant (or document root-only) and add the
+  testing.md **≥90% line+branch** threshold for the engine packages (`packages/core`,
+  `packages/llm`) — per-area, since surfaces are smoke-only. *(minor · vitest.config.ts)*
 - [ ] **Column-level schema fidelity** — `client.test.ts` proves only that table *names* exist.
   Add a `PRAGMA table_info(<table>)` assertion per table (name/type/notnull/dflt/pk) against an
   expected fixture, or snapshot `0000_*.sql` byte-for-byte. *(minor · packages/db/src/client.test.ts)*

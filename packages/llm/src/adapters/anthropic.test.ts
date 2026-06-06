@@ -1,6 +1,16 @@
+import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
 
-import { anthropicAdapter, createAnthropicAdapter, mapStopReason, mapUsage } from './anthropic.js';
+import { LlmProviderError } from '../llm-error.js';
+import type { StreamChunk } from '../types.js';
+import {
+  anthropicErrorToLlmError,
+  anthropicAdapter,
+  createAnthropicAdapter,
+  mapContent,
+  mapStopReason,
+  mapUsage,
+} from './anthropic.js';
 
 describe('AnthropicAdapter', () => {
   it('exposes the anthropic id and the full capability surface', () => {
@@ -93,5 +103,349 @@ describe('AnthropicAdapter', () => {
     );
     expect(sentBody['thinking']).toEqual({ type: 'adaptive' }); // escape-hatch field reached the wire
     expect(sentBody['model']).toBe('claude-opus-4-8'); // mapped common-path fields still present
+  });
+});
+
+describe('anthropicErrorToLlmError — classification', () => {
+  it('classifies the connection/abort error classes', () => {
+    expect(anthropicErrorToLlmError(new Anthropic.APIUserAbortError())).toMatchObject({
+      kind: 'cancelled',
+      retryable: false,
+    });
+    expect(anthropicErrorToLlmError(new Anthropic.APIConnectionTimeoutError())).toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+    });
+    expect(
+      anthropicErrorToLlmError(new Anthropic.APIConnectionError({ message: 'down' })),
+    ).toMatchObject({ kind: 'transport', retryable: true });
+  });
+
+  it('classifies an APIError by HTTP status (rate limit retryable, auth fatal)', () => {
+    expect(
+      anthropicErrorToLlmError(new Anthropic.APIError(429, undefined, 'rate limited', undefined)),
+    ).toMatchObject({ kind: 'rate_limit', retryable: true, status: 429 });
+    expect(
+      anthropicErrorToLlmError(new Anthropic.APIError(401, undefined, 'unauthorized', undefined)),
+    ).toMatchObject({ kind: 'auth', retryable: false, status: 401 });
+  });
+
+  it('classifies a status-less APIError by its error type, and sets code from the type', () => {
+    const err = new Anthropic.APIError(
+      undefined,
+      undefined,
+      'overloaded',
+      undefined,
+      'overloaded_error',
+    );
+    expect(anthropicErrorToLlmError(err)).toMatchObject({
+      kind: 'overloaded',
+      retryable: true,
+      code: 'overloaded_error',
+    });
+  });
+
+  it('falls back to unknown (fatal) for a non-Error throwable', () => {
+    expect(anthropicErrorToLlmError('boom')).toMatchObject({ kind: 'unknown', retryable: false });
+  });
+});
+
+describe('AnthropicAdapter — request building + secret safety', () => {
+  const okResponse = (): Response =>
+    new Response(
+      JSON.stringify({
+        id: 'm',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-8',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+
+  it('maps tool_call / tool_result content + tool_choice + system onto the Anthropic body', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as Record<
+          string,
+          unknown
+        >;
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'claude-opus-4-8',
+        maxTokens: 16,
+        system: 'be terse',
+        toolChoice: 'required',
+        tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_call', id: 'c1', name: 'get_weather', args: { city: 'Paris' } },
+            ],
+          },
+          {
+            role: 'tool',
+            content: [{ type: 'tool_result', toolCallId: 'c1', result: { tempC: 18 } }],
+          },
+        ],
+      },
+      'k',
+    );
+    expect(sent['system']).toBe('be terse');
+    expect(sent['tool_choice']).toEqual({ type: 'any' }); // 'required' → any
+    expect(sent['tools']).toMatchObject([
+      { name: 'get_weather', input_schema: { type: 'object' } },
+    ]);
+    const messages = sent['messages'] as { role: string; content: { type: string }[] }[];
+    expect(messages[0]?.content[0]).toMatchObject({
+      type: 'tool_use',
+      id: 'c1',
+      name: 'get_weather',
+    });
+    // tool role → user; non-string result stringified.
+    expect(messages[1]?.role).toBe('user');
+    expect(messages[1]?.content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'c1',
+      content: JSON.stringify({ tempC: 18 }),
+    });
+  });
+
+  it('never leaks the API key into the surfaced LlmError', async () => {
+    const SECRET = 'sk-ant-SECRET-DO-NOT-LEAK';
+    const adapter = createAnthropicAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: 'error',
+              error: { type: 'authentication_error', message: 'bad key' },
+            }),
+            { status: 401, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      maxRetries: 0,
+    });
+    let caught: unknown;
+    try {
+      await adapter.generate(
+        {
+          model: 'm',
+          maxTokens: 8,
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        },
+        SECRET,
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('auth');
+      expect(JSON.stringify(caught.llmError)).not.toContain('SECRET');
+    }
+  });
+});
+
+describe('AnthropicAdapter — stream edge cases', () => {
+  const REQ = {
+    model: 'm',
+    maxTokens: 8,
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const ev = (type: string, data: unknown): string =>
+    `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  const sse = (body: string): Response =>
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    return chunks;
+  }
+
+  it('yields a single error chunk when the stream fails to start (429)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'rl' } }),
+            { status: 429, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.type).toBe('error');
+    if (chunks[0]?.type === 'error') {
+      expect(chunks[0].error.kind).toBe('rate_limit');
+    }
+  });
+
+  it('ignores unknown events and deltas/stops for an untracked tool index', async () => {
+    const body =
+      ev('message_start', {
+        type: 'message_start',
+        message: {
+          id: 'm',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      }) +
+      ev('ping', { type: 'ping' }) + // unknown event -> default case
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 9, // no tool_use was started at index 9 -> id-missing branch
+        delta: { type: 'input_json_delta', partial_json: '{}' },
+      }) +
+      ev('content_block_stop', { type: 'content_block_stop', index: 9 }) + // id-missing branch
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }) +
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hi' },
+      }) +
+      ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
+      ev('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 2 },
+      }) +
+      ev('message_stop', { type: 'message_stop' }) +
+      '\n';
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(sse(body)),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.some((c) => c.type === 'tool_call_delta')).toBe(false); // no id at index 9
+    expect(chunks.some((c) => c.type === 'tool_call_end')).toBe(false);
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+    expect(chunks.at(-1)?.type).toBe('stop');
+  });
+
+  it('forwards temperature and stopSequences onto the body', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as Record<
+          string,
+          unknown
+        >;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'm',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate({ ...REQ, temperature: 0.5, stopSequences: ['STOP'] }, 'k');
+    expect(sent['temperature']).toBe(0.5);
+    expect(sent['stop_sequences']).toEqual(['STOP']);
+  });
+});
+
+describe('AnthropicAdapter — content mapping + cancellation', () => {
+  it('mapContent keeps text + tool_use and skips off-common-path blocks (thinking)', () => {
+    // A fixture of the vendor content-block union (ToolUseBlock has extra fields) — cast at the
+    // test boundary; mapContent only reads type/text/id/name/input.
+    const parts = mapContent([
+      { type: 'thinking', thinking: 'hmm', signature: 'sig' },
+      { type: 'text', text: 'hi', citations: null },
+      { type: 'tool_use', id: 't1', name: 'f', input: { a: 1 } },
+    ] as Anthropic.ContentBlock[]);
+    expect(parts).toEqual([
+      { type: 'text', text: 'hi' },
+      { type: 'tool_call', id: 't1', name: 'f', args: { a: 1 } },
+    ]);
+  });
+
+  it('threads an AbortSignal to the request options', async () => {
+    let sawSignal = false;
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sawSignal = init?.signal instanceof AbortSignal;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'm',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    const controller = new AbortController();
+    await adapter.generate(
+      {
+        model: 'm',
+        maxTokens: 8,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        signal: controller.signal,
+      },
+      'k',
+    );
+    expect(sawSignal).toBe(true);
+  });
+});
+
+describe('anthropicErrorToLlmError — error-type table (status-less)', () => {
+  const cases: ReadonlyArray<readonly [Anthropic.ErrorType, string]> = [
+    ['rate_limit_error', 'rate_limit'],
+    ['overloaded_error', 'overloaded'],
+    ['api_error', 'overloaded'],
+    ['timeout_error', 'timeout'],
+    ['authentication_error', 'auth'],
+    ['permission_error', 'auth'],
+    ['invalid_request_error', 'bad_request'],
+    ['not_found_error', 'bad_request'],
+  ];
+  it.each(cases)('maps %s -> %s', (type, kind) => {
+    const err = new Anthropic.APIError(undefined, undefined, 'm', undefined, type);
+    expect(anthropicErrorToLlmError(err).kind).toBe(kind);
+  });
+  it('falls back to unknown for an unmapped error type with no status', () => {
+    // billing_error is a valid ErrorType that kindFromErrorType doesn't map → unknown.
+    const err = new Anthropic.APIError(undefined, undefined, 'm', undefined, 'billing_error');
+    expect(anthropicErrorToLlmError(err).kind).toBe('unknown');
   });
 });

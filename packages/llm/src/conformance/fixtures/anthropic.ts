@@ -138,10 +138,44 @@ const toolStream = sse([
   ['message_stop', { type: 'message_stop' }],
 ]);
 
+// A stream that starts, then emits a mid-stream `error` event (HTTP 200, SSE) — the SDK raises on
+// the error event, which the adapter catches and folds into an `error` StreamChunk.
+const streamError = sse([
+  [
+    'message_start',
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_err_stream',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-8',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 1 },
+      },
+    },
+  ],
+  [
+    'content_block_start',
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  ],
+  ['error', { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
+]);
+
 export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textMessage },
   toolGenerate: { status: 200, body: toolMessage },
   textStream: { status: 200, contentType: 'text/event-stream', body: textStream },
   toolStream: { status: 200, contentType: 'text/event-stream', body: toolStream },
   rateLimit: { status: 429, body: rateLimitError },
+  streamError: { status: 200, contentType: 'text/event-stream', body: streamError },
+  expected: {
+    textGenerate: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
+    toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
+    textStream: { stopReason: 'stop', outputTokens: 7 },
+    toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
+    streamErrorKind: 'overloaded',
+  },
 };

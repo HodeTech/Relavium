@@ -8,6 +8,7 @@ import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
   LlmError,
+  LlmErrorKind,
   LlmMessage,
   LlmProvider,
   LlmRequest,
@@ -57,6 +58,7 @@ export function mapStopReason(reason: Anthropic.StopReason | null): StopReason {
     case 'pause_turn':
     case null:
       return 'stop';
+    /* v8 ignore next 4 -- defensive: the switch is exhaustive over Anthropic.StopReason | null */
     default: {
       const unreachable: never = reason;
       throw new Error(`unhandled Anthropic stop reason: ${String(unreachable)}`);
@@ -101,41 +103,64 @@ export function mapContent(blocks: readonly Anthropic.ContentBlock[]): ContentPa
   return parts;
 }
 
-/** Classify any SDK throwable into a normalized `LlmError` — no vendor error shape escapes. */
+/** Map an Anthropic error-body `type` to a kind — works even when there's no HTTP status (a stream `error` event). */
+function kindFromErrorType(type: string): LlmErrorKind | undefined {
+  switch (type) {
+    case 'rate_limit_error':
+      return 'rate_limit';
+    case 'overloaded_error':
+    case 'api_error':
+      return 'overloaded';
+    case 'timeout_error':
+      return 'timeout';
+    case 'authentication_error':
+    case 'permission_error':
+      return 'auth';
+    case 'invalid_request_error':
+    case 'not_found_error':
+      return 'bad_request';
+    default:
+      return undefined; // e.g. billing_error → fall back to the HTTP status, then 'unknown'
+  }
+}
+
+/**
+ * Classify any SDK throwable into a normalized `LlmError` — no vendor error shape escapes. The raw
+ * SDK error is deliberately **not** attached as `cause`: the `LlmError` crosses the seam (into run
+ * events / persistence), and a raw provider object there is both a vendor-shape leak and a latent
+ * secret-exposure surface (error-handling.md). `message` is the SDK's already-redacted text; `code`
+ * comes from the provider's own error `type` (e.g. 'rate_limit_error'), never `Error.name`.
+ */
 export function anthropicErrorToLlmError(err: unknown): LlmError {
   if (err instanceof Anthropic.APIUserAbortError) {
-    return makeLlmError({
-      provider: PROVIDER,
-      kind: 'cancelled',
-      message: 'request aborted',
-      cause: err,
-    });
+    return makeLlmError({ provider: PROVIDER, kind: 'cancelled', message: 'request aborted' });
   }
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
-    return makeLlmError({ provider: PROVIDER, kind: 'timeout', message: err.message, cause: err });
+    return makeLlmError({ provider: PROVIDER, kind: 'timeout', message: err.message });
   }
   if (err instanceof Anthropic.APIConnectionError) {
-    return makeLlmError({
-      provider: PROVIDER,
-      kind: 'transport',
-      message: err.message,
-      cause: err,
-    });
+    return makeLlmError({ provider: PROVIDER, kind: 'transport', message: err.message });
   }
   if (err instanceof Anthropic.APIError) {
     const status = typeof err.status === 'number' ? err.status : undefined;
-    const kind = status !== undefined ? kindFromHttpStatus(status) : 'unknown';
-    return makeLlmError(
-      status !== undefined
-        ? { provider: PROVIDER, kind, message: err.message, status, code: err.name, cause: err }
-        : { provider: PROVIDER, kind, message: err.message, code: err.name, cause: err },
-    );
+    const code = typeof err.type === 'string' && err.type.length > 0 ? err.type : undefined;
+    // Prefer the provider's own error `type` (set even on a mid-stream `error` event that carries no
+    // HTTP status), then fall back to the status, then `unknown`.
+    const kind =
+      (code !== undefined ? kindFromErrorType(code) : undefined) ??
+      (status !== undefined ? kindFromHttpStatus(status) : 'unknown');
+    return makeLlmError({
+      provider: PROVIDER,
+      kind,
+      message: err.message,
+      ...(status !== undefined ? { status } : {}),
+      ...(code !== undefined ? { code } : {}),
+    });
   }
   return makeLlmError({
     provider: PROVIDER,
     kind: 'unknown',
     message: err instanceof Error ? err.message : 'unknown provider error',
-    cause: err,
   });
 }
 
@@ -159,6 +184,7 @@ function toAnthropicBlock(part: ContentPart): Anthropic.ContentBlockParam {
       }
       return block;
     }
+    /* v8 ignore next 4 -- defensive: ContentPart is a closed 3-variant union */
     default: {
       const unreachable: never = part;
       throw new Error(`unhandled content part: ${String(unreachable)}`);
@@ -231,9 +257,11 @@ function buildCommonBody(
   if (req.providerOptions === undefined) {
     return body;
   }
-  // The typed escape hatch (1.D): merge caller-supplied Anthropic-specific params (e.g. `thinking`,
-  // `metadata`) the common path doesn't model. Off the common path, so the caller owns their validity.
-  return { ...body, ...req.providerOptions };
+  // The typed escape hatch (1.D): caller-supplied Anthropic-specific params (e.g. `thinking`,
+  // `metadata`) the common path doesn't model. `body` is spread LAST so the mapped common-path
+  // fields (model / messages / max_tokens / tools / …) always win — providerOptions can only ADD,
+  // never override or smuggle past the canonical request.
+  return { ...req.providerOptions, ...body };
 }
 
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */

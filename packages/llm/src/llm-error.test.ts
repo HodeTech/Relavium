@@ -59,3 +59,18 @@ describe('LlmError classification (the fallback contract)', () => {
     expect(Object.keys(e).sort(byLocale)).toEqual(['kind', 'message', 'provider', 'retryable']);
   });
 });
+
+describe('makeLlmError optional fields', () => {
+  it('includes cause and code when provided', () => {
+    const cause = new Error('boom');
+    const e = makeLlmError({
+      provider: 'anthropic',
+      kind: 'unknown',
+      message: 'x',
+      cause,
+      code: 'weird',
+    });
+    expect(e.cause).toBe(cause);
+    expect(e.code).toBe('weird');
+  });
+});

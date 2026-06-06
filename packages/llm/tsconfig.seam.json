@@ -11,5 +11,13 @@
     "types": []
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/adapters/**", "src/conformance/**"]
+  // Tests are excluded too: a `*.test.ts` imports `vitest`, which transitively pulls in
+  // `@types/node` ambient globals and would silently defeat the `types: []` purity gate for the
+  // whole program. The full-coverage tsconfig.json still type-checks the tests.
+  "exclude": [
+    "src/adapters/**",
+    "src/conformance/**",
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts"
+  ]
 }
