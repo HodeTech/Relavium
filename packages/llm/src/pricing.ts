@@ -46,8 +46,8 @@ export const MODEL_PRICING = {
     displayName: 'Claude Opus 4.8',
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 128_000,
-    inputPerMtokMicrocents: usd(5.0),
-    outputPerMtokMicrocents: usd(25.0),
+    inputPerMtokMicrocents: usd(5),
+    outputPerMtokMicrocents: usd(25),
     cachedInputPerMtokMicrocents: usd(0.5), // cache read = 0.1× input
     cacheWritePerMtokMicrocents: usd(6.25), // cache write (5-min TTL) = 1.25× input
   },
@@ -57,8 +57,8 @@ export const MODEL_PRICING = {
     displayName: 'Claude Sonnet 4.6',
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 64_000,
-    inputPerMtokMicrocents: usd(3.0),
-    outputPerMtokMicrocents: usd(15.0),
+    inputPerMtokMicrocents: usd(3),
+    outputPerMtokMicrocents: usd(15),
     cachedInputPerMtokMicrocents: usd(0.3),
     cacheWritePerMtokMicrocents: usd(3.75),
   },
@@ -68,8 +68,8 @@ export const MODEL_PRICING = {
     displayName: 'Claude Haiku 4.5',
     contextWindowTokens: 200_000,
     maxOutputTokens: 64_000,
-    inputPerMtokMicrocents: usd(1.0),
-    outputPerMtokMicrocents: usd(5.0),
+    inputPerMtokMicrocents: usd(1),
+    outputPerMtokMicrocents: usd(5),
     cachedInputPerMtokMicrocents: usd(0.1),
     cacheWritePerMtokMicrocents: usd(1.25),
   },
@@ -82,7 +82,7 @@ export const MODEL_PRICING = {
     contextWindowTokens: 128_000,
     maxOutputTokens: 16_384,
     inputPerMtokMicrocents: usd(2.5),
-    outputPerMtokMicrocents: usd(10.0),
+    outputPerMtokMicrocents: usd(10),
     cachedInputPerMtokMicrocents: usd(1.25), // OpenAI auto-caches; no separate write charge
   },
   'gpt-4o-mini': {
@@ -114,7 +114,7 @@ export const MODEL_PRICING = {
     contextWindowTokens: 2_097_152,
     maxOutputTokens: 8_192,
     inputPerMtokMicrocents: usd(1.25),
-    outputPerMtokMicrocents: usd(5.0),
+    outputPerMtokMicrocents: usd(5),
     cachedInputPerMtokMicrocents: usd(0.3125),
   },
 

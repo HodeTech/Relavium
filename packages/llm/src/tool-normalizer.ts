@@ -42,7 +42,7 @@ export type ToolWire = OpenAiToolWire | AnthropicToolWire | GeminiToolWire;
 /** Build the native wire tool definition for a provider. `gemini` applies the OpenAPI-subset reshape. */
 export function toWire(toolDef: ToolDef, providerId: ProviderId): ToolWire {
   const { name, description, parameters } = toolDef;
-  const desc = description !== undefined ? { description } : {};
+  const desc = description === undefined ? {} : { description };
   switch (providerId) {
     case 'anthropic':
       return { name, input_schema: parameters, ...desc };
@@ -94,6 +94,59 @@ const GEMINI_ALLOWED_KEYWORDS = new Set([
 /** `format` values Gemini accepts; an unsupported format is dropped, not sent. */
 const GEMINI_SAFE_FORMATS = new Set(['date-time', 'int32', 'int64', 'float', 'double']);
 
+/** Keep a `format` only if Gemini accepts it; an unsupported format is dropped. */
+function reshapeFormat(value: unknown): Record<string, unknown> {
+  return typeof value === 'string' && GEMINI_SAFE_FORMATS.has(value) ? { format: value } : {};
+}
+
+/**
+ * Lower a JSON-Schema `type` array to Gemini's scalar `type` plus the separate `nullable` flag:
+ * `['string', 'null']` → `{ type: 'string', nullable: true }`. An inexpressible union (zero or two+
+ * non-null members) throws, mirroring the strip-or-throw contract of the rest of the reshape.
+ */
+function reshapeTypeArray(value: unknown[], toolName: string): Record<string, unknown> {
+  const nonNull = value.filter((member) => member !== 'null');
+  if (nonNull.length !== 1) {
+    throw new ToolSchemaError(
+      'gemini',
+      toolName,
+      `type union ${JSON.stringify(value)} is not expressible (need exactly one non-null type)`,
+    );
+  }
+  return value.includes('null') ? { type: nonNull[0], nullable: true } : { type: nonNull[0] };
+}
+
+/** Reshape every member schema under a `properties` map. */
+function reshapeProperties(
+  value: Record<string, unknown>,
+  toolName: string,
+): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  for (const [propName, propSchema] of Object.entries(value)) {
+    properties[propName] = reshapeNode(propSchema, toolName);
+  }
+  return properties;
+}
+
+/** Reshape one allow-listed keyword into the fragment to merge onto the output node. */
+function reshapeKeyword(key: string, value: unknown, toolName: string): Record<string, unknown> {
+  if (key === 'format') {
+    return reshapeFormat(value);
+  }
+  if (key === 'type' && Array.isArray(value)) {
+    return reshapeTypeArray(value, toolName);
+  }
+  if (key === 'properties' && isRecord(value)) {
+    return { properties: reshapeProperties(value, toolName) };
+  }
+  if (key === 'items' || key === 'anyOf') {
+    // `items` is a schema; `anyOf` an array of schemas — reshapeNode handles both (a `$ref` inside a
+    // branch still throws), so member schemas are reshaped too.
+    return { [key]: reshapeNode(value, toolName) };
+  }
+  return { [key]: value }; // enum / required / nullable / min|max(Items|Length) / pattern / default — verbatim
+}
+
 function reshapeNode(node: unknown, toolName: string): unknown {
   if (Array.isArray(node)) {
     return node.map((entry) => reshapeNode(entry, toolName));
@@ -111,49 +164,10 @@ function reshapeNode(node: unknown, toolName: string): unknown {
   }
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(node)) {
-    if (!GEMINI_ALLOWED_KEYWORDS.has(key)) {
-      continue; // strip an unsupported keyword (additionalProperties, patternProperties, …)
+    // Strip an unsupported keyword (additionalProperties, patternProperties, …); reshape the rest.
+    if (GEMINI_ALLOWED_KEYWORDS.has(key)) {
+      Object.assign(out, reshapeKeyword(key, value, toolName));
     }
-    if (key === 'format') {
-      if (typeof value === 'string' && GEMINI_SAFE_FORMATS.has(value)) {
-        out[key] = value;
-      }
-      continue; // drop an unsupported format value
-    }
-    if (key === 'type' && Array.isArray(value)) {
-      // JSON-Schema permits `type: [...]`; Gemini wants a scalar type + the separate `nullable` flag.
-      // Collapse `['string', 'null']` → `type: 'string'` + `nullable: true`; an inexpressible union throws.
-      const members: unknown[] = value;
-      const hasNull = members.includes('null');
-      const nonNull = members.filter((member) => member !== 'null');
-      if (nonNull.length !== 1) {
-        throw new ToolSchemaError(
-          'gemini',
-          toolName,
-          `type union ${JSON.stringify(value)} is not expressible (need exactly one non-null type)`,
-        );
-      }
-      out['type'] = nonNull[0];
-      if (hasNull) {
-        out['nullable'] = true;
-      }
-      continue;
-    }
-    if (key === 'properties' && isRecord(value)) {
-      const properties: Record<string, unknown> = {};
-      for (const [propName, propSchema] of Object.entries(value)) {
-        properties[propName] = reshapeNode(propSchema, toolName);
-      }
-      out[key] = properties;
-      continue;
-    }
-    if (key === 'items' || key === 'anyOf') {
-      // `items` is a schema; `anyOf` is an array of schemas — reshapeNode handles both, so
-      // member schemas are reshaped too (and a `$ref` inside a branch still throws).
-      out[key] = reshapeNode(value, toolName);
-      continue;
-    }
-    out[key] = value; // type / enum / required / nullable / min|max(Items|Length) / pattern / default — verbatim
   }
   return out;
 }
