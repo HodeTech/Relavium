@@ -1,8 +1,9 @@
 # Phase 1 — Engine and LLM
 
 > Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**, the
-> `@relavium/shared` reconciliation) landed in **PR #6** (2026-06-05); Wave 1 (**1.A** seam ‖
-> **1.L** parser) is next.
+> `@relavium/shared` reconciliation) landed in **PR #6** (2026-06-05); Wave 1 is **in progress** —
+> the seam workstreams **1.A** (types), **1.B** (CostTracker), and **1.E** (ToolNormalizer) are in
+> review under **PR #7** (2026-06-05), alongside the **1.L** parser.
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
