@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-05
+> Last updated: 2026-06-06
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -93,19 +93,22 @@ The next checkpoint is global milestone **M1 — LLM seam proven** (see the
 
 ## Immediate next steps
 
-Phase 1 is underway. **Wave 0 — 1.L.0** (`@relavium/shared` reconciliation) merged in **PR #6**,
-and the **Wave-1 seam trio — 1.A** (seam types), **1.B** (CostTracker + pricing), **1.E**
-(ToolNormalizer) — merged in **PR #7** (2026-06-06): the frozen `LLMProvider` contract, the
-integer-micro-cent cost table, and the canonical tool↔wire normalizer — all pure-TS behind the seam
-(no provider SDK yet). Per the
+Phase 1 is underway. **Wave 0 — 1.L.0** (`@relavium/shared` reconciliation) merged in **PR #6**;
+the **Wave-1 seam trio — 1.A** (seam types), **1.B** (CostTracker + pricing), **1.E** (ToolNormalizer)
+— merged in **PR #7**; and the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`
+classification), **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — merged in
+**PR #8** (2026-06-06): the seam fence now has its **first real consumer** (`@anthropic-ai/sdk` under
+`packages/llm/src/adapters/`), proven end-to-end against recorded fixtures by the shared conformance
+spec, with classified errors and capability gating — all behind the frozen `LLMProvider` seam. Per the
 [sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the next work runs
 two parallel lanes:
 
-1. **Adapter lane (seam)** — **1.C — `AnthropicAdapter`** *(critical path)*, the first adapter and
-   the seam fence's **first real consumer** (`@anthropic-ai/sdk` lands in
-   `packages/llm/src/adapters/`), with **1.I — `LlmError` classification** (the fallback contract),
-   then **1.F — conformance harness** ‖ **1.D — capabilities + `providerOptions`**. This proves the
-   seam end-to-end and opens 1.G/1.H → **M1**
+1. **Adapter lane (seam)** — the remaining two adapters, now that the harness exists: **1.G —
+   OpenAI-compatible adapter** (OpenAI + DeepSeek via a custom `baseURL`) ‖ **1.H — `GeminiAdapter`**
+   (`@google/genai`, leaning hardest on the 1.E OpenAPI-subset reshape + id-synthesis). Both bind to
+   the **1.F** conformance spec; when all three pass it that is **1.J — conformance green = M1**. In
+   parallel, **1.K — `FallbackChain` runner** (retryable/fatal routing on `LlmError`, per-attempt
+   usage → `CostTracker`) — the seam's first policy layer
    ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
    [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)).
 2. **Engine lane** — **1.L — `WorkflowYAMLParser`** *(critical path)* — scaffold `packages/core` and

@@ -2,8 +2,11 @@
 
 > Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**) landed in
 > **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
-> — landed in **PR #7** (2026-06-06). Next: the adapter lane (**1.C** → {**1.D** ‖ **1.F**}, with
-> **1.I**) ‖ the **1.L** parser.
+> — landed in **PR #7**; the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
+> **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — landed in **PR #8**
+> (2026-06-06): the seam is proven end-to-end against a real provider. Next: the remaining adapters
+> **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini) → **1.J** (conformance green = **M1**), with **1.K**
+> (FallbackChain); ‖ the **1.L** engine parser.
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -208,7 +211,7 @@ from a provider field.
 expected micro-cents; an unknown model id raises a typed, user-facing error rather
 than silently pricing at zero.
 
-### 1.C — `AnthropicAdapter` (the first adapter, proves the seam) — *critical path*
+### 1.C — `AnthropicAdapter` (the first adapter, proves the seam) — *critical path* · ✅ **Done (PR #8)**
 
 The reference adapter over `@anthropic-ai/sdk`. It establishes the normalization
 patterns the conformance harness then enforces across all adapters.
@@ -234,7 +237,7 @@ patterns the conformance harness then enforces across all adapters.
 recorded Anthropic fixtures: streams text, calls a tool and returns a normalized
 `tool_call`, returns usage, maps stop reasons, and surfaces a classified `LlmError`.
 
-### 1.D — Capabilities + the typed `providerOptions` escape hatch
+### 1.D — Capabilities + the typed `providerOptions` escape hatch — ✅ **Done (PR #8)**
 
 Keep the common path narrow and stable; push provider-specific features off it.
 
@@ -272,7 +275,7 @@ on it.
 shapes and back; the Gemini reshape rejects an unsupported schema with a typed error
 and the id-synthesis test proves a stable id across a multi-tool streamed turn.
 
-### 1.F — Conformance harness (shared spec + fixture recorder) — *critical path*
+### 1.F — Conformance harness (shared spec + fixture recorder) — *critical path* · ✅ **Done (PR #8)**
 
 The single spec every adapter must pass, plus the fixture-recording mechanism. This
 is the biggest leverage point for the in-house abstraction.
@@ -332,7 +335,7 @@ hardest on 1.E.
 including a tool call whose id is synthesized and a `SAFETY` stop mapped to
 `content_filter`.
 
-### 1.I — `LlmError` classification (the fallback contract)
+### 1.I — `LlmError` classification (the fallback contract) — ✅ **Done (PR #8)**
 
 The classification the `FallbackChain` depends on, normalized inside each adapter.
 
