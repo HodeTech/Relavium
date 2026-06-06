@@ -34,12 +34,22 @@ function recordAt(record: Record<string, unknown>, key: string): Record<string, 
   return value;
 }
 
+/** A non-array object is the structural floor for a JSON-Schema root — enough to type a test input. */
+const isObjectSchema = (value: unknown): value is JSONSchema7 => isRecord(value);
+
 /**
  * Parse a schema the way a tool's YAML/JSON would actually arrive. Needed where an object literal
  * can't express the input: an own `__proto__` key (a literal `__proto__:` sets the prototype) or a
- * non-JSON-Schema-7 keyword like OpenAPI `nullable`. The JSON.parse boundary cast is the canonical use.
+ * non-JSON-Schema-7 keyword like OpenAPI `nullable`. Parses to `unknown` and narrows with a runtime
+ * guard, so no `as` assertion is needed.
  */
-const parseSchema = (json: string): JSONSchema7 => JSON.parse(json) as JSONSchema7;
+const parseSchema = (json: string): JSONSchema7 => {
+  const parsed: unknown = JSON.parse(json);
+  if (!isObjectSchema(parsed)) {
+    throw new Error(`parseSchema expected an object schema, got: ${json}`);
+  }
+  return parsed;
+};
 
 describe('toWire — one canonical ToolDef, three native shapes', () => {
   it('shapes the Anthropic input_schema form (parameters passed through)', () => {
@@ -149,7 +159,7 @@ describe('reshapeForGemini — OpenAPI-subset reshape', () => {
     const schema = {
       type: 'object',
       properties: { ref: { $ref: '#/$defs/Thing' } },
-    } as JSONSchema7;
+    } satisfies JSONSchema7;
     expect(() => reshapeForGemini(schema, 'demo')).toThrowError(ToolSchemaError);
     try {
       reshapeForGemini(schema, 'demo');
