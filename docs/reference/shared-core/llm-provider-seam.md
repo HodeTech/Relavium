@@ -182,12 +182,18 @@ adapters):
 - **Reasoning channel.** `ContentPart` gains a `reasoning` arm
   (`{ type: 'reasoning', text, signature?, redacted? }`); `StreamChunk` gains
   `reasoning_start` / `reasoning_delta` / `reasoning_end` (mirroring the
-  `tool_call_*` triad; `reasoning_end` carries the optional `signature`); `Usage`
-  gains an optional `reasoningTokens` (**observability only** — already inside
-  `outputTokens` for billing). **Reasoning is ephemeral:** a provider-signed
+  `tool_call_*` triad; `reasoning_end` carries the optional `signature` and
+  `redacted` flag — both surfaced on the streaming path, symmetric with the
+  non-streaming `reasoning` content part); `Usage` gains an optional
+  `reasoningTokens` (**observability only** — already inside `outputTokens` for
+  billing on Anthropic/OpenAI; on Gemini, thinking tokens are billed *separately*
+  from candidates, so the adapter sums both into `outputTokens` and surfaces the
+  thinking subset as `reasoningTokens`). **Reasoning is ephemeral:** a provider-signed
   `signature` is never persisted to a session, never replayed across a provider
   boundary on fallback, and never written to a run event or log — the engine does
-  not interpret it; only the originating adapter feeds it back.
+  not interpret it; only the originating adapter feeds it back (a same-provider,
+  same-turn obligation owned by the 1.K `FallbackChain` strip-on-failover, not yet
+  exercised — no consumer beyond the adapters exists).
 - **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,
