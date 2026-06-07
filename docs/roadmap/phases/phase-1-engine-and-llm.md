@@ -7,7 +7,7 @@
 > (2026-06-06). The remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the
 > **seam-shape amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
 > (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) landed
-> in **PR #9** (2026-06-07): **🎯 M1 — LLM seam proven, is reached.** All three adapters pass one shared
+> in **PR #9** (2026-06-07) — **🎯 M1 (LLM seam proven) is reached.** All three adapters pass one shared
 > conformance suite in fixture mode (live nightly reserved, pending keys); no vendor type crosses the
 > seam. **Next:** **1.K** (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral
 > reasoning signature when failing over** to another provider) ‖ the **1.L** engine parser, converging
@@ -702,7 +702,7 @@ the latter being the critical-path milestone for the whole product.
 | # | Milestone | Completed by |
 | --- | --- | --- |
 | 1.m1 | Seam frozen; first adapter + conformance harness green (Anthropic) | 1.A, 1.C, 1.E, 1.F |
-| **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR, live nightly; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
+| **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR — live-nightly lane reserved/pending keys; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 | Policy layers complete: fallback runner + cost tracker | 1.B, 1.K |
 | 1.m3 | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |

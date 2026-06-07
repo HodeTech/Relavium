@@ -84,7 +84,7 @@ the official provider SDKs — the seam fence's first real consumer) and **`@rel
 (the engine: YAML→DAG parse, runner, checkpoint/resume, retry — zero platform imports,
 consuming `@relavium/db` for run persistence).
 
-Global milestone **M1 — LLM seam proven is reached** (PR #9, 2026-06-07): all three
+Global milestone **M1 — LLM seam proven** is reached (PR #9, 2026-06-07): all three
 adapters pass the shared conformance suite behind the frozen seam. The next checkpoint is
 **M2 — engine end-to-end** (see the [milestone spine](README.md#global-milestone-spine)).
 
