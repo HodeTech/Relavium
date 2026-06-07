@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-import { kebabIdSchema, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import {
+  findDuplicates,
+  kebabIdSchema,
+  nonEmptyString,
+  nonNegativeInt,
+  positiveInt,
+} from './common.js';
 import { ON_EXCEED_ACTIONS, SCHEMA_VERSION } from './constants.js';
 import { AgentSchema } from './agent.js';
 import { NodeSchema } from './node.js';
@@ -189,16 +195,11 @@ export const WorkflowSchema = z
     // context keys, and agent ids are each addressed by reference (edges, `{{inputs.*}}`,
     // `{{ctx.*}}`, `agent_ref`), so a duplicate is an ambiguity, not a forward-compat field.
     const reportDuplicates = (values: string[], label: string, path: (string | number)[]) => {
-      const seen = new Set<string>();
-      const duplicates = new Set<string>();
-      for (const value of values) {
-        if (seen.has(value)) duplicates.add(value);
-        seen.add(value);
-      }
-      if (duplicates.size > 0) {
+      const duplicates = findDuplicates(values);
+      if (duplicates.length > 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `duplicate ${label}: ${[...duplicates].join(', ')}`,
+          message: `duplicate ${label}: ${duplicates.join(', ')}`,
           path,
         });
       }

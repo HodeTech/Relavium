@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowSchema } from './workflow.js';
 
 /**
- * The canonical reference workflow example, transcribed verbatim from the "Complete
- * example" in docs/reference/contracts/workflow-yaml-spec.md (as the parsed object —
- * YAML→object parsing is `@relavium/core`'s responsibility). This fixture is the
- * **no-drift anchor**: the schema must accept it and round-trip it unchanged.
+ * The canonical reference workflow example, modeled on the "Complete example" in
+ * docs/reference/contracts/workflow-yaml-spec.md (as the parsed object — YAML→object parsing is
+ * `@relavium/core`'s responsibility). The structure mirrors the spec; the multi-line prompt strings
+ * are **shortened paraphrases**, not verbatim transcriptions. It serves as a **round-trip anchor**:
+ * the schema accepts it and a parse→serialize→re-parse cycle is stable (not a verbatim spec-drift anchor).
  */
 const codeReviewPipeline = {
   schema_version: '1.0',

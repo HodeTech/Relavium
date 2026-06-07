@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { kebabIdSchema, nonEmptyString, positiveInt, temperatureSchema } from './common.js';
+// RetrySchema is owned by agent.ts; node.ts depends on agent.ts one-way — agent.ts must never
+// import node.ts (the dependency stays acyclic).
 import { RetrySchema } from './agent.js';
 
 /**

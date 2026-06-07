@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
 import { nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
-import { ERROR_CODES, EXECUTION_MODES, FS_SCOPE_TIERS, STOP_REASONS } from './constants.js';
+import {
+  ENGINE_NODE_TYPES,
+  ERROR_CODES,
+  EXECUTION_MODES,
+  FS_SCOPE_TIERS,
+  STOP_REASONS,
+} from './constants.js';
 import { GateTypeSchema } from './node.js';
 
 /**
@@ -56,6 +62,14 @@ export const TokensUsedSchema = z.object({
 });
 export type TokensUsed = z.infer<typeof TokensUsedSchema>;
 
+/**
+ * A secret-typed `run:started` input, masked at emit time — the raw value is replaced with a
+ * keychain/env `ref` (sse-event-schema.md §Security). Never carries the secret itself. The named
+ * contract every surface renders for a masked input value.
+ */
+export const MaskedSecretSchema = z.object({ secret: z.literal(true), ref: nonEmptyString });
+export type MaskedSecret = z.infer<typeof MaskedSecretSchema>;
+
 /** A gate decision value, shared by the resumed event and `GateDecision`. */
 export const GateDecisionValueSchema = z.enum(['approved', 'rejected', 'input_provided']);
 export type GateDecisionValue = z.infer<typeof GateDecisionValueSchema>;
@@ -107,7 +121,7 @@ export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
   ...runBase,
   workflowId: z.string().uuid(), // FK to workflows.id (surrogate UUID), matching RunSchema — ADR-0022
-  inputs: z.record(z.string(), z.unknown()), // secret-typed inputs are masked at emit time
+  inputs: z.record(z.string(), z.unknown()), // a secret-typed input is masked at emit time as MaskedSecret ({ secret: true, ref }); a non-secret keeps its raw value
   executionMode: z.enum(EXECUTION_MODES),
 });
 
@@ -115,7 +129,9 @@ export const NodeStartedEventSchema = z.object({
   type: z.literal('node:started'),
   ...runBase,
   nodeId: nonEmptyString,
-  nodeType: nonEmptyString,
+  // The engine node type (node-types.md is the canonical taxonomy), not the authored YAML type —
+  // `parallel`/`merge` have already expanded to `fan_out`/`fan_in` by the time the engine runs.
+  nodeType: z.enum(ENGINE_NODE_TYPES),
 });
 
 export const AgentTokenEventSchema = z.object({
@@ -164,7 +180,7 @@ export const CostUpdatedEventSchema = z.object({
   inputTokens: nonNegativeInt,
   outputTokens: nonNegativeInt,
   costMicrocents: nonNegativeInt, // integer micro-cents (canonical unit); from Relavium's pricing table, never the provider
-  cumulativeCostMicrocents: nonNegativeInt,
+  cumulativeCostMicrocents: nonNegativeInt, // integer micro-cents running total for the whole run
   attemptNumber: positiveInt.optional(), // 1-based retry attempt this cost belongs to
 });
 export type CostUpdatedEvent = z.infer<typeof CostUpdatedEventSchema>;
@@ -356,7 +372,9 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
-// Per-variant inferred types, for consumers that handle a specific event.
+// Per-variant inferred types, for consumers that handle a specific event. NOTE: this block is the
+// rest of the per-variant exports — a few (CostUpdatedEvent, the HumanGate* events, SessionContext)
+// are exported inline next to their schemas above; this trailing block is NOT the exhaustive set.
 export type RunStartedEvent = z.infer<typeof RunStartedEventSchema>;
 export type NodeStartedEvent = z.infer<typeof NodeStartedEventSchema>;
 export type AgentTokenEvent = z.infer<typeof AgentTokenEventSchema>;

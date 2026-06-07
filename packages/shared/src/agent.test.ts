@@ -76,6 +76,17 @@ describe('AgentSchema', () => {
     );
   });
 
+  it('accepts optional input_schema / output_schema (agent-yaml-spec.md)', () => {
+    const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
+    expect(
+      AgentSchema.safeParse({
+        ...min,
+        input_schema: { type: 'object', properties: { text: { type: 'string' } } },
+        output_schema: { type: 'object' },
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts zero or one mcp_servers (uniqueness boundary)', () => {
     const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
     expect(AgentSchema.safeParse({ ...min, mcp_servers: [] }).success).toBe(true);

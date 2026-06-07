@@ -21,6 +21,11 @@ describe('RunSchema', () => {
     expect(RunSchema.safeParse(run).success).toBe(true);
   });
 
+  it('rejects a non-object inputs (pins the record boundary)', () => {
+    expect(RunSchema.safeParse({ ...run, inputs: 'x' }).success).toBe(false);
+    expect(RunSchema.safeParse({ ...run, inputs: [] }).success).toBe(false);
+  });
+
   it('pins the run-status set to the DB CHECK enum', () => {
     expect(RunStatusSchema.options).toEqual([
       'pending',
