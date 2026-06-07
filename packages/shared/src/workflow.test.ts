@@ -190,6 +190,20 @@ describe('WorkflowSchema', () => {
     expect(accepts(withWorkflow({ nodes }))).toBe(true);
   });
 
+  it('accepts an agents entry that is a $ref to an external .agent.yaml (engine resolves it)', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          agents: [...base.workflow.agents, { $ref: './reviewers/extra.agent.yaml' }],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a malformed $ref agent entry (unknown key)', () => {
+    expect(accepts(withWorkflow({ agents: [{ $ref: './x.agent.yaml', oops: 1 }] }))).toBe(false);
+  });
+
   it('rejects a non-kebab-case workflow id', () => {
     expect(accepts(withWorkflow({ id: 'Code_Review_Pipeline' }))).toBe(false);
   });

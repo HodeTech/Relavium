@@ -45,6 +45,17 @@ describe('config schemas', () => {
     expect(ProjectConfigSchema.safeParse({}).success).toBe(true);
   });
 
+  it('rejects an unknown/typo config key (strict — ADR-0023 parity)', () => {
+    expect(GlobalConfigSchema.safeParse({ updatechannel: 'stable' }).success).toBe(false); // top-level typo
+    expect(
+      GlobalConfigSchema.safeParse({ preferences: { theme: 'dark', themer: 'x' } }).success,
+    ).toBe(false); // nested typo
+    expect(ProjectConfigSchema.safeParse({ varaibles: { a: '1' } }).success).toBe(false);
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { default_model: 'm', maxx_messages: 1 } }).success,
+    ).toBe(false); // [chat] typo
+  });
+
   it('accepts an http MCP registration with a url', () => {
     expect(
       GlobalConfigSchema.safeParse({

@@ -64,17 +64,22 @@ export const McpServerRegistrationSchema = z
     }
   });
 
-/** `~/.relavium/config.toml` — global preferences + MCP registrations. */
-export const GlobalConfigSchema = z.object({
-  update_channel: UpdateChannelSchema.optional(),
-  preferences: z
-    .object({
-      default_model: z.string().optional(),
-      theme: z.string().optional(),
-    })
-    .optional(),
-  mcp_servers: z.array(McpServerRegistrationSchema).optional(),
-});
+/** `~/.relavium/config.toml` — global preferences + MCP registrations.
+ *  `.strict()`: a typo in a committed config key fails loudly rather than being silently dropped —
+ *  parity with the authored-YAML schemas (ADR-0023). */
+export const GlobalConfigSchema = z
+  .object({
+    update_channel: UpdateChannelSchema.optional(),
+    preferences: z
+      .object({
+        default_model: z.string().optional(),
+        theme: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    mcp_servers: z.array(McpServerRegistrationSchema).optional(),
+  })
+  .strict();
 export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
 
 /**
@@ -91,22 +96,26 @@ export const ChatConfigSchema = z
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
   })
+  .strict() // fail loud on an unknown [chat] key (ADR-0023 parity)
   .optional();
 
 /** `project.toml` / `workspace.toml` — project defaults, variables, project-scoped MCP, chat defaults. */
-export const ProjectConfigSchema = z.object({
-  defaults: z
-    .object({
-      model: z.string().optional(),
-      fs_scope: FsScopeSchema.optional(),
-      // Per-call output-token estimate the pre-egress budget governor uses when a node/session
-      // omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block.
-      max_tokens_estimate: positiveInt.optional(),
-    })
-    .optional(),
-  variables: z.record(z.string(), z.string()).optional(),
-  chat: ChatConfigSchema,
-  // Project-scoped MCP registrations merge with the global ones (config-spec.md §resolution).
-  mcp_servers: z.array(McpServerRegistrationSchema).optional(),
-});
+export const ProjectConfigSchema = z
+  .object({
+    defaults: z
+      .object({
+        model: z.string().optional(),
+        fs_scope: FsScopeSchema.optional(),
+        // Per-call output-token estimate the pre-egress budget governor uses when a node/session
+        // omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block.
+        max_tokens_estimate: positiveInt.optional(),
+      })
+      .strict()
+      .optional(),
+    variables: z.record(z.string(), z.string()).optional(),
+    chat: ChatConfigSchema,
+    // Project-scoped MCP registrations merge with the global ones (config-spec.md §resolution).
+    mcp_servers: z.array(McpServerRegistrationSchema).optional(),
+  })
+  .strict();
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;

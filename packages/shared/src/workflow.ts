@@ -182,6 +182,19 @@ export const BudgetSchema = z
   .strict();
 export type Budget = z.infer<typeof BudgetSchema>;
 
+/**
+ * A reference to an external `.agent.yaml` (`{ $ref: './reviewers/security.agent.yaml' }`,
+ * workflow-yaml-spec.md). The contract validates only the *shape* here; the **engine** resolves the
+ * path against the workspace agent registry (the pure/sync shared schema never reads files) and is
+ * where path-traversal/SSRF hardening lives. Keeping the door open lets a workflow bind external
+ * agents without inlining them.
+ */
+export const AgentRefSchema = z.object({ $ref: nonEmptyString }).strict();
+export type AgentRef = z.infer<typeof AgentRefSchema>;
+
+/** An `agents:` entry: an inline agent definition, or a `$ref` to an external `.agent.yaml`. */
+export const WorkflowAgentSchema = z.union([AgentSchema, AgentRefSchema]);
+
 /** The body under the top-level `workflow:` key. */
 export const WorkflowSpecSchema = z
   .object({
@@ -196,7 +209,7 @@ export const WorkflowSpecSchema = z
     trigger: TriggerSchema.optional(),
     inputs: z.array(WorkflowInputSchema).optional(),
     context: z.array(ContextEntrySchema).optional(),
-    agents: z.array(AgentSchema).optional(),
+    agents: z.array(WorkflowAgentSchema).optional(), // inline agents or { $ref } to .agent.yaml
     tools: ToolPolicySchema.optional(),
     budget: BudgetSchema.optional(), // pre-egress cost cap (ADR-0028)
     timeout_ms: positiveInt.optional(), // whole-run wall-clock cap
@@ -257,7 +270,8 @@ export const WorkflowSchema = z
       ['workflow', 'context'],
     );
     reportDuplicates(
-      (doc.workflow.agents ?? []).map((a) => a.id),
+      // Only inline agents carry an `id`; a `{ $ref }` entry is resolved (and id-checked) by the engine.
+      (doc.workflow.agents ?? []).flatMap((a) => ('id' in a ? [a.id] : [])),
       'agent id(s)',
       ['workflow', 'agents'],
     );
