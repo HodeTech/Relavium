@@ -22,8 +22,11 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status: Phase 0 complete (milestone M0, 2026-06-04).** Active work is
-[Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md); see
+**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07);**
+`@relavium/llm` (the seam + all three adapters) is landed and green. Phase 0 (M0) landed
+the monorepo + `@relavium/shared` + CI + `@relavium/db`. Active work continues on the
+`FallbackChain` (1.K) and the
+[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md); see
 [docs/roadmap/current.md](docs/roadmap/current.md).
 
 ## The non-negotiable rules

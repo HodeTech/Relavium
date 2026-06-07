@@ -2,17 +2,17 @@
 
 > Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**) landed in
 > **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
-> — landed in **PR #7**; the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
+> — landed in **PR #7**; the first **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
 > **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — landed in **PR #8**
-> (2026-06-06): the seam is proven end-to-end against a real provider. **In flight (PR after #8):** the
-> remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the **seam-shape
-> amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
-> (reasoning channel + `responseFormat` + `providerExecuted`) — decided **before the M1 freeze** while
-> the only consumers were the adapters; reasoning + structured output are wired in every adapter that
-> supports them, with conformance scenarios. Then **1.J** (conformance green = **M1**) and **1.K**
-> (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral reasoning signature when
-> failing over** to another provider); ‖ the **1.L** engine parser. *(Session persistence, 1.X/1.Z,
-> must exclude the reasoning signature — non-persisting.)*
+> (2026-06-06). The remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the
+> **seam-shape amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
+> (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) landed
+> in **PR #9** (2026-06-07): **🎯 M1 — LLM seam proven, is reached.** All three adapters pass one shared
+> conformance suite in fixture mode (live nightly reserved, pending keys); no vendor type crosses the
+> seam. **Next:** **1.K** (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral
+> reasoning signature when failing over** to another provider) ‖ the **1.L** engine parser, converging
+> at the **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning
+> signature — non-persisting.)*
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -302,7 +302,7 @@ is the biggest leverage point for the in-house abstraction.
 CI; the nightly live job is wired (may be skipped until keys are provisioned) and
 recording a fresh fixture reproduces a green fixture run.
 
-### 1.G — OpenAI-compatible adapter (OpenAI + DeepSeek) — *critical path*
+### 1.G — OpenAI-compatible adapter (OpenAI + DeepSeek) — *critical path* · ✅ **Done (PR #9)**
 
 One adapter over the `openai` SDK serving both OpenAI and DeepSeek (DeepSeek via
 custom `baseURL = api.deepseek.com`) — no separate dependency.
@@ -323,7 +323,7 @@ custom `baseURL = api.deepseek.com`) — no separate dependency.
 `openai` and `deepseek` (separate recorded fixtures), including the tool-call and
 usage cases.
 
-### 1.H — `GeminiAdapter` (`@google/genai`) — *critical path*
+### 1.H — `GeminiAdapter` (`@google/genai`) — *critical path* · ✅ **Done (PR #9)**
 
 The riskiest adapter (restricted tool schema, no native tool-call ids); it leans
 hardest on 1.E.
@@ -359,7 +359,7 @@ The classification the `FallbackChain` depends on, normalized inside each adapte
 retryable and an auth failure as fatal; a cancelled request surfaces a fatal,
 non-retryable `LlmError`.
 
-### 1.J — Conformance green: 3 adapters pass the suite (**M1**)
+### 1.J — Conformance green: 3 adapters pass the suite (**M1**) — ✅ **Done (PR #9) · M1 reached**
 
 The milestone gate that proves the seam: all three adapters honor the contract with
 no vendor type crossing the seam.
@@ -702,7 +702,7 @@ the latter being the critical-path milestone for the whole product.
 | # | Milestone | Completed by |
 | --- | --- | --- |
 | 1.m1 | Seam frozen; first adapter + conformance harness green (Anthropic) | 1.A, 1.C, 1.E, 1.F |
-| **M1** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR, live nightly; no vendor type across the seam)** | 1.G, 1.H, 1.I, **1.J** |
+| **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR, live nightly; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 | Policy layers complete: fallback runner + cost tracker | 1.B, 1.K |
 | 1.m3 | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
