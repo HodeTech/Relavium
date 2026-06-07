@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { EXECUTION_MODES, RunStatusSchema } from '@relavium/shared';
 import { eq, sql } from 'drizzle-orm';
@@ -190,6 +191,32 @@ describe('@relavium/db migrations + client', () => {
     );
   });
 
+  it('the 0000 migration DDL matches the committed snapshot (column-level fidelity)', () => {
+    // Byte-for-byte snapshot of the one migration — pins every column's name/type/notnull/default/pk
+    // and the CHECK/index DDL, so a silent schema regeneration is caught.
+    const ddl = readFileSync(
+      fileURLToPath(new URL('../drizzle/0000_organic_the_santerians.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(ddl).toMatchSnapshot();
+  });
+
+  it('rejects a step_executions row whose run_id does not exist (foreign_keys = ON rejects)', () => {
+    expect(() =>
+      client.db
+        .insert(stepExecutions)
+        .values({
+          id: randomUUID(),
+          runId: randomUUID(), // no such run
+          nodeId: 'n1',
+          nodeType: 'agent',
+          createdAt: TS,
+          updatedAt: TS,
+        })
+        .run(),
+    ).toThrow(/FOREIGN KEY constraint failed/i);
+  });
+
   it('rejects a status / execution_mode outside the CHECK value set (not just the FK)', () => {
     // Insert a real workflow so the FK is satisfied — then ONLY the CHECK can reject these
     // rows. Without it, a non-existent workflow_id would throw an FK violation and the test
@@ -239,6 +266,8 @@ describe('@relavium/db migration + constraint invariants', () => {
   it('opens an in-memory database and applies every migration', () => {
     const mem = createClient(); // default ':memory:'
     runMigrations(mem.db);
+    // WAL is a no-op for an in-memory database — SQLite keeps journal_mode = 'memory'.
+    expect(mem.sqlite.pragma('journal_mode', { simple: true })).toBe('memory');
     const tables = mem.db
       .all<{ name: string }>(sql`select name from sqlite_master where type = 'table'`)
       .map((r) => r.name);
