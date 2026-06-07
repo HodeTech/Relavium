@@ -236,6 +236,10 @@ export function defineConformanceSuite(
         const result = await makeReplayAdapter(recorded).generate(JSON_REQUEST, KEY);
         const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
         expect(() => JSON.parse(text) as unknown).not.toThrow();
+        // responseFormat: json must yield text, not a tool call, and a canonical terminal stop reason —
+        // surfacing any adapter that routes structured output through a forced tool or mis-maps the stop.
+        expect(result.stopReason).toBe('stop');
+        expect(result.content.every((part) => part.type !== 'tool_call')).toBe(true);
         if (expected.structuredOutput !== undefined) {
           expect(text).toBe(expected.structuredOutput.text);
         }

@@ -24,6 +24,8 @@ import type {
   Usage,
 } from '../types.js';
 
+import { isAbortSignal } from './shared.js';
+
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
  * **OpenAI** and **DeepSeek** (DeepSeek via a custom `baseURL`, no separate dependency). Like the
@@ -108,7 +110,12 @@ export function mapUsage(usage: {
 
 /** OpenAI tool-call arguments arrive as a JSON string; parse to the canonical `args` (empty → `{}`). */
 function parseToolArgs(raw: string): unknown {
-  return JSON.parse(raw.length > 0 ? raw : '{}');
+  try {
+    return JSON.parse(raw.length > 0 ? raw : '{}');
+  } catch {
+    // A malformed provider tool-arg payload degrades to {} rather than failing the whole result.
+    return {};
+  }
 }
 
 /** Fold a non-streaming assistant message into canonical content parts (text + tool_call). */
@@ -150,18 +157,23 @@ export function mapContent(
   return parts;
 }
 
+/** The first non-empty string of the candidates, else undefined — the normalized error `code`. */
+function firstNonEmptyString(...values: readonly unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 /** Normalize an SDK `APIError` into an `LlmError`, typed by the structural subset it reads. */
 function mapOpenAiApiError(
   err: { status?: unknown; code?: unknown; type?: unknown; message: string },
   provider: ProviderId,
 ): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
-  const code =
-    typeof err.code === 'string' && err.code.length > 0
-      ? err.code
-      : typeof err.type === 'string' && err.type.length > 0
-        ? err.type
-        : undefined;
+  const code = firstNonEmptyString(err.code, err.type);
   const kind = status === undefined ? 'unknown' : kindFromHttpStatus(status);
   return makeLlmError({
     provider,
@@ -268,6 +280,15 @@ function toOpenAiToolChoice(choice: ToolChoice): OpenAI.ChatCompletionToolChoice
   return { type: 'function', function: { name: choice.name } };
 }
 
+/** OpenAI requires the json_schema `name` to match `^[a-zA-Z0-9_-]{1,64}$`; sanitize a caller's name. */
+function toJsonSchemaName(name: string | undefined): string {
+  if (name === undefined) {
+    return 'response';
+  }
+  const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+  return sanitized.length > 0 ? sanitized : 'response';
+}
+
 /** The shared request body (everything except the `stream` discriminant each method sets). */
 function buildCommonBody(
   req: LlmRequest,
@@ -295,7 +316,7 @@ function buildCommonBody(
     body.response_format = {
       type: 'json_schema',
       json_schema: {
-        name: req.responseFormat.name ?? 'response',
+        name: toJsonSchemaName(req.responseFormat.name),
         schema: req.responseFormat.schema as Record<string, unknown>,
         strict: req.responseFormat.strict ?? true,
       },
@@ -315,11 +336,6 @@ function buildCommonBody(
   }
   // The typed escape hatch (1.D): `body` is spread LAST so mapped common-path fields always win.
   return { ...req.providerOptions, ...body };
-}
-
-/** True for a real `AbortSignal` (the host passes one; it structurally satisfies AbortSignalLike). */
-function isAbortSignal(value: unknown): value is AbortSignal {
-  return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
 }
 
 function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
@@ -367,7 +383,61 @@ function readReasoningContent(delta: unknown): string | undefined {
   return undefined;
 }
 
+// A single reasoning track per response (OpenAI/DeepSeek emit one block; no concurrent tracks). If
+// a provider ever interleaves multiple reasoning streams, move to an index-keyed id like the Anthropic
+// adapter (reasoning-${index}).
 const REASONING_ID = 'reasoning-0';
+
+/** Mutable fold state threaded across the streamed chunks. */
+interface OpenAiStreamState {
+  reasoningOpen: boolean;
+  stopReason: StopReason;
+  readonly toolIdByIndex: Map<number, string>;
+}
+
+/** Emit a `reasoning_end` (closing the ephemeral reasoning channel) if one is open. */
+function closeReasoning(state: OpenAiStreamState, out: StreamChunk[]): void {
+  if (state.reasoningOpen) {
+    out.push({ type: 'reasoning_end', id: REASONING_ID });
+    state.reasoningOpen = false;
+  }
+}
+
+/** Fold one chat-completion chunk into the chunks to emit, mutating the streamed fold state. */
+function foldChatChunk(chunk: OpenAI.ChatCompletionChunk, state: OpenAiStreamState): StreamChunk[] {
+  const out: StreamChunk[] = [];
+  const choice = chunk.choices[0];
+  if (choice === undefined) {
+    return out;
+  }
+  // DeepSeek-R1 / Kimi stream reasoning first (content null) — open the ephemeral reasoning channel.
+  const reasoning = readReasoningContent(choice.delta);
+  if (reasoning !== undefined && reasoning.length > 0) {
+    if (!state.reasoningOpen) {
+      out.push({ type: 'reasoning_start', id: REASONING_ID });
+      state.reasoningOpen = true;
+    }
+    out.push({ type: 'reasoning_delta', id: REASONING_ID, text: reasoning });
+  }
+  if (choice.delta.content != null) {
+    closeReasoning(state, out);
+    out.push({ type: 'text_delta', text: choice.delta.content });
+  }
+  for (const toolCall of choice.delta.tool_calls ?? []) {
+    closeReasoning(state, out);
+    out.push(...foldToolCallDelta(toolCall, state.toolIdByIndex));
+  }
+  if (choice.finish_reason != null) {
+    closeReasoning(state, out);
+    state.stopReason = mapStopReason(choice.finish_reason);
+    // OpenAI has no per-tool end event — every tracked tool finalizes at finish_reason.
+    for (const id of state.toolIdByIndex.values()) {
+      out.push({ type: 'tool_call_end', id });
+    }
+    state.toolIdByIndex.clear();
+  }
+  return out;
+}
 
 /** Fold the OpenAI chat-completion event stream into the canonical `StreamChunk` sequence. */
 async function* streamChunks(
@@ -375,10 +445,12 @@ async function* streamChunks(
   req: LlmRequest,
   provider: ProviderId,
 ): AsyncIterable<StreamChunk> {
-  const toolIdByIndex = new Map<number, string>();
+  const state: OpenAiStreamState = {
+    reasoningOpen: false,
+    stopReason: 'stop',
+    toolIdByIndex: new Map<number, string>(),
+  };
   let usage: Usage = ZERO_USAGE;
-  let stopReason: StopReason = 'stop';
-  let reasoningOpen = false;
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
     sdkStream = await client.chat.completions.create(
@@ -394,53 +466,15 @@ async function* streamChunks(
       if (chunk.usage) {
         usage = mapUsage(chunk.usage); // the include_usage chunk arrives last, with empty choices
       }
-      const choice = chunk.choices[0];
-      if (choice === undefined) {
-        continue;
-      }
-      // DeepSeek-R1 / Kimi stream reasoning first (content null) — open the ephemeral reasoning channel.
-      const reasoning = readReasoningContent(choice.delta);
-      if (reasoning !== undefined && reasoning.length > 0) {
-        if (!reasoningOpen) {
-          yield { type: 'reasoning_start', id: REASONING_ID };
-          reasoningOpen = true;
-        }
-        yield { type: 'reasoning_delta', id: REASONING_ID, text: reasoning };
-      }
-      if (choice.delta.content !== null && choice.delta.content !== undefined) {
-        if (reasoningOpen) {
-          yield { type: 'reasoning_end', id: REASONING_ID };
-          reasoningOpen = false;
-        }
-        yield { type: 'text_delta', text: choice.delta.content };
-      }
-      for (const toolCall of choice.delta.tool_calls ?? []) {
-        if (reasoningOpen) {
-          yield { type: 'reasoning_end', id: REASONING_ID };
-          reasoningOpen = false;
-        }
-        for (const out of foldToolCallDelta(toolCall, toolIdByIndex)) {
-          yield out;
-        }
-      }
-      if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
-        if (reasoningOpen) {
-          yield { type: 'reasoning_end', id: REASONING_ID };
-          reasoningOpen = false;
-        }
-        stopReason = mapStopReason(choice.finish_reason);
-        // OpenAI has no per-tool end event — every tracked tool finalizes at finish_reason.
-        for (const id of toolIdByIndex.values()) {
-          yield { type: 'tool_call_end', id };
-        }
-        toolIdByIndex.clear();
+      for (const out of foldChatChunk(chunk, state)) {
+        yield out;
       }
     }
   } catch (err) {
     yield { type: 'error', error: openaiErrorToLlmError(err, provider) };
     return;
   }
-  yield { type: 'stop', stopReason, usage };
+  yield { type: 'stop', stopReason: state.stopReason, usage };
 }
 
 // --- The adapter -----------------------------------------------------------------------------

@@ -602,3 +602,46 @@ describe('OpenAI-compatible adapter — reasoning close edges', () => {
     expect(chunks.at(-1)?.type).toBe('stop');
   });
 });
+
+describe('OpenAI-compatible adapter — robustness (review fixes)', () => {
+  it('parseToolArgs degrades malformed tool arguments to {} (via mapContent)', () => {
+    const parts = mapContent(
+      {
+        content: null,
+        tool_calls: [{ id: 't1', function: { name: 'f', arguments: '{not json' } }],
+      },
+      'openai',
+    );
+    expect(parts).toEqual([{ type: 'tool_call', id: 't1', name: 'f', args: {} }]);
+  });
+
+  it('sanitizes an invalid json_schema name to OpenAI rules', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o',
+        responseFormat: { type: 'json', schema: { type: 'object' }, name: 'my schema!' },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      },
+      'k',
+    );
+    const rf = sent['response_format'] as { json_schema: { name: string } };
+    expect(rf.json_schema.name).toBe('my_schema_'); // spaces/'!' → '_'
+  });
+
+  it('classifies an APIError code via firstNonEmptyString', () => {
+    const err = new APIError(400, undefined, 'bad', undefined);
+    Object.assign(err, { code: 'invalid_request' });
+    expect(openaiErrorToLlmError(err, 'openai')).toMatchObject({
+      kind: 'bad_request',
+      code: 'invalid_request',
+    });
+  });
+});

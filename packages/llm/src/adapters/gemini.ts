@@ -18,6 +18,8 @@ import type {
   Usage,
 } from '../types.js';
 
+import { isAbortSignal } from './shared.js';
+
 /**
  * The Gemini adapter (1.H) over `@google/genai` — the riskiest adapter: a restricted tool schema and
  * **no native tool-call ids** (synthesized via the 1.E `ToolNormalizer`). Like the others it lives
@@ -258,11 +260,6 @@ function toResponseObject(result: unknown): Record<string, unknown> {
   return isRecord(result) ? result : { result };
 }
 
-/** True for a real `AbortSignal` (the host passes one; it structurally satisfies AbortSignalLike). */
-function isAbortSignal(value: unknown): value is AbortSignal {
-  return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
-}
-
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   const config: Record<string, unknown> = {};
@@ -315,13 +312,67 @@ const sdkTransport: GeminiTransport = {
 
 // --- Streaming fold --------------------------------------------------------------------------
 
+// A single reasoning track per response (Gemini emits one thought stream; no concurrent tracks). If
+// that changes, move to an index-keyed id like the Anthropic adapter (reasoning-${index}).
 const REASONING_ID = 'reasoning-0';
 
-/** A `reasoning_end` chunk carrying the accumulated ephemeral signature when one was seen. */
-function reasoningEnd(signature: string | undefined): StreamChunk {
-  return signature === undefined
-    ? { type: 'reasoning_end', id: REASONING_ID }
-    : { type: 'reasoning_end', id: REASONING_ID, signature };
+/** Mutable fold state threaded across the streamed Gemini responses. */
+interface GeminiStreamState {
+  reasoningOpen: boolean;
+  reasoningSignature: string | undefined;
+  hasToolCalls: boolean;
+  readonly ids: GeminiToolCallIds;
+}
+
+/** Emit `reasoning_end` (with the accumulated signature) if reasoning is open, then reset the track. */
+function closeReasoning(state: GeminiStreamState, out: StreamChunk[]): void {
+  if (!state.reasoningOpen) {
+    return;
+  }
+  out.push(
+    state.reasoningSignature === undefined
+      ? { type: 'reasoning_end', id: REASONING_ID }
+      : { type: 'reasoning_end', id: REASONING_ID, signature: state.reasoningSignature },
+  );
+  state.reasoningOpen = false;
+  state.reasoningSignature = undefined; // reset so a later reasoning segment starts with a fresh signature
+}
+
+/** Fold one Gemini content part into the chunks to emit, mutating the streamed fold state. */
+function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk[] {
+  const out: StreamChunk[] = [];
+  if (part.functionCall !== undefined) {
+    closeReasoning(state, out);
+    const name = part.functionCall.name ?? '';
+    const id = state.ids.synthesize(name);
+    // Gemini delivers the whole args object in one event — emit start/delta/end together.
+    out.push({ type: 'tool_call_start', id, name });
+    out.push({
+      type: 'tool_call_delta',
+      id,
+      argsJsonDelta: JSON.stringify(part.functionCall.args ?? {}),
+    });
+    out.push({ type: 'tool_call_end', id });
+    state.hasToolCalls = true;
+    return out;
+  }
+  if (part.text === undefined || part.text.length === 0) {
+    return out;
+  }
+  if (part.thought === true) {
+    if (!state.reasoningOpen) {
+      out.push({ type: 'reasoning_start', id: REASONING_ID });
+      state.reasoningOpen = true;
+    }
+    if (part.thoughtSignature !== undefined && part.thoughtSignature.length > 0) {
+      state.reasoningSignature = part.thoughtSignature;
+    }
+    out.push({ type: 'reasoning_delta', id: REASONING_ID, text: part.text });
+    return out;
+  }
+  closeReasoning(state, out);
+  out.push({ type: 'text_delta', text: part.text });
+  return out;
 }
 
 async function* streamChunks(
@@ -329,12 +380,14 @@ async function* streamChunks(
   request: GeminiRequest,
   key: string,
 ): AsyncIterable<StreamChunk> {
-  const ids = new GeminiToolCallIds();
+  const state: GeminiStreamState = {
+    reasoningOpen: false,
+    reasoningSignature: undefined,
+    hasToolCalls: false,
+    ids: new GeminiToolCallIds(),
+  };
   let usage: Usage = ZERO_USAGE;
   let finishReason: string | undefined;
-  let hasToolCalls = false;
-  let reasoningOpen = false;
-  let reasoningSignature: string | undefined;
   let sdkStream: AsyncIterable<GeminiResponse>;
   try {
     sdkStream = await transport.stream(request, key);
@@ -352,39 +405,8 @@ async function* streamChunks(
         finishReason = candidate.finishReason;
       }
       for (const part of candidate?.content?.parts ?? []) {
-        if (part.functionCall !== undefined) {
-          if (reasoningOpen) {
-            yield reasoningEnd(reasoningSignature);
-            reasoningOpen = false;
-          }
-          const name = part.functionCall.name ?? '';
-          const id = ids.synthesize(name);
-          // Gemini delivers the whole args object in one event — emit start/delta/end together.
-          yield { type: 'tool_call_start', id, name };
-          yield {
-            type: 'tool_call_delta',
-            id,
-            argsJsonDelta: JSON.stringify(part.functionCall.args ?? {}),
-          };
-          yield { type: 'tool_call_end', id };
-          hasToolCalls = true;
-        } else if (part.text !== undefined && part.text.length > 0) {
-          if (part.thought === true) {
-            if (!reasoningOpen) {
-              yield { type: 'reasoning_start', id: REASONING_ID };
-              reasoningOpen = true;
-            }
-            if (part.thoughtSignature !== undefined && part.thoughtSignature.length > 0) {
-              reasoningSignature = part.thoughtSignature;
-            }
-            yield { type: 'reasoning_delta', id: REASONING_ID, text: part.text };
-          } else {
-            if (reasoningOpen) {
-              yield reasoningEnd(reasoningSignature);
-              reasoningOpen = false;
-            }
-            yield { type: 'text_delta', text: part.text };
-          }
+        for (const out of foldGeminiPart(part, state)) {
+          yield out;
         }
       }
     }
@@ -392,10 +414,12 @@ async function* streamChunks(
     yield { type: 'error', error: geminiErrorToLlmError(err) };
     return;
   }
-  if (reasoningOpen) {
-    yield reasoningEnd(reasoningSignature);
+  const tail: StreamChunk[] = [];
+  closeReasoning(state, tail);
+  for (const out of tail) {
+    yield out;
   }
-  yield { type: 'stop', stopReason: mapStopReason(finishReason, hasToolCalls), usage };
+  yield { type: 'stop', stopReason: mapStopReason(finishReason, state.hasToolCalls), usage };
 }
 
 // --- The adapter -----------------------------------------------------------------------------

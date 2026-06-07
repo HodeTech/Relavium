@@ -528,11 +528,6 @@ describe('AnthropicAdapter — reasoning + structured output (ADR-0030)', () => 
     `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   const sse = (body: string): Response =>
     new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
-    const out: StreamChunk[] = [];
-    for await (const c of stream) out.push(c);
-    return out;
-  }
 
   it('folds thinking blocks into reasoning_start/delta/end carrying the signature', async () => {
     const body =
