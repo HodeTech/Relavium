@@ -366,7 +366,7 @@ function isPrivateOrLocalHost(host: string): boolean {
       host.startsWith('fe80:') ||
       host.startsWith('fc') ||
       host.startsWith('fd') ||
-      host.startsWith('::ffff:7f')
+      host.startsWith('::ffff:7f') // NOSONAR — intentional reserved-range literal; this IS the SSRF block
     );
   }
   if (

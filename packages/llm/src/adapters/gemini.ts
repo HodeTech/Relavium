@@ -366,6 +366,12 @@ interface GeminiStreamState {
   reasoningOpen: boolean;
   reasoningSignature: string | undefined;
   hasToolCalls: boolean;
+  /** A terminal signal (candidate finishReason or prompt block) was seen — else the stream truncated. */
+  sawTerminal: boolean;
+  /** The prompt was blocked (content_filter), not a normal completion. */
+  blocked: boolean;
+  finishReason: string | undefined;
+  usage: Usage;
   readonly ids: GeminiToolCallIds;
 }
 
@@ -397,13 +403,11 @@ function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk
     closeReasoning(state, out);
     const id = state.ids.synthesize(name);
     // Gemini delivers the whole args object in one event — emit start/delta/end together.
-    out.push({ type: 'tool_call_start', id, name });
-    out.push({
-      type: 'tool_call_delta',
-      id,
-      argsJsonDelta: JSON.stringify(part.functionCall.args ?? {}),
-    });
-    out.push({ type: 'tool_call_end', id });
+    out.push(
+      { type: 'tool_call_start', id, name },
+      { type: 'tool_call_delta', id, argsJsonDelta: JSON.stringify(part.functionCall.args ?? {}) },
+      { type: 'tool_call_end', id },
+    );
     state.hasToolCalls = true;
     return out;
   }
@@ -426,6 +430,27 @@ function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk
   return out;
 }
 
+/** Fold one streamed Gemini response into chunks, updating the terminal/usage tracking on `state`. */
+function foldGeminiResponse(response: GeminiResponse, state: GeminiStreamState): StreamChunk[] {
+  const out: StreamChunk[] = [];
+  if (response.usageMetadata) {
+    state.usage = mapUsage(response.usageMetadata);
+  }
+  if (isPromptBlocked(response.promptFeedback)) {
+    state.blocked = true;
+    state.sawTerminal = true;
+  }
+  const candidate = response.candidates?.[0];
+  if (candidate?.finishReason !== undefined) {
+    state.finishReason = candidate.finishReason;
+    state.sawTerminal = true;
+  }
+  for (const part of candidate?.content?.parts ?? []) {
+    out.push(...foldGeminiPart(part, state));
+  }
+  return out;
+}
+
 async function* streamChunks(
   transport: GeminiTransport,
   request: GeminiRequest,
@@ -435,14 +460,12 @@ async function* streamChunks(
     reasoningOpen: false,
     reasoningSignature: undefined,
     hasToolCalls: false,
+    sawTerminal: false,
+    blocked: false,
+    finishReason: undefined,
+    usage: ZERO_USAGE,
     ids: new GeminiToolCallIds(),
   };
-  let usage: Usage = ZERO_USAGE;
-  let finishReason: string | undefined;
-  // A terminal signal: either a candidate finishReason or a prompt-level block. Without one, the
-  // stream was truncated mid-flight and must not be reported as a clean stop.
-  let sawTerminal = false;
-  let blocked = false;
   let sdkStream: AsyncIterable<GeminiResponse>;
   try {
     sdkStream = await transport.stream(request, key);
@@ -452,23 +475,7 @@ async function* streamChunks(
   }
   try {
     for await (const response of sdkStream) {
-      if (response.usageMetadata) {
-        usage = mapUsage(response.usageMetadata);
-      }
-      if (isPromptBlocked(response.promptFeedback)) {
-        blocked = true;
-        sawTerminal = true;
-      }
-      const candidate = response.candidates?.[0];
-      if (candidate?.finishReason !== undefined) {
-        finishReason = candidate.finishReason;
-        sawTerminal = true;
-      }
-      for (const part of candidate?.content?.parts ?? []) {
-        for (const out of foldGeminiPart(part, state)) {
-          yield out;
-        }
-      }
+      yield* foldGeminiResponse(response, state);
     }
   } catch (err) {
     yield { type: 'error', error: geminiErrorToLlmError(err) };
@@ -476,11 +483,9 @@ async function* streamChunks(
   }
   const tail: StreamChunk[] = [];
   closeReasoning(state, tail);
-  for (const out of tail) {
-    yield out;
-  }
+  yield* tail;
   // No finishReason and no block → truncated stream; surface a retryable transport error.
-  if (!sawTerminal) {
+  if (!state.sawTerminal) {
     yield {
       type: 'error',
       error: makeLlmError({
@@ -491,10 +496,10 @@ async function* streamChunks(
     };
     return;
   }
-  const stopReason: StopReason = blocked
+  const stopReason: StopReason = state.blocked
     ? 'content_filter'
-    : mapStopReason(finishReason, state.hasToolCalls);
-  yield { type: 'stop', stopReason, usage };
+    : mapStopReason(state.finishReason, state.hasToolCalls);
+  yield { type: 'stop', stopReason, usage: state.usage };
 }
 
 // --- The adapter -----------------------------------------------------------------------------

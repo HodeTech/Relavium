@@ -435,7 +435,10 @@ function handleContentBlockStop(
   }
   // Carry both the accumulated signature and the redacted flag (asymmetry fix: non-streaming
   // mapContent already sets redacted; the stream must too — ADR-0030).
-  const end: Extract<StreamChunk, { type: 'reasoning_end' }> = { type: 'reasoning_end', id: reasoning.id };
+  const end: Extract<StreamChunk, { type: 'reasoning_end' }> = {
+    type: 'reasoning_end',
+    id: reasoning.id,
+  };
   if (reasoning.signature !== undefined) {
     end.signature = reasoning.signature;
   }

@@ -49,6 +49,31 @@ const okResponse = (): Response =>
     headers: { 'content-type': 'application/json' },
   });
 
+/** Build an SSE Response from a list of chunk objects (shared across the streaming describes). */
+const sse = (chunks: readonly unknown[]): Response =>
+  new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n', {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+
+/** A single chat-completion stream chunk wrapping the given choices. */
+const streamChunk = (choices: readonly unknown[]): Record<string, unknown> => ({
+  id: 's',
+  object: 'chat.completion.chunk',
+  created: 0,
+  model: 'gpt-4o',
+  choices,
+});
+
+/** A one-choice stream chunk with the given delta + finish reason. */
+const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
+  id: 's',
+  object: 'chat.completion.chunk',
+  created: 0,
+  model: 'gpt-4o',
+  choices: [{ index: 0, delta, finish_reason: finish }],
+});
+
 describe('OpenAI-compatible adapter', () => {
   it('exposes openai + deepseek ids with their capability surfaces', () => {
     expect(openaiAdapter.id).toBe('openai');
@@ -288,14 +313,6 @@ describe('OpenAI-compatible adapter — stream edge cases', () => {
     model: 'gpt-4o',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
-  const sse = (chunks: readonly unknown[]): Response =>
-    new Response(
-      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      },
-    );
 
   it('yields a single error chunk when the stream fails to start (429)', async () => {
     const adapter = createOpenAiAdapter({
@@ -373,21 +390,6 @@ describe('OpenAI-compatible adapter — additional fold + generate branches', ()
     model: 'gpt-4o',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
-  const sse = (chunks: readonly unknown[]): Response =>
-    new Response(
-      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      },
-    );
-  const streamChunk = (choices: readonly unknown[]): Record<string, unknown> => ({
-    id: 's',
-    object: 'chat.completion.chunk',
-    created: 0,
-    model: 'gpt-4o',
-    choices,
-  });
 
   it('emits a tool_call_delta when the first tool delta already carries arguments', async () => {
     const adapter = createOpenAiAdapter({
@@ -473,21 +475,6 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
     model: 'deepseek-chat',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
-  const sse = (chunks: readonly unknown[]): Response =>
-    new Response(
-      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      },
-    );
-  const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
-    id: 's',
-    object: 'chat.completion.chunk',
-    created: 0,
-    model: 'deepseek-chat',
-    choices: [{ index: 0, delta, finish_reason: finish }],
-  });
 
   it('folds DeepSeek reasoning_content into reasoning_start/delta/end before the text', async () => {
     const adapter = createOpenAiAdapter({
@@ -575,21 +562,6 @@ describe('OpenAI-compatible adapter — reasoning close edges', () => {
     model: 'deepseek-chat',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
-  const sse = (chunks: readonly unknown[]): Response =>
-    new Response(
-      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      },
-    );
-  const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
-    id: 's',
-    object: 'chat.completion.chunk',
-    created: 0,
-    model: 'deepseek-chat',
-    choices: [{ index: 0, delta, finish_reason: finish }],
-  });
 
   it('closes reasoning before a tool call', async () => {
     const adapter = createOpenAiAdapter({
@@ -674,6 +646,7 @@ describe('OpenAI-compatible adapter — baseURL SSRF guard', () => {
   });
 
   it('rejects a non-HTTPS base URL', () => {
+    // NOSONAR — the cleartext URL is the exact input under test; the assertion proves it is rejected.
     expect(() => createOpenAiAdapter({ baseURL: 'http://api.openai.com' })).toThrow(
       InvalidBaseUrlError,
     );
@@ -735,18 +708,6 @@ describe('OpenAI-compatible adapter — truncation + refusal normalization', () 
     model: 'gpt-4o',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
-  const sse = (chunks: readonly unknown[]): Response =>
-    new Response(
-      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
-      { status: 200, headers: { 'content-type': 'text/event-stream' } },
-    );
-  const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
-    id: 's',
-    object: 'chat.completion.chunk',
-    created: 0,
-    model: 'gpt-4o',
-    choices: [{ index: 0, delta, finish_reason: finish }],
-  });
 
   it('emits a transport error (not a clean stop) when a stream ends without finish_reason', async () => {
     const adapter = createOpenAiAdapter({
@@ -781,7 +742,8 @@ describe('OpenAI-compatible adapter — truncation + refusal normalization', () 
 
   it('drops an empty-string content delta (no zero-length text_delta)', async () => {
     const adapter = createOpenAiAdapter({
-      fetch: () => Promise.resolve(sse([dchunk({ content: '' }), dchunk({ content: 'real' }, 'stop')])),
+      fetch: () =>
+        Promise.resolve(sse([dchunk({ content: '' }), dchunk({ content: 'real' }, 'stop')])),
       maxRetries: 0,
     });
     const chunks = await collect(adapter.stream(REQ, 'k'));
