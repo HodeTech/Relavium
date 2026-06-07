@@ -646,10 +646,8 @@ describe('OpenAI-compatible adapter — baseURL SSRF guard', () => {
   });
 
   it('rejects a non-HTTPS base URL', () => {
-    // NOSONAR — the cleartext URL is the exact input under test; the assertion proves it is rejected.
-    expect(() => createOpenAiAdapter({ baseURL: 'http://api.openai.com' })).toThrow(
-      InvalidBaseUrlError,
-    );
+    const insecure = 'http://api.openai.com'; // NOSONAR — cleartext URL is the exact input under test
+    expect(() => createOpenAiAdapter({ baseURL: insecure })).toThrow(InvalidBaseUrlError);
   });
 
   it('rejects the cloud-metadata link-local address', () => {
