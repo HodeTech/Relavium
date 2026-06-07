@@ -15,31 +15,36 @@ risk/benefit favors waiting. None block a shipped milestone. Pick them up opport
 
 Severity is the review's verified rating. Check an item off in the PR that resolves it.
 
-> **2026-06-07 hardening pass:** the built-package items (shared / db / llm / root tooling / docs)
-> were re-verified against current code by a per-item review and **29 were resolved** (checked off
-> below). What remains open is **maintainer decisions** (`$ref`, branded ids, `LICENSE`, vision
-> image-arm, config strictness, turbo `inputs`, `engine-strict`), **blocked** work (live-nightly keys,
-> non-Anthropic pricing verification — needs the live pages), and **three explicitly deferred** items
-> (each annotated with why: the `z.unknown()` presence check, the dist packaging smoke test, and
-> local `format:check` via turbo).
+> **2026-06-07 hardening pass + maintainer decisions:** the built-package items (shared / db / llm /
+> root tooling / docs) were re-verified against current code and **29 were resolved**, then the seven
+> open decisions were ruled: **`$ref`** (keep the door open — schema now accepts the union, engine
+> resolves the file), **config strictness** (`.strict()`), **`engine-strict`** (enforce), **branded
+> ids** (plain strings stay — code-style note), and **turbo `inputs`** (keep the safe default) are all
+> settled and checked off. **Still open:** the **`LICENSE`** (HodeTech is drafting its own commercial
+> license), **first-class multimodal I/O** (decided as a direction — needs a design analysis + ADR +
+> seam amendment before code), **blocked** work (live-nightly keys, non-Anthropic pricing — needs the
+> live pages), and **three explicitly deferred** items (each annotated with why: the `z.unknown()`
+> presence check, the dist packaging smoke test, and local `format:check` via turbo).
 
 ## Decisions needed (maintainer call)
 
-- [ ] **Workflow `agents:` `$ref` support** — the
+- [x] **Workflow `agents:` `$ref` support** — the
   [workflow YAML spec](../../reference/contracts/workflow-yaml-spec.md) allows an `agents:`
-  entry to be a `$ref` to an external `.agent.yaml`, but `WorkflowSpecSchema.agents` accepts
-  inline `AgentSchema` only (and `.strict()` rejects a `$ref` entry). Decide: accept a `$ref`
-  union in `WorkflowSpecSchema.agents` (handling it in the duplicate-id `superRefine`;
-  ref-resolution stays the engine's job), or amend the spec to resolve external agents only via
-  a node's `agent_ref` + the registry. A product/contract decision. *(major→decision ·
-  workflow.ts:103)*
-- [ ] **Branded id types** — `runId`/`nodeId`/`gateId`/`workflowId`/`agentId` are all plain
-  `string`, mutually assignable across the platform. Introduce `z.string().brand<'RunId'>()`
-  etc. for ids that cross APIs, or record an ADR/code-style note that plain strings are a
-  deliberate choice. *(minor · packages/shared/src/run.ts, node.ts)*
-- [ ] **`LICENSE` file + root `license` field** — the public repo has neither. Add a
-  `LICENSE` matching HodeTech's intent (proprietary `UNLICENSED` or an OSS license) and set
-  the root `package.json` `"license"`. *(nit · package.json, repo root)*
+  entry to be a `$ref` to an external `.agent.yaml`, but `WorkflowSpecSchema.agents` accepted
+  inline `AgentSchema` only. **Decided (2026-06-07): keep the door open** — `agents:` now accepts
+  `z.union([AgentSchema, AgentRefSchema])` (`{ $ref }`, `.strict()`); the duplicate-id check skips
+  `$ref` entries; **file/path resolution + path-traversal/SSRF hardening stay the engine's job**
+  (the pure/sync shared schema never reads files). Code now matches the spec. *(workflow.ts)*
+- [x] **Branded id types** — `runId`/`nodeId`/`gateId`/`workflowId`/`agentId` are all plain
+  `string`. **Decided: plain strings stay** (deliberate) — recorded in
+  [code-style-typescript.md §Naming](../../standards/code-style-typescript.md); validation is at
+  the Zod boundary and branding adds cross-seam friction for little payoff. Revisit via an ADR if a
+  real id-mixup bug class appears. *(minor · packages/shared/src/run.ts, node.ts)*
+- [ ] **`LICENSE` file + root `license` field** — the public repo has neither.
+  **Decided (2026-06-07): HodeTech will author its own commercial/proprietary license** — left open
+  until that license text is drafted (do NOT drop in an `UNLICENSED`/OSS placeholder in the
+  meantime). When ready, add the `LICENSE` file + the root `package.json` `"license"` string.
+  *(nit → pending the drafted license · package.json, repo root)*
 - [x] **`node:started.nodeType` enum vs free string** — currently an unconstrained
   `nonEmptyString`. Decide whether the SSE event should carry the engine node-type enum
   (add `ENGINE_NODE_TYPES` to constants and `z.enum(...)`) or stay free-string for
@@ -52,16 +57,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `packages/*` library base with `composite: true` + `references` (db → shared) and build via
   `tsc -b`, or record that turbo `^build`-ordering is the deliberate final design and update
   the 0.B callout. *(minor · tsconfig.base.json, packages/*/tsconfig.json)*
-- [ ] **`CapabilityFlags.vision` advertised but no canonical image channel** — `vision: true` is
-  set for Anthropic / OpenAI / Gemini, yet `ContentPart` ([content.ts](../../packages/shared/src/content.ts))
-  has no `image` arm, so an image can only reach a provider through the `providerOptions` escape
-  hatch in a vendor-specific shape — never the canonical seam. Decide before any consumer relies on
-  the flag: add a first-class `image` `ContentPart` arm via a seam-shape amendment (the ADR-0030
-  move that made `reasoning` first-class because it is cross-provider — vision is equally
-  cross-provider), **or** record explicitly that vision stays a `providerOptions`-only feature and
-  the flag means "provider-capable", not "sendable through a canonical part". Surfaced by the PR #9
-  comprehensive review. *(review→decision · content.ts; the three adapters' `*_SUPPORTS`;
-  [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md))*
+- [ ] **First-class multimodal I/O (the `vision` flag is only the tip)** — `vision: true` is set for
+  Anthropic / OpenAI / Gemini, yet `ContentPart` ([content.ts](../../packages/shared/src/content.ts))
+  has no media arm, so media can only reach a provider through the `providerOptions` escape hatch in
+  a vendor-specific shape — never the canonical seam. **Decided (2026-06-07): multimodal is a
+  first-class seam capability, NOT providerOptions-only.** Whatever a model the user connects to
+  accepts/returns — image, audio, **video** — must be expressible through the seam **both as input
+  and output** (e.g. a workflow that, by rule, produces an image/video/audio file). This is an
+  **ADR-0030-style seam amendment + a design analysis** before any code, covering: canonical media
+  `ContentPart` arm(s) (base64 vs URL/handle + media-type + size), **output** media return + storage,
+  per-provider/per-modality capability flags (replace the single `vision` bool), per-adapter
+  normalization, **media-transfer security** (where bytes live, redaction in events/logs, managed-mode
+  egress, path-traversal), and cost/usage accounting. Land the analysis + ADR first; then the seam
+  shape; then per-adapter support behind the new capability flags. *(decided → analysis + ADR ·
+  content.ts; the adapters' `*_SUPPORTS`; [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md))*
 
 ## Schema / validation hardening
 
@@ -85,13 +94,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   provider's real range in the `@relavium/llm` adapter (Phase 1, where request validation
   lives) so a `provider: anthropic` + `temperature > 1` agent fails fast — without coupling the
   shared contract to a provider's current API limit. *(review · agent.ts, common.ts)*
-- [ ] **Config-schema strictness parity** — `GlobalConfigSchema` / `ProjectConfigSchema` /
-  `ChatConfigSchema` are **not** `.strict()`, so a typo in a committed `config.toml` /
-  `project.toml` key is silently dropped — asymmetric with the authored-YAML strictness
-  ([ADR-0023](../decisions/0023-strict-authored-yaml-validation.md)). Decide whether the
-  committed config formats should fail loudly on an unknown key (cheap to land pre-coding, no
-  config files exist yet) and apply `.strict()` if so, or record the leniency as deliberate.
-  Pre-existing; out of 1.L.0's additive scope. *(minor · packages/shared/src/config.ts)*
+- [x] **Config-schema strictness parity** — `GlobalConfigSchema` / `ProjectConfigSchema` /
+  `ChatConfigSchema` were **not** `.strict()`, so a typo in a committed `config.toml` /
+  `project.toml` key was silently dropped — asymmetric with the authored-YAML strictness
+  ([ADR-0023](../decisions/0023-strict-authored-yaml-validation.md)). **Decided: fail loud** — all
+  three (and their nested `preferences`/`defaults` objects) are now `.strict()`; a typo'd config key
+  is rejected at parse. *(minor · packages/shared/src/config.ts)*
 - [x] **Codify `ContentPart` / `StopReason` canonical home in the seam doc** — both are intended
   to be **owned by `@relavium/shared`** and re-exported by the `@relavium/llm` seam, never imported
   by shared from llm (which would invert the package dependency). `StopReason` already lives in
@@ -158,9 +166,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## Tooling / CI
 
-- [ ] **Turbo task `inputs`** — `lint`/`typecheck`/`test` declare no `inputs`, so turbo hashes
-  every file (over-invalidation). Scope inputs to the files each task reads (kept as the safe
-  default for now to avoid cache-staleness risk). *(minor · turbo.json:19-30)*
+- [x] **Turbo task `inputs`** — `lint`/`typecheck`/`test` declare no `inputs`, so turbo hashes every
+  file (over-invalidation). **Decided: keep the safe default (hash-all)** — scoping `inputs` risks a
+  stale-cache *false pass* (a changed file outside the input set served as "cached green"), which is
+  worse than slower cache. Recorded as deliberate; revisit if CI cache time becomes a real cost.
+  *(minor · turbo.json:19-30)*
 - [x] **`incremental` tsconfig** — no `.tsbuildinfo` reuse; every `tsc` recompiles from scratch.
   Add `incremental: true` (gitignored `tsBuildInfoFile`, listed in turbo `outputs`). *(minor · tsconfig.base.json)*
 - [x] **Typecheck the config files** — root/package-root `*.config.ts` (drizzle/vitest) are
@@ -170,9 +180,9 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   same-repo branch push and its open PR still run CI under separate groups. Consider
   `group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}` to collapse them.
   *(minor · ci.yml:19-27)*
-- [ ] **`engine-strict=true`** — `engines` is advisory; add `engine-strict=true` to `.npmrc` so
-  an unsupported Node/pnpm fails install fast. (Weighed against breaking fresh checkouts on a
-  slightly-off Node — decide deliberately.) *(minor · .npmrc, package.json)*
+- [x] **`engine-strict=true`** — `engines` was advisory. **Decided: enforce** — `engine-strict=true`
+  added to `.npmrc`, so an unsupported Node/pnpm fails install fast (clear message) instead of
+  surfacing as confusing errors later. *(minor · .npmrc, package.json)*
 - [ ] **Local `format:check` via turbo** — CI now runs `turbo run format:check`; consider routing
   the root `format:check` npm script through turbo too so local + CI share the cache. *(minor · package.json:21)*
   **Deferred 2026-06-07:** low-value cache nit that needs a task rename to avoid turbo recursion
