@@ -369,8 +369,8 @@ function isPrivateOrLocalHost(host: string): boolean {
     // cannot slip past as a "non-loopback" IPv6.
     const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
     if (embeddedHex !== null) {
-      const hi = parseInt(embeddedHex[1] ?? '', 16);
-      const lo = parseInt(embeddedHex[2] ?? '', 16);
+      const hi = Number.parseInt(embeddedHex[1] ?? '', 16);
+      const lo = Number.parseInt(embeddedHex[2] ?? '', 16);
       return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
     }
     const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
