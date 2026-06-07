@@ -2,16 +2,16 @@
 
 > Status: Living
 
-> Last updated: 2026-06-04
+> Last updated: 2026-06-07
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
 A holding pen so confirmed-but-deferred findings don't get lost. Every item here was
-**adversarially confirmed** by the Phase-0 comprehensive review (97-agent workflow) but
-was deliberately **not** fixed in that pass — either because it needs a maintainer decision,
-is below the Phase-0 bar, or is an optimization whose risk/benefit favors waiting. None
-block any Phase-0 exit criterion. Pick them up opportunistically (most fit naturally into
-the Phase-1 work that first touches the file) or in a dedicated hardening pass.
+**adversarially confirmed** by a comprehensive review (the Phase-0 97-agent workflow, or a
+later per-PR review pass) but was deliberately **not** fixed in that pass — either because it
+needs a maintainer decision, is below the bar for its pass, or is an optimization whose
+risk/benefit favors waiting. None block a shipped milestone. Pick them up opportunistically
+(most fit naturally into the work that first touches the file) or in a dedicated hardening pass.
 
 Severity is the review's verified rating. Check an item off in the PR that resolves it.
 
@@ -44,6 +44,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `packages/*` library base with `composite: true` + `references` (db → shared) and build via
   `tsc -b`, or record that turbo `^build`-ordering is the deliberate final design and update
   the 0.B callout. *(minor · tsconfig.base.json, packages/*/tsconfig.json)*
+- [ ] **`CapabilityFlags.vision` advertised but no canonical image channel** — `vision: true` is
+  set for Anthropic / OpenAI / Gemini, yet `ContentPart` ([content.ts](../../packages/shared/src/content.ts))
+  has no `image` arm, so an image can only reach a provider through the `providerOptions` escape
+  hatch in a vendor-specific shape — never the canonical seam. Decide before any consumer relies on
+  the flag: add a first-class `image` `ContentPart` arm via a seam-shape amendment (the ADR-0030
+  move that made `reasoning` first-class because it is cross-provider — vision is equally
+  cross-provider), **or** record explicitly that vision stays a `providerOptions`-only feature and
+  the flag means "provider-capable", not "sendable through a canonical part". Surfaced by the PR #9
+  comprehensive review. *(review→decision · content.ts; the three adapters' `*_SUPPORTS`;
+  [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md))*
 
 ## Schema / validation hardening
 
@@ -151,6 +161,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   slightly-off Node — decide deliberately.) *(minor · .npmrc, package.json)*
 - [ ] **Local `format:check` via turbo** — CI now runs `turbo run format:check`; consider routing
   the root `format:check` npm script through turbo too so local + CI share the cache. *(minor · package.json:21)*
+- [ ] **Enable the live-nightly conformance lane** — the per-provider conformance suite runs in
+  fixture mode on every PR, but the scheduled live-API lane is still reserved/commented in `ci.yml`
+  (the "enable with the first provider adapter" TODO), and the adapters have now landed (PR #9, M1).
+  `1.J` accepted M1 with the live lane **explicitly pending keys**; to actually exercise it,
+  uncomment the `schedule:` lane and add the provider API keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
+  / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY`) as CI secrets. Until then live coverage is a known gap.
+  *(minor → keys · ci.yml, packages/llm/src/conformance/*.conformance.test.ts)*
 
 ## Docs
 
