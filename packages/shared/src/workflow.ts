@@ -103,7 +103,32 @@ export const WorkflowInputSchema = z
     description: z.string().optional(),
     validation: InputValidationSchema.optional(),
   })
-  .strict();
+  .strict()
+  // Per-type validation-key compatibility (workflow-yaml-spec.md): a numeric bound on a string, or a
+  // *_length on a number, is an authored mistake — reject it. (Bound-ordering is on InputValidationSchema.)
+  .superRefine((input, ctx) => {
+    if (!input.validation) {
+      return;
+    }
+    const KEYS_BY_TYPE: Record<z.infer<typeof InputTypeSchema>, readonly string[]> = {
+      number: ['min', 'max', 'enum'],
+      string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+      file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+      code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+      secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+      boolean: [],
+    };
+    const allowed = KEYS_BY_TYPE[input.type];
+    for (const key of Object.keys(input.validation)) {
+      if (!allowed.includes(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `validation key '${key}' is not allowed for input type '${input.type}'`,
+          path: ['validation', key],
+        });
+      }
+    }
+  });
 export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
 
 /** A shared variable exposed as `{{ctx.key}}`. */

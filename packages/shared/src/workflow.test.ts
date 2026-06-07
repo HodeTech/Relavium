@@ -397,4 +397,37 @@ describe('WorkflowSchema', () => {
       ),
     ).toBe(false);
   });
+
+  it('rejects a validation key incompatible with the input type', () => {
+    // a numeric `min` on a string, or a string-y `format` on a number, is an authored mistake
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 's', type: 'string', validation: { min: 0 } }] })),
+    ).toBe(false);
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { format: 'email' } }] }),
+      ),
+    ).toBe(false);
+    // a *_length on a number is also wrong
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { max_length: 5 } }] }),
+      ),
+    ).toBe(false);
+  });
+
+  it('accepts type-appropriate validation keys', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [{ name: 's', type: 'string', validation: { pattern: '^a+$', max_length: 5 } }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { min: 0, max: 9 } }] }),
+      ),
+    ).toBe(true);
+  });
 });
