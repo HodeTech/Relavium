@@ -51,6 +51,7 @@ describe('config schemas', () => {
       GlobalConfigSchema.safeParse({ preferences: { theme: 'dark', themer: 'x' } }).success,
     ).toBe(false); // nested typo
     expect(ProjectConfigSchema.safeParse({ varaibles: { a: '1' } }).success).toBe(false);
+    expect(ProjectConfigSchema.safeParse({ defaults: { modell: 'x' } }).success).toBe(false); // nested defaults typo
     expect(
       ProjectConfigSchema.safeParse({ chat: { default_model: 'm', maxx_messages: 1 } }).success,
     ).toBe(false); // [chat] typo

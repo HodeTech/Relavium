@@ -31,6 +31,8 @@ export const McpServerRegistrationSchema = z
     url: z.string().url().optional(),
     env: z.record(z.string(), z.string()).optional(),
   })
+  // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — ADR-0023 parity with the rest of this file.
+  .strict()
   .superRefine((server, ctx) => {
     if (server.transport === 'stdio' && !server.command) {
       ctx.addIssue({
