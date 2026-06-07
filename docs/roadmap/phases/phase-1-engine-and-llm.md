@@ -8,7 +8,7 @@
 > **seam-shape amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
 > (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) landed
 > in **PR #9** (2026-06-07) — **🎯 M1 (LLM seam proven) is reached.** All three adapters pass one shared
-> conformance suite in fixture mode (live nightly reserved, pending keys); no vendor type crosses the
+> conformance suite in fixture mode (live-nightly lane reserved/pending keys); no vendor type crosses the
 > seam. **Next:** **1.K** (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral
 > reasoning signature when failing over** to another provider) ‖ the **1.L** engine parser, converging
 > at the **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning
