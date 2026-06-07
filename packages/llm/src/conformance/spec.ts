@@ -29,8 +29,9 @@ export interface ConformanceExpectations {
   readonly toolStream: { toolName: string; stopReason: StopReason };
   /** The classified kind a mid-stream `error` event should yield. */
   readonly streamErrorKind: LlmErrorKind;
-  /** Reasoning a thinking model streams (ADR-0030) — only providers that emit reasoning supply this. */
-  readonly reasoningStream?: { text: string };
+  /** Reasoning a thinking model streams (ADR-0030) — only providers that emit reasoning supply this.
+   * `reasoningTokens` is the count the terminal `stop` chunk must surface (observability; ADR-0030). */
+  readonly reasoningStream?: { text: string; reasoningTokens?: number };
   /** The JSON text a model returns under `responseFormat: json` (ADR-0030) — providers that support it. */
   readonly structuredOutput?: { text: string };
 }
@@ -208,12 +209,8 @@ export function defineConformanceSuite(
           return; // narrow for skipIf
         }
         const chunks = await collect(makeReplayAdapter(recorded).stream(TEXT_REQUEST, KEY));
-        expect(chunks.find((chunk) => chunk.type === 'reasoning_start')?.type).toBe(
-          'reasoning_start',
-        );
-        expect(chunks.find((chunk) => chunk.type === 'reasoning_delta')?.type).toBe(
-          'reasoning_delta',
-        );
+        expect(chunks.some((chunk) => chunk.type === 'reasoning_start')).toBe(true);
+        expect(chunks.some((chunk) => chunk.type === 'reasoning_delta')).toBe(true);
         const types = chunks.map((chunk) => chunk.type);
         expect(types.lastIndexOf('reasoning_end')).toBeGreaterThanOrEqual(0);
         expect(types.lastIndexOf('reasoning_end')).toBeLessThan(types.indexOf('stop'));
@@ -222,6 +219,15 @@ export function defineConformanceSuite(
             .map((chunk) => (chunk.type === 'reasoning_delta' ? chunk.text : ''))
             .join('');
           expect(text).toBe(expected.reasoningStream.text);
+        }
+        // The terminal stop must surface the reasoning-token count (ADR-0030 observability) — this is
+        // what catches a streaming-usage merge that drops reasoningTokens (e.g. the Anthropic message_delta).
+        if (expected.reasoningStream?.reasoningTokens !== undefined) {
+          const stop = chunks.at(-1);
+          expect(stop?.type).toBe('stop');
+          if (stop?.type === 'stop') {
+            expect(stop.usage.reasoningTokens).toBe(expected.reasoningStream.reasoningTokens);
+          }
         }
       },
     );

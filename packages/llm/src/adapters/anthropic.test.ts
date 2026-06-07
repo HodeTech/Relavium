@@ -413,12 +413,14 @@ describe('AnthropicAdapter — stream edge cases', () => {
       ev('message_delta', {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn', stop_sequence: null },
-        // cumulative usage the SDK delivers on the delta — must reach the stop chunk
+        // cumulative usage the SDK delivers on the delta — must reach the stop chunk, including the
+        // authoritative thinking count carried in output_tokens_details (ADR-0030).
         usage: {
           input_tokens: 10,
           output_tokens: 5,
           cache_read_input_tokens: 8,
           cache_creation_input_tokens: 3,
+          output_tokens_details: { thinking_tokens: 4 },
         },
       }) +
       ev('message_stop', { type: 'message_stop' }) +
@@ -436,8 +438,88 @@ describe('AnthropicAdapter — stream edge cases', () => {
         outputTokens: 5,
         cacheReadTokens: 8,
         cacheWriteTokens: 3,
+        reasoningTokens: 4, // read from the message_delta's output_tokens_details, not dropped
       });
     }
+  });
+
+  it('emits a transport error (not a clean stop) when the stream ends before message_delta', async () => {
+    // A stream cut after some content but before the terminal message_delta — must surface as an
+    // error, never a successful stop that hides the truncation.
+    const body =
+      ev('message_start', {
+        type: 'message_start',
+        message: {
+          id: 'm',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 1 },
+        },
+      }) +
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }) +
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'partial' },
+      }) +
+      '\n';
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(sse(body)),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.kind).toBe('transport');
+      expect(last.error.retryable).toBe(true);
+    }
+  });
+
+  it('carries the redacted flag onto a streamed reasoning_end (asymmetry fix)', async () => {
+    const body =
+      ev('message_start', {
+        type: 'message_start',
+        message: {
+          id: 'm',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 1 },
+        },
+      }) +
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'redacted_thinking', data: 'opaque' },
+      }) +
+      ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
+      ev('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 3 },
+      }) +
+      ev('message_stop', { type: 'message_stop' }) +
+      '\n';
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(sse(body)),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const end = chunks.find((c) => c.type === 'reasoning_end');
+    expect(end).toMatchObject({ type: 'reasoning_end', redacted: true });
   });
 });
 

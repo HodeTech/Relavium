@@ -222,7 +222,9 @@ const reasoningStream = sse([
     {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { output_tokens: 9 },
+      // The terminal message_delta carries the authoritative cumulative thinking count in
+      // output_tokens_details — the real wire shape the streaming usage merge must read (ADR-0030).
+      usage: { output_tokens: 9, output_tokens_details: { thinking_tokens: 4 } },
     },
   ],
   ['message_stop', { type: 'message_stop' }],
@@ -255,7 +257,7 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
     textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
-    reasoningStream: { text: 'let me think' },
+    reasoningStream: { text: 'let me think', reasoningTokens: 4 },
     structuredOutput: { text: '{"ok":true}' },
   },
 };

@@ -226,6 +226,18 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     expect(request.config['cachedContent']).toBe('abc'); // escape-hatch field
     expect(request.config['temperature']).toBe(0.1); // mapped field wins over providerOptions
   });
+
+  it('strips httpOptions from providerOptions to prevent SSRF via baseUrl redirect', () => {
+    const request = buildGeminiRequest({
+      ...REQ,
+      providerOptions: {
+        httpOptions: { baseUrl: 'https://attacker.example' },
+        cachedContent: 'kept',
+      },
+    });
+    expect(request.config['httpOptions']).toBeUndefined();
+    expect(request.config['cachedContent']).toBe('kept'); // only transport keys are stripped
+  });
 });
 
 describe('Gemini adapter — generate / stream via injected transport', () => {
@@ -357,10 +369,10 @@ describe('Gemini adapter — reasoning + structured output (ADR-0030)', () => {
     expect(request.config['responseJsonSchema']).toEqual({ type: 'object' });
   });
 
-  it('mapUsage surfaces thoughtsTokenCount as reasoningTokens', () => {
+  it('mapUsage adds thoughtsTokenCount into outputTokens (Gemini bills them separately)', () => {
     expect(
       mapUsage({ promptTokenCount: 10, candidatesTokenCount: 20, thoughtsTokenCount: 6 }),
-    ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 6 });
+    ).toEqual({ inputTokens: 10, outputTokens: 26, reasoningTokens: 6 });
   });
 
   it('stream folds thought parts into reasoning_start/delta/end (signature) then text', async () => {
@@ -386,6 +398,7 @@ describe('Gemini adapter — reasoning + structured output (ADR-0030)', () => {
     const types = chunks.map((c) => c.type);
     expect(types.indexOf('reasoning_end')).toBeLessThan(types.indexOf('text_delta'));
     const stop = chunks.at(-1);
+    expect(stop?.type).toBe('stop');
     if (stop?.type === 'stop') {
       expect(stop.usage.reasoningTokens).toBe(2);
     }
@@ -420,6 +433,70 @@ describe('Gemini adapter — reasoning close edges', () => {
       createGeminiAdapter({ transport: fakeTransport(r, [r]) }).stream(REQ, 'k'),
     );
     expect(chunks.some((c) => c.type === 'reasoning_end')).toBe(true);
+    expect(chunks.at(-1)?.type).toBe('stop');
+  });
+});
+
+describe('Gemini adapter — usage, truncation, refusal, malformed tool (review fixes)', () => {
+  it('mapUsage adds toolUsePromptTokenCount to input (disjoint from prompt tokens)', () => {
+    expect(
+      mapUsage({ promptTokenCount: 10, candidatesTokenCount: 4, toolUsePromptTokenCount: 6 }),
+    ).toEqual({ inputTokens: 16, outputTokens: 4 });
+  });
+
+  it('emits a transport error when a stream ends without a finishReason (truncated)', async () => {
+    const r: GeminiResponse = { candidates: [{ content: { parts: [{ text: 'partial' }] } }] };
+    const chunks = await collect(
+      createGeminiAdapter({ transport: fakeTransport(r, [r]) }).stream(REQ, 'k'),
+    );
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.kind).toBe('transport');
+      expect(last.error.retryable).toBe(true);
+    }
+  });
+
+  it('maps a blocked-prompt generate (no candidate + promptFeedback) to content_filter', async () => {
+    const r: GeminiResponse = { promptFeedback: { blockReason: 'SAFETY' } };
+    const result = await createGeminiAdapter({ transport: fakeTransport(r) }).generate(REQ, 'k');
+    expect(result.content).toEqual([]);
+    expect(result.stopReason).toBe('content_filter');
+  });
+
+  it('maps a blocked-prompt stream to a content_filter stop (terminal, not truncation)', async () => {
+    const r: GeminiResponse = { promptFeedback: { blockReason: 'SAFETY' } };
+    const chunks = await collect(
+      createGeminiAdapter({ transport: fakeTransport(r, [r]) }).stream(REQ, 'k'),
+    );
+    const stop = chunks.at(-1);
+    expect(stop?.type).toBe('stop');
+    if (stop?.type === 'stop') {
+      expect(stop.stopReason).toBe('content_filter');
+    }
+  });
+
+  it('treats BLOCKED_REASON_UNSPECIFIED as NOT blocked (the sentinel is not a real block)', async () => {
+    // A normal response that happens to carry the unspecified sentinel must not be mis-mapped to
+    // content_filter. Here it rides alongside a real candidate.
+    const r: GeminiResponse = {
+      candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      promptFeedback: { blockReason: 'BLOCKED_REASON_UNSPECIFIED' },
+    };
+    const result = await createGeminiAdapter({ transport: fakeTransport(r) }).generate(REQ, 'k');
+    expect(result.stopReason).toBe('stop');
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+  });
+
+  it('skips a nameless functionCall in a stream (no invalid name:"" tool_call_start)', async () => {
+    const r: GeminiResponse = {
+      candidates: [{ content: { parts: [{ functionCall: { args: {} } }] }, finishReason: 'STOP' }],
+    };
+    const chunks = await collect(
+      createGeminiAdapter({ transport: fakeTransport(r, [r]) }).stream(REQ, 'k'),
+    );
+    expect(chunks.some((c) => c.type === 'tool_call_start')).toBe(false);
     expect(chunks.at(-1)?.type).toBe('stop');
   });
 });

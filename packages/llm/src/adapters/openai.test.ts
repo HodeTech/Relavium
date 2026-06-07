@@ -1,6 +1,7 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import { describe, expect, it } from 'vitest';
 
+import { InvalidBaseUrlError } from '../errors.js';
 import type { StreamChunk } from '../types.js';
 import {
   createOpenAiAdapter,
@@ -546,6 +547,27 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
       json_schema: { name: 'out', schema: { type: 'object' }, strict: true },
     });
   });
+
+  it('lowers responseFormat json to json_object for DeepSeek (json_schema 400s there)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'deepseek-chat',
+        responseFormat: { type: 'json', schema: { type: 'object' }, name: 'out' },
+        messages: REQ.messages,
+      },
+      'k',
+    );
+    expect(sent['response_format']).toEqual({ type: 'json_object' });
+  });
 });
 
 describe('OpenAI-compatible adapter — reasoning close edges', () => {
@@ -643,5 +665,158 @@ describe('OpenAI-compatible adapter — robustness (review fixes)', () => {
       kind: 'bad_request',
       code: 'invalid_request',
     });
+  });
+});
+
+describe('OpenAI-compatible adapter — baseURL SSRF guard', () => {
+  it('accepts a public HTTPS base URL', () => {
+    expect(() => createOpenAiAdapter({ baseURL: 'https://api.openai.com/v1' })).not.toThrow();
+  });
+
+  it('rejects a non-HTTPS base URL', () => {
+    expect(() => createOpenAiAdapter({ baseURL: 'http://api.openai.com' })).toThrow(
+      InvalidBaseUrlError,
+    );
+  });
+
+  it('rejects the cloud-metadata link-local address', () => {
+    expect(() => createOpenAiAdapter({ baseURL: 'https://169.254.169.254/latest' })).toThrow(
+      InvalidBaseUrlError,
+    );
+  });
+
+  it('rejects loopback and RFC-1918 private ranges', () => {
+    for (const url of [
+      'https://localhost:8080',
+      'https://127.0.0.1',
+      'https://10.0.0.5',
+      'https://192.168.1.1',
+      'https://172.16.0.1',
+      'https://172.31.255.255',
+      'https://service.internal',
+      'https://0.0.0.0',
+    ]) {
+      expect(() => createOpenAiAdapter({ baseURL: url })).toThrow(InvalidBaseUrlError);
+    }
+  });
+
+  it('rejects evasions the URL parser normalizes (userinfo, decimal IP, trailing dot, IPv6)', () => {
+    for (const url of [
+      'https://evil.com@169.254.169.254/latest', // userinfo trick — real host is the metadata IP
+      'https://2130706433/', // decimal-encoded 127.0.0.1
+      'https://0x7f000001/', // hex-encoded 127.0.0.1
+      'https://0177.0.0.1/', // octal-encoded 127.0.0.1
+      'https://127.0.0.1./', // trailing-dot loopback
+      'https://LOCALHOST/', // case-variant localhost
+      'https://[::1]/', // IPv6 loopback
+      'https://[::ffff:127.0.0.1]/', // IPv4-mapped IPv6 loopback
+      'https://[fd00::1]/', // IPv6 unique-local
+      'https://[fe80::1]/', // IPv6 link-local
+    ]) {
+      expect(() => createOpenAiAdapter({ baseURL: url })).toThrow(InvalidBaseUrlError);
+    }
+  });
+
+  it('accepts an uppercase HTTPS scheme (normalized) and a public host', () => {
+    expect(() => createOpenAiAdapter({ baseURL: 'HTTPS://API.OPENAI.COM/v1' })).not.toThrow();
+  });
+
+  it('does not reject the safe public 172.x range outside 16–31', () => {
+    expect(() => createOpenAiAdapter({ baseURL: 'https://172.32.0.1' })).not.toThrow();
+  });
+
+  it('does not validate the built-in DeepSeek default (no caller baseURL)', () => {
+    expect(() => createOpenAiAdapter({ providerId: 'deepseek' })).not.toThrow();
+  });
+});
+
+describe('OpenAI-compatible adapter — truncation + refusal normalization', () => {
+  const REQ = {
+    model: 'gpt-4o',
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+  };
+  const sse = (chunks: readonly unknown[]): Response =>
+    new Response(
+      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+  const dchunk = (delta: unknown, finish: string | null = null): Record<string, unknown> => ({
+    id: 's',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: 'gpt-4o',
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+
+  it('emits a transport error (not a clean stop) when a stream ends without finish_reason', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.resolve(sse([dchunk({ content: 'partial' }, null)])),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks.some((c) => c.type === 'text_delta')).toBe(true);
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.kind).toBe('transport');
+      expect(last.error.retryable).toBe(true);
+    }
+  });
+
+  it('normalizes a streamed refusal to a content_filter stop', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          sse([dchunk({ role: 'assistant', refusal: "I can't help with that" }, 'stop')]),
+        ),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const stop = chunks.at(-1);
+    expect(stop?.type).toBe('stop');
+    if (stop?.type === 'stop') {
+      expect(stop.stopReason).toBe('content_filter');
+    }
+  });
+
+  it('drops an empty-string content delta (no zero-length text_delta)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.resolve(sse([dchunk({ content: '' }), dchunk({ content: 'real' }, 'stop')])),
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const textDeltas = chunks.filter((c) => c.type === 'text_delta');
+    expect(textDeltas).toHaveLength(1);
+    expect(textDeltas[0]).toMatchObject({ text: 'real' });
+  });
+
+  it('normalizes a non-streaming refusal to a content_filter stop', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'c',
+              object: 'chat.completion',
+              created: 0,
+              model: 'gpt-4o',
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: null, refusal: "I won't do that" },
+                  finish_reason: 'stop',
+                  logprobs: null,
+                },
+              ],
+              usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      maxRetries: 0,
+    });
+    const result = await adapter.generate(REQ, 'k');
+    expect(result.content).toEqual([]);
+    expect(result.stopReason).toBe('content_filter');
   });
 });

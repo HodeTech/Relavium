@@ -48,6 +48,28 @@ const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/**
+ * True when the prompt was actually blocked. Gemini's `blockReason` enum includes the
+ * `BLOCKED_REASON_UNSPECIFIED` sentinel that does **not** mean "blocked" — treat only a real,
+ * specified reason as a content-filter block.
+ */
+function isPromptBlocked(promptFeedback: { blockReason?: string } | undefined): boolean {
+  const reason = promptFeedback?.blockReason;
+  return reason !== undefined && reason !== 'BLOCKED_REASON_UNSPECIFIED';
+}
+
+/** Remove transport-level keys that the SDK exposes for URL/header override — SSRF guard. */
+function stripTransportKeys(opts: Record<string, unknown>): Record<string, unknown> {
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(opts)) {
+    // `httpOptions.baseUrl`/`headers` would redirect egress (and the API key) to an arbitrary host.
+    if (k !== 'httpOptions') {
+      rest[k] = v;
+    }
+  }
+  return rest;
+}
+
 // --- Structural views of the SDK shapes (so the fold + conformance stay vendor-type-free) -------
 
 /** The subset of a Gemini `functionCall` part the fold reads. */
@@ -67,11 +89,14 @@ interface GeminiPart {
 /** The subset of a `GenerateContentResponse` the fold reads (the real SDK type satisfies this). */
 export interface GeminiResponse {
   candidates?: Array<{ content?: { parts?: GeminiPart[] }; finishReason?: string }>;
+  // Present (with a blockReason) when the prompt itself is blocked and no candidate is produced.
+  promptFeedback?: { blockReason?: string };
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     cachedContentTokenCount?: number;
     thoughtsTokenCount?: number;
+    toolUsePromptTokenCount?: number;
   };
 }
 
@@ -116,23 +141,34 @@ export function mapStopReason(reason: string | undefined, hasToolCalls: boolean)
   }
 }
 
-/** Map Gemini usage to the canonical **NET** `Usage`: `promptTokenCount` includes cached content. */
+/**
+ * Map Gemini usage to the canonical **NET** `Usage`. Per the `GenerateContentResponseUsageMetadata`
+ * contract (the `generateContent`/`generateContentStream` shape this adapter consumes),
+ * `totalTokenCount = promptTokenCount + candidatesTokenCount + toolUsePromptTokenCount + thoughtsTokenCount`
+ * — the four are **disjoint additive** terms (unlike Anthropic/OpenAI, where thinking is already inside
+ * output). `promptTokenCount` includes cached content (subtracted out for NET input).
+ */
 export function mapUsage(usage: {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
   cachedContentTokenCount?: number;
   thoughtsTokenCount?: number;
+  toolUsePromptTokenCount?: number;
 }): Usage {
   const cached = usage.cachedContentTokenCount ?? 0;
+  const thinking = usage.thoughtsTokenCount ?? 0;
   const out: Usage = {
-    inputTokens: Math.max(0, (usage.promptTokenCount ?? 0) - cached),
-    outputTokens: usage.candidatesTokenCount ?? 0,
+    // Tool-use prompt tokens are input-priced and disjoint from promptTokenCount — include them so
+    // input is not undercounted on grounded/tool-use calls.
+    inputTokens:
+      Math.max(0, (usage.promptTokenCount ?? 0) - cached) + (usage.toolUsePromptTokenCount ?? 0),
+    // Thinking tokens are billed separately from candidates — sum both to match totalTokenCount (ADR-0030).
+    outputTokens: (usage.candidatesTokenCount ?? 0) + thinking,
   };
   if (cached > 0) {
     out.cacheReadTokens = cached;
   }
-  // Thinking tokens are already inside candidatesTokenCount (billing unchanged); surface only (ADR-0030).
-  const thinking = usage.thoughtsTokenCount ?? 0;
+  // Surface the thinking subset for observability (ADR-0030); already included in outputTokens above.
   if (thinking > 0) {
     out.reasoningTokens = thinking;
   }
@@ -289,9 +325,18 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   if (isAbortSignal(req.signal)) {
     config['abortSignal'] = req.signal;
   }
-  // The typed escape hatch (1.D): caller-supplied Gemini config the common path doesn't model. The
-  // mapped fields are applied AFTER, so they always win over providerOptions.
-  const merged = req.providerOptions === undefined ? config : { ...req.providerOptions, ...config };
+  // The typed escape hatch (1.D): caller-supplied Gemini config the common path doesn't model.
+  // Strip httpOptions before the merge: a caller-supplied httpOptions.baseUrl is forwarded verbatim
+  // to the SDK's patchHttpOptions path, which would redirect the request — and the real API key —
+  // to an attacker-controlled URL (SSRF). Transport-level config is never safe to forward from an
+  // untrusted providerOptions payload.
+  const merged =
+    req.providerOptions === undefined
+      ? config
+      : {
+          ...stripTransportKeys(req.providerOptions),
+          ...config, // mapped fields win
+        };
   return { model: req.model, contents: toGeminiContents(req.messages), config: merged };
 }
 
@@ -342,8 +387,14 @@ function closeReasoning(state: GeminiStreamState, out: StreamChunk[]): void {
 function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk[] {
   const out: StreamChunk[] = [];
   if (part.functionCall !== undefined) {
-    closeReasoning(state, out);
     const name = part.functionCall.name ?? '';
+    if (name.length === 0) {
+      // A functionCall with no name can't form a valid (nonEmptyString) tool_call chunk — skip it,
+      // matching the OpenAI stream guard. (The non-streaming path is stricter: normalizeToolCall
+      // throws on an empty name; in a stream we drop the malformed part and continue.)
+      return out;
+    }
+    closeReasoning(state, out);
     const id = state.ids.synthesize(name);
     // Gemini delivers the whole args object in one event — emit start/delta/end together.
     out.push({ type: 'tool_call_start', id, name });
@@ -388,6 +439,10 @@ async function* streamChunks(
   };
   let usage: Usage = ZERO_USAGE;
   let finishReason: string | undefined;
+  // A terminal signal: either a candidate finishReason or a prompt-level block. Without one, the
+  // stream was truncated mid-flight and must not be reported as a clean stop.
+  let sawTerminal = false;
+  let blocked = false;
   let sdkStream: AsyncIterable<GeminiResponse>;
   try {
     sdkStream = await transport.stream(request, key);
@@ -400,9 +455,14 @@ async function* streamChunks(
       if (response.usageMetadata) {
         usage = mapUsage(response.usageMetadata);
       }
+      if (isPromptBlocked(response.promptFeedback)) {
+        blocked = true;
+        sawTerminal = true;
+      }
       const candidate = response.candidates?.[0];
       if (candidate?.finishReason !== undefined) {
         finishReason = candidate.finishReason;
+        sawTerminal = true;
       }
       for (const part of candidate?.content?.parts ?? []) {
         for (const out of foldGeminiPart(part, state)) {
@@ -419,7 +479,22 @@ async function* streamChunks(
   for (const out of tail) {
     yield out;
   }
-  yield { type: 'stop', stopReason: mapStopReason(finishReason, state.hasToolCalls), usage };
+  // No finishReason and no block → truncated stream; surface a retryable transport error.
+  if (!sawTerminal) {
+    yield {
+      type: 'error',
+      error: makeLlmError({
+        provider: PROVIDER,
+        kind: 'transport',
+        message: 'stream ended before a finishReason (truncated response)',
+      }),
+    };
+    return;
+  }
+  const stopReason: StopReason = blocked
+    ? 'content_filter'
+    : mapStopReason(finishReason, state.hasToolCalls);
+  yield { type: 'stop', stopReason, usage };
 }
 
 // --- The adapter -----------------------------------------------------------------------------
@@ -443,9 +518,15 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
         const ids = new GeminiToolCallIds();
         const content = mapContent(response, ids);
         const hasToolCalls = content.some((part) => part.type === 'tool_call');
+        const candidate = response.candidates?.[0];
+        // A blocked prompt yields no candidate but a promptFeedback.blockReason — normalize it to
+        // content_filter, not a clean stop that masks the block as an empty success.
+        const blocked = candidate === undefined && isPromptBlocked(response.promptFeedback);
         return {
           content,
-          stopReason: mapStopReason(response.candidates?.[0]?.finishReason, hasToolCalls),
+          stopReason: blocked
+            ? 'content_filter'
+            : mapStopReason(candidate?.finishReason, hasToolCalls),
           usage: response.usageMetadata ? mapUsage(response.usageMetadata) : ZERO_USAGE,
           raw: response,
         };

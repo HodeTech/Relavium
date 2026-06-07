@@ -100,7 +100,7 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
     textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
-    reasoningStream: { text: 'let me think' },
+    reasoningStream: { text: 'let me think', reasoningTokens: 2 },
     structuredOutput: { text: '{"ok":true}' },
   },
 };

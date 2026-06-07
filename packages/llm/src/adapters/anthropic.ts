@@ -334,6 +334,7 @@ function mergeDeltaUsage(
     output_tokens: number;
     cache_read_input_tokens?: number | null;
     cache_creation_input_tokens?: number | null;
+    output_tokens_details?: { thinking_tokens?: number | null } | null;
   },
 ): Usage {
   const merged: Usage = {
@@ -348,18 +349,20 @@ function mergeDeltaUsage(
   if (cacheWrite != null) {
     merged.cacheWriteTokens = cacheWrite;
   }
-  // Carry reasoning tokens across the merge — they arrive on an earlier event and the delta usage
-  // does not repeat them, so a field-by-field merge would otherwise drop them (ADR-0030).
-  if (prev.reasoningTokens != null) {
-    merged.reasoningTokens = prev.reasoningTokens;
+  // message_delta carries the authoritative cumulative thinking count (same semantics as output_tokens).
+  // Fall back to the message_start value only if the delta omits the details field entirely.
+  const thinking = delta.output_tokens_details?.thinking_tokens ?? prev.reasoningTokens ?? 0;
+  if (thinking > 0) {
+    merged.reasoningTokens = thinking;
   }
   return merged;
 }
 
-/** Per-index reasoning-block state: the synthesized chunk id and the accumulating signature. */
+/** Per-index reasoning-block state: the synthesized chunk id, accumulating signature, redacted flag. */
 interface ReasoningBlock {
   readonly id: string;
   signature?: string;
+  readonly redacted: boolean;
 }
 
 /**
@@ -379,7 +382,7 @@ function handleContentBlockStart(
   }
   if (block.type === 'thinking' || block.type === 'redacted_thinking') {
     const id = `reasoning-${String(event.index)}`;
-    reasoningByIndex.set(event.index, { id });
+    reasoningByIndex.set(event.index, { id, redacted: block.type === 'redacted_thinking' });
     return { type: 'reasoning_start', id };
   }
   return undefined;
@@ -430,9 +433,16 @@ function handleContentBlockStop(
   if (reasoning === undefined) {
     return undefined;
   }
-  return reasoning.signature === undefined
-    ? { type: 'reasoning_end', id: reasoning.id }
-    : { type: 'reasoning_end', id: reasoning.id, signature: reasoning.signature };
+  // Carry both the accumulated signature and the redacted flag (asymmetry fix: non-streaming
+  // mapContent already sets redacted; the stream must too — ADR-0030).
+  const end: Extract<StreamChunk, { type: 'reasoning_end' }> = { type: 'reasoning_end', id: reasoning.id };
+  if (reasoning.signature !== undefined) {
+    end.signature = reasoning.signature;
+  }
+  if (reasoning.redacted) {
+    end.redacted = true;
+  }
+  return end;
 }
 
 /**
@@ -463,6 +473,9 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
   const reasoningByIndex = new Map<number, ReasoningBlock>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = 'stop';
+  // The message_delta event carries the authoritative stop_reason + final usage; a stream that ends
+  // without it was truncated and must not be reported as a successful stop.
+  let sawStop = false;
   let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
   try {
     sdkStream = await client.messages.create(
@@ -480,6 +493,7 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       } else if (event.type === 'message_delta') {
         stopReason = mapStopReason(event.delta.stop_reason);
         usage = mergeDeltaUsage(usage, event.usage);
+        sawStop = true;
       } else if (
         event.type === 'content_block_start' ||
         event.type === 'content_block_delta' ||
@@ -494,6 +508,19 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
     }
   } catch (err) {
     yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    return;
+  }
+  // No message_delta arrived → the SSE stream was cut before completion. Surface a retryable
+  // transport error rather than a clean stop that hides the lost tail.
+  if (!sawStop) {
+    yield {
+      type: 'error',
+      error: makeLlmError({
+        provider: PROVIDER,
+        kind: 'transport',
+        message: 'stream ended before message_delta (truncated response)',
+      }),
+    };
     return;
   }
   yield { type: 'stop', stopReason, usage };

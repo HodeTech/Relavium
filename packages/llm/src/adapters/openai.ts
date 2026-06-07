@@ -8,6 +8,7 @@ import OpenAI, {
 import type { ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
+import { InvalidBaseUrlError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -113,7 +114,9 @@ function parseToolArgs(raw: string): unknown {
   try {
     return JSON.parse(raw.length > 0 ? raw : '{}');
   } catch {
-    // A malformed provider tool-arg payload degrades to {} rather than failing the whole result.
+    // Deliberate (prior review decision, locked by a unit test): a malformed provider tool-arg
+    // payload degrades to {} rather than throwing and failing the whole result. A stricter
+    // surface-as-fatal alternative was raised in PR #9 review and intentionally not adopted.
     return {};
   }
 }
@@ -312,15 +315,21 @@ function buildCommonBody(
     body.tool_choice = toOpenAiToolChoice(req.toolChoice);
   }
   if (req.responseFormat?.type === 'json') {
-    // Native structured output (ADR-0030). The canonical JSON-Schema bridges to OpenAI's at the boundary.
-    body.response_format = {
-      type: 'json_schema',
-      json_schema: {
-        name: toJsonSchemaName(req.responseFormat.name),
-        schema: req.responseFormat.schema as Record<string, unknown>,
-        strict: req.responseFormat.strict ?? true,
-      },
-    };
+    if (provider === 'deepseek') {
+      // DeepSeek only supports json_object; json_schema returns 400 (ADR-0030).
+      // Note: DeepSeek json_object also requires the word "json" to appear in the prompt.
+      body.response_format = { type: 'json_object' };
+    } else {
+      // Native structured output for OpenAI (ADR-0030). The canonical JSON-Schema bridges here.
+      body.response_format = {
+        type: 'json_schema',
+        json_schema: {
+          name: toJsonSchemaName(req.responseFormat.name),
+          schema: req.responseFormat.schema as Record<string, unknown>,
+          strict: req.responseFormat.strict ?? true,
+        },
+      };
+    }
   }
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
@@ -340,6 +349,70 @@ function buildCommonBody(
 
 function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
   return isAbortSignal(req.signal) ? { signal: req.signal } : {};
+}
+
+/**
+ * True for a hostname that resolves to a loopback, private (RFC-1918 / ULA), link-local, or
+ * cloud-metadata address — the literal forms an SSRF payload would use. `host` is the already-
+ * normalized `URL.hostname` (lowercased, IPv6 brackets stripped, decimal/hex IPs canonicalized).
+ */
+function isPrivateOrLocalHost(host: string): boolean {
+  if (host.includes(':')) {
+    // IPv6 literal: loopback, unspecified, link-local (fe80::/10), unique-local (fc00::/7), and
+    // the IPv4-mapped loopback form (::ffff:7f00:1 == ::ffff:127.0.0.1).
+    return (
+      host === '::1' ||
+      host === '::' ||
+      host.startsWith('fe80:') ||
+      host.startsWith('fc') ||
+      host.startsWith('fd') ||
+      host.startsWith('::ffff:7f')
+    );
+  }
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.internal') ||
+    host.endsWith('.local') ||
+    host === '0.0.0.0' ||
+    host.startsWith('127.') ||
+    host.startsWith('10.') ||
+    host.startsWith('192.168.') ||
+    host.startsWith('169.254.') // IPv4 link-local — cloud metadata (169.254.169.254)
+  ) {
+    return true;
+  }
+  // 172.16.0.0 – 172.31.255.255
+  const match = /^172\.(\d{1,3})\./.exec(host);
+  if (match !== null) {
+    const second = Number(match[1]);
+    return second >= 16 && second <= 31;
+  }
+  return false;
+}
+
+/**
+ * Throw if a caller-supplied `baseURL` is not a safe public HTTPS endpoint — a construction-time SSRF
+ * guard so a hostile base URL can't redirect egress (with the real key) to an internal/metadata host.
+ * The `URL` parser normalizes the evasions string-matching misses (userinfo `@`, decimal/hex IPs,
+ * trailing dots, case, IPv6 brackets). This is a best-effort literal block; the *complete* SSRF guard
+ * (DNS resolution to catch a public name pointing at a private IP, redirect re-validation) is the
+ * shared security primitive's job (security-review.md) — a forward obligation, not duplicated here.
+ */
+function assertHttpsBaseUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new InvalidBaseUrlError(url, 'not a valid URL');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new InvalidBaseUrlError(url, `must use HTTPS, got '${parsed.protocol}'`);
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (isPrivateOrLocalHost(host)) {
+    throw new InvalidBaseUrlError(url, 'resolves to a private, loopback, or link-local address');
+  }
 }
 
 // --- Streaming fold --------------------------------------------------------------------------
@@ -392,6 +465,10 @@ const REASONING_ID = 'reasoning-0';
 interface OpenAiStreamState {
   reasoningOpen: boolean;
   stopReason: StopReason;
+  /** True once a terminal `finish_reason` is seen — a stream that ends without one was truncated. */
+  sawTerminal: boolean;
+  /** True once the provider streamed a refusal (delta.refusal) — the stop normalizes to content_filter. */
+  refused: boolean;
   readonly toolIdByIndex: Map<number, string>;
 }
 
@@ -410,6 +487,12 @@ function foldChatChunk(chunk: OpenAI.ChatCompletionChunk, state: OpenAiStreamSta
   if (choice === undefined) {
     return out;
   }
+  // A streamed refusal (delta.refusal) is a safety decline, not an answer — record it so the terminal
+  // stop normalizes to content_filter rather than masking the refusal as a successful stop.
+  const refusal = choice.delta.refusal;
+  if (typeof refusal === 'string' && refusal.length > 0) {
+    state.refused = true;
+  }
   // DeepSeek-R1 / Kimi stream reasoning first (content null) — open the ephemeral reasoning channel.
   const reasoning = readReasoningContent(choice.delta);
   if (reasoning !== undefined && reasoning.length > 0) {
@@ -419,7 +502,9 @@ function foldChatChunk(chunk: OpenAI.ChatCompletionChunk, state: OpenAiStreamSta
     }
     out.push({ type: 'reasoning_delta', id: REASONING_ID, text: reasoning });
   }
-  if (choice.delta.content != null) {
+  // Gate on length: an empty-string content delta is not real text, and emitting it would also close
+  // the reasoning channel prematurely.
+  if (choice.delta.content != null && choice.delta.content.length > 0) {
     closeReasoning(state, out);
     out.push({ type: 'text_delta', text: choice.delta.content });
   }
@@ -429,7 +514,8 @@ function foldChatChunk(chunk: OpenAI.ChatCompletionChunk, state: OpenAiStreamSta
   }
   if (choice.finish_reason != null) {
     closeReasoning(state, out);
-    state.stopReason = mapStopReason(choice.finish_reason);
+    state.sawTerminal = true;
+    state.stopReason = state.refused ? 'content_filter' : mapStopReason(choice.finish_reason);
     // OpenAI has no per-tool end event — every tracked tool finalizes at finish_reason.
     for (const id of state.toolIdByIndex.values()) {
       out.push({ type: 'tool_call_end', id });
@@ -448,6 +534,8 @@ async function* streamChunks(
   const state: OpenAiStreamState = {
     reasoningOpen: false,
     stopReason: 'stop',
+    sawTerminal: false,
+    refused: false,
     toolIdByIndex: new Map<number, string>(),
   };
   let usage: Usage = ZERO_USAGE;
@@ -474,16 +562,32 @@ async function* streamChunks(
     yield { type: 'error', error: openaiErrorToLlmError(err, provider) };
     return;
   }
+  // A stream that ends without a terminal finish_reason was truncated (dropped connection, partial
+  // body) — surface it as a retryable transport error, never a clean stop that hides lost content.
+  if (!state.sawTerminal) {
+    yield {
+      type: 'error',
+      error: makeLlmError({
+        provider,
+        kind: 'transport',
+        message: 'stream ended before a terminal finish_reason (truncated response)',
+      }),
+    };
+    return;
+  }
   yield { type: 'stop', stopReason: state.stopReason, usage };
 }
 
 // --- The adapter -----------------------------------------------------------------------------
 
+/** The two provider ids the OpenAI-compatible adapter can serve (a strict subset of `ProviderId`). */
+type OpenAiProviderId = Extract<ProviderId, 'openai' | 'deepseek'>;
+
 /** Dependencies the conformance replayer / tests inject (and the provider id + base URL selector). */
 export interface OpenAiAdapterDeps {
   /** Which provider this instance serves — selects capabilities, cost pricing, and the default base URL. */
-  readonly providerId?: ProviderId;
-  /** Override the API base URL (DeepSeek defaults to `api.deepseek.com`). */
+  readonly providerId?: OpenAiProviderId;
+  /** Override the API base URL (DeepSeek defaults to `api.deepseek.com`). Validated HTTPS-only. */
   readonly baseURL?: string;
   /** Inject a `fetch` (the replayer/recorder) in place of the network. */
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -493,9 +597,13 @@ export interface OpenAiAdapterDeps {
 
 /** Build an OpenAI-compatible `LlmProvider`. Exposed as `openaiAdapter` / `deepseekAdapter`. */
 export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
-  const providerId: ProviderId = deps.providerId ?? 'openai';
+  const providerId: OpenAiProviderId = deps.providerId ?? 'openai';
   const supports = providerId === 'deepseek' ? DEEPSEEK_SUPPORTS : OPENAI_SUPPORTS;
   const baseURL = deps.baseURL ?? (providerId === 'deepseek' ? DEEPSEEK_BASE_URL : undefined);
+  // Validate caller-supplied base URLs at construction time: HTTPS-only, no internal addresses.
+  if (deps.baseURL !== undefined) {
+    assertHttpsBaseUrl(deps.baseURL);
+  }
   const createClient = (key: string): OpenAI =>
     new OpenAI({
       apiKey: key,
@@ -516,9 +624,12 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           buildRequestOptions(req),
         );
         const choice = completion.choices[0];
+        // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
+        const refused =
+          typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
         return {
           content: choice === undefined ? [] : mapContent(choice.message, providerId),
-          stopReason: mapStopReason(choice?.finish_reason),
+          stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
           usage: completion.usage ? mapUsage(completion.usage) : ZERO_USAGE,
           raw: completion,
         };
