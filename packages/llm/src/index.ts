@@ -14,6 +14,7 @@ export {
   CapabilityFlagsSchema,
   LlmErrorKindSchema,
   LlmErrorSchema,
+  ResponseFormatSchema,
   LlmRequestSchema,
   LlmResultSchema,
   StreamChunkSchema,
@@ -29,6 +30,7 @@ export type {
   CapabilityFlags,
   LlmErrorKind,
   LlmError,
+  ResponseFormat,
   LlmRequest,
   LlmResult,
   StreamChunk,
@@ -46,6 +48,7 @@ export {
   UnknownModelError,
   ToolSchemaError,
   UnsupportedCapabilityError,
+  InvalidBaseUrlError,
 } from './errors.js';
 export type { LlmConfigErrorCode } from './errors.js';
 

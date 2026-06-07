@@ -39,9 +39,17 @@ interface LlmRequest {
   temperature?: number;
   maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
   stopSequences?: string[];
+  responseFormat?: ResponseFormat; // structured-output request (ADR-0030)
   signal?: AbortSignal;          // cancellation; host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
   providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)
 }
+
+// Structured-output contract (ADR-0030). Each adapter lowers `json` to the provider's native mode
+// (OpenAI json_schema; Gemini responseJsonSchema; Anthropic output_config; DeepSeek json_object — no
+// schema enforcement, so its fidelity is "parseable JSON", not schema-validated).
+type ResponseFormat =
+  | { type: 'text' }
+  | { type: 'json'; schema: JSONSchema7; name?: string; strict?: boolean };
 
 interface LlmMessage {
   role: 'user' | 'assistant' | 'tool';
@@ -50,8 +58,9 @@ interface LlmMessage {
 
 type ContentPart =
   | { type: 'text'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: unknown }      // assistant -> wants tool
-  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean };
+  | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral
+  | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean }   // assistant -> wants tool
+  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean; providerExecuted?: boolean };
 
 interface ToolDef {
   name: string;
@@ -74,15 +83,20 @@ interface Usage {
   outputTokens: number;
   cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
   cacheWriteTokens?: number;
+  reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
   costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by a pricing table keyed on canonical model id
 }
 
 // Normalized streaming — one discriminated union for ALL providers
 type StreamChunk =
   | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_start'; id: string }                          // ADR-0030 — reasoning channel
+  | { type: 'reasoning_delta'; id: string; text: string }
+  | { type: 'reasoning_end'; id: string; signature?: string; redacted?: boolean }  // signature/redacted both surfaced on the stream
   | { type: 'tool_call_start'; id: string; name: string }
-  | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON
+  | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON; count/timing is provider-dependent — accumulate, parse at tool_call_end
   | { type: 'tool_call_end'; id: string }
+  | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true }  // ADR-0030 — provider-run tool; engine records, never runs
   | { type: 'stop'; stopReason: StopReason; usage: Usage }
   | { type: 'error'; error: LlmError };
 
@@ -172,6 +186,40 @@ frozen — the *set* of conforming implementations behind it is meant to grow. W
 would require a real (superseding) ADR is changing the seam shape itself: the
 request/result/stream types, the normalization rules, or the `LlmError` contract
 above.
+
+### Seam-shape amendments ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md))
+
+Three cross-provider shape additions were made under ADR-0030 (a real amendment to
+ADR-0011, decided before the seam froze at M1, while the only consumers were the
+adapters):
+
+- **Reasoning channel.** `ContentPart` gains a `reasoning` arm
+  (`{ type: 'reasoning', text, signature?, redacted? }`); `StreamChunk` gains
+  `reasoning_start` / `reasoning_delta` / `reasoning_end` (mirroring the
+  `tool_call_*` triad; `reasoning_end` carries the optional `signature` and
+  `redacted` flag — both surfaced on the streaming path, symmetric with the
+  non-streaming `reasoning` content part); `Usage` gains an optional
+  `reasoningTokens` (**observability only** — already inside `outputTokens` for
+  billing on Anthropic/OpenAI; on Gemini, thinking tokens are billed *separately*
+  from candidates, so the adapter sums both into `outputTokens` and surfaces the
+  thinking subset as `reasoningTokens`). **Reasoning is ephemeral:** a provider-signed
+  `signature` is never persisted to a session, never replayed across a provider
+  boundary on fallback, and never written to a run event or log — the engine does
+  not interpret it; only the originating adapter feeds it back (a same-provider,
+  same-turn obligation owned by the 1.K `FallbackChain` strip-on-failover, not yet
+  exercised — no consumer beyond the adapters exists).
+- **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
+  one canonical JSON-Schema each adapter lowers to the provider's native
+  structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,
+  Anthropic `output_config`). This is the seam mechanism that realizes a node's
+  `output_schema`. (The opencode `{ type: 'tool' }` variant is deliberately not
+  adopted — `toolChoice: { name }` already forces a specific tool.)
+- **`providerExecuted`** — an optional flag on `ContentPart` `tool_call`/`tool_result`
+  plus a provider-executed `tool_result` `StreamChunk` arm, distinguishing a tool
+  the **provider** ran on its own side (server-side/built-in) from one the engine
+  runs. The engine `ToolDispatcher` skips `providerExecuted` calls (no
+  double-execution, and the allowlist applies only to engine-run calls). Phase-1
+  adapters reserve the shape but emit no server-tool calls (off the common path).
 
 ## What must be normalized
 

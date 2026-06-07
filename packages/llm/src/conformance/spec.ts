@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { StopReason } from '@relavium/shared';
 
 import { LlmProviderError } from '../llm-error.js';
+import { LlmResultSchema, StreamChunkSchema } from '../types.js';
 import type { LlmErrorKind, LlmProvider, LlmRequest, StreamChunk } from '../types.js';
 import type { RecordedResponse } from './replay.js';
 
@@ -18,12 +19,22 @@ import type { RecordedResponse } from './replay.js';
 
 /** The canonical values a provider's fixtures should normalize to — asserted concretely. */
 export interface ConformanceExpectations {
-  readonly textGenerate: { stopReason: StopReason; inputTokens: number; outputTokens: number };
+  readonly textGenerate: {
+    stopReason: StopReason;
+    text: string;
+    inputTokens: number;
+    outputTokens: number;
+  };
   readonly toolGenerate: { toolName: string; stopReason: StopReason };
   readonly textStream: { stopReason: StopReason; inputTokens: number; outputTokens: number };
   readonly toolStream: { toolName: string; stopReason: StopReason };
   /** The classified kind a mid-stream `error` event should yield. */
   readonly streamErrorKind: LlmErrorKind;
+  /** Reasoning a thinking model streams (ADR-0030) — only providers that emit reasoning supply this.
+   * `reasoningTokens` is the count the terminal `stop` chunk must surface (observability; ADR-0030). */
+  readonly reasoningStream?: { text: string; reasoningTokens?: number };
+  /** The JSON text a model returns under `responseFormat: json` (ADR-0030) — providers that support it. */
+  readonly structuredOutput?: { text: string };
 }
 
 /** The recorded provider responses a conformance run needs — one per canonical scenario. */
@@ -40,6 +51,10 @@ export interface ConformanceFixtures {
   readonly rateLimit: RecordedResponse;
   /** A stream that emits a mid-stream `error` event after starting. */
   readonly streamError: RecordedResponse;
+  /** A streamed reply that includes reasoning (ADR-0030) — omit for providers that emit no reasoning. */
+  readonly reasoningStream?: RecordedResponse;
+  /** A non-streaming reply produced under `responseFormat: json` (ADR-0030) — omit if unsupported. */
+  readonly structuredOutput?: RecordedResponse;
   /** The canonical values the above should normalize to. */
   readonly expected: ConformanceExpectations;
 }
@@ -70,9 +85,21 @@ const TOOL_REQUEST: LlmRequest = {
   toolChoice: 'auto',
 };
 
+const JSON_REQUEST: LlmRequest = {
+  model: 'conformance-model',
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'Return JSON.' }] }],
+  responseFormat: {
+    type: 'json',
+    schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+  },
+};
+
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
   const chunks: StreamChunk[] = [];
   for await (const chunk of stream) {
+    // Defense-in-depth: every streamed chunk must satisfy the canonical StreamChunk schema (throws
+    // loud on a non-conforming shape, incl. the Usage subset invariant on the terminal stop).
+    StreamChunkSchema.parse(chunk);
     chunks.push(chunk);
   }
   return chunks;
@@ -89,7 +116,10 @@ export function defineConformanceSuite(
   describe(`${name} — conformance (replay)`, () => {
     it('generate: returns text content with the exact usage and canonical stop reason', async () => {
       const result = await makeReplayAdapter(fixtures.textGenerate).generate(TEXT_REQUEST, KEY);
-      expect(result.content.some((part) => part.type === 'text')).toBe(true);
+      // Defense-in-depth: the whole result must satisfy the canonical LlmResult schema.
+      expect(LlmResultSchema.safeParse(result).success).toBe(true);
+      const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+      expect(text).toBe(expected.textGenerate.text); // exact value, not just presence
       expect(result.usage.inputTokens).toBe(expected.textGenerate.inputTokens);
       expect(result.usage.outputTokens).toBe(expected.textGenerate.outputTokens);
       expect(result.stopReason).toBe(expected.textGenerate.stopReason);
@@ -176,5 +206,56 @@ export function defineConformanceSuite(
         expect(errorChunk.error.provider).toBe(name);
       }
     });
+
+    it.skipIf(fixtures.reasoningStream === undefined)(
+      'reasoning: reasoning_start/delta(s)/end arrive and close before the terminal stop (ADR-0030)',
+      async () => {
+        const recorded = fixtures.reasoningStream;
+        if (recorded === undefined) {
+          return; // narrow for skipIf
+        }
+        const chunks = await collect(makeReplayAdapter(recorded).stream(TEXT_REQUEST, KEY));
+        expect(chunks.some((chunk) => chunk.type === 'reasoning_start')).toBe(true);
+        expect(chunks.some((chunk) => chunk.type === 'reasoning_delta')).toBe(true);
+        const types = chunks.map((chunk) => chunk.type);
+        expect(types.lastIndexOf('reasoning_end')).toBeGreaterThanOrEqual(0);
+        expect(types.lastIndexOf('reasoning_end')).toBeLessThan(types.indexOf('stop'));
+        if (expected.reasoningStream !== undefined) {
+          const text = chunks
+            .map((chunk) => (chunk.type === 'reasoning_delta' ? chunk.text : ''))
+            .join('');
+          expect(text).toBe(expected.reasoningStream.text);
+        }
+        // The terminal stop must surface the reasoning-token count (ADR-0030 observability) — this is
+        // what catches a streaming-usage merge that drops reasoningTokens (e.g. the Anthropic message_delta).
+        if (expected.reasoningStream?.reasoningTokens !== undefined) {
+          const stop = chunks.at(-1);
+          expect(stop?.type).toBe('stop');
+          if (stop?.type === 'stop') {
+            expect(stop.usage.reasoningTokens).toBe(expected.reasoningStream.reasoningTokens);
+          }
+        }
+      },
+    );
+
+    it.skipIf(fixtures.structuredOutput === undefined)(
+      'structured output: responseFormat json returns parseable JSON text (ADR-0030)',
+      async () => {
+        const recorded = fixtures.structuredOutput;
+        if (recorded === undefined) {
+          return; // narrow for skipIf
+        }
+        const result = await makeReplayAdapter(recorded).generate(JSON_REQUEST, KEY);
+        const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+        expect(() => JSON.parse(text) as unknown).not.toThrow();
+        // responseFormat: json must yield text, not a tool call, and a canonical terminal stop reason —
+        // surfacing any adapter that routes structured output through a forced tool or mis-maps the stop.
+        expect(result.stopReason).toBe('stop');
+        expect(result.content.every((part) => part.type !== 'tool_call')).toBe(true);
+        if (expected.structuredOutput !== undefined) {
+          expect(text).toBe(expected.structuredOutput.text);
+        }
+      },
+    );
   });
 }

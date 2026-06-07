@@ -7,6 +7,7 @@ import {
   LlmMessageSchema,
   LlmRequestSchema,
   LlmResultSchema,
+  ResponseFormatSchema,
   StreamChunkSchema,
   ToolChoiceSchema,
   ToolDefSchema,
@@ -214,5 +215,69 @@ describe('seam types are pure Relavium types (no vendor SDK type crosses the sea
     };
     expect(stub.id).toBe('anthropic');
     expectTypeOf<LlmProvider['generate']>().returns.resolves.toEqualTypeOf<LlmResult>();
+  });
+});
+
+describe('seam shape amendment (ADR-0030)', () => {
+  it('ResponseFormatSchema accepts text and json{schema}', () => {
+    expect(ResponseFormatSchema.safeParse({ type: 'text' }).success).toBe(true);
+    expect(
+      ResponseFormatSchema.safeParse({
+        type: 'json',
+        schema: { type: 'object' },
+        name: 'out',
+        strict: true,
+      }).success,
+    ).toBe(true);
+    expect(ResponseFormatSchema.safeParse({ type: 'json', schema: [] }).success).toBe(false); // not an object
+  });
+
+  it('LlmRequestSchema accepts an optional responseFormat', () => {
+    const req = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      responseFormat: { type: 'json', schema: { type: 'object' } },
+    };
+    expect(LlmRequestSchema.safeParse(req).success).toBe(true);
+  });
+
+  it('StreamChunkSchema accepts the reasoning triad and a provider-executed tool_result', () => {
+    expect(StreamChunkSchema.safeParse({ type: 'reasoning_start', id: 'r0' }).success).toBe(true);
+    expect(
+      StreamChunkSchema.safeParse({ type: 'reasoning_delta', id: 'r0', text: 'x' }).success,
+    ).toBe(true);
+    expect(
+      StreamChunkSchema.safeParse({
+        type: 'reasoning_end',
+        id: 'r0',
+        signature: 's',
+        redacted: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      StreamChunkSchema.safeParse({
+        type: 'tool_result',
+        id: 't1',
+        name: 'web_search',
+        result: { hits: [] },
+        providerExecuted: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('UsageSchema accepts an optional reasoningTokens', () => {
+    expect(
+      UsageSchema.safeParse({ inputTokens: 1, outputTokens: 2, reasoningTokens: 1 }).success,
+    ).toBe(true);
+    // boundary: equal is allowed
+    expect(
+      UsageSchema.safeParse({ inputTokens: 1, outputTokens: 2, reasoningTokens: 2 }).success,
+    ).toBe(true);
+  });
+
+  it('UsageSchema rejects reasoningTokens > outputTokens (ADR-0030 subset invariant)', () => {
+    expect(
+      UsageSchema.safeParse({ inputTokens: 1, outputTokens: 2, reasoningTokens: 3 }).success,
+    ).toBe(false);
   });
 });

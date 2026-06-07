@@ -2,8 +2,17 @@
 
 > Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**) landed in
 > **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
-> — landed in **PR #7** (2026-06-06). Next: the adapter lane (**1.C** → {**1.D** ‖ **1.F**}, with
-> **1.I**) ‖ the **1.L** parser.
+> — landed in **PR #7**; the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
+> **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — landed in **PR #8**
+> (2026-06-06): the seam is proven end-to-end against a real provider. **In flight (PR after #8):** the
+> remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the **seam-shape
+> amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
+> (reasoning channel + `responseFormat` + `providerExecuted`) — decided **before the M1 freeze** while
+> the only consumers were the adapters; reasoning + structured output are wired in every adapter that
+> supports them, with conformance scenarios. Then **1.J** (conformance green = **M1**) and **1.K**
+> (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral reasoning signature when
+> failing over** to another provider); ‖ the **1.L** engine parser. *(Session persistence, 1.X/1.Z,
+> must exclude the reasoning signature — non-persisting.)*
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -208,7 +217,7 @@ from a provider field.
 expected micro-cents; an unknown model id raises a typed, user-facing error rather
 than silently pricing at zero.
 
-### 1.C — `AnthropicAdapter` (the first adapter, proves the seam) — *critical path*
+### 1.C — `AnthropicAdapter` (the first adapter, proves the seam) — *critical path* · ✅ **Done (PR #8)**
 
 The reference adapter over `@anthropic-ai/sdk`. It establishes the normalization
 patterns the conformance harness then enforces across all adapters.
@@ -234,7 +243,7 @@ patterns the conformance harness then enforces across all adapters.
 recorded Anthropic fixtures: streams text, calls a tool and returns a normalized
 `tool_call`, returns usage, maps stop reasons, and surfaces a classified `LlmError`.
 
-### 1.D — Capabilities + the typed `providerOptions` escape hatch
+### 1.D — Capabilities + the typed `providerOptions` escape hatch — ✅ **Done (PR #8)**
 
 Keep the common path narrow and stable; push provider-specific features off it.
 
@@ -272,7 +281,7 @@ on it.
 shapes and back; the Gemini reshape rejects an unsupported schema with a typed error
 and the id-synthesis test proves a stable id across a multi-tool streamed turn.
 
-### 1.F — Conformance harness (shared spec + fixture recorder) — *critical path*
+### 1.F — Conformance harness (shared spec + fixture recorder) — *critical path* · ✅ **Done (PR #8)**
 
 The single spec every adapter must pass, plus the fixture-recording mechanism. This
 is the biggest leverage point for the in-house abstraction.
@@ -332,7 +341,7 @@ hardest on 1.E.
 including a tool call whose id is synthesized and a `SAFETY` stop mapped to
 `content_filter`.
 
-### 1.I — `LlmError` classification (the fallback contract)
+### 1.I — `LlmError` classification (the fallback contract) — ✅ **Done (PR #8)**
 
 The classification the `FallbackChain` depends on, normalized inside each adapter.
 
@@ -380,10 +389,17 @@ budgets. Adapters stay dumb; this owns the policy.
   accurate across failover.
 - Surface the final outcome plus the attempt trace (which providers were tried, why
   each failed) for the run event/log.
+- **Strip the ephemeral reasoning signature on failover** ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)
+  guardrail): a provider-signed `reasoning` part is a same-provider, same-turn
+  continuity token. When advancing to a *different* provider, drop every `reasoning`
+  part (and any carried `signature`) from the request before re-issuing — a signature
+  is never replayed across a provider boundary. (Within the *same* provider, only the
+  originating adapter feeds it back.)
 
 **Acceptance:** unit tests prove: a primary failing with a retryable error fails over
-to the next provider and the run succeeds; a fatal error stops the chain; and
-per-attempt cost is summed across a failover.
+to the next provider and the run succeeds; a fatal error stops the chain; per-attempt
+cost is summed across a failover; and **a cross-provider failover carries no `reasoning`
+part or `signature` into the next provider's request**.
 
 ### 1.L.0 — Reconcile `@relavium/shared` to the 2026-06-05 contract — ✅ **Done (PR #6)** · *critical path, do first*
 
@@ -517,7 +533,14 @@ Executes a single agent node end-to-end against `@relavium/llm`.
   `CostTracker`, emitting `cost:updated` (`{ nodeId, model, inputTokens,
   outputTokens, costMicrocents, cumulativeCostMicrocents }`).
 - Handle the tool-call loop: dispatch tool calls through the `ToolRegistry` (1.T),
-  feed results back, and continue until a non-`tool_use` stop.
+  feed results back, and continue until a non-`tool_use` stop. **Same-provider signed
+  reasoning** ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)):
+  within one tool-loop continuation that stays on the *originating* provider, the
+  signed `reasoning` block must be **preserved and re-fed** to that adapter — Anthropic's
+  interleaved-thinking continuation rejects a tool-use turn whose prior signed thinking
+  block was dropped. (Cross-provider failover instead **strips** it — see the 1.K note.)
+  The adapters currently drop reasoning on lowering; 1.O/1.K owns the same-provider
+  feedback path.
 - Thread `AbortSignal` for cancellation; map a final node failure to `node:failed`
   with a user-safe message + internal correlation id.
 
@@ -653,9 +676,9 @@ These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agen
 
 - **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses.
 - **1.W — `session:*` event namespace.** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
-- **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate).
+- **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
 - **1.Y — Session checkpoint/resume.** Reuse the idempotency-key logic so a session resumes after a restart.
-- **1.Z — Export-to-workflow serializer.** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Includes a **`WorkflowDefinition` → YAML emitter** (deterministic key ordering, the `metadata` transcript block, secret exclusion) — 1.L is parse-only, so this workstream owns serialization. *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; **parse → serialize round-trips** (including `metadata`); no `secret` value is serialized.
+- **1.Z — Export-to-workflow serializer.** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Includes a **`WorkflowDefinition` → YAML emitter** (deterministic key ordering, the `metadata` transcript block, secret exclusion) — 1.L is parse-only, so this workstream owns serialization. *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; **parse → serialize round-trips** (including `metadata`); no `secret` value is serialized; and **no reasoning `signature` is serialized** (ADR-0030 ephemerality — the signature is a transient same-provider token, never written to a committable artifact, same exclusion as `secret`).
 - **1.AA — Node-harness chat regression.** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI.
 
 ### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P

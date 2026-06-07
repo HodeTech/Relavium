@@ -19,6 +19,8 @@ import type {
   Usage,
 } from '../types.js';
 
+import { isAbortSignal } from './shared.js';
+
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
  * the first place a vendor SDK is imported (allowed only under `src/adapters/*`). It establishes the
@@ -75,6 +77,7 @@ export function mapUsage(usage: {
   output_tokens: number;
   cache_read_input_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
+  output_tokens_details?: { thinking_tokens?: number | null } | null;
 }): Usage {
   const out: Usage = { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens };
   if (usage.cache_read_input_tokens != null) {
@@ -83,10 +86,15 @@ export function mapUsage(usage: {
   if (usage.cache_creation_input_tokens != null) {
     out.cacheWriteTokens = usage.cache_creation_input_tokens;
   }
+  // Thinking tokens are already inside output_tokens (billing unchanged); surface for visibility (ADR-0030).
+  const thinking = usage.output_tokens_details?.thinking_tokens ?? 0;
+  if (thinking > 0) {
+    out.reasoningTokens = thinking;
+  }
   return out;
 }
 
-/** Fold an Anthropic message's content blocks into canonical content parts (text + tool_call). */
+/** Fold an Anthropic message's content blocks into canonical content parts (text + tool_call + reasoning). */
 export function mapContent(blocks: readonly Anthropic.ContentBlock[]): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const block of blocks) {
@@ -96,8 +104,17 @@ export function mapContent(blocks: readonly Anthropic.ContentBlock[]): ContentPa
       parts.push(
         normalizeToolCall(PROVIDER, { id: block.id, name: block.name, args: block.input }),
       );
+    } else if (block.type === 'thinking') {
+      // Reasoning (ADR-0030); the signature is the ephemeral same-provider continuity token.
+      parts.push(
+        block.signature.length > 0
+          ? { type: 'reasoning', text: block.thinking, signature: block.signature }
+          : { type: 'reasoning', text: block.thinking },
+      );
+    } else if (block.type === 'redacted_thinking') {
+      parts.push({ type: 'reasoning', text: '', redacted: true });
     }
-    // thinking / server-tool blocks are off the common path — reachable via LlmResult.raw.
+    // other server-tool blocks remain off the common path — reachable via LlmResult.raw.
   }
   return parts;
 }
@@ -177,7 +194,11 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
-function toAnthropicBlock(part: ContentPart): Anthropic.ContentBlockParam {
+// Reasoning parts are filtered out before this point (ephemeral, not replayed to the wire — ADR-0030),
+// so the wire-able content is the closed text / tool_call / tool_result set.
+function toAnthropicBlock(
+  part: Exclude<ContentPart, { type: 'reasoning' }>,
+): Anthropic.ContentBlockParam {
   switch (part.type) {
     case 'text':
       return { type: 'text', text: part.text };
@@ -195,7 +216,7 @@ function toAnthropicBlock(part: ContentPart): Anthropic.ContentBlockParam {
       }
       return block;
     }
-    /* v8 ignore next 4 -- defensive: ContentPart is a closed 3-variant union */
+    /* v8 ignore next 4 -- defensive: the wire-able content is a closed 3-variant union */
     default: {
       const unreachable: never = part;
       throw new Error(`unhandled content part: ${String(unreachable)}`);
@@ -204,10 +225,15 @@ function toAnthropicBlock(part: ContentPart): Anthropic.ContentBlockParam {
 }
 
 function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
-  // Anthropic has only user/assistant roles; tool results ride in a user-role message.
+  // Anthropic has only user/assistant roles; tool results ride in a user-role message. Reasoning
+  // parts are ephemeral (ADR-0030) and dropped here — they are never replayed to the provider.
   return {
     role: message.role === 'assistant' ? 'assistant' : 'user',
-    content: message.content.map(toAnthropicBlock),
+    content: message.content
+      .filter(
+        (part): part is Exclude<ContentPart, { type: 'reasoning' }> => part.type !== 'reasoning',
+      )
+      .map(toAnthropicBlock),
   };
 }
 
@@ -259,6 +285,12 @@ function buildCommonBody(
   if (req.toolChoice !== undefined) {
     body.tool_choice = toAnthropicToolChoice(req.toolChoice);
   }
+  if (req.responseFormat?.type === 'json') {
+    // Native structured output via output_config (ADR-0030); the canonical JSON-Schema bridges here.
+    body.output_config = {
+      format: { type: 'json_schema', schema: req.responseFormat.schema as Record<string, unknown> },
+    };
+  }
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
   }
@@ -273,11 +305,6 @@ function buildCommonBody(
   // fields (model / messages / max_tokens / tools / …) always win — providerOptions can only ADD,
   // never override or smuggle past the canonical request.
   return { ...req.providerOptions, ...body };
-}
-
-/** True for a real `AbortSignal` (the host passes one; it structurally satisfies AbortSignalLike). */
-function isAbortSignal(value: unknown): value is AbortSignal {
-  return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
 }
 
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */
@@ -307,6 +334,7 @@ function mergeDeltaUsage(
     output_tokens: number;
     cache_read_input_tokens?: number | null;
     cache_creation_input_tokens?: number | null;
+    output_tokens_details?: { thinking_tokens?: number | null } | null;
   },
 ): Usage {
   const merged: Usage = {
@@ -321,12 +349,109 @@ function mergeDeltaUsage(
   if (cacheWrite != null) {
     merged.cacheWriteTokens = cacheWrite;
   }
+  // message_delta carries the authoritative cumulative thinking count (same semantics as output_tokens).
+  // Fall back to the message_start value only if the delta omits the details field entirely.
+  const thinking = delta.output_tokens_details?.thinking_tokens ?? prev.reasoningTokens ?? 0;
+  if (thinking > 0) {
+    merged.reasoningTokens = thinking;
+  }
   return merged;
+}
+
+/** Per-index reasoning-block state: the synthesized chunk id, accumulating signature, redacted flag. */
+interface ReasoningBlock {
+  readonly id: string;
+  signature?: string;
+  readonly redacted: boolean;
 }
 
 /**
  * Fold one content-block stream event into the `StreamChunk` to emit (or `undefined`), tracking the
- * Anthropic tool-call id by content-block index so delta/stop chunks carry the matching id.
+ * tool-call id and the reasoning block by content-block index so delta/stop chunks carry the matching
+ * id (and the reasoning signature accumulates onto the terminating `reasoning_end`). ADR-0030.
+ */
+function handleContentBlockStart(
+  event: Anthropic.RawContentBlockStartEvent,
+  toolIdByIndex: Map<number, string>,
+  reasoningByIndex: Map<number, ReasoningBlock>,
+): StreamChunk | undefined {
+  const block = event.content_block;
+  if (block.type === 'tool_use') {
+    toolIdByIndex.set(event.index, block.id);
+    return { type: 'tool_call_start', id: block.id, name: block.name };
+  }
+  if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+    const id = `reasoning-${String(event.index)}`;
+    reasoningByIndex.set(event.index, { id, redacted: block.type === 'redacted_thinking' });
+    return { type: 'reasoning_start', id };
+  }
+  return undefined;
+}
+
+function handleContentBlockDelta(
+  event: Anthropic.RawContentBlockDeltaEvent,
+  toolIdByIndex: Map<number, string>,
+  reasoningByIndex: Map<number, ReasoningBlock>,
+): StreamChunk | undefined {
+  const delta = event.delta;
+  if (delta.type === 'text_delta') {
+    return { type: 'text_delta', text: delta.text };
+  }
+  if (delta.type === 'input_json_delta') {
+    const id = toolIdByIndex.get(event.index);
+    return id === undefined
+      ? undefined
+      : { type: 'tool_call_delta', id, argsJsonDelta: delta.partial_json };
+  }
+  if (delta.type === 'thinking_delta') {
+    const reasoning = reasoningByIndex.get(event.index);
+    return reasoning === undefined
+      ? undefined
+      : { type: 'reasoning_delta', id: reasoning.id, text: delta.thinking };
+  }
+  if (delta.type === 'signature_delta') {
+    const reasoning = reasoningByIndex.get(event.index);
+    if (reasoning !== undefined) {
+      // The signature streams incrementally like thinking text — append, don't overwrite.
+      reasoning.signature = (reasoning.signature ?? '') + delta.signature;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function handleContentBlockStop(
+  event: Anthropic.RawContentBlockStopEvent,
+  toolIdByIndex: Map<number, string>,
+  reasoningByIndex: Map<number, ReasoningBlock>,
+): StreamChunk | undefined {
+  const toolId = toolIdByIndex.get(event.index);
+  if (toolId !== undefined) {
+    return { type: 'tool_call_end', id: toolId };
+  }
+  const reasoning = reasoningByIndex.get(event.index);
+  if (reasoning === undefined) {
+    return undefined;
+  }
+  // Carry both the accumulated signature and the redacted flag (asymmetry fix: non-streaming
+  // mapContent already sets redacted; the stream must too — ADR-0030).
+  const end: Extract<StreamChunk, { type: 'reasoning_end' }> = {
+    type: 'reasoning_end',
+    id: reasoning.id,
+  };
+  if (reasoning.signature !== undefined) {
+    end.signature = reasoning.signature;
+  }
+  if (reasoning.redacted) {
+    end.redacted = true;
+  }
+  return end;
+}
+
+/**
+ * Fold one content-block stream event into the `StreamChunk` to emit (or `undefined`) by delegating
+ * to the per-phase handlers, which track the tool-call id and reasoning block by content-block index
+ * so delta/stop chunks carry the matching id (and the reasoning signature accumulates). ADR-0030.
  */
 function contentBlockToChunk(
   event:
@@ -334,40 +459,26 @@ function contentBlockToChunk(
     | Anthropic.RawContentBlockDeltaEvent
     | Anthropic.RawContentBlockStopEvent,
   toolIdByIndex: Map<number, string>,
+  reasoningByIndex: Map<number, ReasoningBlock>,
 ): StreamChunk | undefined {
   if (event.type === 'content_block_start') {
-    if (event.content_block.type === 'tool_use') {
-      toolIdByIndex.set(event.index, event.content_block.id);
-      return {
-        type: 'tool_call_start',
-        id: event.content_block.id,
-        name: event.content_block.name,
-      };
-    }
-    return undefined;
+    return handleContentBlockStart(event, toolIdByIndex, reasoningByIndex);
   }
   if (event.type === 'content_block_delta') {
-    if (event.delta.type === 'text_delta') {
-      return { type: 'text_delta', text: event.delta.text };
-    }
-    if (event.delta.type === 'input_json_delta') {
-      const id = toolIdByIndex.get(event.index);
-      return id === undefined
-        ? undefined
-        : { type: 'tool_call_delta', id, argsJsonDelta: event.delta.partial_json };
-    }
-    return undefined;
+    return handleContentBlockDelta(event, toolIdByIndex, reasoningByIndex);
   }
-  // content_block_stop
-  const id = toolIdByIndex.get(event.index);
-  return id === undefined ? undefined : { type: 'tool_call_end', id };
+  return handleContentBlockStop(event, toolIdByIndex, reasoningByIndex);
 }
 
 /** Fold the Anthropic SSE event stream into the canonical `StreamChunk` sequence. */
 async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
   const toolIdByIndex = new Map<number, string>();
+  const reasoningByIndex = new Map<number, ReasoningBlock>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = 'stop';
+  // The message_delta event carries the authoritative stop_reason + final usage; a stream that ends
+  // without it was truncated and must not be reported as a successful stop.
+  let sawStop = false;
   let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
   try {
     sdkStream = await client.messages.create(
@@ -385,12 +496,13 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       } else if (event.type === 'message_delta') {
         stopReason = mapStopReason(event.delta.stop_reason);
         usage = mergeDeltaUsage(usage, event.usage);
+        sawStop = true;
       } else if (
         event.type === 'content_block_start' ||
         event.type === 'content_block_delta' ||
         event.type === 'content_block_stop'
       ) {
-        const chunk = contentBlockToChunk(event, toolIdByIndex);
+        const chunk = contentBlockToChunk(event, toolIdByIndex, reasoningByIndex);
         if (chunk !== undefined) {
           yield chunk;
         }
@@ -399,6 +511,19 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
     }
   } catch (err) {
     yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    return;
+  }
+  // No message_delta arrived → the SSE stream was cut before completion. Surface a retryable
+  // transport error rather than a clean stop that hides the lost tail.
+  if (!sawStop) {
+    yield {
+      type: 'error',
+      error: makeLlmError({
+        provider: PROVIDER,
+        kind: 'transport',
+        message: 'stream ended before message_delta (truncated response)',
+      }),
+    };
     return;
   }
   yield { type: 'stop', stopReason, usage };

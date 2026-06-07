@@ -23,12 +23,28 @@ export const ContentPartSchema = z.discriminatedUnion('type', [
     id: nonEmptyString,
     name: nonEmptyString,
     args: z.unknown(),
+    // The provider ran this tool on its own side (server-side / built-in tool, e.g. web search). The
+    // engine's ToolDispatcher does NOT execute it and does not apply its allowlist to it — it only
+    // records/forwards. Omitted (or false) means an engine-executed call. See ADR-0030 / ADR-0029.
+    providerExecuted: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('tool_result'),
     toolCallId: nonEmptyString,
     result: z.unknown(),
     isError: z.boolean().optional(),
+    // The provider produced this result (the counterpart of a provider-executed tool_call). ADR-0030.
+    providerExecuted: z.boolean().optional(),
+  }),
+  // Reasoning / "thinking" content (ADR-0030). EPHEMERAL: `signature` is a same-provider, same-turn
+  // continuity token — it is never persisted to a session, never replayed across a provider boundary
+  // on fallback, and never written to a run event or log. The engine does not interpret it; only the
+  // originating adapter feeds it back. `redacted` marks a provider-withheld block (data, no text).
+  z.object({
+    type: z.literal('reasoning'),
+    text: z.string(),
+    signature: z.string().optional(),
+    redacted: z.boolean().optional(),
   }),
 ]);
 export type ContentPart = z.infer<typeof ContentPartSchema>;

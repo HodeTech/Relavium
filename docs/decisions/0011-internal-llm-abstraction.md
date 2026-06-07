@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-03
-- **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md) (seam reused by chat-mode agents), [tech-stack.md](../tech-stack.md)
+- **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md) (seam reused by chat-mode agents), [0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) (amends the seam shape), [tech-stack.md](../tech-stack.md)
 
 ## Context
 
@@ -32,6 +32,13 @@ The seam is the immovable contract; the adapter implementation behind it is deli
 > `AgentSession` entry point ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) — chat-mode
 > agents call providers through the identical contract, so no vendor SDK type crosses the seam for
 > sessions either. The seam's types and contract are unchanged.
+
+> Amended 2026-06-07: the seam *shape* grows by three additive features — a reasoning channel,
+> `LlmRequest.responseFormat`, and `providerExecuted` — per
+> [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md). The
+> ADR-0011 decision is unchanged (an internal, provider-agnostic seam in Relavium/Zod types, no
+> vendor SDK type crossing it); only the seam's shape is extended, at the M1 freeze boundary before
+> any consumer narrows on it.
 
 Considered options:
 

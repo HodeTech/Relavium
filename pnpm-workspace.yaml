@@ -33,6 +33,8 @@ catalog:
   better-sqlite3: ^12.10.0
   # Provider SDKs — imported ONLY inside packages/llm/src/adapters/* (the seam fence, 0.F).
   # The official SDKs chosen by ADR-0011 + tech-stack.md; adding them here realizes that
-  # decision (no new ADR). The OpenAI-compatible (`openai`) and Gemini (`@google/genai`)
-  # SDKs land with 1.G / 1.H.
+  # decision (no new ADR). The OpenAI-compatible (`openai`) adapter serves OpenAI + DeepSeek
+  # (DeepSeek via a custom baseURL); `@google/genai` backs the Gemini adapter (1.G / 1.H).
   '@anthropic-ai/sdk': ^0.101.0
+  openai: ^6.42.0
+  '@google/genai': ^2.8.0

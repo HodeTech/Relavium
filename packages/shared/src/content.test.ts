@@ -60,3 +60,33 @@ describe('AbortSignalLike', () => {
     expect(fired).toBe(true);
   });
 });
+
+describe('ContentPart amendment (ADR-0030)', () => {
+  it('accepts a reasoning part with an optional signature/redacted', () => {
+    expect(ContentPartSchema.safeParse({ type: 'reasoning', text: 'thinking' }).success).toBe(true);
+    expect(
+      ContentPartSchema.safeParse({ type: 'reasoning', text: 't', signature: 's', redacted: true })
+        .success,
+    ).toBe(true);
+  });
+
+  it('accepts providerExecuted on tool_call and tool_result', () => {
+    expect(
+      ContentPartSchema.safeParse({
+        type: 'tool_call',
+        id: 'c1',
+        name: 'f',
+        args: {},
+        providerExecuted: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      ContentPartSchema.safeParse({
+        type: 'tool_result',
+        toolCallId: 'c1',
+        result: {},
+        providerExecuted: true,
+      }).success,
+    ).toBe(true);
+  });
+});

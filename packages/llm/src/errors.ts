@@ -11,7 +11,8 @@ import type { CapabilityFlags, ProviderId } from './types.js';
 export type LlmConfigErrorCode =
   | 'unknown_model'
   | 'unsupported_tool_schema'
-  | 'unsupported_capability';
+  | 'unsupported_capability'
+  | 'invalid_base_url';
 
 /** Base for the seam's thrown config errors — narrow on `code`, never on `message`. */
 export abstract class LlmConfigError extends Error {
@@ -52,6 +53,22 @@ export class ToolSchemaError extends LlmConfigError {
     this.provider = provider;
     this.toolName = toolName;
     this.reason = reason;
+  }
+}
+
+/**
+ * The factory was given a `baseURL` that is not a safe HTTPS endpoint (e.g. an HTTP URL, a
+ * loopback/link-local address, or a cloud-metadata service) — the adapter refuses to construct
+ * rather than silently enabling an SSRF path that forwards the real API key.
+ */
+export class InvalidBaseUrlError extends LlmConfigError {
+  readonly code = 'invalid_base_url';
+  readonly url: string;
+
+  constructor(url: string, reason: string) {
+    super(`invalid base URL '${url}': ${reason}`);
+    this.name = 'InvalidBaseUrlError';
+    this.url = url;
   }
 }
 
