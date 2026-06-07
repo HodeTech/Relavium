@@ -67,7 +67,9 @@ export type TokensUsed = z.infer<typeof TokensUsedSchema>;
  * keychain/env `ref` (sse-event-schema.md §Security). Never carries the secret itself. The named
  * contract every surface renders for a masked input value.
  */
-export const MaskedSecretSchema = z.object({ secret: z.literal(true), ref: nonEmptyString });
+export const MaskedSecretSchema = z
+  .object({ secret: z.literal(true), ref: nonEmptyString })
+  .strict(); // reject any extra field so a raw secret value can never ride alongside the masked shape
 export type MaskedSecret = z.infer<typeof MaskedSecretSchema>;
 
 /** A gate decision value, shared by the resumed event and `GateDecision`. */

@@ -1,11 +1,11 @@
 /**
  * Canonical literal constants shared across the schema set. Two roles:
- * - **Directly validated vocabularies** — providers, execution modes, error codes, stop
- *   reasons, fs-scope tiers are consumed via `z.enum(...)`, so the constant *is* the
- *   validated set.
- * - **Parallel authoritative lists** — run-event names and the node-type taxonomies are a
- *   single source of truth that the discriminated unions re-declare by hand (a `z.literal`
- *   per member); tests pin the two in lock-step so they never drift.
+ * - **Directly validated vocabularies** — providers, execution modes, error codes, stop reasons,
+ *   fs-scope tiers, and `ENGINE_NODE_TYPES` are consumed via `z.enum(...)` (e.g. `node:started.nodeType`
+ *   in run-event.ts), so the constant *is* the validated set.
+ * - **Parallel authoritative lists** — run-event names and `WORKFLOW_NODE_TYPES` are a single source
+ *   of truth that a discriminated union re-declares by hand (`NodeSchema` carries a `z.literal` per
+ *   variant); tests pin the two in lock-step so they never drift.
  */
 
 /** The workflow/agent YAML schema version this package targets. */

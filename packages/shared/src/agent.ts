@@ -3,20 +3,13 @@ import { z } from 'zod';
 import {
   URL_HAS_CREDENTIALS,
   findDuplicates,
+  jsonSchemaMetadataSchema,
   kebabIdSchema,
   nonEmptyString,
   positiveInt,
   temperatureSchema,
 } from './common.js';
 import { LLM_PROVIDERS } from './constants.js';
-
-/**
- * Optional agent-level JSON-Schema metadata (`input_schema` / `output_schema`, agent-yaml-spec.md
- * — "purely additive metadata"). A permissive object map; the deep JSON-Schema-subset validation
- * is an engine concern. Defined locally (not imported from `node.ts`) to avoid an agent↔node cycle —
- * `node.ts` already imports `RetrySchema` from here, and that dependency is strictly one-way.
- */
-const SchemaMetadataSchema = z.record(z.string(), z.unknown());
 
 /**
  * Agent schema (agent-yaml-spec.md). An agent is a named, reusable LLM
@@ -149,8 +142,8 @@ export const AgentSchema = z
     max_tokens: positiveInt.optional(),
     // Optional agent-level JSON-Schema metadata (agent-yaml-spec.md) — the engine validates
     // turn I/O against these when present; absent on most agents.
-    input_schema: SchemaMetadataSchema.optional(),
-    output_schema: SchemaMetadataSchema.optional(),
+    input_schema: jsonSchemaMetadataSchema.optional(),
+    output_schema: jsonSchemaMetadataSchema.optional(),
     tools: z.array(nonEmptyString).optional(),
     mcp_servers: z.array(McpServerRefSchema).optional(),
     memory: MemorySchema.optional(),

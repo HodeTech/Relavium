@@ -94,6 +94,20 @@ export const InputValidationSchema = z
   });
 export type InputValidation = z.infer<typeof InputValidationSchema>;
 
+/** Which `validation` keys are legal per input `type` (workflow-yaml-spec.md). Module-level so it is
+ * allocated once and stays a single source of truth alongside the spec table and the unit tests. */
+const VALIDATION_KEYS_BY_TYPE: Record<
+  z.infer<typeof InputTypeSchema>,
+  readonly (keyof InputValidation)[]
+> = {
+  number: ['min', 'max', 'enum'],
+  string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  boolean: [],
+};
+
 export const WorkflowInputSchema = z
   .object({
     name: nonEmptyString,
@@ -110,17 +124,15 @@ export const WorkflowInputSchema = z
     if (!input.validation) {
       return;
     }
-    const KEYS_BY_TYPE: Record<z.infer<typeof InputTypeSchema>, readonly string[]> = {
-      number: ['min', 'max', 'enum'],
-      string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-      file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-      code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-      secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-      boolean: [],
-    };
-    const allowed = KEYS_BY_TYPE[input.type];
+    const allowedKeys = VALIDATION_KEYS_BY_TYPE[input.type];
+    // Defensive: if `type` itself failed enum validation, Zod still runs this refine — bail rather
+    // than crash (the type error is already reported on the `type` field).
+    if (allowedKeys === undefined) {
+      return;
+    }
+    const allowed = new Set<string>(allowedKeys);
     for (const key of Object.keys(input.validation)) {
-      if (!allowed.includes(key)) {
+      if (!allowed.has(key)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `validation key '${key}' is not allowed for input type '${input.type}'`,

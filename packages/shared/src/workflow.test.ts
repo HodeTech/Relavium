@@ -416,6 +416,17 @@ describe('WorkflowSchema', () => {
     ).toBe(false);
   });
 
+  it('does not crash when an invalid input type carries a validation object (clean reject)', () => {
+    // The per-type key superRefine runs even though `type` failed its enum check — it must bail, not
+    // throw on an undefined key list.
+    expect(() =>
+      accepts(withWorkflow({ inputs: [{ name: 'x', type: 'badtype', validation: { min: 0 } }] })),
+    ).not.toThrow();
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 'x', type: 'badtype', validation: { min: 0 } }] })),
+    ).toBe(false);
+  });
+
   it('accepts type-appropriate validation keys', () => {
     expect(
       accepts(

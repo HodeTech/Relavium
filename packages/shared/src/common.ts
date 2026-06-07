@@ -46,6 +46,13 @@ export const URL_HAS_CREDENTIALS = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
 export const temperatureSchema = z.number().finite().min(0).max(2);
 
 /**
+ * A permissive JSON-Schema-subset metadata map (`input_schema` / `output_schema` on agents and
+ * agent/transform nodes). Centralized here so the agent-level and node-level uses stay in lock-step
+ * without an agent↔node import cycle; the deep JSON-Schema-subset validation is an engine concern.
+ */
+export const jsonSchemaMetadataSchema = z.record(z.string(), z.unknown());
+
+/**
  * The distinct values that appear more than once, in first-duplicate order. One O(n) Set-based
  * implementation shared by the duplicate-id `superRefine`s in `agent.ts` and `workflow.ts`
  * (each caller shapes its own issue message/path).

@@ -506,4 +506,11 @@ describe('MaskedSecretSchema', () => {
     expect(MaskedSecretSchema.safeParse({ secret: true }).success).toBe(false); // ref required
     expect(MaskedSecretSchema.safeParse({ secret: true, ref: '' }).success).toBe(false); // ref non-empty
   });
+
+  it('rejects an extra field — a raw secret can never ride alongside the masked shape', () => {
+    expect(
+      MaskedSecretSchema.safeParse({ secret: true, ref: 'keychain:openai', raw_value: 'sk-leak' })
+        .success,
+    ).toBe(false);
+  });
 });

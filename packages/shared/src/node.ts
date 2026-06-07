@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-import { kebabIdSchema, nonEmptyString, positiveInt, temperatureSchema } from './common.js';
+import {
+  jsonSchemaMetadataSchema,
+  kebabIdSchema,
+  nonEmptyString,
+  positiveInt,
+  temperatureSchema,
+} from './common.js';
 // RetrySchema is owned by agent.ts; node.ts depends on agent.ts one-way — agent.ts must never
 // import node.ts (the dependency stays acyclic).
 import { RetrySchema } from './agent.js';
@@ -41,7 +47,7 @@ export const MergeStrategySchema = z.enum(['concat', 'object_merge', 'first', 'c
  * engine validates the node's output against (workflow-yaml-spec.md). Modeled as a permissive
  * object map here; the deep JSON-Schema-subset validation is an engine concern (1.L/1.P).
  */
-export const OutputSchemaSchema = z.record(z.string(), z.unknown());
+export const OutputSchemaSchema = jsonSchemaMetadataSchema;
 
 export const InputNodeSchema = z
   .object({
