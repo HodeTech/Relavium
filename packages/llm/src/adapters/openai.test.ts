@@ -681,8 +681,16 @@ describe('OpenAI-compatible adapter — baseURL SSRF guard', () => {
       'https://LOCALHOST/', // case-variant localhost
       'https://[::1]/', // IPv6 loopback
       'https://[::ffff:127.0.0.1]/', // IPv4-mapped IPv6 loopback
+      'https://[::ffff:169.254.169.254]/', // IPv4-mapped IPv6 → cloud metadata
+      'https://[::ffff:10.0.0.1]/', // IPv4-mapped IPv6 → private 10/8
+      'https://[::ffff:192.168.1.1]/', // IPv4-mapped IPv6 → private 192.168/16
+      'https://[::ffff:172.16.0.1]/', // IPv4-mapped IPv6 → private 172.16/12
+      'https://[64:ff9b::169.254.169.254]/', // NAT64 → cloud metadata
       'https://[fd00::1]/', // IPv6 unique-local
       'https://[fe80::1]/', // IPv6 link-local
+      'https://0.0.0.0/', // unspecified 0.0.0.0/8
+      'https://100.64.0.1/', // CGNAT 100.64.0.0/10
+      'https://100.127.255.255/', // CGNAT upper bound
     ]) {
       expect(() => createOpenAiAdapter({ baseURL: url })).toThrow(InvalidBaseUrlError);
     }

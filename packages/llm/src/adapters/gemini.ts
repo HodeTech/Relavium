@@ -18,7 +18,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { isAbortSignal } from './shared.js';
+import { REASONING_ID, isAbortSignal } from './shared.js';
 
 /**
  * The Gemini adapter (1.H) over `@google/genai` — the riskiest adapter: a restricted tool schema and
@@ -132,6 +132,10 @@ export function mapStopReason(reason: string | undefined, hasToolCalls: boolean)
     case 'IMAGE_SAFETY':
       return 'content_filter';
     case 'MALFORMED_FUNCTION_CALL':
+    case 'UNEXPECTED_TOOL_CALL':
+      // A broken/invalid tool call is a terminal failure — surface it as 'error' rather than masking
+      // it as a clean 'stop' (both are tool-call faults in the pinned SDK enum; the only adapter
+      // that emits 'error').
       return 'error';
     case 'STOP':
     case undefined:
@@ -356,10 +360,6 @@ const sdkTransport: GeminiTransport = {
 /* v8 ignore stop */
 
 // --- Streaming fold --------------------------------------------------------------------------
-
-// A single reasoning track per response (Gemini emits one thought stream; no concurrent tracks). If
-// that changes, move to an index-keyed id like the Anthropic adapter (reasoning-${index}).
-const REASONING_ID = 'reasoning-0';
 
 /** Mutable fold state threaded across the streamed Gemini responses. */
 interface GeminiStreamState {

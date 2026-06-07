@@ -79,17 +79,24 @@ export const ResponseFormatSchema = z.discriminatedUnion('type', [
 export type ResponseFormat = z.infer<typeof ResponseFormatSchema>;
 
 /** Normalized token usage. `costMicrocents` is Relavium's, computed from the pricing table. */
-export const UsageSchema = z.object({
-  inputTokens: nonNegativeInt,
-  outputTokens: nonNegativeInt,
-  cacheReadTokens: nonNegativeInt.optional(),
-  cacheWriteTokens: nonNegativeInt.optional(),
-  // Reasoning ("thinking") tokens — OBSERVABILITY only (ADR-0030). Already counted inside
-  // `outputTokens` for billing, so the CostTracker bills `outputTokens` whole; this is not a new
-  // cost class, just visibility into how much of the output was reasoning.
-  reasoningTokens: nonNegativeInt.optional(),
-  costMicrocents: nonNegativeInt.optional(),
-});
+export const UsageSchema = z
+  .object({
+    inputTokens: nonNegativeInt,
+    outputTokens: nonNegativeInt,
+    cacheReadTokens: nonNegativeInt.optional(),
+    cacheWriteTokens: nonNegativeInt.optional(),
+    // Reasoning ("thinking") tokens — OBSERVABILITY only (ADR-0030). Already counted inside
+    // `outputTokens` for billing, so the CostTracker bills `outputTokens` whole; this is not a new
+    // cost class, just visibility into how much of the output was reasoning.
+    reasoningTokens: nonNegativeInt.optional(),
+    costMicrocents: nonNegativeInt.optional(),
+  })
+  // Enforce the ADR-0030 invariant: reasoning is a SUBSET of output, never larger. Catches an adapter
+  // that mis-maps the reasoning count (the seam's contract, not a billing input).
+  .refine((u) => u.reasoningTokens === undefined || u.reasoningTokens <= u.outputTokens, {
+    message: 'reasoningTokens must be ≤ outputTokens (reasoning is counted inside output)',
+    path: ['reasoningTokens'],
+  });
 export type Usage = z.infer<typeof UsageSchema>;
 
 /** What a provider supports; features off the common path are reached via `providerOptions`. */

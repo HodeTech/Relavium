@@ -25,7 +25,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { isAbortSignal } from './shared.js';
+import { REASONING_ID, isAbortSignal } from './shared.js';
 
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
@@ -239,6 +239,11 @@ function toOpenAiMessages(message: LlmMessage): OpenAI.ChatCompletionMessagePara
       if (toolCalls.length > 0) {
         msg.tool_calls = toolCalls;
       }
+      // An assistant message that lowered to neither text nor tool calls (e.g. reasoning-only — reasoning
+      // is ephemeral and never replayed, ADR-0030) would be wire-invalid; emit empty content instead.
+      if (msg.content === undefined && msg.tool_calls === undefined) {
+        msg.content = '';
+      }
       return [msg];
     }
     case 'tool':
@@ -358,15 +363,26 @@ function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
  */
 function isPrivateOrLocalHost(host: string): boolean {
   if (host.includes(':')) {
-    // IPv6 literal: loopback, unspecified, link-local (fe80::/10), unique-local (fc00::/7), and
-    // the IPv4-mapped loopback form (::ffff:7f00:1 == ::ffff:127.0.0.1).
+    // IPv6 literal. An embedded-IPv4 form (IPv4-mapped `::ffff:a.b.c.d` and well-known NAT64
+    // `64:ff9b::a.b.c.d`) routes to its embedded IPv4 on a dual-stack host — decode it and re-check
+    // the IPv4, so e.g. `::ffff:169.254.169.254` (which Node normalizes to `::ffff:a9fe:a9fe`)
+    // cannot slip past as a "non-loopback" IPv6.
+    const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+    if (embeddedHex !== null) {
+      const hi = parseInt(embeddedHex[1] ?? '', 16);
+      const lo = parseInt(embeddedHex[2] ?? '', 16);
+      return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+    }
+    const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
+    if (embeddedDotted !== null) {
+      return isPrivateOrLocalHost(embeddedDotted[1] ?? '');
+    }
     return (
-      host === '::1' ||
-      host === '::' ||
-      host.startsWith('fe80:') ||
-      host.startsWith('fc') ||
-      host.startsWith('fd') ||
-      host.startsWith('::ffff:7f') // NOSONAR — intentional reserved-range literal; this IS the SSRF block
+      host === '::1' || // loopback
+      host === '::' || // unspecified
+      host.startsWith('fe80:') || // link-local fe80::/10
+      host.startsWith('fc') || // unique-local fc00::/7
+      host.startsWith('fd')
     );
   }
   if (
@@ -374,19 +390,24 @@ function isPrivateOrLocalHost(host: string): boolean {
     host.endsWith('.localhost') ||
     host.endsWith('.internal') ||
     host.endsWith('.local') ||
-    host === '0.0.0.0' ||
-    host.startsWith('127.') ||
-    host.startsWith('10.') ||
-    host.startsWith('192.168.') ||
+    host.startsWith('0.') || // 0.0.0.0/8 — "this host" / unspecified
+    host.startsWith('127.') || // loopback 127/8
+    host.startsWith('10.') || // private 10/8
+    host.startsWith('192.168.') || // private 192.168/16
     host.startsWith('169.254.') // IPv4 link-local — cloud metadata (169.254.169.254)
   ) {
     return true;
   }
-  // 172.16.0.0 – 172.31.255.255
-  const match = /^172\.(\d{1,3})\./.exec(host);
-  if (match !== null) {
-    const second = Number(match[1]);
-    return second >= 16 && second <= 31;
+  // 172.16.0.0–172.31.255.255 (private) and 100.64.0.0–100.127.255.255 (CGNAT).
+  const m172 = /^172\.(\d{1,3})\./.exec(host);
+  if (m172 !== null) {
+    const octet = Number(m172[1]);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  const m100 = /^100\.(\d{1,3})\./.exec(host);
+  if (m100 !== null) {
+    const octet = Number(m100[1]);
+    if (octet >= 64 && octet <= 127) return true;
   }
   return false;
 }
@@ -455,11 +476,6 @@ function readReasoningContent(delta: unknown): string | undefined {
   }
   return undefined;
 }
-
-// A single reasoning track per response (OpenAI/DeepSeek emit one block; no concurrent tracks). If
-// a provider ever interleaves multiple reasoning streams, move to an index-keyed id like the Anthropic
-// adapter (reasoning-${index}).
-const REASONING_ID = 'reasoning-0';
 
 /** Mutable fold state threaded across the streamed chunks. */
 interface OpenAiStreamState {
@@ -628,6 +644,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         const refused =
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
         return {
+          // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
           content: choice === undefined ? [] : mapContent(choice.message, providerId),
           stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
           usage: completion.usage ? mapUsage(completion.usage) : ZERO_USAGE,

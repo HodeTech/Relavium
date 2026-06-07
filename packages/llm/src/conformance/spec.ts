@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { StopReason } from '@relavium/shared';
 
 import { LlmProviderError } from '../llm-error.js';
+import { LlmResultSchema, StreamChunkSchema } from '../types.js';
 import type { LlmErrorKind, LlmProvider, LlmRequest, StreamChunk } from '../types.js';
 import type { RecordedResponse } from './replay.js';
 
@@ -96,6 +97,9 @@ const JSON_REQUEST: LlmRequest = {
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
   const chunks: StreamChunk[] = [];
   for await (const chunk of stream) {
+    // Defense-in-depth: every streamed chunk must satisfy the canonical StreamChunk schema (throws
+    // loud on a non-conforming shape, incl. the Usage subset invariant on the terminal stop).
+    StreamChunkSchema.parse(chunk);
     chunks.push(chunk);
   }
   return chunks;
@@ -112,6 +116,8 @@ export function defineConformanceSuite(
   describe(`${name} — conformance (replay)`, () => {
     it('generate: returns text content with the exact usage and canonical stop reason', async () => {
       const result = await makeReplayAdapter(fixtures.textGenerate).generate(TEXT_REQUEST, KEY);
+      // Defense-in-depth: the whole result must satisfy the canonical LlmResult schema.
+      expect(LlmResultSchema.safeParse(result).success).toBe(true);
       const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
       expect(text).toBe(expected.textGenerate.text); // exact value, not just presence
       expect(result.usage.inputTokens).toBe(expected.textGenerate.inputTokens);

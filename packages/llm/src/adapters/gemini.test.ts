@@ -68,6 +68,7 @@ describe('Gemini adapter', () => {
     expect(mapStopReason('SAFETY', false)).toBe('content_filter');
     expect(mapStopReason('RECITATION', false)).toBe('content_filter');
     expect(mapStopReason('MALFORMED_FUNCTION_CALL', false)).toBe('error');
+    expect(mapStopReason('UNEXPECTED_TOOL_CALL', false)).toBe('error');
     expect(mapStopReason('SOMETHING_NEW', false)).toBe('stop');
   });
 

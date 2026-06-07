@@ -16,6 +16,14 @@ async function* toAsyncIterable(items: readonly GeminiResponse[]): AsyncIterable
   }
 }
 
+// Validate the parsed fixture with a type guard rather than an unsafe `as` (CLAUDE.md): the fold reads
+// every field defensively, so a structural object/array check is sufficient and fails loud on a
+// malformed fixture.
+const isGeminiResponse = (value: unknown): value is GeminiResponse =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isGeminiResponseArray = (value: unknown): value is GeminiResponse[] =>
+  Array.isArray(value) && value.every(isGeminiResponse);
+
 // Gemini has no `fetch` hook, so the conformance harness replays at the transport level: a recorded
 // SDK-output JSON (single response or an array of streamed responses) is parsed and served through a
 // fake GeminiTransport — no vendor SDK is imported here.
@@ -24,12 +32,20 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
   const rejection = (): Promise<never> =>
     Promise.reject(Object.assign(new Error('replayed gemini error'), { status: recorded.status }));
   const transport: GeminiTransport = {
-    generate: () =>
-      failure ? rejection() : Promise.resolve(JSON.parse(recorded.body) as GeminiResponse),
-    stream: () =>
-      failure
-        ? rejection()
-        : Promise.resolve(toAsyncIterable(JSON.parse(recorded.body) as GeminiResponse[])),
+    generate: () => {
+      if (failure) return rejection();
+      const parsed: unknown = JSON.parse(recorded.body);
+      return isGeminiResponse(parsed)
+        ? Promise.resolve(parsed)
+        : Promise.reject(new Error('replay fixture is not a GeminiResponse object'));
+    },
+    stream: () => {
+      if (failure) return rejection();
+      const parsed: unknown = JSON.parse(recorded.body);
+      return isGeminiResponseArray(parsed)
+        ? Promise.resolve(toAsyncIterable(parsed))
+        : Promise.reject(new Error('replay fixture is not a GeminiResponse[] array'));
+    },
   };
   return createGeminiAdapter({ transport });
 };

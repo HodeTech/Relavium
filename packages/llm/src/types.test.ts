@@ -269,5 +269,15 @@ describe('seam shape amendment (ADR-0030)', () => {
     expect(
       UsageSchema.safeParse({ inputTokens: 1, outputTokens: 2, reasoningTokens: 1 }).success,
     ).toBe(true);
+    // boundary: equal is allowed
+    expect(
+      UsageSchema.safeParse({ inputTokens: 1, outputTokens: 2, reasoningTokens: 2 }).success,
+    ).toBe(true);
+  });
+
+  it('UsageSchema rejects reasoningTokens > outputTokens (ADR-0030 subset invariant)', () => {
+    expect(
+      UsageSchema.safeParse({ inputTokens: 1, outputTokens: 2, reasoningTokens: 3 }).success,
+    ).toBe(false);
   });
 });
