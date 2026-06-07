@@ -5,28 +5,35 @@ import { defineConfig } from 'vitest/config';
  * in their own directory; this root config governs a repo-wide run and holds the
  * coverage harness.
  *
- * Coverage uses the V8 provider with branch reporting available now; the >= 90%
- * engine threshold is *enforced* from Phase 1 (see docs/standards/testing.md), so no
- * failing threshold is set on the Phase-0 scaffold yet.
+ * Coverage uses the V8 provider with branch reporting. The Phase-1 **>= 90% line + branch**
+ * engine floor (docs/standards/testing.md#coverage-expectations) is now *enforced* for the
+ * built engine package(s) via the per-glob `thresholds` below; surfaces stay smoke-only.
  */
 export default defineConfig({
   test: {
     environment: 'node',
-    // Pin tests to `*.test.ts` only — the project convention (docs/standards/testing.md).
-    // Vitest's *default* include also matches `*.spec.ts`, which the build tsconfig does
-    // not exclude, so a stray `*.spec.ts` could leak into dist/; restricting the runner
-    // here keeps the runner and the build in lock-step. The `**/` prefix matches whether
-    // Vitest runs from the repo root or inside a package (one ancestor-resolved config).
+    // Pin tests to `*.test.ts` only — the project's single test-file convention
+    // (docs/standards/testing.md). Vitest's *default* include also collects `*.spec.ts`; we do
+    // not use that suffix, so pinning keeps the runner aligned with the convention. A file
+    // mistakenly named `*.spec.ts` simply does not run — which the coverage floor below surfaces
+    // (its target code loses coverage). The `**/` prefix matches whether Vitest runs from the repo
+    // root or inside a package (one ancestor-resolved config).
     include: ['**/*.test.ts'],
     passWithNoTests: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: './coverage',
-      // Scope the denominator to real package source so the Phase-1 >= 90% threshold is
-      // measured against source, not test files, fixtures, configs, dist, or migrations.
-      include: ['packages/*/src/**/*.ts'],
-      exclude: ['**/*.test.ts'],
+      // cwd-tolerant: `**/src/**` matches whether the run is rooted at the repo or a package, so a
+      // package-scoped `--coverage` run no longer reports a false 0%. Apps stay smoke-only (excluded).
+      include: ['**/src/**/*.ts'],
+      exclude: ['**/*.test.ts', '**/apps/**'],
+      // The enforced Phase-1 engine floor, scoped per-glob so it targets only the built engine
+      // package(s) and never the not-yet-90% shared/db or the unbuilt core.
+      thresholds: {
+        'packages/llm/src/**/*.ts': { lines: 90, branches: 90 },
+        // 'packages/core/src/**/*.ts': { lines: 90, branches: 90 }, // enable once core lands (1.L+)
+      },
     },
   },
 });

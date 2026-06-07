@@ -1,0 +1,10 @@
+{
+  // Typecheck the repo-root / tooling `*.config.ts` and `tools/**` scripts that sit outside every
+  // package's tsc program (and so were never typechecked). Run via the `typecheck:tools` script.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["vitest.config.ts", "packages/*/drizzle.config.ts"]
+}
