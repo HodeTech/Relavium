@@ -39,9 +39,17 @@ interface LlmRequest {
   temperature?: number;
   maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
   stopSequences?: string[];
+  responseFormat?: ResponseFormat; // structured-output request (ADR-0030)
   signal?: AbortSignal;          // cancellation; host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
   providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)
 }
+
+// Structured-output contract (ADR-0030). Each adapter lowers `json` to the provider's native mode
+// (OpenAI json_schema; Gemini responseJsonSchema; Anthropic output_config; DeepSeek json_object — no
+// schema enforcement, so its fidelity is "parseable JSON", not schema-validated).
+type ResponseFormat =
+  | { type: 'text' }
+  | { type: 'json'; schema: JSONSchema7; name?: string; strict?: boolean };
 
 interface LlmMessage {
   role: 'user' | 'assistant' | 'tool';
@@ -50,8 +58,9 @@ interface LlmMessage {
 
 type ContentPart =
   | { type: 'text'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: unknown }      // assistant -> wants tool
-  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean };
+  | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral
+  | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean }   // assistant -> wants tool
+  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean; providerExecuted?: boolean };
 
 interface ToolDef {
   name: string;
@@ -74,15 +83,20 @@ interface Usage {
   outputTokens: number;
   cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
   cacheWriteTokens?: number;
+  reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
   costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by a pricing table keyed on canonical model id
 }
 
 // Normalized streaming — one discriminated union for ALL providers
 type StreamChunk =
   | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_start'; id: string }                          // ADR-0030 — reasoning channel
+  | { type: 'reasoning_delta'; id: string; text: string }
+  | { type: 'reasoning_end'; id: string; signature?: string; redacted?: boolean }  // signature/redacted both surfaced on the stream
   | { type: 'tool_call_start'; id: string; name: string }
-  | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON
+  | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON; count/timing is provider-dependent — accumulate, parse at tool_call_end
   | { type: 'tool_call_end'; id: string }
+  | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true }  // ADR-0030 — provider-run tool; engine records, never runs
   | { type: 'stop'; stopReason: StopReason; usage: Usage }
   | { type: 'error'; error: LlmError };
 
