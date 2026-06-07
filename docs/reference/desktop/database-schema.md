@@ -33,7 +33,7 @@ Two SQLite databases exist:
 | Global history | `~/.relavium/history.db` | SQLCipher (key from OS keychain) | Full runs, every event, every cost row, the catalog tables | Never committed |
 | Project history | `{projectRoot}/.relavium/runs.db` | None | Run **metadata only** (no event payloads) so teammates see historical run summaries after a `git pull` | Committed |
 
-The database is opened with `PRAGMA journal_mode = WAL` for concurrent read performance and `PRAGMA foreign_keys = ON` per connection (SQLite does **not** enforce foreign keys by default). Run events in `history.db` are pruned after 90 days by a background job that runs on app launch.
+The database is opened with `PRAGMA journal_mode = WAL` (readers never block the writer and vice-versa — but SQLite still allows **only one writer at a time**, so engine authors must funnel `run_events` and other hot-path writes through a single serialized writer, never concurrent writers) and `PRAGMA foreign_keys = ON` per connection (SQLite does **not** enforce foreign keys by default). Run events in `history.db` are pruned after 90 days by a background job that runs on app launch.
 
 > Workflows and agents are **not** the database's source of truth. The git-committable YAML files (`.relavium.yaml` / `.agent.yaml`) are authoritative; see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md) and [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md). The catalog tables below cache and snapshot them for fast querying, run reproducibility, and offline browsing.
 

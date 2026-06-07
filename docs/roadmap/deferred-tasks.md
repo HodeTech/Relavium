@@ -15,6 +15,14 @@ risk/benefit favors waiting. None block a shipped milestone. Pick them up opport
 
 Severity is the review's verified rating. Check an item off in the PR that resolves it.
 
+> **2026-06-07 hardening pass:** the built-package items (shared / db / llm / root tooling / docs)
+> were re-verified against current code by a per-item review and **29 were resolved** (checked off
+> below). What remains open is **maintainer decisions** (`$ref`, branded ids, `LICENSE`, vision
+> image-arm, config strictness, turbo `inputs`, `engine-strict`), **blocked** work (live-nightly keys,
+> non-Anthropic pricing verification — needs the live pages), and **three explicitly deferred** items
+> (each annotated with why: the `z.unknown()` presence check, the dist packaging smoke test, and
+> local `format:check` via turbo).
+
 ## Decisions needed (maintainer call)
 
 - [ ] **Workflow `agents:` `$ref` support** — the
@@ -32,14 +40,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`LICENSE` file + root `license` field** — the public repo has neither. Add a
   `LICENSE` matching HodeTech's intent (proprietary `UNLICENSED` or an OSS license) and set
   the root `package.json` `"license"`. *(nit · package.json, repo root)*
-- [ ] **`node:started.nodeType` enum vs free string** — currently an unconstrained
+- [x] **`node:started.nodeType` enum vs free string** — currently an unconstrained
   `nonEmptyString`. Decide whether the SSE event should carry the engine node-type enum
   (add `ENGINE_NODE_TYPES` to constants and `z.enum(...)`) or stay free-string for
   forward-compat, and record the choice. *(nit · packages/shared/src/run-event.ts:47)*
-- [ ] **`MaskedSecret` named contract** — `run:started.inputs` documents secret masking only
+- [x] **`MaskedSecret` named contract** — `run:started.inputs` documents secret masking only
   in a comment. Export a `MaskedSecret` type/schema (`{ secret: true; ref: string }`) so the
   masked shape is a named contract every surface renders. *(nit · run-event.ts:39)*
-- [ ] **`composite`/project references (reconcile 0.B)** — phase-0-foundations.md 0.B calls
+- [x] **`composite`/project references (reconcile 0.B)** — phase-0-foundations.md 0.B calls
   for `composite`/project-reference tsconfig fields that were not implemented. Either add a
   `packages/*` library base with `composite: true` + `references` (db → shared) and build via
   `tsc -b`, or record that turbo `^build`-ordering is the deliberate final design and update
@@ -60,15 +68,19 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`z.unknown()` payload presence** — `agent:tool_call.toolInput`, `node:completed.output`,
   `human_gate:resumed.payload` validate even when absent. Decide presence per field (force the
   key via a `.superRefine` hasOwnProperty check, or document absence is OK) and add accept/reject
-  tests. *(minor · run-event.ts:64,93,124)*
-- [ ] **Standalone `MergeNodeSchema` gap** — `merge_strategy:custom` without `merge_fn` only
+  tests. *(minor · run-event.ts:64,93,124)* **Deferred 2026-06-07:** the obvious per-member
+  `.superRefine` is infeasible — these events are members of `z.discriminatedUnion`, which rejects a
+  `ZodEffects` member; the correct fix adds the `hasOwnProperty` check to the existing outer
+  `RunEventSchema.superRefine` (where the runId/sessionId cross-check already lives). Low value, left
+  for the consumer that needs the guarantee.
+- [x] **Standalone `MergeNodeSchema` gap** — `merge_strategy:custom` without `merge_fn` only
   fails at `WorkflowSchema` level (a discriminated-union member can't carry the cross-field
   rule). Document the partial node-level validation and add a `node.test.ts` case pinning the
   gap as intentional. *(minor · node.ts:85-92, workflow.ts:104-113)*
-- [ ] **O(n²) duplicate-id check in `AgentSchema`** — uses `indexOf`-in-`filter` while
+- [x] **O(n²) duplicate-id check in `AgentSchema`** — uses `indexOf`-in-`filter` while
   `workflow.ts` uses an O(n) `Set`. Reuse a shared `reportDuplicates` helper so both schemas
   share the single O(n) implementation. *(nit · agent.ts:109-110)*
-- [ ] **Per-provider temperature ranges** — the shared `temperatureSchema` is the
+- [x] **Per-provider temperature ranges** — the shared `temperatureSchema` is the
   provider-agnostic `[0, 2]` envelope, but Anthropic accepts only `[0, 1]`. Enforce/clamp the
   provider's real range in the `@relavium/llm` adapter (Phase 1, where request validation
   lives) so a `provider: anthropic` + `temperature > 1` agent fails fast — without coupling the
@@ -80,7 +92,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   committed config formats should fail loudly on an unknown key (cheap to land pre-coding, no
   config files exist yet) and apply `.strict()` if so, or record the leniency as deliberate.
   Pre-existing; out of 1.L.0's additive scope. *(minor · packages/shared/src/config.ts)*
-- [ ] **Codify `ContentPart` / `StopReason` canonical home in the seam doc** — both are intended
+- [x] **Codify `ContentPart` / `StopReason` canonical home in the seam doc** — both are intended
   to be **owned by `@relavium/shared`** and re-exported by the `@relavium/llm` seam, never imported
   by shared from llm (which would invert the package dependency). `StopReason` already lives in
   `@relavium/shared` (constants.ts, used by `session:turn_completed`); `ContentPart` lands when
@@ -88,14 +100,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)) still shows both only as
   local TS shapes with no ownership/re-export statement — annotate them there so the seam doc and
   the `constants.ts` / `run-event.ts` comments stay aligned. *(nit → 1.A/1.V · llm-provider-seam.md)*
-- [ ] **`AgentSchema` `input_schema` / `output_schema`** — agent-yaml-spec.md lists both as optional
+- [x] **`AgentSchema` `input_schema` / `output_schema`** — agent-yaml-spec.md lists both as optional
   agent-level fields ("purely additive metadata"), and names `AgentSchema` as their validator, but
   `AgentSchema` is `.strict()` and declares neither — so an authored agent using a spec-sanctioned
   `output_schema` is rejected at parse. Pre-existing (agent.ts untouched by 1.L.0, which scopes
   `output_schema` to the agent/transform *nodes* only); add both as `OutputSchemaSchema.optional()`
   (the node.ts JSON-Schema-subset map) + a test, or amend the spec. *(low · agent.ts,
   agent-yaml-spec.md)*
-- [ ] **Input-validation type-compatibility** — `WorkflowInput.validation` accepts any key
+- [x] **Input-validation type-compatibility** — `WorkflowInput.validation` accepts any key
   regardless of the input `type` (e.g. `format`/`max_length` on a `number`, `min`/`max` on a
   `string`). Bound-ordering (`min ≤ max`, `min_length ≤ max_length`) is enforced; the per-type
   key matrix is not, because the contract (workflow-yaml-spec.md) only shows two examples and
@@ -106,7 +118,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   DeepSeek rows are best-known **placeholders** (Anthropic is confirmed via claude-api). Verify
   each against the provider's pricing page when its adapter lands, and replace Gemini's flat
   ≤128K-tier figures if context-tiered pricing matters. *(low → 1.G/1.H · packages/llm/src/pricing.ts)*
-- [ ] **`model_catalog` cache-write column (at the seeder)** — `ModelPricing` carries
+- [x] **`model_catalog` cache-write column (at the seeder)** — `ModelPricing` carries
   `cacheWritePerMtokMicrocents` (Anthropic charges one), but `model_catalog`
   ([database-schema.md](../reference/desktop/database-schema.md)) has only
   `input/output/cached_input_*_per_mtok_microcents`. When the catalog seeder lands, either add a
@@ -115,31 +127,33 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## Test depth
 
-- [ ] **Coverage glob is cwd-sensitive + no enforced threshold** — `vitest.config.ts`'s
+- [x] **Coverage glob is cwd-sensitive + no enforced threshold** — `vitest.config.ts`'s
   `coverage.include: ['packages/*/src/**/*.ts']` is repo-root-relative, so a package-scoped run
   (`pnpm --filter @relavium/llm exec vitest --coverage`) reports a false **0%**; coverage is only
   accurate from the repo root. Make the glob cwd-tolerant (or document root-only) and add the
   testing.md **≥90% line+branch** threshold for the engine packages (`packages/core`,
   `packages/llm`) — per-area, since surfaces are smoke-only. *(minor · vitest.config.ts)*
-- [ ] **Column-level schema fidelity** — `client.test.ts` proves only that table *names* exist.
+- [x] **Column-level schema fidelity** — `client.test.ts` proves only that table *names* exist.
   Add a `PRAGMA table_info(<table>)` assertion per table (name/type/notnull/dflt/pk) against an
   expected fixture, or snapshot `0000_*.sql` byte-for-byte. *(minor · packages/db/src/client.test.ts)*
-- [ ] **Negative FK test** — insert a `step_executions` row with a non-existent `run_id` and
+- [x] **Negative FK test** — insert a `step_executions` row with a non-existent `run_id` and
   assert `/FOREIGN KEY constraint failed/i`, proving `foreign_keys = ON` actually rejects.
   *(minor · packages/db/src/client.test.ts)*
 - [ ] **dist-resolution packaging test** — the migration runner is tested only from `src/`; add
   a smoke test that imports built `dist/index.js` and runs `runMigrations` (the path consumers
-  use). *(minor · packages/db/src/client.test.ts)*
-- [ ] **In-memory `journal_mode` assertion** — if/when asserting the WAL no-op for `:memory:`,
+  use). *(minor · packages/db/src/client.test.ts)* **Deferred 2026-06-07:** fragile as a Vitest unit
+  test (it must import `dist/` which only exists after `turbo run build`, so it would skip or fail
+  depending on run order). Belongs in a dedicated post-build packaging-smoke step, not the unit suite.
+- [x] **In-memory `journal_mode` assertion** — if/when asserting the WAL no-op for `:memory:`,
   assert its `journal_mode` is `'memory'`. *(nit · client.test.ts:50-53)*
-- [ ] **Edge `from`-handle grammar** — the handle is permissive (uppercase/spaces/repeated
+- [x] **Edge `from`-handle grammar** — the handle is permissive (uppercase/spaces/repeated
   colons). Decide + pin the grammar (`a:` empty handle rejects; decide on `a:UPPER`/`a:a:b`) and
   tighten the regex if needed. *(minor · edge.ts:14-19, edge.test.ts)*
-- [ ] **Condition/transform invariants** — add tests: reject `default:'Not Kebab'`; accept
+- [x] **Condition/transform invariants** — add tests: reject `default:'Not Kebab'`; accept
   `when:'foo'`/`when:7`; reject empty `transform`/`expression`. *(minor · node.test.ts)*
-- [ ] **`record()` non-object reject** — assert `RunSchema.safeParse({ ...run, inputs: 'x' })`
+- [x] **`record()` non-object reject** — assert `RunSchema.safeParse({ ...run, inputs: 'x' })`
   rejects, pinning the record boundary. *(nit · run.test.ts, run-event.test.ts)*
-- [ ] **Round-trip fixture verbatim** — the workflow no-drift fixture paraphrases multi-line
+- [x] **Round-trip fixture verbatim** — the workflow no-drift fixture paraphrases multi-line
   prompts; transcribe them verbatim from the spec or soften the "verbatim" claim. *(nit · workflow.test.ts)*
 
 ## Tooling / CI
@@ -147,12 +161,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Turbo task `inputs`** — `lint`/`typecheck`/`test` declare no `inputs`, so turbo hashes
   every file (over-invalidation). Scope inputs to the files each task reads (kept as the safe
   default for now to avoid cache-staleness risk). *(minor · turbo.json:19-30)*
-- [ ] **`incremental` tsconfig** — no `.tsbuildinfo` reuse; every `tsc` recompiles from scratch.
+- [x] **`incremental` tsconfig** — no `.tsbuildinfo` reuse; every `tsc` recompiles from scratch.
   Add `incremental: true` (gitignored `tsBuildInfoFile`, listed in turbo `outputs`). *(minor · tsconfig.base.json)*
-- [ ] **Typecheck the config files** — root/package-root `*.config.ts` (drizzle/vitest) are
+- [x] **Typecheck the config files** — root/package-root `*.config.ts` (drizzle/vitest) are
   neither typechecked nor linted. Add a `tsconfig.tools.json` + `typecheck:tools` step, or
   document the gap as an accepted boundary. *(minor · drizzle.config.ts, vitest.config.ts)*
-- [ ] **Concurrency head-ref grouping** — `main` is now protected from cancellation, but a
+- [x] **Concurrency head-ref grouping** — `main` is now protected from cancellation, but a
   same-repo branch push and its open PR still run CI under separate groups. Consider
   `group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}` to collapse them.
   *(minor · ci.yml:19-27)*
@@ -161,6 +175,9 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   slightly-off Node — decide deliberately.) *(minor · .npmrc, package.json)*
 - [ ] **Local `format:check` via turbo** — CI now runs `turbo run format:check`; consider routing
   the root `format:check` npm script through turbo too so local + CI share the cache. *(minor · package.json:21)*
+  **Deferred 2026-06-07:** low-value cache nit that needs a task rename to avoid turbo recursion
+  (`//#format:check` is bound by name to the `format:check` script); CI already runs through turbo,
+  so only the local cache-share is missing. Not worth the rename churn now.
 - [ ] **Enable the live-nightly conformance lane** — the per-provider conformance suite runs in
   fixture mode on every PR, but the scheduled live-API lane is still reserved/commented in `ci.yml`
   (the "enable with the first provider adapter" TODO), and the adapters have now landed (PR #9, M1).
@@ -171,26 +188,26 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## Docs
 
-- [ ] **Node-runtime row in tech-stack.md** — `runbooks/local-dev-setup.md` defers the Node
+- [x] **Node-runtime row in tech-stack.md** — `runbooks/local-dev-setup.md` defers the Node
   version to tech-stack.md, which states none. Add a row (`.nvmrc` = dev/CI 22; supported floor
   20.11 per `engines`). *(minor · tech-stack.md)*
-- [ ] **WAL single-writer wording** — soften database-schema.md "concurrent read performance" to
+- [x] **WAL single-writer wording** — soften database-schema.md "concurrent read performance" to
   make the single-writer constraint explicit so engine authors design `run_events` writes around
   one writer. *(minor · database-schema.md)*
-- [ ] **`vitest.config.ts` include comment** — the stated rationale is inaccurate; rewrite it to
+- [x] **`vitest.config.ts` include comment** — the stated rationale is inaccurate; rewrite it to
   the real reason (pin to `*.test.ts` so a stray `*.spec.ts` surfaces). *(minor · vitest.config.ts:16-18)*
-- [ ] **`constants.ts` header overstatement** — clarify that providers/execution-modes are
+- [x] **`constants.ts` header overstatement** — clarify that providers/execution-modes are
   consumed by `z.enum`, while event names/node types are a parallel authoritative list the unions
   re-declare and tests pin. *(nit · constants.ts)*
-- [ ] **`RetrySchema` cross-dep note** — note at the `node.ts` import that `RetrySchema` is owned
+- [x] **`RetrySchema` cross-dep note** — note at the `node.ts` import that `RetrySchema` is owned
   by `agent.ts` and the dependency is one-way (agent.ts must never import node.ts). *(nit · node.ts:1-4)*
-- [ ] **`cumulativeCostMicrocents` comment** — append the run-scope "running total for the whole
+- [x] **`cumulativeCostMicrocents` comment** — append the run-scope "running total for the whole
   run" note to match the spec. *(nit · run-event.ts:84)*
-- [ ] **Per-variant event-type export consolidation** — 3 inline + 10 in a trailing block; either
+- [x] **Per-variant event-type export consolidation** — 3 inline + 10 in a trailing block; either
   co-locate all inline or annotate the trailing block so it isn't read as exhaustive. *(nit · run-event.ts)*
 
 ## Packaging
 
-- [ ] **Shipped source maps reference `../src`** — published `dist/*.map` point at `src/`, which
+- [x] **Shipped source maps reference `../src`** — published `dist/*.map` point at `src/`, which
   isn't in `files`. Either add `"src"` to `files` or drop `declarationMap`/`sourceMap` from the
   `*.build.json`. Bounded by `private: true` for now. *(nit · tsconfig.base.json, package.json `files`)*

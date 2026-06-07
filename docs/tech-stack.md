@@ -67,6 +67,7 @@ adversarially reviewed by a 10-agent workflow before being locked.
 
 ## Supporting Tooling
 
+- **Node.js runtime**: **Node 22** for dev + CI (pinned in [`.nvmrc`](../.nvmrc)); the supported floor is **20.11.0** per the root `package.json` `engines.node` (`>=20.11.0`). The TypeScript engine and every Node surface (CLI, the `@relavium/db`/`@relavium/llm` test runs, Phase-2 Bun parity) target this range.
 - **Monorepo**: Turborepo + pnpm workspaces (see [project-structure.md](project-structure.md))
 - **UI**: shadcn/ui + Radix on Tailwind, shared via `packages/ui`
 - **Canvas**: ReactFlow (custom node types in `packages/ui`)

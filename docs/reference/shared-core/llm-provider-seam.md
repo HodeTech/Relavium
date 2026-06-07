@@ -56,6 +56,8 @@ interface LlmMessage {
   content: ContentPart[];        // normalized parts, not raw strings
 }
 
+// `ContentPart` is OWNED by @relavium/shared (ContentPartSchema) and re-exported by this seam —
+// @relavium/shared never imports from @relavium/llm (that would invert the package dependency).
 type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral
@@ -76,6 +78,8 @@ interface LlmResult {
   raw: unknown;                  // provider response, for debugging/escape hatch
 }
 
+// `StopReason` is also OWNED by @relavium/shared (constants.ts STOP_REASONS, used by
+// `session:turn_completed`) and re-exported by the seam — same one-way ownership as `ContentPart`.
 type StopReason = 'stop' | 'length' | 'tool_use' | 'content_filter' | 'error';
 
 interface Usage {
