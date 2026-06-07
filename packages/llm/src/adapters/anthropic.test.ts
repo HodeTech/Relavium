@@ -384,6 +384,28 @@ describe('AnthropicAdapter — stream edge cases', () => {
     expect(sent['stop_sequences']).toEqual(['STOP']);
   });
 
+  it('rejects a temperature above Anthropic max (1) with a bad_request, never reaching the transport', async () => {
+    let reached = false;
+    const adapter = createAnthropicAdapter({
+      fetch: () => {
+        reached = true;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+      maxRetries: 0,
+    });
+    let caught: unknown;
+    try {
+      await adapter.generate({ ...REQ, temperature: 1.5 }, 'k');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('bad_request');
+    }
+    expect(reached).toBe(false); // failed fast, before egress
+  });
+
   it('merges the cumulative cache/input usage the message_delta carries into the stop chunk', async () => {
     const body =
       ev('message_start', {
