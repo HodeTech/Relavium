@@ -106,6 +106,16 @@ describe('config schemas', () => {
     ).toBe(false);
   });
 
+  it('rejects an unknown/typo key in an MCP registration (strict — ADR-0033)', () => {
+    // `autostrat` is a typo for `autostart`; McpServerRegistrationSchema.strict() rejects it
+    // rather than silently dropping it (config files are strict per ADR-0033).
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'x', transport: 'stdio', command: 'npx', autostrat: true }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts defaults.max_tokens_estimate (ADR-0028 pre-egress estimate)', () => {
     expect(
       ProjectConfigSchema.safeParse({ defaults: { model: 'gpt-4o', max_tokens_estimate: 4096 } })
