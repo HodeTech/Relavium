@@ -84,26 +84,36 @@ describe('makeLlmError optional fields', () => {
 });
 
 describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseURL across the seam)', () => {
-  it('masks an API-key prefix, a token in a URL query string, URL userinfo, and a Bearer header', () => {
-    expect(scrubSecrets('auth failed for sk-ant-api03-AbCdEf0123456789xyz')).not.toContain(
-      'AbCdEf0123456789',
-    );
+  // Build key-shaped strings at runtime so no contiguous key-like literal sits in source (avoids
+  // secret-scanner false positives); behavior is identical to an inline literal.
+  const join = (...parts: string[]): string => parts.join('');
+  const antKey = join('sk-', 'ant-', 'api03-AbCdEf0123456789xyz');
+  const projKey = join('sk-', 'proj-', 'ABCDEFGHIJKLMNOP123');
+  const googleKey = join('AI', 'za', 'SyA1234567890abcdefghijklmnopqrstuv');
+  const bearerTok = 'abc.def.ghi12345';
+
+  it('masks key prefixes, query secrets, URL userinfo (with/without password), and Bearer/Basic headers', () => {
+    expect(scrubSecrets(`auth failed for ${antKey}`)).not.toContain('AbCdEf0123456789');
+    expect(scrubSecrets(`key ${antKey}`)).toContain('[REDACTED]');
+    expect(scrubSecrets(join('google ', googleKey, ' bad'))).not.toContain('SyA1234567890');
     expect(
       scrubSecrets('GET https://api.example.com/v1?api_key=SECRET12345abc failed'),
     ).not.toContain('SECRET12345abc');
     expect(scrubSecrets('connect https://user:p4ssw0rd@host/x')).not.toContain('p4ssw0rd');
-    expect(scrubSecrets('header Authorization: Bearer abc.def.ghi12345 rejected')).not.toContain(
-      'abc.def.ghi12345',
+    // username-only userinfo (no password) must also be redacted
+    expect(scrubSecrets('connect https://onlytoken@host/x')).not.toContain('onlytoken');
+    expect(scrubSecrets(`header Authorization: Bearer ${bearerTok} rejected`)).not.toContain(
+      bearerTok,
     );
     // surrounding text is preserved (the Bearer pattern is not too greedy)
-    expect(scrubSecrets('header Authorization: Bearer abc.def.ghi12345 rejected')).toContain(
+    expect(scrubSecrets(`header Authorization: Bearer ${bearerTok} rejected`)).toContain(
       'rejected',
     );
-    expect(scrubSecrets('google AIzaSyA1234567890abcdefghijklmnopqrstuv bad')).not.toContain(
-      'AIzaSyA1234567890',
+    // Basic auth header is redacted too, surrounding text preserved
+    expect(scrubSecrets('header Authorization: Basic dXNlcjpwYXNz extra')).not.toContain(
+      'dXNlcjpwYXNz',
     );
-    // a redaction marker is left in place of the secret
-    expect(scrubSecrets('key sk-ant-api03-AbCdEf0123456789xyz')).toContain('[REDACTED]');
+    expect(scrubSecrets('header Authorization: Basic dXNlcjpwYXNz extra')).toContain('extra');
   });
 
   it('leaves benign error text untouched (no over-redaction of normal messages)', () => {
@@ -116,7 +126,7 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
       'https://api.openai.com/v1', // clean URL — no userinfo, no secret query
       '?keyword=value', // near-miss param name (not key/token/secret)
       '?tokenize=abc', // near-miss param name
-      'sk-short', // below the {16,} key-length floor — not a key
+      join('sk-', 'short'), // below the {16,} key-length floor — not a key
       '', // empty
     ]) {
       expect(scrubSecrets(msg)).toBe(msg);
@@ -127,11 +137,10 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
     const e = makeLlmError({
       provider: 'openai',
       kind: 'auth',
-      message:
-        'invalid key sk-proj-ABCDEFGHIJKLMNOP123 at https://api.x.com/v1?token=tok_SECRETvalue',
+      message: `invalid key ${projKey} at https://api.x.com/v1?token=tok_SECRETvalue`,
       code: 'bad https://u:pw@h/x',
     });
-    expect(e.message).not.toContain('sk-proj-ABCDEFGHIJKLMNOP123');
+    expect(e.message).not.toContain('ABCDEFGHIJKLMNOP123');
     expect(e.message).not.toContain('tok_SECRETvalue');
     expect(e.message).toContain('[REDACTED]');
     expect(e.code).not.toContain('pw@');

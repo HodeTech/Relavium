@@ -295,14 +295,20 @@ function buildCommonBody(
   }
   if (req.temperature !== undefined) {
     // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API
-    // caps temperature at 1. Fail fast (the adapter's "never silently drop" posture) rather than
-    // forward a value the provider will 400 on — the clamp stays provider-local, contract unchanged.
-    if (req.temperature > MAX_TEMPERATURE) {
+    // accepts temperature in [0, 1]. Fail fast (the adapter's "never silently drop" posture) rather
+    // than forward a value the provider will 400 on — the guard stays provider-local, contract
+    // unchanged. NaN/negative are rejected too: `NaN > 1` and `-0.5 > 1` are both false, so an
+    // upper-bound-only check would silently forward them to a guaranteed 400.
+    if (
+      !Number.isFinite(req.temperature) ||
+      req.temperature < 0 ||
+      req.temperature > MAX_TEMPERATURE
+    ) {
       throw new LlmProviderError(
         makeLlmError({
           provider: PROVIDER,
           kind: 'bad_request',
-          message: `temperature ${String(req.temperature)} exceeds Anthropic's max of ${String(MAX_TEMPERATURE)}`,
+          message: `temperature ${String(req.temperature)} is outside Anthropic's accepted range [0, ${String(MAX_TEMPERATURE)}]`,
         }),
       );
     }

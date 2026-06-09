@@ -82,12 +82,13 @@ interface MakeLlmErrorArgs {
  */
 export function scrubSecrets(text: string): string {
   return text
-    .replace(/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1[REDACTED]@') // URL userinfo  user:pass@
+    .replace(/(https?:\/\/)[^/\s:@]+(?::[^/\s@]+)?@/gi, '$1[REDACTED]@') // URL userinfo: user@ or user:pass@
     .replace(
       /([?&](?:api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi,
       '$1[REDACTED]',
     ) // secret in a URL query string
     .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]') // Authorization: Bearer <token> — any token shape up to whitespace
+    .replace(/\bBasic\s+\S+/gi, 'Basic [REDACTED]') // Authorization: Basic <base64 user:pass>
     .replace(/\bsk-(?:ant-)?[A-Za-z0-9\-_]{16,}/g, '[REDACTED]') // OpenAI sk-/sk-proj-/sk-svcacct- + Anthropic sk-ant- key prefixes
     .replace(/\bAIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED]'); // Google API key prefix
 }
@@ -110,6 +111,10 @@ export function makeLlmError(args: MakeLlmErrorArgs): LlmError {
   if (args.status !== undefined) {
     error.status = args.status;
   }
+  // `cause` is an INTERNAL diagnostic only (error-handling.md): it is NOT scrubbed and may hold a raw
+  // vendor object, so it must never be logged/serialized raw. The run-event boundary already carries
+  // only { code, message, retryable } (run-event.ts), never `cause`; a future adapter that sets `cause`
+  // keeps it off any log/event sink (or scrubs at that boundary).
   if (args.cause !== undefined) {
     error.cause = args.cause;
   }

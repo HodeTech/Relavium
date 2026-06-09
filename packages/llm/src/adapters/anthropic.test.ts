@@ -406,6 +406,48 @@ describe('AnthropicAdapter — stream edge cases', () => {
     expect(reached).toBe(false); // failed fast, before egress
   });
 
+  it('emits a bad_request error chunk for temperature > max via STREAM (never reaching the transport)', async () => {
+    let reached = false;
+    const adapter = createAnthropicAdapter({
+      fetch: () => {
+        reached = true;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream({ ...REQ, temperature: 1.5 }, 'k'));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.type).toBe('error');
+    if (chunks[0]?.type === 'error') {
+      expect(chunks[0].error.kind).toBe('bad_request');
+    }
+    expect(reached).toBe(false); // failed fast, before egress
+  });
+
+  it('rejects a negative or NaN temperature (not only > max) before egress', async () => {
+    let reached = false;
+    const adapter = createAnthropicAdapter({
+      fetch: () => {
+        reached = true;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+      maxRetries: 0,
+    });
+    for (const bad of [-0.5, Number.NaN]) {
+      let caught: unknown;
+      try {
+        await adapter.generate({ ...REQ, temperature: bad }, 'k');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(LlmProviderError);
+      if (caught instanceof LlmProviderError) {
+        expect(caught.llmError.kind).toBe('bad_request');
+      }
+    }
+    expect(reached).toBe(false);
+  });
+
   it('merges the cumulative cache/input usage the message_delta carries into the stop chunk', async () => {
     const body =
       ev('message_start', {
