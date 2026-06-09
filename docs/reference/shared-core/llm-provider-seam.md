@@ -56,6 +56,8 @@ interface LlmMessage {
   content: ContentPart[];        // normalized parts, not raw strings
 }
 
+// `ContentPart` is OWNED by @relavium/shared (ContentPartSchema) and re-exported by this seam —
+// @relavium/shared never imports from @relavium/llm (that would invert the package dependency).
 type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral
@@ -76,6 +78,8 @@ interface LlmResult {
   raw: unknown;                  // provider response, for debugging/escape hatch
 }
 
+// `StopReason` is also OWNED by @relavium/shared (constants.ts STOP_REASONS, used by
+// `session:turn_completed`) and re-exported by the seam — same one-way ownership as `ContentPart`.
 type StopReason = 'stop' | 'length' | 'tool_use' | 'content_filter' | 'error';
 
 interface Usage {
@@ -220,6 +224,18 @@ adapters):
   runs. The engine `ToolDispatcher` skips `providerExecuted` calls (no
   double-execution, and the allowlist applies only to engine-run calls). Phase-1
   adapters reserve the shape but emit no server-tool calls (off the common path).
+
+### Seam-shape amendments ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)) — accepted, lands with 1.AD
+
+ADR-0031 (accepted 2026-06-08) further amends the shape with **first-class multimodal
+I/O**: the MIME-discriminated `media` `ContentPart` arm (flight vs. handle-only durable
+variant), the `media_start`/`media_delta`/`media_end` `StreamChunk` triad, the
+per-modality `CapabilityFlags.media` redesign, `Usage` media-cost fields, and
+`LlmRequest.outputModalities`. The decided shape is recorded in the ADR; **none of it is
+implemented yet** — the types land in `@relavium/shared`/`@relavium/llm` with roadmap
+task **1.AD**, and this section is replaced by the full amendment write-up (the ADR-0030
+mould above) in that same change. Until then this doc describes the implemented seam
+only.
 
 ## What must be normalized
 

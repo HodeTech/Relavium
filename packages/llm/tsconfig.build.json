@@ -6,7 +6,10 @@
   "compilerOptions": {
     "noEmit": false,
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "incremental": true,
+    "declarationMap": false,
+    "sourceMap": false
   },
   "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts", "src/conformance/**"]
 }

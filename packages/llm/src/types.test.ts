@@ -162,11 +162,22 @@ describe('seam result/usage/error/capability schemas', () => {
 });
 
 describe('StreamChunk union', () => {
+  // One entry per union member — the count pin below keeps this table exhaustive.
   const chunks: StreamChunk[] = [
     { type: 'text_delta', text: 'he' },
     { type: 'tool_call_start', id: 'c1', name: 'read_file' },
     { type: 'tool_call_delta', id: 'c1', argsJsonDelta: '{"path":' },
     { type: 'tool_call_end', id: 'c1' },
+    { type: 'reasoning_start', id: 'r1' },
+    { type: 'reasoning_delta', id: 'r1', text: 'th' },
+    { type: 'reasoning_end', id: 'r1' },
+    {
+      type: 'tool_result',
+      id: 'c2',
+      name: 'web_search',
+      result: { hits: 1 },
+      providerExecuted: true,
+    },
     { type: 'stop', stopReason: 'tool_use', usage },
     {
       type: 'error',
@@ -176,6 +187,10 @@ describe('StreamChunk union', () => {
 
   it.each(chunks)('accepts the %o chunk', (chunk) => {
     expect(StreamChunkSchema.safeParse(chunk).success).toBe(true);
+  });
+
+  it('pins the union member count to this table (an added/removed arm must update both)', () => {
+    expect(StreamChunkSchema.options).toHaveLength(chunks.length);
   });
 
   it('rejects an unknown chunk type', () => {

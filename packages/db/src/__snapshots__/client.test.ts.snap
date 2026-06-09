@@ -1,0 +1,194 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`@relavium/db migrations + client > the 0000 migration DDL matches the committed snapshot (column-level fidelity) 1`] = `
+"CREATE TABLE \`agents\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`name\` text NOT NULL,
+	\`slug\` text NOT NULL,
+	\`description\` text,
+	\`model_id\` text NOT NULL,
+	\`system_prompt\` text DEFAULT '' NOT NULL,
+	\`tools\` text DEFAULT '[]' NOT NULL,
+	\`config\` text DEFAULT '{}' NOT NULL,
+	\`input_schema\` text,
+	\`output_schema\` text,
+	\`tags\` text DEFAULT '[]' NOT NULL,
+	\`source_path\` text,
+	\`is_active\` integer DEFAULT 1 NOT NULL,
+	\`deleted_at\` integer,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL,
+	FOREIGN KEY (\`model_id\`) REFERENCES \`model_catalog\`(\`id\`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX \`idx_agents_slug\` ON \`agents\` (\`slug\`) WHERE "agents"."deleted_at" is null;--> statement-breakpoint
+CREATE INDEX \`idx_agents_model\` ON \`agents\` (\`model_id\`);--> statement-breakpoint
+CREATE INDEX \`idx_agents_active\` ON \`agents\` (\`is_active\`,"created_at" desc) WHERE "agents"."deleted_at" is null;--> statement-breakpoint
+CREATE TABLE \`llm_providers\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`name\` text NOT NULL,
+	\`display_name\` text NOT NULL,
+	\`base_url\` text NOT NULL,
+	\`api_key_keychain_ref\` text,
+	\`default_headers\` text DEFAULT '{}' NOT NULL,
+	\`is_active\` integer DEFAULT 1 NOT NULL,
+	\`deleted_at\` integer,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX \`idx_llm_providers_name\` ON \`llm_providers\` (\`name\`) WHERE "llm_providers"."deleted_at" is null;--> statement-breakpoint
+CREATE TABLE \`messages\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`step_execution_id\` text NOT NULL,
+	\`run_id\` text NOT NULL,
+	\`sequence_number\` integer NOT NULL,
+	\`role\` text NOT NULL,
+	\`content\` text,
+	\`content_parts\` text,
+	\`tool_calls\` text,
+	\`tool_call_id\` text,
+	\`name\` text,
+	\`finish_reason\` text,
+	\`created_at\` integer NOT NULL,
+	FOREIGN KEY (\`step_execution_id\`) REFERENCES \`step_executions\`(\`id\`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX \`idx_messages_step\` ON \`messages\` (\`step_execution_id\`,\`sequence_number\`);--> statement-breakpoint
+CREATE INDEX \`idx_messages_run\` ON \`messages\` (\`run_id\`,\`created_at\`);--> statement-breakpoint
+CREATE TABLE \`model_catalog\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`provider_id\` text NOT NULL,
+	\`model_id\` text NOT NULL,
+	\`display_name\` text NOT NULL,
+	\`context_window_tokens\` integer NOT NULL,
+	\`max_output_tokens\` integer NOT NULL,
+	\`input_cost_per_mtok_microcents\` integer DEFAULT 0 NOT NULL,
+	\`output_cost_per_mtok_microcents\` integer DEFAULT 0 NOT NULL,
+	\`cached_input_cost_per_mtok_microcents\` integer DEFAULT 0 NOT NULL,
+	\`supports_tool_calling\` integer DEFAULT 0 NOT NULL,
+	\`supports_vision\` integer DEFAULT 0 NOT NULL,
+	\`supports_streaming\` integer DEFAULT 1 NOT NULL,
+	\`supports_json_mode\` integer DEFAULT 0 NOT NULL,
+	\`capabilities\` text DEFAULT '{}' NOT NULL,
+	\`deprecation_date\` integer,
+	\`is_active\` integer DEFAULT 1 NOT NULL,
+	\`deleted_at\` integer,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL,
+	FOREIGN KEY (\`provider_id\`) REFERENCES \`llm_providers\`(\`id\`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX \`idx_model_catalog_provider_model\` ON \`model_catalog\` (\`provider_id\`,\`model_id\`) WHERE "model_catalog"."deleted_at" is null;--> statement-breakpoint
+CREATE INDEX \`idx_model_catalog_provider\` ON \`model_catalog\` (\`provider_id\`);--> statement-breakpoint
+CREATE INDEX \`idx_model_catalog_active\` ON \`model_catalog\` (\`is_active\`) WHERE "model_catalog"."deleted_at" is null;--> statement-breakpoint
+CREATE TABLE \`run_costs\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`run_id\` text NOT NULL,
+	\`node_id\` text NOT NULL,
+	\`model_id\` text,
+	\`input_tokens\` integer DEFAULT 0 NOT NULL,
+	\`output_tokens\` integer DEFAULT 0 NOT NULL,
+	\`cost_microcents\` integer DEFAULT 0 NOT NULL,
+	\`created_at\` integer NOT NULL,
+	FOREIGN KEY (\`run_id\`) REFERENCES \`runs\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (\`model_id\`) REFERENCES \`model_catalog\`(\`id\`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE INDEX \`idx_run_costs_run\` ON \`run_costs\` (\`run_id\`);--> statement-breakpoint
+CREATE TABLE \`run_events\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`run_id\` text NOT NULL,
+	\`step_execution_id\` text,
+	\`seq\` integer NOT NULL,
+	\`event_type\` text NOT NULL,
+	\`level\` text DEFAULT 'info' NOT NULL,
+	\`node_id\` text,
+	\`payload_json\` text DEFAULT '{}' NOT NULL,
+	\`ts\` integer NOT NULL,
+	FOREIGN KEY (\`run_id\`) REFERENCES \`runs\`(\`id\`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX \`idx_run_events_run_seq\` ON \`run_events\` (\`run_id\`,\`seq\`);--> statement-breakpoint
+CREATE INDEX \`idx_run_events_step\` ON \`run_events\` (\`step_execution_id\`,\`ts\`) WHERE "run_events"."step_execution_id" is not null;--> statement-breakpoint
+CREATE INDEX \`idx_run_events_run_type\` ON \`run_events\` (\`run_id\`,\`event_type\`,\`ts\`);--> statement-breakpoint
+CREATE TABLE \`runs\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`workflow_id\` text NOT NULL,
+	\`workflow_path\` text,
+	\`project_root\` text,
+	\`workflow_definition_snapshot\` text NOT NULL,
+	\`status\` text DEFAULT 'pending' NOT NULL,
+	\`execution_mode\` text DEFAULT 'local' NOT NULL,
+	\`trigger_type\` text DEFAULT 'manual' NOT NULL,
+	\`trigger_metadata\` text DEFAULT '{}' NOT NULL,
+	\`input_json\` text DEFAULT '{}' NOT NULL,
+	\`output_json\` text,
+	\`error_json\` text,
+	\`started_at\` integer,
+	\`completed_at\` integer,
+	\`total_input_tokens\` integer DEFAULT 0 NOT NULL,
+	\`total_output_tokens\` integer DEFAULT 0 NOT NULL,
+	\`total_cost_microcents\` integer DEFAULT 0 NOT NULL,
+	\`deleted_at\` integer,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL,
+	FOREIGN KEY (\`workflow_id\`) REFERENCES \`workflows\`(\`id\`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "runs_status_check" CHECK("runs"."status" in ('pending', 'running', 'paused', 'completed', 'failed', 'cancelled')),
+	CONSTRAINT "runs_execution_mode_check" CHECK("runs"."execution_mode" in ('local', 'cloud', 'managed'))
+);
+--> statement-breakpoint
+CREATE INDEX \`idx_runs_workflow\` ON \`runs\` (\`workflow_id\`,"created_at" desc);--> statement-breakpoint
+CREATE INDEX \`idx_runs_status\` ON \`runs\` (\`status\`,"created_at" desc) WHERE "runs"."deleted_at" is null;--> statement-breakpoint
+CREATE INDEX \`idx_runs_cost\` ON \`runs\` (\`workflow_id\`,\`created_at\`,\`total_cost_microcents\`) WHERE "runs"."deleted_at" is null;--> statement-breakpoint
+CREATE TABLE \`step_executions\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`run_id\` text NOT NULL,
+	\`node_id\` text NOT NULL,
+	\`node_type\` text NOT NULL,
+	\`agent_id\` text,
+	\`agent_snapshot\` text,
+	\`model_id\` text,
+	\`attempt_number\` integer DEFAULT 1 NOT NULL,
+	\`status\` text DEFAULT 'pending' NOT NULL,
+	\`input_json\` text DEFAULT '{}' NOT NULL,
+	\`output_json\` text,
+	\`error_json\` text,
+	\`started_at\` integer,
+	\`completed_at\` integer,
+	\`duration_ms\` integer,
+	\`input_tokens\` integer DEFAULT 0 NOT NULL,
+	\`output_tokens\` integer DEFAULT 0 NOT NULL,
+	\`cached_tokens\` integer DEFAULT 0 NOT NULL,
+	\`cost_microcents\` integer DEFAULT 0 NOT NULL,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL,
+	FOREIGN KEY (\`run_id\`) REFERENCES \`runs\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (\`agent_id\`) REFERENCES \`agents\`(\`id\`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (\`model_id\`) REFERENCES \`model_catalog\`(\`id\`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "step_executions_status_check" CHECK("step_executions"."status" in ('pending', 'running', 'completed', 'failed', 'skipped'))
+);
+--> statement-breakpoint
+CREATE INDEX \`idx_step_exec_run\` ON \`step_executions\` (\`run_id\`,\`created_at\`);--> statement-breakpoint
+CREATE INDEX \`idx_step_exec_run_node\` ON \`step_executions\` (\`run_id\`,\`node_id\`,\`attempt_number\`);--> statement-breakpoint
+CREATE INDEX \`idx_step_exec_agent\` ON \`step_executions\` (\`agent_id\`,"created_at" desc) WHERE "step_executions"."agent_id" is not null;--> statement-breakpoint
+CREATE INDEX \`idx_step_exec_model\` ON \`step_executions\` (\`model_id\`,"created_at" desc) WHERE "step_executions"."model_id" is not null;--> statement-breakpoint
+CREATE INDEX \`idx_step_exec_cost\` ON \`step_executions\` (\`model_id\`,\`created_at\`,\`cost_microcents\`) WHERE "step_executions"."model_id" is not null;--> statement-breakpoint
+CREATE TABLE \`workflows\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`name\` text NOT NULL,
+	\`slug\` text NOT NULL,
+	\`description\` text,
+	\`definition\` text NOT NULL,
+	\`input_schema\` text,
+	\`tags\` text DEFAULT '[]' NOT NULL,
+	\`source_path\` text,
+	\`is_active\` integer DEFAULT 1 NOT NULL,
+	\`deleted_at\` integer,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX \`idx_workflows_slug\` ON \`workflows\` (\`slug\`) WHERE "workflows"."deleted_at" is null;--> statement-breakpoint
+CREATE INDEX \`idx_workflows_active\` ON \`workflows\` (\`is_active\`,"updated_at" desc) WHERE "workflows"."deleted_at" is null;"
+`;

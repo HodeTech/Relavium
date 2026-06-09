@@ -76,6 +76,11 @@ This is the load-bearing rule of the in-house multi-LLM decision
   [glossary](../glossary.md).
 - Prefer descriptive over terse; a name that needs a comment to explain it is the wrong
   name.
+- **Identifiers stay plain `string`** (deliberate, not an oversight). `runId` / `nodeId` /
+  `gateId` / `workflowId` / `agentId` are `z.string().uuid()` (surrogate ids) or `kebabIdSchema`
+  (authored ids), **not** branded/nominal types. Validation already happens at the Zod boundary,
+  and branding would add brand/unbrand friction across every `@relavium/shared → db → core → surface`
+  seam for little payoff. If a future class of id-mixup bug proves real, revisit via an ADR.
 
 ## Code shape
 

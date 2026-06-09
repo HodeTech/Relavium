@@ -2,17 +2,25 @@
 
 > Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**) landed in
 > **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
-> — landed in **PR #7**; the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
+> — landed in **PR #7**; the first **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
 > **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — landed in **PR #8**
-> (2026-06-06): the seam is proven end-to-end against a real provider. **In flight (PR after #8):** the
-> remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the **seam-shape
-> amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
-> (reasoning channel + `responseFormat` + `providerExecuted`) — decided **before the M1 freeze** while
-> the only consumers were the adapters; reasoning + structured output are wired in every adapter that
-> supports them, with conformance scenarios. Then **1.J** (conformance green = **M1**) and **1.K**
-> (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral reasoning signature when
-> failing over** to another provider); ‖ the **1.L** engine parser. *(Session persistence, 1.X/1.Z,
-> must exclude the reasoning signature — non-persisting.)*
+> (2026-06-06). The remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the
+> **seam-shape amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
+> (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) landed
+> in **PR #9** (2026-06-07) — **🎯 M1 (LLM seam proven) is reached.** All three adapters pass one shared
+> conformance suite in fixture mode (live-nightly lane reserved/pending keys); no vendor type crosses the
+> seam. **Next:** **1.K** (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral
+> reasoning signature when failing over** to another provider) ‖ the **1.L** engine parser, converging
+> at the **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning
+> signature — non-persisting.)*
+>
+> **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
+> second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
+> (seam) + [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust
+> de-inline), designed in [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md).
+> The new sub-spine **1.AD–1.AH** (1.m6) lands the **shape (1.AD) before the exhaustive consumers 1.K/1.O**
+> so the `ContentPart`/`StreamChunk` media union members are non-breaking; the **behavior (1.AE–1.AH) is
+> additive and does NOT gate M2** (it threads into the engine and Phases 2–6, like the agent-first sub-spine).
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -302,7 +310,7 @@ is the biggest leverage point for the in-house abstraction.
 CI; the nightly live job is wired (may be skipped until keys are provisioned) and
 recording a fresh fixture reproduces a green fixture run.
 
-### 1.G — OpenAI-compatible adapter (OpenAI + DeepSeek) — *critical path*
+### 1.G — OpenAI-compatible adapter (OpenAI + DeepSeek) — *critical path* · ✅ **Done (PR #9)**
 
 One adapter over the `openai` SDK serving both OpenAI and DeepSeek (DeepSeek via
 custom `baseURL = api.deepseek.com`) — no separate dependency.
@@ -323,7 +331,7 @@ custom `baseURL = api.deepseek.com`) — no separate dependency.
 `openai` and `deepseek` (separate recorded fixtures), including the tool-call and
 usage cases.
 
-### 1.H — `GeminiAdapter` (`@google/genai`) — *critical path*
+### 1.H — `GeminiAdapter` (`@google/genai`) — *critical path* · ✅ **Done (PR #9)**
 
 The riskiest adapter (restricted tool schema, no native tool-call ids); it leans
 hardest on 1.E.
@@ -359,7 +367,7 @@ The classification the `FallbackChain` depends on, normalized inside each adapte
 retryable and an auth failure as fatal; a cancelled request surfaces a fatal,
 non-retryable `LlmError`.
 
-### 1.J — Conformance green: 3 adapters pass the suite (**M1**)
+### 1.J — Conformance green: 3 adapters pass the suite (**M1**) — ✅ **Done (PR #9) · M1 reached**
 
 The milestone gate that proves the seam: all three adapters honor the contract with
 no vendor type crossing the seam.
@@ -399,7 +407,11 @@ budgets. Adapters stay dumb; this owns the policy.
 **Acceptance:** unit tests prove: a primary failing with a retryable error fails over
 to the next provider and the run succeeds; a fatal error stops the chain; per-attempt
 cost is summed across a failover; and **a cross-provider failover carries no `reasoning`
-part or `signature` into the next provider's request**.
+part or `signature` into the next provider's request**; and the **fail-over/stop decision is a pure
+function of the classified `LlmError` discriminant** (`kind`/`retryable`, 1.I), **never** content /
+string-sentinel inspection — a response body containing `'Error:'` or an empty/malformed body does not by
+itself trigger failover, and the normalized `LlmError.message` is secret-free (security-review.md).
+*(Score/quality-threshold fallback is deliberately out of scope for Phase 1 — deferred-tasks.md.)*
 
 ### 1.L.0 — Reconcile `@relavium/shared` to the 2026-06-05 contract — ✅ **Done (PR #6)** · *critical path, do first*
 
@@ -456,7 +468,10 @@ The engine entry point: load a `.relavium.yaml` and validate it against the
 
 **Acceptance:** valid reference example workflows parse to a typed
 `WorkflowDefinition`; a battery of malformed files each fail with a field-named,
-secret-free error; round-trip (parse → object) preserves all node config blocks.
+secret-free error; round-trip (parse → object) preserves all node config blocks; and **parsing is pure /
+side-effect-free** — no file mutation, no `process.env` mutation, no import-time singleton init
+(validation only). *(Note for a future maintainer: the `config.*` schemas are `.strict()` by a **deliberate
+choice beyond** ADR-0023's lenient-config default — "parity with the authored YAML" — not a bug to "fix".)*
 
 ### 1.L2 — Interpolation / templating engine (the `{{ … }}` runtime resolver) — *critical path*
 
@@ -519,7 +534,11 @@ The loop that dispatches ready nodes and emits the canonical event stream.
 
 **Acceptance:** running a multi-node plan emits events in a gap-free `sequenceNumber`
 order asserted against the canonical schema by colon-namespaced name; cancellation
-emits `run:cancelled` and stops dispatch.
+emits `run:cancelled` and stops dispatch; and **every run terminates in EXACTLY ONE terminal event**
+(`run:completed` | `run:failed` | `run:cancelled`) — including on an **uncaught node-handler exception**
+(inject a throw → assert a single `run:failed`) and on **crash-then-restart of a non-resumable run**
+(reconciliation emits `run:failed`, never a stuck `run:started`) — so a zombie / never-terminating run is
+structurally impossible.
 
 ### 1.O — `AgentRunner` (per-node LLM execution) — *critical path*
 
@@ -650,7 +669,12 @@ The engine-side registry that dispatches built-in tools the `AgentRunner` invoke
 
 **Acceptance:** an agent tool call dispatches through the registry, maps I/O
 correctly, and emits sanitized tool events; an unlisted `run_command` is refused;
-`git_commit` is blocked without a gate approval.
+`git_commit` is blocked without a gate approval; and an **upstream agent/LLM output wired via
+`input_mapping` into a tool / `http_request` arg is treated as UNTRUSTED data** — schema-validated against
+the tool's declared arg and, **for an outbound-URL tool**, routed through the **same** exact-FQDN allow-list
++ SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `http_request` / MCP), so a
+derived URL cannot bypass the egress guard. *(A `web_search`-style query is untrusted-data schema-validated
+per ADR-0029(c) but transits a query, not an `allowedDomains` FQDN allowlist.)*
 
 ### 1.U — End-to-end Node harness (**M2**, critical-path milestone) — *critical path*
 
@@ -693,6 +717,86 @@ Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-
 
 **Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
 
+### Multimodal I/O sub-spine (1.AD–1.AH) — seam amendment now, behavior additive
+
+First-class multimodal I/O (image / audio / video, **input AND output**, incl. a workflow that by rule
+**generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
++ [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
+[multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md). The **shape**
+(1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it lands **before the exhaustive
+consumers** (1.K `FallbackChain`, 1.O `AgentRunner`) so adding the `ContentPart`/`StreamChunk` media
+union members is non-breaking. The **behavior** (1.AE–1.AH) is **additive — it does NOT gate M2** (like
+the agent-first sub-spine): media plumbing layers onto the proven engine and threads into the surface
+phases (2–6). Each phase below maps to the design doc's Phase A–E.
+
+- **1.AD — Multimodal seam amendment (Phase A) — land NOW, before 1.K/1.O.** Add to `@relavium/shared`
+  + the `@relavium/llm` seam types, *shape only, no behavior*: the MIME-discriminated `media`
+  `ContentPart` arm **and** the distinct handle-only `DurableMediaPart`/`DurableContentPart` (the durable
+  form also carrying optional `byteLength?` + audio/video `durationMs?` — Y3, ADR-0031 amended); the
+  `media_start/delta/end` `StreamChunk` triad (handle-only terminal; `partialRef` **reserved**, A3);
+  `CapabilityFlags.media` = `input{image,audio,video,document}` (the `document` flag is A2) +
+  `outputCombinations: ModalitySet[]` + the derived `vision` alias; `Usage.mediaUnits`;
+  `LlmRequest.outputModalities`; `tool_result.media: DurableMediaPart[]`; the optional
+  `generateMedia?`/`pollMediaJob?` `LlmProvider` methods (**reserved**, A5); `MediaSource` +
+  `DurableMediaSource` + `INLINE_MEDIA_CEILING` + the per-message count/aggregate caps; the
+  `deInlineMedia` boundary signature + the backstop `persistableMediaRefine`. The `url` carrier ships
+  **feature-flag-OFF**. Replace the ADR-0031 placeholder in
+  [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md) with the full
+  "Seam-shape amendments (ADR-0031)" section (the ADR-0030 mould) — the seam doc is the shape's
+  canonical home (ADR-0031 §Decision; one-canonical-home), so the doc update is part of 1.AD, not a
+  follow-up. StopReason stays `'stop'` + content-inspection (tested). *Acceptance:* the new union
+  members + optional fields/methods parse and round-trip; a base64 part in a durable/`tool_result.result`
+  position is rejected by the backstop; no vendor type crosses the seam; the run-event count-test is
+  green at the new total; **llm-provider-seam.md carries the ADR-0031 amendment section** (placeholder
+  replaced). *(Freeze-criticality recorded in the design doc §9: the three union/capability shapes are
+  truly breaking-to-defer; the optional fields/methods are landed-early-by-choice per A1.)*
+- **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
+  (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
+  wire image/audio/video **input** in Anthropic/OpenAI/Gemini; set the capability matrix; add conformance
+  scenarios (image-in, audio-in, `mediaUnits` mapping). **Complete the one shared SSRF range-primitive**
+  (security-review.md) and flip the `url` flag on for input **and** output, with the landing-gate CI test.
+  *Acceptance:* a vision request actually reaches the provider as media (not flattened text); the
+  conformance suite covers media-in + `mediaUnits`; the `url` carrier is rejected while the SSRF flag is
+  off and accepted once it lands; the **one shared SSRF range-primitive is reused by all four egress
+  callers** (provider-`baseURL`, `http_request`, MCP, the media `url` carrier — never re-implemented) and
+  passes its **direct negative-case tests** (metadata IP, link-local, IPv4-mapped IPv6, post-DNS-resolution
+  IP, per-hop redirect — testing.md §Security-critical primitive tests; a runtime-*derived* base URL is
+  re-checked the same way).
+- **1.AF — Engine media plumbing (Phase C).** `requiredCapabilities()` media-gating (input + the
+  `outputCombinations` **membership** check) + `FallbackChain` provider-skip + the ephemeral-sidecar
+  strip/re-materialize-**before-the-retried-request** on failover (B5); the `MediaStore` contract + host
+  injections; the **one `emitRunEvent`/persist choke point** running `deInlineMedia` on every emit path
+  incl. the checkpoint/`RunState` snapshot **and** the failover context transfer (B1); the `read_media`
+  **scope-set authz** (A8); `output_modalities` / `save_to` node fields (strict-authored-YAML, ADR-0023);
+  media budget caps **+ the per-modality pre-egress media cost estimate** (A6) into the governance
+  events; the `media_objects` retention/GC table. *Acceptance:* an incapable provider is skipped (not
+  silently flattened); a media-bearing event/checkpoint emits handles only (asserted by the backstop +
+  an emit test); `save_to` writes bytes only at the surface boundary; `read_media` **rejects a
+  negative/reversed/out-of-bounds `Range`** and resolves paths with `realpath`+`commonpath` fail-closed
+  (single byte-delivery gate, symlinks off — security-review.md §Media byte delivery); the keychain bridge
+  **never returns a raw key from an IPC command** (direct test); and a run reaching a **terminal event
+  (`run:completed|failed|cancelled`) deterministically reclaims its media refs** so a FAILED/CANCELLED run
+  leaves no orphaned partial media (a terminal-state sweep, not refcount-GC alone).
+- **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
+  image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
+  `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
+  async). **The async poll / checkpoint / resume / cancel loop gets its OWN ADR here (A5)** — it is the
+  highest-complexity piece (a minute-scale LRO that survives a restart, in the run loop + checkpointer,
+  reusing `LlmError` classification). Add `model_catalog.media_surface`. *Acceptance:* a generate-image
+  node produces a handle; an async video job checkpoints, survives a simulated restart, and resumes to
+  completion; **a CANCEL aborts the in-flight `pollMediaJob` (via `AbortSignal`), emits `run:cancelled`,
+  and triggers the terminal-state media sweep**; a content-policy job failure maps to `content_filter`.
+- **1.AH — Surfaces & managed mode (Phase E, spans Phases 2–6).** Desktop:
+  **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media
+  de-inline on egress + session-scoped `read_media` command + the Rust CAS — **must land before any
+  desktop media-output** (phase-3-desktop). CLI/VS Code media rendering (phase-2-cli / phase-4-vscode).
+  Managed-mode gateway media materialization-to-user-store + `mediaUnits` metering, reconciled with
+  [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md) counts-not-content
+  (phase-5-managed-inference). *Acceptance:* on desktop, media bytes never transit the WebView↔Rust
+  channel (only handles do); **`read_media` is the only byte path out — no second raw static mount,
+  `follow_symlink` off, `realpath`+`commonpath` fail-closed**; each surface renders a produced media
+  handle; managed mode meters counts and stores no artifact.
+
 ## Milestones
 
 In-phase milestones map to the workstreams that complete them. The two global-spine
@@ -702,12 +806,13 @@ the latter being the critical-path milestone for the whole product.
 | # | Milestone | Completed by |
 | --- | --- | --- |
 | 1.m1 | Seam frozen; first adapter + conformance harness green (Anthropic) | 1.A, 1.C, 1.E, 1.F |
-| **M1** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR, live nightly; no vendor type across the seam)** | 1.G, 1.H, 1.I, **1.J** |
+| **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR — live-nightly lane reserved/pending keys; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 | Policy layers complete: fallback runner + cost tracker | 1.B, 1.K |
 | 1.m3 | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD — lands before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD**, 1.AE, 1.AF, 1.AG, 1.AH |
 
 ## Sequencing & parallelization
 
@@ -846,7 +951,7 @@ flowchart LR
 | 1.G | A | 1.F | 1.J | ✅ |
 | 1.H | A | 1.E, 1.F | 1.J | ✅ |
 | 1.J | A | 1.G, 1.H, 1.I | 1.K (**M1**) | ✅ |
-| 1.K | A | 1.B, 1.I, 1.J | 1.O | ✅ |
+| 1.K | A | 1.B, 1.I, 1.J, 1.AD (media shape) | 1.O | ✅ |
 | 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ |
 | 1.L2 | B | 1.L | 1.M | ✅ |
 | 1.M | B | 1.L2 | 1.N | ✅ |
@@ -854,7 +959,7 @@ flowchart LR
 | 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
 | 1.T | B | 1.E | 1.O, 1.U | ⬤ |
 | 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P |
-| 1.O | B | **1.K, 1.N, 1.T** (the join) | 1.P, 1.S, 1.AC, 1.V | ✅ |
+| 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ |
 | 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
 | 1.S | B | 1.O, 1.R | 1.U | ✅ |
 | 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ⬤ |
@@ -866,11 +971,21 @@ flowchart LR
 | 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
 | 1.Z | C | 1.V, 1.L | 1.AA | ◇ |
 | 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
+| 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only, precedes consumers |
+| 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
+| 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
+| 1.AG | D | 1.AF | 1.AH | ◇ |
+| 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
 
 > The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`
 > and `1.L.0 → 1.W` into Lane C). The waves Mermaid above draws lane-internal edges plus the `1.O`
 > join and the gate fan-out, omitting those Lane-C feeders to stay readable — so where the diagram
 > and this table differ on a Lane-C predecessor, the table wins.
+>
+> **Lane D (multimodal, 1.AD–1.AH)** is omitted from the waves Mermaid to keep it readable. Its one
+> scheduling constraint: **1.AD (shape only) must land before 1.K and 1.O** — the same cheap-window logic
+> as the ADR-0030 amendment — so the media union members are added before any exhaustive `switch` exists.
+> Everything after 1.AD (1.AE–1.AH) is **additive and never gates M2**, mirroring Lane C.
 
 ### Solo vs. multi-track
 

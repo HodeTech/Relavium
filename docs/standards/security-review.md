@@ -38,8 +38,15 @@ surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
 - **No plaintext at rest.** No key in a config file, `.env` committed to git,
   `.relavium.yaml`, a log, or the SQLite DB unencrypted (the local DB is SQLCipher;
   secrets still belong in the keychain, not a DB column).
-- Keys are never interpolated into error messages or the `node:failed` / `run:failed`
-  events (see [error-handling.md](error-handling.md)).
+- Keys are never interpolated into error messages, the normalized `LlmError` (`.message` / `.code`), or
+  the `node:failed` / `run:failed` events (see [error-handling.md](error-handling.md)). **This is a
+  positive, *tested* obligation, not only a prohibition:** the `@relavium/llm` **per-adapter adapter tests**
+  (each plants a secret in a vendor error and asserts the surfaced `LlmError` is secret-free), plus
+  `llm-error.test.ts` for the shared `makeLlmError`→`scrubSecrets` backstop, assert that the resulting
+  `message`/`code` is **secret-free** — no API key, no credentials-in-URL, no auth header, no token (a
+  public endpoint URL is not itself a secret; a declared-but-untested "already
+  redacted" invariant is a future leak). A secret that was *sent* (in a header, query string, or URL) must
+  likewise be redacted from any provider response/error body before it reaches a log.
 - **Audit the desktop Rust-delegated egress path.** On the desktop the LLM egress is a
   Rust command (`llm_stream`) that streams normalized chunks back over a
   `Channel<StreamChunk>` ([ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md),
@@ -111,13 +118,14 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   prompt body); see the parse-time rejection rule under
   [Sandbox and tool policy](#sandbox-and-tool-policy-run_command-node-tools-secret-inputs).
 
-## Network and outbound URLs (SSRF — three egress paths)
+## Network and outbound URLs (SSRF — three egress paths today, a fourth reserved)
 
-There are **three** user-supplied outbound-URL paths, and they share **one** vetted
+There are **three** user-supplied outbound-URL paths today (a fourth — the multimodal media `url`
+carrier — is forward-looking; see the last bullet), and they share **one** vetted
 SSRF range-primitive — never a second hand-rolled parser. The same validation
 (HTTPS only, reject non-HTTP(S) schemes and credentials-in-URL, and **block
 private/loopback/link-local/metadata ranges** — `127.0.0.0/8`, `::1`, `10/8`,
-`172.16/12`, `192.168/16`, `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
+`172.16/12`, `192.168/16`, `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
 unless the user has explicitly opted into a local endpoint) applies to all three:
 
 - **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
@@ -138,9 +146,39 @@ unless the user has explicitly opted into a local endpoint) applies to all three
   URLs run the **same** SSRF range-primitive (no second parser). See
   [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
   and [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
-- All provider calls are HTTPS; we do not disable TLS verification.
+- **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7) — a fourth path, forward-looking.**
+  A media `url` source (a user-supplied input URL or a provider-returned output URL) is fetched by the
+  **engine** (never an adapter), through this **same** range-primitive — no second parser. It ships
+  **feature-flag-OFF** until the one shared primitive lands. *(Not yet built; recorded here so it binds to
+  the same primitive when it does.)*
+- All provider calls are HTTPS; we do not disable TLS verification. *(Per-host/per-provider TLS granularity
+  is a deferred draft-proposal, not a current rule — see [deferred-tasks.md](../roadmap/deferred-tasks.md);
+  the global never-disable stance holds until a private-CA self-hosted consumer needs an opt-IN behind a
+  fresh ADR.)*
 - Outbound requests carry the AbortSignal and a timeout; a hung provider must not pin a
   worker open.
+
+## Media byte delivery (`read_media`, Range, upload)
+
+Media artifacts are served back to a surface (e.g. the desktop WebView) only through the **one bounded
+`read_media(ref)` gate** ([ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) — never
+a second raw static-file mount, and **never with symlink-following on**. A review of any byte-delivery or
+upload surface must confirm:
+
+- **Range/offset is validated, fail-closed.** A `Range`/offset is rejected if negative, reversed
+  (`end < start`), or out of bounds against the known `byteLength` — a raw `parseInt` with no bound check is
+  a concrete DoS / out-of-bounds-read surface. Serve only the validated window; never trust a client-supplied
+  size.
+- **Bodies stream and are size-bounded.** Neither a download nor an upload reads the whole body into memory;
+  delivery streams from the store and an upload enforces a maximum size — bytes never buffer fully in the
+  engine/process (the de-inline + handle discipline of
+  [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)).
+- **`read_media` is session-scoped** (the scope-set authz of ADR-0031/0032): a session may read only a handle
+  it produced or explicitly received — "know a sha256" is not authorization. The Rust CAS / file layer
+  resolves paths with `realpath` + `commonpath` **fail-closed** (no path-traversal; symlinks off).
+
+*(Not yet built — these are binding acceptance criteria for the `read_media` / Rust-CAS workstreams,
+1.AF/1.AH.)*
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
@@ -226,8 +264,9 @@ never hand-roll a security primitive; rule #2: a new runtime dependency needs an
 
 ## Logging
 
-No secrets, no full prompts/responses, and no raw keys in logs — ever. Logging redaction
-rules live in [logging-and-observability.md](logging-and-observability.md).
+No secrets, no full prompts/responses, and no raw keys in logs — ever, **including a secret that was
+*echoed back* in a provider response or error body, which must be redacted before it is logged.** Logging
+redaction rules live in [logging-and-observability.md](logging-and-observability.md).
 
 ## When a review is mandatory
 
@@ -235,6 +274,7 @@ Any change to: key handling or the keychain bridge, IPC commands, the desktop
 Rust-delegated egress path (`llm_stream` / `Channel<StreamChunk>`), provider base-URL
 handling, the `http_request` tool or MCP server-URL handling (the other two SSRF egress
 paths), the `run_command` sandbox, node `tools:` narrowing or `secret`-typed input
-handling, prompt/tool-call construction, the DB encryption path, or a new dependency. For
+handling, prompt/tool-call construction, **media byte delivery (`read_media` / Range / upload) and the
+media `url` carrier**, the DB encryption path, or a new dependency. For
 **managed mode**, also: the gateway authn/z path, key-pool selection, the metering/billing
 path, and the master-key vault. When in doubt, run the checklist.

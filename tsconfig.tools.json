@@ -1,0 +1,12 @@
+{
+  // Typecheck the repo-root / tooling `*.config.ts` files (vitest, drizzle) that sit outside every
+  // package's tsc program (and so were never typechecked). Run via the `typecheck:tools` script.
+  // NOTE: the `tools/**` lint fixtures are intentionally NOT included — they contain deliberately
+  // broken/unresolvable specifiers and would fail typecheck by design.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["vitest.config.ts", "packages/*/drizzle.config.ts"]
+}

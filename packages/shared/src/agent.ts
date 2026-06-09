@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import {
   URL_HAS_CREDENTIALS,
+  findDuplicates,
+  jsonSchemaMetadataSchema,
   kebabIdSchema,
   nonEmptyString,
   positiveInt,
@@ -138,6 +140,10 @@ export const AgentSchema = z
     system_prompt: nonEmptyString,
     temperature: temperatureSchema.optional(), // provider-agnostic [0, 2] (common.ts)
     max_tokens: positiveInt.optional(),
+    // Optional agent-level JSON-Schema metadata (agent-yaml-spec.md) — the engine validates
+    // turn I/O against these when present; absent on most agents.
+    input_schema: jsonSchemaMetadataSchema.optional(),
+    output_schema: jsonSchemaMetadataSchema.optional(),
     tools: z.array(nonEmptyString).optional(),
     mcp_servers: z.array(McpServerRefSchema).optional(),
     memory: MemorySchema.optional(),
@@ -148,7 +154,7 @@ export const AgentSchema = z
   .superRefine((agent, ctx) => {
     // MCP server ids must be unique within an agent (they namespace the registered tools).
     const ids = (agent.mcp_servers ?? []).map((server) => server.id);
-    const duplicates = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
+    const duplicates = findDuplicates(ids);
     if (duplicates.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

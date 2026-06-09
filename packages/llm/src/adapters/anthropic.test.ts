@@ -240,14 +240,20 @@ describe('AnthropicAdapter — request building + secret safety', () => {
   });
 
   it('never leaks the API key into the surfaced LlmError', async () => {
-    const SECRET = 'sk-ant-SECRET-DO-NOT-LEAK';
+    // Built at runtime so no contiguous key-like literal sits in source (the llm-error.test.ts
+    // convention — avoids secret-scanner false positives); ≥16 chars after `sk-` so it matches
+    // the real scrub pattern.
+    const SECRET = ['sk-', 'ant-', 'SECRET-DO-NOT-LEAK'].join('');
+    // The vendor error body ECHOES the planted key (security-review.md: each adapter plants a
+    // secret in a vendor error) — so the scrubSecrets backstop must actually fire, not merely
+    // find a message the key never reached.
     const adapter = createAnthropicAdapter({
       fetch: () =>
         Promise.resolve(
           new Response(
             JSON.stringify({
               type: 'error',
-              error: { type: 'authentication_error', message: 'bad key' },
+              error: { type: 'authentication_error', message: `bad key: ${SECRET}` },
             }),
             { status: 401, headers: { 'content-type': 'application/json' } },
           ),
@@ -271,6 +277,9 @@ describe('AnthropicAdapter — request building + secret safety', () => {
     if (caught instanceof LlmProviderError) {
       expect(caught.llmError.kind).toBe('auth');
       expect(JSON.stringify(caught.llmError)).not.toContain('SECRET');
+      // Positive proof the scrub fired (the echoed key reached the message and was masked) —
+      // an empty/dropped message would also be "secret-free", but vacuously.
+      expect(caught.llmError.message).toContain('[REDACTED]');
     }
   });
 });
@@ -382,6 +391,70 @@ describe('AnthropicAdapter — stream edge cases', () => {
     await adapter.generate({ ...REQ, temperature: 0.5, stopSequences: ['STOP'] }, 'k');
     expect(sent['temperature']).toBe(0.5);
     expect(sent['stop_sequences']).toEqual(['STOP']);
+  });
+
+  it('rejects a temperature above Anthropic max (1) with a bad_request, never reaching the transport', async () => {
+    let reached = false;
+    const adapter = createAnthropicAdapter({
+      fetch: () => {
+        reached = true;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+      maxRetries: 0,
+    });
+    let caught: unknown;
+    try {
+      await adapter.generate({ ...REQ, temperature: 1.5 }, 'k');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('bad_request');
+    }
+    expect(reached).toBe(false); // failed fast, before egress
+  });
+
+  it('emits a bad_request error chunk for temperature > max via STREAM (never reaching the transport)', async () => {
+    let reached = false;
+    const adapter = createAnthropicAdapter({
+      fetch: () => {
+        reached = true;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+      maxRetries: 0,
+    });
+    const chunks = await collect(adapter.stream({ ...REQ, temperature: 1.5 }, 'k'));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.type).toBe('error');
+    if (chunks[0]?.type === 'error') {
+      expect(chunks[0].error.kind).toBe('bad_request');
+    }
+    expect(reached).toBe(false); // failed fast, before egress
+  });
+
+  it('rejects a negative or NaN temperature (not only > max) before egress', async () => {
+    let reached = false;
+    const adapter = createAnthropicAdapter({
+      fetch: () => {
+        reached = true;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+      maxRetries: 0,
+    });
+    for (const bad of [-0.5, Number.NaN]) {
+      let caught: unknown;
+      try {
+        await adapter.generate({ ...REQ, temperature: bad }, 'k');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(LlmProviderError);
+      if (caught instanceof LlmProviderError) {
+        expect(caught.llmError.kind).toBe('bad_request');
+      }
+    }
+    expect(reached).toBe(false);
   });
 
   it('merges the cumulative cache/input usage the message_delta carries into the stop chunk', async () => {

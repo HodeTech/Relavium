@@ -1,7 +1,12 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { RUN_EVENT_TYPES, SESSION_EVENT_TYPES } from './constants.js';
-import { CostUpdatedEventSchema, RunEventSchema, SessionEventSchema } from './run-event.js';
+import {
+  CostUpdatedEventSchema,
+  MaskedSecretSchema,
+  RunEventSchema,
+  SessionEventSchema,
+} from './run-event.js';
 import type { RunEvent, RunEventType } from './index.js';
 
 const env = { runId: 'run-1', timestamp: '2026-06-04T00:00:00.000Z', sequenceNumber: 7 };
@@ -133,6 +138,27 @@ const reject: Record<string, Record<string, unknown>> = {
     executionMode: 'local',
   },
   'node:started (missing nodeType)': { type: 'node:started', ...env, nodeId: 'n' },
+  // `parallel`/`merge`/`human_gate` are authored YAML types, NOT engine types (`parallel` expands to
+  // fan_out/fan_in; `merge` runs as fan_in; `human_gate` is the authored alias of human_in_the_loop) —
+  // the node:started event carries the engine enum, so every authored-only type must be rejected.
+  'node:started (authored nodeType parallel)': {
+    type: 'node:started',
+    ...env,
+    nodeId: 'n',
+    nodeType: 'parallel',
+  },
+  'node:started (authored nodeType merge)': {
+    type: 'node:started',
+    ...env,
+    nodeId: 'n',
+    nodeType: 'merge',
+  },
+  'node:started (authored nodeType human_gate)': {
+    type: 'node:started',
+    ...env,
+    nodeId: 'n',
+    nodeType: 'human_gate',
+  },
   'agent:token (missing model)': { type: 'agent:token', ...env, nodeId: 'n', token: 'hi' },
   'agent:tool_call (missing toolId)': {
     type: 'agent:tool_call',
@@ -477,6 +503,27 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
         ...valid['run:failed'],
         error: { code: 'internal', message: 'x', retryable: false, nodeId: '' },
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe('MaskedSecretSchema', () => {
+  it('accepts a masked secret ({ secret: true, ref })', () => {
+    expect(MaskedSecretSchema.safeParse({ secret: true, ref: 'keychain:openai' }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects a non-masked or ref-less value', () => {
+    expect(MaskedSecretSchema.safeParse({ secret: false, ref: 'x' }).success).toBe(false); // secret must be literal true
+    expect(MaskedSecretSchema.safeParse({ secret: true }).success).toBe(false); // ref required
+    expect(MaskedSecretSchema.safeParse({ secret: true, ref: '' }).success).toBe(false); // ref non-empty
+  });
+
+  it('rejects an extra field — a raw secret can never ride alongside the masked shape', () => {
+    expect(
+      MaskedSecretSchema.safeParse({ secret: true, ref: 'keychain:openai', raw_value: 'sk-leak' })
+        .success,
     ).toBe(false);
   });
 });

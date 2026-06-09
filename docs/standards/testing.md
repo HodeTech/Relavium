@@ -45,6 +45,33 @@ Tests live beside the code (`*.test.ts`) and never reach across the LLM seam: a 
 asserts on Relavium types only, never on a vendor SDK shape (see
 [code-style-typescript.md](code-style-typescript.md)).
 
+## Security-critical primitive tests (direct, negative-case)
+
+Security primitives are tested **directly and adversarially**, never only transitively through a happy-path
+caller — the dangerous input is exactly the one the happy path never exercises, so coverage-% is not a
+substitute. Each carries its own unit suite with the malicious/edge inputs spelled out:
+
+- **The shared SSRF range-primitive** (the one parser behind provider `baseURL`, the `http_request` tool,
+  MCP server URLs, and the multimodal media `url` carrier): asserts it **blocks** the cloud metadata IP
+  `169.254.169.254`, link-local (`169.254/16`), loopback (`127/8`, `::1`), private ranges (`10/8`,
+  `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), an **IPv4-mapped IPv6** form of any of the above, a
+  credentials-in-URL, and a non-HTTPS scheme — and re-checks the **post-DNS-resolution IP** and **per-hop
+  redirect** targets, not just the literal hostname. A runtime-*derived* base URL is re-checked the same way.
+- **The path-resolve guard** (the Rust CAS / file layer): `realpath` + `commonpath` **fail-closed** rejects
+  a `..` traversal, an absolute path outside the run/session dir, and a **symlink** that escapes it.
+- **The keychain bridge**: the raw key is never returned from an IPC command and never appears in a command
+  result; only a key *reference* crosses to the WebView.
+- **`read_media` / byte delivery**: a negative, reversed (`end < start`), or out-of-bounds `Range` is
+  rejected; an oversize upload is rejected; a cross-session handle read is denied (scope-set authz).
+- **`INLINE_MEDIA_CEILING` + per-message caps**: an over-ceiling base64 part, an over-count message, and an
+  over-aggregate-bytes message are each rejected (the inputs the happy path never sends).
+
+These are **acceptance criteria** for the workstreams that build them (the shared SSRF primitive at 1.AE; the
+`MediaStore` / `read_media` / Rust CAS at 1.AF/1.AH) — green direct tests, not coverage-only. A normalized
+`LlmError.message`/`code` being **secret-free** is likewise asserted by **each adapter's secret-safety unit
+test** (a planted secret → a secret-free surfaced `LlmError`) and by `llm-error.test.ts` (the
+`makeLlmError`→`scrubSecrets` choke-point backstop), not assumed (see [security-review.md](security-review.md)).
+
 ## Per-provider conformance tests
 
 Each `@relavium/llm` adapter must pass one shared **conformance suite** — a single spec run

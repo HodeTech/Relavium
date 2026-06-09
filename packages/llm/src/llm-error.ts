@@ -58,7 +58,8 @@ export class LlmProviderError extends Error {
 interface MakeLlmErrorArgs {
   readonly provider: ProviderId;
   readonly kind: LlmErrorKind;
-  /** Human-readable and **already redacted** of any secret material (a key, a full prompt). */
+  /** Human-readable, **redacted of secret material by the caller** (a key, a full prompt). `makeLlmError`
+   *  additionally scrubs common secret shapes as a backstop at this one choke point (see `scrubSecrets`). */
   readonly message: string;
   /** Normalized provider/transport code, e.g. 'rate_limit'. */
   readonly code?: string;
@@ -69,23 +70,51 @@ interface MakeLlmErrorArgs {
 }
 
 /**
+ * Defense-in-depth secret scrub applied at the one `makeLlmError` choke point. The CALLER (adapter) is
+ * still responsible for passing an already-redacted message; this is the **structural backstop** — like
+ * the engine's `deInlineMedia` pass, leak-freedom here is an active transform at one boundary, not
+ * per-adapter discipline — so a forgotten adapter redaction cannot leak a key / token / credentialed URL
+ * across the seam, into a run event, or into a log. It masks the common secret **shapes** seen in
+ * practice (a key in the message, a token in a URL query string, credentials in a URL userinfo, a Bearer
+ * header); it never alters benign error text. Pure and total: regex replacement only, never throws (the
+ * error path must not throw). Asserted by `llm-error.test.ts` (the backstop) and each adapter's
+ * secret-safety test (a planted secret → a secret-free surfaced `LlmError`); see security-review.md.
+ */
+export function scrubSecrets(text: string): string {
+  return text
+    .replace(/(https?:\/\/)[^/\s:@]+(?::[^/\s@]+)?@/gi, '$1[REDACTED]@') // URL userinfo: user@ or user:pass@
+    .replace(
+      /([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi,
+      '$1[REDACTED]',
+    ) // secret in a URL query string (incl. `x-api-key` — an opaque value has no prefix to catch below)
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]') // Authorization: Bearer <token> — any token shape up to whitespace
+    .replace(/\bBasic\s+\S+/gi, 'Basic [REDACTED]') // Authorization: Basic <base64 user:pass>
+    .replace(/\bsk-(?:ant-)?[A-Za-z0-9\-_]{16,}/g, '[REDACTED]') // OpenAI sk-/sk-proj-/sk-svcacct- + Anthropic sk-ant- key prefixes
+    .replace(/\bAIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED]'); // Google API key prefix
+}
+
+/**
  * Build a normalized `LlmError`, deriving `retryable` from `kind` so a miswired adapter can't
  * produce an inconsistent pair. Constructs directly (no Zod parse) so it never throws on the error
- * path — the TS types already pin the shape.
+ * path — the TS types already pin the shape. `message`/`code` pass through `scrubSecrets` (the backstop).
  */
 export function makeLlmError(args: MakeLlmErrorArgs): LlmError {
   const error: LlmError = {
     kind: args.kind,
     retryable: isRetryable(args.kind),
     provider: args.provider,
-    message: args.message,
+    message: scrubSecrets(args.message),
   };
   if (args.code !== undefined) {
-    error.code = args.code;
+    error.code = scrubSecrets(args.code);
   }
   if (args.status !== undefined) {
     error.status = args.status;
   }
+  // `cause` is an INTERNAL diagnostic only (error-handling.md): it is NOT scrubbed and may hold a raw
+  // vendor object, so it must never be logged/serialized raw. The run-event boundary already carries
+  // only { code, message, retryable } (run-event.ts), never `cause`; a future adapter that sets `cause`
+  // keeps it off any log/event sink (or scrubs at that boundary).
   if (args.cause !== undefined) {
     error.cause = args.cause;
   }

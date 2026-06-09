@@ -76,6 +76,30 @@ describe('AgentSchema', () => {
     );
   });
 
+  it('accepts optional input_schema / output_schema (agent-yaml-spec.md)', () => {
+    const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
+    expect(
+      AgentSchema.safeParse({
+        ...min,
+        input_schema: { type: 'object', properties: { text: { type: 'string' } } },
+        output_schema: { type: 'object' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects non-object input_schema / output_schema metadata (but not an unknown inner JSON-Schema type)', () => {
+    const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
+    // The metadata is a JSON-Schema-subset bag — `jsonSchemaMetadataSchema = z.record(string, unknown)`
+    // (common.ts): a NON-OBJECT value is rejected...
+    expect(AgentSchema.safeParse({ ...min, input_schema: 'not-an-object' }).success).toBe(false);
+    expect(AgentSchema.safeParse({ ...min, output_schema: 42 }).success).toBe(false);
+    // ...but the bag intentionally does NOT deep-validate the inner JSON Schema, so an unknown inner
+    // `type` is accepted (the engine/consumer validates the schema body, not the authored-shape layer).
+    expect(
+      AgentSchema.safeParse({ ...min, input_schema: { type: 'invalid_json_schema_type' } }).success,
+    ).toBe(true);
+  });
+
   it('accepts zero or one mcp_servers (uniqueness boundary)', () => {
     const min = { id: 'a', model: 'm', provider: 'anthropic', system_prompt: 'p' };
     expect(AgentSchema.safeParse({ ...min, mcp_servers: [] }).success).toBe(true);

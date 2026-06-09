@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-import { kebabIdSchema, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import {
+  findDuplicates,
+  kebabIdSchema,
+  nonEmptyString,
+  nonNegativeInt,
+  positiveInt,
+} from './common.js';
 import { ON_EXCEED_ACTIONS, SCHEMA_VERSION } from './constants.js';
 import { AgentSchema } from './agent.js';
 import { NodeSchema } from './node.js';
@@ -88,6 +94,20 @@ export const InputValidationSchema = z
   });
 export type InputValidation = z.infer<typeof InputValidationSchema>;
 
+/** Which `validation` keys are legal per input `type` (workflow-yaml-spec.md). Module-level so it is
+ * allocated once and stays a single source of truth alongside the spec table and the unit tests. */
+const VALIDATION_KEYS_BY_TYPE: Record<
+  z.infer<typeof InputTypeSchema>,
+  readonly (keyof InputValidation)[]
+> = {
+  number: ['min', 'max', 'enum'],
+  string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'], // same keys as `string` — a `secret` is a string-typed value at rest
+  boolean: [],
+};
+
 export const WorkflowInputSchema = z
   .object({
     name: nonEmptyString,
@@ -97,7 +117,30 @@ export const WorkflowInputSchema = z
     description: z.string().optional(),
     validation: InputValidationSchema.optional(),
   })
-  .strict();
+  .strict()
+  // Per-type validation-key compatibility (workflow-yaml-spec.md): a numeric bound on a string, or a
+  // *_length on a number, is an authored mistake — reject it. (Bound-ordering is on InputValidationSchema.)
+  .superRefine((input, ctx) => {
+    if (!input.validation) {
+      return;
+    }
+    const allowedKeys = VALIDATION_KEYS_BY_TYPE[input.type];
+    // Defensive: if `type` itself failed enum validation, Zod still runs this refine — bail rather
+    // than crash (the type error is already reported on the `type` field).
+    if (allowedKeys === undefined) {
+      return;
+    }
+    const allowed = new Set<string>(allowedKeys);
+    for (const key of Object.keys(input.validation)) {
+      if (!allowed.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `validation key '${key}' is not allowed for input type '${input.type}'`,
+          path: ['validation', key],
+        });
+      }
+    }
+  });
 export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
 
 /** A shared variable exposed as `{{ctx.key}}`. */
@@ -139,6 +182,19 @@ export const BudgetSchema = z
   .strict();
 export type Budget = z.infer<typeof BudgetSchema>;
 
+/**
+ * A reference to an external `.agent.yaml` (`{ $ref: './reviewers/security.agent.yaml' }`,
+ * workflow-yaml-spec.md). The contract validates only the *shape* here; the **engine** resolves the
+ * path against the workspace agent registry (the pure/sync shared schema never reads files) and is
+ * where path-traversal/SSRF hardening lives. Keeping the door open lets a workflow bind external
+ * agents without inlining them.
+ */
+export const AgentRefSchema = z.object({ $ref: nonEmptyString }).strict();
+export type AgentRef = z.infer<typeof AgentRefSchema>;
+
+/** An `agents:` entry: an inline agent definition, or a `$ref` to an external `.agent.yaml`. */
+export const WorkflowAgentSchema = z.union([AgentSchema, AgentRefSchema]);
+
 /** The body under the top-level `workflow:` key. */
 export const WorkflowSpecSchema = z
   .object({
@@ -153,7 +209,7 @@ export const WorkflowSpecSchema = z
     trigger: TriggerSchema.optional(),
     inputs: z.array(WorkflowInputSchema).optional(),
     context: z.array(ContextEntrySchema).optional(),
-    agents: z.array(AgentSchema).optional(),
+    agents: z.array(WorkflowAgentSchema).optional(), // inline agents or { $ref } to .agent.yaml
     tools: ToolPolicySchema.optional(),
     budget: BudgetSchema.optional(), // pre-egress cost cap (ADR-0028)
     timeout_ms: positiveInt.optional(), // whole-run wall-clock cap
@@ -189,16 +245,11 @@ export const WorkflowSchema = z
     // context keys, and agent ids are each addressed by reference (edges, `{{inputs.*}}`,
     // `{{ctx.*}}`, `agent_ref`), so a duplicate is an ambiguity, not a forward-compat field.
     const reportDuplicates = (values: string[], label: string, path: (string | number)[]) => {
-      const seen = new Set<string>();
-      const duplicates = new Set<string>();
-      for (const value of values) {
-        if (seen.has(value)) duplicates.add(value);
-        seen.add(value);
-      }
-      if (duplicates.size > 0) {
+      const duplicates = findDuplicates(values);
+      if (duplicates.length > 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `duplicate ${label}: ${[...duplicates].join(', ')}`,
+          message: `duplicate ${label}: ${duplicates.join(', ')}`,
           path,
         });
       }
@@ -219,7 +270,8 @@ export const WorkflowSchema = z
       ['workflow', 'context'],
     );
     reportDuplicates(
-      (doc.workflow.agents ?? []).map((a) => a.id),
+      // Only inline agents carry an `id`; a `{ $ref }` entry is resolved (and id-checked) by the engine.
+      (doc.workflow.agents ?? []).flatMap((a) => ('id' in a ? [a.id] : [])),
       'agent id(s)',
       ['workflow', 'agents'],
     );

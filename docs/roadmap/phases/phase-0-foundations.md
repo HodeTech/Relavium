@@ -154,7 +154,11 @@ drift per package ([../../standards/code-style-typescript.md](../../standards/co
   `isolatedModules`, `moduleResolution: "bundler"`, `target`/`lib` pinned, and
   `skipLibCheck` only where justified.
 - Add thin target bases as needed (e.g. a library base for `packages/*`) that
-  `extends` the root and set `composite`/project-reference fields for Turbo caching.
+  `extends` the root. **Build/typecheck ordering is handled by Turbo's `^build`
+  dependency graph (the implemented final design), not TypeScript `composite` /
+  project-references / `tsc -b`** — the latter were considered and deliberately not
+  adopted (Turbo already orders + caches per-package builds, so composite adds
+  redundant machinery). Per-package `tsconfig.build.json` emits with `rootDir`/`outDir`.
 - Give `packages/shared` a `tsconfig.json` that extends the base and emits declaration
   files; expose a curated `index.ts` entry (no `export *` of internals).
 - Forbid loosening: a package that relaxes a strict flag needs a justification comment

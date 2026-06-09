@@ -34,4 +34,12 @@ describe('EdgeSchema', () => {
     expect(accepts({ from: 'a' })).toBe(false);
     expect(accepts({})).toBe(false);
   });
+
+  it('pins the branch-handle grammar: empty handle rejects, any non-empty handle is accepted', () => {
+    // The handle after `:` is a condition branch `when` value resolved by the engine, so it is
+    // deliberately permissive (`.+`) — but a trailing colon with no handle is malformed.
+    expect(accepts({ from: 'severity-gate:', to: 'b' })).toBe(false); // empty handle
+    expect(accepts({ from: 'severity-gate:UPPER', to: 'b' })).toBe(true); // permissive value
+    expect(accepts({ from: 'severity-gate:a:b', to: 'b' })).toBe(true); // colons inside the handle
+  });
 });

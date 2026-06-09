@@ -96,11 +96,22 @@ An input may carry an optional **`validation`** object the engine checks before 
 inputs:
   - name: reviewer_email
     type: string
-    validation: { format: email, max_length: 100 }   # format | pattern | enum | min | max | min_length | max_length
+    validation: { format: email, max_length: 100 } # string keys: format, pattern, enum, min_length, max_length
   - name: severity
     type: number
-    validation: { min: 0, max: 10 }
+    validation: { min: 0, max: 10 } # number keys: min, max, enum
 ```
+
+**Validation keys are type-scoped** — the parser rejects a key that doesn't apply to the input's
+`type` (e.g. `min` on a `string`, or `max_length` on a `number`):
+
+| `type` | allowed `validation` keys |
+|--------|---------------------------|
+| `number` | `min`, `max`, `enum` |
+| `string` / `file_path` / `code_diff` / `secret` | `format`, `pattern`, `enum`, `min_length`, `max_length` |
+| `boolean` | _(none)_ |
+
+(Bound-ordering — `min ≤ max`, `min_length ≤ max_length` — is also enforced at parse.)
 
 > **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. The rejection is **transitive** (taint-tracked through `context` entries and any derived value — a secret cannot be laundered through an intermediate variable). This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
 

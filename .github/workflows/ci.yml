@@ -21,10 +21,15 @@ on:
     branches: [main, development]
   pull_request:
 
-# Cancel superseded runs on the same ref so CI tracks the latest push — but never cancel a
-# run on `main` (its history is the merge record and must complete).
+# Cancel superseded runs so CI tracks the latest push — but never cancel a run on `main` (its
+# history is the merge record and must complete). The group key: a PR run is keyed by its PR
+# number (`github.event.number` — so two PRs open from the SAME head branch stay independent and
+# can't cancel each other), a push run by its short branch (`ref_name`, e.g. `development`).
+# `event_name` keeps a push and its same-SHA PR in separate groups (otherwise one run cancels the
+# other and a cancelled required check can block merge): `ci-CI-push-development` vs
+# `ci-CI-pull_request-10`.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -69,6 +74,9 @@ jobs:
       # The required gate: lint, typecheck, and test every workspace, then build.
       - name: Lint, typecheck, test
         run: pnpm turbo run lint typecheck test
+      # Typecheck the root/tooling *.config.ts that sit outside every package's tsc program.
+      - name: Typecheck tooling configs
+        run: pnpm typecheck:tools
       # Not redundant with typecheck: `build` runs each package's emit (tsconfig.build.json
       # → dist), which `typecheck` (tsconfig.json --noEmit) does not — it catches
       # emit-only failures and proves the published artifact compiles.

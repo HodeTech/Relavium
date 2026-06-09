@@ -12,10 +12,11 @@
   "scripts": {
     "build": "turbo run build",
     "lint": "turbo run lint",
-    "typecheck": "turbo run typecheck",
+    "typecheck": "turbo run typecheck && pnpm typecheck:tools",
+    "typecheck:tools": "tsc -p tsconfig.tools.json",
     "test": "turbo run test",
     "coverage": "vitest run --coverage",
-    "ci": "turbo run lint typecheck test",
+    "ci": "turbo run lint typecheck test && pnpm typecheck:tools && turbo run build format:check && pnpm lint:fence-check",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

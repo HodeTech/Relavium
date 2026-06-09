@@ -1,7 +1,11 @@
 /**
- * Canonical literal constants shared across the schema set. These are the single
- * source of truth for the closed vocabularies the rest of the package validates
- * against (event names, node types, providers, execution modes).
+ * Canonical literal constants shared across the schema set. Two roles:
+ * - **Directly validated vocabularies** — providers, execution modes, error codes, stop reasons,
+ *   fs-scope tiers, and `ENGINE_NODE_TYPES` are consumed via `z.enum(...)` (e.g. `node:started.nodeType`
+ *   in run-event.ts), so the constant *is* the validated set.
+ * - **Parallel authoritative lists** — run-event names and `WORKFLOW_NODE_TYPES` are a single source
+ *   of truth that a discriminated union re-declares by hand (`NodeSchema` carries a `z.literal` per
+ *   variant); tests pin the two in lock-step so they never drift.
  */
 
 /** The workflow/agent YAML schema version this package targets. */
@@ -100,6 +104,27 @@ export const WORKFLOW_NODE_TYPES = [
   'output',
 ] as const;
 export type WorkflowNodeType = (typeof WORKFLOW_NODE_TYPES)[number];
+
+/**
+ * The eleven **engine** node types (node-types.md §"engine enum") — the runtime taxonomy the
+ * engine executes and the `node:started` run event carries. It differs from the authored set
+ * above: `parallel`/`merge` expand to `fan_out`/`fan_in`, and `tool`/`loop`/`subworkflow` are
+ * engine-only. node-types.md is the canonical home for the taxonomy.
+ */
+export const ENGINE_NODE_TYPES = [
+  'agent',
+  'condition',
+  'tool',
+  'transform',
+  'input',
+  'output',
+  'loop',
+  'fan_out',
+  'fan_in',
+  'human_in_the_loop',
+  'subworkflow',
+] as const;
+export type EngineNodeType = (typeof ENGINE_NODE_TYPES)[number];
 
 /** The four supported LLM providers (the `LLMProvider` seam's closed id set). */
 export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'deepseek'] as const;

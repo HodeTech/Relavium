@@ -2,6 +2,7 @@ import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortEr
 import { describe, expect, it } from 'vitest';
 
 import { InvalidBaseUrlError } from '../errors.js';
+import { LlmProviderError } from '../llm-error.js';
 import type { StreamChunk } from '../types.js';
 import {
   createOpenAiAdapter,
@@ -281,11 +282,19 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
   });
 
   it('never leaks the API key into the surfaced LlmError', async () => {
+    // Built at runtime so no contiguous key-like literal sits in source (the llm-error.test.ts
+    // convention); ≥16 chars after `sk-` so the key matches the real scrub pattern (a shorter toy
+    // key would dodge the regex and prove nothing). The vendor error body ECHOES the planted key
+    // (security-review.md: each adapter plants a secret in a vendor error), so the scrubSecrets
+    // backstop must actually fire — not merely find a message the key never reached.
+    const SECRET = ['sk-', 'SECRET-DO-NOT-LEAK-123'].join('');
     const adapter = createOpenAiAdapter({
       fetch: () =>
         Promise.resolve(
           new Response(
-            JSON.stringify({ error: { message: 'unauthorized', type: 'invalid_request_error' } }),
+            JSON.stringify({
+              error: { message: `unauthorized: ${SECRET}`, type: 'invalid_request_error' },
+            }),
             {
               status: 401,
               headers: { 'content-type': 'application/json' },
@@ -298,13 +307,18 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     try {
       await adapter.generate(
         { model: 'gpt-4o', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] },
-        'sk-SECRET-KEY-123',
+        SECRET,
       );
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(Error);
-    expect(JSON.stringify(caught)).not.toContain('SECRET');
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('auth'); // the 401 classification path ran too
+      expect(JSON.stringify(caught.llmError)).not.toContain('SECRET');
+      // Positive proof the scrub fired (the echoed key reached the message and was masked).
+      expect(caught.llmError.message).toContain('[REDACTED]');
+    }
   });
 });
 

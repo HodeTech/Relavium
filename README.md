@@ -26,12 +26,14 @@ section answers*.
 
 ## Status
 
-**Phase 0 — Foundations complete (milestone M0, 2026-06-04).** The Turborepo + pnpm
-monorepo, the strict toolchain + GitHub Actions CI, `@relavium/shared` (the full Zod
-contract set), the no-vendor-type seam fence, and `@relavium/db` (Drizzle schema +
-migrations + SQLite client) are all in place and green. Work is now on
-[Phase 1 — engine and LLM](docs/roadmap/phases/phase-1-engine-and-llm.md): the
-`@relavium/llm` provider seam (1.A/1.B/1.E in review under **PR #7**, 2026-06-05) and the
-`@relavium/core` engine — which now also adds the **AgentSession** runtime, persistence, and
-export-to-workflow workstream alongside the workflow runner. See
-[docs/roadmap/current.md](docs/roadmap/current.md) for live status.
+**Phase 1 — engine and LLM in progress; milestone M1 (LLM seam proven) reached (PR #9,
+2026-06-07).** Phase 0 — Foundations (milestone M0, 2026-06-04) landed the Turborepo + pnpm
+monorepo, the strict toolchain + GitHub Actions CI, `@relavium/shared` (the full Zod contract
+set), the no-vendor-type seam fence, and `@relavium/db`. Phase 1 then landed
+[`@relavium/llm`](docs/roadmap/phases/phase-1-engine-and-llm.md): the provider-agnostic
+`LLMProvider` seam and **all three adapters** (Anthropic; the OpenAI-compatible adapter serving
+OpenAI + DeepSeek; Gemini), passing one shared conformance suite behind the frozen seam with no
+vendor type crossing it (PR #7–#9). Next on the critical path: the `FallbackChain` runner (1.K)
+and the `@relavium/core` engine — parser, run loop, checkpoint/resume, retry, plus the **AgentSession**
+runtime + export-to-workflow sub-spine. See [docs/roadmap/current.md](docs/roadmap/current.md) for
+live status.

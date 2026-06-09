@@ -33,6 +33,8 @@ import { isAbortSignal } from './shared.js';
 const PROVIDER = 'anthropic';
 /** Anthropic requires `max_tokens`; default it when the request omits one. */
 const DEFAULT_MAX_TOKENS = 4096;
+/** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
+const MAX_TEMPERATURE = 1;
 
 /** Anthropic supports the full common-path surface; provider-specific features go via `providerOptions`. */
 const SUPPORTS: CapabilityFlags = {
@@ -292,6 +294,24 @@ function buildCommonBody(
     };
   }
   if (req.temperature !== undefined) {
+    // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API
+    // accepts temperature in [0, 1]. Fail fast (the adapter's "never silently drop" posture) rather
+    // than forward a value the provider will 400 on — the guard stays provider-local, contract
+    // unchanged. NaN/negative are rejected too: `NaN > 1` and `-0.5 > 1` are both false, so an
+    // upper-bound-only check would silently forward them to a guaranteed 400.
+    if (
+      !Number.isFinite(req.temperature) ||
+      req.temperature < 0 ||
+      req.temperature > MAX_TEMPERATURE
+    ) {
+      throw new LlmProviderError(
+        makeLlmError({
+          provider: PROVIDER,
+          kind: 'bad_request',
+          message: `temperature ${String(req.temperature)} is outside Anthropic's accepted range [0, ${String(MAX_TEMPERATURE)}]`,
+        }),
+      );
+    }
     body.temperature = req.temperature;
   }
   if (req.stopSequences !== undefined) {
@@ -486,7 +506,12 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       buildRequestOptions(req),
     );
   } catch (err) {
-    yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    // A pre-egress guard (e.g. temperature > Anthropic max) already carries a classified LlmError —
+    // surface it as-is rather than re-classifying it as an unknown SDK error.
+    yield {
+      type: 'error',
+      error: err instanceof LlmProviderError ? err.llmError : anthropicErrorToLlmError(err),
+    };
     return;
   }
   try {
@@ -551,6 +576,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
           buildRequestOptions(req),
         );
       } catch (err) {
+        if (err instanceof LlmProviderError) throw err; // a pre-egress guard error — keep its classification
         throw new LlmProviderError(anthropicErrorToLlmError(err));
       }
       return {

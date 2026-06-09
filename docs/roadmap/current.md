@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-06
+> Last updated: 2026-06-08
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -84,8 +84,9 @@ the official provider SDKs — the seam fence's first real consumer) and **`@rel
 (the engine: YAML→DAG parse, runner, checkpoint/resume, retry — zero platform imports,
 consuming `@relavium/db` for run persistence).
 
-The next checkpoint is global milestone **M1 — LLM seam proven** (see the
-[milestone spine](README.md#global-milestone-spine)).
+Global milestone **M1 — LLM seam proven** is reached (PR #9, 2026-06-07): all three
+adapters pass the shared conformance suite behind the frozen seam. The next checkpoint is
+**M2 — engine end-to-end** (see the [milestone spine](README.md#global-milestone-spine)).
 
 > **One Phase-0 follow-up lives outside the code:** a maintainer should mark the CI `ci`
 > job a **required check** in GitHub branch protection (optionally adding `TURBO_TOKEN`/
@@ -93,28 +94,39 @@ The next checkpoint is global milestone **M1 — LLM seam proven** (see the
 
 ## Immediate next steps
 
-Phase 1 is underway. **Wave 0 — 1.L.0** (`@relavium/shared` reconciliation) merged in **PR #6**;
-the **Wave-1 seam trio — 1.A** (seam types), **1.B** (CostTracker + pricing), **1.E** (ToolNormalizer)
-— merged in **PR #7**; and the **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`
-classification), **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — merged in
-**PR #8** (2026-06-06): the seam fence now has its **first real consumer** (`@anthropic-ai/sdk` under
-`packages/llm/src/adapters/`), proven end-to-end against recorded fixtures by the shared conformance
-spec, with classified errors and capability gating — all behind the frozen `LLMProvider` seam. Per the
+Phase 1 is underway and **M1 (LLM seam proven) is reached**. **Wave 0 — 1.L.0** (`@relavium/shared`
+reconciliation) merged in **PR #6**; the **Wave-1 seam trio — 1.A** (seam types), **1.B** (CostTracker
++ pricing), **1.E** (ToolNormalizer) — merged in **PR #7**; the first **adapter lane — 1.C**
+(`AnthropicAdapter`), **1.I** (`LlmError` classification), **1.F** (conformance harness), **1.D**
+(capabilities + `providerOptions`) — merged in **PR #8** (2026-06-06); and the **remaining adapters +
+seam amendment — 1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), the **ADR-0030** seam-shape amendment
+(reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) — merged
+in **PR #9** (2026-06-07). All three adapters now pass the shared conformance spec in fixture mode
+(live nightly reserved, pending keys), with classified errors and capability gating, behind the frozen
+`LLMProvider` seam — **🎯 M1 achieved**. Per the
 [sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the next work runs
 two parallel lanes:
 
-1. **Adapter lane (seam)** — the remaining two adapters, now that the harness exists: **1.G —
-   OpenAI-compatible adapter** (OpenAI + DeepSeek via a custom `baseURL`) ‖ **1.H — `GeminiAdapter`**
-   (`@google/genai`, leaning hardest on the 1.E OpenAPI-subset reshape + id-synthesis). Both bind to
-   the **1.F** conformance spec; when all three pass it that is **1.J — conformance green = M1**. In
-   parallel, **1.K — `FallbackChain` runner** (retryable/fatal routing on `LlmError`, per-attempt
-   usage → `CostTracker`) — the seam's first policy layer
+1. **Seam policy lane** — **1.K — `FallbackChain` runner** (retryable/fatal routing on `LlmError`,
+   per-attempt usage → `CostTracker`, and the ADR-0030 strip-the-reasoning-signature-on-failover
+   obligation) — the seam's last Phase-1 policy layer, completing **1.m2** with the cost tracker
    ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
    [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)).
 2. **Engine lane** — **1.L — `WorkflowYAMLParser`** *(critical path)* — scaffold `packages/core` and
    parse+validate a `.relavium.yaml` against the reconciled `WorkflowSchema`, with typed,
-   field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, waiting at the
-   **1.O join** for the fallback runner (1.K).
+   field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, converging at the
+   **1.O join** (which waits on the fallback runner, 1.K) toward **M2**.
+
+> **Multimodal I/O decided (2026-06-08) — a second pre-freeze seam amendment.** First-class
+> image/audio/video I/O (input **and** output, incl. generate-media-by-rule) is now designed and decided:
+> [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (the seam amendment) +
+> [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust-side
+> de-inline), from [multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md)
+> (nine maintainer decisions A1–A9). It adds the **1.AD–1.AH** sub-spine (1.m6,
+> [phase-1](phases/phase-1-engine-and-llm.md)): **1.AD lands the seam shape NOW — before the exhaustive
+> consumers 1.K/1.O** so the `ContentPart`/`StreamChunk` media union members are non-breaking (the same
+> cheap-window move as ADR-0030); **1.AE–1.AH (media input/engine/output + surfaces) are additive and do
+> NOT gate M2.** So the immediate seam-lane work is **1.AD → then 1.K**, both before the 1.O join.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

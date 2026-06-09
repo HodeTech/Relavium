@@ -45,6 +45,18 @@ describe('config schemas', () => {
     expect(ProjectConfigSchema.safeParse({}).success).toBe(true);
   });
 
+  it('rejects an unknown/typo config key (strict — ADR-0023 parity)', () => {
+    expect(GlobalConfigSchema.safeParse({ updatechannel: 'stable' }).success).toBe(false); // top-level typo
+    expect(
+      GlobalConfigSchema.safeParse({ preferences: { theme: 'dark', themer: 'x' } }).success,
+    ).toBe(false); // nested typo
+    expect(ProjectConfigSchema.safeParse({ varaibles: { a: '1' } }).success).toBe(false);
+    expect(ProjectConfigSchema.safeParse({ defaults: { modell: 'x' } }).success).toBe(false); // nested defaults typo
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { default_model: 'm', maxx_messages: 1 } }).success,
+    ).toBe(false); // [chat] typo
+  });
+
   it('accepts an http MCP registration with a url', () => {
     expect(
       GlobalConfigSchema.safeParse({
@@ -90,6 +102,16 @@ describe('config schemas', () => {
     expect(
       GlobalConfigSchema.safeParse({
         mcp_servers: [{ name: 'r', transport: 'http', url: 'https://user:pass@host' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unknown/typo key in an MCP registration (strict — ADR-0033)', () => {
+    // `autostrat` is a typo for `autostart`; McpServerRegistrationSchema.strict() rejects it
+    // rather than silently dropping it (config files are strict per ADR-0033).
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'x', transport: 'stdio', command: 'npx', autostrat: true }],
       }).success,
     ).toBe(false);
   });

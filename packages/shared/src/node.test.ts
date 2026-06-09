@@ -92,6 +92,36 @@ describe('NodeSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts a custom merge with no merge_fn at the node level (the cross-field rule lives at WorkflowSchema)', () => {
+    // A discriminated-union member can't carry a cross-field refinement, so `merge_strategy:custom`
+    // without `merge_fn` is intentionally accepted here and only rejected at WorkflowSchema level.
+    expect(NodeSchema.safeParse({ id: 'm', type: 'merge', merge_strategy: 'custom' }).success).toBe(
+      true,
+    );
+  });
+
+  it('pins condition default + when invariants', () => {
+    const cond = {
+      id: 'c',
+      type: 'condition',
+      expression: 'x > 1',
+      branches: [{ when: true, target_node: 'a' }],
+    };
+    expect(NodeSchema.safeParse({ ...cond, default: 'Not Kebab' }).success).toBe(false); // default is a kebab node id
+    expect(NodeSchema.safeParse({ ...cond, default: 'fallback-node' }).success).toBe(true);
+    // a when value may be a string expression or a literal (string | number | boolean)
+    expect(
+      NodeSchema.safeParse({ ...cond, branches: [{ when: 'foo', target_node: 'a' }] }).success,
+    ).toBe(true);
+    expect(
+      NodeSchema.safeParse({ ...cond, branches: [{ when: 7, target_node: 'a' }] }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an empty transform expression', () => {
+    expect(NodeSchema.safeParse({ id: 't', type: 'transform', transform: '' }).success).toBe(false);
+  });
+
   it('accepts an agent node with optional overrides, and a minimal one without', () => {
     expect(NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'ag' }).success).toBe(true);
     expect(

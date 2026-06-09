@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowSchema } from './workflow.js';
 
 /**
- * The canonical reference workflow example, transcribed verbatim from the "Complete
- * example" in docs/reference/contracts/workflow-yaml-spec.md (as the parsed object —
- * YAML→object parsing is `@relavium/core`'s responsibility). This fixture is the
- * **no-drift anchor**: the schema must accept it and round-trip it unchanged.
+ * The canonical reference workflow example, modeled on the "Complete example" in
+ * docs/reference/contracts/workflow-yaml-spec.md (as the parsed object — YAML→object parsing is
+ * `@relavium/core`'s responsibility). The structure mirrors the spec; the multi-line prompt strings
+ * are **shortened paraphrases**, not verbatim transcriptions. It serves as a **round-trip anchor**:
+ * the schema accepts it and a parse→serialize→re-parse cycle is stable (not a verbatim spec-drift anchor).
  */
 const codeReviewPipeline = {
   schema_version: '1.0',
@@ -187,6 +188,24 @@ describe('WorkflowSchema', () => {
       n.id === 'merge' ? { ...n, merge_strategy: 'custom', merge_fn: '{ ...a, ...b }' } : n,
     );
     expect(accepts(withWorkflow({ nodes }))).toBe(true);
+  });
+
+  it('accepts an agents entry that is a $ref to an external .agent.yaml (engine resolves it)', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          agents: [...base.workflow.agents, { $ref: './reviewers/extra.agent.yaml' }],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a malformed $ref agent entry (unknown key)', () => {
+    expect(accepts(withWorkflow({ agents: [{ $ref: './x.agent.yaml', oops: 1 }] }))).toBe(false);
+  });
+
+  it('rejects a $ref agent entry with an empty path (caught at the schema, not at resolution)', () => {
+    expect(accepts(withWorkflow({ agents: [{ $ref: '' }] }))).toBe(false);
   });
 
   it('rejects a non-kebab-case workflow id', () => {
@@ -395,5 +414,71 @@ describe('WorkflowSchema', () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it('rejects a validation key incompatible with the input type', () => {
+    // a numeric `min` on a string, or a string-y `format` on a number, is an authored mistake
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 's', type: 'string', validation: { min: 0 } }] })),
+    ).toBe(false);
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { format: 'email' } }] }),
+      ),
+    ).toBe(false);
+    // a *_length on a number is also wrong
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { max_length: 5 } }] }),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects ANY validation key on a boolean input (its allowed set is empty)', () => {
+    // `enum` looks semantically plausible on a boolean — exactly the realistic authored mistake.
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'flag', type: 'boolean', validation: { enum: ['y'] } }] }),
+      ),
+    ).toBe(false);
+    // an empty validation object carries no key, so there is nothing to reject
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 'flag', type: 'boolean', validation: {} }] })),
+    ).toBe(true);
+  });
+
+  it('rejects numeric bound keys on code_diff / secret inputs (string-family keys only)', () => {
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 'd', type: 'code_diff', validation: { min: 0 } }] })),
+    ).toBe(false);
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 's', type: 'secret', validation: { max: 9 } }] })),
+    ).toBe(false);
+  });
+
+  it('does not crash when an invalid input type carries a validation object (clean reject)', () => {
+    // The per-type key superRefine runs even though `type` failed its enum check — it must bail, not
+    // throw on an undefined key list.
+    expect(() =>
+      accepts(withWorkflow({ inputs: [{ name: 'x', type: 'badtype', validation: { min: 0 } }] })),
+    ).not.toThrow();
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 'x', type: 'badtype', validation: { min: 0 } }] })),
+    ).toBe(false);
+  });
+
+  it('accepts type-appropriate validation keys', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          inputs: [{ name: 's', type: 'string', validation: { pattern: '^a+$', max_length: 5 } }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { min: 0, max: 9 } }] }),
+      ),
+    ).toBe(true);
   });
 });
