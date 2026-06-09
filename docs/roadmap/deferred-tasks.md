@@ -222,6 +222,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   accurate from the repo root. Make the glob cwd-tolerant (or document root-only) and add the
   testing.md **≥90% line+branch** threshold for the engine packages (`packages/core`,
   `packages/llm`) — per-area, since surfaces are smoke-only. *(minor · vitest.config.ts)*
+- [ ] **Coverage floor fires only on a repo-root run + is not a CI gate** — two residues of the
+  item above (PR #10 review, verified empirically): (1) the per-glob threshold key
+  (`packages/llm/src/**/*.ts`) is root-relative while a package-scoped `--coverage` run keys the
+  coverage map cwd-relative (`src/…`), so the floor silently does not fire there — and no single
+  glob can fix it without wrongly binding shared/db package runs to the engine floor (documented
+  at the thresholds block). (2) `pnpm coverage` is not yet a required CI step. Resolve both at
+  once when wiring coverage into CI: a root-run `pnpm coverage` CI step makes the root-relative
+  glob authoritative and the package-scoped gap moot. *(minor · vitest.config.ts, ci.yml)*
 - [x] **Column-level schema fidelity** — `client.test.ts` proves only that table *names* exist.
   Add a `PRAGMA table_info(<table>)` assertion per table (name/type/notnull/dflt/pk) against an
   expected fixture, or snapshot `0000_*.sql` byte-for-byte. *(minor · packages/db/src/client.test.ts)*

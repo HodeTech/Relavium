@@ -32,6 +32,12 @@ export default defineConfig({
       exclude: ['**/*.test.ts', '**/apps/**'],
       // The enforced Phase-1 engine floor, scoped per-glob so it targets only the built engine
       // package(s) and never the not-yet-90% shared/db or the unbuilt core.
+      //
+      // KNOWN LIMIT (verified empirically): the floor fires only on a repo-ROOT run
+      // (`pnpm coverage`). A package-scoped run (`cd packages/llm && vitest --coverage`) keys the
+      // coverage map cwd-relative (`src/…`), so NO single glob can both stay package-targeted at
+      // the root and still match there — a cwd-tolerant `src/**` would wrongly bind shared/db
+      // package runs to the engine floor. Tracked in deferred-tasks.md (coverage-in-CI item).
       thresholds: {
         'packages/llm/src/**/*.ts': { lines: 90, branches: 90 },
         // 'packages/core/src/**/*.ts': { lines: 90, branches: 90 }, // enable once core lands (1.L+)
