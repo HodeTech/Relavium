@@ -87,7 +87,7 @@ export function scrubSecrets(text: string): string {
       /([?&](?:api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi,
       '$1[REDACTED]',
     ) // secret in a URL query string
-    .replace(/\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]') // Authorization: Bearer <token>
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]') // Authorization: Bearer <token> — any token shape up to whitespace
     .replace(/\bsk-(?:ant-)?[A-Za-z0-9\-_]{16,}/g, '[REDACTED]') // OpenAI sk-/sk-proj-/sk-svcacct- + Anthropic sk-ant- key prefixes
     .replace(/\bAIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED]'); // Google API key prefix
 }
