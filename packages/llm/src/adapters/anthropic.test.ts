@@ -240,14 +240,20 @@ describe('AnthropicAdapter — request building + secret safety', () => {
   });
 
   it('never leaks the API key into the surfaced LlmError', async () => {
-    const SECRET = 'sk-ant-SECRET-DO-NOT-LEAK';
+    // Built at runtime so no contiguous key-like literal sits in source (the llm-error.test.ts
+    // convention — avoids secret-scanner false positives); ≥16 chars after `sk-` so it matches
+    // the real scrub pattern.
+    const SECRET = ['sk-', 'ant-', 'SECRET-DO-NOT-LEAK'].join('');
+    // The vendor error body ECHOES the planted key (security-review.md: each adapter plants a
+    // secret in a vendor error) — so the scrubSecrets backstop must actually fire, not merely
+    // find a message the key never reached.
     const adapter = createAnthropicAdapter({
       fetch: () =>
         Promise.resolve(
           new Response(
             JSON.stringify({
               type: 'error',
-              error: { type: 'authentication_error', message: 'bad key' },
+              error: { type: 'authentication_error', message: `bad key: ${SECRET}` },
             }),
             { status: 401, headers: { 'content-type': 'application/json' } },
           ),
@@ -271,6 +277,9 @@ describe('AnthropicAdapter — request building + secret safety', () => {
     if (caught instanceof LlmProviderError) {
       expect(caught.llmError.kind).toBe('auth');
       expect(JSON.stringify(caught.llmError)).not.toContain('SECRET');
+      // Positive proof the scrub fired (the echoed key reached the message and was masked) —
+      // an empty/dropped message would also be "secret-free", but vacuously.
+      expect(caught.llmError.message).toContain('[REDACTED]');
     }
   });
 });

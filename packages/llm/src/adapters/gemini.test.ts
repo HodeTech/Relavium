@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { LlmProviderError } from '../llm-error.js';
 import { GeminiToolCallIds } from '../tool-normalizer.js';
 import type { LlmRequest, StreamChunk } from '../types.js';
 import {
@@ -256,19 +257,30 @@ describe('Gemini adapter — generate / stream via injected transport', () => {
   });
 
   it('generate surfaces a transport rejection as a classified LlmProviderError', async () => {
+    // Built at runtime so no contiguous key-like literal sits in source (the llm-error.test.ts
+    // convention). A Gemini-shaped key (`AIza` + ≥20 chars) so it matches the real scrub pattern,
+    // ECHOED in the vendor error message (security-review.md: each adapter plants a secret in a
+    // vendor error) — the scrubSecrets backstop must actually fire, not merely find a message the
+    // key never reached.
+    const SECRET = ['AI', 'za', 'SECRET_DO_NOT_LEAK_123'].join('');
     const transport: GeminiTransport = {
-      generate: () => Promise.reject(Object.assign(new Error('rl'), { status: 429 })),
+      generate: () => Promise.reject(Object.assign(new Error(`rl: ${SECRET}`), { status: 429 })),
       stream: () => Promise.reject(new Error('unused')),
     };
     const adapter = createGeminiAdapter({ transport });
     let caught: unknown;
     try {
-      await adapter.generate(REQ, 'sk-SECRET-123');
+      await adapter.generate(REQ, SECRET);
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(Error);
-    expect(JSON.stringify(caught)).not.toContain('SECRET');
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('rate_limit');
+      expect(JSON.stringify(caught.llmError)).not.toContain('SECRET');
+      // Positive proof the scrub fired (the echoed key reached the message and was masked).
+      expect(caught.llmError.message).toContain('[REDACTED]');
+    }
   });
 
   it('stream folds text + a tool call (start/delta/end) then a terminal stop', async () => {
