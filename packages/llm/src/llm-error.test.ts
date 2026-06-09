@@ -99,6 +99,13 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
     expect(
       scrubSecrets('GET https://api.example.com/v1?api_key=SECRET12345abc failed'),
     ).not.toContain('SECRET12345abc');
+    // `x-api-key` as a query param with an OPAQUE value (no sk-/AIza prefix for the key-shape
+    // patterns to catch) — only the param-name rule can mask it. Built via join() like the keys
+    // above (no contiguous secret-shaped literal in source).
+    const opaqueVal = join('opaque', 'Value123456789');
+    expect(
+      scrubSecrets(`GET https://api.example.com/v1?x-api-key=${opaqueVal} failed`),
+    ).not.toContain(opaqueVal);
     expect(scrubSecrets('connect https://user:p4ssw0rd@host/x')).not.toContain('p4ssw0rd');
     // username-only userinfo (no password) must also be redacted
     expect(scrubSecrets('connect https://onlytoken@host/x')).not.toContain('onlytoken');

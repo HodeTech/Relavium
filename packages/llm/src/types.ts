@@ -136,6 +136,9 @@ export const LlmErrorSchema = z.object({
   status: z.number().int().optional(), // upstream HTTP status, when there was one
   provider: ProviderIdSchema,
   message: z.string(), // human-readable, already redacted of any secret material
+  // INTERNAL diagnostic only — may hold a raw vendor error and is NOT scrubbed by `makeLlmError`
+  // (unlike `message`/`code`). Never log, serialize, or put it in a run event: any sink must strip
+  // `cause` first (the run-event error shape `{ code, message, retryable }` already excludes it).
   cause: z.unknown().optional(), // original error for debugging — never re-thrown across the seam
 });
 export type LlmError = z.infer<typeof LlmErrorSchema>;

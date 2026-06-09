@@ -84,9 +84,9 @@ export function scrubSecrets(text: string): string {
   return text
     .replace(/(https?:\/\/)[^/\s:@]+(?::[^/\s@]+)?@/gi, '$1[REDACTED]@') // URL userinfo: user@ or user:pass@
     .replace(
-      /([?&](?:api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi,
+      /([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi,
       '$1[REDACTED]',
-    ) // secret in a URL query string
+    ) // secret in a URL query string (incl. `x-api-key` — an opaque value has no prefix to catch below)
     .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]') // Authorization: Bearer <token> — any token shape up to whitespace
     .replace(/\bBasic\s+\S+/gi, 'Basic [REDACTED]') // Authorization: Basic <base64 user:pass>
     .replace(/\bsk-(?:ant-)?[A-Za-z0-9\-_]{16,}/g, '[REDACTED]') // OpenAI sk-/sk-proj-/sk-svcacct- + Anthropic sk-ant- key prefixes
