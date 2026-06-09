@@ -13,6 +13,14 @@
 > reasoning signature when failing over** to another provider) ‖ the **1.L** engine parser, converging
 > at the **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning
 > signature — non-persisting.)*
+>
+> **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
+> second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
+> (seam) + [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust
+> de-inline), designed in [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md).
+> The new sub-spine **1.AD–1.AH** (1.m6) lands the **shape (1.AD) before the exhaustive consumers 1.K/1.O**
+> so the `ContentPart`/`StreamChunk` media union members are non-breaking; the **behavior (1.AE–1.AH) is
+> additive and does NOT gate M2** (it threads into the engine and Phases 2–6, like the agent-first sub-spine).
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -693,6 +701,70 @@ Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-
 
 **Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
 
+### Multimodal I/O sub-spine (1.AD–1.AH) — seam amendment now, behavior additive
+
+First-class multimodal I/O (image / audio / video, **input AND output**, incl. a workflow that by rule
+**generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
++ [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
+[multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md). The **shape**
+(1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it lands **before the exhaustive
+consumers** (1.K `FallbackChain`, 1.O `AgentRunner`) so adding the `ContentPart`/`StreamChunk` media
+union members is non-breaking. The **behavior** (1.AE–1.AH) is **additive — it does NOT gate M2** (like
+the agent-first sub-spine): media plumbing layers onto the proven engine and threads into the surface
+phases (2–6). Each phase below maps to the design doc's Phase A–E.
+
+- **1.AD — Multimodal seam amendment (Phase A) — land NOW, before 1.K/1.O.** Add to `@relavium/shared`
+  + the `@relavium/llm` seam types, *shape only, no behavior*: the MIME-discriminated `media`
+  `ContentPart` arm **and** the distinct handle-only `DurableMediaPart`/`DurableContentPart`; the
+  `media_start/delta/end` `StreamChunk` triad (handle-only terminal; `partialRef` **reserved**, A3);
+  `CapabilityFlags.media` = `input{image,audio,video,document}` (the `document` flag is A2) +
+  `outputCombinations: ModalitySet[]` + the derived `vision` alias; `Usage.mediaUnits`;
+  `LlmRequest.outputModalities`; `tool_result.media: DurableMediaPart[]`; the optional
+  `generateMedia?`/`pollMediaJob?` `LlmProvider` methods (**reserved**, A5); `MediaSource` +
+  `DurableMediaSource` + `INLINE_MEDIA_CEILING` + the per-message count/aggregate caps; the
+  `deInlineMedia` boundary signature + the backstop `persistableMediaRefine`. The `url` carrier ships
+  **feature-flag-OFF**. Update [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md);
+  StopReason stays `'stop'` + content-inspection (tested). *Acceptance:* the new union members + optional
+  fields/methods parse and round-trip; a base64 part in a durable/`tool_result.result` position is
+  rejected by the backstop; no vendor type crosses the seam; the run-event count-test is green at the new
+  total. *(Freeze-criticality recorded in the design doc §9: the three union/capability shapes are
+  truly breaking-to-defer; the optional fields/methods are landed-early-by-choice per A1.)*
+- **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
+  (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
+  wire image/audio/video **input** in Anthropic/OpenAI/Gemini; set the capability matrix; add conformance
+  scenarios (image-in, audio-in, `mediaUnits` mapping). **Complete the one shared SSRF range-primitive**
+  (security-review.md) and flip the `url` flag on for input **and** output, with the landing-gate CI test.
+  *Acceptance:* a vision request actually reaches the provider as media (not flattened text); the
+  conformance suite covers media-in + `mediaUnits`; the `url` carrier is rejected while the SSRF flag is
+  off and accepted once it lands.
+- **1.AF — Engine media plumbing (Phase C).** `requiredCapabilities()` media-gating (input + the
+  `outputCombinations` **membership** check) + `FallbackChain` provider-skip + the ephemeral-sidecar
+  strip/re-materialize-**before-the-retried-request** on failover (B5); the `MediaStore` contract + host
+  injections; the **one `emitRunEvent`/persist choke point** running `deInlineMedia` on every emit path
+  incl. the checkpoint/`RunState` snapshot **and** the failover context transfer (B1); the `read_media`
+  **scope-set authz** (A8); `output_modalities` / `save_to` node fields (strict-authored-YAML, ADR-0023);
+  media budget caps **+ the per-modality pre-egress media cost estimate** (A6) into the governance
+  events; the `media_objects` retention/GC table. *Acceptance:* an incapable provider is skipped (not
+  silently flattened); a media-bearing event/checkpoint emits handles only (asserted by the backstop +
+  an emit test); `save_to` writes bytes only at the surface boundary.
+- **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
+  image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
+  `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
+  async). **The async poll / checkpoint / resume / cancel loop gets its OWN ADR here (A5)** — it is the
+  highest-complexity piece (a minute-scale LRO that survives a restart, in the run loop + checkpointer,
+  reusing `LlmError` classification). Add `model_catalog.media_surface`. *Acceptance:* a generate-image
+  node produces a handle; an async video job checkpoints, survives a simulated restart, and resumes to
+  completion; a content-policy job failure maps to `content_filter`.
+- **1.AH — Surfaces & managed mode (Phase E, spans Phases 2–6).** Desktop:
+  **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media
+  de-inline on egress + session-scoped `read_media` command + the Rust CAS — **must land before any
+  desktop media-output** (phase-3-desktop). CLI/VS Code media rendering (phase-2-cli / phase-4-vscode).
+  Managed-mode gateway media materialization-to-user-store + `mediaUnits` metering, reconciled with
+  [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md) counts-not-content
+  (phase-5-managed-inference). *Acceptance:* on desktop, media bytes never transit the WebView↔Rust
+  channel (only handles do); each surface renders a produced media handle; managed mode meters counts and
+  stores no artifact.
+
 ## Milestones
 
 In-phase milestones map to the workstreams that complete them. The two global-spine
@@ -708,6 +780,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD — lands before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD**, 1.AE, 1.AF, 1.AG, 1.AH |
 
 ## Sequencing & parallelization
 
@@ -846,7 +919,7 @@ flowchart LR
 | 1.G | A | 1.F | 1.J | ✅ |
 | 1.H | A | 1.E, 1.F | 1.J | ✅ |
 | 1.J | A | 1.G, 1.H, 1.I | 1.K (**M1**) | ✅ |
-| 1.K | A | 1.B, 1.I, 1.J | 1.O | ✅ |
+| 1.K | A | 1.B, 1.I, 1.J, 1.AD (media shape) | 1.O | ✅ |
 | 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ |
 | 1.L2 | B | 1.L | 1.M | ✅ |
 | 1.M | B | 1.L2 | 1.N | ✅ |
@@ -854,7 +927,7 @@ flowchart LR
 | 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
 | 1.T | B | 1.E | 1.O, 1.U | ⬤ |
 | 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P |
-| 1.O | B | **1.K, 1.N, 1.T** (the join) | 1.P, 1.S, 1.AC, 1.V | ✅ |
+| 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ |
 | 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
 | 1.S | B | 1.O, 1.R | 1.U | ✅ |
 | 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ⬤ |
@@ -866,11 +939,21 @@ flowchart LR
 | 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
 | 1.Z | C | 1.V, 1.L | 1.AA | ◇ |
 | 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
+| 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only, precedes consumers |
+| 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
+| 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
+| 1.AG | D | 1.AF | 1.AH | ◇ |
+| 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
 
 > The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`
 > and `1.L.0 → 1.W` into Lane C). The waves Mermaid above draws lane-internal edges plus the `1.O`
 > join and the gate fan-out, omitting those Lane-C feeders to stay readable — so where the diagram
 > and this table differ on a Lane-C predecessor, the table wins.
+>
+> **Lane D (multimodal, 1.AD–1.AH)** is omitted from the waves Mermaid to keep it readable. Its one
+> scheduling constraint: **1.AD (shape only) must land before 1.K and 1.O** — the same cheap-window logic
+> as the ADR-0030 amendment — so the media union members are added before any exhaustive `switch` exists.
+> Everything after 1.AD (1.AE–1.AH) is **additive and never gates M2**, mirroring Lane C.
 
 ### Solo vs. multi-track
 

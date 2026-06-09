@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-07
+> Last updated: 2026-06-08
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -21,15 +21,23 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > resolves the file), **config strictness** (`.strict()`), **`engine-strict`** (enforce), **branded
 > ids** (plain strings stay — code-style note), and **turbo `inputs`** (keep the safe default) are all
 > settled and checked off. **Still open:** the **`LICENSE`** (HodeTech is drafting its own commercial
-> license), **first-class multimodal I/O** (decided as a direction — needs a design analysis + ADR +
-> seam amendment before code), **blocked** work (live-nightly keys, non-Anthropic pricing — needs the
-> live pages), and **three explicitly deferred** items (each annotated with why: the `z.unknown()`
-> presence check, the dist packaging smoke test, and local `format:check` via turbo).
+> license), **blocked** work (live-nightly keys, non-Anthropic pricing — needs the live pages), and
+> **three explicitly deferred** items (each annotated with why: the `z.unknown()` presence check, the
+> dist packaging smoke test, and local `format:check` via turbo).
+>
+> **2026-06-08 multimodal decision pass:** **first-class multimodal I/O** is now fully designed and
+> decided — the analysis ([multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md)),
+> [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (seam) +
+> [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust de-inline)
+> landed, nine maintainer decisions (A1–A9) ruled, and implementation scheduled as the **1.AD–1.AH**
+> sub-spine (1.m6). The item is checked off; its **not-yet-coded pieces are carried as the seven
+> multimodal forward-obligations** below (SSRF primitive, async-job ADR, media cost estimate, `partialRef`
+> semantics, `workspace` authz scope, retention/GC table, `vision`-alias retirement) so nothing is lost.
 
 ## Decisions needed (maintainer call)
 
 - [x] **Workflow `agents:` `$ref` support** — the
-  [workflow YAML spec](../../reference/contracts/workflow-yaml-spec.md) allows an `agents:`
+  [workflow YAML spec](../reference/contracts/workflow-yaml-spec.md) allows an `agents:`
   entry to be a `$ref` to an external `.agent.yaml`, but `WorkflowSpecSchema.agents` accepted
   inline `AgentSchema` only. **Decided (2026-06-07): keep the door open** — `agents:` now accepts
   `z.union([AgentSchema, AgentRefSchema])` (`{ $ref }`, `.strict()`); the duplicate-id check skips
@@ -37,7 +45,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (the pure/sync shared schema never reads files). Code now matches the spec. *(workflow.ts)*
 - [x] **Branded id types** — `runId`/`nodeId`/`gateId`/`workflowId`/`agentId` are all plain
   `string`. **Decided: plain strings stay** (deliberate) — recorded in
-  [code-style-typescript.md §Naming](../../standards/code-style-typescript.md); validation is at
+  [code-style-typescript.md §Naming](../standards/code-style-typescript.md); validation is at
   the Zod boundary and branding adds cross-seam friction for little payoff. Revisit via an ADR if a
   real id-mixup bug class appears. *(minor · packages/shared/src/run.ts, node.ts)*
 - [ ] **`LICENSE` file + root `license` field** — the public repo has neither.
@@ -57,20 +65,55 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `packages/*` library base with `composite: true` + `references` (db → shared) and build via
   `tsc -b`, or record that turbo `^build`-ordering is the deliberate final design and update
   the 0.B callout. *(minor · tsconfig.base.json, packages/*/tsconfig.json)*
-- [ ] **First-class multimodal I/O (the `vision` flag is only the tip)** — `vision: true` is set for
-  Anthropic / OpenAI / Gemini, yet `ContentPart` ([content.ts](../../packages/shared/src/content.ts))
-  has no media arm, so media can only reach a provider through the `providerOptions` escape hatch in
-  a vendor-specific shape — never the canonical seam. **Decided (2026-06-07): multimodal is a
-  first-class seam capability, NOT providerOptions-only.** Whatever a model the user connects to
-  accepts/returns — image, audio, **video** — must be expressible through the seam **both as input
-  and output** (e.g. a workflow that, by rule, produces an image/video/audio file). This is an
-  **ADR-0030-style seam amendment + a design analysis** before any code, covering: canonical media
-  `ContentPart` arm(s) (base64 vs URL/handle + media-type + size), **output** media return + storage,
-  per-provider/per-modality capability flags (replace the single `vision` bool), per-adapter
-  normalization, **media-transfer security** (where bytes live, redaction in events/logs, managed-mode
-  egress, path-traversal), and cost/usage accounting. Land the analysis + ADR first; then the seam
-  shape; then per-adapter support behind the new capability flags. *(decided → analysis + ADR ·
-  content.ts; the adapters' `*_SUPPORTS`; [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md))*
+- [x] **First-class multimodal I/O (the `vision` flag is only the tip)** — `vision: true` is set for
+  Anthropic / OpenAI / Gemini, yet `ContentPart` had no media arm, so media could only reach a provider
+  through the `providerOptions` escape hatch in a vendor-specific shape. **DONE (2026-06-08): analysis +
+  ADRs landed, decisions ruled, scheduled.** The design analysis is
+  [multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md) (three-perspective
+  adversarial review, 8 blocking issues resolved); the binding records are
+  [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (the seam amendment — media
+  `ContentPart`/`StreamChunk` arms, `CapabilityFlags.media` with `input{image,audio,video,document}` +
+  `outputCombinations`, `Usage.mediaUnits`, `LlmRequest.outputModalities`, reserved
+  `generateMedia?`/`pollMediaJob?`, the `MediaStore`/`deInlineMedia`/handle model) and
+  [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust-side
+  de-inline). **Nine maintainer decisions (A1–A9)** are recorded in ADR-0031's *Maintainer decisions*
+  table. **Implementation is scheduled as the 1.AD–1.AH sub-spine (1.m6,
+  [phase-1](phases/phase-1-engine-and-llm.md))** — 1.AD (seam shape) lands before 1.K/1.O; 1.AE–1.AH are
+  additive. The residual forward-obligations below carry the not-yet-coded pieces so nothing is lost.
+  *(content.ts; the adapters' `*_SUPPORTS`; [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md))*
+
+### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
+
+- [ ] **Shared SSRF range-primitive (the `url`-carrier precondition)** — the one shared HTTPS-only /
+  block-private-loopback-link-local-metadata-CGNAT / DNS-resolution + per-hop-redirect-revalidation /
+  IPv4-mapped-IPv6-decode primitive that `assertHttpsBaseUrl` (openai.ts) is the best-effort placeholder
+  for. security-review.md mandates **one** primitive across all egress paths; the media `url` carrier
+  (input + provider-returned output) is gated **feature-flag-OFF** until it lands. **Land at 1.AE**, with
+  the landing-gate CI test (url rejected while flag off). *(security-review.md; openai.ts; 1.AE)*
+- [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
+  now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
+  (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
+  own ADR written at 1.AG (Phase D)**. Highest behavioral complexity in the multimodal design. *(1.AG)*
+- [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
+  cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
+  analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a
+  per-model media rate in `pricing.ts`/`model_catalog`; the governor estimates `units × rate` pre-egress.
+  *(config.ts; pricing.ts; database-schema.md; wired at 1.AF/1.AG)*
+- [ ] **`partialRef` partial-write semantics (A3, reserved)** — `media_delta.partialRef` ships in the
+  frozen triad (1.AD) but is **reserved, host-implementation-defined**; the `MediaStore` contract defines
+  only `put(completeBytes)`. Specify append-vs-per-delta-put semantics when the surface that renders
+  progressive previews lands. *(1.AH / Phase E)*
+- [ ] **`read_media` `workspace` authz scope kind (A8, reserved)** — `read_media` authz is a generic
+  `handle → allowedScopes: Set<Scope>` with `Scope = { kind:'session', id }` today; the
+  `{ kind:'workspace', id }` kind is **reserved (documented, not implemented)** so cross-session /
+  shared-asset reads are an additive scope kind, no handle-model migration. Implement only when a
+  shared-asset feature has a real consumer. *(1.AF; ADR-0031 read_media guardrail)*
+- [ ] **`MediaStore` retention/GC + `media_objects` table (defaulted)** — per-distinct-reference
+  `refcount` + `last_referenced_at` + grace window, separate from the 90-day `run_events` prune; GC owner
+  is the host (Rust desktop / filesystem CLI). Lands with the table at **1.AF**. *(database-schema.md; 1.AF)*
+- [ ] **Retire the `vision` derived alias (OQ6 default)** — `CapabilityFlags.vision` is kept as a derived
+  alias of `media.input.image` for live consumers (`db.supports_vision`, adapter `supports.vision`);
+  schedule removal once those migrate to `media.input.image`. *(types.ts; a later cleanup)*
 
 ## Schema / validation hardening
 

@@ -2,7 +2,14 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-04
-- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [../reference/contracts/ipc-contract.md](../reference/contracts/ipc-contract.md), [../architecture/local-first-and-security.md](../architecture/local-first-and-security.md)
+- **Related**: [0001-tauri-v2-over-electron.md](0001-tauri-v2-over-electron.md), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0032-desktop-rust-media-de-inline-amends-0018.md](0032-desktop-rust-media-de-inline-amends-0018.md), [../reference/contracts/ipc-contract.md](../reference/contracts/ipc-contract.md), [../architecture/local-first-and-security.md](../architecture/local-first-and-security.md)
+
+> **Amended 2026-06-08 by [ADR-0032](0032-desktop-rust-media-de-inline-amends-0018.md)** (a refinement,
+> not a reversal): for **media-output** turns the Rust `llm_stream` egress command gains a bounded,
+> audited media-detect-and-store step — it writes inline media bytes to a Rust-side CAS and forwards only
+> a handle on the `Channel<StreamChunk>`, so multi-MB media never transits the WebView↔Rust channel
+> (ADR-0031's invariant I3). Text/tool/reasoning chunks are still framed verbatim; the engine, the seam
+> types, and the key-handling below are unchanged.
 
 ## Context
 

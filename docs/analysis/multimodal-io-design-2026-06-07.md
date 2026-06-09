@@ -1,6 +1,21 @@
 # Multimodal I/O — design analysis (first-class image / audio / video, input + output)
 
-> Status: Draft for maintainer review
+> Status: Reviewed and decided — finalized as [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (the seam amendment) + [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (the desktop Rust-side de-inline). This doc is the reasoning trail; the ADRs are the binding record.
+
+> **Decision banner (2026-06-08).** Two independent review reports of this analysis were taken to the
+> maintainer; nine decisions (A1–A9) were ruled and are now baked into ADR-0031 (see its *Maintainer
+> decisions* table) and reflected inline here:
+> **A1** land the **full** Phase-A shape now (not just the freeze-critical minimum — see the
+> freeze-criticality note in §9); **A2** a distinct **`document`** input capability flag for PDF (§3.4);
+> **A3** `partialRef` ships **reserved, host-defined** (§3.3); **A4** desktop Rust-side de-inline →
+> [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), must land before Phase E
+> (§6.5); **A5** `generateMedia`/`pollMediaJob` ship **reserved**; the async poll/checkpoint behavior
+> gets **its own ADR** at Phase D (§5.2); **A6** pre-egress **per-modality media cost estimate** added to
+> the governor (§3.5/§6.7); **A7** provider-returned output URLs are fetched/re-hosted by the **engine**,
+> never the adapter (§6.3/§7); **A8** `read_media` authz is a **generic scope-set** (`session` now,
+> `workspace` reserved) (§6.8); **A9** exported YAML = **handle at the seam, `save_to` at the surface**
+> (§6.10). The §11 open questions are updated with their resolution/defaults. The embedded ADR draft
+> was finalized as the committed [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (see §12).
 
 This is the definitive, revision-incorporated design for first-class multimodal I/O on the
 `@relavium/llm` seam. It supersedes the earlier draft synthesis: three adversarial reviewers
@@ -11,7 +26,7 @@ small assets may inline as base64 *in-flight*, and large assets plus **all** per
 content-addressed handle into a Relavium `MediaStore` — bytes never ride run-events, logs, the DB,
 IPC, or exported YAML. The change is framed as an **amendment to ADR-0011's seam shape**, exactly as
 [ADR-0030](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)
-amended it for reasoning. The draft ADR-0031 is appended.
+amended it for reasoning. ADR-0031 (the seam amendment) and ADR-0032 are now committed; see §12.
 
 The single most important revision the reviewers forced: **leak-freedom is NOT "by construction" on a
 passive Zod refine.** It requires an *active engine-owned emit-time de-inline pass* (`deInlineMedia`)
@@ -161,8 +176,17 @@ split** (blocking #1/#2): one base64-permitting *in-flight* type and one distinc
 export const INLINE_MEDIA_CEILING = {
   image: 256 * 1024, // 256 KB of DECODED bytes (≈ 341 KB of base64 string; the refine bounds the string)
   audio: 256 * 1024,
-  video: 0,          // video is NEVER inline — always a handle or a provider URL
+  video: 0,          // video is NEVER inline — always a handle (B3)
+  document: 0,       // PDF is NEVER inline — large files, high leak surface; same rationale as video (A2/OQ4)
 } as const;
+// B3 — why video=0 even though Gemini accepts inline video ≤~100 MB (§2.1): a multi-MB base64 video on
+// the IPC/event/log path is the single worst leak + amplification surface, and the inline tax (1.33×
+// memory) is unjustifiable at video sizes. The safest, simplest rule is a flat "video → handle" — we
+// deliberately decline Gemini's inline-video ceiling. The engine resolves a handle to fileData/inlineData
+// at egress (§7) when a specific model needs inline bytes, but the SEAM/durable form is never inline video.
+// document (application/pdf) is also capped at 0 — PDF files are typically large, the inline base64 value
+// is low, and the leak surface is high; the same flat "always handle" rule as video applies. (A2 added the
+// `document` input modality, §3.4; this ceiling entry closes the OQ4 gap, resolved 2026-06-08.)
 
 // (1) base64 — the TINY tier, in-flight ONLY (sub-ceiling inputs / a transient adapter materialization).
 //     Bounded by INLINE_MEDIA_CEILING per modality. ABSENT from the durable MediaSource union (§3.2).
@@ -242,6 +266,9 @@ adapter cache** keyed by `(provider, sha256)`:
 // Reconstructed-from-the-canonical-handle on resume / FallbackChain failover: a cache miss re-uploads
 // from the MediaStore bytes. Keyed by content hash so a re-sent asset reuses the prior fileUri within
 // its TTL. Cleared on engine restart; the checkpoint/RunState snapshot CANNOT carry it (§6).
+// TIMING (B5): on a Provider A → B failover the re-upload is AWAITED — the re-materialized ref must be
+// ready BEFORE the retried request is sent. The 1.K FallbackChain waits on re-materialization rather
+// than racing a half-uploaded ref; this is part of the strip-and-re-materialize-on-failover obligation.
 type ProviderMediaRef = { provider: LlmProviderId; id: string; expiresAt?: number };
 type ProviderRefCache = Map</* `${provider}:${sha256}` */ string, ProviderMediaRef>;
 ```
@@ -263,11 +290,16 @@ z.object({ type: z.literal('media_start'), id: nonEmptyString, mimeType: nonEmpt
 // PROGRESS ONLY — carries NO base64. Optional `partialRef` is a handle to a partial-write in the store
 // (e.g. a progressive image preview). Keeps bytes OFF the NORMALIZED Channel<StreamChunk> and the
 // run-event/SSE bus by construction.
+// A3 (DECIDED): `partialRef` ships in the FROZEN triad now (so a later add is non-breaking) but is
+// RESERVED — host-implementation-defined. The MediaStore contract (§4.1) defines only
+// `put(completeBytes) → handle`; partial-write semantics (append vs per-delta put) are NOT specified
+// here and are owned by the surface that first renders progressive previews (Phase E / 1.AH). Until
+// then `partialRef` is shape-only and unset by every adapter. Tracked in deferred-tasks.md.
 z.object({
   type: z.literal('media_delta'),
   id: nonEmptyString,
   progress: z.number().min(0).max(1).optional(),
-  partialRef: nonEmptyString.optional(), // a handle, NEVER base64
+  partialRef: nonEmptyString.optional(), // a handle, NEVER base64 — RESERVED shape (A3), behavior in Phase E
 }),
 
 // TERMINAL — carries the finished media as a DURABLE (handle-only) media part. The engine's de-inline
@@ -292,8 +324,17 @@ IMAGE). Two independent booleans (`image.output:true`, `audio.output:true`) woul
 
 ```ts
 // Input stays a simple per-modality boolean (composability is unconstrained on input — a turn may
-// carry image + audio + text together).
-const InputModalitiesSchema = z.object({ image: z.boolean(), audio: z.boolean(), video: z.boolean() });
+// carry image + audio + text together). `document` (A2) gates application/pdf DISTINCTLY from image:
+// a PDF is a separate modality with its own token/cost profile (Anthropic `document` block, OpenAI/
+// Gemini file input), so folding it into `image` would mis-advertise capability. requiredCapabilities()
+// requires media.input.document for any application/pdf part — the one MIME-discriminated arm still
+// carries it (§3.2), the flag only advertises/gates it.
+const InputModalitiesSchema = z.object({
+  image: z.boolean(),
+  audio: z.boolean(),
+  video: z.boolean(),
+  document: z.boolean(), // application/pdf (A2) — distinct from image
+});
 
 // Output is the CLOSED SET of modality-sets a model can emit in ONE turn. requiredCapabilities()
 // validates the request's outputModalities is a MEMBER of this set — not that each modality is
@@ -322,14 +363,14 @@ export const CapabilityFlagsSchema = z
 
 | Provider / model class | `media.input` | `media.outputCombinations` |
 |------------------------|---------------|----------------------------|
-| **Anthropic** (all)    | `{ image:true, audio:false, video:false }` | `[]` — no media output |
-| **OpenAI** gpt-4o-audio | `{ image:true, audio:true, video:false }` | `[['text'], ['text','audio']]` — inline audio via `modalities` |
-| **OpenAI** image-gen (Responses tool) | `{ image:true, audio:false, video:false }` | `[['text']]` — **image-out is a built-in TOOL, not an outputModality** (§3.6) |
+| **Anthropic** (all)    | `{ image:true, audio:false, video:false, document:true }` | `[]` — no media output |
+| **OpenAI** gpt-4o-audio | `{ image:true, audio:true, video:false, document:true }` | `[['text'], ['text','audio']]` — inline audio via `modalities` |
+| **OpenAI** image-gen (Responses tool) | `{ image:true, audio:false, video:false, document:true }` | `[['text']]` — **image-out is a built-in TOOL, not an outputModality** (§3.6) |
 | **OpenAI** generative (gpt-image-1, tts, sora) | per-model input | `[['image']]` / `[['audio']]` / `[['video']]` via `generateMedia` (media_surface `generative`) |
-| **Gemini** 2.x image | `{ image:true, audio:true, video:true }` | `[['text'], ['text','image']]` — rejects AUDIO in the same call |
-| **Gemini** native-audio TTS | `{ image:true, audio:true, video:true }` | `[['audio']]` — cannot combine with TEXT/IMAGE |
+| **Gemini** 2.x image | `{ image:true, audio:true, video:true, document:true }` | `[['text'], ['text','image']]` — rejects AUDIO in the same call |
+| **Gemini** native-audio TTS | `{ image:true, audio:true, video:true, document:true }` | `[['audio']]` — cannot combine with TEXT/IMAGE |
 | **Gemini** generative (Imagen, Veo) | per-model input | `[['image']]` / `[['video']]` via `generateMedia` |
-| **DeepSeek** (all)     | `{ image:false, audio:false, video:false }` | `[]` |
+| **DeepSeek** (all)     | `{ image:false, audio:false, video:false, document:false }` | `[]` |
 
 `requiredCapabilities(req)` derives the input `(modality)` set from the request's media parts and the
 requested `outputModalities`, then asserts: every input modality is `true` in `media.input`, **and**
@@ -345,7 +386,9 @@ provider — closing the silent-flatten bug (§1.4) the design indicts `provider
 // distinct billing class). The pricing table gains per-unit media rates keyed on canonical model id.
 mediaUnits: z
   .array(z.object({
-    modality: z.enum(['image', 'audio', 'video']),
+    modality: z.enum(['image', 'audio', 'video']), // DELIBERATE closed media-billed set: document(PDF)/text
+                                                    // bill as TOKENS, not media units, so they are not here.
+                                                    // This inner enum is itself breaking-to-extend → complete now (F1).
     direction: z.enum(['input', 'output']),
     units: nonNegativeInt,          // images, audio-seconds, video-seconds — the provider's billed unit
     unit: z.enum(['count', 'second']),
@@ -357,6 +400,19 @@ The conformance suite must assert each adapter's `mediaUnits` mapping against re
 (mirroring the `reasoningTokens <= outputTokens` conformance), because providers bill heterogeneously
 (audio per-second vs per-1k-characters; video per-second vs per-generation) and a mis-mapped unit is a
 silent cost bug. `mediaUnits` doubles as the managed-mode metering record (counts-not-content, §6.6).
+
+**A6 — the PRE-egress estimate (a distinct gap from the post-hoc `mediaUnits`).** `mediaUnits` is
+measured *after* a call returns. The ADR-0028 pre-egress governor caps cost *before* each call using
+`worstCaseNextEstimate(maxTokens)` — which is **token-based and cannot estimate a media-generation
+call** (a Veo/Sora/gpt-image job's cost is per-image / per-second, not derivable from `maxTokens`).
+Without a media estimator, the pre-egress cap silently does not cover `generateMedia` or media-output
+turns. **Decided (A6 = a + b):** add a **per-modality flat media cost estimate** the governor uses
+pre-egress — sourced from **(a)** a config default (`[defaults].media_cost_estimate`, a `count`/`second`
+estimate per modality, the media analogue of `max_tokens_estimate`) **and (b)** a per-model rate already
+in the pricing table / `model_catalog`. The governor estimates `units × rate` for a requested media
+output (e.g. 1 image, or N seconds of video at the model's per-second rate) and blocks/pauses
+pre-egress just as it does for tokens. This extends ADR-0028's pre-egress check to the media axis; it is
+wired with the governor fold (1.AC → the media plumbing in 1.AF/1.AG).
 
 ### 3.6 The `LlmRequest` addition — `outputModalities` (and the OpenAI image-out exception)
 
@@ -384,6 +440,30 @@ lowering is not uniform**, which is why the capability must be the closed-set ma
 This is the single most important security correction (blocking, security #2). The earlier draft
 oversold a passive Zod refine as "by construction." The real enforcement is **active**, in two layers:
 
+```mermaid
+flowchart TB
+    IN["media input — MediaSource<br/>base64 ≤ INLINE_MEDIA_CEILING · url* · handle"]
+    ADP["per-provider adapter<br/>normalize; resolveForEgress(handle) → wire bytes"]
+    PROV(["provider"])
+    OUT["LlmResult.content · StreamChunk<br/>media_start / media_delta(partialRef) / media_end<br/>in-flight MediaPartSchema — base64 PERMITTED"]
+    CHOKE{{"deInlineMedia<br/>ONE emit / persist choke point<br/>flight → durable typed transform"}}
+    DUR["DurableContentPart / DurableMediaPart<br/>DurableMediaSource = handle ONLY<br/>(base64 structurally absent)"]
+    SURF["durable + event surfaces<br/>run-events · checkpoint/RunState · DB · exported YAML · logs · IPC"]
+
+    IN --> ADP --> PROV --> OUT --> CHOKE --> DUR --> SURF
+
+    PROV -. "desktop: RAW chunks may carry inline media bytes" .-> RUST["Rust llm_stream egress (ADR-0018, amended by ADR-0032)<br/>detect inline media → Rust-side CAS;<br/>forward a handle ONLY on the Channel"]
+    RUST --> OUT
+
+    classDef choke fill:#fde68a,stroke:#b45309;
+    class CHOKE choke;
+```
+
+> *The flight→durable media boundary. `url` ships **feature-flag-OFF** until the shared SSRF
+> range-primitive lands (§6.4); on desktop the [ADR-0018](../decisions/0018-desktop-execution-and-rust-egress.md)
+> egress is amended by [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) so media
+> bytes never cross the WebView↔Rust channel — only a handle does (§6.5).*
+
 **Layer 1 — the active `deInlineMedia` emit-time pass (the real mechanism).** The engine owns ONE
 choke point that runs **before any serialize / event-emit / IPC / log / DB write**, on:
 
@@ -391,7 +471,19 @@ choke point that runs **before any serialize / event-emit / IPC / log / DB write
   more common of the two), and the terminal of every stream;
 - **every node output and every event payload** (`node:completed.output`, `run:completed.outputs`,
   `run:failed.partialOutputs`, `run:started.inputs`, the checkpoint/`RunState` snapshot, and the
-  `agent:tool_result.outputSummary` descriptor).
+  `agent:tool_result.outputSummary` descriptor);
+- **the `FallbackChain` cross-provider context transfer** — the agent state (prior turns, tool results)
+  carried to the next provider on failover can itself contain in-flight media parts, so the failover
+  hand-off is a de-inline target too.
+
+**B1 — this is ONE structural boundary, not a 6-call-site discipline.** The guarantee must not rest on
+"every emitter remembers to call `deInlineMedia`." Every event/output/persist/transfer leaves the engine
+through **a single `emitRunEvent` / persistence wrapper**, and `deInlineMedia` runs *inside* that one
+wrapper — exactly as `MaskedSecret` masking is applied at the one emit boundary. A future event type or
+emit path is covered automatically because it must go through the wrapper; the bullet list above
+enumerates the surfaces that flow through it today, it is not a checklist a new emitter could skip. The
+backstop `superRefine` (Layer 2) is the tripwire that fires in tests if a value ever bypasses the
+wrapper.
 
 ```ts
 // Engine-owned. The TYPED transform from flight → durable. Walks any value, replaces every base64
@@ -439,7 +531,7 @@ hot path.
   - **Desktop:** a **Rust-side CAS**; the WebView holds only the handle. The `MediaStore` *write* is a
     Rust command, so generated bytes never transit the WebView↔Rust JSON channel as part of a chunk
     (§6.5). A bounded, **session-scoped** `read_media(ref)` Tauri command serves display, off the hot
-    `Channel<StreamChunk>` (§6.7).
+    `Channel<StreamChunk>` (§6.8).
   - **Managed mode (Phase 2):** the gateway streams provider bytes through to the local engine, which
     materializes into the user's store form; the gateway stores nothing (§6.6).
 - **`MediaStore` is a contract, not an import** (I4): `put(bytes, mime) → handle`, `get(handle) →
@@ -461,6 +553,12 @@ hot path.
   per-message **count cap** and a **per-message aggregate-bytes cap** ship with the ceiling, so a
   workflow attaching hundreds of sub-ceiling 256 KB parts (each individually legal, tens of MB total)
   is rejected — the per-part ceiling alone does not catch amplification.
+- **B4 — close the cap-enforcement window with a CI guard.** The cap *shape* lands in Phase A (1.AD) but
+  capability-gated *enforcement* is wired in Phase C (1.AF). To prevent a cap-less intermediate state
+  between Phase B (input adapters wired, 1.AE) and Phase C, a **landing-gate CI test asserts the
+  aggregate-bytes + count caps are actually enforced** (a request exceeding either is rejected) — the
+  caps are not "declared but un-checked" while media input is live. This mirrors the `url`-carrier
+  feature-flag CI gate (§6.4).
 
 ### 4.3 `tool_result` media normalization — FORBID raw bytes in `result` (blocking #4)
 
@@ -530,6 +628,14 @@ export interface LlmProvider {
 - **Sync generator:** `generateMedia` resolves `{ media }` (handle source). One round-trip.
 - **Async generator (video):** `generateMedia` resolves `{ jobId }`; **the engine owns the poll loop**
   (cancellation, checkpoint, resume — a minute-scale job survives an engine restart).
+- **A5 (DECIDED) — reserved shape now, behavior + its own ADR at Phase D.** `generateMedia?`/
+  `pollMediaJob?` land now as **reserved optional methods** (so a later add is non-breaking, the
+  ADR-0030 `providerExecuted` precedent). The async **poll / checkpoint / resume / cancel loop** is the
+  single highest-behavioral-complexity piece in this whole design — a minute-scale external job that
+  must survive an engine restart, sit in the run loop (1.N) and checkpointer (1.R) without a new node
+  type, and reuse the `LlmError` retryable classification. It is **NOT** freeze-gated (optional method),
+  so it is deferred to **Phase D (1.AG)** and gets **its own ADR** there, written when it is wired —
+  this doc/ADR-0031 only reserves the seam shape. Tracked in deferred-tasks.md so it is not lost.
 - **Failure classification (blocking, correctness #4 — StopReason):** `MediaJobStatus.failed` maps onto
   the existing `LlmError` discriminant — a Veo/Sora content-policy rejection → `content_filter`, a
   timeout → the retryable `timeout` kind — so the job path reuses the existing retryable classification
@@ -585,8 +691,16 @@ pass plus a type split**, not by a passive refine.
    **output** (a DALL·E/CDN link, or a malicious response from a compromised OpenAI-compatible base URL
    pointing at `169.254.169.254`/loopback). **Both** the input `url` carrier and the output-URL
    materialization fetch are bound to the **one shared, completed** SSRF range-primitive: HTTPS-only, no
-   creds-in-URL, block private/loopback/link-local + `169.254.169.254`, with DNS-resolution and
-   **per-hop redirect re-validation**. The **host** fetches, never the seam.
+   creds-in-URL, block private/loopback/link-local + `169.254.169.254` + CGNAT, with DNS-resolution,
+   IPv4-mapped-IPv6 decode, and **per-hop redirect re-validation**. The **host/engine** fetches, never
+   the seam.
+   **A7 (DECIDED) — the ENGINE fetches output URLs, never the adapter.** When a provider returns a media
+   output as a CDN/file URL (e.g. a DALL·E result), the adapter returns it verbatim as a canonical `url`
+   source on the `media` part and does **nothing else**; the **engine** fetches and re-hosts it to a
+   handle **inside the `deInlineMedia` pass**, through the one shared SSRF primitive. Rationale: this
+   keeps SSRF enforcement in exactly one place (the engine choke point), keeps adapters pure
+   string→string with no `MediaStore`/network dependency (I4), and means input and output URLs share the
+   identical guarded fetch. An adapter MUST NOT fetch a provider URL itself.
 
 4. **Gate the `url` carrier behind a feature flag until the primitive lands (blocking, seam-fence #3).**
    The `url` arm may exist in the frozen Phase-A *shape*, but no adapter/engine path accepts a `url`
@@ -598,17 +712,20 @@ pass plus a type split**, not by a passive refine.
 5. **Desktop Rust-IPC — resolve the contradiction, do NOT claim "by construction" (blocking, security
    #1).** ADR-0018/ipc-contract fix the desktop wiring as: Rust does ONE raw HTTPS request and streams
    the provider's **raw** chunks; the WebView adapter normalizes. An inline image-out's base64 is inside
-   that raw body, so it crosses IPC *before* the handle-only `media_end` exists. **Recommended
-   resolution: amend ADR-0018 (option a) — relocate inline-media de-inlining into the privileged Rust
-   egress command for media-output turns:** Rust writes inline media bytes to the Rust-side CAS and
+   that raw body, so it crosses IPC *before* the handle-only `media_end` exists. **DECIDED (A4) —
+   option a, now recorded as its own amendment [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md):
+   relocate inline-media de-inlining into the privileged Rust egress command for media-output turns:**
+   Rust writes inline media bytes to the Rust-side CAS and
    forwards only a **handle** on the Channel, so multi-MB base64 never transits the WebView↔Rust JSON
    channel. This **reverses** §6.2's earlier "Rust never parses/rewrites media arms" stance for the
    narrow media-output case — state that plainly: Rust gains a *bounded, audited* media-detect-and-store
    step on the egress path (it already parses the stream to frame chunks). The alternative (option b —
    accept that raw provider bytes transit the trusted Channel once, since they are a provider response
    like raw chat text, and scope the no-base64 rule to the *normalized* StreamChunk / run-event /
-   persisted layers only) is weaker for large media and is **not** recommended. **This needs an ADR-0018
-   amendment regardless of which option is chosen** — do not paper over it.
+   persisted layers only) is weaker for large media and is **not** recommended. **The ADR-0018 amendment
+   ([ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) is written now and MUST
+   land before any desktop media-output behavior (Phase E / 1.AH)** — not deferred to Phase E, not
+   papered over at the normalized layer.
 
 6. **Managed-mode media egress — reconciled with ADR-0015 (blocking, security #4).** ADR-0015 is
    binding: the gateway is **pass-through, NOT a store**; it meters **counts, not content**. The earlier
@@ -629,11 +746,23 @@ pass plus a type split**, not by a passive refine.
    media size+count budget** feeds the existing budget-warning / budget-paused run events (ADR-0028), so
    media egress volume participates in resource governance.
 
-8. **`read_media(ref)` authz (security non-blocking, promoted).** The new bounded Tauri `read_media`
-   command returns bytes to the untrusted WebView for display, so it is a new IPC surface: it **must
-   validate the ref belongs to the requesting session/run** (no arbitrary CAS read by handle from the
-   WebView) and bound the returned size — otherwise it is a local file-read primitive scoped only by
-   "know a sha256."
+8. **`read_media(ref)` authz — a generic scope-set, NOT owner-equality (A8, DECIDED).** The new bounded
+   Tauri `read_media` command returns bytes to the untrusted WebView for display, so it is a new IPC
+   surface: it **must validate the requesting session is in the handle's allowed-scope set** (no
+   arbitrary CAS read by handle from the WebView) and bound the returned size — otherwise it is a local
+   file-read primitive scoped only by "know a sha256."
+   **The model is a generic `handle → allowedScopes: Set<Scope>`**, where today `Scope = { kind:
+   'session', id }`. A session may read a handle **it produced OR explicitly received as input** (the
+   input-transfer path — e.g. session-export-to-workflow, ADR-0026, or a sub-run — adds the receiver's
+   session scope). **Owner-id equality is explicitly rejected**: it cannot even express "received as
+   input," which option (a) requires. **Why a scope-set and not the simpler check:** modelling authz as
+   a scope-set today makes a later widening to shared/workspace assets a **purely additive scope kind** —
+   a `{ kind: 'workspace', id }` value, **reserved (documented, not implemented) now** — with **no
+   handle-model migration and no re-issuance**. Doing cross-session/workspace sharing *now* was rejected
+   as premature (it opens workspace-granularity, default-share, shared-asset GC-lifetime, and
+   share-authoring questions with no Phase-1 consumer); content-addressing (CAS) already makes any future
+   shared asset tamper-evident. So: the cheap correct model now, the door additively open. Tracked in
+   deferred-tasks.md.
 
 9. **MediaStore retention & GC.** Generated media is the **deliverable**, not a transcript — it must not
    follow the 90-day `run_events` prune. A `media_objects` table with per-distinct-reference `refcount` +
@@ -649,9 +778,9 @@ pass plus a type split**, not by a passive refine.
 
 | Provider | Input normalization | Output normalization |
 |----------|---------------------|----------------------|
-| **Anthropic** | `media` (image / `application/pdf`) → `{ type:'image'\|'document', source: base64\|url\|file_id }` inline block — one MIME-discriminated arm covers both. `media.input.image:true`; `outputCombinations:[]`. | None — no media out. |
-| **OpenAI** | **Fix the §1.4 bug FIRST:** unflatten `user` content from `textOf()` to `ChatCompletionContentPart[]` — `{ type:'image_url' }` (handle → `data:` URI under ceiling, or re-hosted URL), `{ type:'input_audio', format:'wav'\|'mp3' }`, `{ type:'file' }`. `media.input.{image,audio}:true`. | Inline agentic image via Responses `image_generation` **tool** → normalized `media` `tool_result` (handle, §4.3). Inline audio via `modalities` → `media` part (+`transcript`). Separate: `generateMedia` → Images (gpt-image-1), Audio/Speech (TTS); async → Sora job. `outputCombinations` per §3.4. `audio.id`/`expires_at` → ephemeral sidecar. |
-| **Gemini** | `media` → `parts[]` `inlineData` (base64, under ceiling) or `fileData{ fileUri }` (Files API, required above the inline ceiling / for video). `fileUri` cached in the `(gemini, sha256)` sidecar. `media.input.{image,audio,video}:true`. `speechConfig`/voice/`mediaResolution`/`fps` ride `providerOptions`. | Inline: `responseModalities` → media `parts` → `media` part / `media_*` triad. Separate: `generateMedia` → Imagen (`generateImages`); async → Veo LRO (`operations.get` poll). `outputCombinations:[['text'],['text','image']]` (image model) or `[['audio']]` (TTS model). |
+| **Anthropic** | `media` (image / `application/pdf`) → `{ type:'image'\|'document', source: base64\|url\|file_id }` inline block — one MIME-discriminated arm covers both. `media.input.{image,document}:true`; `outputCombinations:[]`. | None — no media out. |
+| **OpenAI** | **Fix the §1.4 bug FIRST:** unflatten `user` content from `textOf()` to `ChatCompletionContentPart[]` — `{ type:'image_url' }` (handle → `data:` URI under ceiling, or re-hosted URL), `{ type:'input_audio', format:'wav'\|'mp3' }`, `{ type:'file' }`. `media.input.{image,audio,document}:true`. | Inline agentic image via Responses `image_generation` **tool** → normalized `media` `tool_result` (handle, §4.3). Inline audio via `modalities` → `media` part (+`transcript`). Separate: `generateMedia` → Images (gpt-image-1), Audio/Speech (TTS); async → Sora job. `outputCombinations` per §3.4. `audio.id`/`expires_at` → ephemeral sidecar. |
+| **Gemini** | `media` → `parts[]` `inlineData` (base64, under ceiling) or `fileData{ fileUri }` (Files API, required above the inline ceiling / for video). `fileUri` cached in the `(gemini, sha256)` sidecar. `media.input.{image,audio,video,document}:true`. `speechConfig`/voice/`mediaResolution`/`fps` ride `providerOptions`. | Inline: `responseModalities` → media `parts` → `media` part / `media_*` triad. Separate: `generateMedia` → Imagen (`generateImages`); async → Veo LRO (`operations.get` poll). `outputCombinations:[['text'],['text','image']]` (image model) or `[['audio']]` (TTS model). |
 | **DeepSeek** | None — `media.input.*` all `false` (no multimodal on current hosted chat models). A media request fails fast / the chain skips it. | None — `outputCombinations:[]`. |
 
 **Shared adapter rule (preserves I4):** adapters receive **resolved strings** — the engine resolves a
@@ -697,8 +826,19 @@ filesystem. Rendering across surfaces: CLI prints the saved path; desktop render
 ## 9. Phased implementation plan (mapped to the roadmap)
 
 Mirrors ADR-0030's "land the breaking union members at the M1 freeze, wire behavior incrementally."
+The five phases map to the roadmap multimodal sub-spine **1.AD → 1.AE → 1.AF → 1.AG → 1.AH**
+(phase-1-engine-and-llm.md), threaded into the engine workstreams and the surface phases (2–6).
 
-- **Phase A — Seam amendment (the breaking part, now, at M1).** Land all discriminated-union *members*
+> **A1 freeze-criticality (DECIDED — land the FULL shape now).** The maintainer chose to land the whole
+> Phase-A shape now rather than the minimum. For the record, the genuinely **freeze-critical** elements
+> (breaking to add once a consumer's exhaustive `switch` exists) are only: the `media` **`ContentPart`
+> arm**, the `media_start/delta/end` **`StreamChunk` triad**, and **`CapabilityFlags.media`** (the
+> adapter `supports` shape). The rest landing in Phase A — `LlmRequest.outputModalities`,
+> `Usage.mediaUnits`, `tool_result.media`, and the optional `generateMedia?`/`pollMediaJob?` methods —
+> is **additive** (safe to add later) but landed now for a single coherent amendment. This distinction
+> is recorded so a future maintainer knows what *had* to land vs what was a deliberate cohesion choice.
+
+- **Phase A (1.AD) — Seam amendment (the breaking part, now, post-M1 / pre-consumer).** Land all discriminated-union *members*
   and optional fields: the in-flight `media` `ContentPart` arm **and the distinct
   `DurableMediaPart`/`DurableContentPart`**; the `media_start/delta/end` `StreamChunk` triad
   (handle-only terminal); the `CapabilityFlags.media` shape with **`outputCombinations`** (+ `vision`
@@ -707,28 +847,32 @@ Mirrors ADR-0030's "land the breaking union members at the M1 freeze, wire behav
   `DurableMediaSource`, `INLINE_MEDIA_CEILING` + the per-message count/aggregate caps, the
   `deInlineMedia` boundary, and the backstop `persistableMediaRefine`. **The `url` carrier ships
   feature-flag-OFF** (§6.4). Pin the canonical home: `MediaSource`/`INLINE_MEDIA_CEILING`/the media arm
-  live in `@relavium/shared/src/content.ts`. Update `llm-provider-seam.md` and write **ADR-0031**
-  (below). **Confirm the StopReason decision (`'stop'` + content-inspection)** and test it. *No behavior
+  live in `@relavium/shared/src/content.ts`. Update `llm-provider-seam.md`; ADR-0031 (the seam amendment)
+  and ADR-0032 are already committed (see §12). **Confirm the StopReason decision (`'stop'` + content-inspection)** and test it. *No behavior
   yet — shape only.*
-- **Phase B — Input adapters + the two bug fixes.** Fix OpenAI `textOf` flattening (unflatten to a
+- **Phase B (1.AE) — Input adapters + the two bug fixes.** Fix OpenAI `textOf` flattening (unflatten to a
   content-part array) — the prerequisite for *any* OpenAI media. Wire image/audio/video **input** in
   Anthropic/OpenAI/Gemini; set the capability matrix; add conformance scenarios (image-in, audio-in,
   `mediaUnits` mapping). **Complete the shared SSRF range-primitive and flip the `url` flag on** (input
   + output binding, §6.3/6.4).
-- **Phase C — Engine & workflow.** Wire `requiredCapabilities()` media-gating (input + `outputCombinations`
+- **Phase C (1.AF) — Engine & workflow.** Wire `requiredCapabilities()` media-gating (input + `outputCombinations`
   membership) + `FallbackChain` provider-skip + ephemeral-sidecar strip/re-materialize-on-failover; the
-  `MediaStore` contract + host injections; the `deInlineMedia` choke point on every emit path **incl. the
-  checkpoint/`RunState` snapshot**; `output_modalities` / `save_to` node fields (strict-YAML validation);
-  media budget caps into the governance events; the `media_objects` retention/GC table.
-- **Phase D — Output generation.** Wire inline media-out (Gemini `responseModalities`, OpenAI agentic
+  `MediaStore` contract + host injections; the `deInlineMedia` choke point (the one `emitRunEvent`/persist
+  wrapper, §3.7-B1) on every emit path **incl. the checkpoint/`RunState` snapshot and the failover context
+  transfer**; the **`read_media` scope-set authz** (A8); `output_modalities` / `save_to` node fields
+  (strict-YAML validation); media budget caps + the **per-modality pre-egress media cost estimate** (A6)
+  into the governance events; the `media_objects` retention/GC table.
+- **Phase D (1.AG) — Output generation.** Wire inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio). Wire
   `generateMedia`/`pollMediaJob` for separate-endpoint generators (gpt-image-1, Imagen, TTS sync;
-  Sora/Veo async with the engine-owned poll/checkpoint loop and `LlmError` failure mapping). Add
-  `model_catalog.media_surface`.
-- **Phase E — Surfaces & managed mode.** Desktop **ADR-0018 amendment** (Rust-side media de-inline on
-  egress, §6.5) + session-scoped `read_media` command + Rust CAS; CLI/VS Code rendering; managed-mode
-  gateway media materialization-to-user-store + `mediaUnits` metering (ADR-0015 reconciliation, §6.6).
-  Video-output shape is reserved ahead of behavior (like ADR-0030's `providerExecuted`) and lit up here.
+  Sora/Veo async with the engine-owned poll/checkpoint loop and `LlmError` failure mapping) — **the async
+  poll/checkpoint loop gets its own ADR here (A5)**. Add `model_catalog.media_surface`.
+- **Phase E (1.AH) — Surfaces & managed mode.** Desktop
+  **[ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** (Rust-side media de-inline
+  on egress, §6.5 — **must already be landed before this**) + session-scoped `read_media` command + Rust
+  CAS; CLI/VS Code rendering; managed-mode gateway media materialization-to-user-store + `mediaUnits`
+  metering (ADR-0015 reconciliation, §6.6). Video-output shape is reserved ahead of behavior (like
+  ADR-0030's `providerExecuted`) and lit up here.
 
 ---
 
@@ -753,207 +897,54 @@ backstop tripwire on typed positions (§3.7, §6.1).
 
 ---
 
-## 11. Open questions for the maintainer
+## 11. Open questions — RESOLVED / defaulted (2026-06-08)
 
-1. **ADR-0018 amendment scope (§6.5).** Confirm option (a): Rust de-inlines inline-media bytes on the
-   egress path and forwards only a handle. This puts a bounded media-detect-and-store step in the
-   privileged Rust command — acceptable, or prefer option (b) (raw bytes transit the trusted Channel
-   once, no-base64 rule scoped to normalized/persisted layers)? This is the load-bearing desktop call.
-2. **Handle URI scheme & `MediaStore` identity.** Is `media://sha256-<hex>` the right handle form? Is
-   `MediaStore` a brand-new injected dependency (like the HTTP transport) or an extension of an existing
-   store? Does the `media_objects` table land in Phase A or Phase C?
-3. **MediaStore retention/GC policy (§6.9).** Default retention (per-distinct-reference refcount +
-   `last_referenced_at` + grace window)? Divergence from the 90-day `run_events` prune is assumed — who
-   owns GC on desktop (Rust) vs CLI (filesystem)?
-4. **Inline ceiling values.** Confirm 256 KB decoded for image/audio and "video always a handle," and
-   the per-message count + aggregate-bytes caps. Per-modality or one global constant?
-5. **`generateMedia`/`pollMediaJob` now vs deferred.** Land as reserved optional methods at M1
-   (recommended — isolates the async job sub-protocol, avoids a future breaking optional-method add) or
-   defer to Phase D? The union members must land now regardless.
-6. **`vision` alias lifecycle.** Keep the derived alias indefinitely (cheap back-compat) or schedule
-   removal once `db.supports_vision` and adapter consumers migrate to `media.input.image`?
-7. **Provider-URL passthrough as a durable form — ever?** The design re-hosts input URLs and
-   materializes output URLs to handles. Is there *any* case a provider URL may persist (a stable CDN
-   asset), or is "handle-only durable" absolute?
-8. **Media in exported YAML (§6.10).** Stated guardrail: never bytes. Open only: does exported YAML
-   carry the handle (bytes in the run's `MediaStore`, not the repo) or a relative `save_to` path? This
-   affects git-native portability (ADR-0009) and the session→workflow export surface (ADR-0026).
+The maintainer ruled on the two review reports. The blocking questions are **decided** (baked into
+ADR-0031/ADR-0032); the residual implementation-detail questions are given a **default** (consistent
+with the design's lean) and tracked in [deferred-tasks.md](../roadmap/deferred-tasks.md) — none changes
+the accepted seam shape, so they do not block ADR-0031.
+
+1. **✅ DECIDED (A4) — ADR-0018 amendment scope (§6.5).** Option (a): Rust de-inlines inline-media bytes
+   on the egress path and forwards only a handle. Recorded as
+   [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md); must land before Phase E.
+2. **◻ DEFAULT — Handle URI scheme & `MediaStore` identity.** Default: handle form `media://sha256-<64hex>`;
+   `MediaStore` is a **new host-injected contract** (like the ADR-0018 HTTP transport), not an extension
+   of an existing store; the `media_objects` table lands in **Phase C (1.AF)**, not Phase A. *(Confirm at
+   1.AF; not seam-shape-blocking.)*
+3. **◻ DEFAULT — Retention/GC policy (§6.9).** Default: per-distinct-reference `refcount` +
+   `last_referenced_at` + a grace window; **diverges** from the 90-day `run_events` prune (generated media
+   is the deliverable, not a transcript); GC owner is the **host** — Rust on desktop, filesystem on CLI.
+   *(Detailed at 1.AF.)*
+4. **◻ DEFAULT — Inline ceiling values.** Default: **256 KB decoded** for image/audio; **document (PDF)
+   and video always a handle** (B3 — same large-file/high-leak rationale); **per-modality** constant (not
+   one global), with the per-message count + aggregate-bytes caps. *(document=0 closed the OQ4 gap, §3.1;
+   the numeric ceilings stay tunable at 1.AD — constants, not a shape.)*
+5. **✅ DECIDED (A5) — `generateMedia`/`pollMediaJob` now vs deferred.** Land as **reserved optional
+   methods now** (1.AD); the async poll/checkpoint **behavior + its own ADR** land at **Phase D (1.AG)**.
+6. **◻ DEFAULT — `vision` alias lifecycle.** Default: **keep the derived alias now** (cheap back-compat
+   for `db.supports_vision` + adapter `supports.vision`); schedule removal in a later cleanup once those
+   consumers migrate to `media.input.image`.
+7. **◻ DEFAULT — Provider-URL as a durable form.** Default: **"handle-only durable" is absolute** — input
+   URLs are re-hosted at ingest, output URLs are materialized to handles (A7); no provider URL persists.
+   *(Revisit only if a concrete stable-CDN case appears.)*
+8. **✅ DECIDED (A9) — Media in exported YAML (§6.10).** At the seam the durable form is a **handle**
+   (bytes in the run's `MediaStore`, not the repo); `save_to` is a **surface-level** export/render concern,
+   not a seam type. Never bytes (I3 + ADR-0009).
 
 ---
----
 
-# Draft ADR-0031 (condensed MADR — Status: Proposed)
+## 12. The decision record (finalized)
 
-> Save as `docs/decisions/0031-llm-seam-shape-amendment-multimodal-io.md`. Frames the change as
-> **amending ADR-0011's seam shape** exactly as ADR-0030 did — not superseding it. ADR-0031 is the
-> next number after the current highest (0030).
+The condensed ADR draft that previously closed this analysis has been **finalized and committed** — to
+keep one canonical home per artifact (CLAUDE.md rule 8), it is no longer duplicated here:
 
----
+- **[ADR-0031 — first-class multimodal I/O](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)**
+  — the seam-shape amendment (the eight additions, the guardrails, the A1–A9 maintainer decisions, and
+  the residual open implementation details). **Status: Accepted.**
+- **[ADR-0032 — desktop Rust-side media de-inlining](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)**
+  — the ADR-0018 amendment that makes invariant I3 literally true on desktop (A4). **Status: Accepted.**
 
-# ADR-0031: first-class multimodal I/O — media content arms, MediaStore, capability redesign
-
-- **Status**: Proposed
-- **Date**: 2026-06-07
-- **Related**: [0011-internal-llm-abstraction.md](../decisions/0011-internal-llm-abstraction.md) (the seam ADR this amends), [0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) (the same pre-freeze amendment move; the `providerExecuted` arm + ephemeral-signature discipline this reuses), [0018-desktop-execution-and-rust-egress.md](../decisions/0018-desktop-execution-and-rust-egress.md) (**this ADR proposes amending it** for Rust-side media de-inlining), [0015-managed-mode-data-handling-and-compliance.md](../decisions/0015-managed-mode-data-handling-and-compliance.md) (the counts-not-content / pass-through-not-a-store rule the managed-media path reconciles with), [0028-workflow-resource-governance.md](../decisions/0028-workflow-resource-governance.md) (the budget events media volume feeds), [0023-strict-authored-yaml-validation.md](../decisions/0023-strict-authored-yaml-validation.md) (load-time validation of `output_modalities`/`outputCombinations`), [0009-git-native-workflow-yaml.md](../decisions/0009-git-native-workflow-yaml.md) (exported-YAML-carries-handle-not-bytes), [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) (the seam's one canonical home), [../standards/security-review.md](../standards/security-review.md) (the shared SSRF range-primitive; the no-bytes invariant).
-
-## Context
-
-The `@relavium/llm` seam — the request/result/stream/usage/content shapes in
-[`packages/llm/src/types.ts`](../../packages/llm/src/types.ts) and
-[`packages/shared/src/content.ts`](../../packages/shared/src/content.ts) — is text-and-tools only.
-Relavium's product promise is *"connect to any model Relavium offers"* — which must mean send **and**
-receive whatever that model supports: image, audio, and **video**, as both input and output, including
-a workflow that by rule **generates** a media file. The seam cannot express any of this, and the only
-escape (`providerOptions` + `raw`) is request-inbound and vendor-shaped — re-introducing exactly the
-coupling ADR-0011 forbids and making the no-bytes-anywhere-durable guarantee unenforceable.
-
-This is the **same situation ADR-0029/0030 acted on**: the seam is at the **M1 freeze boundary** with
-**no consumer beyond the adapters** (the `FallbackChain` 1.K, the engine, the session layer, the
-surfaces are all unbuilt). Adding a **member to a discriminated union** (`StreamChunk`/`ContentPart`)
-is **breaking to add later** (every consumer's exhaustive `switch` breaks); adding it now is nearly
-free. Multimodal I/O is a genuine **cross-provider** concern (image-in: Anthropic/OpenAI/Gemini;
-audio-in: OpenAI/Gemini; video-in: Gemini; image/audio/video-out: OpenAI/Gemini) — not a
-single-provider quirk for `providerOptions`. DeepSeek is text-only and confirms media must be
-capability-gated, never assumed.
-
-Six hard invariants constrain any design: **(I1)** no vendor SDK type crosses the seam; **(I2)** the
-seam is platform-free (`tsconfig.seam.json` `types: []`) so a media payload is a base64/URL/handle
-**string**, never a `Buffer`/`Blob`; **(I3)** no bytes in run-events/logs/DB/exported-YAML; **(I4)** the
-engine has zero platform imports; **(I5)** desktop egress is Rust-delegated over a `Channel<StreamChunk>`
-that streams **raw** provider chunks (so inline media bytes cross IPC before WebView normalization);
-**(I6)** managed mode is a pass-through gateway, NOT a store, metering counts-not-content. Two latent
-bugs are in scope: OpenAI `textOf()` flattens content to a string (vision **advertised but
-unsendable**), and the shared SSRF range-primitive is an unfulfilled obligation.
-
-## Decision
-
-**We extend the `@relavium/llm` seam shape for first-class multimodal I/O, recorded as an amendment to
-(not a supersession of) [ADR-0011](../decisions/0011-internal-llm-abstraction.md)** — ADR-0011's
-decision (an internal provider-agnostic seam in Relavium/Zod types, no vendor type crossing it) is
-unchanged; this grows the shape. Canonical types live in
-[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md); `MediaSource`,
-`INLINE_MEDIA_CEILING`, and the media arm live in `@relavium/shared/src/content.ts`. The additions:
-
-1. **A MIME-discriminated `media` `ContentPart` arm, FORKED into a flight and a durable variant.** The
-   in-flight `{ type:'media', mimeType, source, name?, transcript? }` permits a `base64` source for
-   sub-ceiling inputs; the distinct **`DurableMediaPart`** narrows `source` to **handle-only** (no
-   `base64` literal in its union), so the compiler proves no bytes reach a durable schema. Modality
-   derives from the MIME prefix (one arm covers image/audio/video/`application/pdf`; a new format needs
-   zero schema change). The ephemeral provider-hosted id (Gemini `fileUri`, OpenAI `file_id`,
-   `audio.id`) is **structurally absent from any `ContentPart`** — it lives only in a process-scoped
-   adapter sidecar keyed by `(provider, sha256)`, under the ADR-0030 reasoning-signature discipline,
-   reconstructed-from-the-canonical-handle on resume/failover.
-
-2. **A `media_start` / `media_delta` / `media_end` `StreamChunk` triad** (mirroring
-   `tool_call_*`/`reasoning_*`). `media_delta` carries **NO base64** (progress + an optional
-   `partialRef` handle); `media_end` carries a **handle-only `DurableMediaPart`**. This governs the
-   *normalized* chunk; the *raw* desktop IPC path is addressed by the ADR-0018 amendment (Guardrails).
-
-3. **A redesigned `CapabilityFlags.media`** — `input:{image,audio,video}` booleans plus
-   **`outputCombinations: ModalitySet[]`**, the **closed set of modality-sets a model can emit in one
-   turn** (replacing independent output booleans, which mis-advertise wire-invalid combinations like
-   Gemini image+audio). `vision` is kept as a derived alias of `media.input.image` for live consumers.
-   `requiredCapabilities()` validates input modalities and **membership** of the requested
-   `outputModalities` in `outputCombinations`, so a media request **fails fast** and the `FallbackChain`
-   skips an incapable provider.
-
-4. **`Usage.mediaUnits`** — a disjoint observability+billing axis (`{ modality, direction, units, unit
-   }`), **not** folded into tokens and **not** refined against them (a distinct cost class); per-unit
-   rates added to the pricing table; doubles as the managed-mode metering record (counts-not-content).
-
-5. **`LlmRequest.outputModalities`** — request non-text output on inline-surface models (the symmetric
-   mechanism to ADR-0030's `responseFormat`). OpenAI image-out is the exception: it routes through the
-   Responses `image_generation` **built-in tool** (the `providerExecuted` arm), not `outputModalities`.
-
-6. **Optional `generateMedia?` / `pollMediaJob?` on the existing `LlmProvider`** (not a separate sibling
-   seam) for separate-endpoint generators. A sync generator (gpt-image-1, Imagen, TTS) resolves
-   immediately; an async one (Sora, Veo) resolves a **Relavium-opaque `jobId`** the engine polls (no
-   vendor operation-name crosses the seam); `pollMediaJob` failures map onto the existing `LlmError`
-   classification. A `model_catalog.media_surface` enum (`chat` | `generative`) data-drives inline
-   `generate()` vs `generateMedia()` routing.
-
-7. **`tool_result` gains a typed `media: DurableMediaPart[]` field;** raw media bytes in
-   `tool_result.result` (`z.unknown()`) are **forbidden** so the typed guard reaches provider-executed
-   image-gen results.
-
-8. **StopReason is unchanged:** a media-only inline turn reports `'stop'`; the presence of a `media`
-   part in `content` is the signal. No new closed-enum member.
-
-**Alternatives weighed.** *(i)* `providerOptions` + `raw` (rejected: request-inbound only; outbound
-media would be a vendor-shaped `unknown`; invisible to capability-gating). *(ii)* A single dual-use
-`ContentPart` with a refine for durable-safety (rejected: a refine on a dual-use base also rejects
-legitimate in-flight base64 and does not recurse into `z.unknown()` event fields — the type **must**
-fork, and de-inlining **must** be an active emit-time pass). *(iii)* Independent output booleans
-(rejected: advertise wire-invalid combinations; replaced by `outputCombinations`). *(iv)* A pure base64
-carrier as default (rejected: memory/IPC tax + leak surface; kept as the bounded tiny tier). *(v)* A
-pure handle carrier as sole form (rejected: a useless store round-trip for a 4 KB icon; kept as the
-canonical durable form). *(vi)* A separate `GenerativeMediaProvider` seam (rejected: duplicates the
-provider registry). *(vii)* A new `media` StopReason (rejected: closed enum, breaking to extend,
-doesn't help consumers who inspect `content` anyway).
-
-## Guardrails (binding)
-
-- **No media bytes cross a durable / run-event / log / DB / exported-YAML / IPC boundary (I3) — by an
-  ACTIVE emit-time pass + the type split, NOT a passive refine.** The durable form is always a handle
-  (`DurableMediaPart` makes base64 structurally impossible). One engine-owned **`deInlineMedia`** choke
-  point runs on `LlmResult.content`, every node output / event payload, **the checkpoint/`RunState`
-  snapshot**, and the `tool_result` descriptor **before any serialize/emit/IPC/log** — exactly as
-  `MaskedSecret` masks at emit time. A backstop `superRefine` on typed media positions is a test-time
-  tripwire, not the primary guarantee (the leak-bearing event fields are `z.unknown()` a refine cannot
-  reach).
-- **No vendor type crosses the seam (I1).** Each provider's native media shape is normalized inside the
-  adapter. A provider-hosted ref lives **only** in a process-scoped adapter sidecar keyed by
-  `(provider, sha256)` — **never** a `ContentPart` field, **never** persisted/logged/checkpointed;
-  **stripped and re-materialized from the canonical handle on `FallbackChain` failover / resume**
-  (re-upload on cache miss). Async `jobId` is Relavium-opaque (no verbatim vendor operation-name).
-- **The seam stays platform-free (I2, I4).** Every carrier is a `string`; `MediaStore` is a host-injected
-  contract named only by the handle string at the seam.
-- **Inline ceiling + per-message caps are type-level.** `INLINE_MEDIA_CEILING` (decoded-byte bound,
-  accounting for base64's 1.33×) is asserted on the base64 carrier; **video is never inline**; a
-  per-message **count cap** and **aggregate-bytes cap** ship alongside it (anti-amplification).
-- **SSRF (security-review.md).** A media `url` — **input OR provider-returned output** — is fetched by
-  the **host** (never the seam) ONLY through the **one shared, completed** SSRF range-primitive
-  (HTTPS-only, no creds-in-URL, block private/loopback/link-local + `169.254.169.254`, DNS-resolution +
-  **per-hop redirect re-validation**). The `url` carrier ships **feature-flag-OFF** (a hard CI/landing
-  gate) until the primitive lands; input URLs are re-hosted to a handle at ingest.
-- **Desktop Rust-IPC (amends ADR-0018).** Because Rust streams **raw** provider chunks, inline-media
-  base64 crosses IPC before normalization. This ADR proposes **amending ADR-0018** so the privileged
-  Rust egress command de-inlines inline-media bytes to the Rust-side CAS and forwards only a handle on
-  the `Channel<StreamChunk>` — a bounded, audited media-detect-and-store step. The `read_media(ref)`
-  display command is **session-scoped** (validates the ref belongs to the requesting session, bounds
-  the returned size).
-- **Managed mode (reconciles ADR-0015).** Generated media materializes to the **user's local**
-  `MediaStore`; the gateway streams provider bytes through (incl. async LRO poll-through), **stores
-  nothing**, and meters `mediaUnits` **counts only** — never the artifact body. No provider key crosses
-  the seam.
-- **Resource governance + retention.** A per-run/per-session media size+count budget feeds the
-  budget-warning / budget-paused run events (ADR-0028). Generated media has its own retention
-  (per-distinct-reference refcount + `last_referenced_at`, separate from the 90-day `run_events` prune).
-- **Exported YAML carries a handle or a relative `save_to` path, NEVER bytes** (I3 + ADR-0009).
-- **Usage stays disjoint.** `mediaUnits` is an extra observability/billing axis, not a token count.
-
-## Consequences
-
-### Positive
-
-- The seam is extended at its cheapest moment — three adapters, zero downstream consumers — avoiding a
-  future breaking discriminated-union change + superseding ADR + consumer rework.
-- The product promise becomes real: any model's image/audio/video, in and out, reaches the
-  UI/session/workflow as a canonical, vendor-neutral, leak-free channel; a generate-media-by-rule
-  workflow is expressible (`output_modalities` + `save_to`).
-- The OpenAI flatten bug and the SSRF obligation are fixed as named preconditions, not deferred.
-- No-bytes-in-events/IPC holds by the **active `deInlineMedia` pass + the durable type split** — a
-  proven mechanism (compiler + emit-time transform + backstop refine), not review discipline.
-
-### Negative
-
-- The largest seam-surface addition to date: a forked media `ContentPart` arm + a `media_*`
-  `StreamChunk` triad + the capability matrix with `outputCombinations` + two optional provider methods
-  + a typed `tool_result.media` + the tier/ceiling policy — enlarging every future consumer's
-  exhaustive `switch` (mitigated: one MIME-discriminated arm, exhaustiveness caught at compile time).
-- It **requires an ADR-0018 amendment** (Rust-side media de-inlining) and an `LlmProvider`-interface
-  growth (optional methods) landed now as reserved shape ahead of behavior (lit up Phase D/E).
-- New standing obligations every later consumer upholds: the active `deInlineMedia` pass on every emit
-  site (incl. the checkpoint snapshot), the ephemeral-sidecar discipline (owned by the 1.K
-  `FallbackChain` strip/re-materialize-on-failover), a new `MediaStore` retention/GC story, and the
-  feature-flagged `url` carrier gated on the shared SSRF primitive.
+This document remains the **reasoning trail** (provider reality, the three-carrier rationale, the
+adversarial-review resolutions §10, the phased plan §9, and the resolved open questions §11); the two
+ADRs are the **binding record**. The roadmap multimodal sub-spine **1.AD–1.AH**
+([phase-1-engine-and-llm.md](../roadmap/phases/phase-1-engine-and-llm.md)) schedules the implementation.

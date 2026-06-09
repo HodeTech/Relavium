@@ -2,7 +2,7 @@
 
 > Status: Not started (Product Phase 1). Blocked on Phase 2.
 
-- **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-4-vscode.md](phase-4-vscode.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [../../architecture/state-management.md](../../architecture/state-management.md), [../../reference/desktop/routes-and-screens.md](../../reference/desktop/routes-and-screens.md), [../../reference/desktop/tauri-plugins.md](../../reference/desktop/tauri-plugins.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/shared-core/store-shapes.md](../../reference/shared-core/store-shapes.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../decisions/0001-tauri-v2-over-electron.md](../../decisions/0001-tauri-v2-over-electron.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md](../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md), [../../decisions/0018-desktop-execution-and-rust-egress.md](../../decisions/0018-desktop-execution-and-rust-egress.md)
+- **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-4-vscode.md](phase-4-vscode.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [../../architecture/state-management.md](../../architecture/state-management.md), [../../reference/desktop/routes-and-screens.md](../../reference/desktop/routes-and-screens.md), [../../reference/desktop/tauri-plugins.md](../../reference/desktop/tauri-plugins.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/shared-core/store-shapes.md](../../reference/shared-core/store-shapes.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../decisions/0001-tauri-v2-over-electron.md](../../decisions/0001-tauri-v2-over-electron.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md](../../decisions/0010-zustand-direct-subscriptions-for-reactflow.md), [../../decisions/0018-desktop-execution-and-rust-egress.md](../../decisions/0018-desktop-execution-and-rust-egress.md), [../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)
 
 ## Goal
 
@@ -178,6 +178,15 @@ and receive its event stream.
   WebView-resident engine run (plus Rust-side bookkeeping: active-run count, checkpoint
   persistence) and returns `{ runId }`; it does **not** push a `Channel<RunEvent>` — run
   events stay WebView-side (below).
+- **Media de-inline on egress ([ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md),
+  amends ADR-0018) — required before any desktop media-output (multimodal 1.AH).** For a media-bearing
+  response, `llm_stream` additionally detects inline media in the raw provider stream, writes the bytes
+  to the **Rust-side content-addressed `MediaStore` (CAS)**, and forwards only a Relavium **handle** on
+  the `Channel<StreamChunk>` — so multi-MB base64 never transits the WebView↔Rust channel (invariant I3
+  becomes literally true on desktop). Add the session-scoped **`read_media(ref)`** command (validates the
+  requesting session is in the handle's scope-set, bounds returned size) that serves display bytes
+  **off** the hot channel. Text/tool/reasoning chunks are still framed verbatim; this is the one narrow
+  case where Rust understands chunk content.
 - Honor backpressure on the egress channel: when the WebView consumer lags, the
   `Channel<StreamChunk>` buffer fills and the Rust sender awaits (no dropped chunks),
   per the channel semantics in the IPC contract.

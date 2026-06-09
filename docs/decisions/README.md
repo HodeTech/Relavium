@@ -74,6 +74,8 @@ flowchart TD
 | 0028 | [Workflow resource governance — pre-egress budget, run timeout, concurrency cap](0028-workflow-resource-governance.md) | Accepted | 2026-06-05 |
 | 0029 | [Tool-policy hardening — command match, tool narrowing, secret interpolation, SSRF](0029-tool-policy-hardening.md) | Accepted | 2026-06-05 |
 | 0030 | [`@relavium/llm` seam-shape amendment — reasoning channel, responseFormat, providerExecuted](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) | Accepted | 2026-06-07 |
+| 0031 | [`@relavium/llm` seam-shape amendment — first-class multimodal I/O](0031-llm-seam-shape-amendment-multimodal-io.md) | Accepted | 2026-06-08 |
+| 0032 | [Desktop Rust-side media de-inlining on the egress path (amends 0018)](0032-desktop-rust-media-de-inline-amends-0018.md) | Accepted | 2026-06-08 |
 
 ## Creating a new ADR
 

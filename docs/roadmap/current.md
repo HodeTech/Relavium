@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-07
+> Last updated: 2026-06-08
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -116,6 +116,17 @@ two parallel lanes:
    parse+validate a `.relavium.yaml` against the reconciled `WorkflowSchema`, with typed,
    field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, converging at the
    **1.O join** (which waits on the fallback runner, 1.K) toward **M2**.
+
+> **Multimodal I/O decided (2026-06-08) — a second pre-freeze seam amendment.** First-class
+> image/audio/video I/O (input **and** output, incl. generate-media-by-rule) is now designed and decided:
+> [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (the seam amendment) +
+> [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust-side
+> de-inline), from [multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md)
+> (nine maintainer decisions A1–A9). It adds the **1.AD–1.AH** sub-spine (1.m6,
+> [phase-1](phases/phase-1-engine-and-llm.md)): **1.AD lands the seam shape NOW — before the exhaustive
+> consumers 1.K/1.O** so the `ContentPart`/`StreamChunk` media union members are non-breaking (the same
+> cheap-window move as ADR-0030); **1.AE–1.AH (media input/engine/output + surfaces) are additive and do
+> NOT gate M2.** So the immediate seam-lane work is **1.AD → then 1.K**, both before the 1.O join.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
