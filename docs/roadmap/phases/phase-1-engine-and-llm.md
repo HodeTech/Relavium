@@ -740,11 +740,15 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   `generateMedia?`/`pollMediaJob?` `LlmProvider` methods (**reserved**, A5); `MediaSource` +
   `DurableMediaSource` + `INLINE_MEDIA_CEILING` + the per-message count/aggregate caps; the
   `deInlineMedia` boundary signature + the backstop `persistableMediaRefine`. The `url` carrier ships
-  **feature-flag-OFF**. Update [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md);
-  StopReason stays `'stop'` + content-inspection (tested). *Acceptance:* the new union members + optional
-  fields/methods parse and round-trip; a base64 part in a durable/`tool_result.result` position is
-  rejected by the backstop; no vendor type crosses the seam; the run-event count-test is green at the new
-  total. *(Freeze-criticality recorded in the design doc §9: the three union/capability shapes are
+  **feature-flag-OFF**. Replace the ADR-0031 placeholder in
+  [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md) with the full
+  "Seam-shape amendments (ADR-0031)" section (the ADR-0030 mould) — the seam doc is the shape's
+  canonical home (ADR-0031 §Decision; one-canonical-home), so the doc update is part of 1.AD, not a
+  follow-up. StopReason stays `'stop'` + content-inspection (tested). *Acceptance:* the new union
+  members + optional fields/methods parse and round-trip; a base64 part in a durable/`tool_result.result`
+  position is rejected by the backstop; no vendor type crosses the seam; the run-event count-test is
+  green at the new total; **llm-provider-seam.md carries the ADR-0031 amendment section** (placeholder
+  replaced). *(Freeze-criticality recorded in the design doc §9: the three union/capability shapes are
   truly breaking-to-defer; the optional fields/methods are landed-early-by-choice per A1.)*
 - **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
   (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
