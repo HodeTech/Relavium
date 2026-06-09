@@ -88,15 +88,17 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
     expect(scrubSecrets('auth failed for sk-ant-api03-AbCdEf0123456789xyz')).not.toContain(
       'AbCdEf0123456789',
     );
-    expect(scrubSecrets('GET https://api.example.com/v1?api_key=SECRET12345abc failed')).not.toContain(
-      'SECRET12345abc',
-    );
+    expect(
+      scrubSecrets('GET https://api.example.com/v1?api_key=SECRET12345abc failed'),
+    ).not.toContain('SECRET12345abc');
     expect(scrubSecrets('connect https://user:p4ssw0rd@host/x')).not.toContain('p4ssw0rd');
     expect(scrubSecrets('header Authorization: Bearer abc.def.ghi12345 rejected')).not.toContain(
       'abc.def.ghi12345',
     );
     // surrounding text is preserved (the Bearer pattern is not too greedy)
-    expect(scrubSecrets('header Authorization: Bearer abc.def.ghi12345 rejected')).toContain('rejected');
+    expect(scrubSecrets('header Authorization: Bearer abc.def.ghi12345 rejected')).toContain(
+      'rejected',
+    );
     expect(scrubSecrets('google AIzaSyA1234567890abcdefghijklmnopqrstuv bad')).not.toContain(
       'AIzaSyA1234567890',
     );
@@ -125,7 +127,8 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
     const e = makeLlmError({
       provider: 'openai',
       kind: 'auth',
-      message: 'invalid key sk-proj-ABCDEFGHIJKLMNOP123 at https://api.x.com/v1?token=tok_SECRETvalue',
+      message:
+        'invalid key sk-proj-ABCDEFGHIJKLMNOP123 at https://api.x.com/v1?token=tok_SECRETvalue',
       code: 'bad https://u:pw@h/x',
     });
     expect(e.message).not.toContain('sk-proj-ABCDEFGHIJKLMNOP123');
