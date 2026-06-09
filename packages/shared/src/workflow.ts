@@ -104,7 +104,7 @@ const VALIDATION_KEYS_BY_TYPE: Record<
   string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
   file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
   code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-  secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
+  secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'], // same keys as `string` — a `secret` is a string-typed value at rest
   boolean: [],
 };
 

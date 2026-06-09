@@ -43,7 +43,8 @@ surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
   positive, *tested* obligation, not only a prohibition:** the `@relavium/llm` **per-adapter adapter tests**
   (each plants a secret in a vendor error and asserts the surfaced `LlmError` is secret-free), plus
   `llm-error.test.ts` for the shared `makeLlmError`→`scrubSecrets` backstop, assert that the resulting
-  `message`/`code` is **secret-free** — no API key, `baseURL`, auth header, or token (a declared-but-untested "already
+  `message`/`code` is **secret-free** — no API key, no credentials-in-URL, no auth header, no token (a
+  public endpoint URL is not itself a secret; a declared-but-untested "already
   redacted" invariant is a future leak). A secret that was *sent* (in a header, query string, or URL) must
   likewise be redacted from any provider response/error body before it reaches a log.
 - **Audit the desktop Rust-delegated egress path.** On the desktop the LLM egress is a

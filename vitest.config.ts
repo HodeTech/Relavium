@@ -6,8 +6,10 @@ import { defineConfig } from 'vitest/config';
  * coverage harness.
  *
  * Coverage uses the V8 provider with branch reporting. The Phase-1 **>= 90% line + branch**
- * engine floor (docs/standards/testing.md#coverage-expectations) is now *enforced* for the
- * built engine package(s) via the per-glob `thresholds` below; surfaces stay smoke-only.
+ * engine floor (docs/standards/testing.md#coverage-expectations) is the threshold the built engine
+ * package(s) must meet under `pnpm coverage` (run from the repo ROOT — the threshold glob below is
+ * root-relative). NOTE: `pnpm coverage` is NOT yet a required CI gate (CI runs lint/typecheck/test);
+ * wiring coverage into CI is tracked in deferred-tasks. Surfaces stay smoke-only.
  */
 export default defineConfig({
   test: {

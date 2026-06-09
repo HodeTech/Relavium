@@ -1,7 +1,7 @@
 # Multimodal I/O — design analysis (first-class image / audio / video, input + output)
 
 > Status: Reviewed and decided — finalized as [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (the seam amendment) + [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (the desktop Rust-side de-inline). This doc is the reasoning trail; the ADRs are the binding record.
-
+>
 > **Decision banner (2026-06-08).** Two independent review reports of this analysis were taken to the
 > maintainer; nine decisions (A1–A9) were ruled and are now baked into ADR-0031 (see its *Maintainer
 > decisions* table) and reflected inline here:
