@@ -204,6 +204,10 @@ describe('WorkflowSchema', () => {
     expect(accepts(withWorkflow({ agents: [{ $ref: './x.agent.yaml', oops: 1 }] }))).toBe(false);
   });
 
+  it('rejects a $ref agent entry with an empty path (caught at the schema, not at resolution)', () => {
+    expect(accepts(withWorkflow({ agents: [{ $ref: '' }] }))).toBe(false);
+  });
+
   it('rejects a non-kebab-case workflow id', () => {
     expect(accepts(withWorkflow({ id: 'Code_Review_Pipeline' }))).toBe(false);
   });
@@ -427,6 +431,28 @@ describe('WorkflowSchema', () => {
       accepts(
         withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { max_length: 5 } }] }),
       ),
+    ).toBe(false);
+  });
+
+  it('rejects ANY validation key on a boolean input (its allowed set is empty)', () => {
+    // `enum` looks semantically plausible on a boolean — exactly the realistic authored mistake.
+    expect(
+      accepts(
+        withWorkflow({ inputs: [{ name: 'flag', type: 'boolean', validation: { enum: ['y'] } }] }),
+      ),
+    ).toBe(false);
+    // an empty validation object carries no key, so there is nothing to reject
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 'flag', type: 'boolean', validation: {} }] })),
+    ).toBe(true);
+  });
+
+  it('rejects numeric bound keys on code_diff / secret inputs (string-family keys only)', () => {
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 'd', type: 'code_diff', validation: { min: 0 } }] })),
+    ).toBe(false);
+    expect(
+      accepts(withWorkflow({ inputs: [{ name: 's', type: 'secret', validation: { max: 9 } }] })),
     ).toBe(false);
   });
 

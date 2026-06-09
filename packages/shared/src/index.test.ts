@@ -31,7 +31,14 @@ describe('@relavium/shared public surface', () => {
 
   it('does not leak internal primitives from common.ts', () => {
     const exported = Object.keys(shared);
-    for (const internal of ['kebabIdSchema', 'nonEmptyString', 'positiveInt', 'nonNegativeInt']) {
+    for (const internal of [
+      'kebabIdSchema',
+      'nonEmptyString',
+      'positiveInt',
+      'nonNegativeInt',
+      'findDuplicates',
+      'jsonSchemaMetadataSchema',
+    ]) {
       expect(exported).not.toContain(internal);
     }
   });

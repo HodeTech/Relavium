@@ -138,13 +138,26 @@ const reject: Record<string, Record<string, unknown>> = {
     executionMode: 'local',
   },
   'node:started (missing nodeType)': { type: 'node:started', ...env, nodeId: 'n' },
-  // `parallel` is an authored YAML type, NOT an engine type (it expands to fan_out/fan_in) — the
-  // node:started event carries the engine enum, so an authored-only type must be rejected.
-  'node:started (authored nodeType)': {
+  // `parallel`/`merge`/`human_gate` are authored YAML types, NOT engine types (`parallel` expands to
+  // fan_out/fan_in; `merge` runs as fan_in; `human_gate` is the authored alias of human_in_the_loop) —
+  // the node:started event carries the engine enum, so every authored-only type must be rejected.
+  'node:started (authored nodeType parallel)': {
     type: 'node:started',
     ...env,
     nodeId: 'n',
     nodeType: 'parallel',
+  },
+  'node:started (authored nodeType merge)': {
+    type: 'node:started',
+    ...env,
+    nodeId: 'n',
+    nodeType: 'merge',
+  },
+  'node:started (authored nodeType human_gate)': {
+    type: 'node:started',
+    ...env,
+    nodeId: 'n',
+    nodeType: 'human_gate',
   },
   'agent:token (missing model)': { type: 'agent:token', ...env, nodeId: 'n', token: 'hi' },
   'agent:tool_call (missing toolId)': {
