@@ -21,14 +21,15 @@ on:
     branches: [main, development]
   pull_request:
 
-# Cancel superseded runs on the same branch (a push and its open PR share one group) so CI tracks
-# the latest push — but never cancel a run on `main` (its history is the merge record and must
-# complete). `head_ref` is the short branch on a PR; `ref_name` is the short branch on a push — both
-# resolve to e.g. `development`. `event_name` is included so a push and its same-SHA PR do NOT collapse
-# into one group (otherwise one run cancels the other and a cancelled required check can block merge);
-# each gets its own group (`ci-CI-push-development` vs `ci-CI-pull_request-development`).
+# Cancel superseded runs so CI tracks the latest push — but never cancel a run on `main` (its
+# history is the merge record and must complete). The group key: a PR run is keyed by its PR
+# number (`github.event.number` — so two PRs open from the SAME head branch stay independent and
+# can't cancel each other), a push run by its short branch (`ref_name`, e.g. `development`).
+# `event_name` keeps a push and its same-SHA PR in separate groups (otherwise one run cancels the
+# other and a cancelled required check can block merge): `ci-CI-push-development` vs
+# `ci-CI-pull_request-10`.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
