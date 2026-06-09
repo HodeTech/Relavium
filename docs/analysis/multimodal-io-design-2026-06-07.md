@@ -16,6 +16,12 @@
 > `workspace` reserved) (§6.8); **A9** exported YAML = **handle at the seam, `save_to` at the surface**
 > (§6.10). The §11 open questions are updated with their resolution/defaults. The embedded ADR draft
 > was finalized as the committed [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (see §12).
+>
+> **Y3 follow-up (2026-06-09).** A later hardening pass resolved one more seam-field question: the media
+> arm's **durable** form (`DurableMediaPart`) gains an optional **`byteLength?`** + audio/video
+> **`durationMs?`** (§3.2) — **no `checksum`** (the `media://sha256-<hex>` handle is the checksum),
+> **`width`/`height` excluded** (render-only). Recorded as ADR-0031's dated *Amended 2026-06-09* note; must
+> land in the 1.AD seam shape.
 
 This is the definitive, revision-incorporated design for first-class multimodal I/O on the
 `@relavium/llm` seam. It supersedes the earlier draft synthesis: three adversarial reviewers
@@ -248,6 +254,13 @@ const DurableMediaPartSchema = z.object({
   source: DurableMediaSourceSchema, // handle only
   name: z.string().optional(),
   transcript: z.string().optional(),
+  // Y3 (resolved 2026-06-09, ADR-0031 amended) — integrity/size/duration metadata lives on the DURABLE
+  // form ONLY; the host populates it at the deInlineMedia boundary (the MediaStore knows the byte count;
+  // the host probes duration). Bind it to the handle-keyed durable type the MediaStore/GC already key on.
+  byteLength: nonNegativeInt.optional(),  // bounds a Range/delivery request without trusting a raw file size
+  durationMs: positiveInt.optional(),     // audio/video only — render/desync metadata
+  // NO `checksum` field: the content-addressed `media://sha256-<hex>` handle already IS the sha256.
+  // `width`/`height` EXCLUDED from Phase A: pure render concern, no failover/gating consumer.
 });
 
 // ContentPart forks: the seam re-exports the in-flight variant; persist/event/IPC schemas reference

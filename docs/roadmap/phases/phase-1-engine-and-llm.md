@@ -407,7 +407,11 @@ budgets. Adapters stay dumb; this owns the policy.
 **Acceptance:** unit tests prove: a primary failing with a retryable error fails over
 to the next provider and the run succeeds; a fatal error stops the chain; per-attempt
 cost is summed across a failover; and **a cross-provider failover carries no `reasoning`
-part or `signature` into the next provider's request**.
+part or `signature` into the next provider's request**; and the **fail-over/stop decision is a pure
+function of the classified `LlmError` discriminant** (`kind`/`retryable`, 1.I), **never** content /
+string-sentinel inspection — a response body containing `'Error:'` or an empty/malformed body does not by
+itself trigger failover, and the normalized `LlmError.message` is secret-free (security-review.md).
+*(Score/quality-threshold fallback is deliberately out of scope for Phase 1 — deferred-tasks.md.)*
 
 ### 1.L.0 — Reconcile `@relavium/shared` to the 2026-06-05 contract — ✅ **Done (PR #6)** · *critical path, do first*
 
@@ -464,7 +468,10 @@ The engine entry point: load a `.relavium.yaml` and validate it against the
 
 **Acceptance:** valid reference example workflows parse to a typed
 `WorkflowDefinition`; a battery of malformed files each fail with a field-named,
-secret-free error; round-trip (parse → object) preserves all node config blocks.
+secret-free error; round-trip (parse → object) preserves all node config blocks; and **parsing is pure /
+side-effect-free** — no file mutation, no `process.env` mutation, no import-time singleton init
+(validation only). *(Note for a future maintainer: the `config.*` schemas are `.strict()` by a **deliberate
+choice beyond** ADR-0023's lenient-config default — "parity with the authored YAML" — not a bug to "fix".)*
 
 ### 1.L2 — Interpolation / templating engine (the `{{ … }}` runtime resolver) — *critical path*
 
@@ -527,7 +534,11 @@ The loop that dispatches ready nodes and emits the canonical event stream.
 
 **Acceptance:** running a multi-node plan emits events in a gap-free `sequenceNumber`
 order asserted against the canonical schema by colon-namespaced name; cancellation
-emits `run:cancelled` and stops dispatch.
+emits `run:cancelled` and stops dispatch; and **every run terminates in EXACTLY ONE terminal event**
+(`run:completed` | `run:failed` | `run:cancelled`) — including on an **uncaught node-handler exception**
+(inject a throw → assert a single `run:failed`) and on **crash-then-restart of a non-resumable run**
+(reconciliation emits `run:failed`, never a stuck `run:started`) — so a zombie / never-terminating run is
+structurally impossible.
 
 ### 1.O — `AgentRunner` (per-node LLM execution) — *critical path*
 
@@ -658,7 +669,12 @@ The engine-side registry that dispatches built-in tools the `AgentRunner` invoke
 
 **Acceptance:** an agent tool call dispatches through the registry, maps I/O
 correctly, and emits sanitized tool events; an unlisted `run_command` is refused;
-`git_commit` is blocked without a gate approval.
+`git_commit` is blocked without a gate approval; and an **upstream agent/LLM output wired via
+`input_mapping` into a tool / `http_request` arg is treated as UNTRUSTED data** — schema-validated against
+the tool's declared arg and, **for an outbound-URL tool**, routed through the **same** exact-FQDN allow-list
++ SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `http_request` / MCP), so a
+derived URL cannot bypass the egress guard. *(A `web_search`-style query is untrusted-data schema-validated
+per ADR-0029(c) but transits a query, not an `allowedDomains` FQDN allowlist.)*
 
 ### 1.U — End-to-end Node harness (**M2**, critical-path milestone) — *critical path*
 
@@ -715,7 +731,8 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
 
 - **1.AD — Multimodal seam amendment (Phase A) — land NOW, before 1.K/1.O.** Add to `@relavium/shared`
   + the `@relavium/llm` seam types, *shape only, no behavior*: the MIME-discriminated `media`
-  `ContentPart` arm **and** the distinct handle-only `DurableMediaPart`/`DurableContentPart`; the
+  `ContentPart` arm **and** the distinct handle-only `DurableMediaPart`/`DurableContentPart` (the durable
+  form also carrying optional `byteLength?` + audio/video `durationMs?` — Y3, ADR-0031 amended); the
   `media_start/delta/end` `StreamChunk` triad (handle-only terminal; `partialRef` **reserved**, A3);
   `CapabilityFlags.media` = `input{image,audio,video,document}` (the `document` flag is A2) +
   `outputCombinations: ModalitySet[]` + the derived `vision` alias; `Usage.mediaUnits`;
@@ -736,7 +753,11 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   (security-review.md) and flip the `url` flag on for input **and** output, with the landing-gate CI test.
   *Acceptance:* a vision request actually reaches the provider as media (not flattened text); the
   conformance suite covers media-in + `mediaUnits`; the `url` carrier is rejected while the SSRF flag is
-  off and accepted once it lands.
+  off and accepted once it lands; the **one shared SSRF range-primitive is reused by all four egress
+  callers** (provider-`baseURL`, `http_request`, MCP, the media `url` carrier — never re-implemented) and
+  passes its **direct negative-case tests** (metadata IP, link-local, IPv4-mapped IPv6, post-DNS-resolution
+  IP, per-hop redirect — testing.md §Security-critical primitive tests; a runtime-*derived* base URL is
+  re-checked the same way).
 - **1.AF — Engine media plumbing (Phase C).** `requiredCapabilities()` media-gating (input + the
   `outputCombinations` **membership** check) + `FallbackChain` provider-skip + the ephemeral-sidecar
   strip/re-materialize-**before-the-retried-request** on failover (B5); the `MediaStore` contract + host
@@ -746,7 +767,12 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   media budget caps **+ the per-modality pre-egress media cost estimate** (A6) into the governance
   events; the `media_objects` retention/GC table. *Acceptance:* an incapable provider is skipped (not
   silently flattened); a media-bearing event/checkpoint emits handles only (asserted by the backstop +
-  an emit test); `save_to` writes bytes only at the surface boundary.
+  an emit test); `save_to` writes bytes only at the surface boundary; `read_media` **rejects a
+  negative/reversed/out-of-bounds `Range`** and resolves paths with `realpath`+`commonpath` fail-closed
+  (single byte-delivery gate, symlinks off — security-review.md §Media byte delivery); the keychain bridge
+  **never returns a raw key from an IPC command** (direct test); and a run reaching a **terminal event
+  (`run:completed|failed|cancelled`) deterministically reclaims its media refs** so a FAILED/CANCELLED run
+  leaves no orphaned partial media (a terminal-state sweep, not refcount-GC alone).
 - **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
   `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
@@ -754,7 +780,8 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   highest-complexity piece (a minute-scale LRO that survives a restart, in the run loop + checkpointer,
   reusing `LlmError` classification). Add `model_catalog.media_surface`. *Acceptance:* a generate-image
   node produces a handle; an async video job checkpoints, survives a simulated restart, and resumes to
-  completion; a content-policy job failure maps to `content_filter`.
+  completion; **a CANCEL aborts the in-flight `pollMediaJob` (via `AbortSignal`), emits `run:cancelled`,
+  and triggers the terminal-state media sweep**; a content-policy job failure maps to `content_filter`.
 - **1.AH — Surfaces & managed mode (Phase E, spans Phases 2–6).** Desktop:
   **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media
   de-inline on egress + session-scoped `read_media` command + the Rust CAS — **must land before any
@@ -762,8 +789,9 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   Managed-mode gateway media materialization-to-user-store + `mediaUnits` metering, reconciled with
   [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md) counts-not-content
   (phase-5-managed-inference). *Acceptance:* on desktop, media bytes never transit the WebView↔Rust
-  channel (only handles do); each surface renders a produced media handle; managed mode meters counts and
-  stores no artifact.
+  channel (only handles do); **`read_media` is the only byte path out — no second raw static mount,
+  `follow_symlink` off, `realpath`+`commonpath` fail-closed**; each surface renders a produced media
+  handle; managed mode meters counts and stores no artifact.
 
 ## Milestones
 

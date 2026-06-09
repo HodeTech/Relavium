@@ -4,6 +4,19 @@
 - **Date**: 2026-06-08
 - **Related**: [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md) (the seam ADR this **amends**, not supersedes), [0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) (the same pre-freeze amendment move; the `providerExecuted` arm + ephemeral-signature discipline this reuses), [0032-desktop-rust-media-de-inline-amends-0018.md](0032-desktop-rust-media-de-inline-amends-0018.md) (the desktop Rust-side media de-inline this requires; amends [ADR-0018](0018-desktop-execution-and-rust-egress.md)), [0015-managed-mode-data-handling-and-compliance.md](0015-managed-mode-data-handling-and-compliance.md) (the counts-not-content / pass-through-not-a-store rule the managed-media path reconciles with), [0028-workflow-resource-governance.md](0028-workflow-resource-governance.md) (the budget events media volume feeds; extended with a per-modality media cost estimate), [0023-strict-authored-yaml-validation.md](0023-strict-authored-yaml-validation.md) (load-time validation of `output_modalities`/`outputCombinations`), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md) (exported-YAML-carries-handle-not-bytes), [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) (the seam's one canonical home), [../standards/security-review.md](../standards/security-review.md) (the shared SSRF range-primitive; the no-bytes invariant), [../analysis/multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md) (the full design analysis this condenses).
 
+> **Amended 2026-06-09 (Y3 — media-arm integrity metadata).** A refinement, not a reversal: decision #1's
+> media arm gains, on the **durable** form (`DurableMediaPart`) only, an optional **`byteLength?`** and an
+> optional audio/video **`durationMs?`**; the in-flight arm stays lean (`{ type, mimeType, source, name?,
+> transcript? }`). The host populates these at the `deInlineMedia` boundary (the `MediaStore` knows the
+> byte count; the host probes duration); `byteLength` is what a Range/byte-delivery request is bounded
+> against without trusting a raw file size (see security-review.md byte-delivery rule). **No `checksum`
+> field** — the content-addressed `media://sha256-<hex>` handle already *is* the sha256, so a separate
+> checksum is pure redundancy. **`width`/`height` are excluded** from Phase A (pure render concern, no
+> failover/gating consumer; revisit only with a concrete consumer). This **must land in the 1.AD seam
+> shape, before the 1.K/1.O exhaustive consumers exist**, because adding a field to a discriminated-union
+> arm afterward is exactly the breaking change this ADR exists to avoid. Decision #1 below is unchanged in
+> intent. Full reasoning: [multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md) §3.2.
+
 ## Context
 
 The `@relavium/llm` seam — the request/result/stream/usage/content shapes in

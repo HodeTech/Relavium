@@ -84,12 +84,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
+- [ ] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
+  durable form (`DurableMediaPart`) carries an optional **`byteLength?`** + audio/video **`durationMs?`**,
+  host-populated at the `deInlineMedia` boundary; **no `checksum`** (the `media://sha256-<hex>` handle IS
+  the sha256); **no `width`/`height`** in Phase A (render-only). **Must ship in the 1.AD seam shape**
+  (before 1.K/1.O exhaustive consumers) — adding a union-arm field later is breaking. `byteLength` is what
+  the byte-delivery Range check bounds against. *(ADR-0031 "Amended 2026-06-09"; multimodal-io-design §3.2; 1.AD)*
 - [ ] **Shared SSRF range-primitive (the `url`-carrier precondition)** — the one shared HTTPS-only /
   block-private-loopback-link-local-metadata-CGNAT / DNS-resolution + per-hop-redirect-revalidation /
   IPv4-mapped-IPv6-decode primitive that `assertHttpsBaseUrl` (openai.ts) is the best-effort placeholder
   for. security-review.md mandates **one** primitive across all egress paths; the media `url` carrier
   (input + provider-returned output) is gated **feature-flag-OFF** until it lands. **Land at 1.AE**, with
-  the landing-gate CI test (url rejected while flag off). *(security-review.md; openai.ts; 1.AE)*
+  the landing-gate CI test (url rejected while flag off). **A runtime-*derived* base URL** (auto-selected /
+  resolved, not literally user-supplied) is re-checked through this same primitive against its
+  **post-resolution IP**; an explicit-local-endpoint opt-out **narrows, never removes**, the
+  metadata-IP/link-local block. *(security-review.md; openai.ts; 1.AE)*
 - [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
   now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
   (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
@@ -114,6 +123,35 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Retire the `vision` derived alias (OQ6 default)** — `CapabilityFlags.vision` is kept as a derived
   alias of `media.input.image` for live consumers (`db.supports_vision`, adapter `supports.vision`);
   schedule removal once those migrate to `media.input.image`. *(types.ts; a later cleanup)*
+
+### Engine/seam policy & surface follow-ups (2026-06-09 hardening-analysis pass)
+
+> A hardening-analysis pass over the seam / fallback / byte-delivery / i18n surfaces (validated against the
+> current ADRs) produced these recorded rulings and deferrals. Each stands on Relavium's own architecture.
+
+- [ ] **Score-threshold / partial-success fallback — DECIDED out-of-scope for Phase 1 (Y2).** `FallbackChain`
+  (1.K) routing is **binary** classified-retryable-vs-fatal only ([phase-1](phases/phase-1-engine-and-llm.md)
+  1.K acceptance); a cross-provider *quality* judgment is a provider-superior decision that ADR-0011's
+  capability-gated **lowest-common-denominator** seam explicitly fences out. Quality/score fallback stays an
+  **author/node concern** (a judge / `condition` node + branch in the DAG), **not** an `LLMProvider`-seam or
+  1.K concern — do **not** fold it into 1.K under any framing. Promote to a separate candidate-ADR **only** if
+  a concrete multi-workflow demand for engine-native quality-fallback appears, and even then it must sit
+  **above** the seam, never amend the `LLMProvider` contract. *(in-1.K scope: the fallback trigger is a typed
+  `LlmError`/run-event, never a string-sentinel — see phase-1 1.K acceptance.)* *([ADR-0011](../decisions/0011-internal-llm-abstraction.md); 1.K)*
+- [ ] **Per-host/per-provider TLS-verify granularity — DEFERRED draft-proposal (MD-TLS).** The stance today
+  is a single global never-disable ([security-review.md](../standards/security-review.md)), which is strictly
+  safer. Per-host granular TLS (for a self-signed / private-CA local gateway) reintroduces the MITM surface
+  and would need its own ADR + opt-on/opt-out tests. **Decided: keep the global never-disable stance**;
+  revisit a per-host **opt-IN** only when a real private-CA self-hosted consumer lands (the BYOK
+  custom-baseURL opt-in-local path already covers the realistic local-endpoint case). *(security-review.md)*
+- [ ] **Run-submission idempotency / request-dedup (open — evaluate carefully).** Distinct from the content-addressed
+  media cache and any managed-mode metering `request_id`: should an identical run-create request be
+  de-duplicated so a double-submit does not start two runs? **Open:** a Phase-1 engine run-create hook vs a
+  surface concern. Low-stakes; recorded so it is not lost. *(WorkflowEngine run-create; 1.N)*
+- [ ] **i18n CI key-parity + data/code separation (Phase 2+ surface).** When the desktop / CLI / VS Code
+  surfaces add i18n: a CI test that **fails** on a missing/extra translation key (parity), **zero conditional
+  logic in translation data** (data ≠ code), and a dead/unused-string lint. Recorded now; lands with the
+  Phase-2/3/4 surface i18n work (no consumer yet). *(a `docs/standards/` entry or skill; Phases 2–4)*
 
 ## Schema / validation hardening
 

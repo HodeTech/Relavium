@@ -35,6 +35,10 @@ This is a hard rule, enforced in [security-review.md](security-review.md):
   debug-only path that redacts known secret patterns.
 - Custom base URLs and request targets are logged host-only where they could carry a
   token; never log a URL with embedded credentials.
+- A secret that was *sent* (a key in a header, a token in a query string or URL) and is then
+  **echoed back** in a provider response or error body is redacted **before that body is logged** —
+  the response/error path is a leak surface too, not just the request (also asserted by the
+  `@relavium/llm` conformance suite for the normalized `LlmError`; see [security-review.md](security-review.md)).
 - A user-facing error shown in the UI is already redacted (see
   [error-handling.md](error-handling.md)); logs hold the internal detail, never the other
   way around.
