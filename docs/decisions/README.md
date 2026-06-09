@@ -76,6 +76,7 @@ flowchart TD
 | 0030 | [`@relavium/llm` seam-shape amendment — reasoning channel, responseFormat, providerExecuted](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) | Accepted | 2026-06-07 |
 | 0031 | [`@relavium/llm` seam-shape amendment — first-class multimodal I/O](0031-llm-seam-shape-amendment-multimodal-io.md) | Accepted | 2026-06-08 |
 | 0032 | [Desktop Rust-side media de-inlining on the egress path (amends 0018)](0032-desktop-rust-media-de-inline-amends-0018.md) | Accepted | 2026-06-08 |
+| 0033 | [Local config files are strictly validated too (amends 0023)](0033-strict-config-files-amends-0023.md) | Accepted | 2026-06-09 |
 
 ## Creating a new ADR
 

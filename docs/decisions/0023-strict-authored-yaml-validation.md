@@ -2,7 +2,13 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-04
-- **Related**: [ADR-0009](0009-git-native-workflow-yaml.md), [ADR-0020](0020-zod-runtime-schema-library.md), [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md), [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
+- **Related**: [ADR-0009](0009-git-native-workflow-yaml.md), [ADR-0020](0020-zod-runtime-schema-library.md), [0033-strict-config-files-amends-0023.md](0033-strict-config-files-amends-0023.md) (**amends the config-scope carve-out below**), [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md), [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
+
+> **Amended 2026-06-09 by [ADR-0033](0033-strict-config-files-amends-0023.md)** (append-only — this body
+> is unchanged): the **config-scope carve-out** in the *Scope* section below (local config files left
+> lenient) is **reversed** — `config.toml`/`project.toml`/`workspace.toml` (+ the `[chat]` block and
+> `[[mcp_servers]]` registrations) are now `.strict()` too, reconciling with `config-spec.md`. The
+> authored-YAML decision and the `RunEvent`/`RunSchema` leniency are unchanged.
 
 ## Context
 

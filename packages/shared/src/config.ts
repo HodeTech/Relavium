@@ -31,7 +31,7 @@ export const McpServerRegistrationSchema = z
     url: z.string().url().optional(),
     env: z.record(z.string(), z.string()).optional(),
   })
-  // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — ADR-0023 parity with the rest of this file.
+  // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — strict config per ADR-0033 (which amends ADR-0023's config carve-out).
   .strict()
   .superRefine((server, ctx) => {
     if (server.transport === 'stdio' && !server.command) {
@@ -68,7 +68,7 @@ export const McpServerRegistrationSchema = z
 
 /** `~/.relavium/config.toml` — global preferences + MCP registrations.
  *  `.strict()`: a typo in a committed config key fails loudly rather than being silently dropped —
- *  parity with the authored-YAML schemas (ADR-0023). */
+ *  config files are strict too per ADR-0033 (which amends ADR-0023's config carve-out). */
 export const GlobalConfigSchema = z
   .object({
     update_channel: UpdateChannelSchema.optional(),
@@ -98,7 +98,7 @@ export const ChatConfigSchema = z
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
   })
-  .strict() // fail loud on an unknown [chat] key (ADR-0023 parity)
+  .strict() // fail loud on an unknown [chat] key (strict config — ADR-0033, amends ADR-0023)
   .optional();
 
 /** `project.toml` / `workspace.toml` — project defaults, variables, project-scoped MCP, chat defaults. */
