@@ -646,6 +646,17 @@ describe('seam shape amendment (ADR-0031) — multimodal I/O', () => {
     expect(
       MediaGenRequestSchema.safeParse({ model: 'm', prompt: 'p', modality: 'document' }).success,
     ).toBe(false); // only the media-billed set is generatable
+    // mimeType shares the one bounded bare-MIME schema — every mimeType position does.
+    for (const mimeType of [
+      'image/png; charset=utf-8',
+      `data:image/png;base64,${TINY_BASE64}`,
+      `image/${'x'.repeat(300)}`,
+    ]) {
+      expect(
+        MediaGenRequestSchema.safeParse({ model: 'm', prompt: 'p', modality: 'image', mimeType })
+          .success,
+      ).toBe(false);
+    }
 
     const media = { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } };
     expect(MediaGenResultSchema.safeParse({ media, raw: null }).success).toBe(true);

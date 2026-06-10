@@ -410,7 +410,7 @@ export const MediaGenRequestSchema = z.object({
   model: nonEmptyString, // canonical model id, mapped per adapter
   prompt: nonEmptyString,
   modality: z.enum(MEDIA_BILLED_MODALITIES), // the artifact class to generate: image | audio | video
-  mimeType: nonEmptyString.optional(), // requested output format hint, e.g. 'image/png'
+  mimeType: MediaMimeTypeSchema.optional(), // requested output format hint, e.g. 'image/png' — the one shared bare-MIME bound
   count: z.number().int().positive().optional(), // artifacts per call (image generators)
   durationSeconds: z.number().positive().optional(), // target duration (audio/video generators)
   signal: abortSignalLikeSchema.optional(),
