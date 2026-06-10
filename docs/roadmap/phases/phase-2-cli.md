@@ -82,7 +82,10 @@ the [config resolution order](../../reference/contracts/config-spec.md), and the
 
 The workstreams are ordered for execution. Critical-path workstreams (`2.A`,
 `2.B`, `2.D`, `2.F`, `2.K`) gate the global milestone **M3**. Earlier workstreams
-unblock later ones; build them in this order.
+unblock later ones; build them in this order. (`2.R` is the one exception to the
+documentation order: it appears after the chat workstreams below but is
+**scheduled early** — implementation needs only 2.B + 2.C, while its end-to-end
+acceptance fixture additionally needs 2.F's `relavium run` to exist.)
 
 ```mermaid
 flowchart LR
@@ -434,9 +437,10 @@ The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-ag
 
 Implement the **inbound** half of [mcp-integration.md](../../reference/shared-core/mcp-integration.md)
 — agents consuming MCP tools — on the official TypeScript SDK per
-[ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md). Scheduled **early** (it needs only
-2.B config + 2.C keys) but **off the M3 critical path**; the workflow-as-MCP-server (outbound)
-direction is deliberately not in this slot.
+[ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md). Scheduled **early** (implementation
+needs only 2.B config + 2.C keys; the end-to-end acceptance below additionally requires 2.F's
+`relavium run`) but **off the M3 critical path**; the workflow-as-MCP-server (outbound) direction
+is deliberately not in this slot.
 
 **Tasks:**
 

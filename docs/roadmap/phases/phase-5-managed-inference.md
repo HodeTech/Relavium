@@ -237,7 +237,7 @@ Where Relavium's own provider keys live and how the gateway draws from them safe
 - Implement **per-provider key pools**: multiple keys per provider to spread org rate
   limits, with selection, **zero-downtime rotation**, and a **429-cooldown** that
   parks a saturated key and advances to the next. Pool retry discipline mirrors the
-  seam's fallback rules (1.K): transient errors back off with jitter, while an
+  seam's fallback rules ([1.K](phase-1-engine-and-llm.md)): transient errors back off with jitter, while an
   **auth-class failure on a pooled key is never blindly retried** — it parks the key
   for investigation (possible revocation) and advances, since a deterministic auth
   failure only repeats.

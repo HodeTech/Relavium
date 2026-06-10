@@ -12,9 +12,9 @@ defines both directions (agents consuming MCP tools; workflows published as MCP 
 `McpServerRef` shape lives in the agent/workflow schemas, `[[mcp_servers]]` registration lives in
 [config-spec.md](../reference/contracts/config-spec.md), and the desktop IPC contract reserves
 `list_mcp_servers` — yet **no roadmap workstream builds the client**, and the implementation
-requires a runtime dependency that rule #2 ("no new runtime dependency without an ADR",
-[architectural-principles.md](../standards/architectural-principles.md)) says must be decided in
-an ADR **before** any implementation work starts. Leaving the gap open risks the contract and the
+requires a runtime dependency that the no-new-runtime-dependency-without-an-ADR rule
+(CLAUDE.md non-negotiable #2; [architectural-principles.md](../standards/architectural-principles.md)
+§9) says must be decided in an ADR **before** any implementation work starts. Leaving the gap open risks the contract and the
 implementation drifting apart, or the dependency being adopted ad hoc inside a feature PR.
 
 Two questions are settled here: **which client implementation** (hand-rolled protocol code vs the
@@ -47,8 +47,8 @@ Considered alternatives:
   the implementation for two phases already; deciding the dependency and the slot now is what keeps
   the contract honest and gives the workstream (2.R) an unambiguous starting point.
 
-Binding guardrails for the implementation (each is an existing decision applied to MCP, cited not
-restated):
+Binding guardrails for the implementation (1–4 are existing decisions applied to MCP, cited not
+restated; 5 is a new obligation this ADR records):
 
 1. **Secrets**: MCP server credentials resolve from the OS keychain / secret store into the server
    `env` at spawn time and never appear in YAML, logs, or event payloads ([ADR-0006](0006-os-keychain-for-api-keys.md),
