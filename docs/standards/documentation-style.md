@@ -50,7 +50,7 @@ The H1 is the document's canonical title and should match the intent of the file
   `local-dev-setup.md`, `multi-llm-providers.md`.
 - ADRs are zero-padded four digits plus a slug: `0001-tauri-v2-over-electron.md`.
 - Dated analysis docs suffix an ISO date:
-  `competitive-landscape-2026-06-03.md`.
+  `managed-inference-business-model-2026-06-03.md`.
 - Review records use a full ISO timestamp slug (see
   [reviews/README.md](../reviews/README.md)):
   `YYYY-MM-DDTHH-MM-SS-<slug>-review.md`.

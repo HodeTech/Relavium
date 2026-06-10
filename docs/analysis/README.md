@@ -16,14 +16,12 @@ It has two parts:
 
 | Document | What it is |
 |----------|-----------|
-| [competitive-landscape-2026-06-05.md](competitive-landscape-2026-06-05.md) | Competitive analysis carrying the two-entry-point thesis (agent chat + workflow): four surfaces, one runtime, two entry points, and the chat → workflow continuum. Supersedes the 2026-06-03 read after the agent-first pivot. |
-| [competitive-landscape-2026-06-03.md](competitive-landscape-2026-06-03.md) | Competitive analysis vs Claude Code, Cursor, Continue.dev, Cline/Roo-code, GitHub Copilot Agent Mode, n8n/Zapier, and CrewAI/AutoGen, with where Relavium wins. |
 | [managed-inference-business-model-2026-06-03.md](managed-inference-business-model-2026-06-03.md) | Decision analysis: BYOK vs managed inference (Relavium's own keys, metered by license). ToS/legality, competitive pricing, unit economics, gateway architecture, compliance. Led to the dual-mode decision ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md)). |
 | [_archive/README.md](_archive/README.md) | Provenance map: which living docs were seeded by which frozen raw-analysis section. The archive itself is **frozen — never edited**. |
 
 ## Conventions
 
-- **Dated research** uses an ISO-date suffix: `competitive-landscape-2026-06-03.md`.
+- **Dated research** uses an ISO-date suffix: `managed-inference-business-model-2026-06-03.md`.
   When the analysis is redone, a new dated file is added rather than overwriting the old
   one — the dated trail is the point.
 - **Analysis is not a spec.** Concrete specs (schemas, contracts, DDL, node types) live
