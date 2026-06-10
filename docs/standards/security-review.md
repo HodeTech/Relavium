@@ -151,6 +151,12 @@ unless the user has explicitly opted into a local endpoint) applies to all three
   **engine** (never an adapter), through this **same** range-primitive — no second parser. It ships
   **feature-flag-OFF** until the one shared primitive lands. *(Not yet built; recorded here so it binds to
   the same primitive when it does.)*
+- **The check and the connect must see the same address (no TOCTOU).** The primitive resolves the
+  hostname, validates **every** resolved IP against the range-block, and then **pins the connection
+  to a validated IP** (connect-by-validated-IP / a lookup-pinned HTTP agent). Validating one
+  resolution and letting the HTTP client re-resolve at connect time is the DNS-rebinding window —
+  an attacker-controlled DNS answer can pass the check and then point the actual connection at a
+  private address. Redirects re-run the full resolve-validate-pin cycle per hop.
 - All provider calls are HTTPS; we do not disable TLS verification. *(Per-host/per-provider TLS granularity
   is a deferred draft-proposal, not a current rule — see [deferred-tasks.md](../roadmap/deferred-tasks.md);
   the global never-disable stance holds until a private-CA self-hosted consumer needs an opt-IN behind a
@@ -246,6 +252,18 @@ never hand-roll a security primitive; rule #2: a new runtime dependency needs an
   text in a fetched document or prior tool result cannot silently escalate privilege.
 - We do not concatenate untrusted content into a position where it can override the system
   prompt; the `system` field is set by Relavium, not by tool output.
+- **Untrusted-content-as-data is a *structural* engine guarantee, not a per-call-site
+  discipline.** Every piece of content the model's caller does not author — a tool result
+  (`run_command` stdout, `read_file` contents, an `http_request` body), an MCP server
+  response, fetched media text — enters message assembly through a **typed untrusted
+  boundary** (a branded wrapper / taint marker on the engine side, the same compile-time
+  technique as the ADR-0029(c) secret taint), and the assembly layer can place such a value
+  **only** in a data position (`user`/`tool` content), **never** in `system` and never
+  string-concatenated into an instruction template. The reason it must be structural: with
+  N tool call-sites, "remember to wrap it" fails open at exactly one forgotten site — the
+  type boundary makes the unsafe path unrepresentable. This binds the `AgentRunner` /
+  `ToolRegistry` / `AgentSession` implementations (1.O / 1.T / 1.V); it is an engine-layer
+  rule and changes **no** seam shape — `LlmMessage` stays as the seam defines it.
 
 ## Never hand-roll crypto
 
