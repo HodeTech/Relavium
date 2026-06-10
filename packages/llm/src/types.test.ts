@@ -538,6 +538,22 @@ describe('seam shape amendment (ADR-0031) — multimodal I/O', () => {
     expect(
       StreamChunkSchema.safeParse({ type: 'media_delta', id: 'm1', progress: 1.5 }).success,
     ).toBe(false); // progress is a 0..1 fraction
+    // media_start.mimeType shares the one bounded bare-MIME schema — a data-URI or oversized
+    // value cannot ride the stream through a metadata field.
+    expect(
+      StreamChunkSchema.safeParse({
+        type: 'media_start',
+        id: 'm1',
+        mimeType: `data:image/png;base64,${TINY_BASE64}`,
+      }).success,
+    ).toBe(false);
+    expect(
+      StreamChunkSchema.safeParse({
+        type: 'media_start',
+        id: 'm1',
+        mimeType: `image/${'x'.repeat(300)}`,
+      }).success,
+    ).toBe(false);
   });
 
   it('Usage.mediaUnits is a disjoint axis: accepted untied to token counts, closed modality set', () => {

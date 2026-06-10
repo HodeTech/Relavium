@@ -25,7 +25,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertNoMediaParts, isAbortSignal } from './shared.js';
+import { REASONING_ID, assertNoMediaRequested, isAbortSignal } from './shared.js';
 
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
@@ -647,7 +647,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     supports,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(providerId, supports, req); // fail fast, never silently drop an unsupported feature
-      assertNoMediaParts(providerId, req.messages); // media input is unwired until 1.AE (ADR-0031)
+      assertNoMediaRequested(providerId, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
       const client = createClient(key);
       try {
         const completion = await client.chat.completions.create(
@@ -672,7 +672,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
-      assertNoMediaParts(providerId, req.messages); // media input is unwired until 1.AE (ADR-0031)
+      assertNoMediaRequested(providerId, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
       return streamChunks(createClient(key), req, providerId);
     },
   };

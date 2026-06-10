@@ -88,6 +88,15 @@ describe('Gemini adapter', () => {
     expect(transport.lastRequest).toBeUndefined(); // failed fast — nothing reached the transport
   });
 
+  it('rejects a non-text outputModalities request the same way (media output is unwired)', async () => {
+    const transport = fakeTransport({ candidates: [] });
+    const adapter = createGeminiAdapter({ transport });
+    const req: LlmRequest = { ...REQ, outputModalities: ['text', 'image'] };
+    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+    expect(transport.lastRequest).toBeUndefined();
+  });
+
   it('maps finish reasons (STOP+tools → tool_use; SAFETY → content_filter; MALFORMED → error)', () => {
     expect(mapStopReason('STOP', false)).toBe('stop');
     expect(mapStopReason('STOP', true)).toBe('tool_use');

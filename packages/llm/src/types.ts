@@ -9,6 +9,7 @@ import {
   MEDIA_BILLED_MODALITIES,
   MEDIA_HANDLE_PATTERN,
   MEDIA_MESSAGE_CAPS,
+  MediaMimeTypeSchema,
   MediaPartSchema,
   OUTPUT_MODALITIES,
   refineInFlightMediaPart,
@@ -356,7 +357,9 @@ export const StreamChunkSchema = z
     // carries progress plus an optional partial-preview HANDLE, and media_end carries the finished
     // media as a handle-only durable part (the engine's de-inline boundary wrote the bytes to the
     // MediaStore). The raw desktop IPC path is ADR-0032's concern, not this union's.
-    z.object({ type: z.literal('media_start'), id: nonEmptyString, mimeType: nonEmptyString }),
+    // mimeType shares the one bounded bare-MIME schema — every mimeType position does, so a
+    // metadata field can never become the bytes channel the no-base64 stream rule forbids.
+    z.object({ type: z.literal('media_start'), id: nonEmptyString, mimeType: MediaMimeTypeSchema }),
     z.object({
       type: z.literal('media_delta'),
       id: nonEmptyString,

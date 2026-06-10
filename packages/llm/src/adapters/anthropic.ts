@@ -19,7 +19,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { assertNoMediaParts, isAbortSignal } from './shared.js';
+import { assertNoMediaRequested, isAbortSignal } from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -207,7 +207,7 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
 // Reasoning parts are filtered out before this point (ephemeral, not replayed to the wire — ADR-0030)
-// and media parts were rejected pre-flight by `assertNoMediaParts` (shape-only until 1.AE — ADR-0031),
+// and media was rejected pre-flight by `assertNoMediaRequested` (shape-only until 1.AE — ADR-0031),
 // so the wire-able content is the closed text / tool_call / tool_result set.
 function toAnthropicBlock(
   part: Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }>,
@@ -580,7 +580,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
-      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
+      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
@@ -602,7 +602,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
-      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
+      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
       return streamChunks(createClient(key), req);
     },
   };

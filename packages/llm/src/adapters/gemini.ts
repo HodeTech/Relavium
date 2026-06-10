@@ -18,7 +18,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertNoMediaParts, isAbortSignal } from './shared.js';
+import { REASONING_ID, assertNoMediaRequested, isAbortSignal } from './shared.js';
 
 /**
  * The Gemini adapter (1.H) over `@google/genai` — the riskiest adapter: a restricted tool schema and
@@ -528,7 +528,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     supports: GEMINI_SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
-      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
+      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
       try {
         const response = await transport.generate(buildGeminiRequest(req), key);
         const ids = new GeminiToolCallIds();
@@ -553,7 +553,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
-      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
+      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
       return streamChunks(transport, buildGeminiRequest(req), key);
     },
   };
