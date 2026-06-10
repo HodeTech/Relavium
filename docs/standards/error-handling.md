@@ -72,6 +72,12 @@ We distinguish the two and never leak one as the other:
 - Errors surfaced through the run-event stream use the canonical `node:failed` and
   `run:failed` events (see the [SSE event schema](../reference/contracts/sse-event-schema.md));
   they carry a user-safe message plus an internal correlation id, not a raw exception.
+- **Resource/limit codes are fatal-without-user-action, never silent.** `budget_exceeded`,
+  `run_timeout`, and `turn_limit` (an agent/session round cap, e.g. the `[chat]`
+  `max_messages` ceiling) end the work with a typed event carrying that code — the engine
+  never trims, loops, or quietly stops to fit under a cap. They are not retryable by
+  policy: continuing past a limit is an explicit user decision (raise the cap, resume the
+  session), not something a runner retries into.
 
 ## Validation at boundaries
 
