@@ -753,7 +753,11 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
 - **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
   (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
   wire image/audio/video **input** in Anthropic/OpenAI/Gemini; set the capability matrix; add conformance
-  scenarios (image-in, audio-in, `mediaUnits` mapping). **Complete the one shared SSRF range-primitive**
+  scenarios (image-in, audio-in, `mediaUnits` mapping). **Wiring order (1.AD review note):** the shared
+  `assertNoMediaRequested` fail-fast guard is the only **live** media gate at 1.AD (the
+  `LlmMessageSchema` ceiling/caps/url-gate bind a *parsed* request) — remove it per adapter only once
+  that adapter's entry actually validates the request through `LlmMessageSchema` (or the 1.AF
+  `requiredCapabilities()` gating), otherwise a cap-less window opens. **Complete the one shared SSRF range-primitive**
   (security-review.md) and flip the `url` flag on for input **and** output, with the landing-gate CI test.
   *Acceptance:* a vision request actually reaches the provider as media (not flattened text); the
   conformance suite covers media-in + `mediaUnits`; the `url` carrier is rejected while the SSRF flag is

@@ -333,10 +333,13 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   drift — and is removed in a later cleanup. **At 1.AD every adapter honestly advertises
   all-false / `[]`** (nothing is wired; advertising more would re-create the
   "advertised but unsendable" vision lie), and a shared pre-flight guard
-  (`assertNoMediaParts`) makes each adapter **fail fast with the typed
-  `UnsupportedCapabilityError`** — never a silent flatten — when a media part arrives.
-  1.AE wires input and sets the real matrix; 1.AF wires `requiredCapabilities()`
-  (input check + `outputCombinations` **membership** check → `FallbackChain` skip).
+  (`assertNoMediaRequested`) makes each adapter **fail fast with the typed
+  `UnsupportedCapabilityError`** — never a silent flatten — on a media part, a
+  `tool_result` media attachment, or a non-text `outputModalities` request. That guard
+  is the **live** media gate at 1.AD (the `LlmMessageSchema` caps bind a parsed
+  request); it stays until 1.AE/1.AF wire request validation + `requiredCapabilities()`
+  media gating (input check + `outputCombinations` **membership** check →
+  `FallbackChain` skip) at the same entry.
 - **`Usage.mediaUnits`** — a disjoint observability + billing axis (per-image /
   per-second, never folded into tokens; no refine ties it to token counts). The inner
   `modality` enum is the deliberately complete media-billed set `image`/`audio`/`video`
