@@ -134,6 +134,12 @@ work runs two parallel lanes:
 > input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane proceeds straight
 > to **1.K**.
 
+> **MCP client scheduled (2026-06-10).** The long-standing contract-ahead-of-implementation gap is
+> closed at the decision layer: [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) pins the
+> official TypeScript MCP SDK as the client implementation and binds the inbound client to
+> **workstream 2.R** at the start of [build phase 2](phases/phase-2-cli.md) (off the M3 critical
+> path). No Phase-1 work changes.
+
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
 

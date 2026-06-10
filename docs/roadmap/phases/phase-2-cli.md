@@ -56,6 +56,11 @@ the [config resolution order](../../reference/contracts/config-spec.md), and the
   `run_events`, `run_costs`) so `list`/`logs`/`status` read durable state.
 - A CLI-driven engine regression harness: a small set of example workflows run
   with `--json` and asserted on in CI on every engine change.
+- The **MCP client** (inbound direction of
+  [mcp-integration.md](../../reference/shared-core/mcp-integration.md)): connect/spawn the
+  `[[mcp_servers]]` registrations resolved by 2.B and surface their tools through the engine's
+  `ToolRegistry`, per [ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md) (2.R — off the
+  M3 critical path).
 
 ### Explicitly out of scope
 
@@ -94,6 +99,8 @@ flowchart LR
   F --> K["2.K regression harness"]
   I --> K
   K --> L["2.L packaging & publish"]
+  B --> R["2.R MCP client"]
+  C --> R
 ```
 
 ### 2.A — CLI skeleton (`commander.js`) and process contract
@@ -124,6 +131,10 @@ flags) every command inherits.
 - Centralize error rendering: human-readable to a TTY, structured `RunEvent`-shaped
   error object to stdout under `--json`; never leak a stack trace as the primary
   output.
+- Keep each command's **core framework-free**: the logic lives in a plain module
+  (parsed args in, typed result out) that imports neither `commander` nor `ink`; the
+  CLI layer is thin wiring around it. This is what makes commands unit-testable
+  without a TTY and keeps the TUI and `--json` paths renderers over one core.
 
 **Acceptance:** `relavium --help` and every subcommand's `--help` print the
 documented surface; `relavium <bogus>` exits `2`; output mode is correctly
@@ -419,6 +430,39 @@ The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-ag
 
 **Acceptance:** an interactive `relavium chat` streams a multi-turn conversation with a tool call, persists, and resumes; `chat --json` emits a deterministic `session:*` stream; `agent run` invokes a single agent headlessly; chat `/exit` returns exit code 4.
 
+### 2.R — MCP client integration (inbound)
+
+Implement the **inbound** half of [mcp-integration.md](../../reference/shared-core/mcp-integration.md)
+— agents consuming MCP tools — on the official TypeScript SDK per
+[ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md). Scheduled **early** (it needs only
+2.B config + 2.C keys) but **off the M3 critical path**; the workflow-as-MCP-server (outbound)
+direction is deliberately not in this slot.
+
+**Tasks:**
+
+- Add the SDK dependency (version pinned in the pnpm `catalog:`, recorded in tech-stack.md) per
+  [ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md); SDK types stay confined to the MCP
+  integration layer — discovered tools surface to the `ToolRegistry` only as Relavium/Zod tool
+  definitions (the same confinement discipline as provider SDKs in `@relavium/llm`).
+- Resolve `[[mcp_servers]]` registrations through the 2.B config loader (global → project merge per
+  [config-spec.md](../../reference/contracts/config-spec.md)); spawn stdio servers / connect
+  SSE/WebSocket servers, run `tools/list` discovery, and register tools under the
+  `mcp_{server}_{tool}` namespace per [mcp-integration.md](../../reference/shared-core/mcp-integration.md).
+- Inject server credentials from the keychain-backed secret seam (2.C) into the server `env` at
+  spawn time; construct the child environment **explicitly** (declared `env` + a minimal base),
+  never a blanket copy of the host environment; no secret in YAML, logs, or `--json` output.
+- Validate every MCP `url` through the one shared SSRF primitive (same range-block as provider
+  base URLs and `http_request`, [ADR-0029](../../decisions/0029-tool-policy-hardening.md)); honor
+  the explicit local-endpoint opt-in.
+- Enforce tool policy: MCP tools enter an agent's surface only under the narrow-only rules of
+  [ADR-0029](../../decisions/0029-tool-policy-hardening.md); honor a per-server `tools_allowlist`;
+  schema-validate every call against the server-reported JSON Schema before dispatch.
+
+**Acceptance:** a fixture agent declaring a stdio MCP server completes a real tool round-trip via
+`relavium run` (and `relavium chat`), with the tool visible under its namespaced id; credentials
+reach the server only via its spawn-time `env`; a private-range MCP `url` is rejected without the
+explicit opt-in; the import-zone check confirms no SDK type leaks past the integration layer.
+
 ## Milestones
 
 | In-phase milestone | Completed by | Global milestone |
@@ -432,6 +476,7 @@ The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-ag
 | CLI adopted as the engine regression harness | 2.D, 2.F, 2.K | **M3** |
 | Published, installable binary verified on all OSes | 2.L | — |
 | **Agent-first CLI** — `relavium chat` + session commands (resume / list / export / `agent run` / `gate list`): the **first user-facing `AgentSession` surface**, a committed build-phase-2 deliverable (off the M3 critical path, but a phase exit item — the agent-first headline is demonstrable here) | 2.M, 2.N, 2.O, 2.P, 2.Q | — |
+| **MCP client live** — a fixture agent completes a real stdio MCP tool round-trip behind the `ToolRegistry`, per [ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md) (off the M3 critical path) | 2.R | — |
 
 ## Dependencies
 

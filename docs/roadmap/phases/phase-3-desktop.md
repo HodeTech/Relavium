@@ -491,7 +491,10 @@ Git-native interoperability and a fast first-run experience.
   `.relavium/` files grouped by tag with last-run status; New / Import / Duplicate /
   Delete.
 - Bundle 3–5 curated starter templates at install, surfaced in the Dashboard
-  gallery and the onboarding flow.
+  gallery and the onboarding flow. Candidate set (settled when this workstream
+  starts): a code-review pipeline, a changelog/release-notes generator, and a
+  **research pipeline** (plan → search → extract → synthesize as an explicit DAG —
+  the template that shows off fan-out, a condition, and a human gate together).
 
 **Acceptance:** importing a hand-authored, git-committed workflow, editing it on the
 canvas, and exporting produces a diff limited to the intended edit; a starter
