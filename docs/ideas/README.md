@@ -24,6 +24,7 @@ matures into a real choice, it graduates to an ADR (and usually appears in
 | Note | Summary | Status |
 |------|---------|--------|
 | [scheduled-and-webhook-triggers.md](scheduled-and-webhook-triggers.md) | Time-based (cron) and HTTP webhook triggers for workflows. Out of scope for Phase 1 because they require an always-on listener. | Phase-2 idea, out of Phase-1 scope |
+| [evaluation-harness.md](evaluation-harness.md) | Run a workflow against a git-committed dataset and score the outputs — deterministic scorers first, LLM-as-judge strictly opt-in, in-process via the normal engine. | Phase-2+ idea, not committed |
 
 ## When to add a note here
 
