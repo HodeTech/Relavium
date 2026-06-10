@@ -341,6 +341,19 @@ edges:
 | `label` | no | Display label. |
 | `condition` | no | JS expression; the edge is followed only when truthy. Omit for unconditional. |
 | `data_mapping` | — | **Reserved / engine-internal in v1.0** — not an authored field; reshape state via a `transform` node or a custom `merge_fn` instead. |
+| `on_error` | — | **Reserved (forward-compat; not authorable in v1.0)** — see the reservation note below. |
+
+> **Reserved: `on_error` error-routing edges.** A per-node error port — an edge kind that routes a
+> node's *failure* (rather than its output) to a designated handler branch — is **reserved** for a
+> post-v1.0 schema revision: the slot is named in this contract so adding it later is additive, but
+> there is no v1.0 authored field and no Phase-1 engine handler. Authoring `on_error` today is
+> rejected at parse like any unknown key
+> ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). *Considered for v1.0 and
+> deliberately deferred:* v1.0 failure semantics stay the simple, predictable pair — per-node
+> `retry` plus run failure (a required node is never silently skipped) — and graph-level error
+> routing interacts with fan-in strategies, gate timeouts, and checkpoint/resume in ways that
+> deserve their own design pass, recorded in a future ADR before the engine grows a third failure
+> path.
 
 ## Complete example
 
