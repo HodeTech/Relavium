@@ -40,9 +40,14 @@ interface LlmRequest {
   maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
   stopSequences?: string[];
   responseFormat?: ResponseFormat; // structured-output request (ADR-0030)
-  signal?: AbortSignal;          // cancellation; host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
+  outputModalities?: OutputModality[]; // request media output on the INLINE path (ADR-0031); default ['text']
+  signal?: AbortSignalLike;      // cancellation — the structural, platform-free signal contract from @relavium/shared (a real AbortSignal satisfies it); host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
   providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)
 }
+
+// The output-modality vocabulary (OWNED by @relavium/shared constants.ts, ADR-0031). `document`
+// (PDF) is input-only — no provider emits a PDF as a chat-turn output.
+type OutputModality = 'text' | 'image' | 'audio' | 'video';
 
 // Structured-output contract (ADR-0030). Each adapter lowers `json` to the provider's native mode
 // (OpenAI json_schema; Gemini responseJsonSchema; Anthropic output_config; DeepSeek json_object — no
@@ -62,7 +67,33 @@ type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral
   | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean }   // assistant -> wants tool
-  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean; providerExecuted?: boolean };
+  | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean; providerExecuted?: boolean;
+      media?: DurableMediaPart[] }  // ADR-0031 #7 — typed handle-only attachments; raw media bytes in `result` are FORBIDDEN
+  | { type: 'media'; mimeType: string; source: MediaSource; name?: string; transcript?: string };  // ADR-0031 — the in-flight media arm; modality = MIME prefix
+
+// The media carriers (ADR-0031; OWNED by @relavium/shared content.ts). Platform-free: every
+// carrier is a string — never a Buffer/Blob. base64 is the in-flight tiny tier, bounded by
+// INLINE_MEDIA_CEILING **decoded** bytes per modality (256 KB image/audio; video and document are
+// NEVER inline — ceiling 0); per-message count + aggregate-decoded-bytes caps (MEDIA_MESSAGE_CAPS)
+// ride the same ingestion boundary. The `url` carrier ships FEATURE-FLAG-OFF
+// (MEDIA_URL_SOURCE_ENABLED) until the one shared SSRF range-primitive lands (1.AE).
+type MediaSource =                       // in-flight union (request/result content)
+  | { kind: 'base64'; data: string }
+  | { kind: 'handle'; ref: string }      // `media://sha256-<64hex>` — the canonical durable form
+  | { kind: 'url'; url: string };
+type DurableMediaSource = { kind: 'handle'; ref: string };  // durable union: handle ONLY — base64/url structurally absent
+
+// The DURABLE fork of the media arm (what persisted/event/IPC positions reference): handle-only
+// source plus the Y3 integrity metadata, host-populated at the deInlineMedia boundary. No
+// `checksum` field — the content-addressed handle IS the sha256.
+type DurableMediaPart = {
+  type: 'media'; mimeType: string; source: DurableMediaSource; name?: string; transcript?: string;
+  byteLength?: number;   // bounds a Range/byte-delivery request without trusting a raw file size
+  durationMs?: number;   // audio/video only — render/desync metadata
+};
+// DurableContentPart mirrors ContentPart with the durable media arm and a SIGNATURE-LESS reasoning
+// arm ({ type: 'reasoning'; text; redacted? }) — the ADR-0030 "never persisted" guarantee made
+// structural. deInlineMedia (engine-owned, wired at 1.AF) is the typed flight→durable transform.
 
 interface ToolDef {
   name: string;
@@ -88,7 +119,18 @@ interface Usage {
   cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
   cacheWriteTokens?: number;
   reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
+  mediaUnits?: MediaUnitsEntry[]; // ADR-0031 — a DISJOINT media axis (per-image / per-second), never folded into tokens
   costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by a pricing table keyed on canonical model id
+}
+
+// One media usage record (ADR-0031). `modality` is the deliberately complete media-BILLED closed
+// set — document (PDF) and text bill as tokens, so they are excluded, not forgotten. Doubles as
+// the managed-mode metering record (counts, never content — ADR-0015).
+interface MediaUnitsEntry {
+  modality: 'image' | 'audio' | 'video';
+  direction: 'input' | 'output';
+  units: number;                 // images, audio-seconds, video-seconds — the provider's billed unit
+  unit: 'count' | 'second';
 }
 
 // Normalized streaming — one discriminated union for ALL providers
@@ -100,7 +142,11 @@ type StreamChunk =
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON; count/timing is provider-dependent — accumulate, parse at tool_call_end
   | { type: 'tool_call_end'; id: string }
-  | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true }  // ADR-0030 — provider-run tool; engine records, never runs
+  | { type: 'media_start'; id: string; mimeType: string }            // ADR-0031 — media output channel (mirrors the triads)
+  | { type: 'media_delta'; id: string; progress?: number; partialRef?: string }  // progress is a 0..1 fraction; NO base64 ever; partialRef is a RESERVED preview HANDLE (A3)
+  | { type: 'media_end'; id: string; media: DurableMediaPart }       // terminal — the finished media as a handle-only durable part
+  | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true;
+      media?: DurableMediaPart[] }  // ADR-0030 provider-run tool (engine records, never runs); media: ADR-0031 #7
   | { type: 'stop'; stopReason: StopReason; usage: Usage }
   | { type: 'error'; error: LlmError };
 
@@ -108,7 +154,27 @@ interface LlmProvider {
   readonly id: 'anthropic' | 'openai' | 'gemini' | 'deepseek';
   generate(req: LlmRequest, key: string): Promise<LlmResult>;
   stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
-  supports: CapabilityFlags;     // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning }
+  readonly supports: CapabilityFlags;  // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning, media } — vision is the derived alias of media.input.image (ADR-0031)
+  // ADR-0031 decision #6 — separate-endpoint media generation, RESERVED at 1.AD (A5): the methods
+  // are optional shape only; behavior + the async poll/checkpoint loop's own ADR land at 1.AG.
+  generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
+  pollMediaJob?(jobId: string, key: string): Promise<MediaJobStatus>;          // pending(progress?) | done(media) | failed(LlmError)
+}
+
+// The per-modality capability matrix (ADR-0031 decision #3). Input composability is unconstrained
+// (per-modality booleans; `document` gates application/pdf DISTINCTLY from image — A2). Output is
+// `outputCombinations`: the CLOSED set of modality-sets a model can emit in ONE turn ([] = no
+// media output) — independent booleans would advertise wire-invalid combinations (e.g. Gemini
+// image+audio). requiredCapabilities() gains the input check + the outputCombinations MEMBERSHIP
+// check at 1.AF, so an incapable provider fails fast and the FallbackChain skips it.
+interface CapabilityFlags {
+  tools: boolean; streaming: boolean; parallelToolCalls: boolean;
+  vision: boolean;               // TEMPORARY derived alias of media.input.image — a refine pins them equal; removed in a later cleanup
+  promptCache: boolean; reasoning: boolean;
+  media: {
+    input: { image: boolean; audio: boolean; video: boolean; document: boolean };
+    outputCombinations: OutputModality[][];
+  };
 }
 ```
 
@@ -127,12 +193,16 @@ interface LlmProvider {
 > desktop egress wiring is in
 > [../contracts/ipc-contract.md](../contracts/ipc-contract.md#rust-delegated-llm-egress).
 
-The interface exposes a capability-gated lowest-common-denominator surface
-(text + tools + streaming + usage). Provider-specific features (vision, prompt
-caching, reasoning/thinking, parallel tool calls) are deliberately **out of the
-common path** and reached only through the typed `providerOptions` escape hatch
-and the `supports` capability flags — never by leaking a vendor shape across the
-seam.
+The interface exposes a capability-gated common-path surface: text + tools +
+streaming + usage, plus the canonical **reasoning channel** (ADR-0030) and the
+canonical **media shapes** (ADR-0031 — shape landed at 1.AD, behavior wired
+1.AE+). Provider-specific features with no cross-provider shape (prompt-cache
+control, thinking budgets, safety settings, parallel-tool-call toggles) stay
+**out of the common path**, reached only through the typed `providerOptions`
+escape hatch and gated by the `supports` capability flags — never by leaking a
+vendor shape across the seam. The promotion rule is ADR-0030's: a capability
+shared by several providers in both directions becomes first-class seam shape;
+a single-provider quirk rides `providerOptions`.
 
 ### `LlmError` — the normalized error type
 
@@ -225,17 +295,116 @@ adapters):
   double-execution, and the allowlist applies only to engine-run calls). Phase-1
   adapters reserve the shape but emit no server-tool calls (off the common path).
 
-### Seam-shape amendments ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)) — accepted, lands with 1.AD
+### Seam-shape amendments ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md))
 
-ADR-0031 (accepted 2026-06-08) further amends the shape with **first-class multimodal
-I/O**: the MIME-discriminated `media` `ContentPart` arm (flight vs. handle-only durable
-variant), the `media_start`/`media_delta`/`media_end` `StreamChunk` triad, the
-per-modality `CapabilityFlags.media` redesign, `Usage` media-cost fields, and
-`LlmRequest.outputModalities`. The decided shape is recorded in the ADR; **none of it is
-implemented yet** — the types land in `@relavium/shared`/`@relavium/llm` with roadmap
-task **1.AD**, and this section is replaced by the full amendment write-up (the ADR-0030
-mould above) in that same change. Until then this doc describes the implemented seam
-only.
+Eight cross-provider shape additions for **first-class multimodal I/O** were made under
+ADR-0031 (a second pre-freeze amendment to ADR-0011, in the ADR-0030 mould — decided
+while the only consumers were the adapters, so the new union members are non-breaking).
+The shapes landed with roadmap task **1.AD** as **shape only**: behavior arrives with
+1.AE–1.AH. `MediaSource`, `INLINE_MEDIA_CEILING`, the media arms, and the durable fork
+are **owned by `@relavium/shared`** (`content.ts`, same one-way ownership as
+`ContentPart`); the seam re-exports them. The binding security guardrails (the active
+`deInlineMedia` emit-time pass, the ephemeral provider-ref sidecar, SSRF, desktop IPC,
+managed mode) are recorded in the ADR — this section is the dry shape reference.
+
+- **The `media` `ContentPart` arm, forked flight vs durable.** One MIME-discriminated
+  in-flight arm (`{ type: 'media', mimeType, source, name?, transcript? }`) covers
+  image / audio / video / `application/pdf` — modality derives from the MIME prefix
+  (`mediaModalityOf`), so a new format needs zero schema change. The distinct
+  **`DurableMediaPart`** narrows `source` to **handle-only** (`media://sha256-<64hex>`,
+  validated by `MEDIA_HANDLE_PATTERN`) and carries the optional Y3 integrity metadata
+  (`byteLength?`, audio/video-only `durationMs?`; **no `checksum`** — the handle is the
+  sha256), so the compiler proves no bytes reach a durable schema. `DurableContentPart`
+  additionally drops the reasoning `signature` **structurally** (parsing a signed part
+  through it strips the field — the ADR-0030 never-persisted rule made type-level). An
+  ephemeral provider-hosted ref (Gemini `fileUri`, OpenAI `file_id`/`audio.id`) is
+  **structurally absent from every part** — it lives only in a process-scoped adapter
+  sidecar keyed by `(provider, sha256)` (ADR-0031 §Guardrails).
+- **The `media_start` / `media_delta` / `media_end` `StreamChunk` triad** (mirrors the
+  `tool_call_*`/`reasoning_*` triads; `id` correlates). **No base64 ever rides the
+  normalized stream**: `media_delta` carries `progress?` plus `partialRef?` — a
+  **reserved, host-implementation-defined** preview *handle* (A3; unset by every adapter
+  until 1.AH / Phase E) — and `media_end` carries a handle-only `DurableMediaPart`. The raw
+  desktop IPC path is [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)'s concern.
+- **The `CapabilityFlags.media` matrix** — per-modality `input` booleans (`document`
+  gates PDF distinctly from `image`, A2) plus **`outputCombinations`**, the closed set of
+  modality-sets a model can emit in one turn (`[]` = no media output). `vision` stays as
+  a **derived alias of `media.input.image`** — a refine pins the two equal so they cannot
+  drift — and is removed in a later cleanup. **At 1.AD every adapter honestly advertises
+  all-false / `[]`** (nothing is wired; advertising more would re-create the
+  "advertised but unsendable" vision lie), and a shared pre-flight guard
+  (`assertNoMediaParts`) makes each adapter **fail fast with the typed
+  `UnsupportedCapabilityError`** — never a silent flatten — when a media part arrives.
+  1.AE wires input and sets the real matrix; 1.AF wires `requiredCapabilities()`
+  (input check + `outputCombinations` **membership** check → `FallbackChain` skip).
+- **`Usage.mediaUnits`** — a disjoint observability + billing axis (per-image /
+  per-second, never folded into tokens; no refine ties it to token counts). The inner
+  `modality` enum is the deliberately complete media-billed set `image`/`audio`/`video`
+  (document and text bill as tokens — excluded, not forgotten). Doubles as the
+  managed-mode metering record (counts-not-content, ADR-0015).
+- **`LlmRequest.outputModalities`** — request non-text output on the inline path
+  (default `['text']`), the symmetric mechanism to ADR-0030's `responseFormat`. Lowering
+  is per-adapter (Gemini `responseModalities`; OpenAI audio via Chat `modalities`).
+  **The OpenAI image-out exception:** inline image generation is the Responses
+  `image_generation` **built-in tool** — it routes through the `providerExecuted`
+  `tool_result` arm, never through `outputModalities`.
+- **`tool_result.media: DurableMediaPart[]`** (content part **and** stream arm) — typed,
+  handle-only media attachments. **Raw media bytes inside the opaque `result` are
+  forbidden** so the typed guard reaches provider-executed image-gen results; `result`
+  carries at most a descriptor.
+- **Optional `generateMedia?` / `pollMediaJob?` on `LlmProvider`** (decision #6;
+  **reserved**, A5) with `MediaGenRequest` / `MediaGenResult` / `MediaJobStatus`: a sync
+  generator resolves `{ media }`; an async one (Sora, Veo) resolves a **Relavium-opaque**
+  `jobId` (no vendor operation name crosses the seam); `failed` carries the existing
+  classified `LlmError` (content-policy → `content_filter`). The engine-owned
+  poll/checkpoint/resume/cancel loop gets its own ADR at 1.AG. No Phase-1 adapter
+  implements either method.
+
+  ```ts
+  // RESERVED shape (A5) — deliberately minimal; behavior lands at 1.AG with its own ADR.
+  interface MediaGenRequest {
+    model: string;
+    prompt: string;
+    modality: 'image' | 'audio' | 'video'; // the artifact class (the media-billed set)
+    mimeType?: string;                     // requested output format hint, e.g. 'image/png'
+    count?: number;                        // artifacts per call (image generators)
+    durationSeconds?: number;              // target duration (audio/video generators)
+    signal?: AbortSignalLike;
+    providerOptions?: Record<string, unknown>;
+  }
+  interface MediaGenResult {               // EXACTLY ONE of media (sync) | jobId (async)
+    media?: MediaPart;                     // an in-flight part — the engine de-inlines it
+    jobId?: string;                        // Relavium-opaque; never a vendor operation name
+    raw: unknown;                          // debugging only — sinks strip it (the LlmError.cause rule)
+  }
+  type MediaJobStatus =
+    | { state: 'pending'; progress?: number }  // progress is a 0..1 fraction
+    | { state: 'done'; media: MediaPart }
+    | { state: 'failed'; error: LlmError };    // reuses the one classified failure vocabulary
+  ```
+- **`StopReason` is unchanged** (decision #8): a media-only inline turn reports
+  `'stop'`; the presence of a `media` part in `content` is the signal. Consumers treat
+  `content` as the source of truth — tested (a media-only turn is distinguishable from
+  an empty text turn by content inspection alone).
+
+**The tier policy and where the rules are mounted.** `INLINE_MEDIA_CEILING` bounds the
+in-flight base64 carrier per modality in **decoded** bytes (256 KB image/audio — tunable
+constants; **video and document are never inline**, ceiling 0); `MEDIA_MESSAGE_CAPS`
+adds the per-message **count** and **aggregate-decoded-bytes** anti-amplification caps.
+All ingestion-side rules — ceiling, caps, the unknown-modality fail-closed check, the
+`url`-carrier landing gate (`MEDIA_URL_SOURCE_ENABLED`, **OFF** until the shared SSRF
+range-primitive lands at 1.AE), and the no-raw-bytes-in-`tool_result.result` scan — are
+mounted on **`LlmMessageSchema`** (the seam request boundary), so there is no cap-less
+window between the shape (1.AD) and capability-gating (1.AF). `LlmResultSchema` and the
+`StreamChunk` `tool_result` arm scan `result` on the way out; the durable union carries
+the **`persistableMediaRefine` backstop** (a tripwire — the primary guarantee is the type
+split plus the engine's active `deInlineMedia` pass at the one emit choke point, wired at
+1.AF). Result content is deliberately **not** ceiling-bounded: a generated image
+legitimately exceeds the inline ceiling in flight and is de-inlined at the seam return.
+The platform-free **`MediaStore`** contract (`put`/`get`/`resolveForEgress` — bytes as
+`Uint8Array`, named only by the handle string) and the **`DeInlineMedia`** transform
+signature are landed as reserved shape; implementations and the choke-point wiring are
+1.AF.
 
 ## What must be normalized
 
@@ -290,13 +459,15 @@ discriminated union:
 
 | Provider | Native stream | Folded into |
 | --- | --- | --- |
-| OpenAI / DeepSeek | SSE `chat.completion.chunk` with `choices[].delta` (content or `tool_calls` fragments; tool-call args arrive as incremental JSON-string fragments per index). | `text_delta`, `tool_call_*`, `stop` |
-| Anthropic | Typed events: `message_start`, `content_block_start` / `delta` (`text_delta` \| `input_json_delta`) / `stop`, `message_delta` (carries `stop_reason` + `usage`), `message_stop`. | `text_delta`, `tool_call_*`, `stop` |
-| Gemini | `streamGenerateContent` candidate chunks with `parts`. | `text_delta`, `tool_call_*`, `stop` |
+| OpenAI / DeepSeek | SSE `chat.completion.chunk` with `choices[].delta` (content or `tool_calls` fragments; tool-call args arrive as incremental JSON-string fragments per index; DeepSeek adds `reasoning_content` deltas). | `text_delta`, `tool_call_*`, `reasoning_*` (DeepSeek — OpenAI chat emits no reasoning), `stop` |
+| Anthropic | Typed events: `message_start`, `content_block_start` / `delta` (`text_delta` \| `input_json_delta` \| `thinking_delta`) / `stop`, `message_delta` (carries `stop_reason` + `usage`), `message_stop`. | `text_delta`, `tool_call_*`, `reasoning_*`, `stop` |
+| Gemini | `streamGenerateContent` candidate chunks with `parts` (`thought`-flagged parts carry reasoning). | `text_delta`, `tool_call_*`, `reasoning_*`, `stop` |
 
 Tool-argument JSON deltas are concatenated into `argsJsonDelta` across
 `tool_call_delta` chunks and **parsed once at `tool_call_end`**. The final
-`stop` chunk always carries `stopReason` + `usage`.
+`stop` chunk always carries `stopReason` + `usage`. The `media_start/delta/end`
+triad is part of the frozen union but **emitted by no adapter at 1.AD** — media
+output wiring is 1.AG/1.AH, consistent with the all-false `media` matrices.
 
 ### 5. Stop reasons
 

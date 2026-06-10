@@ -154,15 +154,24 @@ the adapters and `CostTracker` read.
 
 ## Capabilities and the escape hatch
 
-The seam exposes a **capability-gated lowest-common-denominator** interface: text +
-tools + streaming + usage, which all four providers support uniformly. Provider-
-specific features — Anthropic prompt caching and extended thinking, OpenAI tool-call
-streaming deltas, Gemini safety settings, parallel tool calls, vision, reasoning
-traces — are deliberately **out of the common path**. They are reachable only through
-a typed `providerOptions` escape hatch on the request (and a `raw` passthrough on the
-result for debugging). This keeps the common interface stable and prevents scope
-creep into a "second product"; escape-hatch usage stays out of `packages/core` and is
-confined to opt-in agent config.
+The seam exposes a **capability-gated common-path** interface: text + tools +
+streaming + usage, which all four providers support uniformly, plus the canonical
+channels promoted by the two pre-freeze seam amendments — the **reasoning** content
+arm and stream triad
+([ADR-0030](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md))
+and the **multimodal media** shapes — the `media` arm, `outputModalities`, the
+per-modality `media` capability matrix with `vision` as its derived alias
+([ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md); shape landed
+at 1.AD, behavior wired 1.AE+). The promotion rule: a capability several providers
+share in both directions becomes first-class seam shape; a single-provider quirk —
+Anthropic prompt-cache control and thinking budgets, OpenAI tool-call streaming
+deltas, Gemini safety settings, parallel-tool-call toggles — stays deliberately
+**out of the common path**, reachable only through a typed `providerOptions` escape
+hatch on the request (and a `raw` passthrough on the result for debugging). This
+keeps the common interface stable and prevents scope creep into a "second product";
+escape-hatch usage stays out of `packages/core` and is confined to opt-in agent
+config. The exact shapes live in
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).
 
 ## Tool normalization
 
