@@ -145,6 +145,15 @@ describe('MediaSource (ADR-0031)', () => {
     }
   });
 
+  it('pins both regex anchors: a payload appended or prepended to a valid handle is rejected', () => {
+    // Without `$`, `<handle><base64 payload>` would parse as a valid ref — the exact
+    // bytes-smuggling channel the handle-only durable form exists to make impossible.
+    expect(MediaSourceSchema.safeParse({ kind: 'handle', ref: `${HANDLE}AAAA` }).success).toBe(
+      false,
+    );
+    expect(MediaSourceSchema.safeParse({ kind: 'handle', ref: `x${HANDLE}` }).success).toBe(false);
+  });
+
   it('durable union is handle-only by construction — base64 and url are structurally absent', () => {
     expect(DurableMediaSourceSchema.safeParse({ kind: 'handle', ref: HANDLE }).success).toBe(true);
     expect(DurableMediaSourceSchema.safeParse({ kind: 'base64', data: TINY_BASE64 }).success).toBe(
@@ -352,10 +361,28 @@ describe('media helpers (ADR-0031)', () => {
     expect(
       containsInlineMediaBytes({ deep: { uri: `data:audio/wav;base64,${TINY_BASE64}` } }),
     ).toBe(true);
+    // RFC 2397 is case-insensitive — an uppercase scheme/token must trip the scan too (/i pin).
+    expect(containsInlineMediaBytes(`DATA:image/png;BASE64,${TINY_BASE64}`)).toBe(true);
     // Raw binary containers ARE media bytes — rejected generically, never walked (OOM guard).
     expect(containsInlineMediaBytes(new Uint8Array([1, 2, 3]))).toBe(true);
     expect(containsInlineMediaBytes({ result: { buffer: new ArrayBuffer(8) } })).toBe(true);
     expect(containsInlineMediaBytes(new DataView(new ArrayBuffer(4)))).toBe(true);
+    expect(containsInlineMediaBytes(new SharedArrayBuffer(8))).toBe(true);
+    // Map/Set containers are walked (keys AND values), not skipped.
+    expect(containsInlineMediaBytes(new Map([['k', new Uint8Array([1])]]))).toBe(true);
+    expect(containsInlineMediaBytes(new Set([`data:image/png;base64,${TINY_BASE64}`]))).toBe(true);
+    expect(containsInlineMediaBytes(new Map([[new Uint8Array([1]), 'v']]))).toBe(true);
+    expect(containsInlineMediaBytes(new Map([['a', 1]]))).toBe(false);
+    // A value that booby-traps inspection (throwing getter) fails CLOSED instead of throwing
+    // out of the mounting schema's safeParse.
+    const trapped = {};
+    Object.defineProperty(trapped, 'x', {
+      get() {
+        throw new Error('trap');
+      },
+      enumerable: true,
+    });
+    expect(containsInlineMediaBytes({ result: trapped })).toBe(true);
     expect(containsInlineMediaBytes({ kind: 'handle', ref: HANDLE })).toBe(false);
     expect(containsInlineMediaBytes({ ok: true, list: [1, 'two', null] })).toBe(false);
     expect(containsInlineMediaBytes(undefined)).toBe(false);
@@ -522,6 +549,46 @@ describe('round-trip fidelity (1.AD acceptance: the new shapes parse AND round-t
     expect(parsed).toEqual(part);
     expect(Object.keys(parsed)).not.toContain('byteLength');
     expect(Object.keys(parsed)).not.toContain('durationMs');
+  });
+
+  it('guards the media text hints: data-URI name/transcript and an oversized name are rejected', () => {
+    const durableBase = {
+      type: 'media',
+      mimeType: 'audio/wav',
+      source: { kind: 'handle', ref: HANDLE },
+    };
+    // A data: URI in a TYPED hint field would carry bytes where the opaque-field scan never looks.
+    expect(
+      DurableMediaPartSchema.safeParse({
+        ...durableBase,
+        transcript: `data:audio/wav;base64,${TINY_BASE64}`,
+      }).success,
+    ).toBe(false);
+    expect(
+      DurableMediaPartSchema.safeParse({ ...durableBase, name: `data:;base64,${TINY_BASE64}` })
+        .success,
+    ).toBe(false);
+    expect(
+      DurableMediaPartSchema.safeParse({ ...durableBase, name: 'x'.repeat(300) }).success,
+    ).toBe(false); // name is a bounded hint
+    expect(
+      DurableMediaPartSchema.safeParse({ ...durableBase, transcript: 'a perfectly normal text' })
+        .success,
+    ).toBe(true);
+    // The same rules hold at the in-flight ingestion boundary.
+    let probedBytes: number | undefined;
+    const boundary = MediaPartSchema.superRefine((part, ctx) => {
+      probedBytes = refineInFlightMediaPart(part, ctx);
+    });
+    expect(
+      boundary.safeParse({
+        type: 'media',
+        mimeType: 'audio/wav',
+        source: { kind: 'base64', data: TINY_BASE64 },
+        transcript: `data:audio/wav;base64,${TINY_BASE64}`,
+      }).success,
+    ).toBe(false);
+    expect(probedBytes).toBeDefined();
   });
 
   it('bounds mimeType — parameters, spaces, oversize, and data-URI shapes are rejected', () => {

@@ -132,12 +132,18 @@ export function decodedBase64ByteLength(data: string): number | undefined {
 const DATA_URI_BASE64_PATTERN = /^data:[^,]*;base64,/i;
 
 /**
- * Raw binary in an opaque position (a typed array, `DataView`, or `ArrayBuffer` — all ES
- * built-ins, so the check stays platform-free) IS media bytes by definition: fail closed rather
- * than walk it (`Object.values` over a multi-MB typed array would also be an OOM hazard).
+ * Raw binary in an opaque position (a typed array, `DataView`, `ArrayBuffer`, or
+ * `SharedArrayBuffer` — all ES built-ins, so the check stays platform-free) IS media bytes by
+ * definition: fail closed rather than walk it (`Object.values` over a multi-MB typed array would
+ * also be an OOM hazard). `SharedArrayBuffer` is typeof-guarded because hosts may hide it
+ * (browser COOP/COEP gating) even though its lib type always exists.
  */
 function isBinaryBuffer(value: object): boolean {
-  return ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
+  return (
+    ArrayBuffer.isView(value) ||
+    value instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
+  );
 }
 
 /** A plain string-keyed record — the cast-free narrowing the deep scan walks. */
@@ -152,14 +158,27 @@ function isCanonicalBase64Source(record: Record<string, unknown>): boolean {
 
 /**
  * One node of the deep scan: `true` when the object itself carries inline bytes (a binary buffer
- * or a canonical base64 source), otherwise its children are queued onto `stack` for the caller's
- * loop. Split out of `containsInlineMediaBytes` so each function stays simple (sonar S3776).
+ * or a canonical base64 source), otherwise its children — array items, `Map` keys+values, `Set`
+ * values, record values — are queued onto `stack` for the caller's loop. Split out of
+ * `containsInlineMediaBytes` so each function stays simple (sonar S3776).
  */
 function objectNodeHasInlineBytes(node: object, stack: unknown[]): boolean {
   if (isBinaryBuffer(node)) {
     return true;
   }
   if (Array.isArray(node)) {
+    for (const item of node) {
+      stack.push(item);
+    }
+    return false;
+  }
+  if (node instanceof Map) {
+    for (const [key, item] of node) {
+      stack.push(key, item);
+    }
+    return false;
+  }
+  if (node instanceof Set) {
     for (const item of node) {
       stack.push(item);
     }
@@ -188,25 +207,57 @@ function objectNodeHasInlineBytes(node: object, stack: unknown[]): boolean {
  * platform-free package may carry.
  */
 export function containsInlineMediaBytes(value: unknown): boolean {
-  const seen = new Set<object>();
-  const stack: unknown[] = [value];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (typeof current === 'string') {
-      if (DATA_URI_BASE64_PATTERN.test(current)) {
+  try {
+    const seen = new Set<object>();
+    const stack: unknown[] = [value];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (typeof current === 'string') {
+        if (DATA_URI_BASE64_PATTERN.test(current)) {
+          return true;
+        }
+        continue;
+      }
+      if (typeof current !== 'object' || current === null || seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      if (objectNodeHasInlineBytes(current, stack)) {
         return true;
       }
-      continue;
     }
-    if (typeof current !== 'object' || current === null || seen.has(current)) {
-      continue;
-    }
-    seen.add(current);
-    if (objectNodeHasInlineBytes(current, stack)) {
-      return true;
+    return false;
+  } catch {
+    // Fail closed, deliberately: a value that booby-traps inspection (a throwing property getter,
+    // a hostile proxy/iterator) cannot be proven byte-free, and letting the throw escape would
+    // turn every mounting schema's safeParse into a throwing call. Treat it as containing bytes.
+    return true;
+  }
+}
+
+/**
+ * The media arm's text hints must stay text: a `name`/`transcript` whose value IS a base64
+ * `data:` URI would carry bytes on a TYPED media-part position — exactly where the opaque-field
+ * deep scan never looks (it walks `z.unknown()` values, not parsed schema fields). Mounted by
+ * both the in-flight ingestion refine and the durable refine so neither fork can smuggle.
+ */
+function refineMediaTextHints(
+  part: { name?: string | undefined; transcript?: string | undefined },
+  ctx: z.RefinementCtx,
+  path: readonly (string | number)[] = [],
+): void {
+  for (const [field, value] of [
+    ['name', part.name],
+    ['transcript', part.transcript],
+  ] as const) {
+    if (value !== undefined && DATA_URI_BASE64_PATTERN.test(value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${field} must not carry a base64 data: URI — media bytes ride the source carrier only (ADR-0031 I3)`,
+        path: [...path, field],
+      });
     }
   }
-  return false;
 }
 
 /**
@@ -296,7 +347,10 @@ const durableMediaPartObjectSchema = z.object({
   type: z.literal('media'),
   mimeType: MediaMimeTypeSchema,
   source: DurableMediaSourceSchema,
-  name: z.string().optional(),
+  // A display/filename hint — bounded like mimeType (a hint, not a payload channel). transcript
+  // stays unbounded (real transcripts are legitimately long text) but is data-URI-guarded by
+  // refineMediaTextHints on both forks.
+  name: z.string().max(255).optional(),
   transcript: z.string().optional(),
   byteLength: nonNegativeInt.optional(),
   durationMs: positiveInt.optional(),
@@ -311,6 +365,7 @@ function refineDurableMediaPart(
   part: z.infer<typeof durableMediaPartObjectSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  refineMediaTextHints(part, ctx);
   const modality = mediaModalityOf(part.mimeType);
   if (modality === undefined) {
     ctx.addIssue({
@@ -353,7 +408,7 @@ export const MediaPartSchema = z.object({
   type: z.literal('media'),
   mimeType: MediaMimeTypeSchema,
   source: MediaSourceSchema,
-  name: z.string().optional(),
+  name: z.string().max(255).optional(), // display/filename hint — bounded, like mimeType
   transcript: z.string().optional(),
 });
 export type MediaPart = z.infer<typeof MediaPartSchema>;
@@ -489,6 +544,7 @@ export function refineInFlightMediaPart(
   ctx: z.RefinementCtx,
   path: readonly (string | number)[] = [],
 ): number {
+  refineMediaTextHints(part, ctx, path);
   const modality = mediaModalityOf(part.mimeType);
   if (modality === undefined) {
     ctx.addIssue({
