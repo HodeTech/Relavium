@@ -151,6 +151,33 @@ function isCanonicalBase64Source(record: Record<string, unknown>): boolean {
 }
 
 /**
+ * One node of the deep scan: `true` when the object itself carries inline bytes (a binary buffer
+ * or a canonical base64 source), otherwise its children are queued onto `stack` for the caller's
+ * loop. Split out of `containsInlineMediaBytes` so each function stays simple (sonar S3776).
+ */
+function objectNodeHasInlineBytes(node: object, stack: unknown[]): boolean {
+  if (isBinaryBuffer(node)) {
+    return true;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      stack.push(item);
+    }
+    return false;
+  }
+  if (!isRecord(node)) {
+    return false;
+  }
+  if (isCanonicalBase64Source(node)) {
+    return true;
+  }
+  for (const nested of Object.values(node)) {
+    stack.push(nested);
+  }
+  return false;
+}
+
+/**
  * Deep, cycle-safe scan of an opaque (`z.unknown()`) value for smuggled inline media bytes: a
  * canonical `{ kind: 'base64', data }` media source anywhere in the tree, a base64 `data:` URI
  * string, or a raw binary buffer. This is how the typed guard reaches the `tool_call.args` /
@@ -175,20 +202,8 @@ export function containsInlineMediaBytes(value: unknown): boolean {
       continue;
     }
     seen.add(current);
-    if (isBinaryBuffer(current)) {
+    if (objectNodeHasInlineBytes(current, stack)) {
       return true;
-    }
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        stack.push(item);
-      }
-    } else if (isRecord(current)) {
-      if (isCanonicalBase64Source(current)) {
-        return true;
-      }
-      for (const nested of Object.values(current)) {
-        stack.push(nested);
-      }
     }
   }
   return false;
