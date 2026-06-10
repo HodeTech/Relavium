@@ -104,6 +104,12 @@ jobs:
       - name: Seam fence is enforced
         run: pnpm lint:fence-check
 
+      # The size half of the fence: engine packages' runtime dependency graphs must stay
+      # within their reviewed allowlists (a new engine dep = an ADR + a deliberate edit to
+      # tools/engine-deps/check.mjs in the same change).
+      - name: Engine dependency allowlist
+        run: pnpm lint:engine-deps
+
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
   # peer drift here without breaking local dev.

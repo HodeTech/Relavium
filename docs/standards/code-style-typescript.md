@@ -52,6 +52,11 @@ This is the load-bearing rule of the in-house multi-LLM decision
   importing a provider SDK outside the adapter folder. Adding a vendor dependency to the
   core path requires an [ADR](../decisions/README.md) and a
   [code review](code-review.md) sign-off.
+- The fence has a **size half**, CI-enforced: each engine package's runtime `dependencies`
+  must stay within an explicit, reviewed allowlist (`tools/engine-deps/check.mjs`, hard-zero
+  — growing the list happens only together with the dependency's ADR). The same
+  import-zone technique extends to `packages/ui`'s internal layer boundaries when that
+  package lands in build phase 3.
 - The same discipline applies to other framework seams (DB driver, keychain, IPC): the
   vendor lives behind a Relavium interface, and only that package imports it.
 
