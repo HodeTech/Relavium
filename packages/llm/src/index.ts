@@ -11,13 +11,19 @@ export {
   LlmMessageSchema,
   ToolChoiceSchema,
   UsageSchema,
+  MediaUnitsEntrySchema,
   CapabilityFlagsSchema,
+  MediaCapabilitiesSchema,
+  ModalitySetSchema,
   LlmErrorKindSchema,
   LlmErrorSchema,
   ResponseFormatSchema,
   LlmRequestSchema,
   LlmResultSchema,
   StreamChunkSchema,
+  MediaGenRequestSchema,
+  MediaGenResultSchema,
+  MediaJobStatusSchema,
 } from './types.js';
 
 export type {
@@ -27,20 +33,61 @@ export type {
   LlmMessage,
   ToolChoice,
   Usage,
+  MediaUnitsEntry,
   CapabilityFlags,
+  MediaCapabilities,
+  ModalitySet,
   LlmErrorKind,
   LlmError,
   ResponseFormat,
   LlmRequest,
   LlmResult,
   StreamChunk,
+  MediaGenRequest,
+  MediaGenResult,
+  MediaJobStatus,
   LlmProvider,
 } from './types.js';
 
 // The shared-owned seam substrate, re-exported so callers import it from the seam (single
 // canonical home — `@relavium/shared` owns it; the dependency direction is `shared → llm`).
-export { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
-export type { ContentPart, StopReason, AbortSignalLike } from '@relavium/shared';
+// The media shapes (ADR-0031, 1.AD) live in `@relavium/shared/src/content.ts` for the same reason.
+export {
+  ContentPartSchema,
+  StopReasonSchema,
+  DurableContentPartSchema,
+  MediaPartSchema,
+  DurableMediaPartSchema,
+  MediaSourceSchema,
+  DurableMediaSourceSchema,
+  INLINE_MEDIA_CEILING,
+  MEDIA_MESSAGE_CAPS,
+  MEDIA_URL_SOURCE_ENABLED,
+  MEDIA_HANDLE_PATTERN,
+  MEDIA_MODALITIES,
+  OUTPUT_MODALITIES,
+  MEDIA_BILLED_MODALITIES,
+  mediaModalityOf,
+  decodedBase64ByteLength,
+  containsInlineMediaBytes,
+  refineInFlightMediaPart,
+  persistableMediaRefine,
+} from '@relavium/shared';
+export type {
+  ContentPart,
+  StopReason,
+  AbortSignalLike,
+  DurableContentPart,
+  MediaPart,
+  DurableMediaPart,
+  MediaSource,
+  DurableMediaSource,
+  MediaModality,
+  OutputModality,
+  MediaBilledModality,
+  MediaStore,
+  DeInlineMedia,
+} from '@relavium/shared';
 
 // Typed config/validation errors (1.B/1.E/1.D).
 export {

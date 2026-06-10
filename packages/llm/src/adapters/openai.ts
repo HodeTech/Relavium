@@ -25,7 +25,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, isAbortSignal } from './shared.js';
+import { REASONING_ID, assertNoMediaParts, isAbortSignal } from './shared.js';
 
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
@@ -39,17 +39,27 @@ import { REASONING_ID, isAbortSignal } from './shared.js';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
-/** OpenAI's common-path capability surface (reasoning models are a separate, non-common path). */
+/**
+ * OpenAI's common-path capability surface (reasoning models are a separate, non-common path). The
+ * ADR-0031 `media` matrix is honestly all-false at 1.AD: the request path still flattens user
+ * content to text (the §1.4 `textOf` bug — fixed at 1.AE), so advertising media/vision would be
+ * exactly the "advertised but unsendable" lie the amendment exists to close. 1.AE unflattens the
+ * content path and sets the real matrix; `vision` is the derived alias of `media.input.image`.
+ */
 const OPENAI_SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: true,
+  vision: false,
   promptCache: true, // automatic prompt caching; no separate write charge
   reasoning: false,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+  },
 };
 
-/** DeepSeek's capability surface (deepseek-reasoner exposes reasoning; no vision). */
+/** DeepSeek's capability surface (deepseek-reasoner exposes reasoning; text-only — no media, ADR-0031). */
 const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
@@ -57,6 +67,10 @@ const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   vision: false,
   promptCache: true, // cache-hit input is discounted
   reasoning: true,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+  },
 };
 
 const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -633,6 +647,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     supports,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(providerId, supports, req); // fail fast, never silently drop an unsupported feature
+      assertNoMediaParts(providerId, req.messages); // media input is unwired until 1.AE (ADR-0031)
       const client = createClient(key);
       try {
         const completion = await client.chat.completions.create(
@@ -657,6 +672,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
+      assertNoMediaParts(providerId, req.messages); // media input is unwired until 1.AE (ADR-0031)
       return streamChunks(createClient(key), req, providerId);
     },
   };

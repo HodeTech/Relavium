@@ -14,7 +14,10 @@ export type Capability = keyof CapabilityFlags;
 /**
  * The capabilities a request requires, given the current request surface. Only `tools` is currently
  * expressible in a canonical `LlmRequest`; the rest (vision, cache, reasoning, parallel tool calls)
- * are reached via `providerOptions` and so are not gated here.
+ * are reached via `providerOptions` and so are not gated here. The ADR-0031 media gating — the
+ * per-modality input check derived from the request's media parts plus the `outputModalities`
+ * MEMBERSHIP check against `media.outputCombinations` — lands with the engine media plumbing
+ * (1.AF); at 1.AD the `media` matrix is shape only, so it is deliberately not consulted yet.
  */
 export function requiredCapabilities(req: LlmRequest): Capability[] {
   const required: Capability[] = [];

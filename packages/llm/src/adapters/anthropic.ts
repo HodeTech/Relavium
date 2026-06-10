@@ -19,7 +19,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { isAbortSignal } from './shared.js';
+import { assertNoMediaParts, isAbortSignal } from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -36,14 +36,24 @@ const DEFAULT_MAX_TOKENS = 4096;
 /** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
 const MAX_TEMPERATURE = 1;
 
-/** Anthropic supports the full common-path surface; provider-specific features go via `providerOptions`. */
+/**
+ * Anthropic supports the full common-path surface; provider-specific features go via
+ * `providerOptions`. The ADR-0031 `media` matrix is honestly all-false at 1.AD (shape only — no
+ * media input is wired, so advertising it would re-create the "advertised but unsendable" bug);
+ * 1.AE wires the input path and sets the real matrix (image/document in, no media out). `vision`
+ * is the derived alias of `media.input.image`, so it reads false until then too.
+ */
 const SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: true,
+  vision: false,
   promptCache: true,
   reasoning: true,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+  },
 };
 
 // --- Normalization: Anthropic wire → canonical -----------------------------------------------
@@ -196,10 +206,11 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
-// Reasoning parts are filtered out before this point (ephemeral, not replayed to the wire — ADR-0030),
+// Reasoning parts are filtered out before this point (ephemeral, not replayed to the wire — ADR-0030)
+// and media parts were rejected pre-flight by `assertNoMediaParts` (shape-only until 1.AE — ADR-0031),
 // so the wire-able content is the closed text / tool_call / tool_result set.
 function toAnthropicBlock(
-  part: Exclude<ContentPart, { type: 'reasoning' }>,
+  part: Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }>,
 ): Anthropic.ContentBlockParam {
   switch (part.type) {
     case 'text':
@@ -233,7 +244,8 @@ function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
     role: message.role === 'assistant' ? 'assistant' : 'user',
     content: message.content
       .filter(
-        (part): part is Exclude<ContentPart, { type: 'reasoning' }> => part.type !== 'reasoning',
+        (part): part is Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }> =>
+          part.type !== 'reasoning' && part.type !== 'media',
       )
       .map(toAnthropicBlock),
   };
@@ -568,6 +580,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
+      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
@@ -589,6 +602,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
+      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
       return streamChunks(createClient(key), req);
     },
   };

@@ -18,7 +18,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, isAbortSignal } from './shared.js';
+import { REASONING_ID, assertNoMediaParts, isAbortSignal } from './shared.js';
 
 /**
  * The Gemini adapter (1.H) over `@google/genai` — the riskiest adapter: a restricted tool schema and
@@ -33,14 +33,24 @@ import { REASONING_ID, isAbortSignal } from './shared.js';
 
 const PROVIDER = 'gemini';
 
-/** Gemini's common-path capability surface (restricted tool schema; ids synthesized). */
+/**
+ * Gemini's common-path capability surface (restricted tool schema; ids synthesized). The ADR-0031
+ * `media` matrix is honestly all-false at 1.AD: `toGeminiParts` carries only text/tool parts, so
+ * no media input is actually sendable yet. 1.AE wires `inlineData`/`fileData` input and sets the
+ * real matrix (the broadest of the three providers); `vision` is the derived alias of
+ * `media.input.image`, so it reads false until then too.
+ */
 const GEMINI_SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: true,
+  vision: false,
   promptCache: true,
   reasoning: true,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+  },
 };
 
 const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -518,6 +528,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     supports: GEMINI_SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
+      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
       try {
         const response = await transport.generate(buildGeminiRequest(req), key);
         const ids = new GeminiToolCallIds();
@@ -542,6 +553,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
+      assertNoMediaParts(PROVIDER, req.messages); // media input is unwired until 1.AE (ADR-0031)
       return streamChunks(transport, buildGeminiRequest(req), key);
     },
   };

@@ -1,7 +1,7 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import { describe, expect, it } from 'vitest';
 
-import { InvalidBaseUrlError } from '../errors.js';
+import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import type { StreamChunk } from '../types.js';
 import {
@@ -79,10 +79,41 @@ describe('OpenAI-compatible adapter', () => {
   it('exposes openai + deepseek ids with their capability surfaces', () => {
     expect(openaiAdapter.id).toBe('openai');
     expect(deepseekAdapter.id).toBe('deepseek');
-    expect(openaiAdapter.supports.vision).toBe(true);
+    // Honestly all-false at 1.AD (ADR-0031, shape only): the request path still flattens user
+    // content to text (the §1.4 textOf bug, fixed at 1.AE), so neither media nor its vision alias
+    // may be advertised yet.
+    expect(openaiAdapter.supports.vision).toBe(false);
+    expect(openaiAdapter.supports.media).toEqual({
+      input: { image: false, audio: false, video: false, document: false },
+      outputCombinations: [],
+    });
     expect(openaiAdapter.supports.reasoning).toBe(false);
     expect(deepseekAdapter.supports.reasoning).toBe(true);
     expect(deepseekAdapter.supports.vision).toBe(false);
+    expect(deepseekAdapter.supports.media.outputCombinations).toEqual([]);
+  });
+
+  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    const req = {
+      model: 'gpt-4o',
+      messages: [
+        {
+          role: 'user' as const,
+          content: [
+            {
+              type: 'media' as const,
+              mimeType: 'image/png',
+              source: { kind: 'base64' as const, data: 'aGVsbG8=' },
+            },
+          ],
+        },
+      ],
+    };
+    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
   });
 
   it('maps finish reasons to the canonical enum (incl. graceful unknown → stop)', () => {
