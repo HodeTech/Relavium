@@ -84,12 +84,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
-- [ ] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
+- [x] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
   durable form (`DurableMediaPart`) carries an optional **`byteLength?`** + audio/video **`durationMs?`**,
   host-populated at the `deInlineMedia` boundary; **no `checksum`** (the `media://sha256-<hex>` handle IS
   the sha256); **no `width`/`height`** in Phase A (render-only). **Must ship in the 1.AD seam shape**
   (before 1.K/1.O exhaustive consumers) — adding a union-arm field later is breaking. `byteLength` is what
   the byte-delivery Range check bounds against. *(ADR-0031 "Amended 2026-06-09"; multimodal-io-design §3.2; 1.AD)*
+  **✅ Landed at 1.AD (PR #11, 2026-06-10):** `byteLength?`/`durationMs?` ship on `DurableMediaPart` only
+  (the in-flight arm stays lean — parse-stripped, tested), with the `durationMs`-is-audio/video-only rule
+  enforced on both the standalone schema and the durable union.
 - [ ] **Shared SSRF range-primitive (the `url`-carrier precondition)** — the one shared HTTPS-only /
   block-private-loopback-link-local-metadata-CGNAT / DNS-resolution + per-hop-redirect-revalidation /
   IPv4-mapped-IPv6-decode primitive that `assertHttpsBaseUrl` (openai.ts) is the best-effort placeholder

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-08
+> Last updated: 2026-06-10
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -103,9 +103,14 @@ seam amendment — 1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), the **ADR-0030*
 (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) — merged
 in **PR #9** (2026-06-07). All three adapters now pass the shared conformance spec in fixture mode
 (live nightly reserved, pending keys), with classified errors and capability gating, behind the frozen
-`LLMProvider` seam — **🎯 M1 achieved**. Per the
-[sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the next work runs
-two parallel lanes:
+`LLMProvider` seam — **🎯 M1 achieved**. The **ADR-0031 multimodal seam-shape amendment — 1.AD**
+(the `media` `ContentPart` arm + handle-only durable fork, the `media_start/delta/end` `StreamChunk`
+triad, the `CapabilityFlags.media` matrix with `vision` as its derived alias, `Usage.mediaUnits`,
+`LlmRequest.outputModalities`, and the reserved `generateMedia?`/`pollMediaJob?` methods — **shape
+only**, with honest all-false adapter matrices and a fail-fast media guard until 1.AE) — merged in
+**PR #11** (2026-06-10), landing the union members **before the seam's exhaustive consumers** exist.
+Per the [sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the next
+work runs two parallel lanes:
 
 1. **Seam policy lane** — **1.K — `FallbackChain` runner** (retryable/fatal routing on `LlmError`,
    per-attempt usage → `CostTracker`, and the ADR-0030 strip-the-reasoning-signature-on-failover
@@ -117,16 +122,17 @@ two parallel lanes:
    field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, converging at the
    **1.O join** (which waits on the fallback runner, 1.K) toward **M2**.
 
-> **Multimodal I/O decided (2026-06-08) — a second pre-freeze seam amendment.** First-class
-> image/audio/video I/O (input **and** output, incl. generate-media-by-rule) is now designed and decided:
+> **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
+> image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
 > [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (the seam amendment) +
 > [ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust-side
 > de-inline), from [multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md)
-> (nine maintainer decisions A1–A9). It adds the **1.AD–1.AH** sub-spine (1.m6,
-> [phase-1](phases/phase-1-engine-and-llm.md)): **1.AD lands the seam shape NOW — before the exhaustive
-> consumers 1.K/1.O** so the `ContentPart`/`StreamChunk` media union members are non-breaking (the same
-> cheap-window move as ADR-0030); **1.AE–1.AH (media input/engine/output + surfaces) are additive and do
-> NOT gate M2.** So the immediate seam-lane work is **1.AD → then 1.K**, both before the 1.O join.
+> (nine maintainer decisions A1–A9), as the **1.AD–1.AH** sub-spine (1.m6,
+> [phase-1](phases/phase-1-engine-and-llm.md)). **1.AD landed the seam shape before the exhaustive
+> consumers 1.K/1.O** (the same cheap-window move as ADR-0030), so the media union members are
+> non-breaking; the seam doc carries the full amendment section. **1.AE–1.AH (media
+> input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane proceeds straight
+> to **1.K**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

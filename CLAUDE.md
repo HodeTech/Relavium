@@ -43,7 +43,10 @@ Phase 0 (M0, 2026-06-04) landed the monorepo, strict toolchain + CI, `@relavium/
 full Zod contract set), the no-vendor-type seam fence, and `@relavium/db`. Phase 1 has since
 landed `@relavium/llm` — the `LLMProvider` seam + all three adapters (Anthropic, OpenAI/DeepSeek,
 Gemini), green on one shared conformance suite with no vendor type crossing the seam, plus the
-ADR-0030 seam-shape amendment. Active work continues on the `FallbackChain` (1.K) and the
+ADR-0030 seam-shape amendment — and the **ADR-0031 multimodal seam-shape amendment (1.AD, PR #11,
+2026-06-10)**: the media content/stream union members, the per-modality capability matrix, and the
+reserved generator methods, shape-only, landed before the seam's exhaustive consumers. Active work
+continues on the `FallbackChain` (1.K) and the
 [`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md); see
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 

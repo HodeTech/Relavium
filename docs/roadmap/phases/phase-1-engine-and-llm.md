@@ -21,6 +21,8 @@
 > The new sub-spine **1.AD–1.AH** (1.m6) lands the **shape (1.AD) before the exhaustive consumers 1.K/1.O**
 > so the `ContentPart`/`StreamChunk` media union members are non-breaking; the **behavior (1.AE–1.AH) is
 > additive and does NOT gate M2** (it threads into the engine and Phases 2–6, like the agent-first sub-spine).
+> **1.AD is ✅ Done (PR #11, 2026-06-10)** — the shape landed with all-false adapter matrices and the
+> fail-fast media guard; 1.K is unblocked.
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -725,13 +727,13 @@ First-class multimodal I/O (image / audio / video, **input AND output**, incl. a
 **generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
 + [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
 [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md). The **shape**
-(1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it lands **before the exhaustive
+(1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it landed **before the exhaustive
 consumers** (1.K `FallbackChain`, 1.O `AgentRunner`) so adding the `ContentPart`/`StreamChunk` media
 union members is non-breaking. The **behavior** (1.AE–1.AH) is **additive — it does NOT gate M2** (like
 the agent-first sub-spine): media plumbing layers onto the proven engine and threads into the surface
 phases (2–6). Each phase below maps to the design doc's Phase A–E.
 
-- **1.AD — Multimodal seam amendment (Phase A) — land NOW, before 1.K/1.O.** Add to `@relavium/shared`
+- **1.AD — Multimodal seam amendment (Phase A) — landed before 1.K/1.O — ✅ Done (PR #11, 2026-06-10).** Add to `@relavium/shared`
   + the `@relavium/llm` seam types, *shape only, no behavior*: the MIME-discriminated `media`
   `ContentPart` arm **and** the distinct handle-only `DurableMediaPart`/`DurableContentPart` (the durable
   form also carrying optional `byteLength?` + audio/video `durationMs?` — Y3, ADR-0031 amended); the
@@ -818,7 +820,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
-| 1.m6 | Multimodal I/O: seam amendment (**1.AD — lands before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD**, 1.AE, 1.AF, 1.AG, 1.AH |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅**, 1.AE, 1.AF, 1.AG, 1.AH |
 
 ## Sequencing & parallelization
 
@@ -977,7 +979,7 @@ flowchart LR
 | 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
 | 1.Z | C | 1.V, 1.L | 1.AA | ◇ |
 | 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
-| 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only, precedes consumers |
+| 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
 | 1.AG | D | 1.AF | 1.AH | ◇ |
@@ -991,7 +993,8 @@ flowchart LR
 > **Lane D (multimodal, 1.AD–1.AH)** is omitted from the waves Mermaid to keep it readable. Its one
 > scheduling constraint: **1.AD (shape only) must land before 1.K and 1.O** — the same cheap-window logic
 > as the ADR-0030 amendment — so the media union members are added before any exhaustive `switch` exists.
-> Everything after 1.AD (1.AE–1.AH) is **additive and never gates M2**, mirroring Lane C.
+> That constraint is **satisfied: 1.AD is ✅ Done (PR #11, 2026-06-10)**. Everything after 1.AD
+> (1.AE–1.AH) is **additive and never gates M2**, mirroring Lane C.
 
 ### Solo vs. multi-track
 
