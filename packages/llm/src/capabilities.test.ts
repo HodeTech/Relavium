@@ -16,6 +16,11 @@ const ALL: CapabilityFlags = {
   vision: true,
   promptCache: true,
   reasoning: true,
+  // vision === media.input.image (the ADR-0031 derived-alias refine).
+  media: {
+    input: { image: true, audio: true, video: true, document: true },
+    outputCombinations: [['text'], ['text', 'image']],
+  },
 };
 const NONE: CapabilityFlags = {
   tools: false,
@@ -24,6 +29,10 @@ const NONE: CapabilityFlags = {
   vision: false,
   promptCache: false,
   reasoning: false,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+  },
 };
 
 const TEXT_REQ: LlmRequest = {

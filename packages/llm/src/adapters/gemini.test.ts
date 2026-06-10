@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import { GeminiToolCallIds } from '../tool-normalizer.js';
 import type { LlmRequest, StreamChunk } from '../types.js';
@@ -59,6 +60,41 @@ describe('Gemini adapter', () => {
     expect(geminiAdapter.id).toBe('gemini');
     expect(geminiAdapter.supports.tools).toBe(true);
     expect(geminiAdapter.supports.streaming).toBe(true);
+    // Honestly all-false at 1.AD (ADR-0031, shape only): toGeminiParts carries only text/tool
+    // parts until 1.AE wires inlineData/fileData input; vision is the derived media.input.image alias.
+    expect(geminiAdapter.supports.vision).toBe(false);
+    expect(geminiAdapter.supports.media).toEqual({
+      input: { image: false, audio: false, video: false, document: false },
+      outputCombinations: [],
+    });
+  });
+
+  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
+    const transport = fakeTransport({ candidates: [] });
+    const adapter = createGeminiAdapter({ transport });
+    const req: LlmRequest = {
+      model: 'gemini-2.0-flash',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aGVsbG8=' } },
+          ],
+        },
+      ],
+    };
+    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+    expect(transport.lastRequest).toBeUndefined(); // failed fast — nothing reached the transport
+  });
+
+  it('rejects a non-text outputModalities request the same way (media output is unwired)', async () => {
+    const transport = fakeTransport({ candidates: [] });
+    const adapter = createGeminiAdapter({ transport });
+    const req: LlmRequest = { ...REQ, outputModalities: ['text', 'image'] };
+    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+    expect(transport.lastRequest).toBeUndefined();
   });
 
   it('maps finish reasons (STOP+tools → tool_use; SAFETY → content_filter; MALFORMED → error)', () => {

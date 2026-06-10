@@ -4,17 +4,22 @@ import type { CapabilityFlags, LlmRequest, ProviderId } from './types.js';
 /**
  * Capability gating (1.D) — keeps the common path narrow and honest. A request that needs a feature
  * the provider can't do **fails fast with a typed error rather than being silently dropped**.
- * Provider-specific features off the common path (vision, prompt cache, reasoning, parallel tool
- * calls) travel through `LlmRequest.providerOptions`, not these flags. See ADR-0011.
+ * Provider-specific features with no cross-provider shape (prompt-cache control, thinking budgets,
+ * parallel-tool-call toggles) travel through `LlmRequest.providerOptions`, not these flags; the
+ * reasoning and media channels are canonical seam shape (ADR-0030/0031). See ADR-0011.
  */
 
 /** One capability flag name. */
 export type Capability = keyof CapabilityFlags;
 
 /**
- * The capabilities a request requires, given the current request surface. Only `tools` is currently
- * expressible in a canonical `LlmRequest`; the rest (vision, cache, reasoning, parallel tool calls)
- * are reached via `providerOptions` and so are not gated here.
+ * The capabilities a request requires, given the current request surface. Only `tools` is gated
+ * here today: promptCache/parallelToolCalls ride `providerOptions`, and while media IS now
+ * expressible in a canonical `LlmRequest` (media parts, `outputModalities` — ADR-0031), its
+ * gating — the per-modality input check derived from the request's media parts plus the
+ * `outputModalities` MEMBERSHIP check against `media.outputCombinations` — lands with the engine
+ * media plumbing (1.AF); at 1.AD the `media` matrix is shape only and the live media gate is the
+ * adapters' shared `assertNoMediaRequested` pre-flight.
  */
 export function requiredCapabilities(req: LlmRequest): Capability[] {
   const required: Capability[] = [];

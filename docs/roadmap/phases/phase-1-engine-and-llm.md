@@ -84,9 +84,10 @@ checkpoint/resume, retry, and provider failover all demonstrated.
 - A **`FallbackChain` runner outside the adapters** (policy, not adapter logic)
   and a `CostTracker` recording usage as integer **micro-cents** consistent with
   [database-schema.md](../../reference/desktop/database-schema.md).
-- A capability-gated lowest-common-denominator surface (text + tools + streaming +
-  usage) plus a typed `providerOptions` escape hatch for provider-specific
-  features (vision, caching, reasoning, parallel tool calls).
+- A capability-gated common-path surface (text + tools + streaming + usage, plus the
+  canonical reasoning and media shapes — ADR-0030/0031) and a typed `providerOptions`
+  escape hatch for provider-specific features with no cross-provider shape (prompt-cache
+  control, thinking budgets, safety settings, parallel-tool-call toggles).
 - Cancellation via `AbortSignal`, working in both Node and the Tauri WebView fetch.
 - A per-provider **conformance suite**: recorded fixtures on PR, live provider APIs
   nightly in CI ([testing.md](../../standards/testing.md)).
@@ -257,7 +258,8 @@ Keep the common path narrow and stable; push provider-specific features off it.
 
 **Tasks:**
 - Populate `supports: CapabilityFlags` (`tools`, `streaming`, `parallelToolCalls`,
-  `vision`, `promptCache`, `reasoning`) per adapter.
+  `vision`, `promptCache`, `reasoning`) per adapter. *(ADR-0031 later adds the `media`
+  matrix, with `vision` pinned as the derived alias of `media.input.image` — 1.AD.)*
 - Define the typed `providerOptions` passthrough and the `raw` result passthrough;
   document that escape-hatch usage stays out of `packages/core`.
 - Add a capability guard so a request using an unsupported feature fails fast with a
@@ -753,7 +755,11 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
 - **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
   (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
   wire image/audio/video **input** in Anthropic/OpenAI/Gemini; set the capability matrix; add conformance
-  scenarios (image-in, audio-in, `mediaUnits` mapping). **Complete the one shared SSRF range-primitive**
+  scenarios (image-in, audio-in, `mediaUnits` mapping). **Wiring order (1.AD review note):** the shared
+  `assertNoMediaRequested` fail-fast guard is the only **live** media gate at 1.AD (the
+  `LlmMessageSchema` ceiling/caps/url-gate bind a *parsed* request) — remove it per adapter only once
+  that adapter's entry actually validates the request through `LlmMessageSchema` (or the 1.AF
+  `requiredCapabilities()` gating), otherwise a cap-less window opens. **Complete the one shared SSRF range-primitive**
   (security-review.md) and flip the `url` flag on for input **and** output, with the landing-gate CI test.
   *Acceptance:* a vision request actually reaches the provider as media (not flattened text); the
   conformance suite covers media-in + `mediaUnits`; the `url` carrier is rejected while the SSRF flag is

@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
 
+import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import type { StreamChunk } from '../types.js';
 import {
@@ -40,10 +41,39 @@ describe('AnthropicAdapter', () => {
       tools: true,
       streaming: true,
       parallelToolCalls: true,
-      vision: true,
+      // Honestly all-false at 1.AD (ADR-0031, shape only): no media input is wired until 1.AE,
+      // and vision is the derived alias of media.input.image, so it reads false too.
+      vision: false,
       promptCache: true,
       reasoning: true,
+      media: {
+        input: { image: false, audio: false, video: false, document: false },
+        outputCombinations: [],
+      },
     });
+  });
+
+  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    const req = {
+      model: 'claude-sonnet-4-6',
+      messages: [
+        {
+          role: 'user' as const,
+          content: [
+            {
+              type: 'media' as const,
+              mimeType: 'image/png',
+              source: { kind: 'base64' as const, data: 'aGVsbG8=' },
+            },
+          ],
+        },
+      ],
+    };
+    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
   });
 
   it('maps every Anthropic stop reason to the canonical 5-value enum', () => {

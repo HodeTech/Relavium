@@ -92,17 +92,25 @@ interface SessionMessage {
   sessionId: string;
   sequenceNumber: number;                 // monotonic per session
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: ContentPart[];                 // text | tool_call | tool_result parts
+  content: DurableContentPart[];          // the PERSISTED content union (ADR-0031): handle-only media, signature-less reasoning
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   timestamp: string;                      // ISO 8601
 }
 ```
 
+> **Amended 2026-06-10 (ADR-0031 / 1.AD).** A persisted position references the **durable**
+> content union, not the in-flight `ContentPart`: `DurableContentPart` (owned by
+> `@relavium/shared`, see [llm-provider-seam.md](../shared-core/llm-provider-seam.md)
+> §"Seam-shape amendments (ADR-0031)") makes media handle-only and drops the reasoning
+> `signature` structurally — the engine's `deInlineMedia` pass is the in-flight→durable
+> transform. Binding on the session-persistence implementation (1.X).
+
 `SessionMessage` is **mapped to the seam's `LlmMessage` at call time, never copied** — when the
 session calls a provider, the `AgentRunner` projects the persisted messages into the `LlmMessage`
 shape owned by [llm-provider-seam.md](../shared-core/llm-provider-seam.md). **No vendor SDK type
-crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)); the `ContentPart`
-union is the same Relavium type the seam uses.
+crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)); the
+`DurableContentPart`/`ContentPart` unions are the same Relavium types the seam uses — the
+projection resolves durable handles for egress, it never invents a new shape.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`
