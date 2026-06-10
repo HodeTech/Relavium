@@ -9,10 +9,13 @@
  * change as the ADR that justifies the dependency (architectural-principles.md §9,
  * ADR-0003 zero-platform-imports, ADR-0011 seam discipline).
  *
- * `devDependencies` are not checked (they never ship); `@relavium/db` is deliberately NOT
- * an engine package — it is host-bound by design (better-sqlite3). When `packages/ui`
- * lands (build phase 3), its internal layer boundaries get the same treatment via an
- * ESLint import-zone config rather than this list.
+ * Checked: `dependencies` + `optionalDependencies` (both install and ship — an optional
+ * runtime dep must not bypass the gate). Not checked: `devDependencies` (never ship),
+ * `peerDependencies` (declared, not shipped; the strict CI peer gate polices drift), and
+ * `bundledDependencies` (unused in this repo). `@relavium/db` is deliberately NOT an
+ * engine package — it is host-bound by design (better-sqlite3). When `packages/ui` lands
+ * (build phase 3), its internal layer boundaries get the same treatment via an ESLint
+ * import-zone config rather than this list.
  *
  * Exits non-zero so CI fails loudly. Run from the repo root:
  *   node tools/engine-deps/check.mjs
@@ -33,7 +36,11 @@ const ENGINE_ALLOWLISTS = {
   'packages/llm': ['@relavium/shared', 'zod', '@anthropic-ai/sdk', 'openai', '@google/genai'],
   // The engine: Relavium packages only, plus the ADR-0027 sandbox runtime once the 1.AB
   // perf spike pins the package (added here, with the catalog pin, in that change).
-  'packages/core': ['@relavium/shared', '@relavium/llm', '@relavium/db', 'zod'],
+  // @relavium/db is deliberately ABSENT: the engine runs in the Tauri WebView with zero
+  // platform imports (CLAUDE.md rule 5), and @relavium/db pulls the native better-sqlite3
+  // runtime. Core may use its TYPES via a devDependency (the Checkpointer interface /
+  // Drizzle schema types); the store itself is injected by the host surface (1.R).
+  'packages/core': ['@relavium/shared', '@relavium/llm', 'zod'],
 };
 
 let failed = false;
@@ -45,7 +52,10 @@ for (const [pkgDir, allowed] of Object.entries(ENGINE_ALLOWLISTS)) {
     continue;
   }
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const deps = Object.keys(manifest.dependencies ?? {});
+  const deps = [
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.optionalDependencies ?? {}),
+  ];
   const offenders = deps.filter((d) => !allowed.includes(d));
   if (offenders.length > 0) {
     failed = true;
