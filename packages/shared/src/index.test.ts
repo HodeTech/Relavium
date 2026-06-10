@@ -9,6 +9,10 @@ describe('@relavium/shared public surface', () => {
     expect(shared.WORKFLOW_NODE_TYPES).toContain('human_gate');
     expect(shared.LLM_PROVIDERS).toEqual(['anthropic', 'openai', 'gemini', 'deepseek']);
     expect(shared.EXECUTION_MODES).toEqual(['local', 'cloud', 'managed']);
+    // ADR-0031 modality vocabularies (document is input-only; mediaUnits bills image/audio/video).
+    expect(shared.MEDIA_MODALITIES).toEqual(['image', 'audio', 'video', 'document']);
+    expect(shared.OUTPUT_MODALITIES).toEqual(['text', 'image', 'audio', 'video']);
+    expect(shared.MEDIA_BILLED_MODALITIES).toEqual(['image', 'audio', 'video']);
   });
 
   it('exports the full canonical schema set', () => {
@@ -23,6 +27,22 @@ describe('@relavium/shared public surface', () => {
       'RunSchema',
       'GlobalConfigSchema',
       'ProjectConfigSchema',
+      // ADR-0031 (1.AD) — the multimodal seam shapes owned by @relavium/shared.
+      'ContentPartSchema',
+      'DurableContentPartSchema',
+      'MediaPartSchema',
+      'DurableMediaPartSchema',
+      'MediaSourceSchema',
+      'DurableMediaSourceSchema',
+      'INLINE_MEDIA_CEILING',
+      'MEDIA_MESSAGE_CAPS',
+      'MEDIA_URL_SOURCE_ENABLED',
+      'MEDIA_HANDLE_PATTERN',
+      'mediaModalityOf',
+      'decodedBase64ByteLength',
+      'containsInlineMediaBytes',
+      'refineInFlightMediaPart',
+      'persistableMediaRefine',
     ] as const;
     for (const name of names) {
       expect(shared[name]).toBeDefined();

@@ -89,6 +89,35 @@ export const STOP_REASONS = ['stop', 'length', 'tool_use', 'content_filter', 'er
 export type StopReason = (typeof STOP_REASONS)[number];
 
 /**
+ * The four **media input modalities** a `media` content part can carry (ADR-0031). The modality
+ * of a part is derived from its MIME type (`image/*`, `audio/*`, `video/*`, `application/pdf`),
+ * never stored as a second field; `document` (PDF) is deliberately distinct from `image` — a
+ * separate modality with a separate token/cost profile (maintainer decision A2). The matching
+ * `CapabilityFlags.media.input` booleans in `@relavium/llm` gate each one.
+ */
+export const MEDIA_MODALITIES = ['image', 'audio', 'video', 'document'] as const;
+export type MediaModality = (typeof MEDIA_MODALITIES)[number];
+
+/**
+ * The **output modalities** a request may ask an inline-surface model to emit
+ * (`LlmRequest.outputModalities`, ADR-0031 decision #5) and the member vocabulary of a
+ * `CapabilityFlags.media.outputCombinations` modality-set. Also the future vocabulary of the
+ * authored `output_modalities` node field (1.AF), which is why it lives in `@relavium/shared`.
+ * `document` is input-only — no provider emits a PDF as a chat-turn output.
+ */
+export const OUTPUT_MODALITIES = ['text', 'image', 'audio', 'video'] as const;
+export type OutputModality = (typeof OUTPUT_MODALITIES)[number];
+
+/**
+ * The modalities billed as **media units** rather than tokens (`Usage.mediaUnits`, ADR-0031
+ * decision #4). A deliberately **complete closed set**: `document` (PDF) and `text` bill as
+ * tokens, so they are intentionally excluded, not forgotten (ADR-0031 §Freeze-criticality —
+ * this inner enum is breaking-to-extend, like a union arm, so it ships complete now).
+ */
+export const MEDIA_BILLED_MODALITIES = ['image', 'audio', 'video'] as const;
+export type MediaBilledModality = (typeof MEDIA_BILLED_MODALITIES)[number];
+
+/**
  * The eight **authored** YAML node types (workflow-yaml-spec.md v1.0). The richer
  * canvas-component / engine-enum taxonomy (which adds `tool`, `loop`, `subworkflow`)
  * is reconciled in node-types.md; these eight are the user-authored surface.
