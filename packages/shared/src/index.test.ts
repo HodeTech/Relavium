@@ -38,6 +38,7 @@ describe('@relavium/shared public surface', () => {
       'MEDIA_MESSAGE_CAPS',
       'MEDIA_URL_SOURCE_ENABLED',
       'MEDIA_HANDLE_PATTERN',
+      'MediaMimeTypeSchema',
       'mediaModalityOf',
       'decodedBase64ByteLength',
       'containsInlineMediaBytes',

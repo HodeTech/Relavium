@@ -268,6 +268,14 @@ describe('DurableContentPart (ADR-0031)', () => {
         result: { nested: [{ kind: 'base64', data: TINY_BASE64 }] },
       }).success,
     ).toBe(false);
+    // A raw binary buffer in a durable position is itself media bytes — rejected generically.
+    expect(
+      DurableContentPartSchema.safeParse({
+        type: 'tool_result',
+        toolCallId: 'c1',
+        result: { bytes: new Uint8Array([137, 80, 78, 71]) },
+      }).success,
+    ).toBe(false);
     expect(
       DurableContentPartSchema.safeParse({
         type: 'tool_call',
@@ -344,6 +352,10 @@ describe('media helpers (ADR-0031)', () => {
     expect(
       containsInlineMediaBytes({ deep: { uri: `data:audio/wav;base64,${TINY_BASE64}` } }),
     ).toBe(true);
+    // Raw binary containers ARE media bytes — rejected generically, never walked (OOM guard).
+    expect(containsInlineMediaBytes(new Uint8Array([1, 2, 3]))).toBe(true);
+    expect(containsInlineMediaBytes({ result: { buffer: new ArrayBuffer(8) } })).toBe(true);
+    expect(containsInlineMediaBytes(new DataView(new ArrayBuffer(4)))).toBe(true);
     expect(containsInlineMediaBytes({ kind: 'handle', ref: HANDLE })).toBe(false);
     expect(containsInlineMediaBytes({ ok: true, list: [1, 'two', null] })).toBe(false);
     expect(containsInlineMediaBytes(undefined)).toBe(false);

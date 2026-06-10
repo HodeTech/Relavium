@@ -93,9 +93,10 @@ export function mediaModalityOf(mimeType: string): MediaModality | undefined {
  * cosmetic: `mimeType` is interpolated into validation error messages, and an unbounded value
  * would turn the rejection MESSAGE into a bytes-smuggling channel into the very logs/events the
  * media guardrails exist to keep bytes out of (I3). Parameters (`; charset=…`) are rejected —
- * providers exchange bare types; modality derivation needs only the prefix.
+ * providers exchange bare types; modality derivation needs only the prefix. Exported so EVERY
+ * mimeType position (the media arms here, `media_start` in `@relavium/llm`) shares the one bound.
  */
-const mimeTypeSchema = z
+export const MediaMimeTypeSchema = z
   .string()
   .min(1)
   .max(255)
@@ -113,7 +114,12 @@ export function decodedBase64ByteLength(data: string): number | undefined {
   if (data.length === 0 || data.length % 4 !== 0 || !BASE64_PATTERN.test(data)) {
     return undefined;
   }
-  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  let padding = 0;
+  if (data.endsWith('==')) {
+    padding = 2;
+  } else if (data.endsWith('=')) {
+    padding = 1;
+  }
   return (data.length / 4) * 3 - padding;
 }
 
@@ -126,11 +132,33 @@ export function decodedBase64ByteLength(data: string): number | undefined {
 const DATA_URI_BASE64_PATTERN = /^data:[^,]*;base64,/i;
 
 /**
+ * Raw binary in an opaque position (a typed array, `DataView`, or `ArrayBuffer` — all ES
+ * built-ins, so the check stays platform-free) IS media bytes by definition: fail closed rather
+ * than walk it (`Object.values` over a multi-MB typed array would also be an OOM hazard).
+ */
+function isBinaryBuffer(value: object): boolean {
+  return ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
+}
+
+/** A plain string-keyed record — the cast-free narrowing the deep scan walks. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The canonical in-flight base64 carrier shape, found loose inside an opaque value. */
+function isCanonicalBase64Source(record: Record<string, unknown>): boolean {
+  return record['kind'] === 'base64' && typeof record['data'] === 'string';
+}
+
+/**
  * Deep, cycle-safe scan of an opaque (`z.unknown()`) value for smuggled inline media bytes: a
- * canonical `{ kind: 'base64', data }` media source anywhere in the tree, or a base64 `data:` URI
- * string. This is how the typed guard reaches the `tool_call.args` / `tool_result.result` fields
- * a Zod refine cannot recurse into (ADR-0031 decision #7) — used by the durable union's backstop
- * and the seam boundary schemas in `@relavium/llm`.
+ * canonical `{ kind: 'base64', data }` media source anywhere in the tree, a base64 `data:` URI
+ * string, or a raw binary buffer. This is how the typed guard reaches the `tool_call.args` /
+ * `tool_result.result` fields a Zod refine cannot recurse into (ADR-0031 decision #7) — used by
+ * the durable union's backstop and the seam boundary schemas in `@relavium/llm`. Deliberately
+ * limited to CANONICAL Relavium shapes plus generic binary: a vendor-native media shape (Gemini
+ * `inlineData`, OpenAI `b64_json`) is an adapter-normalization obligation, never knowledge this
+ * platform-free package may carry.
  */
 export function containsInlineMediaBytes(value: unknown): boolean {
   const seen = new Set<object>();
@@ -143,27 +171,24 @@ export function containsInlineMediaBytes(value: unknown): boolean {
       }
       continue;
     }
-    if (typeof current !== 'object' || current === null) {
-      continue;
-    }
-    if (seen.has(current)) {
+    if (typeof current !== 'object' || current === null || seen.has(current)) {
       continue;
     }
     seen.add(current);
+    if (isBinaryBuffer(current)) {
+      return true;
+    }
     if (Array.isArray(current)) {
       for (const item of current) {
         stack.push(item);
       }
-      continue;
-    }
-    // A typeof-checked plain object read as an opaque string-keyed record (a validated narrowing,
-    // not an unchecked cast — every value stays `unknown`).
-    const record = current as Record<string, unknown>;
-    if (record['kind'] === 'base64' && typeof record['data'] === 'string') {
-      return true;
-    }
-    for (const nested of Object.values(record)) {
-      stack.push(nested);
+    } else if (isRecord(current)) {
+      if (isCanonicalBase64Source(current)) {
+        return true;
+      }
+      for (const nested of Object.values(current)) {
+        stack.push(nested);
+      }
     }
   }
   return false;
@@ -254,7 +279,7 @@ export type DurableMediaSource = z.infer<typeof DurableMediaSourceSchema>;
  */
 const durableMediaPartObjectSchema = z.object({
   type: z.literal('media'),
-  mimeType: mimeTypeSchema,
+  mimeType: MediaMimeTypeSchema,
   source: DurableMediaSourceSchema,
   name: z.string().optional(),
   transcript: z.string().optional(),
@@ -311,7 +336,7 @@ export type DurableMediaPart = z.infer<typeof DurableMediaPartSchema>;
  */
 export const MediaPartSchema = z.object({
   type: z.literal('media'),
-  mimeType: mimeTypeSchema,
+  mimeType: MediaMimeTypeSchema,
   source: MediaSourceSchema,
   name: z.string().optional(),
   transcript: z.string().optional(),
@@ -405,6 +430,9 @@ export const DurableContentPartSchema = z
   ])
   .superRefine((part, ctx) => {
     if (part.type === 'media') {
+      // Here the structural union rejection is the ACTIVE mechanism (the durable arm's source is
+      // handle-only, so a base64/url part never parses this far) — the backstop fires only on the
+      // cast-around/direct-invocation path; its live mounts are the typed positions and the tests.
       persistableMediaRefine(part, ctx);
       refineDurableMediaPart(part, ctx);
       return;
