@@ -84,9 +84,10 @@ checkpoint/resume, retry, and provider failover all demonstrated.
 - A **`FallbackChain` runner outside the adapters** (policy, not adapter logic)
   and a `CostTracker` recording usage as integer **micro-cents** consistent with
   [database-schema.md](../../reference/desktop/database-schema.md).
-- A capability-gated lowest-common-denominator surface (text + tools + streaming +
-  usage) plus a typed `providerOptions` escape hatch for provider-specific
-  features (vision, caching, reasoning, parallel tool calls).
+- A capability-gated common-path surface (text + tools + streaming + usage, plus the
+  canonical reasoning and media shapes — ADR-0030/0031) and a typed `providerOptions`
+  escape hatch for provider-specific features with no cross-provider shape (prompt-cache
+  control, thinking budgets, safety settings, parallel-tool-call toggles).
 - Cancellation via `AbortSignal`, working in both Node and the Tauri WebView fetch.
 - A per-provider **conformance suite**: recorded fixtures on PR, live provider APIs
   nightly in CI ([testing.md](../../standards/testing.md)).
@@ -257,7 +258,8 @@ Keep the common path narrow and stable; push provider-specific features off it.
 
 **Tasks:**
 - Populate `supports: CapabilityFlags` (`tools`, `streaming`, `parallelToolCalls`,
-  `vision`, `promptCache`, `reasoning`) per adapter.
+  `vision`, `promptCache`, `reasoning`) per adapter. *(ADR-0031 later adds the `media`
+  matrix, with `vision` pinned as the derived alias of `media.input.image` — 1.AD.)*
 - Define the typed `providerOptions` passthrough and the `raw` result passthrough;
   document that escape-hatch usage stays out of `packages/core`.
 - Add a capability guard so a request using an unsupported feature fails fast with a

@@ -77,6 +77,11 @@ type ContentPart =
 // NEVER inline — ceiling 0); per-message count + aggregate-decoded-bytes caps (MEDIA_MESSAGE_CAPS)
 // ride the same ingestion boundary. The `url` carrier ships FEATURE-FLAG-OFF
 // (MEDIA_URL_SOURCE_ENABLED) until the one shared SSRF range-primitive lands (1.AE).
+// EVERY mimeType position — both media arms, media_start, MediaGenRequest — shares the one
+// bounded bare-`type/subtype` schema (MediaMimeTypeSchema, ≤255 chars, parameters rejected): an
+// unbounded value would turn interpolated rejection messages into a bytes channel (I3). The text
+// hints are guarded the same way: `name` is bounded (≤255) and neither `name` nor `transcript`
+// may be a base64 `data:` URI — bytes ride the source carrier only.
 type MediaSource =                       // in-flight union (request/result content)
   | { kind: 'base64'; data: string }
   | { kind: 'handle'; ref: string }      // `media://sha256-<64hex>` — the canonical durable form
@@ -142,7 +147,7 @@ type StreamChunk =
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON; count/timing is provider-dependent — accumulate, parse at tool_call_end
   | { type: 'tool_call_end'; id: string }
-  | { type: 'media_start'; id: string; mimeType: string }            // ADR-0031 — media output channel (mirrors the triads)
+  | { type: 'media_start'; id: string; mimeType: string }            // ADR-0031 — media output channel (mirrors the triads); mimeType is bounded bare type/subtype (MediaMimeTypeSchema)
   | { type: 'media_delta'; id: string; progress?: number; partialRef?: string }  // progress is a 0..1 fraction; NO base64 ever; partialRef is a RESERVED preview HANDLE (A3)
   | { type: 'media_end'; id: string; media: DurableMediaPart }       // terminal — the finished media as a handle-only durable part
   | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true;
@@ -237,6 +242,14 @@ type LlmErrorKind =
   | 'cancelled'              // AbortSignal
   | 'unknown';               // unclassifiable — treated as fatal
 ```
+
+> **The internal-diagnostics rule (`cause` and the `raw` passthroughs).** `LlmError.cause`,
+> `LlmResult.raw`, and `MediaGenResult.raw` are internal diagnostics only: **never logged,
+> serialized, checkpointed, or put in a run event — any sink strips them first** (the run-event
+> error shape `{ code, message, retryable }` already excludes `cause`). This matters doubly for
+> media (ADR-0031): from 1.AE/1.AG on, `raw` is the highest-volume media-bytes carrier (vendor
+> `b64_json` / `inlineData`), and vendor shapes inside it are invisible to the canonical-shape
+> backstop scans — stripping at the sink is the only guarantee.
 
 The `kind`/`retryable` split is the contract the fallback runner depends on: a
 `retryable` `LlmError` advances `withFallback` to the next provider (recording the
@@ -369,7 +382,7 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
     model: string;
     prompt: string;
     modality: 'image' | 'audio' | 'video'; // the artifact class (the media-billed set)
-    mimeType?: string;                     // requested output format hint, e.g. 'image/png'
+    mimeType?: string;                     // requested output format hint, e.g. 'image/png' — bounded bare type/subtype (MediaMimeTypeSchema)
     count?: number;                        // artifacts per call (image generators)
     durationSeconds?: number;              // target duration (audio/video generators)
     signal?: AbortSignalLike;
