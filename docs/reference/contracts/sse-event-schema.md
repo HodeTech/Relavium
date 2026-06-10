@@ -220,7 +220,7 @@ Within a turn, the conversational work reuses the **same** `agent:token` / `agen
 
 `validation` · `provider_auth` · `provider_rate_limit` · `provider_unavailable` · `tool_denied` · `tool_failed` · `budget_exceeded` · `run_timeout` · `turn_limit` · `cancelled` · `sandbox_error` · `internal`
 
-The retryable/fatal mapping is owned by [error-handling.md](../../standards/error-handling.md) (e.g. `provider_rate_limit`/`provider_unavailable` retryable; `provider_auth`/`validation`/`tool_denied`/`turn_limit`/`cancelled` fatal). `turn_limit` is the limit-family code for an agent/session round cap (e.g. the `[chat]` `max_messages` ceiling) — distinct from `run_timeout`/`budget_exceeded` so a capped conversation surfaces its own cause rather than a silent stop; continuing past it is an explicit user action, never a retry. Messages remain user-safe and secret-free.
+The retryable/fatal mapping is owned by [error-handling.md](../../standards/error-handling.md) (e.g. `provider_rate_limit`/`provider_unavailable` retryable; `provider_auth`/`validation`/`tool_denied`/`turn_limit`/`cancelled` fatal). `turn_limit` is the limit-family code for a **hard** agent/session turn/round cap (the exact knob is settled with `AgentSession`, 1.V) — distinct from `run_timeout`/`budget_exceeded` so a capped conversation surfaces its own cause rather than a silent stop; continuing past it is an explicit user action, never a retry. It is **not** the `[chat].max_messages` knob, which is a session-history **trim** threshold ([config-spec.md](config-spec.md)) — trimming continues the session and emits no error. Messages remain user-safe and secret-free.
 
 ## Forward-compatibility
 
