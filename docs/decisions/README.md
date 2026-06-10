@@ -77,6 +77,7 @@ flowchart TD
 | 0031 | [`@relavium/llm` seam-shape amendment — first-class multimodal I/O](0031-llm-seam-shape-amendment-multimodal-io.md) | Accepted | 2026-06-08 |
 | 0032 | [Desktop Rust-side media de-inlining on the egress path (amends 0018)](0032-desktop-rust-media-de-inline-amends-0018.md) | Accepted | 2026-06-08 |
 | 0033 | [Local config files are strictly validated too (amends 0023)](0033-strict-config-files-amends-0023.md) | Accepted | 2026-06-09 |
+| 0034 | [MCP client implementation — the official TypeScript SDK, scheduled in build phase 2](0034-mcp-client-sdk-dependency.md) | Accepted | 2026-06-10 |
 
 ## Creating a new ADR
 
