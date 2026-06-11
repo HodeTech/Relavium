@@ -213,6 +213,11 @@ local, only egress is proxied" behind the seam.
 - Enforce the seam boundary: the gateway is the only path that touches Relavium's
   keys; surfaces and `@relavium/core` never see a managed key (mirrors the BYOK
   secret rule, [local-first-and-security.md](../../architecture/local-first-and-security.md)).
+- Gateway health/error reporting is **secret-free by classification**: an upstream or
+  probe failure maps to a closed category + actionable hint — never a raw exception
+  string or a URL that may carry credentials — and multi-provider health checks run
+  under a deadline hierarchy (per-probe, per-provider, overall ceiling) so one hung
+  upstream cannot stall the health surface.
 
 **Acceptance:** a workflow runs end-to-end in `managed` mode with the engine still
 local and only LLM egress proxied; the `ManagedGatewayProvider` returns the
@@ -231,7 +236,11 @@ Where Relavium's own provider keys live and how the gateway draws from them safe
   client-facing payloads (extends the never-reinvent-security-primitives rule).
 - Implement **per-provider key pools**: multiple keys per provider to spread org rate
   limits, with selection, **zero-downtime rotation**, and a **429-cooldown** that
-  parks a saturated key and advances to the next.
+  parks a saturated key and advances to the next. Pool retry discipline mirrors the
+  seam's fallback rules ([1.K](phase-1-engine-and-llm.md)): transient errors back off with jitter, while an
+  **auth-class failure on a pooled key is never blindly retried** — it parks the key
+  for investigation (possible revocation) and advances, since a deterministic auth
+  failure only repeats.
 - Add **cross-provider fallback** for the managed lane (consistent with the BYOK
   `FallbackChain` policy, but over Relavium's pooled keys) so a provider outage
   degrades gracefully.
@@ -335,6 +344,10 @@ analysis) ([ADR-0012](../../decisions/0012-managed-inference-dual-mode.md)).
   managed mode never repeats the Cursor/Copilot "silent devaluation" backlash.
 - Keep routing a **managed-mode policy only**; BYOK mode honors the agent's model
   selection exactly (no managed routing crosses into BYOK).
+- Evaluate a **dynamic model catalog for the managed lane** (a remote, versioned
+  price/limit/capability dataset refreshed out-of-band) so routing and pricing updates
+  do not require a client release; BYOK keeps the in-code pricing table as its source
+  of truth either way.
 
 **Acceptance:** a managed workflow without an explicit frontier model runs on the
 cheap default lane; prompt caching reduces measured token COGS on a cache-friendly

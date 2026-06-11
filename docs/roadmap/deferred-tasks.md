@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-09
+> Last updated: 2026-06-10
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -33,6 +33,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > sub-spine (1.m6). The item is checked off; its **not-yet-coded pieces are carried as the seven
 > multimodal forward-obligations** below (SSRF primitive, async-job ADR, media cost estimate, `partialRef`
 > semantics, `workspace` authz scope, retention/GC table, `vision`-alias retirement) so nothing is lost.
+
+> **2026-06-10 engine/tooling review pass:** a review of the engine, tool, and CI surfaces against
+> the current contracts produced a small set of additions, recorded in their sections below: the
+> **tool-output size gate + spill-to-disk** (1.T), **conformance tool-loop / cache-hit scenarios**
+> (1.F follow-up), a **token-estimate accuracy** watch item (1.AC), the **Leakwatch CI gate**
+> (deferred pending a distribution path), and a **dependency-bump cooling window** (pending a pnpm
+> major). The same pass settled three decisions outside this file: the MCP client dependency and
+> scheduling (ADR-0034 / workstream 2.R), the reserved `on_error` edge kind
+> (workflow-yaml-spec.md), and the `turn_limit` `ErrorCode` (constants.ts + sse-event-schema.md).
 
 ## Decisions needed (maintainer call)
 
@@ -84,12 +93,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
-- [ ] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
+- [x] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
   durable form (`DurableMediaPart`) carries an optional **`byteLength?`** + audio/video **`durationMs?`**,
   host-populated at the `deInlineMedia` boundary; **no `checksum`** (the `media://sha256-<hex>` handle IS
   the sha256); **no `width`/`height`** in Phase A (render-only). **Must ship in the 1.AD seam shape**
   (before 1.K/1.O exhaustive consumers) — adding a union-arm field later is breaking. `byteLength` is what
   the byte-delivery Range check bounds against. *(ADR-0031 "Amended 2026-06-09"; multimodal-io-design §3.2; 1.AD)*
+  **✅ Landed at 1.AD (PR #11, 2026-06-10):** `byteLength?`/`durationMs?` ship on `DurableMediaPart` only
+  (the in-flight arm stays lean — parse-stripped, tested), with the `durationMs`-is-audio/video-only rule
+  enforced on both the standalone schema and the durable union.
 - [ ] **Shared SSRF range-primitive (the `url`-carrier precondition)** — the one shared HTTPS-only /
   block-private-loopback-link-local-metadata-CGNAT / DNS-resolution + per-hop-redirect-revalidation /
   IPv4-mapped-IPv6-decode primitive that `assertHttpsBaseUrl` (openai.ts) is the best-effort placeholder
@@ -98,7 +110,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   the landing-gate CI test (url rejected while flag off). **A runtime-*derived* base URL** (auto-selected /
   resolved, not literally user-supplied) is re-checked through this same primitive against its
   **post-resolution IP**; an explicit-local-endpoint opt-out **narrows, never removes**, the
-  metadata-IP/link-local block. *(security-review.md; openai.ts; 1.AE)*
+  metadata-IP/link-local block. **The primitive must also pin the connection to the IP it validated**
+  (connect-by-validated-IP / a lookup-pinned agent): validating one resolution and letting the HTTP
+  client re-resolve is a TOCTOU window DNS-rebinding walks through — the check and the connect must
+  see the same address (a binding control in [security-review.md](../standards/security-review.md)).
+  *(security-review.md; openai.ts; 1.AE)*
 - [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
   now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
   (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
@@ -152,6 +168,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   surfaces add i18n: a CI test that **fails** on a missing/extra translation key (parity), **zero conditional
   logic in translation data** (data ≠ code), and a dead/unused-string lint. Recorded now; lands with the
   Phase-2/3/4 surface i18n work (no consumer yet). *(a `docs/standards/` entry or skill; Phases 2–4)*
+- [ ] **Tool-output size/token gate + spill-to-disk (1.T).** Today only the *event* `outputSummary` is
+  truncated; the tool result handed back to the model has no bound, so one oversized `read_file` /
+  `http_request` / MCP result can blow the context window (a cost/DoS surface ADR-0028's pre-egress
+  governor cannot see, since the damage lands in the *next* request). Add to the `ToolRegistry`
+  dispatch path (1.T): a byte/token ceiling per tool result with an explicit truncation marker, and
+  for over-threshold output (e.g. >2000 lines / >50KB) spill the full output to a workspace-scoped
+  file and hand the model a bounded preview + the path (readable via the normal FS-scope-tiered
+  tools). Behavior belongs in [built-in-tools.md](../reference/shared-core/built-in-tools.md) when
+  implemented. *(1.T; built-in-tools.md)*
+- [ ] **Pre-egress token-estimate accuracy — watch item (1.AC).** The ADR-0028 governor blocks on
+  `worstCaseNextEstimate(maxTokens)` from `[defaults].max_tokens_estimate`. Record the open
+  question: does the estimate need provider-accurate token counting (from the seam's model meta /
+  usage feedback) to avoid systematic over/under-blocking, or is the declared estimate enough?
+  No change now — re-evaluate with real 1.AC telemetry. *(1.AC; ADR-0028)*
 
 ## Schema / validation hardening
 
@@ -252,6 +282,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   rejects, pinning the record boundary. *(nit · run.test.ts, run-event.test.ts)*
 - [x] **Round-trip fixture verbatim** — the workflow no-drift fixture paraphrases multi-line
   prompts; transcribe them verbatim from the spec or soften the "verbatim" claim. *(nit · workflow.test.ts)*
+- [ ] **Conformance: tool-loop + cache-hit recorded scenarios (1.F follow-up)** — the shared
+  conformance suite covers text / single tool-call / usage / stop / error, but not a **multi-turn
+  tool loop** (call → result → continuation on the same provider, the path every agent node
+  exercises) or a **prompt-cache-hit** response (cached-token usage fields folding into the one
+  canonical `Usage`). Add both as recorded scenarios, and grow a small provider-quirk fixture bank
+  (reasoning-field variants, tool-call adjacency rules) as quirks are met in the adapters — the
+  suite is where quirk knowledge belongs, not adapter comments. *(packages/llm conformance; next
+  adapters-touching PR wave)*
 
 ## Tooling / CI
 
@@ -284,6 +322,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   uncomment the `schedule:` lane and add the provider API keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
   / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY`) as CI secrets. Until then live coverage is a known gap.
   *(minor → keys · ci.yml, packages/llm/src/conformance/*.conformance.test.ts)*
+- [ ] **Leakwatch secret-scanning CI gate** — CI has no secret-scan step. The HodeTech standard
+  scanner is **Leakwatch** (never gitleaks); the blocking `ci.yml` step is wired once a
+  distribution path for the binary onto Actions runners exists (private release / action). Until
+  then scanning runs locally with the installed binary, and test fixtures keep building any
+  key-shaped strings via `join()` so no contiguous key literal ever sits in the tree. Exceptions,
+  when the gate lands, are documented per finding — never blanket-ignored.
+  *(blocked → distribution path · ci.yml, security-review.md)*
+- [ ] **Dependency-bump cooling window** — adopt a "no same-day upgrades" posture for runtime
+  dependency bumps: a freshly published version waits a cooling period before entering the
+  lockfile (supply-chain compromise of a new release is typically detected within days), with a
+  documented security-exception path (a CVE fix may skip the window, recorded in the PR). pnpm 9
+  has no native knob for this; enforce as review policy now and revisit native enforcement
+  (e.g. a minimum-release-age setting) when the toolchain moves to a pnpm major that has one.
+  *(policy now, tooling later · pnpm-workspace.yaml, architectural-principles.md)*
 
 ## Docs
 

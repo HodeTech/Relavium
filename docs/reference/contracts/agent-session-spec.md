@@ -108,9 +108,11 @@ interface SessionMessage {
 `SessionMessage` is **mapped to the seam's `LlmMessage` at call time, never copied** — when the
 session calls a provider, the `AgentRunner` projects the persisted messages into the `LlmMessage`
 shape owned by [llm-provider-seam.md](../shared-core/llm-provider-seam.md). **No vendor SDK type
-crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)); the
-`DurableContentPart`/`ContentPart` unions are the same Relavium types the seam uses — the
-projection resolves durable handles for egress, it never invents a new shape.
+crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)): both unions are
+Relavium-owned types from `@relavium/shared`, but they are **distinct by design** —
+`DurableContentPart` is the persisted form (handle-only media, signature-less reasoning), while
+`ContentPart` is the in-flight form `LlmMessage` carries. The projection bridges the two existing
+types (resolving durable handles for egress); it never invents a new shape.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`

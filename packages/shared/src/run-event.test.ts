@@ -398,6 +398,18 @@ describe('SessionEvent union — the agent-first namespace', () => {
     ).toBe(true);
   });
 
+  it('pins turn_limit as the ErrorCode for a capped conversation (never a silent stop)', () => {
+    // A session hitting a hard turn/round cap must be expressible as its own cause,
+    // fatal-without-user-action — not folded into run_timeout/budget_exceeded. (Distinct
+    // from [chat].max_messages, which is a history-trim threshold, not a stop.)
+    expect(
+      SessionEventSchema.safeParse({
+        ...validSession['session:turn_completed'],
+        error: { code: 'turn_limit', message: 'session reached its turn cap', retryable: false },
+      }).success,
+    ).toBe(true);
+  });
+
   it('rejects a session:started selection whose startLine exceeds endLine', () => {
     const withSelection = (sel: { file: string; startLine: number; endLine: number }) =>
       SessionEventSchema.safeParse({

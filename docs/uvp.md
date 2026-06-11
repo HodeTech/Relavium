@@ -1,7 +1,7 @@
 # Unique Value Proposition
 
 - **Status**: Accepted
-- **Related**: [vision.md](vision.md), [product-constraints.md](product-constraints.md), [analysis/competitive-landscape-2026-06-05.md](analysis/competitive-landscape-2026-06-05.md)
+- **Related**: [vision.md](vision.md), [product-constraints.md](product-constraints.md), [analysis/README.md](analysis/README.md)
 
 ## Statement
 
@@ -62,8 +62,9 @@ both. The five properties that, taken together, no one else offers:
 
 ## Competitive Framing
 
-A condensed read; the full matrix with per-competitor strengths and gaps lives in
-[analysis/competitive-landscape-2026-06-05.md](analysis/competitive-landscape-2026-06-05.md).
+A condensed read of the per-competitor strengths and the gaps Relavium fills — this table is
+the surviving canonical competitive framing. *(The dated competitive-landscape analyses it
+distilled were removed on 2026-06-10.)*
 
 | Competitor | Their strength | The gap Relavium fills |
 |-----------|----------------|------------------------|

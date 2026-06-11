@@ -129,6 +129,16 @@ export default tseslint.config(
     },
   },
   {
+    // The repo's Node tooling scripts (the seam-fence assert + the engine-deps guard).
+    // This is the "globals.node for Node tooling" slot promised above, granted narrowly
+    // and inline (no `globals` package) — only what the scripts actually touch. ESLint 9
+    // flat config ignores `/* eslint-env */` comments, so the grant must live here.
+    files: ['tools/**/*.{js,mjs,cjs}'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly' },
+    },
+  },
+  {
     // The seam's ONE legal zone: provider SDKs are imported only inside the adapters,
     // which translate vendor shapes to Relavium/Zod seam types (ADR-0011). Every seam
     // rule (both variants + the syntax rule) is lifted here and nowhere else.

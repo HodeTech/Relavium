@@ -63,6 +63,11 @@ export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
  * `node:failed` / `run:failed` / `session:turn_completed` carry one of these as
  * `error.code` (never a free string), so a surface can branch on cause. The
  * retryable/fatal mapping is owned by docs/standards/error-handling.md.
+ * `turn_limit` is the limit-family code for a HARD agent/session turn/round cap
+ * (the knob is settled at 1.V): distinct from `run_timeout`/`budget_exceeded` so a
+ * capped conversation surfaces its own cause instead of a silent stop. Not to be
+ * confused with `[chat].max_messages`, which is a history-trim threshold
+ * (config-spec.md) — trimming continues the session and emits no error.
  */
 export const ERROR_CODES = [
   'validation',
@@ -73,6 +78,7 @@ export const ERROR_CODES = [
   'tool_failed',
   'budget_exceeded',
   'run_timeout',
+  'turn_limit',
   'cancelled',
   'sandbox_error',
   'internal',

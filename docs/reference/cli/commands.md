@@ -33,6 +33,15 @@ The CLI auto-detects its environment and switches presentation accordingly:
 
 Exit codes are CI-friendly (see [Exit codes](#exit-codes)).
 
+> **Candidate (non-gating): an agent-readable command surface.** Because Relavium's own thesis is
+> that work starts in an agent, the CLI is a natural *tool surface for other agents* — two cheap
+> affordances are candidates for the build-phase-2 implementation, with neither gating M3: a
+> **machine-readable help mode** (`--help` emitting the command/flag surface as JSON, so an agent
+> can discover the CLI without scraping prose) and a per-command **`effect` annotation**
+> (`read` / `write` / `destructive`) in that output, so an agent's tool policy can gate
+> destructive commands behind approval the same way workflow tools are gated. If adopted, the
+> shapes are locked here.
+
 ## Commands
 
 The command set below is the confirmed surface. Subcommands marked _(planned)_ are intended but not yet locked.

@@ -4,9 +4,13 @@
 - **Date**: 2026-06-03
 - **Related**: [0007-desktop-is-not-an-ide.md](0007-desktop-is-not-an-ide.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md), [0026-session-export-to-workflow.md](0026-session-export-to-workflow.md), [product-constraints.md](../product-constraints.md), [tech-stack.md](../tech-stack.md)
 
+> Amended 2026-06-10: the dated competitive-landscape analysis this ADR cited was removed from
+> `docs/analysis/`; its surviving distillation is [uvp.md](../uvp.md), and the two citations below
+> now point there. The decision and its reasoning are unchanged.
+
 ## Context
 
-A workflow and the agents inside it have to be *stored* somewhere. The choice of storage format is also a choice about whether workflows are first-class, shareable, reviewable artifacts or opaque rows in a private database. For a developer tool whose differentiator over chat-style competitors is **reusable, version-controllable, team-shareable workflows** (see the competitive analysis in [analysis/competitive-landscape-2026-06-03.md](../analysis/competitive-landscape-2026-06-03.md)), this is a defining decision.
+A workflow and the agents inside it have to be *stored* somewhere. The choice of storage format is also a choice about whether workflows are first-class, shareable, reviewable artifacts or opaque rows in a private database. For a developer tool whose differentiator over chat-style competitors is **reusable, version-controllable, team-shareable workflows** (see the competitive framing in [uvp.md](../uvp.md)), this is a defining decision.
 
 Two facts constrain it. First, the desktop app is an agent-management center with a *visual* canvas (see [ADR-0007](0007-desktop-is-not-an-ide.md)), while the VS Code extension edits the *same* definitions as text — so the format must be editable cleanly in both modalities without one corrupting the other. Second, the product is local-first with no database-of-record in the cloud (see [ADR-0008](0008-local-first-phase-1-cloud-phase-2.md)); the files on disk *are* the source of truth, and teams must be able to share them the way they share code — by committing, branching, and reviewing in a PR.
 
@@ -30,7 +34,7 @@ Critically, **the YAML schema is treated as a public API from day one**. Because
 
 ### Positive
 
-- Workflows and agents are first-class source artifacts: committable, branchable, diff-able, and reviewable in a PR — the core differentiator over chat/CLI-only competitors (see [analysis/competitive-landscape-2026-06-03.md](../analysis/competitive-landscape-2026-06-03.md)).
+- Workflows and agents are first-class source artifacts: committable, branchable, diff-able, and reviewable in a PR — the core differentiator over chat/CLI-only competitors (see [uvp.md](../uvp.md)).
 - Human-friendly authoring: multi-line prompts read naturally, comments capture intent, and diffs are clean and reviewable.
 - One source of truth for two editing modalities — the visual canvas ([ADR-0007](0007-desktop-is-not-an-ide.md)) and the VS Code text editor edit the very same files.
 - No database-of-record and no server needed to define or share a workflow, reinforcing the local-first model of [ADR-0008](0008-local-first-phase-1-cloud-phase-2.md).

@@ -61,6 +61,19 @@ deliberately does not ship.
   enumerates `manual`, `file_change`, and reserves `schedule` / `webhook`). The canonical
   schema is in [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md); any
   real implementation updates that one home, not this note.
+- **Execution-model candidate (the part that needs an ADR).** Whatever hosts the
+  scheduler, the *execution model* should be: **durable and run-id'd** — schedule state
+  lives in the database keyed to real run records
+  ([ADR-0022](../decisions/0022-run-references-workflow-by-uuid.md)), never a loose
+  side-file, so a crash can neither lose a fire nor double-fire (claim-idempotency: a
+  fire is claimed transactionally before it enqueues, and a zombie claim from a dead
+  host is reaped on startup); **deterministic catch-up policy** declared per workflow
+  (skip vs run-once-on-recovery — never an unbounded replay storm); and **scheduling
+  stays a host/surface concern outside `@relavium/core`** — the engine exposes
+  `start(workflowId, input)` and stays free of timers and platform imports
+  ([ADR-0003](../decisions/0003-pure-ts-engine-not-langgraph-python.md)), so the same
+  scheduler core could drive a Phase-2 cloud queue or a long-running local host without
+  forking the engine.
 
 ## Open questions
 

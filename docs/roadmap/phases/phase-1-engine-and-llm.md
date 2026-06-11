@@ -21,6 +21,8 @@
 > The new sub-spine **1.AD–1.AH** (1.m6) lands the **shape (1.AD) before the exhaustive consumers 1.K/1.O**
 > so the `ContentPart`/`StreamChunk` media union members are non-breaking; the **behavior (1.AE–1.AH) is
 > additive and does NOT gate M2** (it threads into the engine and Phases 2–6, like the agent-first sub-spine).
+> **1.AD is ✅ Done (PR #11, 2026-06-10)** — the shape landed with all-false adapter matrices and the
+> fail-fast media guard; 1.K is unblocked.
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -395,6 +397,14 @@ budgets. Adapters stay dumb; this owns the policy.
 - On a **classified-retryable** `LlmError`, exhaust the entry's `max_attempts` with
   backoff, then advance to the next entry; on a **fatal** `LlmError`, stop
   immediately (never mask a real bug by falling through).
+- Three behavior nuances the chain must honor: an **auth-class error is never blindly
+  retried** (a `provider_auth` failure repeats deterministically — at most one out-of-band
+  credential-refresh path, never the attempt loop); a **rate-limited entry is parked in a
+  short cooldown** so an immediately-following call on the same chain does not hammer the
+  saturated provider again; and there is **no failover after the first content chunk** —
+  once a stream has begun emitting, a mid-stream error surfaces to the node-retry layer
+  (1.S) instead of silently re-issuing on the next provider (which would duplicate tokens
+  and tool side effects).
 - Record **per-attempt usage** and feed it to the `CostTracker` (1.B) so cost stays
   accurate across failover.
 - Surface the final outcome plus the attempt trace (which providers were tried, why
@@ -413,6 +423,10 @@ part or `signature` into the next provider's request**; and the **fail-over/stop
 function of the classified `LlmError` discriminant** (`kind`/`retryable`, 1.I), **never** content /
 string-sentinel inspection — a response body containing `'Error:'` or an empty/malformed body does not by
 itself trigger failover, and the normalized `LlmError.message` is secret-free (security-review.md).
+Additionally: a `provider_auth` failure is not re-attempted on the same entry; an error after the
+first streamed content chunk does **not** advance the chain; and every failover is **visible** —
+the attempt trace (which entry failed, why, where the chain advanced) reaches the run event/log,
+never a silent provider switch.
 *(Score/quality-threshold fallback is deliberately out of scope for Phase 1 — deferred-tasks.md.)*
 
 ### 1.L.0 — Reconcile `@relavium/shared` to the 2026-06-05 contract — ✅ **Done (PR #6)** · *critical path, do first*
@@ -470,7 +484,10 @@ The engine entry point: load a `.relavium.yaml` and validate it against the
 
 **Acceptance:** valid reference example workflows parse to a typed
 `WorkflowDefinition`; a battery of malformed files each fail with a field-named,
-secret-free error; round-trip (parse → object) preserves all node config blocks; and **parsing is pure /
+secret-free error — including an authored **`on_error` edge field, which is a *reserved* edge kind
+(not a v1.0 field; [workflow-yaml-spec.md §Edges](../../reference/contracts/workflow-yaml-spec.md#edges))
+and must be rejected at parse with a field-named error like any unknown key**; round-trip
+(parse → object) preserves all node config blocks; and **parsing is pure /
 side-effect-free** — no file mutation, no `process.env` mutation, no import-time singleton init
 (validation only). *(Note for a future maintainer: the `config.*` schemas are `.strict()` by a **deliberate
 choice beyond** ADR-0023's lenient-config default — "parity with the authored YAML" — not a bug to "fix".)*
@@ -533,10 +550,24 @@ The loop that dispatches ready nodes and emits the canonical event stream.
   consumes).
 - Define the execution-mode interface seam (local now; cloud later) so the loop is
   identical across modes.
+- Dispatch is a **completion-driven ready queue** (a node becomes ready when its last
+  dependency settles) — never a sleep/poll loop; the JS event loop is the scheduler.
+- Cancellation is **cooperative end-to-end**: the `AbortSignal` threads through the
+  `AgentRunner` into the seam call and tool dispatch, so an in-flight provider stream or
+  tool is actually aborted, not orphaned to finish in the background.
+- Condition branches **skip-propagate**: when a branch is not selected, every node
+  reachable *only* through it is marked skipped (recursively), and a downstream fan-in
+  counts skipped branches against its join strategy instead of waiting forever.
+- The bus has exactly **one** producer-side translation point (engine internals → the
+  canonical `RunEvent` union); persistence, cost, and UI subscribe as **passive
+  consumers** — observation never mutates run state, and intervention happens only through
+  the engine API (`cancel` / `resume`), never through a listener.
 
 **Acceptance:** running a multi-node plan emits events in a gap-free `sequenceNumber`
 order asserted against the canonical schema by colon-namespaced name; cancellation
-emits `run:cancelled` and stops dispatch; and **every run terminates in EXACTLY ONE terminal event**
+emits `run:cancelled` and stops dispatch **and aborts the in-flight provider call/tool
+(cooperative, asserted mid-stream)**; an unselected condition branch's entire subtree is
+skipped and a fan-in over it still joins; and **every run terminates in EXACTLY ONE terminal event**
 (`run:completed` | `run:failed` | `run:cancelled`) — including on an **uncaught node-handler exception**
 (inject a throw → assert a single `run:failed`) and on **crash-then-restart of a non-resumable run**
 (reconciliation emits `run:failed`, never a stuck `run:started`) — so a zombie / never-terminating run is
@@ -564,6 +595,15 @@ Executes a single agent node end-to-end against `@relavium/llm`.
   feedback path.
 - Thread `AbortSignal` for cancellation; map a final node failure to `node:failed`
   with a user-safe message + internal correlation id.
+- Structure the turn loop as **small, separately-testable steps** (assemble → call →
+  categorize chunk → dispatch tool → persist/emit), each a function with explicit
+  inputs/outputs — never one monolithic loop body with shared mutable flags.
+- A node sees only its **declared inputs** (the resolved `{{ … }}` references and its
+  config block), never the whole run state or another node's transcript — context
+  isolation is what keeps prompts small and node behavior reproducible.
+- Tool results enter message assembly **as data through the typed untrusted boundary**
+  ([security-review.md §Prompt-injection posture](../../standards/security-review.md#prompt-injection-posture),
+  binding): never into `system`, never string-concatenated into an instruction template.
 
 **Acceptance:** an agent node with a tool streams tokens, performs a tool round-trip,
 emits a correct `cost:updated`, and completes with `node:completed`; a forced
@@ -628,10 +668,27 @@ Persist state at every node boundary and reconstruct a run from it.
   in-flight runs from their last checkpoint rather than losing them).
 - Use a stable idempotency key (`runId + nodeId + retryCount`) so a retry never
   double-applies side effects; align gap detection to `sequenceNumber`.
+- **Checkpoint writes are crash-safe and loud.** A `Checkpointer` implementation persists
+  atomically (a transaction for the DB-backed store; write-temp → fsync → rename for any
+  file-backed one) so a crash mid-write can never leave a torn checkpoint; a checkpoint
+  **write failure surfaces as a typed error/event** ([error-handling.md](../../standards/error-handling.md)
+  no-silent-catches), never a warn-and-continue that quietly forfeits resumability.
+- **Resume validates identity.** `resume` checks the run's frozen
+  `workflow_definition_snapshot` against the plan being resumed and **refuses a mismatch**
+  with a typed error (an edited workflow resumes via retry-from-node against the snapshot,
+  not by replaying a stale plan over a new graph).
+- The derived `CheckpointState` carries a **`schemaVersion`** so a later engine revision
+  can detect, migrate, or refuse an older derivation instead of misreading it. Forward
+  note for the Phase-2 persistence wiring: bound `run_events` row width — an
+  over-threshold node output is stored once out-of-row and referenced, keeping event-log
+  replay cheap (canonical DDL change goes to
+  [database-schema.md](../../reference/desktop/database-schema.md) when wired).
 
 **Acceptance:** a run interrupted after node 2 resumes from the checkpoint and
 completes nodes 3..N without re-running 1..2; re-applying a checkpointed node is
-idempotent; gap detection triggers a resync rather than trusting a partial view.
+idempotent; gap detection triggers a resync rather than trusting a partial view;
+resume against a non-matching workflow snapshot is refused with a typed error; and a
+forced checkpoint-write failure is visible as a typed error/event, not a silent skip.
 
 ### 1.S — Retry + fallback wiring (node budget above the chain) — *critical path*
 
@@ -668,6 +725,24 @@ The engine-side registry that dispatches built-in tools the `AgentRunner` invoke
 - Plumb `invoke_agent` so an agent can dispatch another agent node by id (the
   orchestrator delegation mechanism), without building the full router selection
   logic this phase.
+- **Bound tool results** (the model-facing result, not just the event summary): a
+  byte/token ceiling per result with an explicit truncation marker; the over-threshold
+  spill-to-file + bounded-preview behavior is the
+  [deferred-tasks.md](../deferred-tasks.md) tool-output-gate entry, landed here or in the
+  first pass that hits a real oversized output (behavior documented in
+  [built-in-tools.md](../../reference/shared-core/built-in-tools.md) when implemented).
+- Tool resolution is **exact-match by id**: an unknown or misspelled tool name is a typed
+  error that lists the available tools — never fuzzy/nearest-name matching (the
+  wrong-tool-executed failure mode), consistent with ADR-0029's exact-match posture.
+- Tool parameter schemas distinguish **LLM-visible vs config-only** parameters:
+  config-pinned values are merged at dispatch and never enter the LLM-facing JSON Schema
+  (smaller prompts, and a config value can't be overridden by a model-supplied argument).
+  The concrete field shape is documented in
+  [built-in-tools.md](../../reference/shared-core/built-in-tools.md) when this lands.
+- A tool that spawns a process passes an **explicitly constructed environment** (its
+  declared vars + a minimal base) — never a blanket copy of the host environment, which
+  would hand every subprocess the host's secrets and hijack vectors (`PATH`,
+  `NODE_OPTIONS`, …).
 
 **Acceptance:** an agent tool call dispatches through the registry, maps I/O
 correctly, and emits sanitized tool events; an unlisted `run_command` is refused;
@@ -700,7 +775,7 @@ reproduces the same final output — **M2 achieved**.
 
 These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). They run **parallel** to 1.L–1.U and do **not** feed the 1.U workflow harness — each is proven by its own harness (1.AA). The `WorkflowEngine` is unchanged; `AgentSession` is an additional entry point on the same substrate.
 
-- **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses.
+- **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). This workstream also settles the session's **hard turn/round cap** knob — deliberately distinct from `[chat].max_messages`, which is a history-**trim** threshold ([config-spec.md](../../reference/contracts/config-spec.md)) that continues the session. A session that reaches the hard cap ends **loudly**: `session:turn_completed` carries `error.code: 'turn_limit'` ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#error-code-taxonomy)) — never a silent stop — and the behavior is pinned by a dedicated regression test (a refactor of the turn loop must not be able to silently drop the cap signal). Context compaction (when it lands, later phases) is **append-only by principle**: the persisted transcript is never rewritten or trimmed in place; `agent:context_compacted` is the reserved signal ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#workflow-governance-and-reserved-events)). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses; a session driven to its hard turn cap emits the `turn_limit`-coded event, regression-pinned.
 - **1.W — `session:*` event namespace.** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
 - **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
 - **1.Y — Session checkpoint/resume.** Reuse the idempotency-key logic so a session resumes after a restart.
@@ -715,7 +790,7 @@ Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, res
 
 ### 1.AC — Resource governor (pre-egress budget) — folds into 1.O
 
-Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-egress** budget check, a run `timeout_ms`, and a parallel concurrency cap, with `pause_for_approval` reusing the human-gate seam and emitting `budget:warning` / `budget:paused` / `run:timeout`. The cost formula and `on_exceed` semantics are owned by ADR-0028; this workstream wires them into 1.O.
+Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-egress** budget check, a run `timeout_ms`, and a parallel concurrency cap, with `pause_for_approval` reusing the human-gate seam and emitting `budget:warning` / `budget:paused` / `run:timeout`. The cost formula and `on_exceed` semantics are owned by ADR-0028; this workstream wires them into 1.O. The estimator itself is a **pure function** (model meta + declared estimate in → budget verdict out, no I/O, no ambient state) so it is unit-testable in isolation and reusable wherever a context/token budget is computed (e.g. session context assembly), and its accuracy is a recorded watch item ([deferred-tasks.md](../deferred-tasks.md)).
 
 **Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
 
@@ -725,13 +800,13 @@ First-class multimodal I/O (image / audio / video, **input AND output**, incl. a
 **generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
 + [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
 [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md). The **shape**
-(1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it lands **before the exhaustive
+(1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it landed **before the exhaustive
 consumers** (1.K `FallbackChain`, 1.O `AgentRunner`) so adding the `ContentPart`/`StreamChunk` media
 union members is non-breaking. The **behavior** (1.AE–1.AH) is **additive — it does NOT gate M2** (like
 the agent-first sub-spine): media plumbing layers onto the proven engine and threads into the surface
 phases (2–6). Each phase below maps to the design doc's Phase A–E.
 
-- **1.AD — Multimodal seam amendment (Phase A) — land NOW, before 1.K/1.O.** Add to `@relavium/shared`
+- **1.AD — Multimodal seam amendment (Phase A) — landed before 1.K/1.O — ✅ Done (PR #11, 2026-06-10).** Add to `@relavium/shared`
   + the `@relavium/llm` seam types, *shape only, no behavior*: the MIME-discriminated `media`
   `ContentPart` arm **and** the distinct handle-only `DurableMediaPart`/`DurableContentPart` (the durable
   form also carrying optional `byteLength?` + audio/video `durationMs?` — Y3, ADR-0031 amended); the
@@ -818,7 +893,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
-| 1.m6 | Multimodal I/O: seam amendment (**1.AD — lands before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD**, 1.AE, 1.AF, 1.AG, 1.AH |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅**, 1.AE, 1.AF, 1.AG, 1.AH |
 
 ## Sequencing & parallelization
 
@@ -977,7 +1052,7 @@ flowchart LR
 | 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
 | 1.Z | C | 1.V, 1.L | 1.AA | ◇ |
 | 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
-| 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only, precedes consumers |
+| 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
 | 1.AG | D | 1.AF | 1.AH | ◇ |
@@ -991,7 +1066,8 @@ flowchart LR
 > **Lane D (multimodal, 1.AD–1.AH)** is omitted from the waves Mermaid to keep it readable. Its one
 > scheduling constraint: **1.AD (shape only) must land before 1.K and 1.O** — the same cheap-window logic
 > as the ADR-0030 amendment — so the media union members are added before any exhaustive `switch` exists.
-> Everything after 1.AD (1.AE–1.AH) is **additive and never gates M2**, mirroring Lane C.
+> That constraint is **satisfied: 1.AD is ✅ Done (PR #11, 2026-06-10)**. Everything after 1.AD
+> (1.AE–1.AH) is **additive and never gates M2**, mirroring Lane C.
 
 ### Solo vs. multi-track
 

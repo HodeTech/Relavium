@@ -16,8 +16,9 @@
     "typecheck:tools": "tsc -p tsconfig.tools.json",
     "test": "turbo run test",
     "coverage": "vitest run --coverage",
-    "ci": "turbo run lint typecheck test && pnpm typecheck:tools && turbo run build format:check && pnpm lint:fence-check",
+    "ci": "turbo run lint typecheck test && pnpm typecheck:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
+    "lint:engine-deps": "node tools/engine-deps/check.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -31,5 +32,11 @@
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
     "vitest": "catalog:"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   }
 }
