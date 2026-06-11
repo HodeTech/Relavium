@@ -249,12 +249,12 @@ export class FallbackChain {
     const run = new ChainRun(req);
     for (const entry of this.#plan) {
       this.#throwIfAborted(req, entry.provider.id);
-      const entryReq = run.beginEntry(entry);
-      const skip = this.#skipReason(entry, entryReq);
+      const skip = this.#skipReason(entry, run.previewRequest(entry));
       if (skip !== undefined) {
         this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
         continue;
       }
+      const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
       const result = await this.#runEntryGenerate(entry, entryReq, req, run);
       if (result !== undefined) {
         return result;
@@ -311,12 +311,12 @@ export class FallbackChain {
         yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
         return;
       }
-      const entryReq = run.beginEntry(entry);
-      const skip = this.#skipReason(entry, entryReq, { streaming: true });
+      const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
       if (skip !== undefined) {
         this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
         continue;
       }
+      const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
       const action = yield* this.#runEntryStream(entry, entryReq, req, run);
       if (action === 'done') {
         return;
@@ -439,10 +439,10 @@ export class FallbackChain {
   async #afterFailure(entry: FallbackPlanEntry, error: LlmError): Promise<Verdict> {
     if (error.kind === 'auth') {
       // Never a blind retry loop — at most ONE out-of-band credential refresh, then fatal.
-      if (this.#options.onAuthError !== undefined && !this.#authRefreshed.has(entry.provider.id)) {
+      const hook = this.#options.onAuthError;
+      if (hook !== undefined && !this.#authRefreshed.has(entry.provider.id)) {
         this.#authRefreshed.add(entry.provider.id);
-        const refreshed = await this.#options.onAuthError(entry.provider.id);
-        if (refreshed) {
+        if (await this.#refreshCredential(hook, entry.provider.id)) {
           return 'auth-refreshed';
         }
       }
@@ -454,6 +454,24 @@ export class FallbackChain {
       return 'retryable';
     }
     return isRetryable(error.kind) ? 'retryable' : 'fatal';
+  }
+
+  /**
+   * Invoke the optional credential-refresh hook, treating any throw/rejection as a declined refresh.
+   * A misbehaving host hook must not break the runner's error contract (generate rejects with an
+   * `LlmProviderError`; stream yields an `error` chunk) — on a hook failure the original auth error
+   * stays fatal and the engine surfaces it to the run-event/log, so the throw is deliberately not
+   * re-raised here (the runner has no log sink of its own).
+   */
+  async #refreshCredential(
+    hook: (provider: ProviderId) => boolean | Promise<boolean>,
+    provider: ProviderId,
+  ): Promise<boolean> {
+    try {
+      return await hook(provider);
+    } catch {
+      return false;
+    }
   }
 
   /** Whether to skip an entry without consuming an attempt (cooldown or unmet capability). */
@@ -569,10 +587,20 @@ class ChainRun {
   }
 
   /**
-   * Begin an entry: return the request to send (its model), stripping reasoning parts once a provider
-   * boundary is crossed (ADR-0030). The strip mutates the running request permanently for the rest of
-   * the call (idempotent), so reasoning never reaches any provider past the originating one. Called
-   * once per entry, before the attempt loop.
+   * The request a skip check sees — the running (already-stripped) request with this entry's model,
+   * **without** advancing the strip latch. A skipped entry is not a provider boundary, so it must not
+   * pollute `#lastProvider` (which would wrongly strip reasoning for a later same-provider entry).
+   */
+  previewRequest(entry: FallbackPlanEntry): LlmRequest {
+    return { ...this.#req, model: entry.model };
+  }
+
+  /**
+   * Begin an entry that will actually be attempted: return the request to send (its model), stripping
+   * reasoning parts once a provider boundary is crossed (ADR-0030). The strip mutates the running
+   * request permanently for the rest of the call (idempotent), so reasoning never reaches any provider
+   * past the originating one. Called once per attempted entry — after the skip check, never for a
+   * skipped entry — so the latch tracks only providers that were actually invoked.
    */
   beginEntry(entry: FallbackPlanEntry): LlmRequest {
     const providerId = entry.provider.id;

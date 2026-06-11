@@ -463,6 +463,37 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     const secondCallParts = provider.calls[1]?.messages.flatMap((m) => m.content) ?? [];
     expect(secondCallParts.some((p) => p.type === 'reasoning')).toBe(true); // not stripped
   });
+
+  it('keeps reasoning for a same-provider entry after an intervening provider is skipped', async () => {
+    // [anthropic, openai(skipped, lacks tools), anthropic] — the skipped openai entry must NOT count
+    // as a provider boundary, or the third (same-provider) entry would wrongly lose its reasoning.
+    const toolReq: LlmRequest = {
+      ...reqWithReasoning,
+      tools: [{ name: 'read_file', parameters: { type: 'object' } }],
+    };
+    const primary = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'overloaded') });
+    const skipped = makeProvider({
+      id: 'openai',
+      supports: { tools: false },
+      generate: resolves('x'),
+    });
+    const sameProvider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [
+        entry(primary, 'claude-opus-4-8'),
+        entry(skipped, 'gpt-5.5'),
+        entry(sameProvider, 'claude-haiku-4-5'),
+      ],
+      options,
+    );
+
+    await chain.generate(toolReq);
+
+    expect(skipped.calls).toHaveLength(0); // openai skipped (no tools)
+    const parts = sameProvider.calls[0]?.messages.flatMap((m) => m.content) ?? [];
+    expect(parts.some((p) => p.type === 'reasoning')).toBe(true); // same provider → reasoning kept
+  });
 });
 
 describe('stripReasoningParts', () => {
@@ -620,6 +651,21 @@ describe('FallbackChain.generate — auth handling', () => {
     expect(err.kind).toBe('auth');
     expect(refreshCalls).toBe(1);
     expect(provider.calls).toHaveLength(1);
+  });
+
+  it('treats a throwing credential-refresh hook as a declined refresh (fatal, contract intact)', async () => {
+    const provider = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'auth') });
+    const { options } = makeOptions({
+      onAuthError: () => {
+        throw new Error('the host hook blew up');
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    const err = await rejectedError(chain.generate(userReq));
+
+    expect(err.kind).toBe('auth'); // the ORIGINAL auth error surfaces, not the hook's throw
+    expect(provider.calls).toHaveLength(1); // a failed refresh grants no extra attempt
   });
 });
 
