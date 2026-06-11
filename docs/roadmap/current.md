@@ -109,18 +109,21 @@ triad, the `CapabilityFlags.media` matrix with `vision` as its derived alias, `U
 `LlmRequest.outputModalities`, and the reserved `generateMedia?`/`pollMediaJob?` methods — **shape
 only**, with honest all-false adapter matrices and a fail-fast media guard until 1.AE) — merged in
 **PR #11** (2026-06-10), landing the union members **before the seam's exhaustive consumers** exist.
-Per the [sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the next
-work runs two parallel lanes:
+Per the [sequencing plan](phases/phase-1-engine-and-llm.md#sequencing--parallelization), the **seam
+policy lane is now complete**: **1.K — `FallbackChain` runner** (retryable/fatal routing on `LlmError`,
+per-attempt usage → `CostTracker`, the ADR-0030 strip-the-reasoning-signature-on-failover obligation,
+plus the no-blind-auth-retry / rate-limit-cooldown / no-failover-after-first-content-chunk nuances) —
+merged in **PR #13** (2026-06-11) as a `FallbackChain` class + `withFallback` façade in `@relavium/llm`,
+the seam's last Phase-1 policy layer, **completing 1.m2** with the cost tracker
+([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)). *(PR #13 also refreshed the
+model-pricing table to current provider models and added Claude Fable 5.)* The active work is now the
+**engine lane**, which `@relavium/core` has not started:
 
-1. **Seam policy lane** — **1.K — `FallbackChain` runner** (retryable/fatal routing on `LlmError`,
-   per-attempt usage → `CostTracker`, and the ADR-0030 strip-the-reasoning-signature-on-failover
-   obligation) — the seam's last Phase-1 policy layer, completing **1.m2** with the cost tracker
-   ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
-   [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)).
-2. **Engine lane** — **1.L — `WorkflowYAMLParser`** *(critical path)* — scaffold `packages/core` and
-   parse+validate a `.relavium.yaml` against the reconciled `WorkflowSchema`, with typed,
-   field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, converging at the
-   **1.O join** (which waits on the fallback runner, 1.K) toward **M2**.
+- **1.L — `WorkflowYAMLParser`** *(critical path)* — **scaffold `packages/core`** (still only a README)
+  and parse+validate a `.relavium.yaml` against the reconciled `WorkflowSchema`, with typed,
+  field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, converging at the
+  **1.O join** (whose `FallbackChain` dependency, 1.K, is now satisfied) toward **M2**.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -131,8 +134,8 @@ work runs two parallel lanes:
 > [phase-1](phases/phase-1-engine-and-llm.md)). **1.AD landed the seam shape before the exhaustive
 > consumers 1.K/1.O** (the same cheap-window move as ADR-0030), so the media union members are
 > non-breaking; the seam doc carries the full amendment section. **1.AE–1.AH (media
-> input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane proceeds straight
-> to **1.K**.
+> input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane ran straight to
+> **1.K** (✅ Done, PR #13), which closed it.
 
 > **Review-pass follow-ups landed (PR #12, merged 2026-06-11).** The 2026-06-10 engine/tooling
 > review pass landed as docs/decisions only — no Phase-1 workstream changed: **MCP client scheduling**
@@ -141,7 +144,8 @@ work runs two parallel lanes:
 > off the M3 critical path); the **`turn_limit` `ErrorCode`** (a hard session turn cap, distinct from
 > the `[chat].max_messages` trim threshold); the **reserved `on_error` edge kind**
 > (workflow-yaml-spec.md, not authorable in v1.0); and a CI **engine dependency-allowlist guard** + the
-> pnpm install-script allowlist. No Phase-1 work changes; 1.K/1.L remain the next workstreams.
+> pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)** and **1.L is
+> the next workstream**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

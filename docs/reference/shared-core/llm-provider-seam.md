@@ -293,8 +293,9 @@ adapters):
   `signature` is never persisted to a session, never replayed across a provider
   boundary on fallback, and never written to a run event or log — the engine does
   not interpret it; only the originating adapter feeds it back (a same-provider,
-  same-turn obligation owned by the 1.K `FallbackChain` strip-on-failover, not yet
-  exercised — no consumer beyond the adapters exists).
+  same-turn obligation enforced by the 1.K `FallbackChain` strip-on-failover, which
+  drops every `reasoning` part on a cross-provider advance — see the fallback section
+  below).
 - **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,

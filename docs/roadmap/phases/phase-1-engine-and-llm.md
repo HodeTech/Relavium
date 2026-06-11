@@ -9,10 +9,11 @@
 > (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) landed
 > in **PR #9** (2026-06-07) — **🎯 M1 (LLM seam proven) is reached.** All three adapters pass one shared
 > conformance suite in fixture mode (live-nightly lane reserved/pending keys); no vendor type crosses the
-> seam. **Next:** **1.K** (FallbackChain — born with the ADR-0030 obligation to **strip the ephemeral
-> reasoning signature when failing over** to another provider) ‖ the **1.L** engine parser, converging
-> at the **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning
-> signature — non-persisting.)*
+> seam. **1.K (FallbackChain) is ✅ Done (PR #13, 2026-06-11)** — the seam's last policy layer, with the
+> ADR-0030 strip-on-failover obligation honoured; **1.m2 (policy layers) is complete** (with the
+> CostTracker, 1.B). **Next:** the **1.L** engine parser (it scaffolds `packages/core`), then Lane B
+> (1.L → 1.L2 → 1.M → 1.N → 1.R) converging at the **1.O** join toward **M2**. *(Session persistence,
+> 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -22,7 +23,7 @@
 > so the `ContentPart`/`StreamChunk` media union members are non-breaking; the **behavior (1.AE–1.AH) is
 > additive and does NOT gate M2** (it threads into the engine and Phases 2–6, like the agent-first sub-spine).
 > **1.AD is ✅ Done (PR #11, 2026-06-10)** — the shape landed with all-false adapter matrices and the
-> fail-fast media guard; 1.K is unblocked.
+> fail-fast media guard; it unblocked 1.K, now also ✅ Done (PR #13).
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
@@ -385,10 +386,13 @@ no vendor type crossing the seam.
 **Acceptance:** fixture-mode conformance is a required, green CI check for all
 adapters; the import-zone lint and export audit pass — **M1 achieved**.
 
-### 1.K — `FallbackChain` runner (policy outside the adapters) — *critical path*
+### 1.K — `FallbackChain` runner (policy outside the adapters) — *critical path* · ✅ **Done (PR #13, 2026-06-11)**
 
 The small runner that walks an ordered list of models with per-model attempt
-budgets. Adapters stay dumb; this owns the policy.
+budgets. Adapters stay dumb; this owns the policy. **Landed as a `FallbackChain`
+class + a `withFallback` façade in `@relavium/llm` (platform-free, host-injected
+timer), 100% line/branch covered; the seam doc's "Fallback lives outside the
+adapter" section is the canonical shape.**
 
 **Tasks:**
 - Implement `withFallback(providers, requestFn)` consuming the agent's
@@ -888,7 +892,7 @@ the latter being the critical-path milestone for the whole product.
 | --- | --- | --- |
 | 1.m1 | Seam frozen; first adapter + conformance harness green (Anthropic) | 1.A, 1.C, 1.E, 1.F |
 | **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR — live-nightly lane reserved/pending keys; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
-| 1.m2 | Policy layers complete: fallback runner + cost tracker | 1.B, 1.K |
+| 1.m2 ✅ | Policy layers complete: fallback runner + cost tracker (**1.B PR #7, 1.K PR #13**) | 1.B, 1.K |
 | 1.m3 | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
@@ -1032,7 +1036,7 @@ flowchart LR
 | 1.G | A | 1.F | 1.J | ✅ |
 | 1.H | A | 1.E, 1.F | 1.J | ✅ |
 | 1.J | A | 1.G, 1.H, 1.I | 1.K (**M1**) | ✅ |
-| 1.K | A | 1.B, 1.I, 1.J, 1.AD (media shape) | 1.O | ✅ |
+| 1.K | A | 1.B, 1.I, 1.J, 1.AD (media shape) | 1.O | ✅ — **Done (PR #13)** |
 | 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ |
 | 1.L2 | B | 1.L | 1.M | ✅ |
 | 1.M | B | 1.L2 | 1.N | ✅ |
