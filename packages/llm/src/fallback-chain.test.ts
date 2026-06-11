@@ -487,6 +487,29 @@ describe('stripReasoningParts', () => {
     expect(out.messages[0]?.content).toEqual([{ type: 'text', text: 'kept' }]);
     expect(req.messages).toHaveLength(2); // input untouched
   });
+
+  it('merges messages left adjacent and same-role after a reasoning-only drop (alternation stays valid)', () => {
+    const req: LlmRequest = {
+      model: 'm',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'a' }] },
+        { role: 'assistant', content: [{ type: 'reasoning', text: 'think', signature: 's' }] }, // reasoning-only
+        { role: 'user', content: [{ type: 'text', text: 'b' }] },
+      ],
+    };
+
+    const out = stripReasoningParts(req);
+
+    // the assistant turn is dropped and the two now-adjacent user turns merge — no `[user, user]`
+    expect(out.messages).toHaveLength(1);
+    expect(out.messages[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'a' },
+        { type: 'text', text: 'b' },
+      ],
+    });
+  });
 });
 
 // --- auth nuance: no blind retry + optional one-shot refresh ----------------------------------
@@ -930,6 +953,34 @@ describe('FallbackChain.stream', () => {
     expect(fallback.calls).toHaveLength(0); // committed → no failover
     expect(trace).toHaveLength(1);
     expect(trace[0]).toMatchObject({ provider: 'anthropic', outcome: 'failed' });
+  });
+
+  it('commits the stream on a non-text content chunk (tool_call_start), preventing failover', async () => {
+    const primary = makeProvider({
+      id: 'anthropic',
+      stream: () =>
+        streamFrom([
+          { type: 'tool_call_start', id: 'tc1', name: 'read_file' },
+          errChunk('anthropic', 'overloaded'),
+        ]),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    const chunks = await collect(chain.stream(userReq));
+
+    expect(chunks).toEqual([
+      { type: 'tool_call_start', id: 'tc1', name: 'read_file' },
+      errChunk('anthropic', 'overloaded'),
+    ]);
+    expect(fallback.calls).toHaveLength(0); // a non-text content chunk commits → no failover
   });
 
   it('surfaces a post-content throw without failing over', async () => {

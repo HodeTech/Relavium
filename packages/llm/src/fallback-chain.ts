@@ -4,6 +4,7 @@ import type { CostTracker, CostUpdate } from './cost-tracker.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
   LlmError,
+  LlmMessage,
   LlmProvider,
   LlmRequest,
   LlmResult,
@@ -152,12 +153,29 @@ type Verdict = 'fatal' | 'retryable' | 'auth-refreshed';
  * advance so a provider-signed reasoning block never crosses a provider boundary (ADR-0030).
  */
 export function stripReasoningParts(req: LlmRequest): LlmRequest {
-  const messages = req.messages
+  const kept = req.messages
     .map((message) => ({
       ...message,
       content: message.content.filter((part) => part.type !== 'reasoning'),
     }))
     .filter((message) => message.content.length > 0);
+  // Dropping a reasoning-only message can leave two adjacent same-role messages, which strict
+  // providers (e.g. Anthropic) reject as a non-alternating sequence — so a failover meant to RESCUE
+  // the turn would instead 400. Merge adjacent same-role messages to keep the request well-formed.
+  // (A provider that additionally collapses distinct seam roles — Anthropic maps `tool`→user — owns
+  // that provider-specific normalization in its adapter; this only guarantees the seam-level shape.)
+  const messages: LlmMessage[] = [];
+  for (const message of kept) {
+    const previous = messages[messages.length - 1];
+    if (previous !== undefined && previous.role === message.role) {
+      messages[messages.length - 1] = {
+        ...previous,
+        content: [...previous.content, ...message.content],
+      };
+    } else {
+      messages.push(message);
+    }
+  }
   return { ...req, messages };
 }
 
