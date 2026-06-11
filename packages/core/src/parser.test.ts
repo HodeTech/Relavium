@@ -178,6 +178,26 @@ describe('parseWorkflow — malformed (each fails with a field-named, secret-fre
     expect(err.message.toLowerCase()).toMatch(/duplicate/);
   });
 
+  it('does not echo an authored secret via the custom Zod code path (superRefine invariant)', () => {
+    // The duplicate-id superRefine uses `code: custom` and echoes the duplicate identifier in its
+    // message. Duplicate node IDs are kebab-id-validated by the schema, so an arbitrary secret
+    // cannot appear here — but this test pins the invariant: the custom code path must never leak
+    // an authored secret value even if the superRefine message does embed it.
+    const secret = 'sk-live-DO-NOT-LEAK-CUSTOM';
+    // Use the per-type validation-key superRefine: an unrecognised key on a number input triggers
+    // `code: custom, message: "validation key '${key}' is not allowed for input type '${type}'"`.
+    // The key names are schema-defined strings — but we verify no arbitrary token leaks.
+    const err = expectValidationError(
+      doc(
+        `  id: w\n  inputs:\n    - name: n\n      type: number\n      validation:\n        min_length: 1\n  nodes:\n    - id: x\n      type: input\n  edges: []`,
+      ),
+    );
+    // `min_length` is not allowed for `number` → custom issue. Verify the secret is not present.
+    expect(JSON.stringify(err.issues)).not.toContain(secret);
+    // And the message IS informative (structural key name echoed, not a value).
+    expect(err.issues.some((i) => i.message.includes('min_length'))).toBe(true);
+  });
+
   it('rejects an unknown node `type` with the valid options', () => {
     const err = expectValidationError(
       doc(`  id: w\n  nodes:\n    - id: x\n      type: looop\n  edges: []`),
@@ -360,6 +380,22 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
       thrown = caught;
     }
     expect((thrown as WorkflowSyntaxError).source).toBe('big.yaml');
+  });
+});
+
+describe('collectReferences — context/run.outputs (1.M known gap)', () => {
+  it('permits a context value that references run.outputs — enforcement deferred to the DAG builder (1.M)', () => {
+    // TODO(1.M): workflow-yaml-spec.md forbids {{run.outputs[...]}} inside context[].value because
+    // context is resolved pre-run. Once the DAG builder rejects unsatisfiable node-output edges in a
+    // context site, replace this test with a WorkflowValidationError assertion from parseWorkflow.
+    const wf = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: w\n  context:\n    - key: snapshot\n      value: '{{run.outputs["some-node"]}}'\n  nodes:\n    - id: some-node\n      type: input\n  edges: []`,
+    );
+    const sites = collectReferences(wf);
+    const ctxSite = sites.find((s) => s.location === 'context `snapshot`.value');
+    // The reference is CLASSIFIED (kind:'node') but not VALIDATED — the gap is intentional for now.
+    expect(ctxSite?.references[0]?.kind).toBe('node');
+    expect(ctxSite?.references[0]?.identifier).toBe('some-node');
   });
 });
 

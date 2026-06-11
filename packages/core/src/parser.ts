@@ -28,14 +28,14 @@ export interface ParseWorkflowOptions {
   readonly source?: string;
 }
 
+/** A pre-parse character cap (≈ bytes for authored ASCII) — workflow files are small; a DoS guard. */
+const MAX_SOURCE_CHARS = 2 * 1024 * 1024; // 2 MiB
+
 /**
  * Parse + validate a workflow YAML string. Throws {@link WorkflowSyntaxError} on a YAML fault or
  * {@link WorkflowValidationError} (field-named, secret-free) on a schema failure — an invalid file
  * never yields a `WorkflowDefinition`, so a run never starts on one.
  */
-/** A pre-parse character cap (≈ bytes for authored ASCII) — workflow files are small; a DoS guard. */
-const MAX_SOURCE_CHARS = 2 * 1024 * 1024; // 2 MiB
-
 export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): WorkflowDefinition {
   const source = opts?.source;
 
@@ -86,11 +86,13 @@ function syntaxErrorFrom(
   if (err instanceof YAMLParseError) {
     // With `prettyErrors: false` the message is the rule alone (no code-frame, no authored content);
     // the position comes from the LineCounter, so the source text is never carried into the error.
-    const pos = lineCounter.linePos(err.pos[0]);
+    // `err.pos[0]` is -1 when the yaml library has no position for the fault (e.g. a bare stream
+    // error); lineCounter.linePos(-1) would return a nonsensical {line:0, col:-1}, so skip it.
+    const posOffset = err.pos[0];
+    const pos = posOffset >= 0 ? lineCounter.linePos(posOffset) : undefined;
     return new WorkflowSyntaxError(err.message, {
       ...(source !== undefined ? { source } : {}),
-      line: pos.line,
-      column: pos.col,
+      ...(pos !== undefined ? { line: pos.line, column: pos.col } : {}),
       cause: err,
     });
   }
@@ -176,6 +178,14 @@ function itemLabel(
 /**
  * A user-facing message for a Zod issue. Deliberately code-derived (type names, key names, enum
  * options) — it never echoes an authored *value*, so a secret in a credential field can never leak.
+ *
+ * `custom` issues come from `@relavium/shared`'s `superRefine` calls. Today every one of them emits
+ * a structural message (schema-defined key names, kebab-id-validated identifiers, type-enum labels)
+ * — never an authored *value*. The explicit `case 'custom':` here makes that invariant visible in
+ * the call site: if a future refine ever embeds an authored value, this switch is the first place a
+ * reviewer should add a safe, value-free override. The `default` branch is the last-resort fallback
+ * for Zod codes not yet seen in practice; it returns a generic message so an unknown code can never
+ * accidentally surface a payload.
  */
 function messageFor(issue: ZodIssue): string {
   switch (issue.code) {
@@ -191,8 +201,14 @@ function messageFor(issue: ZodIssue): string {
       return `invalid value — expected one of: ${issue.options.map((o) => String(o)).join(', ')}`;
     case 'invalid_union_discriminator':
       return `expected one of: ${issue.options.map((o) => String(o)).join(', ')}`;
-    default:
+    case 'custom':
+      // All @relavium/shared superRefines emit structural-only messages — see the comment above.
       return issue.message;
+    default:
+      // A Zod code not explicitly handled — return a generic message rather than risking an echo of
+      // an authored value via issue.message (which is code-derived for the built-in codes, but could
+      // change in future Zod versions).
+      return 'invalid value';
   }
 }
 

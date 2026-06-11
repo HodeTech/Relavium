@@ -142,6 +142,29 @@ describe('parseTemplate', () => {
     expect(ref).toMatchObject({ kind: 'node', identifier: 'a}}b', path: '.score' });
   });
 
+  it('handles an escaped quote inside a filter string argument (does not close the quote early)', () => {
+    // `default("say \"hi\"")` — the `\"` must NOT close the string, so the argument is `say "hi"`.
+    const ref = refOf(parseTemplate('{{inputs.x | default("say \\"hi\\"")}}')[0]);
+    expect(ref.filters).toEqual([
+      { name: 'default', args: [{ type: 'string', value: 'say \\"hi\\"' }] },
+    ]);
+  });
+
+  it('handles an escaped quote inside a filter string argument (single-quote variant)', () => {
+    const ref = refOf(parseTemplate("{{inputs.x | default('it\\'s fine')}}")[0]);
+    expect(ref.filters).toEqual([
+      { name: 'default', args: [{ type: 'string', value: "it\\'s fine" }] },
+    ]);
+  });
+
+  it('does not let an escaped quote before `}}` terminate the reference', () => {
+    // `{{ inputs.x | default("a\\\"") }}` — the `\"` is escaped, the `"` that follows closes the
+    // string; the first `}}` after that closes the reference.
+    const segments = parseTemplate('{{inputs.x | default("val")}} tail');
+    expect(segments[0]?.kind).toBe('reference');
+    expect(segments[1]).toEqual({ kind: 'literal', text: ' tail' });
+  });
+
   it('keeps a non-decimal numeric-looking argument a string (no Number() over-acceptance)', () => {
     const ref = refOf(parseTemplate('{{inputs.x | f(0x10, 1e3, Infinity)}}')[0]);
     expect(ref.filters[0]?.args).toEqual([

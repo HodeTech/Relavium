@@ -106,10 +106,17 @@ function pushLiteral(segments: TemplateSegment[], text: string): void {
 function findClose(text: string, from: number): number {
   let quote: string | undefined;
   let depth = 0;
+  let escaped = false;
   for (let i = from; i < text.length - 1; i += 1) {
     const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
     if (quote !== undefined) {
-      if (ch === quote) {
+      if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
         quote = undefined;
       }
     } else if (ch === '"' || ch === "'") {
@@ -202,10 +209,18 @@ function splitTopLevel(s: string, delim: string): string[] {
   let buf = '';
   let quote: string | undefined;
   let depth = 0;
+  let escaped = false;
   for (const ch of s) {
+    if (escaped) {
+      buf += ch;
+      escaped = false;
+      continue;
+    }
     if (quote !== undefined) {
       buf += ch;
-      if (ch === quote) {
+      if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
         quote = undefined;
       }
       continue;

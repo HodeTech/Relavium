@@ -24,6 +24,13 @@ export interface ReferenceSite {
   readonly references: readonly InterpolationReference[];
 }
 
+// Security note: the `location` strings below embed node.id, agent.id, input.name, and
+// context entry.key directly, without applying the SAFE_LABEL regex from parser.ts.  This is
+// intentional and safe: `collectReferences` accepts a `Workflow` — the output of `parseWorkflow`
+// — which has already been fully validated by `WorkflowSchema`.  Every id/name/key has been
+// checked against the kebab-id regex (or at minimum `nonEmptyString`) by the Zod schema before
+// reaching this function.  A raw, unvalidated string can never appear here.
+// If the schema ever relaxes those constraints, add a SAFE_LABEL guard here in the same change.
 export function collectReferences(workflow: Workflow): readonly ReferenceSite[] {
   const sites: ReferenceSite[] = [];
   const spec = workflow.workflow;
@@ -41,6 +48,13 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
     }
   };
 
+  // TODO(1.M): workflow-yaml-spec.md §Context-and-interpolation forbids `{{run.outputs[...]}}` in
+  // context values (context is eagerly evaluated before the run; node outputs are unavailable).
+  // Enforcing this here would require importing parseTemplate, coupling the collector to a semantic
+  // constraint that the DAG builder (1.M) is better placed to enforce (it wires data-dependency
+  // edges and can produce a richer error). Until then, a context entry that references a node
+  // output is collected with kind:'node' and will be caught by the DAG builder when it finds no
+  // satisfying edge for it. See the pinned test in parser.test.ts ("permits a context value …").
   for (const entry of spec.context ?? []) {
     visit(`context \`${entry.key}\`.value`, entry.value);
   }
