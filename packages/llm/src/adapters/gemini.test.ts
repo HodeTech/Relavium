@@ -51,7 +51,7 @@ function fakeTransport(
 }
 
 const REQ: LlmRequest = {
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
 };
 
@@ -73,7 +73,7 @@ describe('Gemini adapter', () => {
     const transport = fakeTransport({ candidates: [] });
     const adapter = createGeminiAdapter({ transport });
     const req: LlmRequest = {
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       messages: [
         {
           role: 'user',
@@ -168,7 +168,7 @@ describe('geminiErrorToLlmError — classification', () => {
 describe('Gemini adapter — request building (buildGeminiRequest)', () => {
   it('routes system → systemInstruction, tools → functionDeclarations, and tool choice modes', () => {
     const request = buildGeminiRequest({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       system: 'be terse',
       temperature: 0.4,
       maxTokens: 64,
@@ -217,7 +217,7 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
 
   it('round-trips tool_call → functionCall and tool_result → functionResponse by name', () => {
     const request = buildGeminiRequest({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       messages: [
         {
           role: 'assistant',
@@ -251,7 +251,7 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
 
   it('wraps a non-object tool result and lets providerOptions only ADD (mapped fields win)', () => {
     const request = buildGeminiRequest({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       providerOptions: { cachedContent: 'abc', temperature: 99 },
       temperature: 0.1,
       messages: [
@@ -398,7 +398,7 @@ describe('Gemini adapter — remaining branches', () => {
 
   it('drops a message that lowers to zero parts', () => {
     const request = buildGeminiRequest({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       messages: [
         { role: 'user', content: [] },
         { role: 'user', content: [{ type: 'text', text: 'hi' }] },

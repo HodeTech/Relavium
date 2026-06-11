@@ -79,7 +79,7 @@ describe('seam request/message/tool schemas', () => {
   it('accepts a request with tools, toolChoice, and the providerOptions escape hatch', () => {
     expect(
       LlmRequestSchema.safeParse({
-        model: 'gpt-4o',
+        model: 'gpt-5.5',
         system: 'be terse',
         messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
         tools: [{ name: 'read_file', parameters: { type: 'object' } }],

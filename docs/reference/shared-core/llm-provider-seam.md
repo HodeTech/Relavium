@@ -561,13 +561,36 @@ the seam types are unchanged. The full metering design is in
 ## Fallback lives outside the adapter
 
 Adapters stay **dumb**: they normalize one provider and nothing more. Fallback
-chains are **policy**, implemented in a small `withFallback(providers:
-LlmProvider[])` runner (in `packages/core`/`packages/llm`):
+chains are **policy**, implemented by the `FallbackChain` runner (1.K) in
+`@relavium/llm` — a class constructed from an ordered plan of attempts
+(`{ provider, model, maxAttempts, backoff }`), plus a thin
+`withFallback(plan, req, options)` façade for the common single-shot
+non-streaming case. It exposes `generate(req)` and `stream(req)`, and the engine
+(1.O) builds the plan from the agent's primary `model`/`provider` (+ `retry`)
+followed by each authored `fallback_chain` entry:
 
-- Try `providers[0]`; on a **classified-retryable** `LlmError` (rate limit,
-  5xx, overload) move to the next provider.
-- Surface **per-attempt usage** so cost accounting stays accurate even across a
-  failover.
+- Try each entry in order; on a **classified-retryable** `LlmError` (rate limit,
+  5xx/overload, timeout, transport) exhaust the entry's `maxAttempts` with
+  backoff, then advance to the next entry. On a **fatal** `LlmError` stop
+  immediately. The advance/stop decision is a pure function of the classified
+  `kind`/`retryable` (1.I) — never content/string-sentinel inspection.
+- **No blind auth retry:** an `auth` failure is never re-attempted on the same
+  entry; an optional out-of-band credential refresh (`onAuthError`) may grant
+  exactly one more attempt, otherwise it is fatal.
+- **Rate-limit cooldown:** a rate-limited entry is parked in a per-provider
+  cooldown so an immediately-following call on the same chain skips it.
+- **No failover after the first streamed content chunk:** once `stream` has
+  forwarded content, a mid-stream error surfaces to the node-retry layer (1.S)
+  rather than re-issuing on the next provider.
+- **Strip-on-failover (ADR-0030):** crossing to a *different* provider drops
+  every `reasoning` part (and its ephemeral `signature`) from the request before
+  re-issuing — a signature is never replayed across a provider boundary.
+- Surface **per-attempt usage** to the injected `CostTracker` (against that
+  attempt's model) so cost stays accurate across a failover, and report each
+  attempt (succeeded / failed / skipped) via an `onAttempt` observer so the
+  engine can emit a `cost:updated` per attempt and a warn log — **visible**
+  failover, never a silent provider switch. The runner imports no event bus; it
+  is platform-free (the host injects the `sleep` timer).
 
 This keeps per-agent fallback (e.g. Anthropic → OpenAI → DeepSeek) a config
 concern declared in [`agent-yaml-spec.md`](../contracts/agent-yaml-spec.md)

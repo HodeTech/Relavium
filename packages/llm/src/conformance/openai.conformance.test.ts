@@ -18,7 +18,7 @@ describe('openai — conformance (live, nightly)', () => {
   it.skipIf(liveKey === '')('generate hits the real API and returns canonical text', async () => {
     const result = await openaiAdapter.generate(
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.4-mini',
         maxTokens: 16,
         messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply with one word.' }] }],
       },
