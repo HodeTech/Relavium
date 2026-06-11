@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-10
+> Last updated: 2026-06-11
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -134,11 +134,14 @@ work runs two parallel lanes:
 > input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane proceeds straight
 > to **1.K**.
 
-> **MCP client scheduled (2026-06-10).** The long-standing contract-ahead-of-implementation gap is
-> closed at the decision layer: [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) pins the
-> official TypeScript MCP SDK as the client implementation and binds the inbound client to
-> **workstream 2.R** at the start of [build phase 2](phases/phase-2-cli.md) (off the M3 critical
-> path). No Phase-1 work changes.
+> **Review-pass follow-ups landed (PR #12, merged 2026-06-11).** The 2026-06-10 engine/tooling
+> review pass landed as docs/decisions only — no Phase-1 workstream changed: **MCP client scheduling**
+> ([ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) pins the official TypeScript MCP SDK and
+> binds the inbound client to **workstream 2.R** at the start of [build phase 2](phases/phase-2-cli.md),
+> off the M3 critical path); the **`turn_limit` `ErrorCode`** (a hard session turn cap, distinct from
+> the `[chat].max_messages` trim threshold); the **reserved `on_error` edge kind**
+> (workflow-yaml-spec.md, not authorable in v1.0); and a CI **engine dependency-allowlist guard** + the
+> pnpm install-script allowlist. No Phase-1 work changes; 1.K/1.L remain the next workstreams.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

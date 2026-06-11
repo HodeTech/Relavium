@@ -45,20 +45,20 @@ describe('cost', () => {
 
   it('prices Sonnet 4.6 and DeepSeek from their own rows', () => {
     expect(cost('claude-sonnet-4-6', { inputTokens: 1000, outputTokens: 500 })).toBe(1_050_000);
-    // deepseek-chat: 1000 in @ $0.27/MTok = 27_000µ¢; 500 out @ $1.10/MTok = 55_000µ¢
-    expect(cost('deepseek-chat', { inputTokens: 1000, outputTokens: 500 })).toBe(82_000);
+    // deepseek-chat: 1000 in @ $0.14/MTok = 14_000µ¢; 500 out @ $0.28/MTok = 14_000µ¢
+    expect(cost('deepseek-chat', { inputTokens: 1000, outputTokens: 500 })).toBe(28_000);
   });
 
-  it('ignores cache-write tokens for a provider with no cache-write price (gpt-4o)', () => {
-    // gpt-4o has no cacheWritePerMtokMicrocents → the 1000 cache-write tokens cost 0.
-    expect(cost('gpt-4o', { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 1000 })).toBe(
-      250_000,
-    ); // 1000 in @ $2.50/MTok = 250_000
+  it('ignores cache-write tokens for a provider with no cache-write price (gpt-5.5)', () => {
+    // gpt-5.5 has no cacheWritePerMtokMicrocents → the 1000 cache-write tokens cost 0.
+    expect(cost('gpt-5.5', { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 1000 })).toBe(
+      500_000,
+    ); // 1000 in @ $5.00/MTok = 500_000
   });
 
   it('rounds the per-class micro-cent figure (half-up)', () => {
-    // gpt-4o-mini cached input $0.075/MTok = 7_500_000µ¢/MTok → 1 token = 7.5 → rounds to 8.
-    expect(cost('gpt-4o-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 })).toBe(8);
+    // gpt-5.4-mini cached input $0.075/MTok = 7_500_000µ¢/MTok → 1 token = 7.5 → rounds to 8.
+    expect(cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 })).toBe(8);
   });
 });
 
@@ -72,10 +72,10 @@ describe('CostTracker', () => {
       costMicrocents: 1_750_000,
       cumulativeCostMicrocents: 1_750_000,
     });
-    const b = tracker.record('gpt-4o', { inputTokens: 1000, outputTokens: 0 });
-    expect(b.costMicrocents).toBe(250_000);
-    expect(b.cumulativeCostMicrocents).toBe(2_000_000); // 1_750_000 + 250_000
-    expect(tracker.cumulativeCostMicrocents).toBe(2_000_000);
+    const b = tracker.record('gpt-5.5', { inputTokens: 1000, outputTokens: 0 });
+    expect(b.costMicrocents).toBe(500_000);
+    expect(b.cumulativeCostMicrocents).toBe(2_250_000); // 1_750_000 + 500_000
+    expect(tracker.cumulativeCostMicrocents).toBe(2_250_000);
   });
 });
 

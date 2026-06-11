@@ -39,7 +39,7 @@ const completion = (message: unknown, finishReason = 'stop'): string =>
     id: 'c',
     object: 'chat.completion',
     created: 0,
-    model: 'gpt-4o',
+    model: 'gpt-5.5',
     choices: [{ index: 0, message, finish_reason: finishReason, logprobs: null }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   });
@@ -62,7 +62,7 @@ const streamChunk = (choices: readonly unknown[]): Record<string, unknown> => ({
   id: 's',
   object: 'chat.completion.chunk',
   created: 0,
-  model: 'gpt-4o',
+  model: 'gpt-5.5',
   choices,
 });
 
@@ -71,7 +71,7 @@ const dchunk = (delta: unknown, finish: string | null = null): Record<string, un
   id: 's',
   object: 'chat.completion.chunk',
   created: 0,
-  model: 'gpt-4o',
+  model: 'gpt-5.5',
   choices: [{ index: 0, delta, finish_reason: finish }],
 });
 
@@ -98,7 +98,7 @@ describe('OpenAI-compatible adapter', () => {
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
     const req = {
-      model: 'gpt-4o',
+      model: 'gpt-5.5',
       messages: [
         {
           role: 'user' as const,
@@ -227,7 +227,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     });
     await adapter.generate(
       {
-        model: 'gpt-4o',
+        model: 'gpt-5.5',
         system: 'be terse',
         toolChoice: 'required',
         tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
@@ -278,7 +278,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     });
     await adapter.generate(
       {
-        model: 'gpt-4o',
+        model: 'gpt-5.5',
         temperature: 0.5,
         stopSequences: ['STOP'],
         providerOptions: { seed: 42, model: 'attacker-override' },
@@ -289,7 +289,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     expect(sent['temperature']).toBe(0.5);
     expect(sent['stop']).toEqual(['STOP']);
     expect(sent['seed']).toBe(42); // escape-hatch field reached the wire
-    expect(sent['model']).toBe('gpt-4o'); // mapped field wins over providerOptions
+    expect(sent['model']).toBe('gpt-5.5'); // mapped field wins over providerOptions
   });
 
   it('maps tool_choice {name} to a named function choice', async () => {
@@ -303,7 +303,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     });
     await adapter.generate(
       {
-        model: 'gpt-4o',
+        model: 'gpt-5.5',
         toolChoice: { name: 'get_weather' },
         messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       },
@@ -337,7 +337,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     let caught: unknown;
     try {
       await adapter.generate(
-        { model: 'gpt-4o', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] },
+        { model: 'gpt-5.5', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] },
         SECRET,
       );
     } catch (err) {
@@ -355,7 +355,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
 
 describe('OpenAI-compatible adapter — stream edge cases', () => {
   const REQ = {
-    model: 'gpt-4o',
+    model: 'gpt-5.5',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 
@@ -387,7 +387,7 @@ describe('OpenAI-compatible adapter — stream edge cases', () => {
               id: 's',
               object: 'chat.completion.chunk',
               created: 0,
-              model: 'gpt-4o',
+              model: 'gpt-5.5',
               // a fragment with no preceding id+name for index 0 — can't start a tool, skipped
               choices: [
                 {
@@ -401,7 +401,7 @@ describe('OpenAI-compatible adapter — stream edge cases', () => {
               id: 's',
               object: 'chat.completion.chunk',
               created: 0,
-              model: 'gpt-4o',
+              model: 'gpt-5.5',
               choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: 'stop' }],
             },
           ]),
@@ -432,7 +432,7 @@ describe('OpenAI-compatible adapter — stream edge cases', () => {
 
 describe('OpenAI-compatible adapter — additional fold + generate branches', () => {
   const REQ = {
-    model: 'gpt-4o',
+    model: 'gpt-5.5',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 
@@ -500,7 +500,7 @@ describe('OpenAI-compatible adapter — additional fold + generate branches', ()
               id: 'c',
               object: 'chat.completion',
               created: 0,
-              model: 'gpt-4o',
+              model: 'gpt-5.5',
               choices: [],
             }),
             { status: 200, headers: { 'content-type': 'application/json' } },
@@ -568,7 +568,7 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
     });
     await adapter.generate(
       {
-        model: 'gpt-4o',
+        model: 'gpt-5.5',
         responseFormat: { type: 'json', schema: { type: 'object' }, name: 'out' },
         messages: REQ.messages,
       },
@@ -665,7 +665,7 @@ describe('OpenAI-compatible adapter — robustness (review fixes)', () => {
     });
     await adapter.generate(
       {
-        model: 'gpt-4o',
+        model: 'gpt-5.5',
         responseFormat: { type: 'json', schema: { type: 'object' }, name: 'my schema!' },
         messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       },
@@ -756,7 +756,7 @@ describe('OpenAI-compatible adapter — baseURL SSRF guard', () => {
 
 describe('OpenAI-compatible adapter — truncation + refusal normalization', () => {
   const REQ = {
-    model: 'gpt-4o',
+    model: 'gpt-5.5',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 
@@ -812,7 +812,7 @@ describe('OpenAI-compatible adapter — truncation + refusal normalization', () 
               id: 'c',
               object: 'chat.completion',
               created: 0,
-              model: 'gpt-4o',
+              model: 'gpt-5.5',
               choices: [
                 {
                   index: 0,

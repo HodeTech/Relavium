@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-10
+> Last updated: 2026-06-11
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -34,14 +34,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > multimodal forward-obligations** below (SSRF primitive, async-job ADR, media cost estimate, `partialRef`
 > semantics, `workspace` authz scope, retention/GC table, `vision`-alias retirement) so nothing is lost.
 
-> **2026-06-10 engine/tooling review pass:** a review of the engine, tool, and CI surfaces against
-> the current contracts produced a small set of additions, recorded in their sections below: the
-> **tool-output size gate + spill-to-disk** (1.T), **conformance tool-loop / cache-hit scenarios**
-> (1.F follow-up), a **token-estimate accuracy** watch item (1.AC), the **Leakwatch CI gate**
-> (deferred pending a distribution path), and a **dependency-bump cooling window** (pending a pnpm
-> major). The same pass settled three decisions outside this file: the MCP client dependency and
-> scheduling (ADR-0034 / workstream 2.R), the reserved `on_error` edge kind
-> (workflow-yaml-spec.md), and the `turn_limit` `ErrorCode` (constants.ts + sse-event-schema.md).
+> **2026-06-10 engine/tooling review pass (landed in PR #12, merged 2026-06-11):** a review of the
+> engine, tool, and CI surfaces against the current contracts produced a small set of additions,
+> recorded in their sections below: the **tool-output size gate + spill-to-disk** (1.T),
+> **conformance tool-loop / cache-hit scenarios** (1.F follow-up), a **token-estimate accuracy** watch
+> item (1.AC), the **Leakwatch CI gate** (deferred pending a distribution path), and a
+> **dependency-bump cooling window** (pending a pnpm major). The same pass settled three decisions
+> outside this file: the MCP client dependency and scheduling (ADR-0034 / workstream 2.R), the
+> reserved `on_error` edge kind (workflow-yaml-spec.md), and the `turn_limit` `ErrorCode`
+> (constants.ts + sse-event-schema.md). It also landed a CI **engine dependency-allowlist guard**
+> (`tools/engine-deps/check.mjs`) and the pnpm **install-script allowlist**.
 
 ## Decisions needed (maintainer call)
 
@@ -233,10 +235,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   doesn't define which keys are legal per `InputType`. Specify that matrix, then add a
   `WorkflowInputSchema.superRefine((type, validation) => …)`. *(minor · workflow.ts,
   workflow-yaml-spec.md)*
-- [ ] **Verify the non-Anthropic prices in `pricing.ts` (at 1.G/1.H)** — the OpenAI / Gemini /
-  DeepSeek rows are best-known **placeholders** (Anthropic is confirmed via claude-api). Verify
-  each against the provider's pricing page when its adapter lands, and replace Gemini's flat
-  ≤128K-tier figures if context-tiered pricing matters. *(low → 1.G/1.H · packages/llm/src/pricing.ts)*
+- [x] **Verify the non-Anthropic prices in `pricing.ts` (at 1.G/1.H)** — the OpenAI / Gemini /
+  DeepSeek rows were best-known **placeholders** (Anthropic confirmed via claude-api). **Done
+  2026-06-11:** verified against each provider's live pricing page, which revealed five of the six
+  non-Anthropic models were deprecated/shut down — retired and replaced with current models
+  (gpt-4o→gpt-5.5, gpt-4o-mini→gpt-5.4-mini, gemini-2.0-flash→gemini-2.5-flash,
+  gemini-1.5-pro→gemini-2.5-pro), DeepSeek prices corrected (deepseek-chat/-reasoner now distinct,
+  ctx 1M / 384K out, deprecating 2026-07-24), and **Claude Fable 5** added; Opus 4.8 / Sonnet 4.6 /
+  Haiku 4.5 re-confirmed unchanged. *(packages/llm/src/pricing.ts)*
 - [x] **`model_catalog` cache-write column (at the seeder)** — `ModelPricing` carries
   `cacheWritePerMtokMicrocents` (Anthropic charges one), but `model_catalog`
   ([database-schema.md](../reference/desktop/database-schema.md)) has only

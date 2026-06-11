@@ -58,7 +58,7 @@ describe('gemini — conformance (live, nightly)', () => {
   it.skipIf(liveKey === '')('generate hits the real API and returns canonical text', async () => {
     const result = await geminiAdapter.generate(
       {
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         maxTokens: 16,
         messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply with one word.' }] }],
       },
