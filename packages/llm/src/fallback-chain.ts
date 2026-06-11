@@ -166,7 +166,7 @@ export function stripReasoningParts(req: LlmRequest): LlmRequest {
   // that provider-specific normalization in its adapter; this only guarantees the seam-level shape.)
   const messages: LlmMessage[] = [];
   for (const message of kept) {
-    const previous = messages[messages.length - 1];
+    const previous = messages.at(-1);
     if (previous !== undefined && previous.role === message.role) {
       messages[messages.length - 1] = {
         ...previous,
@@ -216,7 +216,7 @@ export class FallbackChain {
   readonly #exhaustedProvider: ProviderId;
 
   constructor(plan: readonly FallbackPlanEntry[], options: FallbackChainOptions) {
-    const lastEntry = plan[plan.length - 1];
+    const lastEntry = plan.at(-1);
     if (lastEntry === undefined) {
       // A wiring invariant, not a provider failure: the engine always supplies at least the primary.
       throw new Error('FallbackChain requires at least one plan entry');
@@ -255,29 +255,47 @@ export class FallbackChain {
         this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
         continue;
       }
-      const budget = entry.maxAttempts;
-      let bonus = 0; // one extra attempt granted by a successful auth refresh (never the retry loop)
-      for (let attempt = 1; attempt <= budget + bonus; attempt += 1) {
-        this.#throwIfAborted(req, entry.provider.id);
-        const outcome = await this.#runGenerateAttempt(entry, entryReq, run);
-        if (outcome.status === 'success') {
-          return outcome.result;
-        }
-        run.lastError = outcome.error;
-        const verdict = await this.#afterFailure(entry, outcome.error);
-        if (verdict === 'fatal') {
-          throw new LlmProviderError(outcome.error);
-        }
-        if (verdict === 'auth-refreshed') {
-          bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
-          continue;
-        }
-        if (attempt < budget + bonus) {
-          await this.#backoff(entry, attempt - 1);
-        }
+      const result = await this.#runEntryGenerate(entry, entryReq, req, run);
+      if (result !== undefined) {
+        return result;
       }
     }
     throw new LlmProviderError(run.lastError ?? this.#exhaustedError());
+  }
+
+  /**
+   * Run one entry's attempt budget (+ any auth bonus) on the non-streaming path. Returns the result
+   * on success, or `undefined` to advance to the next entry; throws `LlmProviderError` on a fatal
+   * classification (which stops the whole chain).
+   */
+  async #runEntryGenerate(
+    entry: FallbackPlanEntry,
+    entryReq: LlmRequest,
+    req: LlmRequest,
+    run: ChainRun,
+  ): Promise<LlmResult | undefined> {
+    const budget = entry.maxAttempts;
+    let bonus = 0; // one extra attempt granted by a successful auth refresh (never the retry loop)
+    for (let attempt = 1; attempt <= budget + bonus; attempt += 1) {
+      this.#throwIfAborted(req, entry.provider.id);
+      const outcome = await this.#runGenerateAttempt(entry, entryReq, run);
+      if (outcome.status === 'success') {
+        return outcome.result;
+      }
+      run.lastError = outcome.error;
+      const verdict = await this.#afterFailure(entry, outcome.error);
+      if (verdict === 'fatal') {
+        throw new LlmProviderError(outcome.error);
+      }
+      if (verdict === 'auth-refreshed') {
+        bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
+        continue;
+      }
+      if (attempt < budget + bonus) {
+        await this.#backoff(entry, attempt - 1);
+      }
+    }
+    return undefined; // budget exhausted → advance to the next entry
   }
 
   /**
@@ -299,40 +317,56 @@ export class FallbackChain {
         this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
         continue;
       }
-      const budget = entry.maxAttempts;
-      let bonus = 0; // one extra attempt granted by a successful auth refresh (never the retry loop)
-      for (let attempt = 1; attempt <= budget + bonus; attempt += 1) {
-        if (this.#aborted(req)) {
-          yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
-          return;
-        }
-        const record = run.next(entry);
-        const attemptState: StreamAttemptState = { committed: false };
-        // Drive the attempt; it yields chunks and returns the terminal usage/failure.
-        const failure = yield* this.#runStreamAttempt(entry, entryReq, record, attemptState);
-        if (attemptState.committed) {
-          // The attempt forwarded content — whatever happened next was surfaced inside the attempt.
-          return;
-        }
-        if (failure === undefined) {
-          return; // a clean, content-free completion (e.g. a bare `stop`) — already emitted success.
-        }
-        run.lastError = failure;
-        const verdict = await this.#afterFailure(entry, failure);
-        if (verdict === 'fatal') {
-          yield { type: 'error', error: failure };
-          return;
-        }
-        if (verdict === 'auth-refreshed') {
-          bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
-          continue;
-        }
-        if (attempt < budget + bonus) {
-          await this.#backoff(entry, attempt - 1);
-        }
+      const action = yield* this.#runEntryStream(entry, entryReq, req, run);
+      if (action === 'done') {
+        return;
       }
     }
     yield { type: 'error', error: run.lastError ?? this.#exhaustedError() };
+  }
+
+  /**
+   * Run one entry's attempt budget (+ any auth bonus) on the streaming path. Yields the surviving
+   * provider's chunks; returns `'done'` when the stream is complete (a success, a committed/surfaced
+   * failure, a fatal pre-content stop, or a cancellation) or `'advance'` to try the next entry.
+   */
+  async *#runEntryStream(
+    entry: FallbackPlanEntry,
+    entryReq: LlmRequest,
+    req: LlmRequest,
+    run: ChainRun,
+  ): AsyncGenerator<StreamChunk, 'done' | 'advance'> {
+    const budget = entry.maxAttempts;
+    let bonus = 0; // one extra attempt granted by a successful auth refresh (never the retry loop)
+    for (let attempt = 1; attempt <= budget + bonus; attempt += 1) {
+      if (this.#aborted(req)) {
+        yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
+        return 'done';
+      }
+      const record = run.next(entry);
+      const attemptState: StreamAttemptState = { committed: false };
+      const failure = yield* this.#runStreamAttempt(entry, entryReq, record, attemptState);
+      if (attemptState.committed) {
+        return 'done'; // content forwarded — any later failure was surfaced inside the attempt
+      }
+      if (failure === undefined) {
+        return 'done'; // a clean, content-free completion (e.g. a bare `stop`) — success emitted
+      }
+      run.lastError = failure;
+      const verdict = await this.#afterFailure(entry, failure);
+      if (verdict === 'fatal') {
+        yield { type: 'error', error: failure };
+        return 'done';
+      }
+      if (verdict === 'auth-refreshed') {
+        bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
+        continue;
+      }
+      if (attempt < budget + bonus) {
+        await this.#backoff(entry, attempt - 1);
+      }
+    }
+    return 'advance'; // budget exhausted → try the next entry
   }
 
   /** Execute one `generate` attempt and report it; returns the success/error outcome. */
@@ -347,8 +381,8 @@ export class FallbackChain {
       const result = await entry.provider.generate(entryReq, key);
       this.#emitSuccess(record, entry.model, result.usage);
       return { status: 'success', result };
-    } catch (caught) {
-      const error = this.#errorOf(caught, entry.provider.id);
+    } catch (err) {
+      const error = this.#errorOf(err, entry.provider.id);
       this.#emit({ ...record, outcome: 'failed', error });
       return { status: 'error', error };
     }
@@ -384,8 +418,8 @@ export class FallbackChain {
         state.committed = state.committed || isContentChunk(chunk);
         yield chunk;
       }
-    } catch (caught) {
-      const error = this.#errorOf(caught, entry.provider.id);
+    } catch (err) {
+      const error = this.#errorOf(err, entry.provider.id);
       this.#emit({ ...record, outcome: 'failed', error });
       if (state.committed) {
         yield { type: 'error', error };
@@ -506,7 +540,7 @@ export class FallbackChain {
       ...record,
       outcome: 'succeeded',
       usage,
-      ...(cost !== undefined ? { cost } : {}),
+      ...(cost === undefined ? {} : { cost }),
     });
   }
 
@@ -560,7 +594,7 @@ class ChainRun {
       provider: entry.provider.id,
       model: entry.model,
       outcome: extra?.outcome ?? 'failed',
-      ...(extra?.skipReason !== undefined ? { skipReason: extra.skipReason } : {}),
+      ...(extra?.skipReason === undefined ? {} : { skipReason: extra.skipReason }),
     };
   }
 }

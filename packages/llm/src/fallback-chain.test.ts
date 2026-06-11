@@ -158,11 +158,11 @@ function makeOptions(overrides?: Partial<FallbackChainOptions>): {
 async function rejectedError(promise: Promise<unknown>): Promise<LlmError> {
   try {
     await promise;
-  } catch (caught) {
-    if (caught instanceof LlmProviderError) {
-      return caught.llmError;
+  } catch (err) {
+    if (err instanceof LlmProviderError) {
+      return err.llmError;
     }
-    throw caught;
+    throw err;
   }
   throw new Error('expected the promise to reject with an LlmProviderError');
 }
@@ -282,7 +282,7 @@ describe('FallbackChain.generate', () => {
         // A provider that throws a non-Error value (not the seam contract, but the runner must
         // normalize it rather than leak it) — exercises the `#errorOf` fallback message.
         // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberate non-Error throw
-        throw 'a bare string failure';
+        throw 'a bare string failure'; // NOSONAR — the non-Error throw is exactly what this test exercises
       },
     });
     const { options } = makeOptions();
