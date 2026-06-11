@@ -27,6 +27,9 @@ catalog:
   drizzle-kit: ^0.31.10
   # Runtime
   zod: ^3.23.0
+  # The engine's YAML loader — pure-JS, confined to @relavium/core (ADR-0035). Decodes an
+  # authored `.relavium.yaml` to a plain JS object that the strict WorkflowSchema validates.
+  yaml: ^2.9.0
   # @relavium/db persistence stack — Drizzle ORM (ADR-0005) over better-sqlite3,
   # the pinned Node-side SQLite driver (ADR-0021).
   drizzle-orm: ^0.45.2

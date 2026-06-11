@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
+    // `types: []` is the platform-type boundary — the engine has ZERO platform-specific
+    // imports (CLAUDE.md rule 5, ADR-0011), so a stray `process`/`Buffer`/`node:*` is a TS
+    // error. The whole package is the platform-free zone (unlike `@relavium/llm`, which needs
+    // a separate tsconfig.seam.json to fence its Node-typed adapter zone); this single config
+    // suffices. The YAML loader (`yaml`, ADR-0035) is pure-JS, so it needs no ambient types.
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
