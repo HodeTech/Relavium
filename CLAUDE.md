@@ -38,16 +38,17 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07).**
+**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07); the `FallbackChain` runner (1.K) has since landed, completing 1.m2 with the cost tracker (PR #13, 2026-06-11).**
 Phase 0 (M0, 2026-06-04) landed the monorepo, strict toolchain + CI, `@relavium/shared` (the
 full Zod contract set), the no-vendor-type seam fence, and `@relavium/db`. Phase 1 has since
 landed `@relavium/llm` — the `LLMProvider` seam + all three adapters (Anthropic, OpenAI/DeepSeek,
 Gemini), green on one shared conformance suite with no vendor type crossing the seam, plus the
 ADR-0030 seam-shape amendment — and the **ADR-0031 multimodal seam-shape amendment (1.AD, PR #11,
 2026-06-10)**: the media content/stream union members, the per-modality capability matrix, and the
-reserved generator methods, shape-only, landed before the seam's exhaustive consumers. Active work
-continues on the `FallbackChain` (1.K) and the
-[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md); see
+reserved generator methods, shape-only, landed before the seam's exhaustive consumers. The
+`FallbackChain` runner (1.K, PR #13) is now landed and fully covered; active work continues on the
+[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md), starting with the YAML
+parser (1.L); see
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 
 ## Non-negotiable rules for AI agents

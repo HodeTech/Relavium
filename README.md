@@ -36,7 +36,8 @@ OpenAI + DeepSeek; Gemini), passing one shared conformance suite behind the froz
 vendor type crossing it (PR #7–#9), followed by the **ADR-0031 multimodal seam-shape amendment
 (1.AD)** — the media content/stream union members, the per-modality capability matrix, and the
 reserved generator methods, landed **shape-only** before the seam's exhaustive consumers exist
-(PR #11, 2026-06-10). Next on the critical path: the `FallbackChain` runner (1.K)
-and the `@relavium/core` engine — parser, run loop, checkpoint/resume, retry, plus the **AgentSession**
-runtime + export-to-workflow sub-spine. See [docs/roadmap/current.md](docs/roadmap/current.md) for
+(PR #11, 2026-06-10). The seam's last policy layer — the `FallbackChain` runner (1.K) — then landed
+(PR #13, 2026-06-11), completing the LLM lane. Next on the critical path: the `@relavium/core` engine
+— parser, run loop, checkpoint/resume, retry, plus the **AgentSession** runtime + export-to-workflow
+sub-spine. See [docs/roadmap/current.md](docs/roadmap/current.md) for
 live status.
