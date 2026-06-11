@@ -28,6 +28,7 @@ export const ProviderSchema = z.enum(LLM_PROVIDERS);
 
 /** Backoff curve for `retry` and for engine-side retry config. */
 export const BackoffStrategySchema = z.enum(['linear', 'exponential']);
+export type BackoffStrategy = z.infer<typeof BackoffStrategySchema>;
 
 /** Transient-error retry on the *same* model. */
 export const RetrySchema = z

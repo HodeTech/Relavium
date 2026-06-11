@@ -124,6 +124,16 @@ export type { ModelPricing, CanonicalModelId } from './pricing.js';
 export { priceModel, cost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate } from './cost-tracker.js';
 
+// FallbackChain runner — fallback policy outside the adapters (1.K).
+export { FallbackChain, withFallback, stripReasoningParts } from './fallback-chain.js';
+export type {
+  FallbackPlanEntry,
+  FallbackChainOptions,
+  AttemptRecord,
+  AttemptOutcome,
+  BackoffStrategy,
+} from './fallback-chain.js';
+
 // ToolNormalizer (1.E).
 export {
   toWire,
