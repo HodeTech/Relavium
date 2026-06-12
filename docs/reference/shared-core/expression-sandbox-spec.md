@@ -147,7 +147,7 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 | Node | Required result | Violation |
 |------|-----------------|-----------|
 | `condition` | a `boolean` \| `string` \| `number`, compared to each `when` by strict `===` (no coercion) | a result outside that set → fatal `sandbox_error` (`result_type`). *(No-`when`-match-and-no-`default` is the **1.P condition handler's** concern when it applies the result — not the sandbox.)* |
-| `transform` | a JSON-serializable value per `target_key` | a function, symbol, top-level `undefined`, top-level **`BigInt`**, or circular result → fatal `sandbox_error` (`non_serializable`) |
+| `transform` | a JSON-serializable value per `target_key` | a function, symbol, top-level `undefined`, top-level **`BigInt`**, a top-level **boxed primitive** (`new String`/`new Number`/`new Boolean`), or circular result → fatal `sandbox_error` (`non_serializable`) |
 | `merge_fn` | a JSON-serializable object | as `transform` |
 
 > **Lossy JSON coercion (author guidance).** A `transform`/`merge_fn` result is taken as
@@ -155,6 +155,21 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 > `NaN`/`Infinity`/`-Infinity` → `null`, `-0` → `0`. These **pass** validation (they *are*
 > JSON-serializable) but lose information — return plain JSON values to avoid surprise. A top-level
 > `BigInt`, by contrast, is **rejected** (`JSON.stringify` throws on it — it is not serializable).
+
+> **Boxed primitives are rejected (deliberate over-rejection).** A top-level `new String("x")` /
+> `new Number(1)` / `new Boolean(true)` is rejected as `non_serializable` even though it round-trips
+> through `JSON.stringify` cleanly. The host validator keys on the **VM-side `typeof`** (which is
+> `'object'` for a wrapper) while the marshaled value is a host primitive, and treats that
+> object-vs-primitive mismatch as the tell of a non-marshalable result. The contract is therefore
+> slightly stricter than raw JSON-serializability: **return a plain primitive**, never a wrapper.
+
+> **Unsettled `run.outputs` reads (hazard).** A JS-expression `run.outputs["x"]` read is **not** wired
+> as a dependency edge by the DAG builder (1.M) — only `{{ … }}` template references are (see
+> [run-plan.md](run-plan.md#the-dependency-graph)). So if a `condition`/`transform`/`merge_fn` reads a
+> producer it is not transitively ordered after, it sees `undefined`: a dereference throws a loud
+> `runtime` error, but a bare comparison (`run.outputs["x"] === "ready"`) silently compares against
+> `undefined` and can mis-route. Order such producers with an explicit edge; a future 1.P handler may
+> fail closed on an unsettled reference.
 
 ## Error taxonomy
 

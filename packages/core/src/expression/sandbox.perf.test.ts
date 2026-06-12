@@ -3,11 +3,13 @@
  * the first `createExpressionSandbox()` is a genuine cold start (wasm instantiation). It measures
  * cold-start, per-eval latency, and per-eval RSS, logs them for the record, and soft-asserts generous
  * regression ceilings — the QuickJS-wasm *choice* is settled (this is an implementation gate, not a
- * decision gate). The numbers confirm the v1.0 caps (1000ms timeout) sit far above legitimate cost.
+ * decision gate). Measurement uses a generous override cap so timing never trips the sandbox; the
+ * assertion ties back to the REAL default cap (`DEFAULT_SANDBOX_LIMITS.timeoutMs`), confirming per-eval
+ * cost sits far below it.
  */
 import { describe, expect, it } from 'vitest';
 
-import { createExpressionSandbox, type EvaluateInput } from './sandbox.js';
+import { createExpressionSandbox, DEFAULT_SANDBOX_LIMITS, type EvaluateInput } from './sandbox.js';
 
 const EVALS = 500;
 
@@ -57,9 +59,11 @@ describe('expression sandbox — perf spike', () => {
         `rss-delta=${rssDeltaMb.toFixed(1)}MB`,
     );
 
-    // Outlier-robust catastrophic-regression guard only (avg over n=500 absorbs scheduling spikes);
-    // p95 is logged, not asserted. The observed values (cold-start ~35ms, avg ~1ms) leave huge headroom.
+    // Outlier-robust catastrophic-regression guard (avg over n=500 absorbs scheduling spikes); p95 is
+    // logged, not asserted. The observed values (cold-start ~35ms, avg ~1ms) leave huge headroom. The
+    // final assertion ties the "well under the caps" claim to the REAL default timeout cap.
     expect(coldStartMs).toBeLessThan(30_000);
     expect(avg).toBeLessThan(100);
+    expect(avg).toBeLessThan(DEFAULT_SANDBOX_LIMITS.timeoutMs);
   });
 });

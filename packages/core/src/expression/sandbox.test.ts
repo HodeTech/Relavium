@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { SandboxError } from '../errors.js';
 import {
   createExpressionSandbox,
+  hostErrorToSandbox,
   type EvaluateInput,
   type ExpressionSandbox,
   type ExpressionScope,
@@ -552,5 +553,80 @@ describe('error serialization safety', () => {
     });
     expect(error.detail).toContain('SENSITIVE-XYZ'); // readable by an explicit logger
     expect(JSON.stringify(error)).not.toContain('SENSITIVE-XYZ'); // but not via naive serialization
+  });
+});
+
+describe('createExpressionSandbox — PR-review regression cases', () => {
+  it('evaluates an expression carrying a trailing line comment (own-line wrapping)', () => {
+    // The author expression is emitted on its own line so a trailing `//` cannot comment out the
+    // closing `);` (commit 9493ba5). An inline regression would break every such expression.
+    expect(
+      sandbox.evaluate({ kind: 'condition', expression: '1 + 1 === 2 // ok', scope: mkScope() }),
+    ).toBe(true);
+    expect(
+      sandbox.evaluate({ kind: 'transform', expression: '({ a: 1 }) // note', scope: mkScope() }),
+    ).toEqual({ a: 1 });
+  });
+
+  it('rejects an unterminated block comment as a syntax error', () => {
+    expect(
+      evalError({ kind: 'condition', expression: 'true /* unterminated', scope: mkScope() }).reason,
+    ).toBe('syntax');
+  });
+
+  it('evaluates a multi-line merge_fn body (with a trailing comment)', () => {
+    const expression = [
+      '(function () {',
+      '  const merged = {};',
+      '  for (let i = 0; i < branches.length; i++) { Object.assign(merged, branches[i]); }',
+      '  return merged; // combine the branch outputs',
+      '})()',
+    ].join('\n');
+    expect(
+      sandbox.evaluate({
+        kind: 'merge_fn',
+        expression,
+        scope: mkScope({ branches: [{ a: 1 }, { b: 2 }] }),
+      }),
+    ).toEqual({ a: 1, b: 2 });
+  });
+
+  it('rejects a pathologically large expression before evalCode (bounds host parse overflow)', () => {
+    // Deeply-nested parens around `1` — well over MAX_EXPRESSION_CHARS, the shape that would overflow
+    // the host parser stack; the length bound rejects it cleanly as `syntax` first.
+    const expression = `${'('.repeat(60_000)}1${')'.repeat(60_000)}`;
+    expect(evalError({ kind: 'condition', expression, scope: mkScope() }).reason).toBe('syntax');
+  });
+
+  it('rejects a top-level boxed primitive as non_serializable (documented over-rejection)', () => {
+    // `new String(...)` round-trips through JSON but the VM typeof is `object` while the marshaled
+    // value is a primitive — the host validator rejects that mismatch (spec §Result contract).
+    expect(
+      evalError({ kind: 'transform', expression: 'new String("x")', scope: mkScope() }).reason,
+    ).toBe('non_serializable');
+  });
+
+  it('classifies a non-serializable injected scope via the JSON.stringify-throw branch', () => {
+    // A SHALLOW BigInt scope passes assertBoundedDepth, then JSON.stringify throws — exercising the
+    // stringify-throw arm (distinct message), not the depth arm.
+    const error = evalError({
+      kind: 'transform',
+      expression: '1',
+      scope: mkScope({ inputs: { n: BigInt(5) } }),
+    });
+    expect(error.reason).toBe('scope');
+    expect(error.message).toContain('could not be serialized');
+  });
+
+  it('hostErrorToSandbox classifies a raw host throw without leaking it (the evaluate boundary arm)', () => {
+    // The `: hostErrorToSandbox(err)` arm of evaluate's catch (a raw host throw constructing the
+    // runtime/context) is otherwise impractical to reach from a black-box test — unit-test the mapping.
+    const passthrough = new SandboxError('timeout', 'x');
+    expect(hostErrorToSandbox(passthrough)).toBe(passthrough); // a SandboxError passes through unchanged
+    const stack = hostErrorToSandbox(new RangeError('Maximum call stack size exceeded'));
+    expect(stack.reason).toBe('stack');
+    const generic = hostErrorToSandbox(new Error('boom'));
+    expect(generic.reason).toBe('runtime');
+    expect(JSON.stringify(generic)).not.toContain('boom'); // detail is non-enumerable (secret-free)
   });
 });

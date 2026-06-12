@@ -73,11 +73,11 @@ export interface SandboxLimits {
  * budget spuriously trips a trivial eval when the process is descheduled mid-call (and a timeout is
  * the one retryable failure, so even a spurious trip is recovered by node retry).
  */
-export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
+export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = Object.freeze({
   timeoutMs: 1000,
   memoryBytes: 16 * 1024 * 1024,
   stackBytes: 256 * 1024,
-};
+});
 
 /** One expression evaluation request. */
 export interface EvaluateInput {
@@ -136,6 +136,15 @@ const SANDBOX_INTRINSICS: Intrinsics = {
 const MAX_SCOPE_DEPTH = 256;
 
 /**
+ * Reject a pathologically large expression *string* before `evalCode`. A deeply-nested expression
+ * overflows the HOST stack inside the parser (a raw `RangeError` whose stack-vs-runtime classification
+ * is then host-engine-specific) — this bound, the companion to {@link MAX_SCOPE_DEPTH} for the scope,
+ * keeps that branch unreachable for any realistic input (a real `condition`/`transform`/`merge_fn` is
+ * tens to a few hundred chars; 100 KB is orders of magnitude above any authored expression).
+ */
+const MAX_EXPRESSION_CHARS = 100_000;
+
+/**
  * Load the QuickJS wasm module once per process (instantiation is the expensive step; runtimes and
  * contexts are cheap and created fresh per evaluation). Memoized so concurrent callers share it.
  */
@@ -180,6 +189,9 @@ export async function createExpressionSandbox(options?: {
  * safe (it cannot reach `eval`/`Function`/`Date`/I/O — none exist).
  */
 function buildProgram(expression: string, scope: ExpressionScope): string {
+  if (expression.length > MAX_EXPRESSION_CHARS) {
+    throw new SandboxError('syntax', 'the expression is too large to evaluate');
+  }
   const envelope = {
     inputs: scope.inputs,
     ctx: scope.ctx,
@@ -321,8 +333,13 @@ function assertBoundedDepth(root: unknown): void {
   }
 }
 
-/** Convert a host-side throw that escaped the VM into a classified, fatal {@link SandboxError}. */
-function hostErrorToSandbox(cause: unknown): SandboxError {
+/**
+ * Convert a host-side throw that escaped the VM into a classified, fatal {@link SandboxError}.
+ * Exported for the same-package unit test only (NOT re-exported from the package `index.ts`): the host
+ * arm of `evaluate`'s boundary catch (a failure constructing the runtime/context) is otherwise
+ * impractical to reach from a black-box test.
+ */
+export function hostErrorToSandbox(cause: unknown): SandboxError {
   if (cause instanceof SandboxError) {
     return cause;
   }
