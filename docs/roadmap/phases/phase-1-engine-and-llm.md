@@ -470,7 +470,7 @@ schemas; the run-event count-test is green at the new total; `tsc` + the seam fe
 today is the count-pinned unit test, **not** the DB-migration drift gate — `run_events.event_type` is
 unconstrained text — so the test total must be updated deliberately.)
 
-### 1.L — `WorkflowYAMLParser` (parse + validate) — *critical path*
+### 1.L — `WorkflowYAMLParser` (parse + validate) — *critical path* · ✅ **Done (PR #14, 2026-06-12)**
 
 The engine entry point: load a `.relavium.yaml` and validate it against the
 `@relavium/shared` `WorkflowSchema` (post-1.L.0) before any LLM call.
