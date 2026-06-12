@@ -233,6 +233,93 @@ describe('buildRunPlan — valid topological orders', () => {
   });
 });
 
+describe('buildRunPlan — graph shapes', () => {
+  it('orders multiple independent roots converging on one sink', () => {
+    const p = plan(
+      doc(`  id: roots
+  nodes:
+    - { id: r1, type: input }
+    - { id: r2, type: input }
+    - { id: sink, type: output }
+  edges:
+    - { from: r1, to: sink }
+    - { from: r2, to: sink }`),
+    );
+    assertTopo(p);
+    expect(p.vertices.get('sink')?.dependencies).toEqual(['r1', 'r2']);
+  });
+
+  it('orders a diamond (top → {left,right} → bottom)', () => {
+    const p = plan(
+      doc(`  id: diamond
+  nodes:
+    - { id: top, type: input }
+    - { id: left, type: transform, transform: '1' }
+    - { id: right, type: transform, transform: '2' }
+    - { id: bottom, type: output }
+  edges:
+    - { from: top, to: left }
+    - { from: top, to: right }
+    - { from: left, to: bottom }
+    - { from: right, to: bottom }`),
+    );
+    assertTopo(p);
+    expect(p.vertices.get('bottom')?.dependencies).toEqual(['left', 'right']);
+    expect(p.order[0]).toBe('top');
+  });
+
+  it('handles fully isolated nodes (no edges)', () => {
+    const p = plan(
+      doc(`  id: iso
+  nodes:
+    - { id: a, type: input }
+    - { id: b, type: output }
+  edges: []`),
+    );
+    expect(p.order).toEqual(['a', 'b']);
+    expect(p.vertices.get('a')?.dependencies).toEqual([]);
+    expect(p.vertices.get('b')?.dependencies).toEqual([]);
+  });
+
+  it('synthesizes NO fan_in for a parallel with no paired merge', () => {
+    const p = plan(
+      doc(`  id: nomerge
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [a, b] }
+    - { id: a, type: output }
+    - { id: b, type: output }
+  edges:
+    - { from: start, to: fan }`),
+    );
+    expect(p.vertices.get('fan')?.type).toBe('fan_out');
+    expect([...p.vertices.values()].some((v) => v.type === 'fan_in')).toBe(false);
+    expect(p.vertices.get('a')?.dependencies).toEqual(['fan']);
+  });
+
+  it('dedupes a condition whose default equals a branch target', () => {
+    const p = plan(
+      doc(`  id: dedup
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: only }], default: only }
+    - { id: only, type: output }
+  edges: []`),
+    );
+    expect(p.vertices.get('gate')?.dependents).toEqual(['only']);
+    expect(p.vertices.get('only')?.dependencies).toEqual(['gate']);
+  });
+
+  it('omits maxParallel when the workflow declares none', () => {
+    const p = plan(
+      doc(`  id: nocap
+  nodes:
+    - { id: a, type: input }
+  edges: []`),
+    );
+    expect(p.maxParallel).toBeUndefined();
+  });
+});
+
 describe('buildRunPlan — cycle detection', () => {
   it('rejects a direct cycle, naming it', () => {
     const err = expectGraphError(
@@ -377,6 +464,18 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     );
     expect(p.vertices.has('gate')).toBe(true);
   });
+
+  it('accepts a non-canonical numeric handle (gate:1.0 for when: 1)', () => {
+    const p = plan(
+      doc(`  id: numcanon
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: 1, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: 'gate:1.0', to: out }`),
+    );
+    expect(p.vertices.has('gate')).toBe(true);
+  });
 });
 
 describe('buildRunPlan — agent_ref resolution', () => {
@@ -465,6 +564,53 @@ describe('buildRunPlan — secret re-taint of resolved $ref agents', () => {
     const leak = (thrown as WorkflowSecretLeakError).leaks[0];
     expect(leak?.secret).toBe(`inputs.${SECRET_INPUT}`);
     expect(leak?.location).toContain('leaky');
+  });
+
+  it('does NOT re-taint an unreferenced registry agent (only referenced ones reach a model)', () => {
+    const agents = new Map<string, Agent>([
+      ['used-clean', { id: 'used-clean', model: 'm', provider: 'anthropic', system_prompt: 'clean' }],
+      [
+        'unused-leaky',
+        { id: 'unused-leaky', model: 'm', provider: 'anthropic', system_prompt: `x {{inputs.${SECRET_INPUT}}}` },
+      ],
+    ]);
+    // `unused-leaky` leaks but no node references it, so the build must succeed (it never reaches a model).
+    const p = plan(
+      doc(`  id: unref
+  inputs:
+    - { name: ${SECRET_INPUT}, type: secret }
+  nodes:
+    - { id: n, type: agent, agent_ref: used-clean, prompt_template: 'go' }
+  edges: []`),
+      { agents },
+    );
+    expect(p.vertices.get('n')?.config).toMatchObject({ kind: 'agent' });
+  });
+
+  it('reports the first leak in authored node order, not host registry Map order', () => {
+    // Registry inserted in REVERSE authored order — the reported headline leak must still follow authored order.
+    const agents = new Map<string, Agent>([
+      ['agent-b', { id: 'agent-b', model: 'm', provider: 'anthropic', system_prompt: `b {{inputs.${SECRET_INPUT}}}` }],
+      ['agent-a', { id: 'agent-a', model: 'm', provider: 'anthropic', system_prompt: `a {{inputs.${SECRET_INPUT}}}` }],
+    ]);
+    let thrown: unknown;
+    try {
+      plan(
+        doc(`  id: order
+  inputs:
+    - { name: ${SECRET_INPUT}, type: secret }
+  nodes:
+    - { id: node-a, type: agent, agent_ref: agent-a, prompt_template: 'go' }
+    - { id: node-b, type: agent, agent_ref: agent-b, prompt_template: 'go' }
+  edges: []`),
+        { agents },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(WorkflowSecretLeakError);
+    // node-a is authored first → its agent is the headline leak, despite agent-b being inserted Map-first.
+    expect((thrown as WorkflowSecretLeakError).leaks[0]?.location).toContain('agent-a');
   });
 
   it('does NOT re-check inline agents (already gated by the parser) via the registry path', () => {

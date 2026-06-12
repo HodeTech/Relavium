@@ -88,14 +88,26 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     }
   }
 
-  // 3. Secret re-taint of resolved-but-not-inline agent prompts (inline ones are already parser-checked).
+  // 3. Secret re-taint of resolved `$ref`/registry agent prompts that a node actually *references* via
+  //    `agent_ref` (inline agents are already parser-checked; an unreferenced registry agent never reaches
+  //    a model, so re-tainting it would wrongly reject a runnable workflow — scope it to referenced agents,
+  //    parity with the `dangling_ref` check). Iterate in authored node order, deduping by ref, so the
+  //    reported leak order is deterministic and consistent with the parser's authored-order gate —
+  //    independent of the host registry's Map insertion order. The echoed `ref` is `kebabIdSchema`-valid.
   if (opts?.agents !== undefined) {
     const texts: { location: string; text: string }[] = [];
-    for (const [id, agent] of opts.agents) {
-      if (!inlineAgentIds.has(id)) {
-        const label = SAFE_ID_LABEL.test(id) ? `\`${id}\`` : '<agent>';
-        texts.push({ location: `agent ${label}.system_prompt`, text: agent.system_prompt });
+    const seenRefs = new Set<string>();
+    for (const node of spec.nodes) {
+      if (node.type !== 'agent' || seenRefs.has(node.agent_ref) || inlineAgentIds.has(node.agent_ref)) {
+        continue;
       }
+      seenRefs.add(node.agent_ref);
+      const agent = opts.agents.get(node.agent_ref);
+      if (agent === undefined) {
+        continue; // a dangling ref — reported by the graph pass, not here
+      }
+      const label = SAFE_ID_LABEL.test(node.agent_ref) ? `\`${node.agent_ref}\`` : '<agent>';
+      texts.push({ location: `agent ${label}.system_prompt`, text: agent.system_prompt });
     }
     const leaks = analyzeResolvedAgentTaint(def, texts);
     if (leaks.length > 0) {
@@ -318,7 +330,14 @@ function validateHandle(
     });
     return;
   }
-  const known = fromNode.branches.some((branch) => String(branch.when) === handle);
+  // A handle matches a branch when its text equals the `when` value stringified. For a *numeric* `when`,
+  // also accept a non-canonical numeric form (`gate:1.0` / `gate:0x10` for `when: 1` / `when: 16`), since
+  // the spec names no canonical handle form and YAML already coerced the authored `when` to a number.
+  const known = fromNode.branches.some(
+    (branch) =>
+      String(branch.when) === handle ||
+      (typeof branch.when === 'number' && handle.trim() !== '' && Number(handle) === branch.when),
+  );
   if (!known) {
     issues.push({
       kind: 'invalid_handle',
