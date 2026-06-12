@@ -11,9 +11,11 @@
 > conformance suite in fixture mode (live-nightly lane reserved/pending keys); no vendor type crosses the
 > seam. **1.K (FallbackChain) is ✅ Done (PR #13, 2026-06-11)** — the seam's last policy layer, with the
 > ADR-0030 strip-on-failover obligation honoured; **1.m2 (policy layers) is complete** (with the
-> CostTracker, 1.B). **1.L ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is now scaffolded with the
-> `WorkflowYAMLParser`; the engine lane continues at **1.L2 → 1.M → 1.N → 1.R**, converging at the
-> **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
+> CostTracker, 1.B). **1.L ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is scaffolded with the
+> `WorkflowYAMLParser` — and **1.L2 ✅ Done (PR #15, 2026-06-12)** — the `{{ … }}` interpolation engine
+> (runtime resolver + pipe-filter registry) plus the parse-time transitive secret-taint gate
+> (ADR-0029(c)). The engine lane continues at **1.M → 1.N → 1.R**, converging at the **1.O** join toward
+> **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -496,7 +498,7 @@ side-effect-free** — no file mutation, no `process.env` mutation, no import-ti
 (validation only). *(Note for a future maintainer: the `config.*` schemas are `.strict()` by a **deliberate
 choice beyond** ADR-0023's lenient-config default — "parity with the authored YAML" — not a bug to "fix".)*
 
-### 1.L2 — Interpolation / templating engine (the `{{ … }}` runtime resolver) — *critical path*
+### 1.L2 — Interpolation / templating engine (the `{{ … }}` runtime resolver) — *critical path* · ✅ **Done (PR #15)**
 
 1.L resolves interpolation references to a **structured, unevaluated** representation; this workstream owns
 the **runtime resolver** every node's input flows through. (No other workstream owns it — it sits on the path
@@ -1050,8 +1052,8 @@ flowchart LR
 | 1.H | A | 1.E, 1.F | 1.J | ✅ |
 | 1.J | A | 1.G, 1.H, 1.I | 1.K (**M1**) | ✅ |
 | 1.K | A | 1.B, 1.I, 1.J, 1.AD (media shape) | 1.O | ✅ — **Done (PR #13)** |
-| 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ |
-| 1.L2 | B | 1.L | 1.M | ✅ |
+| 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ — **Done (PR #14)** |
+| 1.L2 | B | 1.L | 1.M | ✅ — **Done (PR #15)** |
 | 1.M | B | 1.L2 | 1.N | ✅ |
 | 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ |
 | 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |

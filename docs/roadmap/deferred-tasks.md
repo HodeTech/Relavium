@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-11
+> Last updated: 2026-06-12
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -184,6 +184,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   question: does the estimate need provider-accurate token counting (from the seam's model meta /
   usage feedback) to avoid systematic over/under-blocking, or is the declared estimate enough?
   No change now — re-evaluate with real 1.AC telemetry. *(1.AC; ADR-0028)*
+
+## Interpolation engine (1.L2) follow-ups
+
+> A comprehensive multi-dimensional pre-merge review of **1.L2** (PR #15, merged 2026-06-12) confirmed
+> the engine sound and folded every actionable finding. Two cross-layer forward-obligations were
+> deliberately deferred (each marked in a code comment); recorded here so the 1.M / 1.R implementers
+> see them. The security-critical deferrals — re-tainting `run.outputs` for a secret-derived node
+> output, and carrying resolved-interpolation provenance into the untrusted-content-as-data boundary —
+> are already **1.O acceptance criteria** (phase-1 §1.O), so they are not duplicated here.
+
+- [ ] **Structured-default reference flow (→ 1.M).** The static gates (`analyzeSecretTaint`,
+  `analyzePreRunReferences`) scan only **string** input defaults; a `{{ … }}` nested in a STRUCTURED
+  default (`default: { token: '{{secrets.x}}' }`) is not scanned. This is **not a runtime leak** —
+  `resolveTemplate` is single-pass and never re-interpolates, so `{{inputs.config | json}}` emits the
+  literal `{{secrets.x}}`, not a resolved secret — but the typed-input layer (1.M) should decide whether
+  a structured default's references are resolved/taint-checked at all, and pin the boundary with a test.
+  *(packages/core/src/interpolation/analyze.ts; 1.M)*
+- [ ] **Frozen `ctx` checkpoint transport must use `structuredClone` (→ 1.R).** `resolveContext` returns
+  an `Object.freeze`d **null-prototype** map so a `__proto__`/`constructor` context key is a safe own
+  property. That guard is in-memory only: persisting/transporting it via `JSON.stringify` → `JSON.parse`
+  (esp. with a reviver, or merged into `{}`) can re-materialize `__proto__` as a real setter. The 1.R
+  checkpoint/resume layer MUST transport the frozen scope with `structuredClone`, never a JSON round-trip;
+  pin it with a test when the checkpointer lands. *(packages/core/src/interpolation/resolve.ts; 1.R)*
 
 ## Schema / validation hardening
 
