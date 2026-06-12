@@ -121,7 +121,7 @@ inputs:
 
 ## Context and interpolation
 
-`context` declares named values available throughout the workflow as `{{ctx.key}}`. Interpolation uses `{{ ... }}` syntax everywhere (inputs, context, prompt templates, message templates, edge/condition expressions). A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
+`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `inputs` defaults, `context` values, agent `prompt_template` / `system_prompt_append`, and human-gate `assignee` / `message_template`. The **expression fields** — a `condition` node's `expression`, a `transform`, a `merge_fn`, and an edge `condition` — are **bare sandboxed JavaScript** (`expression_type: js`; [ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper, and a non-`js` `expression_type` is rejected at parse. A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
 
 ```yaml
 context:
@@ -135,7 +135,7 @@ Common interpolation namespaces:
 
 - `{{inputs.<name>}}` — declared workflow inputs.
 - `{{ctx.<key>}}` — context entries.
-- `{{run.outputs["<node-id>"]}}` — a completed node's output (used in conditions, templates, and merges).
+- `{{run.outputs["<node-id>"]}}` — a completed node's output, in a template field; the same data is read as bare `run.outputs["<node-id>"]` (no `{{ }}`) inside a `condition` / `transform` / `merge_fn` expression.
 - Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`.
 
 > **Evaluation timing.** `context` entries are evaluated **eagerly, exactly once, before any node runs**, and the resolved values are immutable and cached for the whole run. A pipe-filter failure (e.g. `read_file` on a missing path) is a **validation error** that fails the run before it starts (CLI exit code 2), never a mid-run surprise. A `context` value may reference `{{inputs.*}}` but **not** `{{run.outputs[...]}}` (no node has run yet) — doing so is a parse error.

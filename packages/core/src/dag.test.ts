@@ -38,9 +38,10 @@ function assertTopo(p: RunPlan): void {
     for (const dep of vertex.dependencies) {
       const a = pos.get(dep);
       const b = pos.get(vertex.id);
-      expect(a).toBeDefined();
-      expect(b).toBeDefined();
-      expect(a as number).toBeLessThan(b as number);
+      if (a === undefined || b === undefined) {
+        throw new Error(`missing topological position for \`${dep}\` or \`${vertex.id}\``);
+      }
+      expect(a).toBeLessThan(b);
     }
   }
 }
@@ -68,6 +69,21 @@ describe('buildRunPlan — valid topological orders', () => {
 
   it('is deterministic — the same workflow yields a deep-equal order', () => {
     expect(plan(SEQUENTIAL).order).toEqual(plan(SEQUENTIAL).order);
+  });
+
+  it('breaks ties by authored order across the whole ready set (not discovery order)', () => {
+    const p = plan(
+      doc(`  id: tie
+  nodes:
+    - { id: a, type: input }
+    - { id: b, type: output }
+    - { id: c, type: output }
+  edges:
+    - { from: a, to: b }`),
+    );
+    // a(0) and c(2) start ready; after a runs, b(1) becomes ready and must precede c(2) by authored
+    // index — a discovery-order (FIFO) walk would wrongly emit [a, c, b].
+    expect(p.order).toEqual(['a', 'b', 'c']);
   });
 
   it('orders a parallel fan-out / fan-in graph and expands parallel→fan_out, merge→fan_in', () => {
@@ -382,7 +398,7 @@ describe('buildRunPlan — cycle detection', () => {
     );
     expect(err.issues[0]?.kind).toBe('cycle');
     // Names the cycle containing the first stuck node in authored order (a↔b); naming one suffices.
-    expect(err.issues[0]?.field).toMatch(/a|b/);
+    expect(err.issues[0]?.field).toMatch(/[ab]/);
     expect(err.issues[0]?.message).toMatch(/cycle/i);
   });
 
@@ -488,6 +504,21 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     - { from: 'gate:7', to: out }`),
     );
     expect(p.vertices.has('gate')).toBe(true);
+  });
+
+  it('rejects a condition handle edge whose `to` contradicts the branch target_node', () => {
+    const err = expectGraphError(
+      doc(`  id: mismatch
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: a }] }
+    - { id: a, type: output }
+    - { id: b, type: output }
+  edges:
+    - { from: 'gate:true', to: b }`),
+    );
+    expect(err.issues.some((i) => i.kind === 'mismatched_branch_target')).toBe(true);
+    // Routing stays authoritative: the materialized edge follows the branch's target_node, not the edge.
+    expect(err.issues[0]?.message).toContain('routes to `a`');
   });
 
   it('accepts a non-canonical numeric handle (gate:1.0 for when: 1)', () => {

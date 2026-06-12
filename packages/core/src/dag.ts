@@ -24,11 +24,23 @@
 
 import type { Agent, EngineNodeType, Workflow, WorkflowNode } from '@relavium/shared';
 
-import { WorkflowGraphError, WorkflowSecretLeakError, type GraphIssue } from './errors.js';
+import {
+  WorkflowGraphError,
+  WorkflowSecretLeakError,
+  type GraphIssue,
+  type SecretLeak,
+} from './errors.js';
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
 import { templateReferences } from './interpolation/references.js';
 import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
+
+/** Authored node variants, narrowed from the shared union for the per-type wiring helpers. */
+type ParallelNode = Extract<WorkflowNode, { type: 'parallel' }>;
+type ConditionNode = Extract<WorkflowNode, { type: 'condition' }>;
+type AgentNode = Extract<WorkflowNode, { type: 'agent' }>;
+type WorkflowSpec = Workflow['workflow'];
+type AddEdge = (producer: string, consumer: string) => void;
 
 /** Options for {@link buildRunPlan}. */
 export interface BuildRunPlanOptions {
@@ -66,55 +78,14 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     authoredIndex.set(node.id, i);
   });
 
-  // 2. Resolve agents: inline `agents:` entries, then the host-supplied registry (never overriding inline).
-  const agentsById = new Map<string, Agent>();
-  const inlineAgentIds = new Set<string>();
-  for (const agent of spec.agents ?? []) {
-    if ('id' in agent) {
-      inlineAgentIds.add(agent.id);
-      agentsById.set(agent.id, agent);
-    }
-  }
-  if (opts?.agents !== undefined) {
-    for (const [id, agent] of opts.agents) {
-      if (!agentsById.has(id)) {
-        agentsById.set(id, agent);
-      }
-    }
+  // 2. Resolve agents (inline + host registry), then re-taint the prompts a node actually references.
+  const { agentsById, inlineAgentIds } = resolveAgents(spec, opts?.agents);
+  const leaks = referencedAgentLeaks(def, spec, opts?.agents, inlineAgentIds);
+  if (leaks.length > 0) {
+    throw new WorkflowSecretLeakError(leaks, sourceOpt);
   }
 
-  // 3. Secret re-taint of resolved `$ref`/registry agent prompts that a node actually *references* via
-  //    `agent_ref` (inline agents are already parser-checked; an unreferenced registry agent never reaches
-  //    a model, so re-tainting it would wrongly reject a runnable workflow — scope it to referenced agents,
-  //    parity with the `dangling_ref` check). Iterate in authored node order, deduping by ref, so the
-  //    reported leak order is deterministic and consistent with the parser's authored-order gate —
-  //    independent of the host registry's Map insertion order. The echoed `ref` is `kebabIdSchema`-valid.
-  if (opts?.agents !== undefined) {
-    const texts: { location: string; text: string }[] = [];
-    const seenRefs = new Set<string>();
-    for (const node of spec.nodes) {
-      if (
-        node.type !== 'agent' ||
-        seenRefs.has(node.agent_ref) ||
-        inlineAgentIds.has(node.agent_ref)
-      ) {
-        continue;
-      }
-      seenRefs.add(node.agent_ref);
-      const agent = opts.agents.get(node.agent_ref);
-      if (agent === undefined) {
-        continue; // a dangling ref — reported by the graph pass, not here
-      }
-      const label = SAFE_ID_LABEL.test(node.agent_ref) ? `\`${node.agent_ref}\`` : '<agent>';
-      texts.push({ location: `agent ${label}.system_prompt`, text: agent.system_prompt });
-    }
-    const leaks = analyzeResolvedAgentTaint(def, texts);
-    if (leaks.length > 0) {
-      throw new WorkflowSecretLeakError(leaks, sourceOpt);
-    }
-  }
-
-  // 4. Build the dependency graph (dependents = out-edges, dependencies = in-edges) over node ids, plus
+  // 3. Build the dependency graph (dependents = out-edges, dependencies = in-edges) over node ids, plus
   //    collect field-named issues. Edges with a missing endpoint are skipped from the graph (the missing
   //    endpoint is reported separately), so the cycle check runs over the well-formed subgraph.
   const dependents = new Map<string, Set<string>>();
@@ -136,7 +107,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   const issues: GraphIssue[] = [];
   validateAndWireEdges(spec, nodesById, agentsById, opts?.agents !== undefined, addEdge, issues);
 
-  // 5. Kahn topological order (authored-order tie-break → reproducible plan; deep-equal-testable).
+  // 4. Kahn topological order (authored-order tie-break → reproducible plan; deep-equal-testable).
   const order = kahnOrder(spec.nodes, dependents, dependencies, authoredIndex);
   if (order.length < spec.nodes.length) {
     const cycle = extractCycle(spec.nodes, order, dependencies, authoredIndex);
@@ -154,7 +125,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     throw new WorkflowGraphError(issues, sourceOpt);
   }
 
-  // 6. Assemble the plan — one vertex per node, wired and configured deterministically.
+  // 5. Assemble the plan — one vertex per node, wired and configured deterministically.
   const vertices = new Map<string, PlanVertex>();
   const byAuthored = (a: string, b: string): number =>
     (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
@@ -191,100 +162,215 @@ function validateAndWireEdges(
   addEdge: (producer: string, consumer: string) => void,
   issues: GraphIssue[],
 ): void {
-  // 4a. Structural edges + handle validation.
-  spec.edges.forEach((edge, i) => {
-    const colon = edge.from.indexOf(':');
-    const fromBase = colon === -1 ? edge.from : edge.from.slice(0, colon);
-    const handle = colon === -1 ? undefined : edge.from.slice(colon + 1);
-    const fromNode = nodesById.get(fromBase);
-    const locator = `edge \`${fromBase}\`→\`${edge.to}\``;
+  // 3a. Structural edges + handle validation.
+  spec.edges.forEach((edge, i) => validateStructuralEdge(edge, i, nodesById, addEdge, issues));
 
-    if (fromNode === undefined) {
-      issues.push({
-        kind: 'unknown_edge_target',
-        field: locator,
-        message: `edge source \`${fromBase}\` is not a node`,
-      });
-    }
-    if (!nodesById.has(edge.to)) {
-      issues.push({
-        kind: 'unknown_edge_target',
-        field: locator,
-        message: `edge target \`${edge.to}\` is not a node`,
-      });
-    }
-    if (handle !== undefined && fromNode !== undefined) {
-      validateHandle(fromNode, handle, locator, i, issues);
-    }
-    addEdge(fromBase, edge.to);
-  });
-
-  // 4b. Per-node endpoints: parallel_of membership, condition targets, agent_ref resolution, and the
-  //     materialized fan-out + data edges.
+  // 3b. Per-node endpoints (membership/targets/agent_ref) + materialized routing + own data edges.
   for (const node of spec.nodes) {
     if (node.type === 'parallel') {
-      node.parallel_of.forEach((member, j) => {
-        if (!nodesById.has(member)) {
-          issues.push({
-            kind: 'unknown_edge_target',
-            field: `node \`${node.id}\`.parallel_of[${j}]`,
-            message: `\`${member}\` is not a node`,
-          });
-        }
-        addEdge(node.id, member); // fan-out: each branch depends on the split
-      });
+      wireParallelNode(node, nodesById, addEdge, issues);
     } else if (node.type === 'condition') {
-      // Routing is authored on `branches[].target_node` / `default`, so it must carry a real dependency
-      // edge — symmetric with `parallel_of`'s self-materialization. Without it, a cycle routed through a
-      // branch (with no explicit `nodeId:handle` edge) would escape the cycle check, and the run loop's
-      // completion-gating / skip-propagation (§1.N) would see empty dependents. `addEdge` is a no-op when
-      // the target is missing (already flagged), so it is safe to call unconditionally after the check.
-      node.branches.forEach((branch, j) => {
-        if (!nodesById.has(branch.target_node)) {
-          issues.push({
-            kind: 'unknown_edge_target',
-            field: `node \`${node.id}\`.branches[${j}].target_node`,
-            message: `branch target \`${branch.target_node}\` is not a node`,
-          });
-        }
-        addEdge(node.id, branch.target_node);
-      });
-      if (node.default !== undefined) {
-        if (!nodesById.has(node.default)) {
-          issues.push({
-            kind: 'unknown_edge_target',
-            field: `node \`${node.id}\`.default`,
-            message: `default target \`${node.default}\` is not a node`,
-          });
-        }
-        addEdge(node.id, node.default);
-      }
+      wireConditionNode(node, nodesById, addEdge, issues);
     } else if (node.type === 'agent') {
-      if (registrySupplied && !agentsById.has(node.agent_ref)) {
-        issues.push({
-          kind: 'dangling_ref',
-          field: `node \`${node.id}\`.agent_ref`,
-          message: `agent_ref \`${node.agent_ref}\` resolves to no agent`,
-        });
-      }
-      // The resolved agent's own system_prompt may reference node outputs — those order this node too.
-      const agent = agentsById.get(node.agent_ref);
-      if (agent !== undefined) {
-        wireDataEdges(agent.system_prompt, node.id, nodesById, addEdge);
+      validateAgentNode(node, agentsById, registrySupplied, nodesById, addEdge, issues);
+    }
+    wireOwnDataEdges(node, addEdge);
+  }
+}
+
+/** Resolve agents from the inline `agents:` entries plus the host-supplied registry (inline wins). */
+function resolveAgents(
+  spec: WorkflowSpec,
+  registry: ReadonlyMap<string, Agent> | undefined,
+): { agentsById: Map<string, Agent>; inlineAgentIds: Set<string> } {
+  const agentsById = new Map<string, Agent>();
+  const inlineAgentIds = new Set<string>();
+  for (const agent of spec.agents ?? []) {
+    if ('id' in agent) {
+      inlineAgentIds.add(agent.id);
+      agentsById.set(agent.id, agent);
+    }
+  }
+  if (registry !== undefined) {
+    for (const [id, agent] of registry) {
+      if (!agentsById.has(id)) {
+        agentsById.set(id, agent);
       }
     }
+  }
+  return { agentsById, inlineAgentIds };
+}
 
-    // Data edges from this node's own template fields (`{{run.outputs["<id>"]}}` → this node depends on it).
-    // A reference to a *non-existent* producer adds no edge and — by design — no diagnostic: it is left to
-    // the runtime resolver, which raises `unresolved_reference` at dispatch. This is deliberate and
-    // symmetric with JS-expression `run.outputs` reads in `condition`/`transform`/`merge_fn` (sandbox-
-    // owned, 1.AB), which the builder also does not validate — the builder validates the authored *graph*
-    // (edges, branches, `parallel_of`, `agent_ref`), not data-reference targets. Pinned by a test.
-    for (const site of nodeReferenceSites(node)) {
-      for (const ref of site.references) {
-        if (ref.kind === 'node') {
-          addEdge(ref.identifier, node.id);
-        }
+/**
+ * Re-taint the resolved `$ref`/registry agent prompts a node actually *references* via `agent_ref`
+ * (inline agents are already parser-checked; an unreferenced registry agent never reaches a model, so
+ * re-tainting it would wrongly reject a runnable workflow — scope it to referenced agents, parity with
+ * the `dangling_ref` check). Iterate in authored node order, deduping by ref, so the reported leak order
+ * is deterministic and consistent with the parser's authored-order gate — independent of the host
+ * registry's Map insertion order. The echoed `ref` is `kebabIdSchema`-valid.
+ */
+function referencedAgentLeaks(
+  def: Workflow,
+  spec: WorkflowSpec,
+  registry: ReadonlyMap<string, Agent> | undefined,
+  inlineAgentIds: ReadonlySet<string>,
+): readonly SecretLeak[] {
+  if (registry === undefined) {
+    return [];
+  }
+  const texts: { location: string; text: string }[] = [];
+  const seenRefs = new Set<string>();
+  for (const node of spec.nodes) {
+    if (
+      node.type !== 'agent' ||
+      seenRefs.has(node.agent_ref) ||
+      inlineAgentIds.has(node.agent_ref)
+    ) {
+      continue;
+    }
+    seenRefs.add(node.agent_ref);
+    const agent = registry.get(node.agent_ref);
+    if (agent === undefined) {
+      continue; // a dangling ref — reported by the graph pass, not here
+    }
+    const label = SAFE_ID_LABEL.test(node.agent_ref) ? `\`${node.agent_ref}\`` : '<agent>';
+    texts.push({ location: `agent ${label}.system_prompt`, text: agent.system_prompt });
+  }
+  return analyzeResolvedAgentTaint(def, texts);
+}
+
+/**
+ * Validate one structural edge and wire its dependency. A `nodeId:handle` edge only routes a `condition`
+ * branch; its dependency is materialized from `branches[].target_node` ({@link wireConditionNode}), so a
+ * handled edge adds NO second (possibly contradictory) structural edge here — it is only validated
+ * (handle exists, and its `to` agrees with the branch's target). A plain edge wires `from → to`.
+ */
+function validateStructuralEdge(
+  edge: WorkflowSpec['edges'][number],
+  index: number,
+  nodesById: ReadonlyMap<string, WorkflowNode>,
+  addEdge: AddEdge,
+  issues: GraphIssue[],
+): void {
+  const colon = edge.from.indexOf(':');
+  const fromBase = colon === -1 ? edge.from : edge.from.slice(0, colon);
+  const handle = colon === -1 ? undefined : edge.from.slice(colon + 1);
+  const fromNode = nodesById.get(fromBase);
+  const locator = `edge \`${fromBase}\`→\`${edge.to}\``;
+
+  if (fromNode === undefined) {
+    issues.push({
+      kind: 'unknown_edge_target',
+      field: locator,
+      message: `edge source \`${fromBase}\` is not a node`,
+    });
+  }
+  if (!nodesById.has(edge.to)) {
+    issues.push({
+      kind: 'unknown_edge_target',
+      field: locator,
+      message: `edge target \`${edge.to}\` is not a node`,
+    });
+  }
+  if (handle !== undefined) {
+    if (fromNode !== undefined) {
+      validateHandle(fromNode, handle, edge.to, locator, index, issues);
+    }
+    return; // a handled edge's dependency comes from branch materialization, never a second edge here
+  }
+  addEdge(fromBase, edge.to);
+}
+
+/** Wire a `parallel` node's fan-out: each `parallel_of` member depends on the split. */
+function wireParallelNode(
+  node: ParallelNode,
+  nodesById: ReadonlyMap<string, WorkflowNode>,
+  addEdge: AddEdge,
+  issues: GraphIssue[],
+): void {
+  node.parallel_of.forEach((member, j) => {
+    if (!nodesById.has(member)) {
+      issues.push({
+        kind: 'unknown_edge_target',
+        field: `node \`${node.id}\`.parallel_of[${j}]`,
+        message: `\`${member}\` is not a node`,
+      });
+    }
+    addEdge(node.id, member);
+  });
+}
+
+/**
+ * Wire a `condition` node's routing from `branches[].target_node` / `default` — symmetric with
+ * `parallel_of`'s self-materialization. Without it, a cycle routed through a branch (with no explicit
+ * `nodeId:handle` edge) would escape the cycle check, and the run loop's completion-gating /
+ * skip-propagation (§1.N) would see empty dependents. `addEdge` is a no-op when a target is missing
+ * (already flagged), so it is safe to call unconditionally after the existence check.
+ */
+function wireConditionNode(
+  node: ConditionNode,
+  nodesById: ReadonlyMap<string, WorkflowNode>,
+  addEdge: AddEdge,
+  issues: GraphIssue[],
+): void {
+  node.branches.forEach((branch, j) => {
+    if (!nodesById.has(branch.target_node)) {
+      issues.push({
+        kind: 'unknown_edge_target',
+        field: `node \`${node.id}\`.branches[${j}].target_node`,
+        message: `branch target \`${branch.target_node}\` is not a node`,
+      });
+    }
+    addEdge(node.id, branch.target_node);
+  });
+  if (node.default !== undefined) {
+    if (!nodesById.has(node.default)) {
+      issues.push({
+        kind: 'unknown_edge_target',
+        field: `node \`${node.id}\`.default`,
+        message: `default target \`${node.default}\` is not a node`,
+      });
+    }
+    addEdge(node.id, node.default);
+  }
+}
+
+/** Validate an `agent` node's `agent_ref` and wire data edges from the resolved agent's system prompt. */
+function validateAgentNode(
+  node: AgentNode,
+  agentsById: ReadonlyMap<string, Agent>,
+  registrySupplied: boolean,
+  nodesById: ReadonlyMap<string, WorkflowNode>,
+  addEdge: AddEdge,
+  issues: GraphIssue[],
+): void {
+  if (registrySupplied && !agentsById.has(node.agent_ref)) {
+    issues.push({
+      kind: 'dangling_ref',
+      field: `node \`${node.id}\`.agent_ref`,
+      message: `agent_ref \`${node.agent_ref}\` resolves to no agent`,
+    });
+  }
+  // The resolved agent's own system_prompt may reference node outputs — those order this node too.
+  const agent = agentsById.get(node.agent_ref);
+  if (agent !== undefined) {
+    wireDataEdges(agent.system_prompt, node.id, nodesById, addEdge);
+  }
+}
+
+/**
+ * Wire data edges from a node's own template fields (`{{run.outputs["<id>"]}}` → this node depends on
+ * it). A reference to a *non-existent* producer adds no edge and — by design — no diagnostic: it is left
+ * to the runtime resolver, which raises `unresolved_reference` at dispatch. This is deliberate and
+ * symmetric with JS-expression `run.outputs` reads in `condition`/`transform`/`merge_fn` (sandbox-owned,
+ * 1.AB), which the builder also does not validate — the builder validates the authored *graph* (edges,
+ * branches, `parallel_of`, `agent_ref`), not data-reference targets. Pinned by a test.
+ */
+function wireOwnDataEdges(node: WorkflowNode, addEdge: AddEdge): void {
+  for (const site of nodeReferenceSites(node)) {
+    for (const ref of site.references) {
+      if (ref.kind === 'node') {
+        addEdge(ref.identifier, node.id);
       }
     }
   }
@@ -311,11 +397,14 @@ function wireDataEdges(
 /**
  * A `nodeId:handle` edge is valid only from a `condition` node whose `when` values include the handle
  * (workflow-yaml-spec.md §Edges). Any other source — an agent, a `parallel` fan-out (plain edges in
- * v1.0), a default-output node — exposes no named handle, so a handle on it is rejected.
+ * v1.0), a default-output node — exposes no named handle, so a handle on it is rejected. The edge's `to`
+ * must also agree with that branch's authored `target_node` (the routing is authoritative; a contradiction
+ * is rejected, symmetric with the `parallel_of` ↔ fan-out-edge agreement check).
  */
 function validateHandle(
   fromNode: WorkflowNode,
   handle: string,
+  edgeTo: string,
   locator: string,
   index: number,
   issues: GraphIssue[],
@@ -334,21 +423,33 @@ function validateHandle(
   // A handle matches a branch when its text equals the `when` value stringified. For a *numeric* `when`,
   // also accept a non-canonical numeric form (`gate:1.0` / `gate:0x10` for `when: 1` / `when: 16`), since
   // the spec names no canonical handle form and YAML already coerced the authored `when` to a number.
-  const known = fromNode.branches.some(
-    (branch) =>
-      String(branch.when) === handle ||
-      (typeof branch.when === 'number' && handle.trim() !== '' && Number(handle) === branch.when),
+  const branch = fromNode.branches.find(
+    (b) =>
+      String(b.when) === handle ||
+      (typeof b.when === 'number' && handle.trim() !== '' && Number(handle) === b.when),
   );
-  if (!known) {
+  if (branch === undefined) {
     issues.push({
       kind: 'invalid_handle',
       field: locator,
       message: `condition \`${fromNode.id}\` has no branch handle matching ${handleLabel}`,
     });
+    return;
+  }
+  if (branch.target_node !== edgeTo) {
+    issues.push({
+      kind: 'mismatched_branch_target',
+      field: locator,
+      message: `condition \`${fromNode.id}\` handle ${handleLabel} routes to \`${branch.target_node}\`, but the edge targets \`${edgeTo}\``,
+    });
   }
 }
 
-/** Kahn's algorithm over the dependency graph; ties broken by authored order for a reproducible plan. */
+/**
+ * Kahn's algorithm over the dependency graph. Each step emits the authored-**minimum** ready vertex, so
+ * the authored-order tie-break holds across the ENTIRE ready set (not merely discovery order) — a fully
+ * deterministic, reproducible plan. (`ready` is re-sorted each step; the authored graph is small.)
+ */
 function kahnOrder(
   nodes: Workflow['workflow']['nodes'],
   dependents: ReadonlyMap<string, ReadonlySet<string>>,
@@ -361,31 +462,25 @@ function kahnOrder(
   for (const [id, ins] of dependencies) {
     remaining.set(id, ins.size);
   }
-  // Seed roots in authored order (we iterate `nodes` in authored order, so `queue` starts ordered).
-  const queue: string[] = [];
+  const ready: string[] = [];
   for (const node of nodes) {
     if ((remaining.get(node.id) ?? 0) === 0) {
-      queue.push(node.id);
+      ready.push(node.id);
     }
   }
   const order: string[] = [];
-  let head = 0;
-  while (head < queue.length) {
-    const id = queue[head];
-    head += 1;
+  while (ready.length > 0) {
+    ready.sort(byAuthored);
+    const id = ready.shift();
     if (id === undefined) {
       break;
     }
     order.push(id);
-    const outs = dependents.get(id);
-    if (outs === undefined) {
-      continue;
-    }
-    for (const consumer of [...outs].sort(byAuthored)) {
+    for (const consumer of dependents.get(id) ?? []) {
       const next = (remaining.get(consumer) ?? 0) - 1;
       remaining.set(consumer, next);
       if (next === 0) {
-        queue.push(consumer);
+        ready.push(consumer);
       }
     }
   }
