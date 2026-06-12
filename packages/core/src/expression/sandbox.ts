@@ -158,10 +158,17 @@ export async function createExpressionSandbox(options?: {
   const defaultLimits = options?.limits ?? DEFAULT_SANDBOX_LIMITS;
   return {
     evaluate(input: EvaluateInput): unknown {
-      const limits = input.limits ?? defaultLimits;
-      const program = buildProgram(input.expression, input.scope);
-      const outcome = runProgram(module, program, limits);
-      return validateResult(outcome.value, outcome.type, input.kind);
+      try {
+        const limits = input.limits ?? defaultLimits;
+        const program = buildProgram(input.expression, input.scope);
+        const outcome = runProgram(module, program, limits);
+        return validateResult(outcome.value, outcome.type, input.kind);
+      } catch (err) {
+        // Contract guarantee: `evaluate` only ever throws a classified SandboxError. A SandboxError
+        // passes through; any OTHER host throw — notably a failure constructing the runtime/context,
+        // which happens before `runProgram`'s own try — is classified here rather than leaked raw.
+        throw err instanceof SandboxError ? err : hostErrorToSandbox(err);
+      }
     },
   };
 }
@@ -219,7 +226,11 @@ function buildProgram(expression: string, scope: ExpressionScope): string {
     '  const ctx = __scope.ctx;',
     '  const run = __scope.run;',
     '  const branches = __scope.branches;',
-    `  return (${expression});`,
+    // The expression goes on its OWN line so a trailing line comment (`expr // note`) cannot comment out
+    // the closing `);` (which would be a spurious SyntaxError); the `(`/`)` still parenthesize it.
+    '  return (',
+    expression,
+    '  );',
     '})()',
   ].join('\n');
 }

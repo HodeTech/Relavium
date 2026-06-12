@@ -228,7 +228,8 @@ load in the Tauri WebView. The exact variant + version are pinned in the `catalo
 
 The sandbox lives in `packages/core/src/expression/` (1.AB) and is consumed by the 1.P node handlers.
 Its public surface is exported from `packages/core/src/index.ts`. Adversarial accept/reject tests
-(prototype-pollution escape, `eval`/`Function` absent, `Date`/`Math.random`/`Promise` absent,
-secret-in-scope yields a secret-free error, cap-trip classification, determinism over shuffled
-`run.outputs` key order) are a binding part of 1.AB per
+(prototype-pollution escape, `eval`/`Function` **present-but-VM-isolated** — they exist inside the wasm
+VM because the `Eval` intrinsic must stay on for `evalCode` to compile, yet reach no host reference or
+forbidden capability — `Date`/`Math.random`/`Promise` absent, secret-in-scope yields a secret-free
+error, cap-trip classification, determinism over shuffled `run.outputs` key order) are a binding part of 1.AB per
 [testing.md](../../standards/testing.md#security-critical-primitive-tests).
