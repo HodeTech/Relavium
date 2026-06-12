@@ -28,12 +28,7 @@ import { WorkflowGraphError, WorkflowSecretLeakError, type GraphIssue } from './
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
 import { templateReferences } from './interpolation/references.js';
-import type {
-  JoinStrategy,
-  PlanConfig,
-  PlanVertex,
-  RunPlan,
-} from './run-plan.js';
+import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
 
 /** Options for {@link buildRunPlan}. */
 export interface BuildRunPlanOptions {
@@ -98,7 +93,11 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     const texts: { location: string; text: string }[] = [];
     const seenRefs = new Set<string>();
     for (const node of spec.nodes) {
-      if (node.type !== 'agent' || seenRefs.has(node.agent_ref) || inlineAgentIds.has(node.agent_ref)) {
+      if (
+        node.type !== 'agent' ||
+        seenRefs.has(node.agent_ref) ||
+        inlineAgentIds.has(node.agent_ref)
+      ) {
         continue;
       }
       seenRefs.add(node.agent_ref);
@@ -321,7 +320,9 @@ function validateHandle(
   index: number,
   issues: GraphIssue[],
 ): void {
-  const handleLabel = SAFE_NAME_LABEL.test(handle) ? `\`${handle}\`` : `the handle on edge #${index}`;
+  const handleLabel = SAFE_NAME_LABEL.test(handle)
+    ? `\`${handle}\``
+    : `the handle on edge #${index}`;
   if (fromNode.type !== 'condition') {
     issues.push({
       kind: 'invalid_handle',
@@ -474,7 +475,8 @@ function buildConfig(node: WorkflowNode, agentsById: ReadonlyMap<string, Agent>)
     case 'parallel':
       return { kind: 'fan_out', node, branchNodeIds: node.parallel_of };
     case 'merge': {
-      const joinStrategy: JoinStrategy = node.merge_strategy === 'first' ? 'wait_first' : 'wait_all';
+      const joinStrategy: JoinStrategy =
+        node.merge_strategy === 'first' ? 'wait_first' : 'wait_all';
       return {
         kind: 'fan_in',
         node,

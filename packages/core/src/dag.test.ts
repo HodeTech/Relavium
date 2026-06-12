@@ -217,7 +217,12 @@ describe('buildRunPlan — valid topological orders', () => {
     const agents = new Map<string, Agent>([
       [
         'summarizer',
-        { id: 'summarizer', model: 'm', provider: 'anthropic', system_prompt: 'base {{run.outputs["scan"]}}' },
+        {
+          id: 'summarizer',
+          model: 'm',
+          provider: 'anthropic',
+          system_prompt: 'base {{run.outputs["scan"]}}',
+        },
       ],
     ]);
     const p = plan(
@@ -419,9 +424,9 @@ describe('buildRunPlan — endpoint and handle validation', () => {
   edges:
     - { from: ghost, to: a }`),
     );
-    expect(err.issues.some((i) => i.kind === 'unknown_edge_target' && i.message.includes('source'))).toBe(
-      true,
-    );
+    expect(
+      err.issues.some((i) => i.kind === 'unknown_edge_target' && i.message.includes('source')),
+    ).toBe(true);
   });
 
   it('rejects a condition branch / default that targets a missing node', () => {
@@ -444,9 +449,9 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     - { id: fan, type: parallel, parallel_of: [ghost] }
   edges: []`),
     );
-    expect(err.issues.some((i) => i.kind === 'unknown_edge_target' && i.field.includes('parallel_of'))).toBe(
-      true,
-    );
+    expect(
+      err.issues.some((i) => i.kind === 'unknown_edge_target' && i.field.includes('parallel_of')),
+    ).toBe(true);
   });
 
   it('rejects a handle on a non-condition source', () => {
@@ -588,10 +593,18 @@ describe('buildRunPlan — secret re-taint of resolved $ref agents', () => {
 
   it('does NOT re-taint an unreferenced registry agent (only referenced ones reach a model)', () => {
     const agents = new Map<string, Agent>([
-      ['used-clean', { id: 'used-clean', model: 'm', provider: 'anthropic', system_prompt: 'clean' }],
+      [
+        'used-clean',
+        { id: 'used-clean', model: 'm', provider: 'anthropic', system_prompt: 'clean' },
+      ],
       [
         'unused-leaky',
-        { id: 'unused-leaky', model: 'm', provider: 'anthropic', system_prompt: `x {{inputs.${SECRET_INPUT}}}` },
+        {
+          id: 'unused-leaky',
+          model: 'm',
+          provider: 'anthropic',
+          system_prompt: `x {{inputs.${SECRET_INPUT}}}`,
+        },
       ],
     ]);
     // `unused-leaky` leaks but no node references it, so the build must succeed (it never reaches a model).
@@ -610,8 +623,24 @@ describe('buildRunPlan — secret re-taint of resolved $ref agents', () => {
   it('reports the first leak in authored node order, not host registry Map order', () => {
     // Registry inserted in REVERSE authored order — the reported headline leak must still follow authored order.
     const agents = new Map<string, Agent>([
-      ['agent-b', { id: 'agent-b', model: 'm', provider: 'anthropic', system_prompt: `b {{inputs.${SECRET_INPUT}}}` }],
-      ['agent-a', { id: 'agent-a', model: 'm', provider: 'anthropic', system_prompt: `a {{inputs.${SECRET_INPUT}}}` }],
+      [
+        'agent-b',
+        {
+          id: 'agent-b',
+          model: 'm',
+          provider: 'anthropic',
+          system_prompt: `b {{inputs.${SECRET_INPUT}}}`,
+        },
+      ],
+      [
+        'agent-a',
+        {
+          id: 'agent-a',
+          model: 'm',
+          provider: 'anthropic',
+          system_prompt: `a {{inputs.${SECRET_INPUT}}}`,
+        },
+      ],
     ]);
     let thrown: unknown;
     try {
@@ -636,7 +665,10 @@ describe('buildRunPlan — secret re-taint of resolved $ref agents', () => {
   it('does NOT re-check inline agents (already gated by the parser) via the registry path', () => {
     // An inline agent is parser-checked; supplying it again in the registry must not double-flag.
     const agents = new Map<string, Agent>([
-      ['inliner', { id: 'inliner', model: 'm', provider: 'anthropic', system_prompt: 'clean prompt' }],
+      [
+        'inliner',
+        { id: 'inliner', model: 'm', provider: 'anthropic', system_prompt: 'clean prompt' },
+      ],
     ]);
     const p = plan(
       doc(`  id: inline-ok

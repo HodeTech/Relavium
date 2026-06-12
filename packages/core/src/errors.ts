@@ -265,7 +265,11 @@ export class SandboxError extends Error {
    */
   readonly detail?: string;
 
-  constructor(reason: SandboxErrorReason, message: string, opts?: { detail?: string; cause?: unknown }) {
+  constructor(
+    reason: SandboxErrorReason,
+    message: string,
+    opts?: { detail?: string; cause?: unknown },
+  ) {
     super(message, opts?.cause === undefined ? undefined : { cause: opts.cause });
     this.name = 'SandboxError';
     this.reason = reason;

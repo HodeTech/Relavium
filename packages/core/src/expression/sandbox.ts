@@ -235,7 +235,11 @@ interface EvalOutcome {
  * everything. Throws a classified {@link SandboxError} on any failure — including a host-side throw
  * that escapes the VM bridge (a deep scope/expression overflowing the host stack inside `evalCode`).
  */
-function runProgram(module: QuickJSWASMModule, program: string, limits: SandboxLimits): EvalOutcome {
+function runProgram(
+  module: QuickJSWASMModule,
+  program: string,
+  limits: SandboxLimits,
+): EvalOutcome {
   const runtime = module.newRuntime({
     memoryLimitBytes: limits.memoryBytes,
     maxStackSizeBytes: limits.stackBytes,
@@ -440,13 +444,11 @@ function validateResult(value: unknown, type: string, kind: ExpressionKind): unk
   // coerces an unserializable object to a string, so a VM-side `object` whose marshaled value is not an
   // object is the tell. (Map/Set→{} and NaN/Infinity→null follow JSON.stringify semantics — see the
   // spec author guidance.)
-  if (
-    type === 'function' ||
-    type === 'symbol' ||
-    type === 'undefined' ||
-    type === 'bigint'
-  ) {
-    throw new SandboxError('non_serializable', 'the expression must return a JSON-serializable value');
+  if (type === 'function' || type === 'symbol' || type === 'undefined' || type === 'bigint') {
+    throw new SandboxError(
+      'non_serializable',
+      'the expression must return a JSON-serializable value',
+    );
   }
   if (type === 'object' && value !== null && typeof value !== 'object') {
     throw new SandboxError('non_serializable', 'the expression returned a non-serializable value');

@@ -19,12 +19,7 @@
  * settled upstream results — not evaluated inputs.
  */
 
-import type {
-  Agent,
-  FallbackChainEntry,
-  EngineNodeType,
-  WorkflowNode,
-} from '@relavium/shared';
+import type { Agent, FallbackChainEntry, EngineNodeType, WorkflowNode } from '@relavium/shared';
 
 import type { ReferenceSite } from './interpolation/collect.js';
 

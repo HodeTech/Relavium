@@ -38,9 +38,9 @@ function evalError(input: EvaluateInput): SandboxError {
 
 describe('createExpressionSandbox — basic evaluation', () => {
   it('evaluates a boolean condition', () => {
-    expect(sandbox.evaluate({ kind: 'condition', expression: '1 + 1 === 2', scope: mkScope() })).toBe(
-      true,
-    );
+    expect(
+      sandbox.evaluate({ kind: 'condition', expression: '1 + 1 === 2', scope: mkScope() }),
+    ).toBe(true);
   });
 
   it('reads inputs, ctx, and run.outputs', () => {
@@ -103,9 +103,9 @@ describe('determinism — non-deterministic and I/O-bearing capabilities are abs
   });
 
   it('calling Date throws (Date is not even defined)', () => {
-    expect(evalError({ kind: 'condition', expression: 'Date.now() > 0', scope: mkScope() }).reason).toBe(
-      'runtime',
-    );
+    expect(
+      evalError({ kind: 'condition', expression: 'Date.now() > 0', scope: mkScope() }).reason,
+    ).toBe('runtime');
   });
 
   it('Math.random is neutralized — calling it throws', () => {
@@ -220,13 +220,15 @@ describe('result contract', () => {
     ['string', '"yes"', 'yes'],
     ['boolean', 'false', false],
   ])('a condition may return a %s', (_t, expr, expected) => {
-    expect(sandbox.evaluate({ kind: 'condition', expression: expr, scope: mkScope() })).toBe(expected);
+    expect(sandbox.evaluate({ kind: 'condition', expression: expr, scope: mkScope() })).toBe(
+      expected,
+    );
   });
 
   it('a transform returning undefined is rejected as non-serializable', () => {
-    expect(
-      evalError({ kind: 'transform', expression: 'undefined', scope: mkScope() }).reason,
-    ).toBe('non_serializable');
+    expect(evalError({ kind: 'transform', expression: 'undefined', scope: mkScope() }).reason).toBe(
+      'non_serializable',
+    );
   });
 
   it('a transform returning a function is rejected as non-serializable', () => {
@@ -343,9 +345,18 @@ describe('limits', () => {
 describe('classification keys on type, not author-controlled message text', () => {
   it.each([
     ['Error("…interrupted…")', '(function () { throw new Error("the job was interrupted"); })()'],
-    ['Error("…stack overflow…")', '(function () { throw new Error("stack overflow happened"); })()'],
-    ['RangeError("…out of memory…")', '(function () { throw new RangeError("we ran out of memory"); })()'],
-    ['Error("…string too long…")', '(function () { throw new Error("the string too long anyway"); })()'],
+    [
+      'Error("…stack overflow…")',
+      '(function () { throw new Error("stack overflow happened"); })()',
+    ],
+    [
+      'RangeError("…out of memory…")',
+      '(function () { throw new RangeError("we ran out of memory"); })()',
+    ],
+    [
+      'Error("…string too long…")',
+      '(function () { throw new Error("the string too long anyway"); })()',
+    ],
   ])('a thrown %s is a fatal runtime error, never a retryable timeout', (_label, expr) => {
     const error = evalError({ kind: 'condition', expression: expr, scope: mkScope() });
     expect(error.reason).toBe('runtime');
@@ -389,9 +400,9 @@ describe('a pathologically deep value is a clean SandboxError, never a raw host 
 
 describe('result serialization', () => {
   it('a transform returning a top-level BigInt is rejected as non-serializable', () => {
-    expect(
-      evalError({ kind: 'transform', expression: '2n ** 64n', scope: mkScope() }).reason,
-    ).toBe('non_serializable');
+    expect(evalError({ kind: 'transform', expression: '2n ** 64n', scope: mkScope() }).reason).toBe(
+      'non_serializable',
+    );
   });
 
   // Map/Set→{} and NaN/Infinity→null are standard JSON.stringify semantics (documented in the spec
@@ -453,7 +464,10 @@ describe('determinism over scope ordering', () => {
 
 describe('prototype-pollution containment (deep + cross-eval)', () => {
   it('a nested/deep __proto__ in untrusted scope cannot pollute the prototype chain', () => {
-    const deepEvil = JSON.parse('{"a":{"b":{"__proto__":{"polluted":1}}}}') as Record<string, unknown>;
+    const deepEvil = JSON.parse('{"a":{"b":{"__proto__":{"polluted":1}}}}') as Record<
+      string,
+      unknown
+    >;
     expect(
       sandbox.evaluate({
         kind: 'condition',
@@ -518,7 +532,8 @@ describe('the VM surface matches the documented allow-list', () => {
     expect(
       evalError({
         kind: 'condition',
-        expression: '(function () { Math.random = function () { return 0.5; }; return Math.random(); })()',
+        expression:
+          '(function () { Math.random = function () { return 0.5; }; return Math.random(); })()',
         scope: mkScope(),
       }).reason,
     ).toBe('runtime');
