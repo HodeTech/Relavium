@@ -40,7 +40,7 @@ export default defineConfig({
       // package runs to the engine floor. Tracked in deferred-tasks.md (coverage-in-CI item).
       thresholds: {
         'packages/llm/src/**/*.ts': { lines: 90, branches: 90 },
-        // 'packages/core/src/**/*.ts': { lines: 90, branches: 90 }, // enable once core lands (1.L+)
+        'packages/core/src/**/*.ts': { lines: 90, branches: 90 }, // engine floor — core landed at 1.L
       },
     },
   },
