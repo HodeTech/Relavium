@@ -1,13 +1,20 @@
 /**
- * `WorkflowYAMLParser` (1.L) — the engine's entry point. Loads a `.relavium.yaml` **string** and
- * validates it against the strict `@relavium/shared` `WorkflowSchema` (ADR-0023), producing a typed
- * `WorkflowDefinition` or a typed, field-named, secret-free error.
+ * `WorkflowYAMLParser` (1.L / 1.L2) — the engine's entry point. Loads a `.relavium.yaml` **string**,
+ * validates it against the strict `@relavium/shared` `WorkflowSchema` (ADR-0023), and runs the static
+ * interpolation gates (1.L2), producing a typed `WorkflowDefinition` or a typed, field-named,
+ * secret-free error.
+ *
+ * Three reject stages, in order: a YAML syntax fault → {@link WorkflowSyntaxError}; a schema failure
+ * or a context value that reads a node output → {@link WorkflowValidationError}; a secret reaching
+ * agent/human text → {@link WorkflowSecretLeakError} (ADR-0029(c)). All three are field-named and
+ * secret-free, so an invalid file never yields a `WorkflowDefinition` and a run never starts on one.
  *
  * Pure by contract: it takes text (never a path), reads no filesystem, touches no environment, and
  * holds no state — the host surface (CLI / desktop / VS Code) reads the file and passes the string
  * plus an optional workspace-relative label in. Node-existence, `$ref`/`agent_ref` resolution, handle
- * resolution, and the cycle check are the DAG builder's job (1.M) on the returned object; interpolation
- * EVALUATION and secret-taint are the resolver's job (1.L2). 1.L is shape-only.
+ * resolution, and the cycle check are the DAG builder's job (1.M); interpolation *evaluation* is the
+ * runtime resolver's job (`resolveTemplate`/`resolveContext`, 1.L2). The taint check here is static —
+ * it reads an input's *type*, never its value.
  */
 
 import { LineCounter, parse as parseYaml, YAMLParseError } from 'yaml';
@@ -15,7 +22,13 @@ import type { ZodIssue } from 'zod';
 
 import { WorkflowSchema, type Workflow } from '@relavium/shared';
 
-import { WorkflowSyntaxError, WorkflowValidationError, type WorkflowIssue } from './errors.js';
+import {
+  WorkflowSecretLeakError,
+  WorkflowSyntaxError,
+  WorkflowValidationError,
+  type WorkflowIssue,
+} from './errors.js';
+import { analyzePreRunReferences, analyzeSecretTaint } from './interpolation/analyze.js';
 
 /** The validated workflow document — `@relavium/shared`'s `Workflow`, under a parser-local alias. */
 export type WorkflowDefinition = Workflow;
@@ -74,7 +87,18 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
     // and `cause` is publicly reachable — the curated, secret-free `issues` are the diagnostic surface.
     throw new WorkflowValidationError(issues, source === undefined ? undefined : { source });
   }
-  return result.data;
+  const definition = result.data;
+
+  // Static interpolation gates (1.L2) over the now-typed definition — both read structure only.
+  const preRunIssues = analyzePreRunReferences(definition);
+  if (preRunIssues.length > 0) {
+    throw new WorkflowValidationError(preRunIssues, source === undefined ? undefined : { source });
+  }
+  const leaks = analyzeSecretTaint(definition);
+  if (leaks.length > 0) {
+    throw new WorkflowSecretLeakError(leaks, source === undefined ? undefined : { source });
+  }
+  return definition;
 }
 
 /** Normalize ANY parse-stage throw (a YAML fault, an anchor/alias `ReferenceError`, …) to a typed error. */
@@ -141,11 +165,17 @@ function locate(path: ReadonlyArray<string | number>, root: unknown): string {
 }
 
 /**
- * A well-formed identifier (the shape of a valid id/name/key) — only such a value is echoed into a
- * field locator, so an INVALID authored value (e.g. an id that failed kebab validation, which may be
- * arbitrary text or a misplaced secret) is never reflected back; it falls back to a positional `#n`.
+ * The shape of a valid authored identifier — only such a value is echoed into a field locator, so an
+ * INVALID authored value (which may be arbitrary text or a misplaced secret) is never reflected back;
+ * it falls back to a positional `#n`. Two charsets, each mirroring exactly what its field's schema
+ * permits: `SAFE_ID_LABEL` for `node`/`agent` ids (hyphen-only kebab, mirrors `@relavium/shared`'s
+ * `kebabIdSchema` — so a kebab-invalid id like `sk_live_x` is NOT echoed), and `SAFE_NAME_LABEL` for an
+ * `input` name / `context` key (the interpolation head charset, mirrors `interpolationNameSchema`).
+ * Keeping each aligned with its schema means a value the schema accepts (e.g. `API_KEY`) still names
+ * its own error, while one it rejects falls back to `#n`.
  */
-const SAFE_LABEL = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const SAFE_ID_LABEL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SAFE_NAME_LABEL = /^[A-Za-z0-9_-]+$/;
 
 function itemLabel(
   spec: Record<string, unknown> | undefined,
@@ -153,21 +183,21 @@ function itemLabel(
   index: number,
 ): string {
   const item = asRecord(asArray(spec?.[collection])?.[index]);
-  const named = (key: string, prefix: string): string => {
+  const named = (key: string, prefix: string, pattern: RegExp): string => {
     const value = item?.[key];
-    return typeof value === 'string' && value.length <= 64 && SAFE_LABEL.test(value)
+    return typeof value === 'string' && value.length <= 64 && pattern.test(value)
       ? `${prefix} \`${value}\``
       : `${prefix} #${index}`;
   };
   switch (collection) {
     case 'nodes':
-      return named('id', 'node');
+      return named('id', 'node', SAFE_ID_LABEL);
     case 'agents':
-      return named('id', 'agent');
+      return named('id', 'agent', SAFE_ID_LABEL);
     case 'inputs':
-      return named('name', 'input');
+      return named('name', 'input', SAFE_NAME_LABEL);
     case 'context':
-      return named('key', 'context');
+      return named('key', 'context', SAFE_NAME_LABEL);
     case 'edges':
       return `edge #${index}`;
     default:

@@ -88,6 +88,10 @@ inputs:
     default: 'team@example.com'
 ```
 
+An input `name` must be a **referenceable identifier** — `[A-Za-z0-9_-]+` (letters, digits, `_` or `-`),
+the same charset the `{{inputs.<name>}}` head accepts — so a name like `my name` or `a.b` that could never
+be referenced is rejected at parse (ADR-0023).
+
 `secret`-typed inputs are resolved through the secret store, never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
 An input may carry an optional **`validation`** object the engine checks before a run starts; a violating input fails fast and the run never begins:
@@ -117,7 +121,7 @@ inputs:
 
 ## Context and interpolation
 
-`context` declares named values available throughout the workflow as `{{ctx.key}}`. Interpolation uses `{{ ... }}` syntax everywhere (inputs, context, prompt templates, message templates, edge/condition expressions).
+`context` declares named values available throughout the workflow as `{{ctx.key}}`. Interpolation uses `{{ ... }}` syntax everywhere (inputs, context, prompt templates, message templates, edge/condition expressions). A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
 
 ```yaml
 context:

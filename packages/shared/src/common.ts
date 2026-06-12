@@ -24,6 +24,20 @@ export const kebabIdSchema = z
 /** A non-empty string. */
 export const nonEmptyString = z.string().min(1);
 
+/**
+ * An identifier referenceable from `{{inputs.<name>}}` / `{{ctx.<key>}}` (`workflow.inputs[].name`,
+ * `workflow.context[].key`). It must match the interpolation lexer's head charset (the `NAMESPACED`
+ * rule in `@relavium/core` `references.ts`) — otherwise a schema-valid name could never be referenced.
+ * Aligning the authored contract with the lexer is an ADR-0023 fail-loud tightening.
+ */
+export const INTERPOLATION_NAME_PATTERN = '[A-Za-z0-9_-]+';
+export const interpolationNameSchema = z
+  .string()
+  .regex(
+    new RegExp(`^${INTERPOLATION_NAME_PATTERN}$`),
+    'must be referenceable in {{ … }} (letters, digits, `_` or `-`)',
+  );
+
 /** A positive integer (>= 1). */
 export const positiveInt = z.number().int().positive();
 

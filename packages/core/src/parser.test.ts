@@ -1,7 +1,7 @@
 import { stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
-import { WorkflowSyntaxError, WorkflowValidationError } from './errors.js';
+import { WorkflowSecretLeakError, WorkflowSyntaxError, WorkflowValidationError } from './errors.js';
 import { collectReferences } from './interpolation/collect.js';
 import { parseWorkflow } from './parser.js';
 
@@ -263,15 +263,26 @@ describe('parseWorkflow — malformed (each fails with a field-named, secret-fre
     expect(err.issues[0]?.message).toMatch(/kebab/);
   });
 
+  it('does not echo a kebab-invalid (underscore) node id — SAFE_ID_LABEL mirrors kebabIdSchema', () => {
+    // A lowercase id with underscores fails the hyphen-only kebab schema; the locator must NOT echo it
+    // (it would otherwise reflect a secret-shaped `sk_live_…` value), falling back to `node #0`.
+    const secret = 'sk_live_do_not_echo';
+    const err = expectValidationError(
+      doc(`  id: w\n  nodes:\n    - id: ${secret}\n      type: input\n  edges: []`),
+    );
+    expect(JSON.stringify(err.issues)).not.toContain(secret);
+    expect(err.issues[0]?.field).toBe('node #0.id');
+  });
+
   it('surfaces a structural message for the `too_small` code path (min-1 string constraint)', () => {
-    // An empty string on context[].key (nonEmptyString = z.string().min(1)) → Zod code `too_small`.
+    // An empty agent `system_prompt` (nonEmptyString = z.string().min(1)) → Zod code `too_small`.
     // messageFor returns issue.message directly — pin that it names the constraint, not the authored value.
     const err = expectValidationError(
       doc(
-        `  id: w\n  context:\n    - key: ''\n      value: v\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+        `  id: w\n  agents:\n    - id: ag\n      name: A\n      model: claude-sonnet-4-6\n      provider: anthropic\n      system_prompt: ''\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
       ),
     );
-    const issue = err.issues.find((i) => i.field.includes('context'));
+    const issue = err.issues.find((i) => i.field.includes('system_prompt'));
     expect(issue).toBeDefined();
     expect(issue?.message).toMatch(/character|length|least/i);
   });
@@ -348,6 +359,17 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
     expect(err.issues[0]?.message).toMatch(/expected one of:/);
   });
 
+  it('still names an input whose (now schema-legal) name is uppercase/underscore (SAFE_NAME_LABEL)', () => {
+    // `API_KEY` passes `interpolationNameSchema` but not the kebab id charset — the locator must use the
+    // name charset, not degrade to a positional `#0`.
+    const err = expectValidationError(
+      doc(
+        `  id: w\n  inputs:\n    - name: API_KEY\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+      ),
+    );
+    expect(err.issues[0]?.field).toBe('input `API_KEY`.type'); // missing `type` → named, not `input #0`
+  });
+
   it('falls back to an index when a context entry is missing its key', () => {
     const err = expectValidationError(
       doc(
@@ -421,19 +443,64 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
   });
 });
 
-describe('collectReferences — context/run.outputs (1.M known gap)', () => {
-  it('permits a context value that references run.outputs — enforcement deferred to the DAG builder (1.M)', () => {
-    // TODO(1.M): workflow-yaml-spec.md forbids {{run.outputs[...]}} inside context[].value because
-    // context is resolved pre-run. Once the DAG builder rejects unsatisfiable node-output edges in a
-    // context site, replace this test with a WorkflowValidationError assertion from parseWorkflow.
-    const wf = parseWorkflow(
+describe('parseWorkflow — context referencing run.outputs (1.L2 static gate)', () => {
+  it('rejects a context value that references run.outputs (resolved before any node runs)', () => {
+    // workflow-yaml-spec.md §Context-and-interpolation: context is eagerly resolved pre-run, so a
+    // node output is unavailable — `analyzePreRunReferences` makes this a field-named parse error.
+    const err = expectValidationError(
       `schema_version: '1.0'\nworkflow:\n  id: w\n  context:\n    - key: snapshot\n      value: '{{run.outputs["some-node"]}}'\n  nodes:\n    - id: some-node\n      type: input\n  edges: []`,
     );
-    const sites = collectReferences(wf);
-    const ctxSite = sites.find((s) => s.location === 'context `snapshot`.value');
-    // The reference is CLASSIFIED (kind:'node') but not VALIDATED — the gap is intentional for now.
-    expect(ctxSite?.references[0]?.kind).toBe('node');
-    expect(ctxSite?.references[0]?.identifier).toBe('some-node');
+    expect(err.issues[0]?.field).toBe('context `snapshot`.value');
+    expect(err.issues[0]?.message).toContain('run.outputs');
+  });
+
+  it('permits a context value that references inputs/ctx (the legitimate pre-run sources)', () => {
+    const wf = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: w\n  inputs:\n    - name: p\n      type: string\n  context:\n    - key: snapshot\n      value: 'for {{inputs.p}}'\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+    );
+    const ctxSite = collectReferences(wf).find((s) => s.location === 'context `snapshot`.value');
+    expect(ctxSite?.category).toBe('context-value');
+    expect(ctxSite?.references[0]).toMatchObject({ kind: 'inputs', identifier: 'p' });
+  });
+});
+
+describe('parseWorkflow — secret interpolation (ADR-0029(c) static gate)', () => {
+  const LEAK = `schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+  agents:
+    - id: ag
+      name: Ag
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: 'system'
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'use {{inputs.api_key}}'
+  edges: []`;
+
+  it('rejects at parse with a WorkflowSecretLeakError naming the field and the secret', () => {
+    let thrown: unknown;
+    try {
+      parseWorkflow(LEAK, { source: 'leak.yaml' });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(WorkflowSecretLeakError);
+    if (!(thrown instanceof WorkflowSecretLeakError)) {
+      throw new Error('expected a WorkflowSecretLeakError');
+    }
+    expect(thrown.leaks[0]).toEqual({
+      location: 'node `n`.prompt_template',
+      secret: 'inputs.api_key',
+    });
+    expect(thrown.source).toBe('leak.yaml'); // the workspace-relative label is propagated
+    expect(thrown.message).toContain('`inputs.api_key`'); // names the symbol, never a resolved value
   });
 });
 
@@ -463,9 +530,12 @@ function expectValidationError(
   let thrown: unknown;
   try {
     parseWorkflow(yamlText, opts);
-  } catch (caught) {
-    thrown = caught;
+  } catch (err) {
+    thrown = err;
   }
   expect(thrown).toBeInstanceOf(WorkflowValidationError);
-  return thrown as WorkflowValidationError;
+  if (!(thrown instanceof WorkflowValidationError)) {
+    throw new Error('expected a WorkflowValidationError');
+  }
+  return thrown;
 }

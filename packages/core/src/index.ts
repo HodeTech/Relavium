@@ -6,13 +6,24 @@
  * Code extension host, and Bun alike.
  */
 
-// WorkflowYAMLParser (1.L) — parse + validate a `.relavium.yaml` string into a typed definition.
+// WorkflowYAMLParser (1.L / 1.L2) — parse + validate + static interpolation gates into a typed def.
 export { parseWorkflow } from './parser.js';
 export type { WorkflowDefinition, ParseWorkflowOptions } from './parser.js';
 
 // Typed, field-named, secret-free parse/validation errors — narrow on `code`, never on `message`.
-export { WorkflowParseError, WorkflowSyntaxError, WorkflowValidationError } from './errors.js';
-export type { WorkflowParseErrorCode, WorkflowIssue } from './errors.js';
+export {
+  WorkflowParseError,
+  WorkflowSyntaxError,
+  WorkflowValidationError,
+  WorkflowSecretLeakError,
+  InterpolationError,
+} from './errors.js';
+export type {
+  WorkflowParseErrorCode,
+  WorkflowIssue,
+  SecretLeak,
+  InterpolationErrorCode,
+} from './errors.js';
 
 // Structured, un-evaluated interpolation references — the view the DAG builder (1.M) consumes.
 export { parseTemplate, templateReferences } from './interpolation/references.js';
@@ -24,4 +35,11 @@ export type {
   FilterArg,
 } from './interpolation/references.js';
 export { collectReferences } from './interpolation/collect.js';
-export type { ReferenceSite } from './interpolation/collect.js';
+export type { ReferenceSite, ReferenceSiteCategory } from './interpolation/collect.js';
+
+// Static interpolation analyses (1.L2) — also consumed by the future VS Code language server.
+export { analyzeSecretTaint, analyzePreRunReferences } from './interpolation/analyze.js';
+
+// The `{{ … }}` runtime resolver (1.L2) — evaluate templates against a run scope, eager-once context.
+export { resolveTemplate, resolveContext } from './interpolation/resolve.js';
+export type { RunScope, ResolverCapabilities } from './interpolation/scope.js';

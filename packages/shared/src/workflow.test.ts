@@ -270,6 +270,16 @@ describe('WorkflowSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects an input name / context key that is not referenceable in {{ … }}', () => {
+    // The lexer's head charset is [A-Za-z0-9_-]+, so a name with a space or dot could never be
+    // referenced — the schema must reject it (aligns the contract with the interpolation lexer).
+    expect(accepts(withWorkflow({ inputs: [{ name: 'my name', type: 'string' }] }))).toBe(false);
+    expect(accepts(withWorkflow({ inputs: [{ name: 'a.b', type: 'string' }] }))).toBe(false);
+    expect(accepts(withWorkflow({ context: [{ key: 'has space', value: 'v' }] }))).toBe(false);
+    // …but a normal snake/kebab identifier is accepted.
+    expect(accepts(withWorkflow({ inputs: [{ name: 'file_path', type: 'string' }] }))).toBe(true);
+  });
+
   it('rejects duplicate agent ids', () => {
     const agent = {
       id: 'dup',

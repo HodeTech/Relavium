@@ -470,7 +470,7 @@ schemas; the run-event count-test is green at the new total; `tsc` + the seam fe
 today is the count-pinned unit test, **not** the DB-migration drift gate — `run_events.event_type` is
 unconstrained text — so the test total must be updated deliberately.)
 
-### 1.L — `WorkflowYAMLParser` (parse + validate) — *critical path*
+### 1.L — `WorkflowYAMLParser` (parse + validate) — *critical path* · ✅ **Done (PR #14, 2026-06-12)**
 
 The engine entry point: load a `.relavium.yaml` and validate it against the
 `@relavium/shared` `WorkflowSchema` (post-1.L.0) before any LLM call.
@@ -504,16 +504,19 @@ of every node, so it is sequenced before 1.M/1.O/1.P.) It is distinct from the J
 (1.AB): `{{ … }}` is string templating; `condition`/`transform`/`merge_fn` are JS evaluated in the sandbox.
 
 **Tasks:**
-- Evaluate `{{ … }}` against the run scope — `inputs`, `ctx`, `run.outputs` (keyed by node id), `secrets` —
-  with the pipe-filter registry (`| read_file`, `| json`, `| length`, `| default`, …) per
-  [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
+- Evaluate `{{ … }}` against the run scope — the three authored namespaces `inputs`, `ctx`, and
+  `run.outputs` (keyed by node id); a `secrets.*` reference is recognized by the lexer only so the
+  resolver/taint gate can reject it — with the pipe-filter registry (`| read_file`, `| json`,
+  `| length`, `| default("…")` — the argument-taking fallback applied when the value is missing, …)
+  per [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
 - **Eager-once, immutable cached context:** a node's inputs are resolved once into a frozen snapshot, so a
   re-run/replay is deterministic (aligned with the checkpoint + idempotency model, 1.R).
 - Enforce the **transitive parse-time secret taint** [ADR-0029(c)](../../decisions/0029-tool-policy-hardening.md)
   mandates "by the parser": a `secret`-typed value (or anything derived from one) is rejected from
-  `prompt_template` / tool text, allowed only in credential/header fields. Raise a typed `InterpolationError`
-  (key + workspace-relative location + node id; no absolute paths, no secret values) per
-  [error-handling.md](../../standards/error-handling.md).
+  `prompt_template` / tool text, allowed only in credential/header fields. Raise a typed,
+  field-named parse error (`WorkflowSecretLeakError`) — names only, no absolute paths, no secret
+  values — per [error-handling.md](../../standards/error-handling.md). (A *runtime* resolver failure
+  is the separate `InterpolationError`.)
 
 **Acceptance:** interpolation resolves refs + filters correctly; a secret routed into prompt/tool text is
 rejected at parse with a field-named, secret-free error; re-resolving a node yields an identical frozen scope.
@@ -608,10 +611,20 @@ Executes a single agent node end-to-end against `@relavium/llm`.
 - Tool results enter message assembly **as data through the typed untrusted boundary**
   ([security-review.md §Prompt-injection posture](../../standards/security-review.md#prompt-injection-posture),
   binding): never into `system`, never string-concatenated into an instruction template.
+  **This also covers resolved-interpolation content**: 1.L2's `resolveTemplate` returns a flat
+  string, dropping provenance, so a field that drew on `read_file` / `run.outputs` (untrusted) must
+  be carried as untrusted into a `user`/`tool` position by this layer, never `system`.
+- **Re-apply secret taint when populating `run.outputs`** (ADR-0029(c) follow-up): the 1.L2
+  parse-time gate covers only the authored `{{ … }}` template graph. Any node output derived from a
+  `secret` — e.g. a `secret`-typed input surfaced *verbatim* via an `input` node's output — **must be
+  marked tainted when it is placed into `run.outputs`**, so a later `{{run.outputs["…"]}}` reference
+  into agent/human text is rejected the same way an authored secret reference is. The parse-time gate
+  remains responsible only for the authored template graph.
 
 **Acceptance:** an agent node with a tool streams tokens, performs a tool round-trip,
 emits a correct `cost:updated`, and completes with `node:completed`; a forced
-provider error drives the fallback chain before the node is considered failed.
+provider error drives the fallback chain before the node is considered failed; a `secret`-typed
+input cannot reach agent/human text through a node output (taint re-applied at `run.outputs`).
 
 ### 1.P — Node-type handlers (condition / fan-out / fan-in / transform / input / output)
 

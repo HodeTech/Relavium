@@ -2,14 +2,14 @@
 
 > Status: Living
 
-> Last updated: 2026-06-11
+> Last updated: 2026-06-12
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
 This page tracks what is active **right now** and the immediate next concrete
 actions. The full phase plan and the global milestone spine are in
 [README.md](README.md); the granular work breakdown for the active phase is in
-[phases/phase-0-foundations.md](phases/phase-0-foundations.md).
+[phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md).
 
 ## Where we are
 
@@ -145,8 +145,10 @@ now scaffolded with a pure-TypeScript `WorkflowYAMLParser` that parses and valid
 > off the M3 critical path); the **`turn_limit` `ErrorCode`** (a hard session turn cap, distinct from
 > the `[chat].max_messages` trim threshold); the **reserved `on_error` edge kind**
 > (workflow-yaml-spec.md, not authorable in v1.0); and a CI **engine dependency-allowlist guard** + the
-> pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)** and **1.L is
-> the next workstream**.
+> pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)**, and
+> **1.L has since landed (PR #14, 2026-06-12)**; **1.L2 (the `{{ … }}` interpolation engine + the
+> parse-time secret-taint gate) is in review (PR #15)** — once it merges, **1.M (DAG builder +
+> `RunPlan`) is the next workstream**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
