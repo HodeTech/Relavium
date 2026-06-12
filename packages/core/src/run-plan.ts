@@ -59,8 +59,15 @@ export interface FanInPlanConfig {
   readonly joinStrategy: JoinStrategy;
   /** *How* the branches combine — the authored `merge_strategy`, carried verbatim. */
   readonly mergeStrategy: MergeStrategy;
-  /** The author-supplied `js` merge expression — present only for `merge_strategy: custom`. */
-  readonly mergeFn?: string;
+  /**
+   * The branch node ids this join aggregates, in the **stable order** the run loop must surface them
+   * to a `custom` `merge_fn` (`ExpressionScope.branches`) and a `concat` result — the paired `parallel`
+   * node's `parallel_of` declaration order when this merge joins exactly one parallel's branches, else
+   * the merge's own incoming branches in authored order. Carried here because the merge's
+   * `dependencies` are authored-index-sorted, which is NOT `parallel_of` order, and the run loop /
+   * sandbox cannot reconstruct it from the vertex alone — see run-plan.md §fan-in branch order.
+   */
+  readonly branchNodeIds: readonly string[];
 }
 
 /** An LLM agent vertex (node-types.md `agent_config`). */

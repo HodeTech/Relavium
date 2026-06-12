@@ -122,6 +122,39 @@ describe('buildRunPlan — valid topological orders', () => {
     });
   });
 
+  it('exposes fan_in branchNodeIds in parallel_of order, not authored order', () => {
+    const p = plan(
+      doc(`  id: branchorder
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [b, a] }
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: transform, transform: '2' }
+    - { id: join, type: merge, merge_strategy: concat }
+  edges:
+    - { from: start, to: fan }
+    - { from: a, to: join }
+    - { from: b, to: join }`),
+    );
+    // parallel_of declares [b, a]; authored order is [a, b]; the merge's dependencies sort to [a, b].
+    // The fan_in must surface branches in parallel_of order so merge_fn/concat is deterministic.
+    expect(p.vertices.get('join')?.config).toMatchObject({ kind: 'fan_in', branchNodeIds: ['b', 'a'] });
+  });
+
+  it('falls back to authored branch order for a merge with no paired parallel', () => {
+    const p = plan(
+      doc(`  id: nopair
+  nodes:
+    - { id: x, type: transform, transform: '1' }
+    - { id: y, type: transform, transform: '2' }
+    - { id: join, type: merge, merge_strategy: concat }
+  edges:
+    - { from: y, to: join }
+    - { from: x, to: join }`),
+    );
+    expect(p.vertices.get('join')?.config).toMatchObject({ kind: 'fan_in', branchNodeIds: ['x', 'y'] });
+  });
+
   it('carries the merge_fn for a custom merge (wait_all join)', () => {
     const p = plan(
       doc(`  id: custom
@@ -226,7 +259,31 @@ describe('buildRunPlan — valid topological orders', () => {
     expect(p.order).toEqual(['producer', 'consumer']);
     expect(p.vertices.get('consumer')?.dependencies).toEqual(['producer']);
     // The consumer's template is attached un-evaluated for the run loop to resolve at dispatch.
-    expect(p.vertices.get('consumer')?.inputSites).toHaveLength(1);
+    const sites = p.vertices.get('consumer')?.inputSites ?? [];
+    expect(sites).toHaveLength(1);
+    expect(sites[0]?.location).toBe('node `consumer`.prompt_template');
+    expect(sites[0]?.category).toBe('node-text');
+    expect(sites[0]?.references[0]).toMatchObject({ kind: 'node', identifier: 'producer' });
+  });
+
+  it('attaches every template field of a node as a separate input site', () => {
+    const p = plan(
+      doc(`  id: twosites
+  agents:
+    - { id: w, model: m, provider: anthropic, system_prompt: 's' }
+  nodes:
+    - { id: n, type: agent, agent_ref: w, prompt_template: 'p {{inputs.x}}', system_prompt_append: 'a {{ctx.y}}' }
+  inputs:
+    - { name: x, type: string }
+  context:
+    - { key: y, value: 'v' }
+  edges: []`),
+    );
+    const locations = (p.vertices.get('n')?.inputSites ?? []).map((s) => s.location).sort();
+    expect(locations).toEqual([
+      'node `n`.prompt_template',
+      'node `n`.system_prompt_append',
+    ]);
   });
 
   it('wires a data edge from a resolved agent system_prompt referencing a node output', () => {
@@ -715,6 +772,23 @@ describe('buildRunPlan — secret re-taint of resolved $ref agents', () => {
 });
 
 describe('buildRunPlan — error hygiene', () => {
+  it('never echoes an identifier-shaped (secret-token-shaped) handle into a graph error', () => {
+    // An identifier-charset token PASSES SAFE_NAME_LABEL, so the charset alone is not a guard; the
+    // invalid-handle path must stay positional regardless. Build the token via join() (Leakwatch hygiene).
+    const token = ['sk', 'live', 'DEADBEEFsecret0123456789'].join('-');
+    const err = expectGraphError(
+      doc(`  id: tokenhandle
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: output }
+  edges:
+    - { from: 'a:${token}', to: b }`),
+    );
+    expect(err.issues[0]?.kind).toBe('invalid_handle');
+    expect(err.message).not.toContain(token);
+    expect(JSON.stringify(err.issues)).not.toContain(token);
+  });
+
   it('does not echo a charset-unsafe edge handle into the error', () => {
     const unsafe = ['secret', 'value'].join('/'); // contains '/', outside the safe handle charset
     const err = expectGraphError(

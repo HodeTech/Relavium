@@ -38,9 +38,11 @@ export type GraphIssueKind =
 
 /**
  * One field-named graph problem found by the DAG builder (1.M). Every field is a *name* — a node id,
- * an edge locator, a handle, or an `agent_ref` field — never an authored value, so a finding is safe
- * to surface and log. The unconstrained `:handle` suffix of an edge `from` is guarded against echo by
- * the builder (a non-identifier handle degrades to a positional `edge #n`).
+ * an edge locator, or an `agent_ref` field — never an authored value, so a finding is safe to surface
+ * and log. The unconstrained `:handle` suffix of an edge `from` is never echoed for an INVALID handle
+ * (those messages stay positional, `edge #n`); a *matched* condition branch handle is echoed only when
+ * it is a short, simple label, else it too stays positional — so a secret-shaped handle never rides a
+ * message.
  */
 export interface GraphIssue {
   /** Human field/locator — e.g. ``edge `merge`→`gate```, ``node `gate`.branches[0].target_node``. */

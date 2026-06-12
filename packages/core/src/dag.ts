@@ -129,6 +129,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   const vertices = new Map<string, PlanVertex>();
   const byAuthored = (a: string, b: string): number =>
     (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
+  const mergeBranchOrder = computeMergeBranchOrder(spec, dependencies, authoredIndex);
   for (const node of spec.nodes) {
     vertices.set(node.id, {
       id: node.id,
@@ -136,7 +137,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
       dependencies: [...(dependencies.get(node.id) ?? [])].sort(byAuthored),
       dependents: [...(dependents.get(node.id) ?? [])].sort(byAuthored),
       inputSites: nodeReferenceSites(node),
-      config: buildConfig(node, agentsById),
+      config: buildConfig(node, agentsById, mergeBranchOrder),
     });
   }
 
@@ -360,11 +361,14 @@ function validateAgentNode(
 
 /**
  * Wire data edges from a node's own template fields (`{{run.outputs["<id>"]}}` → this node depends on
- * it). A reference to a *non-existent* producer adds no edge and — by design — no diagnostic: it is left
- * to the runtime resolver, which raises `unresolved_reference` at dispatch. This is deliberate and
- * symmetric with JS-expression `run.outputs` reads in `condition`/`transform`/`merge_fn` (sandbox-owned,
- * 1.AB), which the builder also does not validate — the builder validates the authored *graph* (edges,
- * branches, `parallel_of`, `agent_ref`), not data-reference targets. Pinned by a test.
+ * it). A reference to a *non-existent* producer adds no edge and — by design — no diagnostic: a TEMPLATE
+ * dangling ref is surfaced by the runtime resolver as `unresolved_reference` at dispatch. The builder
+ * *likewise* does not validate `run.outputs` reads in the JS-expression fields (`condition`/`transform`/
+ * `merge_fn` — sandbox-owned, 1.AB), but the symmetry is builder-non-validation only: those are NOT
+ * templates and never produce `unresolved_reference` — a dangling JS-expression read evaluates to
+ * `undefined` in-VM (surfacing later as a `non_serializable`/`result_type` violation, or a fatal
+ * `runtime` SandboxError if dereferenced). The builder validates the authored *graph* (edges, branches,
+ * `parallel_of`, `agent_ref`), not data-reference targets. Pinned by a test.
  */
 function wireOwnDataEdges(node: WorkflowNode, addEdge: AddEdge): void {
   for (const site of nodeReferenceSites(node)) {
@@ -409,14 +413,17 @@ function validateHandle(
   index: number,
   issues: GraphIssue[],
 ): void {
-  const handleLabel = SAFE_NAME_LABEL.test(handle)
-    ? `\`${handle}\``
-    : `the handle on edge #${index}`;
+  // The `:handle` suffix is unconstrained authored text (`(?::.+)?`, edge.ts). On the two INVALID-handle
+  // paths the handle matched no branch — naming it adds nothing and could echo an arbitrary token, so
+  // they stay positional (`edge #n`), never echoing the suffix. (The base64url/identifier charset alone
+  // does NOT exclude a secret-shaped token — `sk-live-…`/`ghp_…` pass it — so SAFE_NAME_LABEL is not a
+  // sufficient guard here; CLAUDE.md rule 6, defense-in-depth.)
+  const positional = `the handle on edge #${index}`;
   if (fromNode.type !== 'condition') {
     issues.push({
       kind: 'invalid_handle',
       field: locator,
-      message: `node \`${fromNode.id}\` (type \`${fromNode.type}\`) exposes no named output handle for ${handleLabel}`,
+      message: `node \`${fromNode.id}\` (type \`${fromNode.type}\`) exposes no named output handle for ${positional}`,
     });
     return;
   }
@@ -432,11 +439,16 @@ function validateHandle(
     issues.push({
       kind: 'invalid_handle',
       field: locator,
-      message: `condition \`${fromNode.id}\` has no branch handle matching ${handleLabel}`,
+      message: `condition \`${fromNode.id}\` has no branch handle matching ${positional}`,
     });
     return;
   }
   if (branch.target_node !== edgeTo) {
+    // Here the handle DID match an authored branch `when` (a routing label, not a credential field). Echo
+    // it only when it is a short, simple label — else stay positional, so a pathological long/odd handle
+    // never rides the message.
+    const handleLabel =
+      SAFE_NAME_LABEL.test(handle) && handle.length <= 24 ? `\`${handle}\`` : positional;
     issues.push({
       kind: 'mismatched_branch_target',
       field: locator,
@@ -554,8 +566,50 @@ function engineType(node: WorkflowNode): EngineNodeType {
   }
 }
 
+/**
+ * The stable branch order a `fan_in` (merge) vertex exposes to a `custom` `merge_fn` and `concat`.
+ * Order = the paired `parallel`'s `parallel_of` declaration order when this merge joins exactly the
+ * branches of one parallel (the common authored shape), else the merge's incoming branches in authored
+ * order. A merge's `dependencies` are authored-index-sorted, which is NOT `parallel_of` order, so the
+ * run loop / sandbox cannot reconstruct it from the vertex — the builder pins it here.
+ */
+function computeMergeBranchOrder(
+  spec: WorkflowSpec,
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+  authoredIndex: ReadonlyMap<string, number>,
+): Map<string, readonly string[]> {
+  const byAuthored = (a: string, b: string): number =>
+    (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
+  const parallels = spec.nodes.filter((n): n is ParallelNode => n.type === 'parallel');
+  const order = new Map<string, readonly string[]>();
+  for (const node of spec.nodes) {
+    if (node.type !== 'merge') {
+      continue;
+    }
+    const preds = dependencies.get(node.id) ?? new Set<string>();
+    // The paired parallel: the authored-first parallel ALL of whose `parallel_of` members feed this
+    // merge directly. Then branches follow `parallel_of` order, with any extra (non-parallel) incoming
+    // branches appended in authored order; with no unique pairing, fall back to authored order.
+    const paired = parallels.find(
+      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => preds.has(m)),
+    );
+    if (paired === undefined) {
+      order.set(node.id, [...preds].sort(byAuthored));
+    } else {
+      const members = new Set(paired.parallel_of);
+      const extras = [...preds].filter((m) => !members.has(m)).sort(byAuthored);
+      order.set(node.id, [...paired.parallel_of, ...extras]);
+    }
+  }
+  return order;
+}
+
 /** Build the per-type config block for a vertex, deriving engine-only fields (join strategy, fallback). */
-function buildConfig(node: WorkflowNode, agentsById: ReadonlyMap<string, Agent>): PlanConfig {
+function buildConfig(
+  node: WorkflowNode,
+  agentsById: ReadonlyMap<string, Agent>,
+  mergeBranchOrder: ReadonlyMap<string, readonly string[]>,
+): PlanConfig {
   switch (node.type) {
     case 'input':
       return { kind: 'input', node };
@@ -577,6 +631,7 @@ function buildConfig(node: WorkflowNode, agentsById: ReadonlyMap<string, Agent>)
         node,
         joinStrategy,
         mergeStrategy: node.merge_strategy,
+        branchNodeIds: mergeBranchOrder.get(node.id) ?? [],
         ...(node.merge_fn === undefined ? {} : { mergeFn: node.merge_fn }),
       };
     }

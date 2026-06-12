@@ -39,7 +39,7 @@ export type {
   PipeFilter,
   FilterArg,
 } from './interpolation/references.js';
-export { collectReferences, nodeReferenceSites } from './interpolation/collect.js';
+export { collectReferences } from './interpolation/collect.js';
 export type { ReferenceSite, ReferenceSiteCategory } from './interpolation/collect.js';
 
 // Static interpolation analyses (1.L2) — also consumed by the future VS Code language server.
