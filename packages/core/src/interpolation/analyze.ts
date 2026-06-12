@@ -6,12 +6,17 @@
  *    derived from one through a `context` entry *or* an `input` default — must never reach agent/human
  *    text. An input's *type* alone seeds the taint, so the whole check runs before any secret value is
  *    fetched.
- *  - `analyzeContextReferences` enforces the eager-context rule (workflow-yaml-spec.md
- *    §Context-and-interpolation): a `context` value may read `{{inputs.*}}`/`{{ctx.*}}` but not
- *    `{{run.outputs[…]}}`, because context is resolved before any node runs.
+ *  - `analyzePreRunReferences` enforces the eager-resolution rule (workflow-yaml-spec.md
+ *    §Context-and-interpolation): a value resolved **before any node runs** — a `context` value or an
+ *    `input` default — may read `{{inputs.*}}`/`{{ctx.*}}` but not `{{run.outputs[…]}}`.
  *
  * Both name only fields, input names, and context keys — never an authored value — so their findings
  * are safe to surface and log.
+ *
+ * Scope: this analysis covers the `{{ … }}` template graph only. Secret flow through the JS expression
+ * fields (`condition`/`transform`/`merge_fn`) and through `run.outputs` is the responsibility of the
+ * expression sandbox (1.AB) and the run loop (1.M/1.O) — a `transform` that returns a secret cannot be
+ * caught here because it is not a template. ADR-0029(c)'s "any derived value" spans those layers too.
  */
 
 import type { Workflow } from '@relavium/shared';
@@ -57,20 +62,29 @@ export function analyzeSecretTaint(workflow: Workflow): readonly SecretLeak[] {
 }
 
 /**
- * Find `context` values that reference a node output. Empty when clean; the parser turns a non-empty
- * result into a `WorkflowValidationError` (a field-named parse error).
+ * Find a value resolved before any node runs that references a node output. Empty when clean; the
+ * parser turns a non-empty result into a `WorkflowValidationError` (a field-named parse error).
  */
-export function analyzeContextReferences(workflow: Workflow): readonly WorkflowIssue[] {
+export function analyzePreRunReferences(workflow: Workflow): readonly WorkflowIssue[] {
+  const spec = workflow.workflow;
   const issues: WorkflowIssue[] = [];
-  for (const entry of workflow.workflow.context ?? []) {
-    for (const ref of templateReferences(entry.value)) {
+  const checkNoNodeOutput = (field: string, text: string): void => {
+    for (const ref of templateReferences(text)) {
       if (ref.kind === 'node') {
         issues.push({
-          field: `context \`${entry.key}\`.value`,
-          message: `cannot reference \`run.outputs[…]\` — context is resolved before any node runs`,
+          field,
+          message: `cannot reference \`run.outputs[…]\` — this is resolved before any node runs`,
         });
-        break; // one issue per context entry is enough to fail the parse
+        return; // one issue per site is enough to fail the parse
       }
+    }
+  };
+  for (const entry of spec.context ?? []) {
+    checkNoNodeOutput(`context \`${entry.key}\`.value`, entry.value);
+  }
+  for (const input of spec.inputs ?? []) {
+    if (typeof input.default === 'string') {
+      checkNoNodeOutput(`input \`${input.name}\`.default`, input.default);
     }
   }
   return issues;
@@ -79,8 +93,8 @@ export function analyzeContextReferences(workflow: Workflow): readonly WorkflowI
 /**
  * Compute the taint sets to a fixpoint. Seeds from `secret`-typed inputs, then closes the taint over
  * both intermediates a secret can be laundered through — an `input` default and a `context` value —
- * iterating until nothing new is tainted (so order of declaration does not matter, and a multi-hop
- * chain through inputs and context resolves).
+ * re-running a full round until it taints nothing new (so declaration order and multi-hop chains
+ * through inputs and context all resolve).
  */
 function computeTaint(spec: Workflow['workflow']): TaintSets {
   const inputs = new Map<string, string | undefined>();
@@ -90,33 +104,38 @@ function computeTaint(spec: Workflow['workflow']): TaintSets {
       inputs.set(input.name, undefined); // a source — no deeper "via"
     }
   }
+  while (taintRound(spec, inputs, ctx)) {
+    /* keep iterating until a full round taints nothing new */
+  }
+  return { inputs, ctx };
+}
 
-  const current: TaintSets = { inputs, ctx };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const input of spec.inputs ?? []) {
-      if (inputs.has(input.name) || typeof input.default !== 'string') {
-        continue;
-      }
-      const reason = firstTaintReason(input.default, current);
+/** One taint pass over input defaults then context values; returns whether anything new was tainted. */
+function taintRound(
+  spec: Workflow['workflow'],
+  inputs: Map<string, string | undefined>,
+  ctx: Map<string, string>,
+): boolean {
+  let changed = false;
+  for (const input of spec.inputs ?? []) {
+    if (!inputs.has(input.name) && typeof input.default === 'string') {
+      const reason = firstTaintReason(input.default, { inputs, ctx });
       if (reason !== undefined) {
         inputs.set(input.name, reason);
         changed = true;
       }
     }
-    for (const entry of spec.context ?? []) {
-      if (ctx.has(entry.key)) {
-        continue;
-      }
-      const reason = firstTaintReason(entry.value, current);
+  }
+  for (const entry of spec.context ?? []) {
+    if (!ctx.has(entry.key)) {
+      const reason = firstTaintReason(entry.value, { inputs, ctx });
       if (reason !== undefined) {
         ctx.set(entry.key, reason);
         changed = true;
       }
     }
   }
-  return current;
+  return changed;
 }
 
 /** The first tainted symbol any reference in `text` reads, or `undefined` if the text is clean. */

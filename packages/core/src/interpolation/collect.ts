@@ -102,6 +102,8 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
     }
   }
   for (const agent of spec.agents ?? []) {
+    // TODO(1.M): a `$ref` agent's `system_prompt` lives in another file; once 1.M resolves the ref,
+    // the resolved prompt must be re-run through `analyzeSecretTaint` so a secret cannot hide behind it.
     if (!('$ref' in agent)) {
       push(`agent \`${agent.id}\`.system_prompt`, 'agent-text', agent.system_prompt);
     }

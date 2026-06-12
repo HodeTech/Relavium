@@ -38,7 +38,7 @@ export { collectReferences } from './interpolation/collect.js';
 export type { ReferenceSite, ReferenceSiteCategory } from './interpolation/collect.js';
 
 // Static interpolation analyses (1.L2) — also consumed by the future VS Code language server.
-export { analyzeSecretTaint, analyzeContextReferences } from './interpolation/analyze.js';
+export { analyzeSecretTaint, analyzePreRunReferences } from './interpolation/analyze.js';
 
 // The `{{ … }}` runtime resolver (1.L2) — evaluate templates against a run scope, eager-once context.
 export { resolveTemplate, resolveContext } from './interpolation/resolve.js';

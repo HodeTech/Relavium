@@ -291,8 +291,10 @@ redaction rules live in [logging-and-observability.md](logging-and-observability
 Any change to: key handling or the keychain bridge, IPC commands, the desktop
 Rust-delegated egress path (`llm_stream` / `Channel<StreamChunk>`), provider base-URL
 handling, the `http_request` tool or MCP server-URL handling (the other two SSRF egress
-paths), the `run_command` sandbox, node `tools:` narrowing or `secret`-typed input
-handling, prompt/tool-call construction, **media byte delivery (`read_media` / Range / upload) and the
-media `url` carrier**, the DB encryption path, or a new dependency. For
+paths), the `run_command` sandbox, **the host file reader behind the `read_file` interpolation
+filter (`ResolverCapabilities.readFile`) — which must jail to the workspace root and reject path
+traversal, a duty the pure engine delegates to each host**, node `tools:` narrowing or
+`secret`-typed input handling, prompt/tool-call construction, **media byte delivery (`read_media` /
+Range / upload) and the media `url` carrier**, the DB encryption path, or a new dependency. For
 **managed mode**, also: the gateway authn/z path, key-pool selection, the metering/billing
 path, and the master-key vault. When in doubt, run the checklist.

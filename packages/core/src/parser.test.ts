@@ -466,17 +466,19 @@ workflow:
     let thrown: unknown;
     try {
       parseWorkflow(LEAK, { source: 'leak.yaml' });
-    } catch (caught) {
-      thrown = caught;
+    } catch (err) {
+      thrown = err;
     }
     expect(thrown).toBeInstanceOf(WorkflowSecretLeakError);
-    const err = thrown as WorkflowSecretLeakError;
-    expect(err.leaks[0]).toEqual({
+    if (!(thrown instanceof WorkflowSecretLeakError)) {
+      throw new Error('expected a WorkflowSecretLeakError');
+    }
+    expect(thrown.leaks[0]).toEqual({
       location: 'node `n`.prompt_template',
       secret: 'inputs.api_key',
     });
-    expect(err.source).toBe('leak.yaml'); // the workspace-relative label is propagated
-    expect(err.message).toContain('`inputs.api_key`'); // names the symbol, never a resolved value
+    expect(thrown.source).toBe('leak.yaml'); // the workspace-relative label is propagated
+    expect(thrown.message).toContain('`inputs.api_key`'); // names the symbol, never a resolved value
   });
 });
 
@@ -506,9 +508,12 @@ function expectValidationError(
   let thrown: unknown;
   try {
     parseWorkflow(yamlText, opts);
-  } catch (caught) {
-    thrown = caught;
+  } catch (err) {
+    thrown = err;
   }
   expect(thrown).toBeInstanceOf(WorkflowValidationError);
-  return thrown as WorkflowValidationError;
+  if (!(thrown instanceof WorkflowValidationError)) {
+    throw new Error('expected a WorkflowValidationError');
+  }
+  return thrown;
 }

@@ -77,14 +77,18 @@ describe('getByPath', () => {
   it.each(['..score', '.', '[0', '[nope]', '.issues[]', 'score', '["k', '["k"x]'])(
     'throws InterpolationError(invalid_path) for the malformed path %j',
     (bad) => {
+      let thrown: unknown;
       try {
         getByPath(obj, bad, '{{run.outputs["x"]}}');
-        throw new Error('expected getByPath to throw');
       } catch (err) {
-        expect(err).toBeInstanceOf(InterpolationError);
-        expect((err as InterpolationError).code).toBe('invalid_path');
-        expect((err as InterpolationError).location).toBe('{{run.outputs["x"]}}');
+        thrown = err;
       }
+      expect(thrown).toBeInstanceOf(InterpolationError);
+      if (!(thrown instanceof InterpolationError)) {
+        throw new Error('expected getByPath to throw InterpolationError');
+      }
+      expect(thrown.code).toBe('invalid_path');
+      expect(thrown.location).toBe('{{run.outputs["x"]}}');
     },
   );
 });

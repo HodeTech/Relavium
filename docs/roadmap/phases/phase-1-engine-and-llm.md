@@ -511,9 +511,10 @@ of every node, so it is sequenced before 1.M/1.O/1.P.) It is distinct from the J
   re-run/replay is deterministic (aligned with the checkpoint + idempotency model, 1.R).
 - Enforce the **transitive parse-time secret taint** [ADR-0029(c)](../../decisions/0029-tool-policy-hardening.md)
   mandates "by the parser": a `secret`-typed value (or anything derived from one) is rejected from
-  `prompt_template` / tool text, allowed only in credential/header fields. Raise a typed `InterpolationError`
-  (key + workspace-relative location + node id; no absolute paths, no secret values) per
-  [error-handling.md](../../standards/error-handling.md).
+  `prompt_template` / tool text, allowed only in credential/header fields. Raise a typed,
+  field-named parse error (`WorkflowSecretLeakError`) — names only, no absolute paths, no secret
+  values — per [error-handling.md](../../standards/error-handling.md). (A *runtime* resolver failure
+  is the separate `InterpolationError`.)
 
 **Acceptance:** interpolation resolves refs + filters correctly; a secret routed into prompt/tool text is
 rejected at parse with a field-named, secret-free error; re-resolving a node yields an identical frozen scope.

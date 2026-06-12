@@ -85,12 +85,17 @@ async function resolveReference(
 function resolveHead(ref: InterpolationReference, scope: RunScope): unknown {
   switch (ref.kind) {
     case 'inputs':
-      return scope.inputs[ref.identifier];
+      return ownValue(scope.inputs, ref.identifier);
     case 'ctx':
-      return scope.ctx[ref.identifier];
+      return ownValue(scope.ctx, ref.identifier);
     case 'node':
-      return scope.outputs[ref.identifier];
+      return ownValue(scope.outputs, ref.identifier);
     case 'secrets':
+      throw new InterpolationError(
+        'unknown_namespace',
+        `\`secrets.*\` is not a runtime namespace — a \`secret\`-typed input feeds credential fields, never resolved text`,
+        { location: ref.raw },
+      );
     case 'unknown':
       throw new InterpolationError(
         'unknown_namespace',
@@ -98,6 +103,15 @@ function resolveHead(ref: InterpolationReference, scope: RunScope): unknown {
         { location: ref.raw },
       );
   }
+}
+
+/**
+ * Read an OWN property only. A scope bag is assembled by the host from external data, so a
+ * prototype/polluted key (`toString`, `__proto__`, `constructor`) is treated as a missing reference
+ * (→ `undefined`, then `default`/`unresolved_reference`) rather than returning an inherited member.
+ */
+function ownValue(bag: Readonly<Record<string, unknown>>, key: string): unknown {
+  return Object.hasOwn(bag, key) ? bag[key] : undefined;
 }
 
 /** Turn a resolved value into text — primitives stringify; an object needs an explicit `| json`. */

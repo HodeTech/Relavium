@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { WorkflowSchema } from '@relavium/shared';
 
-import { WorkflowSecretLeakError } from '../errors.js';
+import { WorkflowSecretLeakError, WorkflowValidationError } from '../errors.js';
 import { parseWorkflow } from '../parser.js';
 
-import { analyzeContextReferences, analyzeSecretTaint } from './analyze.js';
+import { analyzePreRunReferences, analyzeSecretTaint } from './analyze.js';
 
 /** A schema-valid inline agent the leak fixtures bind their agent nodes to. */
 const AGENT = `  agents:
@@ -20,8 +20,10 @@ function expectLeak(yaml: string): WorkflowSecretLeakError {
   try {
     parseWorkflow(yaml);
   } catch (err) {
-    expect(err).toBeInstanceOf(WorkflowSecretLeakError);
-    return err as WorkflowSecretLeakError;
+    if (!(err instanceof WorkflowSecretLeakError)) {
+      throw err; // an unexpected error type — surface it rather than mis-narrowing
+    }
+    return err;
   }
   throw new Error('expected parseWorkflow to reject the secret interpolation');
 }
@@ -141,6 +143,55 @@ ${AGENT}
       via: 'inputs.api_key',
     });
   });
+
+  it('rejects a secret in an inline agent `system_prompt` and a node `system_prompt_append`', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+  agents:
+    - id: ag
+      name: Ag
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: 'be terse {{inputs.api_key}}'
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      system_prompt_append: 'and {{inputs.api_key}}'
+  edges: []`);
+    const locations = err.leaks.map((leak) => leak.location);
+    expect(locations).toContain('agent `ag`.system_prompt');
+    expect(locations).toContain('node `n`.system_prompt_append');
+  });
+
+  it('reports every leaking site — two nodes referencing the same secret yield two leaks', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+${AGENT}
+  nodes:
+    - id: a
+      type: agent
+      agent_ref: ag
+      prompt_template: 'one {{inputs.api_key}}'
+    - id: b
+      type: agent
+      agent_ref: ag
+      prompt_template: 'two {{inputs.api_key}}'
+  edges: []`);
+    expect(err.leaks).toHaveLength(2);
+    expect(err.leaks.map((leak) => leak.location)).toEqual([
+      'node `a`.prompt_template',
+      'node `b`.prompt_template',
+    ]);
+  });
 });
 
 describe('analyzeSecretTaint — permitted (no leak)', () => {
@@ -180,7 +231,7 @@ ${AGENT}
   });
 });
 
-describe('analyzeContextReferences', () => {
+describe('analyzePreRunReferences', () => {
   it('returns no issues for a clean context (reads inputs/ctx only)', () => {
     const wf = parseWorkflow(`schema_version: '1.0'
 workflow:
@@ -195,7 +246,7 @@ workflow:
     - id: n
       type: input
   edges: []`);
-    expect(analyzeContextReferences(wf)).toEqual([]);
+    expect(analyzePreRunReferences(wf)).toEqual([]);
   });
 
   it('flags a context value that reads run.outputs (the positive branch, in isolation)', () => {
@@ -210,9 +261,35 @@ workflow:
         edges: [],
       },
     });
-    const issues = analyzeContextReferences(wf);
+    const issues = analyzePreRunReferences(wf);
     expect(issues).toHaveLength(1);
     expect(issues[0]?.field).toBe('context `snapshot`.value');
     expect(issues[0]?.message).toContain('run.outputs');
+  });
+
+  it('flags an input default that reads run.outputs (defaults also resolve pre-run)', () => {
+    // parseWorkflow rejects this with a WorkflowValidationError, consistent with the context gate.
+    let thrown: unknown;
+    try {
+      parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: seeded
+      type: string
+      default: 'from {{run.outputs["x"]}}'
+  nodes:
+    - id: x
+      type: input
+  edges: []`);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(WorkflowValidationError);
+    if (!(thrown instanceof WorkflowValidationError)) {
+      throw new Error('expected a WorkflowValidationError');
+    }
+    expect(thrown.issues[0]?.field).toBe('input `seeded`.default');
+    expect(thrown.issues[0]?.message).toContain('run.outputs');
   });
 });

@@ -20,9 +20,11 @@ async function expectCode(
   try {
     await resolveTemplate(text, s, caps);
   } catch (err) {
-    expect(err).toBeInstanceOf(InterpolationError);
-    expect((err as InterpolationError).code).toBe(code);
-    return err as InterpolationError;
+    if (!(err instanceof InterpolationError)) {
+      throw err; // an unexpected error type — surface it rather than mis-narrowing
+    }
+    expect(err.code).toBe(code);
+    return err;
   }
   throw new Error(`expected resolveTemplate to throw ${code}`);
 }
@@ -102,7 +104,14 @@ describe('resolveTemplate — typed, secret-free errors', () => {
 
   it('unknown_namespace for a non inputs/ctx/run.outputs head (incl. secrets)', async () => {
     await expectCode('{{foo.bar}}', scope(), 'unknown_namespace');
-    await expectCode('{{secrets.token}}', scope(), 'unknown_namespace');
+    const secretErr = await expectCode('{{secrets.token}}', scope(), 'unknown_namespace');
+    expect(secretErr.message).toContain('secret'); // a clearer message than the generic unknown case
+  });
+
+  it('treats a prototype key on a scope bag as a missing reference (no inherited member)', async () => {
+    // `scope.inputs.toString` must not return Object.prototype.toString — it is an unresolved reference.
+    await expectCode('{{inputs.toString}}', scope({ inputs: {} }), 'unresolved_reference');
+    await expectCode('{{ctx.constructor}}', scope({ ctx: {} }), 'unresolved_reference');
   });
 
   it('unserializable when an object/array is used as text without a json filter', async () => {
@@ -265,9 +274,12 @@ workflow:
       thrown = err;
     }
     expect(thrown).toBeInstanceOf(InterpolationError);
-    expect((thrown as InterpolationError).code).toBe('read_file_failed');
-    expect((thrown as InterpolationError).message).not.toContain('/abs/missing.ts');
-    expect((thrown as InterpolationError).cause).toBe(boom);
+    if (!(thrown instanceof InterpolationError)) {
+      throw new Error('expected an InterpolationError');
+    }
+    expect(thrown.code).toBe('read_file_failed');
+    expect(thrown.message).not.toContain('/abs/missing.ts');
+    expect(thrown.cause).toBe(boom);
   });
 
   it('returns a frozen empty snapshot when there is no context', async () => {

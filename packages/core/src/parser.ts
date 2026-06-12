@@ -28,7 +28,7 @@ import {
   WorkflowValidationError,
   type WorkflowIssue,
 } from './errors.js';
-import { analyzeContextReferences, analyzeSecretTaint } from './interpolation/analyze.js';
+import { analyzePreRunReferences, analyzeSecretTaint } from './interpolation/analyze.js';
 
 /** The validated workflow document — `@relavium/shared`'s `Workflow`, under a parser-local alias. */
 export type WorkflowDefinition = Workflow;
@@ -90,9 +90,9 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
   const definition = result.data;
 
   // Static interpolation gates (1.L2) over the now-typed definition — both read structure only.
-  const contextIssues = analyzeContextReferences(definition);
-  if (contextIssues.length > 0) {
-    throw new WorkflowValidationError(contextIssues, source === undefined ? undefined : { source });
+  const preRunIssues = analyzePreRunReferences(definition);
+  if (preRunIssues.length > 0) {
+    throw new WorkflowValidationError(preRunIssues, source === undefined ? undefined : { source });
   }
   const leaks = analyzeSecretTaint(definition);
   if (leaks.length > 0) {

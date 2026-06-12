@@ -41,8 +41,8 @@ function stepInto(current: unknown, step: PathStep): unknown {
   // A plain object's OWN property only — arrays expose just numeric indices here, and an own-property
   // guard keeps a missing key returning `undefined` instead of reaching an inherited prototype member
   // (`.toString`, `.constructor`, `.__proto__`), which would both break the contract and be unsafe.
-  if (typeof current === 'object' && !Array.isArray(current)) {
-    return Object.prototype.hasOwnProperty.call(current, step.key)
+  if (typeof current === 'object' && current !== null && !Array.isArray(current)) {
+    return Object.hasOwn(current, step.key)
       ? (current as Record<string, unknown>)[step.key]
       : undefined;
   }
@@ -98,7 +98,9 @@ function readBracket(
   }
   const opener = path[i];
   // A quoted key: scan to the matching closing quote so a `]` *inside* the key (e.g. `["weird]key"]`)
-  // does not prematurely end the bracket — `indexOf(']')` cannot do that.
+  // does not prematurely end the bracket — `indexOf(']')` cannot do that. (Backslash escapes inside a
+  // quoted key are not honored here; the lexer's `findClose` preserves them, so such an exotic key
+  // fails safely with `invalid_path` rather than resolving — acceptable for v1.0.)
   if (opener === '"' || opener === "'") {
     i += 1;
     let key = '';
@@ -119,8 +121,8 @@ function readBracket(
     steps.push({ key });
     return i + 1;
   }
-  // A numeric index: the first `]` closes it (a number has no quotes/brackets inside).
-  const close = path.indexOf(']', from);
+  // A numeric index: the first `]` after the `[` closes it (a number has no quotes/brackets inside).
+  const close = path.indexOf(']', from + 1);
   if (close === -1) {
     throw invalidPath(path, location);
   }

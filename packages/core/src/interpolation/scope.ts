@@ -32,10 +32,12 @@ export interface RunScope {
 /** Side-effecting capabilities the host injects because the pure engine cannot implement them. */
 export interface ResolverCapabilities {
   /**
-   * Read a workspace file's text for the `read_file` filter. The host supplies a reader that enforces
-   * its own workspace-root sandbox; the engine passes the authored path through unchanged and never
-   * touches the filesystem itself. May resolve synchronously or asynchronously. When absent, a
-   * `read_file` filter fails with a typed `InterpolationError` (`read_file_unavailable`).
+   * Read a workspace file's text for the `read_file` filter. The engine passes the authored path
+   * through **unchanged** and never touches the filesystem itself, so the host reader **must jail to
+   * the workspace root and reject path traversal** — that sandbox duty is delegated, not optional, and
+   * is a mandatory-review trigger (docs/standards/security-review.md §When a review is mandatory). May
+   * resolve synchronously or asynchronously. When absent, a `read_file` filter fails with a typed
+   * `InterpolationError` (`read_file_unavailable`), never a crash.
    */
   readonly readFile?: (path: string) => string | Promise<string>;
 }
