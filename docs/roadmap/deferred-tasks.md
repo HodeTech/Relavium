@@ -194,13 +194,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > output, and carrying resolved-interpolation provenance into the untrusted-content-as-data boundary —
 > are already **1.O acceptance criteria** (phase-1 §1.O), so they are not duplicated here.
 
-- [ ] **Structured-default reference flow (→ 1.M).** The static gates (`analyzeSecretTaint`,
-  `analyzePreRunReferences`) scan only **string** input defaults; a `{{ … }}` nested in a STRUCTURED
-  default (`default: { token: '{{secrets.x}}' }`) is not scanned. This is **not a runtime leak** —
-  `resolveTemplate` is single-pass and never re-interpolates, so `{{inputs.config | json}}` emits the
-  literal `{{secrets.x}}`, not a resolved secret — but the typed-input layer (1.M) should decide whether
-  a structured default's references are resolved/taint-checked at all, and pin the boundary with a test.
-  *(packages/core/src/interpolation/analyze.ts; 1.M)*
+- [x] **Structured-default reference flow (→ 1.M).** *Resolved in 1.M.* Boundary **decided and
+  pinned**: a structured input default is **opaque data**, never template-interpolated — only **string**
+  defaults carry templates. A `{{ … }}` nested in a structured default (`default: { token: '{{secrets.x}}' }`)
+  is therefore neither resolved nor taint-scanned, and is not a leak vector (`resolveTemplate` is
+  single-pass, so `{{inputs.cfg | json}}` emits the literal `{{secrets.x}}`, not a resolved secret). Pinned
+  by `analyze.test.ts` ("treats a STRUCTURED input default as opaque data"). *(packages/core/src/interpolation/analyze.ts)*
 - [ ] **Frozen `ctx` checkpoint transport must use `structuredClone` (→ 1.R).** `resolveContext` returns
   an `Object.freeze`d **null-prototype** map so a `__proto__`/`constructor` context key is a safe own
   property. That guard is in-memory only: persisting/transporting it via `JSON.stringify` → `JSON.parse`

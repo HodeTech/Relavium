@@ -60,8 +60,15 @@ function buildSite(
   return references.length > 0 ? { location, category, segments, references } : undefined;
 }
 
-/** Collect reference sites from template fields on a single workflow node — all model/human text. */
-function collectNodeSites(node: WorkflowNode): ReferenceSite[] {
+/**
+ * Collect reference sites from the template fields on a single workflow node — all model/human text
+ * (an agent's `prompt_template`/`system_prompt_append`, a human gate's `assignee`/`message_template`).
+ * The DAG builder (1.M) calls this per node to attach a vertex's own un-evaluated input templates and
+ * to discover its `{{run.outputs[…]}}` data-dependency edges. Pure; empty for nodes with no template
+ * fields. (The JS-expression fields `condition`/`transform`/`merge_fn` are not templates and are not
+ * scanned here — they read run scope without `{{ }}` and are owned by the sandbox, 1.AB.)
+ */
+export function nodeReferenceSites(node: WorkflowNode): readonly ReferenceSite[] {
   const sites: ReferenceSite[] = [];
   const addFieldSite = (label: string, value: string | undefined): void => {
     if (value !== undefined) {
@@ -109,7 +116,7 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
     }
   }
   for (const node of spec.nodes) {
-    sites.push(...collectNodeSites(node));
+    sites.push(...nodeReferenceSites(node));
   }
   return sites;
 }

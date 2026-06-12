@@ -14,7 +14,11 @@
  * against a run scope.
  */
 
-export type WorkflowParseErrorCode = 'invalid_yaml' | 'schema_validation' | 'secret_interpolation';
+export type WorkflowParseErrorCode =
+  | 'invalid_yaml'
+  | 'schema_validation'
+  | 'secret_interpolation'
+  | 'invalid_graph';
 
 /** One field-named validation problem — the unit the VS Code language server later renders. */
 export interface WorkflowIssue {
@@ -22,6 +26,28 @@ export interface WorkflowIssue {
   readonly field: string;
   /** The user-facing message — no secret value, no absolute path, no raw payload/stack. */
   readonly message: string;
+}
+
+/** What kind of graph fault a {@link GraphIssue} reports — callers narrow on `kind`, never on `message`. */
+export type GraphIssueKind =
+  | 'cycle' // the dependency graph has a directed cycle (the run could never start)
+  | 'unknown_edge_target' // an edge / branch / `parallel_of` endpoint names a node that does not exist
+  | 'invalid_handle' // a `nodeId:handle` edge names a handle the source node does not expose
+  | 'dangling_ref'; // an `agent_ref` resolves to no agent (only checked when a resolved-agent registry is supplied)
+
+/**
+ * One field-named graph problem found by the DAG builder (1.M). Every field is a *name* — a node id,
+ * an edge locator, a handle, or an `agent_ref` field — never an authored value, so a finding is safe
+ * to surface and log. The unconstrained `:handle` suffix of an edge `from` is guarded against echo by
+ * the builder (a non-identifier handle degrades to a positional `edge #n`).
+ */
+export interface GraphIssue {
+  /** Human field/locator — e.g. ``edge `merge`→`gate```, ``node `gate`.branches[0].target_node``. */
+  readonly field: string;
+  /** The user-facing, structural message — names nodes/edges/handles, never an authored value. */
+  readonly message: string;
+  /** Stable discriminant for the fault class. */
+  readonly kind: GraphIssueKind;
 }
 
 /**
@@ -94,6 +120,35 @@ function summarize(issues: readonly WorkflowIssue[]): string {
   const first = issues[0];
   if (first === undefined) {
     return 'workflow validation failed';
+  }
+  const rest = issues.length - 1;
+  const suffix = rest === 1 ? '' : 's';
+  const more = rest > 0 ? ` (and ${rest} more issue${suffix})` : '';
+  return `${first.field}: ${first.message}${more}`;
+}
+
+/**
+ * The validated definition is structurally unrunnable as a graph — a dependency cycle, an edge or
+ * branch pointing at a missing node, an invalid `nodeId:handle`, or (when a resolved-agent registry is
+ * supplied) a dangling `agent_ref`. Thrown by the DAG builder (1.M) so a run never starts on a graph
+ * that could not execute. A sibling of {@link WorkflowValidationError}: both reject before a run, both
+ * are field-named and secret-free. The raw graph is NOT attached as `cause` (it could echo a value).
+ */
+export class WorkflowGraphError extends WorkflowParseError {
+  readonly code = 'invalid_graph';
+  readonly issues: readonly GraphIssue[];
+
+  constructor(issues: readonly GraphIssue[], opts?: { source?: string }) {
+    super(summarizeGraph(issues), opts?.source, undefined);
+    this.name = 'WorkflowGraphError';
+    this.issues = issues;
+  }
+}
+
+function summarizeGraph(issues: readonly GraphIssue[]): string {
+  const first = issues[0];
+  if (first === undefined) {
+    return 'workflow graph is invalid';
   }
   const rest = issues.length - 1;
   const suffix = rest === 1 ? '' : 's';

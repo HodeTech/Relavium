@@ -319,6 +319,31 @@ workflow:
     expect(analyzeSecretTaint(wf)).toEqual([]);
   });
 
+  it('treats a STRUCTURED input default as opaque data — a nested {{secrets.x}} is not a leak', () => {
+    // Boundary pin (deferred from 1.L2): only STRING defaults carry templates. A `{{ … }}` nested in a
+    // structured default is opaque JSON, never interpolated (resolveTemplate is single-pass), so it is
+    // neither taint-scanned nor a leak vector — the typed-input layer keeps structured defaults verbatim.
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: cfg
+      type: string
+      default:
+        token: '{{secrets.api_key}}'
+        ref: '{{run.outputs["n"]}}'
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'use {{inputs.cfg}}'
+  edges: []`);
+    expect(analyzeSecretTaint(wf)).toEqual([]);
+    // …and the structured default's {{run.outputs[…]}} is likewise opaque — no pre-run violation.
+    expect(analyzePreRunReferences(wf)).toEqual([]);
+  });
+
   it('returns no leaks for the canonical (secret-free) pipeline', () => {
     const wf = parseWorkflow(`schema_version: '1.0'
 workflow:

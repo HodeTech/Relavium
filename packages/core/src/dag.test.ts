@@ -1,0 +1,532 @@
+import { describe, expect, it } from 'vitest';
+
+import type { Agent } from '@relavium/shared';
+
+import { buildRunPlan, type BuildRunPlanOptions } from './dag.js';
+import { WorkflowGraphError, WorkflowSecretLeakError } from './errors.js';
+import { parseWorkflow } from './parser.js';
+import type { RunPlan } from './run-plan.js';
+
+/** Wrap a `workflow:` body into a full v1.0 document. */
+function doc(body: string): string {
+  return `schema_version: '1.0'\nworkflow:\n${body}`;
+}
+
+/** Parse + build in one step (the normal pipeline order). */
+function plan(yaml: string, opts?: BuildRunPlanOptions): RunPlan {
+  return buildRunPlan(parseWorkflow(yaml), opts);
+}
+
+/** Build expecting a graph error; returns it narrowed for assertions, or throws if none/other. */
+function expectGraphError(yaml: string, opts?: BuildRunPlanOptions): WorkflowGraphError {
+  try {
+    plan(yaml, opts);
+  } catch (err) {
+    if (err instanceof WorkflowGraphError) {
+      return err;
+    }
+    throw err;
+  }
+  throw new Error('expected a WorkflowGraphError, but build succeeded');
+}
+
+/** Assert that every dependency edge orders producer before consumer in the topological order. */
+function assertTopo(p: RunPlan): void {
+  const pos = new Map(p.order.map((id, i) => [id, i] as const));
+  expect(p.order).toHaveLength(p.vertices.size);
+  for (const vertex of p.vertices.values()) {
+    for (const dep of vertex.dependencies) {
+      const a = pos.get(dep);
+      const b = pos.get(vertex.id);
+      expect(a).toBeDefined();
+      expect(b).toBeDefined();
+      expect(a as number).toBeLessThan(b as number);
+    }
+  }
+}
+
+describe('buildRunPlan — valid topological orders', () => {
+  const SEQUENTIAL = doc(`  id: seq
+  nodes:
+    - { id: start, type: input }
+    - { id: step-a, type: transform, transform: 'a' }
+    - { id: step-b, type: transform, transform: 'b' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: step-a }
+    - { from: step-a, to: step-b }
+    - { from: step-b, to: done }`);
+
+  it('orders a sequential chain and wires dependencies/dependents', () => {
+    const p = plan(SEQUENTIAL);
+    expect(p.workflowId).toBe('seq');
+    expect(p.order).toEqual(['start', 'step-a', 'step-b', 'done']);
+    assertTopo(p);
+    expect(p.vertices.get('step-b')?.dependencies).toEqual(['step-a']);
+    expect(p.vertices.get('step-a')?.dependents).toEqual(['step-b']);
+  });
+
+  it('is deterministic — the same workflow yields a deep-equal order', () => {
+    expect(plan(SEQUENTIAL).order).toEqual(plan(SEQUENTIAL).order);
+  });
+
+  it('orders a parallel fan-out / fan-in graph and expands parallel→fan_out, merge→fan_in', () => {
+    const p = plan(
+      doc(`  id: par
+  max_parallel: 4
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [branch-a, branch-b] }
+    - { id: branch-a, type: transform, transform: 'a' }
+    - { id: branch-b, type: transform, transform: 'b' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: branch-a, to: join }
+    - { from: branch-b, to: join }
+    - { from: join, to: done }`),
+    );
+    assertTopo(p);
+    expect(p.maxParallel).toBe(4);
+
+    const fan = p.vertices.get('fan');
+    expect(fan?.type).toBe('fan_out');
+    expect(fan?.config).toMatchObject({ kind: 'fan_out', branchNodeIds: ['branch-a', 'branch-b'] });
+    // The materialized fan-out edges make both branches depend on the split.
+    expect(p.vertices.get('branch-a')?.dependencies).toContain('fan');
+    expect(p.vertices.get('branch-b')?.dependencies).toContain('fan');
+
+    const join = p.vertices.get('join');
+    expect(join?.type).toBe('fan_in');
+    expect(join?.config).toMatchObject({
+      kind: 'fan_in',
+      joinStrategy: 'wait_all',
+      mergeStrategy: 'concat',
+    });
+  });
+
+  it('carries the merge_fn for a custom merge (wait_all join)', () => {
+    const p = plan(
+      doc(`  id: custom
+  nodes:
+    - { id: fan, type: parallel, parallel_of: [a, b] }
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: transform, transform: '2' }
+    - { id: join, type: merge, merge_strategy: custom, merge_fn: 'branches' }
+  edges:
+    - { from: a, to: join }
+    - { from: b, to: join }`),
+    );
+    expect(p.vertices.get('join')?.config).toMatchObject({
+      kind: 'fan_in',
+      joinStrategy: 'wait_all',
+      mergeStrategy: 'custom',
+      mergeFn: 'branches',
+    });
+  });
+
+  it('derives join_strategy wait_first for merge_strategy first', () => {
+    const p = plan(
+      doc(`  id: first
+  nodes:
+    - { id: fan, type: parallel, parallel_of: [a, b] }
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: transform, transform: '2' }
+    - { id: join, type: merge, merge_strategy: first }
+  edges:
+    - { from: a, to: join }
+    - { from: b, to: join }`),
+    );
+    expect(p.vertices.get('join')?.config).toMatchObject({
+      kind: 'fan_in',
+      joinStrategy: 'wait_first',
+      mergeStrategy: 'first',
+    });
+  });
+
+  it('orders a conditional graph and maps human_gate→human_in_the_loop', () => {
+    const p = plan(
+      doc(`  id: cond
+  nodes:
+    - { id: start, type: input }
+    - { id: gate, type: condition, expression: 'run.outputs["start"].ok', branches: [{ when: true, target_node: approve }, { when: false, target_node: reject }] }
+    - { id: approve, type: human_gate, gate_type: approval }
+    - { id: reject, type: output }
+  edges:
+    - { from: start, to: gate }
+    - { from: 'gate:true', to: approve }
+    - { from: 'gate:false', to: reject }`),
+    );
+    assertTopo(p);
+    expect(p.vertices.get('gate')?.type).toBe('condition');
+    expect(p.vertices.get('approve')?.type).toBe('human_in_the_loop');
+    expect(p.vertices.get('gate')?.dependents).toEqual(['approve', 'reject']);
+  });
+
+  it('materializes a dependency edge from a condition branch / default (no explicit edge needed)', () => {
+    const p = plan(
+      doc(`  id: condwire
+  nodes:
+    - { id: start, type: input }
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: yes-node }], default: no-node }
+    - { id: yes-node, type: output }
+    - { id: no-node, type: output }
+  edges:
+    - { from: start, to: gate }`),
+    );
+    assertTopo(p);
+    // No `gate:true → …` edge authored — routing comes solely from branches/default, yet it is wired.
+    expect(p.vertices.get('gate')?.dependents).toEqual(['yes-node', 'no-node']);
+    expect(p.vertices.get('yes-node')?.dependencies).toEqual(['gate']);
+    expect(p.vertices.get('no-node')?.dependencies).toEqual(['gate']);
+  });
+
+  it('leaves a dangling {{run.outputs["ghost"]}} reference to the runtime resolver (no build error)', () => {
+    const p = plan(
+      doc(`  id: ghostref
+  agents:
+    - { id: w, model: m, provider: anthropic, system_prompt: 's' }
+  nodes:
+    - { id: only, type: agent, agent_ref: w, prompt_template: 'use {{run.outputs["ghost-node"]}}' }
+  edges: []`),
+    );
+    expect(p.order).toEqual(['only']);
+    // The ghost reference adds no edge; the resolver flags it as unresolved_reference at dispatch (1.O).
+    expect(p.vertices.get('only')?.dependencies).toEqual([]);
+  });
+
+  it('wires a data-dependency edge from a {{run.outputs[…]}} reference with no explicit edge', () => {
+    const p = plan(
+      doc(`  id: data
+  agents:
+    - { id: writer, model: m, provider: anthropic, system_prompt: 'write' }
+  nodes:
+    - { id: producer, type: agent, agent_ref: writer, prompt_template: 'go' }
+    - { id: consumer, type: agent, agent_ref: writer, prompt_template: 'use {{run.outputs["producer"]}}' }
+  edges: []`),
+    );
+    assertTopo(p);
+    expect(p.order).toEqual(['producer', 'consumer']);
+    expect(p.vertices.get('consumer')?.dependencies).toEqual(['producer']);
+    // The consumer's template is attached un-evaluated for the run loop to resolve at dispatch.
+    expect(p.vertices.get('consumer')?.inputSites).toHaveLength(1);
+  });
+
+  it('wires a data edge from a resolved agent system_prompt referencing a node output', () => {
+    const agents = new Map<string, Agent>([
+      [
+        'summarizer',
+        { id: 'summarizer', model: 'm', provider: 'anthropic', system_prompt: 'base {{run.outputs["scan"]}}' },
+      ],
+    ]);
+    const p = plan(
+      doc(`  id: ref-data
+  nodes:
+    - { id: scan, type: transform, transform: '1' }
+    - { id: report, type: agent, agent_ref: summarizer, prompt_template: 'go' }
+  edges: []`),
+      { agents },
+    );
+    expect(p.vertices.get('report')?.dependencies).toEqual(['scan']);
+    expect(p.vertices.get('report')?.config).toMatchObject({ kind: 'agent' });
+  });
+});
+
+describe('buildRunPlan — cycle detection', () => {
+  it('rejects a direct cycle, naming it', () => {
+    const err = expectGraphError(
+      doc(`  id: cyc
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: transform, transform: '2' }
+  edges:
+    - { from: a, to: b }
+    - { from: b, to: a }`),
+    );
+    expect(err.code).toBe('invalid_graph');
+    expect(err.issues[0]?.kind).toBe('cycle');
+    expect(err.issues[0]?.message).toMatch(/cycle/i);
+    expect(err.issues[0]?.field).toContain('a');
+    expect(err.issues[0]?.field).toContain('b');
+  });
+
+  it('rejects a self-loop', () => {
+    const err = expectGraphError(
+      doc(`  id: self
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+  edges:
+    - { from: a, to: a }`),
+    );
+    expect(err.issues[0]?.kind).toBe('cycle');
+  });
+
+  it('detects a cycle routed through a condition branch with no explicit back-edge', () => {
+    const err = expectGraphError(
+      doc(`  id: condcycle
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+    - { id: gate, type: condition, expression: 'run.outputs["a"].ok', branches: [{ when: true, target_node: a }] }
+  edges:
+    - { from: a, to: gate }`),
+    );
+    expect(err.issues[0]?.kind).toBe('cycle');
+  });
+
+  it('rejects a longer cycle through a data-dependency edge', () => {
+    const err = expectGraphError(
+      doc(`  id: cyc3
+  agents:
+    - { id: w, model: m, provider: anthropic, system_prompt: 's' }
+  nodes:
+    - { id: a, type: agent, agent_ref: w, prompt_template: 'use {{run.outputs["c"]}}' }
+    - { id: b, type: transform, transform: '1' }
+    - { id: c, type: transform, transform: '2' }
+  edges:
+    - { from: a, to: b }
+    - { from: b, to: c }`),
+    );
+    expect(err.issues[0]?.kind).toBe('cycle');
+  });
+});
+
+describe('buildRunPlan — endpoint and handle validation', () => {
+  it('rejects an edge to a missing node', () => {
+    const err = expectGraphError(
+      doc(`  id: miss
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+  edges:
+    - { from: a, to: ghost }`),
+    );
+    expect(err.issues[0]?.kind).toBe('unknown_edge_target');
+    expect(err.issues[0]?.message).toContain('ghost');
+  });
+
+  it('rejects an edge whose source is not a node', () => {
+    const err = expectGraphError(
+      doc(`  id: missource
+  nodes:
+    - { id: a, type: output }
+  edges:
+    - { from: ghost, to: a }`),
+    );
+    expect(err.issues.some((i) => i.kind === 'unknown_edge_target' && i.message.includes('source'))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a condition branch / default that targets a missing node', () => {
+    const err = expectGraphError(
+      doc(`  id: badtarget
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: ghost }], default: alsoghost }
+  edges: []`),
+    );
+    const kinds = err.issues.map((i) => i.kind);
+    expect(kinds).toContain('unknown_edge_target');
+    expect(err.issues.some((i) => i.field.includes('branches[0].target_node'))).toBe(true);
+    expect(err.issues.some((i) => i.field.includes('.default'))).toBe(true);
+  });
+
+  it('rejects a parallel_of member that is not a node', () => {
+    const err = expectGraphError(
+      doc(`  id: badpar
+  nodes:
+    - { id: fan, type: parallel, parallel_of: [ghost] }
+  edges: []`),
+    );
+    expect(err.issues.some((i) => i.kind === 'unknown_edge_target' && i.field.includes('parallel_of'))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a handle on a non-condition source', () => {
+    const err = expectGraphError(
+      doc(`  id: badhandle
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: output }
+  edges:
+    - { from: 'a:branch', to: b }`),
+    );
+    expect(err.issues[0]?.kind).toBe('invalid_handle');
+  });
+
+  it('rejects a condition handle that matches no branch', () => {
+    const err = expectGraphError(
+      doc(`  id: nohandle
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: 'gate:false', to: out }`),
+    );
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
+  });
+
+  it('accepts a numeric condition handle (when value stringified)', () => {
+    const p = plan(
+      doc(`  id: numhandle
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: 7, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: 'gate:7', to: out }`),
+    );
+    expect(p.vertices.has('gate')).toBe(true);
+  });
+});
+
+describe('buildRunPlan — agent_ref resolution', () => {
+  it('defers agent_ref resolution when no registry is supplied', () => {
+    // `unknown-agent` is neither inline nor in a registry — with no registry, this is NOT an error.
+    const p = plan(
+      doc(`  id: defer
+  nodes:
+    - { id: n, type: agent, agent_ref: unknown-agent, prompt_template: 'go' }
+  edges: []`),
+    );
+    expect(p.vertices.get('n')?.config).toMatchObject({ kind: 'agent' });
+  });
+
+  it('flags a dangling agent_ref when a registry is supplied', () => {
+    const err = expectGraphError(
+      doc(`  id: dangle
+  nodes:
+    - { id: n, type: agent, agent_ref: unknown-agent, prompt_template: 'go' }
+  edges: []`),
+      { agents: new Map() },
+    );
+    expect(err.issues[0]?.kind).toBe('dangling_ref');
+    expect(err.issues[0]?.field).toContain('agent_ref');
+  });
+
+  it('attaches the resolved agent and its fallback chain to an agent vertex', () => {
+    const agents = new Map<string, Agent>([
+      [
+        'writer',
+        {
+          id: 'writer',
+          model: 'claude-opus-4-8',
+          provider: 'anthropic',
+          system_prompt: 'write well',
+          fallback_chain: [{ model: 'gpt-5', provider: 'openai', max_attempts: 2 }],
+        },
+      ],
+    ]);
+    const p = plan(
+      doc(`  id: resolved
+  nodes:
+    - { id: n, type: agent, agent_ref: writer, prompt_template: 'go' }
+  edges: []`),
+      { agents },
+    );
+    expect(p.vertices.get('n')?.config).toMatchObject({
+      kind: 'agent',
+      resolvedAgent: { id: 'writer', provider: 'anthropic' },
+      fallbackChain: [{ model: 'gpt-5', provider: 'openai', max_attempts: 2 }],
+    });
+  });
+});
+
+describe('buildRunPlan — secret re-taint of resolved $ref agents', () => {
+  // Build the secret-looking input name out of fragments — no contiguous literal (Leakwatch hygiene).
+  const SECRET_INPUT = ['api', 'key'].join('_');
+
+  it('rejects a resolved agent whose system_prompt leaks a secret input', () => {
+    const agents = new Map<string, Agent>([
+      [
+        'leaky',
+        {
+          id: 'leaky',
+          model: 'm',
+          provider: 'anthropic',
+          system_prompt: `inject {{inputs.${SECRET_INPUT}}} here`,
+        },
+      ],
+    ]);
+    let thrown: unknown;
+    try {
+      plan(
+        doc(`  id: leak
+  inputs:
+    - { name: ${SECRET_INPUT}, type: secret }
+  nodes:
+    - { id: n, type: agent, agent_ref: leaky, prompt_template: 'go' }
+  edges: []`),
+        { agents },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(WorkflowSecretLeakError);
+    const leak = (thrown as WorkflowSecretLeakError).leaks[0];
+    expect(leak?.secret).toBe(`inputs.${SECRET_INPUT}`);
+    expect(leak?.location).toContain('leaky');
+  });
+
+  it('does NOT re-check inline agents (already gated by the parser) via the registry path', () => {
+    // An inline agent is parser-checked; supplying it again in the registry must not double-flag.
+    const agents = new Map<string, Agent>([
+      ['inliner', { id: 'inliner', model: 'm', provider: 'anthropic', system_prompt: 'clean prompt' }],
+    ]);
+    const p = plan(
+      doc(`  id: inline-ok
+  agents:
+    - { id: inliner, model: m, provider: anthropic, system_prompt: 'clean prompt' }
+  nodes:
+    - { id: n, type: agent, agent_ref: inliner, prompt_template: 'go' }
+  edges: []`),
+      { agents },
+    );
+    expect(p.vertices.get('n')?.config).toMatchObject({ kind: 'agent' });
+  });
+});
+
+describe('buildRunPlan — error hygiene', () => {
+  it('does not echo a charset-unsafe edge handle into the error', () => {
+    const unsafe = ['secret', 'value'].join('/'); // contains '/', outside the safe handle charset
+    const err = expectGraphError(
+      doc(`  id: hyg
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: output }
+  edges:
+    - { from: 'a:${unsafe}', to: b }`),
+    );
+    expect(err.issues[0]?.kind).toBe('invalid_handle');
+    expect(JSON.stringify(err.issues)).not.toContain(unsafe);
+  });
+
+  it('attaches no cause to a graph error (no raw object that could echo a value)', () => {
+    const err = expectGraphError(
+      doc(`  id: nocause
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+  edges:
+    - { from: a, to: a }`),
+    );
+    expect(err.cause).toBeUndefined();
+  });
+
+  it('carries the source label into a graph error', () => {
+    try {
+      buildRunPlan(
+        parseWorkflow(
+          doc(`  id: src
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+  edges:
+    - { from: a, to: ghost }`),
+        ),
+        { source: 'flows/x.relavium.yaml' },
+      );
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(WorkflowGraphError);
+      expect((err as WorkflowGraphError).source).toBe('flows/x.relavium.yaml');
+    }
+  });
+});

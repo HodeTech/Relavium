@@ -16,12 +16,15 @@ export {
   WorkflowSyntaxError,
   WorkflowValidationError,
   WorkflowSecretLeakError,
+  WorkflowGraphError,
   InterpolationError,
 } from './errors.js';
 export type {
   WorkflowParseErrorCode,
   WorkflowIssue,
   SecretLeak,
+  GraphIssue,
+  GraphIssueKind,
   InterpolationErrorCode,
 } from './errors.js';
 
@@ -34,12 +37,36 @@ export type {
   PipeFilter,
   FilterArg,
 } from './interpolation/references.js';
-export { collectReferences } from './interpolation/collect.js';
+export { collectReferences, nodeReferenceSites } from './interpolation/collect.js';
 export type { ReferenceSite, ReferenceSiteCategory } from './interpolation/collect.js';
 
 // Static interpolation analyses (1.L2) — also consumed by the future VS Code language server.
-export { analyzeSecretTaint, analyzePreRunReferences } from './interpolation/analyze.js';
+export {
+  analyzeSecretTaint,
+  analyzePreRunReferences,
+  analyzeResolvedAgentTaint,
+} from './interpolation/analyze.js';
 
 // The `{{ … }}` runtime resolver (1.L2) — evaluate templates against a run scope, eager-once context.
 export { resolveTemplate, resolveContext } from './interpolation/resolve.js';
 export type { RunScope, ResolverCapabilities } from './interpolation/scope.js';
+
+// DAG builder + RunPlan (1.M) — compile a validated definition into an executable, topologically
+// ordered plan; the run loop (1.N) and AgentRunner (1.O) consume it.
+export { buildRunPlan } from './dag.js';
+export type { BuildRunPlanOptions } from './dag.js';
+export type {
+  RunPlan,
+  PlanVertex,
+  PlanConfig,
+  InputPlanConfig,
+  AgentPlanConfig,
+  ConditionPlanConfig,
+  TransformPlanConfig,
+  FanOutPlanConfig,
+  FanInPlanConfig,
+  HumanGatePlanConfig,
+  OutputPlanConfig,
+  JoinStrategy,
+  MergeStrategy,
+} from './run-plan.js';
