@@ -263,6 +263,17 @@ describe('parseWorkflow — malformed (each fails with a field-named, secret-fre
     expect(err.issues[0]?.message).toMatch(/kebab/);
   });
 
+  it('does not echo a kebab-invalid (underscore) node id — SAFE_ID_LABEL mirrors kebabIdSchema', () => {
+    // A lowercase id with underscores fails the hyphen-only kebab schema; the locator must NOT echo it
+    // (it would otherwise reflect a secret-shaped `sk_live_…` value), falling back to `node #0`.
+    const secret = 'sk_live_do_not_echo';
+    const err = expectValidationError(
+      doc(`  id: w\n  nodes:\n    - id: ${secret}\n      type: input\n  edges: []`),
+    );
+    expect(JSON.stringify(err.issues)).not.toContain(secret);
+    expect(err.issues[0]?.field).toBe('node #0.id');
+  });
+
   it('surfaces a structural message for the `too_small` code path (min-1 string constraint)', () => {
     // An empty agent `system_prompt` (nonEmptyString = z.string().min(1)) → Zod code `too_small`.
     // messageFor returns issue.message directly — pin that it names the constraint, not the authored value.

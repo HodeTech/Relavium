@@ -167,12 +167,14 @@ function locate(path: ReadonlyArray<string | number>, root: unknown): string {
 /**
  * The shape of a valid authored identifier — only such a value is echoed into a field locator, so an
  * INVALID authored value (which may be arbitrary text or a misplaced secret) is never reflected back;
- * it falls back to a positional `#n`. Two charsets, each matching what its field's schema permits:
- * `SAFE_ID_LABEL` for `node`/`agent` ids (kebab/snake, `kebabIdSchema`), and `SAFE_NAME_LABEL` for an
- * `input` name / `context` key (the interpolation head charset, `@relavium/shared` `interpolationNameSchema`).
- * Keeping them aligned means a name the schema now accepts (e.g. `API_KEY`) still names its own error.
+ * it falls back to a positional `#n`. Two charsets, each mirroring exactly what its field's schema
+ * permits: `SAFE_ID_LABEL` for `node`/`agent` ids (hyphen-only kebab, mirrors `@relavium/shared`'s
+ * `kebabIdSchema` — so a kebab-invalid id like `sk_live_x` is NOT echoed), and `SAFE_NAME_LABEL` for an
+ * `input` name / `context` key (the interpolation head charset, mirrors `interpolationNameSchema`).
+ * Keeping each aligned with its schema means a value the schema accepts (e.g. `API_KEY`) still names
+ * its own error, while one it rejects falls back to `#n`.
  */
-const SAFE_ID_LABEL = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const SAFE_ID_LABEL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SAFE_NAME_LABEL = /^[A-Za-z0-9_-]+$/;
 
 function itemLabel(
