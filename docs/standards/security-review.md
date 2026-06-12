@@ -238,11 +238,15 @@ security invariants** a review must confirm are:
   global from embedded wasm bytes — `@relavium/core` imports `quickjs-emscripten-core` plus a
   single-file **sync** variant, never the meta-package's default `getQuickJS()` loader (it statically
   imports `node:fs`/`path` and breaks the zero-platform-imports invariant,
-  [ADR-0003](../decisions/0003-pure-ts-engine-not-langgraph-python.md)). `eval`, the `Function`
-  constructor, and the Node `vm` module are **never created/used** (`Eval: false`).
-- **Deny-by-default language surface.** Only the audited pure allow-list exists; `Date`,
-  `Math.random`, `Promise`/async, `performance`, `crypto`, `Proxy`/`Reflect`, and all I/O are absent.
-  v1.0 injects **zero custom host functions**.
+  [ADR-0003](../decisions/0003-pure-ts-engine-not-langgraph-python.md)). Host `new Function()` / `eval`
+  / the Node `vm` module are **never used as the sandbox** (none is a boundary).
+- **The wasm VM is the boundary; deny-by-default capabilities.** The VM runs on an isolated wasm heap
+  with no host reference reachable (zero host functions injected). Only the audited pure allow-list
+  exists; `Date`, `Math.random`, `Promise`/async, `performance`, `crypto`, `Proxy`/`Reflect`, and all
+  I/O are absent. The `Eval` intrinsic stays on (quickjs `evalCode` needs it), so `eval`/`Function`
+  exist *inside* the VM but are contained — they reach no host reference and no forbidden capability,
+  so they are harmless; the guarantee rests on the isolation + capability removal, not on deleting
+  every reflective handle to `Function`.
 - **JSON-only marshaling, immutable global.** Scope crosses the boundary as plain JSON (host
   `stringify` → VM `parse`), so no live host object/getter/function leaks in and a `{"__proto__":…}`
   in model/tool-derived `run.outputs` cannot poison the prototype chain; each binding is installed

@@ -104,13 +104,20 @@ import-zone check enforce this statically. The exact variant + version is pinned
 the 1.AB perf spike and mirrored in [tech-stack.md](../tech-stack.md); the engine-deps allowlist
 (`tools/engine-deps/check.mjs`) is edited in the **same commit** as the first import.
 
-**2. Deny-by-default language surface (never created, not deleted).** The context is built with a
-**minimal intrinsic set** so dangerous capabilities are never created: `Eval: false` (QuickJS's `Eval`
-intrinsic is what installs both `eval` and the `Function` constructor, so omitting it creates neither),
-`Date: false`, `Promise: false` (evaluation is **synchronous-only** — `executePendingJobs` is never
-called). `Math.random` is deleted as an own property by the host immediately after `newContext()` (no
-intrinsic flag omits a single `Math` method). The exhaustive allow-list and forbidden set are owned by
-the reference spec.
+**2. Deny-by-default *capabilities*; the wasm VM is the boundary, not the language.** The context is
+built with a **minimal intrinsic set** so the non-deterministic and I/O-bearing capabilities are never
+created — `Date: false`, `Promise: false` (evaluation is **synchronous-only** — `executePendingJobs` is
+never called), `Proxy`/typed-array/bignum off — and `Math.random` is deleted before the expression
+runs. The `Eval` intrinsic stays **enabled** (quickjs `evalCode` requires it to compile, so disabling
+it disables evaluation), which means `eval` and the `Function` constructor exist *inside* the VM — but
+they are harmless: the wasm isolation is the boundary, no host reference is reachable (zero host
+functions are injected), and every forbidden capability above is absent, so code reached via
+`eval` / `Function` / a re-acquired `(…).constructor` can read no clock or RNG, touch no host object,
+and do no I/O — and is bounded by the same caps. (Implementation correction, 2026-06-12: an earlier
+draft of this item said `Eval: false`; that is technically accurate but unusable, since it disables
+`evalCode` itself — the contract instead removes the *capabilities* and relies on the isolation, the
+stronger and more honest guarantee.) The exhaustive allow-list and forbidden set are owned by the
+reference spec.
 
 **3. Marshaling is JSON-only; the global is immutable (prototype-pollution closed).** Scope crosses
 into the VM as **plain JSON data**: the host `JSON.stringify`s `inputs`/`ctx`/`run.outputs` (and
@@ -133,13 +140,16 @@ caps (timeout, memory, stack) are **non-idempotent safety nets, never a result**
 surfaces as the error path (item 6), never as a stable boolean/value. A *successful* evaluation stays
 reproducible across checkpoint/resume; a cap-trip re-executes under the node retry budget (1.S).
 
-**5. Resource-cap defaults (fixed in v1.0).** Per evaluation: **100 ms** wall-clock timeout, **16 MB**
+**5. Resource-cap defaults (fixed in v1.0).** Per evaluation: **1000 ms** wall-clock timeout, **16 MB**
 heap (`setMemoryLimit`), **256 KB** stack (`setMaxStackSize`). The wasm module is instantiated **once**
 per engine instance; **each evaluation gets a fresh runtime + context, disposed after** — full
 isolation between expressions, and OOM-safe (a tripped runtime is discarded, not reused). Caps are
 **fixed engine constants** in v1.0 (expressions are small and infrequent; configurability is a future
-ADR), confirmed/tuned by the 1.AB perf spike. The numbers are owned by the reference spec so every
-surface shares one source of truth.
+ADR). The 1.AB perf spike measured a real expression at ~1 ms, so the 1 s budget is ~1000× headroom —
+deliberately loose so OS scheduling jitter on a busy host cannot spuriously trip a trivial eval (a
+timeout is the one retryable failure, so a tight cap would only manufacture needless node retries), and
+it is started **after** the cold runtime/context construction so setup time is not charged against it.
+The numbers are owned by the reference spec so every surface shares one source of truth.
 
 **6. Error taxonomy (closed `sandbox_error` code).** Every sandbox failure surfaces as the closed
 `ErrorCode` member `sandbox_error` ([sse-event-schema.md](../reference/contracts/sse-event-schema.md#error-code-taxonomy)),

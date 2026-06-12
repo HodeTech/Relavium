@@ -18,6 +18,7 @@ export {
   WorkflowSecretLeakError,
   WorkflowGraphError,
   InterpolationError,
+  SandboxError,
 } from './errors.js';
 export type {
   WorkflowParseErrorCode,
@@ -26,6 +27,7 @@ export type {
   GraphIssue,
   GraphIssueKind,
   InterpolationErrorCode,
+  SandboxErrorReason,
 } from './errors.js';
 
 // Structured, un-evaluated interpolation references — the view the DAG builder (1.M) consumes.
@@ -70,3 +72,15 @@ export type {
   JoinStrategy,
   MergeStrategy,
 } from './run-plan.js';
+
+// Expression sandbox (1.AB) — the deterministic, resource-capped QuickJS-wasm evaluator for the bare
+// JS condition / transform / merge_fn expressions (ADR-0027; expression-sandbox-spec.md). The 1.P node
+// handlers create one sandbox and call `evaluate`; failures surface as the typed `SandboxError` above.
+export { createExpressionSandbox, DEFAULT_SANDBOX_LIMITS } from './expression/sandbox.js';
+export type {
+  ExpressionSandbox,
+  EvaluateInput,
+  ExpressionScope,
+  ExpressionKind,
+  SandboxLimits,
+} from './expression/sandbox.js';

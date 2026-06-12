@@ -57,28 +57,34 @@ Rules:
 
 ## Language surface (deny-by-default allow-list)
 
-The VM context is built with a **minimal intrinsic set**, so dangerous capabilities are **never
-created** — not created-then-deleted. Available to an expression:
+The VM context is built with a **minimal intrinsic set**: the non-deterministic and I/O-bearing
+capabilities are simply **not created** (the one exception `BaseObjects` ships, `Math.random`, is
+removed before the expression runs). Available to an expression:
 
 | Available | Notes |
 |-----------|-------|
 | `Object`, `Array`, `String`, `Number`, `Boolean` | constructors + their pure prototype methods |
-| `Math` | **without `Math.random`** — the host deletes the `Math.random` own property immediately after `newContext()` (no intrinsic flag omits a single `Math` method); calling it throws → `sandbox_error` |
+| `Math` | **without `Math.random`** — the sandbox deletes the `Math.random` own property before the expression runs (no intrinsic flag omits a single `Math` method); calling it throws → `sandbox_error` |
 | `JSON` | `parse` / `stringify` |
 | `Map`, `Set` | deterministic; insertion-ordered |
 | `RegExp` | deterministic (catastrophic backtracking is bounded by the wall-clock cap) |
 | `parseInt`, `parseFloat`, `isNaN`, `isFinite` | global numeric helpers |
 
-**Forbidden — not present in the context:**
+**Forbidden — not present in the context:** `Date`, `Math.random`, `Promise` / `async` / `await` /
+`queueMicrotask` (evaluation is synchronous — pending jobs are never run), `setTimeout` /
+`setInterval`, `performance`, `crypto`, `Proxy` / `Reflect`, `WeakRef` / `FinalizationRegistry`,
+`import` / `require` / `process`, and any ambient I/O (`fetch`, filesystem, network). No custom host
+function is injected in v1.0 — only the built-in pure objects above (an interpolation filter such as
+`read_file` is a templating-engine concern, **not** part of this sandbox).
 
-`eval`, the `Function` constructor (QuickJS's `Eval` intrinsic is what installs both; `Eval: false`
-omits it, so neither is created), `Date`, `Math.random`, `Promise` /
-`async` / `await` / `queueMicrotask` (evaluation is synchronous — pending jobs are never run),
-`setTimeout` / `setInterval`, `performance`, `crypto`, `globalThis` / `global` self-reference escapes,
-`Proxy` / `Reflect`, `WeakRef` / `FinalizationRegistry`, `import` / `require` / `process`, and any
-ambient I/O (`fetch`, filesystem, network). No custom host function is injected in v1.0 — only the
-built-in pure objects above (an interpolation filter such as `read_file` is a templating-engine
-concern, **not** part of this sandbox).
+> **`eval` / `Function` are present but contained — the wasm VM is the boundary, not their absence.**
+> quickjs `evalCode` requires the `Eval` intrinsic to compile, so it stays enabled and `eval` / the
+> `Function` constructor exist inside the VM. This is safe: the QuickJS VM runs on an isolated wasm heap
+> with **no host reference reachable** (zero host functions are injected), and every capability above is
+> absent — so code reached through `eval`, `Function`, or a re-acquired `(…).constructor` can read no
+> clock, no RNG, no host object, do no I/O, and is bounded by the same caps. Isolation and determinism
+> rest on removing the **capabilities**, not on trying to delete every reflective handle to `Function`
+> (which would be fragile theater the wasm boundary already makes unnecessary).
 
 ## Determinism guarantee
 
@@ -109,14 +115,17 @@ tripped runtime is discarded, never reused).
 
 | Cap | Default (v1.0) | Enforced by | On trip |
 |-----|----------------|-------------|---------|
-| Wall-clock timeout | **100 ms** | `setInterruptHandler(shouldInterruptAfterDeadline(…))` | `sandbox_error` — **retryable** (non-idempotent safety net) |
+| Wall-clock timeout | **1000 ms** | `setInterruptHandler(shouldInterruptAfterDeadline(…))`, started **after** runtime/context construction (it bounds execution, not cold setup) | `sandbox_error` — **retryable** (non-idempotent safety net) |
 | Heap memory | **16 MB** | `runtime.setMemoryLimit(bytes)` | `sandbox_error` — **fatal** |
 | Stack size | **256 KB** | `runtime.setMaxStackSize(bytes)` | `sandbox_error` — **fatal** |
 
 The caps are **fixed engine constants** in v1.0 — expressions are small and infrequent relative to LLM
-calls, so a trip signals a bug or a DoS attempt, not normal variation. Author-configurable caps are a
-future ADR. These numbers are the single source of truth; every surface uses them unchanged. The 1.AB
-perf spike confirms they sit comfortably above legitimate expression cost.
+calls, so a trip signals a bug or a DoS attempt, not normal variation. The 1.AB perf spike measured a
+real expression at **~1 ms** (cold-start ~35 ms), so the 1 s budget leaves ~1000× headroom; it is set
+that loose on purpose — a tighter wall-clock budget spuriously trips a trivial eval when the host
+deschedules the process mid-call, and since a timeout is the one *retryable* failure, a tighter cap
+would only convert scheduling jitter into needless node retries. Author-configurable caps are a future
+ADR. These numbers are the single source of truth; every surface uses them unchanged.
 
 ## Result contract
 

@@ -223,3 +223,54 @@ export class InterpolationError extends Error {
     }
   }
 }
+
+/**
+ * Why an expression-sandbox evaluation failed (1.AB) — callers narrow on `reason`, never on
+ * `message`. The retryable/fatal split is a pure function of this discriminant
+ * (docs/standards/error-handling.md): only a wall-clock-`timeout` trip is retryable (a
+ * non-idempotent safety net that may pass on re-execution); every other reason is deterministic and
+ * therefore fatal. See [expression-sandbox-spec.md](../../../docs/reference/shared-core/expression-sandbox-spec.md).
+ */
+export type SandboxErrorReason =
+  | 'syntax' // the author's expression is not valid JavaScript (fatal — a retry repeats it)
+  | 'runtime' // a thrown Reference/Type/Range error while evaluating (fatal)
+  | 'timeout' // the wall-clock deadline tripped (RETRYABLE — the one non-idempotent safety net)
+  | 'memory' // the heap cap tripped (fatal)
+  | 'stack' // the stack cap tripped (fatal)
+  | 'result_type' // a `condition` result was not a boolean/string/number (fatal)
+  | 'non_serializable' // a `transform`/`merge_fn` result was not JSON-serializable (fatal)
+  | 'scope'; // the injected scope was itself not serializable — an engine/caller fault (fatal)
+
+/**
+ * A failure inside the deterministic, resource-capped expression sandbox (ADR-0027, 1.AB) that
+ * evaluates `condition` / `transform` / `merge_fn`. Surfaced to the run as the closed `ErrorCode`
+ * member `sandbox_error`. The user-facing `message` is a fixed, generic, secret-free string per
+ * `reason` — it never echoes the expression source, a variable name, a scope value, or a host stack.
+ * Any raw diagnostic (the quickjs `dump()` of the thrown value) is kept on the internal-only
+ * {@link detail} for logs, and an `AbortSignal`/host `cause` on the standard `cause` — neither is the
+ * user message. Callers narrow on {@link reason} / {@link retryable}, never on `message`.
+ */
+export class SandboxError extends Error {
+  /** The closed-enum run `ErrorCode` this maps to (sse-event-schema.md). */
+  readonly code = 'sandbox_error';
+  /** Stable fault discriminant — the one field policy (retry vs fail) branches on. */
+  readonly reason: SandboxErrorReason;
+  /** A pure function of {@link reason}: only a wall-clock `timeout` trip is retryable. */
+  readonly retryable: boolean;
+  /**
+   * Internal-only diagnostic (the scrubbed quickjs error text) for logs keyed by a correlation id —
+   * never surfaced as the user message. May carry expression-derived text, never a secret (secrets
+   * are filtered out of the scope before evaluation).
+   */
+  readonly detail?: string;
+
+  constructor(reason: SandboxErrorReason, message: string, opts?: { detail?: string; cause?: unknown }) {
+    super(message, opts?.cause === undefined ? undefined : { cause: opts.cause });
+    this.name = 'SandboxError';
+    this.reason = reason;
+    this.retryable = reason === 'timeout';
+    if (opts?.detail !== undefined) {
+      this.detail = opts.detail;
+    }
+  }
+}
