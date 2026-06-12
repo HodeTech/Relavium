@@ -109,8 +109,10 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
     }
   }
   for (const agent of spec.agents ?? []) {
-    // TODO(1.M): a `$ref` agent's `system_prompt` lives in another file; once 1.M resolves the ref,
-    // the resolved prompt must be re-run through `analyzeSecretTaint` so a secret cannot hide behind it.
+    // A `$ref` agent's `system_prompt` lives in another file the pure parser never reads, so it is not
+    // collected here. The DAG builder (1.M) resolves the ref via a host-supplied registry and re-runs the
+    // resolved prompt through the taint gate (`analyzeResolvedAgentTaint`, called from `buildRunPlan`), so
+    // a secret cannot hide behind a ref — see dag.ts.
     if (!('$ref' in agent)) {
       push(`agent \`${agent.id}\`.system_prompt`, 'agent-text', agent.system_prompt);
     }

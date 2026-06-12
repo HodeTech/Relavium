@@ -361,6 +361,26 @@ describe('buildRunPlan — cycle detection', () => {
     expect(err.issues[0]?.kind).toBe('cycle');
   });
 
+  it('names one cycle when the graph contains two disjoint cycles', () => {
+    const err = expectGraphError(
+      doc(`  id: twocyc
+  nodes:
+    - { id: a, type: transform, transform: '1' }
+    - { id: b, type: transform, transform: '2' }
+    - { id: c, type: transform, transform: '3' }
+    - { id: d, type: transform, transform: '4' }
+  edges:
+    - { from: a, to: b }
+    - { from: b, to: a }
+    - { from: c, to: d }
+    - { from: d, to: c }`),
+    );
+    expect(err.issues[0]?.kind).toBe('cycle');
+    // Names the cycle containing the first stuck node in authored order (a↔b); naming one suffices.
+    expect(err.issues[0]?.field).toMatch(/a|b/);
+    expect(err.issues[0]?.message).toMatch(/cycle/i);
+  });
+
   it('rejects a longer cycle through a data-dependency edge', () => {
     const err = expectGraphError(
       doc(`  id: cyc3
