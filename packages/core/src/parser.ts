@@ -165,11 +165,15 @@ function locate(path: ReadonlyArray<string | number>, root: unknown): string {
 }
 
 /**
- * A well-formed identifier (the shape of a valid id/name/key) — only such a value is echoed into a
- * field locator, so an INVALID authored value (e.g. an id that failed kebab validation, which may be
- * arbitrary text or a misplaced secret) is never reflected back; it falls back to a positional `#n`.
+ * The shape of a valid authored identifier — only such a value is echoed into a field locator, so an
+ * INVALID authored value (which may be arbitrary text or a misplaced secret) is never reflected back;
+ * it falls back to a positional `#n`. Two charsets, each matching what its field's schema permits:
+ * `SAFE_ID_LABEL` for `node`/`agent` ids (kebab/snake, `kebabIdSchema`), and `SAFE_NAME_LABEL` for an
+ * `input` name / `context` key (the interpolation head charset, `@relavium/shared` `interpolationNameSchema`).
+ * Keeping them aligned means a name the schema now accepts (e.g. `API_KEY`) still names its own error.
  */
-const SAFE_LABEL = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const SAFE_ID_LABEL = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const SAFE_NAME_LABEL = /^[A-Za-z0-9_-]+$/;
 
 function itemLabel(
   spec: Record<string, unknown> | undefined,
@@ -177,21 +181,21 @@ function itemLabel(
   index: number,
 ): string {
   const item = asRecord(asArray(spec?.[collection])?.[index]);
-  const named = (key: string, prefix: string): string => {
+  const named = (key: string, prefix: string, pattern: RegExp): string => {
     const value = item?.[key];
-    return typeof value === 'string' && value.length <= 64 && SAFE_LABEL.test(value)
+    return typeof value === 'string' && value.length <= 64 && pattern.test(value)
       ? `${prefix} \`${value}\``
       : `${prefix} #${index}`;
   };
   switch (collection) {
     case 'nodes':
-      return named('id', 'node');
+      return named('id', 'node', SAFE_ID_LABEL);
     case 'agents':
-      return named('id', 'agent');
+      return named('id', 'agent', SAFE_ID_LABEL);
     case 'inputs':
-      return named('name', 'input');
+      return named('name', 'input', SAFE_NAME_LABEL);
     case 'context':
-      return named('key', 'context');
+      return named('key', 'context', SAFE_NAME_LABEL);
     case 'edges':
       return `edge #${index}`;
     default:

@@ -76,7 +76,7 @@ ${AGENT}
     expect(err.message).toContain('ADR-0029');
   });
 
-  it('reaches taint through a two-hop, out-of-order context chain (fixpoint)', () => {
+  it('reaches taint through a two-hop, out-of-order context chain (transitive worklist)', () => {
     const err = expectLeak(`schema_version: '1.0'
 workflow:
   id: w
@@ -115,6 +115,49 @@ workflow:
     expect(err.leaks[0]).toEqual({
       location: 'node `g`.message_template',
       secret: 'secrets.token',
+    });
+  });
+
+  it('launders a `secrets.*` reference through a context value into text (via the secret store)', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: creds
+      value: 'Bearer {{secrets.token}}'
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'auth {{ctx.creds}}'
+  edges: []`);
+    expect(err.leaks[0]).toEqual({
+      location: 'node `n`.prompt_template',
+      secret: 'ctx.creds',
+      via: 'secrets.token',
+    });
+  });
+
+  it('launders a `secrets.*` reference through a non-secret input default into text', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: reviewer
+      type: string
+      default: '{{secrets.token}}'
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: '{{inputs.reviewer}}'
+  edges: []`);
+    expect(err.leaks[0]).toEqual({
+      location: 'node `n`.prompt_template',
+      secret: 'inputs.reviewer',
+      via: 'secrets.token',
     });
   });
 
@@ -168,7 +211,7 @@ workflow:
     expect(locations).toContain('node `n`.system_prompt_append');
   });
 
-  it('launders a secret through TWO chained input defaults (multi-hop fixpoint)', () => {
+  it('launders a secret through TWO chained input defaults (multi-hop transitive)', () => {
     const err = expectLeak(`schema_version: '1.0'
 workflow:
   id: w

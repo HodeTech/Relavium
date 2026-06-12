@@ -69,7 +69,10 @@ export async function resolveContext(
   signal?: AbortSignalLike,
 ): Promise<Readonly<Record<string, string>>> {
   // A null-prototype accumulator so a context key named `__proto__`/`constructor` is stored as a real
-  // own property rather than being silently dropped (or mutating a prototype).
+  // own property rather than being silently dropped (or mutating a prototype). NOTE for 1.R: this
+  // null-proto guard is in-memory only — when this frozen `ctx` is persisted/transported for
+  // checkpoint/resume it MUST go through `structuredClone` (which preserves the null prototype), never
+  // `JSON.stringify` → `JSON.parse`, which would re-materialize a `__proto__` key as a real setter.
   const ctx = Object.create(null) as Record<string, string>;
   for (const entry of workflow.workflow.context ?? []) {
     abortIfCancelled(signal);

@@ -348,6 +348,17 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
     expect(err.issues[0]?.message).toMatch(/expected one of:/);
   });
 
+  it('still names an input whose (now schema-legal) name is uppercase/underscore (SAFE_NAME_LABEL)', () => {
+    // `API_KEY` passes `interpolationNameSchema` but not the kebab id charset — the locator must use the
+    // name charset, not degrade to a positional `#0`.
+    const err = expectValidationError(
+      doc(
+        `  id: w\n  inputs:\n    - name: API_KEY\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+      ),
+    );
+    expect(err.issues[0]?.field).toBe('input `API_KEY`.type'); // missing `type` → named, not `input #0`
+  });
+
   it('falls back to an index when a context entry is missing its key', () => {
     const err = expectValidationError(
       doc(

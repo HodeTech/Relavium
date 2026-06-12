@@ -150,7 +150,16 @@ function filterType(
   });
 }
 
-/** Whether a thrown value is a standard cancellation (`AbortError` from a host reader honoring a signal). */
+/**
+ * Whether a thrown value is a standard cancellation (`AbortError` from a host reader honoring a signal).
+ * Checks the `name` structurally rather than via `instanceof Error`, because in the Tauri WebView a
+ * `DOMException('…','AbortError')` is not an `Error` instance (CLAUDE.md rule 5 — the engine runs there).
+ */
 function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'AbortError';
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'name' in err &&
+    (err as { name?: unknown }).name === 'AbortError'
+  );
 }

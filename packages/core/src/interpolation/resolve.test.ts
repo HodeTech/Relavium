@@ -16,9 +16,10 @@ async function expectCode(
   s: RunScope,
   code: string,
   caps?: ResolverCapabilities,
+  signal?: AbortSignal,
 ): Promise<InterpolationError> {
   try {
-    await resolveTemplate(text, s, caps);
+    await resolveTemplate(text, s, caps, signal);
   } catch (err) {
     if (!(err instanceof InterpolationError)) {
       throw err; // an unexpected error type — surface it rather than mis-narrowing
@@ -124,9 +125,22 @@ describe('resolveTemplate — typed, secret-free errors', () => {
   });
 
   it('treats a prototype key on a scope bag as a missing reference (no inherited member)', async () => {
-    // `scope.inputs.toString` must not return Object.prototype.toString — it is an unresolved reference.
+    // A prototype key on any of the three namespaces must not return an inherited member.
     await expectCode('{{inputs.toString}}', scope({ inputs: {} }), 'unresolved_reference');
     await expectCode('{{ctx.constructor}}', scope({ ctx: {} }), 'unresolved_reference');
+    await expectCode('{{run.outputs["toString"]}}', scope({ outputs: {} }), 'unresolved_reference');
+  });
+
+  it('aborts a single resolveTemplate between segments when the signal has fired', async () => {
+    const aborted = new AbortController();
+    aborted.abort();
+    await expectCode(
+      '{{inputs.a}}{{inputs.b}}',
+      scope({ inputs: { a: '1', b: '2' } }),
+      'aborted',
+      undefined,
+      aborted.signal,
+    );
   });
 
   it('unserializable when an object/array is used as text without a json filter', async () => {

@@ -504,10 +504,11 @@ of every node, so it is sequenced before 1.M/1.O/1.P.) It is distinct from the J
 (1.AB): `{{ … }}` is string templating; `condition`/`transform`/`merge_fn` are JS evaluated in the sandbox.
 
 **Tasks:**
-- Evaluate `{{ … }}` against the run scope — `inputs`, `ctx`, `run.outputs` (keyed by node id), `secrets` —
-  with the pipe-filter registry (`| read_file`, `| json`, `| length`, `| default("…")` — the
-  argument-taking fallback applied when the value is missing, …) per
-  [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
+- Evaluate `{{ … }}` against the run scope — the three authored namespaces `inputs`, `ctx`, and
+  `run.outputs` (keyed by node id); a `secrets.*` reference is recognized by the lexer only so the
+  resolver/taint gate can reject it — with the pipe-filter registry (`| read_file`, `| json`,
+  `| length`, `| default("…")` — the argument-taking fallback applied when the value is missing, …)
+  per [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
 - **Eager-once, immutable cached context:** a node's inputs are resolved once into a frozen snapshot, so a
   re-run/replay is deterministic (aligned with the checkpoint + idempotency model, 1.R).
 - Enforce the **transitive parse-time secret taint** [ADR-0029(c)](../../decisions/0029-tool-policy-hardening.md)

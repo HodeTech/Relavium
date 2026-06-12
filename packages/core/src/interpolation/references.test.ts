@@ -144,6 +144,16 @@ describe('parseTemplate', () => {
     expect(ref.filters).toEqual([{ name: 'trim', args: [] }]);
   });
 
+  it('carries a non-identifier filter name verbatim (the resolver later rejects it)', () => {
+    const ref = refOf(parseTemplate('{{inputs.x | 9bad}}')[0]);
+    expect(ref.filters).toEqual([{ name: '9bad', args: [] }]);
+  });
+
+  it('drops an empty (trailing-comma) filter argument piece', () => {
+    const ref = refOf(parseTemplate('{{inputs.x | f(a,)}}')[0]);
+    expect(ref.filters).toEqual([{ name: 'f', args: [{ type: 'string', value: 'a' }] }]);
+  });
+
   it('does not let a literal `}}` inside a quoted argument truncate the reference', () => {
     const segments = parseTemplate('{{inputs.x | default("}}")}} tail');
     expect(segments).toEqual([

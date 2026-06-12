@@ -83,6 +83,10 @@ export function analyzePreRunReferences(workflow: Workflow): readonly WorkflowIs
     checkNoNodeOutput(`context \`${entry.key}\`.value`, entry.value);
   }
   for (const input of spec.inputs ?? []) {
+    // Only a string default is a template. A `{{ … }}` nested in a STRUCTURED default
+    // (`default: { token: '{{secrets.x}}' }`) is not scanned — it is never re-interpolated either
+    // (`resolveTemplate` is single-pass, so `| json` emits the literal `{{…}}`, not a resolved value),
+    // so this is a deferral to the 1.M typed-input layer, not a gap that leaks.
     if (typeof input.default === 'string') {
       checkNoNodeOutput(`input \`${input.name}\`.default`, input.default);
     }
@@ -172,6 +176,8 @@ function computeTaint(spec: Workflow['workflow']): TaintSets {
     if (input.type === 'secret') {
       seedTaint(graph, `inputs.${input.name}`, undefined); // a source secret — no deeper "via"
     }
+    // Only a string default carries a template; a `{{ … }}` inside a STRUCTURED default is not scanned
+    // (and never re-interpolated), so it cannot launder a secret — deferred to the 1.M typed-input layer.
     const fallback = typeof input.default === 'string' ? input.default : undefined;
     scanField(graph, `inputs.${input.name}`, fallback);
   }

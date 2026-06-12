@@ -142,4 +142,29 @@ describe('read_file filter', () => {
       }),
     ).rejects.toMatchObject({ code: 'read_file_failed' });
   });
+
+  it('classifies a plain host error as `aborted` when the run signal already fired (signal operand)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const ref: InterpolationReference = {
+      kind: 'inputs',
+      identifier: 'x',
+      path: '',
+      filters: [{ name: 'read_file', args: [] }],
+      raw: '{{inputs.x | read_file}}',
+    };
+    await expect(
+      filterFn({ name: 'read_file', args: [] }, ref)(
+        'a.ts',
+        [],
+        {
+          readFile: () => {
+            throw new Error('whatever'); // a plain error, but the signal is what makes it an abort
+          },
+        },
+        ref,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ code: 'aborted' });
+  });
 });
