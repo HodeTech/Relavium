@@ -61,6 +61,43 @@ const seamSyntaxRules = /** @type {const} */ ([
 ]);
 
 /**
+ * The pure-engine purity fence (CLAUDE.md rule 5). `packages/core` SHIPPING source must import no
+ * platform-specific module and reach no Node global, so the engine runs identically in Node, the Tauri
+ * WebView, the VS Code host, and Bun. The PRIMARY guard is `packages/core/tsconfig.purity.json`
+ * (`types: []`, tests excluded); this is the lint-time defense-in-depth (it also catches a Node *global*
+ * reference, which a type gate alone would miss once `@types/node` is in the test program). Test files
+ * are exempt — they import `vitest`/`@types/node` and a benchmark may read `process.memoryUsage()`; they
+ * never ship. Composed onto the seam fence so core source keeps BOTH guarantees.
+ */
+const ENGINE_PURITY_MESSAGE =
+  'packages/core is the pure engine (CLAUDE.md rule 5): no platform-specific import. It must run ' +
+  'identically in Node, the Tauri WebView, the VS Code host, and Bun — never import `node:*` or a ' +
+  'Node builtin, nor reach a Node global (process/Buffer/__dirname/…).';
+// Bare Node builtins (the `node:*`-prefixed form is caught by the `node:*` pattern below).
+const NODE_BUILTINS = [
+  'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console', 'constants', 'crypto',
+  'dgram', 'dns', 'domain', 'events', 'fs', 'http', 'http2', 'https', 'inspector', 'module', 'net',
+  'os', 'path', 'perf_hooks', 'process', 'punycode', 'querystring', 'readline', 'repl', 'stream',
+  'string_decoder', 'timers', 'tls', 'trace_events', 'tty', 'url', 'util', 'v8', 'vm', 'wasi',
+  'worker_threads', 'zlib',
+];
+// The seam fence (vendor SDKs) + the node fence, in one entry — core source keeps both.
+const enginePurityImportEntry = /** @type {const} */ ([
+  'error',
+  {
+    paths: seamImportOptions.paths,
+    patterns: [
+      ...seamImportOptions.patterns,
+      { group: ['node:*'], message: ENGINE_PURITY_MESSAGE },
+      { group: NODE_BUILTINS, message: ENGINE_PURITY_MESSAGE },
+    ],
+  },
+]);
+const ENGINE_NODE_GLOBALS = [
+  'process', 'Buffer', '__dirname', '__filename', 'global', 'setImmediate', 'clearImmediate',
+];
+
+/**
  * Single root ESLint flat config shared by every package (no per-package config
  * without a justified override). ESLint owns correctness; Prettier owns formatting
  * (see docs/standards/code-style-typescript.md).
@@ -136,6 +173,22 @@ export default tseslint.config(
     files: ['tools/**/*.{js,mjs,cjs}'],
     languageOptions: {
       globals: { console: 'readonly', process: 'readonly' },
+    },
+  },
+  {
+    // The pure-engine purity fence (defense-in-depth over packages/core/tsconfig.purity.json).
+    // SHIPPING core source only — tests are exempt (they import vitest and may benchmark with
+    // `process`). Overrides the general TS block's seam entry with the COMBINED seam + node entry, so
+    // core source keeps the vendor-SDK fence AND gains the node-import/global fence. (core/src is all
+    // TypeScript; a JS file would still get the seam fence from the general JS block.)
+    files: ['packages/core/src/**/*.{ts,tsx,mts,cts}'],
+    ignores: ['packages/core/src/**/*.test.ts', 'packages/core/src/**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': enginePurityImportEntry,
+      'no-restricted-globals': [
+        'error',
+        ...ENGINE_NODE_GLOBALS.map((name) => ({ name, message: ENGINE_PURITY_MESSAGE })),
+      ],
     },
   },
   {
