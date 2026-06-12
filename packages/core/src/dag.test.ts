@@ -285,7 +285,9 @@ describe('buildRunPlan — valid topological orders', () => {
     - { key: y, value: 'v' }
   edges: []`),
     );
-    const locations = (p.vertices.get('n')?.inputSites ?? []).map((s) => s.location).sort();
+    const locations = (p.vertices.get('n')?.inputSites ?? [])
+      .map((s) => s.location)
+      .sort((a, b) => a.localeCompare(b));
     expect(locations).toEqual(['node `n`.prompt_template', 'node `n`.system_prompt_append']);
   });
 

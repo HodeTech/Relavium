@@ -376,18 +376,19 @@ describe('classification keys on type, not author-controlled message text', () =
   });
 });
 
-describe('a pathologically deep value is a clean SandboxError, never a raw host throw', () => {
-  function deepObject(depth: number): Record<string, unknown> {
-    const root: Record<string, unknown> = {};
-    let cur = root;
-    for (let i = 0; i < depth; i++) {
-      const next: Record<string, unknown> = {};
-      cur['n'] = next;
-      cur = next;
-    }
-    return root;
+/** Build an object nested `depth` levels deep (`{ n: { n: … } }`) — drives the deep-scope rejection test. */
+function deepObject(depth: number): Record<string, unknown> {
+  const root: Record<string, unknown> = {};
+  let cur = root;
+  for (let i = 0; i < depth; i++) {
+    const next: Record<string, unknown> = {};
+    cur['n'] = next;
+    cur = next;
   }
+  return root;
+}
 
+describe('a pathologically deep value is a clean SandboxError, never a raw host throw', () => {
   it('a deeply-nested scope value is rejected as a SandboxError (not a host RangeError)', () => {
     const error = evalError({
       kind: 'condition',
