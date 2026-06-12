@@ -250,6 +250,44 @@ describe('parseWorkflow — malformed (each fails with a field-named, secret-fre
     const err = expectValidationError(doc(`  id: w\n  nodes: []\n  edges: []`));
     expect(err.cause).toBeUndefined();
   });
+
+  it('does not echo an authored value via the `invalid_string` code path (regex-failed id)', () => {
+    // A node id with uppercase letters fails the kebab-id regex → Zod code `invalid_string`.
+    // messageFor returns issue.message directly for this case — pin that the message is structural.
+    const secret = 'SK-LIVE-INVALID-STRING';
+    const err = expectValidationError(
+      doc(`  id: w\n  nodes:\n    - id: ${secret}\n      type: input\n  edges: []`),
+    );
+    expect(err.message).not.toContain(secret);
+    expect(JSON.stringify(err.issues)).not.toContain(secret);
+    expect(err.issues[0]?.message).toMatch(/kebab/);
+  });
+
+  it('surfaces a structural message for the `too_small` code path (min-1 string constraint)', () => {
+    // An empty string on context[].key (nonEmptyString = z.string().min(1)) → Zod code `too_small`.
+    // messageFor returns issue.message directly — pin that it names the constraint, not the authored value.
+    const err = expectValidationError(
+      doc(
+        `  id: w\n  context:\n    - key: ''\n      value: v\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+      ),
+    );
+    const issue = err.issues.find((i) => i.field.includes('context'));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toMatch(/character|length|least/i);
+  });
+
+  it('does not echo an authored value via the `too_big` code path (max-value numeric constraint)', () => {
+    // temperature: 3 on an agent exceeds temperatureSchema's .max(2) → Zod code `too_big`.
+    // messageFor returns issue.message directly — pin that it names the limit, not the authored value.
+    const err = expectValidationError(
+      doc(
+        `  id: w\n  agents:\n    - id: ag\n      name: Agent\n      model: claude-sonnet-4-6\n      provider: anthropic\n      system_prompt: sys\n      temperature: 3\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+      ),
+    );
+    const issue = err.issues.find((i) => i.field.includes('temperature'));
+    expect(issue).toBeDefined();
+    expect(issue?.message).not.toContain('3');
+  });
 });
 
 describe('parseWorkflow — hardened decode (ADR-0035)', () => {

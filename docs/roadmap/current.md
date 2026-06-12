@@ -118,12 +118,13 @@ the seam's last Phase-1 policy layer, **completing 1.m2** with the cost tracker
 ([ADR-0011](../decisions/0011-internal-llm-abstraction.md),
 [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)). *(PR #13 also refreshed the
 model-pricing table to current provider models and added Claude Fable 5.)* The active work is now the
-**engine lane**, which `@relavium/core` has not started:
-
-- **1.L — `WorkflowYAMLParser`** *(critical path)* — **scaffold `packages/core`** (still only a README)
-  and parse+validate a `.relavium.yaml` against the reconciled `WorkflowSchema`, with typed,
-  field-named errors (**zero platform imports**), then 1.L → 1.L2 → 1.M → 1.N → 1.R, converging at the
-  **1.O join** (whose `FallbackChain` dependency, 1.K, is now satisfied) toward **M2**.
+**engine lane**: **1.L (`WorkflowYAMLParser`) ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is
+now scaffolded with a pure-TypeScript `WorkflowYAMLParser` that parses and validates
+`.relavium.yaml` against the reconciled `WorkflowSchema`, with typed, field-named errors
+(**zero platform imports**) and a hardened YAML decode profile
+([ADR-0035](../decisions/0035-yaml-parser-dependency.md)). The engine lane continues:
+**1.L2 → 1.M → 1.N → 1.R**, converging at the **1.O join** (whose `FallbackChain` dependency,
+1.K, is now satisfied) toward **M2**.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:

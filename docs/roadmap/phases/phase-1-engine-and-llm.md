@@ -11,9 +11,9 @@
 > conformance suite in fixture mode (live-nightly lane reserved/pending keys); no vendor type crosses the
 > seam. **1.K (FallbackChain) is ✅ Done (PR #13, 2026-06-11)** — the seam's last policy layer, with the
 > ADR-0030 strip-on-failover obligation honoured; **1.m2 (policy layers) is complete** (with the
-> CostTracker, 1.B). **Next:** the **1.L** engine parser (it scaffolds `packages/core`), then Lane B
-> (1.L → 1.L2 → 1.M → 1.N → 1.R) converging at the **1.O** join toward **M2**. *(Session persistence,
-> 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
+> CostTracker, 1.B). **1.L ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is now scaffolded with the
+> `WorkflowYAMLParser`; the engine lane continues at **1.L2 → 1.M → 1.N → 1.R**, converging at the
+> **1.O** join toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)

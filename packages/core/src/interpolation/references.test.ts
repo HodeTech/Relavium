@@ -105,6 +105,30 @@ describe('parseTemplate', () => {
     ]);
   });
 
+  it('parses an empty `{{}}` as an unknown reference with empty identifier', () => {
+    const segments = parseTemplate('{{}}');
+    expect(segments).toHaveLength(1);
+    expect(refOf(segments[0])).toMatchObject({
+      kind: 'unknown',
+      identifier: '',
+      path: '',
+      filters: [],
+      raw: '{{}}',
+    });
+  });
+
+  it('parses a whitespace-only `{{ }}` as an unknown reference with empty identifier', () => {
+    const segments = parseTemplate('{{ }}');
+    expect(segments).toHaveLength(1);
+    expect(refOf(segments[0])).toMatchObject({
+      kind: 'unknown',
+      identifier: '',
+      path: '',
+      filters: [],
+      raw: '{{ }}',
+    });
+  });
+
   it('does not split on a pipe inside a filter string argument', () => {
     const ref = refOf(parseTemplate('{{inputs.x | default("a|b")}}')[0]);
     expect(ref.filters).toEqual([{ name: 'default', args: [{ type: 'string', value: 'a|b' }] }]);
