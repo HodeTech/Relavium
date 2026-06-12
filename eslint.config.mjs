@@ -75,11 +75,46 @@ const ENGINE_PURITY_MESSAGE =
   'Node builtin, nor reach a Node global (process/Buffer/__dirname/…).';
 // Bare Node builtins (the `node:*`-prefixed form is caught by the `node:*` pattern below).
 const NODE_BUILTINS = [
-  'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console', 'constants', 'crypto',
-  'dgram', 'dns', 'domain', 'events', 'fs', 'http', 'http2', 'https', 'inspector', 'module', 'net',
-  'os', 'path', 'perf_hooks', 'process', 'punycode', 'querystring', 'readline', 'repl', 'stream',
-  'string_decoder', 'timers', 'tls', 'trace_events', 'tty', 'url', 'util', 'v8', 'vm', 'wasi',
-  'worker_threads', 'zlib',
+  'assert',
+  'async_hooks',
+  'buffer',
+  'child_process',
+  'cluster',
+  'console',
+  'constants',
+  'crypto',
+  'dgram',
+  'dns',
+  'domain',
+  'events',
+  'fs',
+  'http',
+  'http2',
+  'https',
+  'inspector',
+  'module',
+  'net',
+  'os',
+  'path',
+  'perf_hooks',
+  'process',
+  'punycode',
+  'querystring',
+  'readline',
+  'repl',
+  'stream',
+  'string_decoder',
+  'timers',
+  'tls',
+  'trace_events',
+  'tty',
+  'url',
+  'util',
+  'v8',
+  'vm',
+  'wasi',
+  'worker_threads',
+  'zlib',
 ];
 // The seam fence (vendor SDKs) + the node fence, in one entry — core source keeps both.
 const enginePurityImportEntry = /** @type {const} */ ([
@@ -94,7 +129,13 @@ const enginePurityImportEntry = /** @type {const} */ ([
   },
 ]);
 const ENGINE_NODE_GLOBALS = [
-  'process', 'Buffer', '__dirname', '__filename', 'global', 'setImmediate', 'clearImmediate',
+  'process',
+  'Buffer',
+  '__dirname',
+  '__filename',
+  'global',
+  'setImmediate',
+  'clearImmediate',
 ];
 
 /**

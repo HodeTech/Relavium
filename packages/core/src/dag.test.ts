@@ -138,7 +138,10 @@ describe('buildRunPlan — valid topological orders', () => {
     );
     // parallel_of declares [b, a]; authored order is [a, b]; the merge's dependencies sort to [a, b].
     // The fan_in must surface branches in parallel_of order so merge_fn/concat is deterministic.
-    expect(p.vertices.get('join')?.config).toMatchObject({ kind: 'fan_in', branchNodeIds: ['b', 'a'] });
+    expect(p.vertices.get('join')?.config).toMatchObject({
+      kind: 'fan_in',
+      branchNodeIds: ['b', 'a'],
+    });
   });
 
   it('falls back to authored branch order for a merge with no paired parallel', () => {
@@ -152,7 +155,10 @@ describe('buildRunPlan — valid topological orders', () => {
     - { from: y, to: join }
     - { from: x, to: join }`),
     );
-    expect(p.vertices.get('join')?.config).toMatchObject({ kind: 'fan_in', branchNodeIds: ['x', 'y'] });
+    expect(p.vertices.get('join')?.config).toMatchObject({
+      kind: 'fan_in',
+      branchNodeIds: ['x', 'y'],
+    });
   });
 
   it('carries the merge_fn for a custom merge (wait_all join)', () => {
@@ -280,10 +286,7 @@ describe('buildRunPlan — valid topological orders', () => {
   edges: []`),
     );
     const locations = (p.vertices.get('n')?.inputSites ?? []).map((s) => s.location).sort();
-    expect(locations).toEqual([
-      'node `n`.prompt_template',
-      'node `n`.system_prompt_append',
-    ]);
+    expect(locations).toEqual(['node `n`.prompt_template', 'node `n`.system_prompt_append']);
   });
 
   it('wires a data edge from a resolved agent system_prompt referencing a node output', () => {
