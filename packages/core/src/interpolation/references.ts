@@ -3,10 +3,11 @@
  *
  * An authored template field (a prompt, a context value, a gate message) may carry `{{ … }}`
  * occurrences. 1.L turns each into a typed reference for the DAG builder (1.M) — it does NOT
- * evaluate anything: the run-scope lookup, the pipe-filter registry, the eager-once snapshot, and
- * the secret-taint rejection all belong to the runtime resolver (1.L2) and the JS sandbox (1.AB).
- * This module is a pure lexer: text in, structured segments out. It reads no files, touches no
- * environment, and holds no state.
+ * evaluate anything. The run-scope lookup, the pipe-filter registry, and the eager-once snapshot
+ * belong to the runtime resolver (1.L2); the secret-taint rejection is a parse-time **static** gate
+ * (1.L2, run in the parser after schema validation, never at runtime); and `condition`/`transform`/
+ * `merge_fn` belong to the JS sandbox (1.AB). This module is a pure lexer: text in, structured
+ * segments out. It reads no files, touches no environment, and holds no state.
  *
  * The four authored namespaces (workflow-yaml-spec.md §Context-and-interpolation):
  *   - `{{ inputs.<name> }}`            → kind `inputs`

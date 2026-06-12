@@ -14,10 +14,20 @@ import type { Workflow } from '@relavium/shared';
 
 import { parseTemplate, type InterpolationReference, type TemplateSegment } from './references.js';
 
+/**
+ * What kind of field a reference site is — the distinction the secret-taint analyzer (1.L2) needs.
+ * `agent-text`/`node-text` are model/human-visible and so are leak-checked; `context-value` is where
+ * taint *propagates* (not itself a leak) and `input-default` is a fallback value, neither of which is
+ * sent to a model. The DAG builder (1.M) also reads this to know which sites carry run data.
+ */
+export type ReferenceSiteCategory = 'context-value' | 'input-default' | 'agent-text' | 'node-text';
+
 /** One field that carries at least one `{{ … }}` reference. */
 export interface ReferenceSite {
   /** A human field locator, e.g. ``node `synthesize-report`.prompt_template``. */
   readonly location: string;
+  /** Which kind of field this is — text (leak-checked) vs context/default (taint-propagating). */
+  readonly category: ReferenceSiteCategory;
   /** The ordered literal/reference segments of the field's value. */
   readonly segments: readonly TemplateSegment[];
   /** Just the references at this site, in order. */
@@ -35,7 +45,11 @@ export interface ReferenceSite {
 type WorkflowNode = Workflow['workflow']['nodes'][number];
 
 /** Build a ReferenceSite for `text` if it contains at least one interpolation reference. */
-function buildSite(location: string, text: string): ReferenceSite | undefined {
+function buildSite(
+  location: string,
+  category: ReferenceSiteCategory,
+  text: string,
+): ReferenceSite | undefined {
   const segments = parseTemplate(text);
   const references: InterpolationReference[] = [];
   for (const segment of segments) {
@@ -43,15 +57,15 @@ function buildSite(location: string, text: string): ReferenceSite | undefined {
       references.push(segment.reference);
     }
   }
-  return references.length > 0 ? { location, segments, references } : undefined;
+  return references.length > 0 ? { location, category, segments, references } : undefined;
 }
 
-/** Collect reference sites from template fields on a single workflow node. */
+/** Collect reference sites from template fields on a single workflow node — all model/human text. */
 function collectNodeSites(node: WorkflowNode): ReferenceSite[] {
   const sites: ReferenceSite[] = [];
   const addFieldSite = (label: string, value: string | undefined): void => {
     if (value !== undefined) {
-      const site = buildSite(label, value);
+      const site = buildSite(label, 'node-text', value);
       if (site !== undefined) sites.push(site);
     }
   };
@@ -69,29 +83,27 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
   const sites: ReferenceSite[] = [];
   const spec = workflow.workflow;
 
-  const push = (location: string, text: string): void => {
-    const site = buildSite(location, text);
+  const push = (location: string, category: ReferenceSiteCategory, text: string): void => {
+    const site = buildSite(location, category, text);
     if (site !== undefined) sites.push(site);
   };
 
-  // TODO(1.M): workflow-yaml-spec.md §Context-and-interpolation forbids `{{run.outputs[...]}}` in
-  // context values (context is eagerly evaluated before the run; node outputs are unavailable).
-  // Enforcing this here would require importing parseTemplate, coupling the collector to a semantic
-  // constraint that the DAG builder (1.M) is better placed to enforce (it wires data-dependency
-  // edges and can produce a richer error). Until then, a context entry that references a node
-  // output is collected with kind:'node' and will be caught by the DAG builder when it finds no
-  // satisfying edge for it. See the pinned test in parser.test.ts ("permits a context value …").
+  // A `{{run.outputs[…]}}` reference in a context value is rejected at parse by
+  // `analyzeContextReferences` (1.L2) — context is eagerly resolved before any node runs, so no node
+  // output exists yet (workflow-yaml-spec.md §Context-and-interpolation). The collector stays a pure
+  // structural view: it records the site (with kind:'node'); the analyzer reads it and raises the
+  // field-named parse error.
   for (const entry of spec.context ?? []) {
-    push(`context \`${entry.key}\`.value`, entry.value);
+    push(`context \`${entry.key}\`.value`, 'context-value', entry.value);
   }
   for (const input of spec.inputs ?? []) {
     if (typeof input.default === 'string') {
-      push(`input \`${input.name}\`.default`, input.default);
+      push(`input \`${input.name}\`.default`, 'input-default', input.default);
     }
   }
   for (const agent of spec.agents ?? []) {
     if (!('$ref' in agent)) {
-      push(`agent \`${agent.id}\`.system_prompt`, agent.system_prompt);
+      push(`agent \`${agent.id}\`.system_prompt`, 'agent-text', agent.system_prompt);
     }
   }
   for (const node of spec.nodes) {

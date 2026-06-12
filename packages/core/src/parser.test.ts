@@ -1,7 +1,7 @@
 import { stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
-import { WorkflowSyntaxError, WorkflowValidationError } from './errors.js';
+import { WorkflowSecretLeakError, WorkflowSyntaxError, WorkflowValidationError } from './errors.js';
 import { collectReferences } from './interpolation/collect.js';
 import { parseWorkflow } from './parser.js';
 
@@ -421,19 +421,62 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
   });
 });
 
-describe('collectReferences — context/run.outputs (1.M known gap)', () => {
-  it('permits a context value that references run.outputs — enforcement deferred to the DAG builder (1.M)', () => {
-    // TODO(1.M): workflow-yaml-spec.md forbids {{run.outputs[...]}} inside context[].value because
-    // context is resolved pre-run. Once the DAG builder rejects unsatisfiable node-output edges in a
-    // context site, replace this test with a WorkflowValidationError assertion from parseWorkflow.
-    const wf = parseWorkflow(
+describe('parseWorkflow — context referencing run.outputs (1.L2 static gate)', () => {
+  it('rejects a context value that references run.outputs (resolved before any node runs)', () => {
+    // workflow-yaml-spec.md §Context-and-interpolation: context is eagerly resolved pre-run, so a
+    // node output is unavailable — `analyzeContextReferences` makes this a field-named parse error.
+    const err = expectValidationError(
       `schema_version: '1.0'\nworkflow:\n  id: w\n  context:\n    - key: snapshot\n      value: '{{run.outputs["some-node"]}}'\n  nodes:\n    - id: some-node\n      type: input\n  edges: []`,
     );
-    const sites = collectReferences(wf);
-    const ctxSite = sites.find((s) => s.location === 'context `snapshot`.value');
-    // The reference is CLASSIFIED (kind:'node') but not VALIDATED — the gap is intentional for now.
-    expect(ctxSite?.references[0]?.kind).toBe('node');
-    expect(ctxSite?.references[0]?.identifier).toBe('some-node');
+    expect(err.issues[0]?.field).toBe('context `snapshot`.value');
+    expect(err.issues[0]?.message).toContain('run.outputs');
+  });
+
+  it('permits a context value that references inputs/ctx (the legitimate pre-run sources)', () => {
+    const wf = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: w\n  inputs:\n    - name: p\n      type: string\n  context:\n    - key: snapshot\n      value: 'for {{inputs.p}}'\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+    );
+    const ctxSite = collectReferences(wf).find((s) => s.location === 'context `snapshot`.value');
+    expect(ctxSite?.category).toBe('context-value');
+    expect(ctxSite?.references[0]).toMatchObject({ kind: 'inputs', identifier: 'p' });
+  });
+});
+
+describe('parseWorkflow — secret interpolation (ADR-0029(c) static gate)', () => {
+  const LEAK = `schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+  agents:
+    - id: ag
+      name: Ag
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: 'system'
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'use {{inputs.api_key}}'
+  edges: []`;
+
+  it('rejects at parse with a WorkflowSecretLeakError naming the field and the secret', () => {
+    let thrown: unknown;
+    try {
+      parseWorkflow(LEAK, { source: 'leak.yaml' });
+    } catch (caught) {
+      thrown = caught;
+    }
+    expect(thrown).toBeInstanceOf(WorkflowSecretLeakError);
+    const err = thrown as WorkflowSecretLeakError;
+    expect(err.leaks[0]).toEqual({
+      location: 'node `n`.prompt_template',
+      secret: 'inputs.api_key',
+    });
+    expect(err.source).toBe('leak.yaml'); // the workspace-relative label is propagated
+    expect(err.message).toContain('`inputs.api_key`'); // names the symbol, never a resolved value
   });
 });
 
