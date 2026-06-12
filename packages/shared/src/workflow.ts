@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   findDuplicates,
+  interpolationNameSchema,
   kebabIdSchema,
   nonEmptyString,
   nonNegativeInt,
@@ -110,7 +111,7 @@ const VALIDATION_KEYS_BY_TYPE: Record<
 
 export const WorkflowInputSchema = z
   .object({
-    name: nonEmptyString,
+    name: interpolationNameSchema, // must be referenceable as `{{inputs.<name>}}`
     type: InputTypeSchema,
     required: z.boolean().optional(),
     default: z.unknown().optional(),
@@ -146,7 +147,7 @@ export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
 /** A shared variable exposed as `{{ctx.key}}`. */
 export const ContextEntrySchema = z
   .object({
-    key: nonEmptyString,
+    key: interpolationNameSchema, // must be referenceable as `{{ctx.<key>}}`
     value: z.string(),
   })
   .strict();

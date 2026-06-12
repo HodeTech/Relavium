@@ -146,7 +146,9 @@ now scaffolded with a pure-TypeScript `WorkflowYAMLParser` that parses and valid
 > the `[chat].max_messages` trim threshold); the **reserved `on_error` edge kind**
 > (workflow-yaml-spec.md, not authorable in v1.0); and a CI **engine dependency-allowlist guard** + the
 > pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)**, and
-> **1.L has since landed (PR #14, 2026-06-12)**; **1.L2 is the next workstream**.
+> **1.L has since landed (PR #14, 2026-06-12)**; **1.L2 (the `{{ … }}` interpolation engine + the
+> parse-time secret-taint gate) is in review (PR #15)** — once it merges, **1.M (DAG builder +
+> `RunPlan`) is the next workstream**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

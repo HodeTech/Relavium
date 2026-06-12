@@ -33,7 +33,11 @@ export interface SecretLeak {
   readonly location: string;
   /** The tainted symbol referenced at that site — e.g. `inputs.api_key` or `ctx.creds` (a name). */
   readonly secret: string;
-  /** The deeper tainted symbol, when laundered through a `context` entry — e.g. `inputs.api_key`. */
+  /**
+   * The **immediate** deeper tainted symbol, when laundered through a `context` entry or `input`
+   * default — e.g. `inputs.api_key`. This is a single hop (the direct predecessor), not the full
+   * chain; v1.0 surfaces one hop for a concise message.
+   */
   readonly via?: string;
 }
 
@@ -98,10 +102,10 @@ function summarize(issues: readonly WorkflowIssue[]): string {
 }
 
 /**
- * A `secret`-typed value — or anything transitively derived from one through a `context` entry —
- * reaches agent/human text (`prompt_template`, `system_prompt[_append]`, `message_template`,
- * `assignee`). Rejected at parse so a run never starts on it (ADR-0029(c)). The message names the
- * offending field and the tainted symbol; it never carries the secret's value.
+ * A `secret`-typed value — or anything transitively derived from one through a `context` entry or an
+ * `input` default — reaches agent/human text (`prompt_template`, `system_prompt[_append]`,
+ * `message_template`, `assignee`). Rejected at parse so a run never starts on it (ADR-0029(c)). The
+ * message names the offending field and the tainted symbol; it never carries the secret's value.
  */
 export class WorkflowSecretLeakError extends WorkflowParseError {
   readonly code = 'secret_interpolation';
@@ -137,7 +141,8 @@ export type InterpolationErrorCode =
   | 'unserializable' // a reference resolved to an object/array used as text without a `| json` filter
   | 'invalid_path' // a malformed property/index access after the head
   | 'read_file_unavailable' // the `read_file` filter ran without a host `readFile` capability
-  | 'read_file_failed'; // the host `readFile` capability threw (cause kept for logs, off the message)
+  | 'read_file_failed' // the host `readFile` capability threw (cause kept for logs, off the message)
+  | 'aborted'; // the run's `AbortSignal` fired mid-resolution (cooperative cancellation)
 
 /**
  * A runtime interpolation failure raised while *resolving* `{{ … }}` against a run scope (1.L2) —

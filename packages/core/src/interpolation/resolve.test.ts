@@ -77,6 +77,21 @@ describe('resolveTemplate — happy paths', () => {
     );
   });
 
+  it('default keeps a falsy-but-present value (0 / false / empty string), rescues only missing', async () => {
+    await expect(
+      resolveTemplate('{{inputs.z | default("FB")}}', scope({ inputs: { z: 0 } })),
+    ).resolves.toBe('0');
+    await expect(
+      resolveTemplate('{{inputs.f | default("FB")}}', scope({ inputs: { f: false } })),
+    ).resolves.toBe('false');
+    await expect(
+      resolveTemplate('{{inputs.e | default("FB")}}', scope({ inputs: { e: '' } })),
+    ).resolves.toBe('');
+    await expect(
+      resolveTemplate('{{run.outputs["m"] | default("FB")}}', scope({ outputs: {} })),
+    ).resolves.toBe('FB');
+  });
+
   it('chains filters left to right (default rescues, then length counts)', async () => {
     const s = scope({ outputs: {} });
     await expect(
@@ -142,6 +157,13 @@ describe('resolveTemplate — typed, secret-free errors', () => {
 
   it('unknown_filter for a filter not in the registry', async () => {
     await expectCode('{{inputs.x | nope}}', scope({ inputs: { x: 'v' } }), 'unknown_filter');
+  });
+
+  it('unknown_filter for an inherited registry member used as a filter name (no prototype call)', async () => {
+    const s = scope({ inputs: { x: 'v' } });
+    await expectCode('{{inputs.x | toString}}', s, 'unknown_filter');
+    await expectCode('{{inputs.x | constructor}}', s, 'unknown_filter');
+    await expectCode('{{inputs.x | __proto__}}', s, 'unknown_filter');
   });
 
   it('filter_arity for the wrong number of arguments', async () => {
@@ -293,5 +315,110 @@ workflow:
     const ctx = await resolveContext(wf, {});
     expect(ctx).toEqual({});
     expect(Object.isFrozen(ctx)).toBe(true);
+  });
+
+  it('stores a `__proto__` context key as a real own property (null-prototype accumulator)', async () => {
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: __proto__
+      value: 'safe'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    const ctx = await resolveContext(wf, {});
+    expect(Object.hasOwn(ctx, '__proto__')).toBe(true);
+    expect(ctx['__proto__']).toBe('safe');
+  });
+
+  it('a backward context reference is unresolved at runtime (single-pass declared order)', async () => {
+    // `early` reads `late`, declared after it — accepted at parse, unresolved at runtime.
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: early
+      value: '{{ctx.late}}'
+    - key: late
+      value: 'L'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    await expect(resolveContext(wf, {})).rejects.toBeInstanceOf(InterpolationError);
+
+    // … unless a default rescues it.
+    const wf2 = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: early
+      value: '{{ctx.late | default("FB")}}'
+    - key: late
+      value: 'L'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    const ctx = await resolveContext(wf2, {});
+    expect(ctx['early']).toBe('FB');
+  });
+
+  it('forwards the AbortSignal to the host readFile and aborts an already-cancelled run', async () => {
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: path
+      type: file_path
+  context:
+    - key: code
+      value: '{{inputs.path | read_file}}'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    let receivedSignal: unknown;
+    const live = new AbortController();
+    await resolveContext(
+      wf,
+      { path: 'x.ts' },
+      {
+        readFile: (path, signal) => {
+          receivedSignal = signal;
+          return `FILE(${path})`;
+        },
+      },
+      live.signal,
+    );
+    expect(receivedSignal).toBe(live.signal);
+
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      resolveContext(wf, { path: 'x.ts' }, { readFile: (p) => `FILE(${p})` }, aborted.signal),
+    ).rejects.toThrow();
+  });
+
+  it('re-resolves a read_file context identically (determinism across the impurity seam)', async () => {
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: path
+      type: file_path
+  context:
+    - key: code
+      value: '{{inputs.path | read_file}}'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    const reader = (path: string): string => `FILE(${path})`;
+    const first = await resolveContext(wf, { path: 'x.ts' }, { readFile: reader });
+    const second = await resolveContext(wf, { path: 'x.ts' }, { readFile: reader });
+    expect(second).toEqual(first);
   });
 });

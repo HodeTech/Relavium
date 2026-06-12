@@ -89,7 +89,7 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
   };
 
   // A `{{run.outputs[…]}}` reference in a context value is rejected at parse by
-  // `analyzeContextReferences` (1.L2) — context is eagerly resolved before any node runs, so no node
+  // `analyzePreRunReferences` (1.L2) — context is eagerly resolved before any node runs, so no node
   // output exists yet (workflow-yaml-spec.md §Context-and-interpolation). The collector stays a pure
   // structural view: it records the site (with kind:'node'); the analyzer reads it and raises the
   // field-named parse error.

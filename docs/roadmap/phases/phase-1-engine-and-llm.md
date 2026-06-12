@@ -609,10 +609,19 @@ Executes a single agent node end-to-end against `@relavium/llm`.
 - Tool results enter message assembly **as data through the typed untrusted boundary**
   ([security-review.md §Prompt-injection posture](../../standards/security-review.md#prompt-injection-posture),
   binding): never into `system`, never string-concatenated into an instruction template.
+  **This also covers resolved-interpolation content**: 1.L2's `resolveTemplate` returns a flat
+  string, dropping provenance, so a field that drew on `read_file` / `run.outputs` (untrusted) must
+  be carried as untrusted into a `user`/`tool` position by this layer, never `system`.
+- **Re-apply secret taint when populating `run.outputs`** (ADR-0029(c) follow-up): the 1.L2
+  parse-time gate covers only the authored `{{ … }}` template graph; a `secret`-typed input
+  surfaced *verbatim* via an `input` node's output (or any node output derived from a secret) would
+  otherwise be referenceable as `{{run.outputs["…"]}}` past the parse gate. The run loop must mark
+  such outputs tainted (or refuse to surface a raw secret as a node output).
 
 **Acceptance:** an agent node with a tool streams tokens, performs a tool round-trip,
 emits a correct `cost:updated`, and completes with `node:completed`; a forced
-provider error drives the fallback chain before the node is considered failed.
+provider error drives the fallback chain before the node is considered failed; a `secret`-typed
+input cannot reach agent/human text through a node output (taint re-applied at `run.outputs`).
 
 ### 1.P — Node-type handlers (condition / fan-out / fan-in / transform / input / output)
 

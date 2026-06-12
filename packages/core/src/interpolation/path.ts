@@ -36,7 +36,14 @@ export function getByPath(value: unknown, path: string, location?: string): unkn
 
 function stepInto(current: unknown, step: PathStep): unknown {
   if ('index' in step) {
-    return Array.isArray(current) ? (current as readonly unknown[])[step.index] : undefined;
+    if (!Array.isArray(current)) {
+      return undefined;
+    }
+    // Own index only — `Object.hasOwn` keeps a polluted `Array.prototype[i]` from leaking through a
+    // sparse/empty array, symmetric with the object-property branch below.
+    return Object.hasOwn(current, step.index)
+      ? (current as readonly unknown[])[step.index]
+      : undefined;
   }
   // A plain object's OWN property only — arrays expose just numeric indices here, and an own-property
   // guard keeps a missing key returning `undefined` instead of reaching an inherited prototype member
@@ -128,7 +135,12 @@ function readBracket(
   }
   const inner = path.slice(from + 1, close).trim();
   if (INTEGER.test(inner)) {
-    steps.push({ index: Number(inner) });
+    const index = Number(inner);
+    if (!Number.isSafeInteger(index) || index < 0) {
+      // A huge (non-safe-integer) or negative index is malformed, not a benign out-of-bounds miss.
+      throw invalidPath(path, location);
+    }
+    steps.push({ index });
     return close + 1;
   }
   throw invalidPath(path, location);

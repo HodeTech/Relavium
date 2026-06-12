@@ -168,6 +168,69 @@ workflow:
     expect(locations).toContain('node `n`.system_prompt_append');
   });
 
+  it('launders a secret through TWO chained input defaults (multi-hop fixpoint)', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: a
+      type: secret
+    - name: b
+      type: string
+      default: '{{inputs.a}}'
+    - name: c
+      type: string
+      default: '{{inputs.b}}'
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: '{{inputs.c}}'
+  edges: []`);
+    expect(err.leaks[0]).toEqual({
+      location: 'node `n`.prompt_template',
+      secret: 'inputs.c',
+      via: 'inputs.b',
+    });
+  });
+
+  it('rejects a secret read via a trailing path — taint keys on the symbol, not the path (no via)', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'token {{inputs.api_key.token}}'
+  edges: []`);
+    expect(err.leaks[0]).toEqual({
+      location: 'node `n`.prompt_template',
+      secret: 'inputs.api_key',
+    });
+  });
+
+  it('rejects a secret interpolated into a human_gate `assignee`', () => {
+    const err = expectLeak(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+  nodes:
+    - id: g
+      type: human_gate
+      gate_type: approval
+      assignee: '{{inputs.api_key}}'
+  edges: []`);
+    expect(err.leaks[0]).toEqual({ location: 'node `g`.assignee', secret: 'inputs.api_key' });
+  });
+
   it('reports every leaking site — two nodes referencing the same secret yield two leaks', () => {
     const err = expectLeak(`schema_version: '1.0'
 workflow:

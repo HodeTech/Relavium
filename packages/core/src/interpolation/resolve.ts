@@ -13,9 +13,16 @@
  * taint gate (`analyzeSecretTaint`) already rejected that, and {@link RunScope} carries no `secrets`
  * namespace. The whole-string JS fields (`condition`/`transform`/`merge_fn`) are not templates; they
  * belong to the expression sandbox (1.AB), not here.
+ *
+ * Provenance: `resolveTemplate` returns a plain string, flattening any `read_file`- / `run.outputs`-
+ * derived (untrusted) content together with literals — it carries no taint marker. The structural
+ * "untrusted-content-as-data" guarantee (docs/standards/security-review.md) binds the message-assembly
+ * layer (1.O/1.T/1.V): a resolved field that drew on an untrusted source must be placed only in a
+ * `user`/`tool` position, never `system`. That re-tainting is a 1.O/1.O-run-loop acceptance criterion,
+ * not something this pure resolver can enforce once provenance is flattened.
  */
 
-import type { Workflow } from '@relavium/shared';
+import type { AbortSignalLike, Workflow } from '@relavium/shared';
 
 import { InterpolationError } from '../errors.js';
 
@@ -34,13 +41,15 @@ export async function resolveTemplate(
   text: string,
   scope: RunScope,
   caps: ResolverCapabilities = {},
+  signal?: AbortSignalLike,
 ): Promise<string> {
   let out = '';
   for (const segment of parseTemplate(text)) {
     if (segment.kind === 'literal') {
       out += segment.text;
     } else {
-      const value = await resolveReference(segment.reference, scope, caps);
+      abortIfCancelled(signal);
+      const value = await resolveReference(segment.reference, scope, caps, signal);
       out += stringify(value, segment.reference);
     }
   }
@@ -57,13 +66,17 @@ export async function resolveContext(
   workflow: Workflow,
   inputs: Readonly<Record<string, unknown>>,
   caps: ResolverCapabilities = {},
+  signal?: AbortSignalLike,
 ): Promise<Readonly<Record<string, string>>> {
-  const ctx: Record<string, string> = {};
+  // A null-prototype accumulator so a context key named `__proto__`/`constructor` is stored as a real
+  // own property rather than being silently dropped (or mutating a prototype).
+  const ctx = Object.create(null) as Record<string, string>;
   for (const entry of workflow.workflow.context ?? []) {
+    abortIfCancelled(signal);
     // No node has run yet, so `outputs` is empty; a `{{run.outputs[…]}}` reference here is already
-    // rejected at parse (`analyzeContextReferences`), so this only ever serves `inputs`/`ctx`.
+    // rejected at parse (`analyzePreRunReferences`), so this only ever serves `inputs`/`ctx`.
     const scope: RunScope = { inputs, ctx, outputs: {} };
-    ctx[entry.key] = await resolveTemplate(entry.value, scope, caps);
+    ctx[entry.key] = await resolveTemplate(entry.value, scope, caps, signal);
   }
   return Object.freeze(ctx);
 }
@@ -73,10 +86,11 @@ async function resolveReference(
   ref: InterpolationReference,
   scope: RunScope,
   caps: ResolverCapabilities,
+  signal?: AbortSignalLike,
 ): Promise<unknown> {
   let value = getByPath(resolveHead(ref, scope), ref.path, ref.raw);
   for (const filter of ref.filters) {
-    value = await filterFn(filter, ref)(value, filter.args, caps, ref);
+    value = await filterFn(filter, ref)(value, filter.args, caps, ref, signal);
   }
   return value;
 }
@@ -112,6 +126,17 @@ function resolveHead(ref: InterpolationReference, scope: RunScope): unknown {
  */
 function ownValue(bag: Readonly<Record<string, unknown>>, key: string): unknown {
   return Object.hasOwn(bag, key) ? bag[key] : undefined;
+}
+
+/**
+ * Cooperative cancellation between resolution steps: throw a typed `aborted` error once the run's
+ * signal has fired. (`AbortSignalLike` is the engine's DOM/node-free signal type, so it exposes
+ * `aborted` rather than `throwIfAborted()`; the same signal also forwards to the host `readFile`.)
+ */
+function abortIfCancelled(signal: AbortSignalLike | undefined): void {
+  if (signal?.aborted === true) {
+    throw new InterpolationError('aborted', 'interpolation was aborted');
+  }
 }
 
 /** Turn a resolved value into text — primitives stringify; an object needs an explicit `| json`. */

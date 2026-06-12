@@ -19,6 +19,8 @@
  * scope is ever resolved, so a secret value never flows through the text path by construction.
  */
 
+import type { AbortSignalLike } from '@relavium/shared';
+
 /** The run-scope namespaces a `{{ … }}` reference may read against. */
 export interface RunScope {
   /** Declared workflow inputs, resolved to their values — `{{inputs.<name>}}`. */
@@ -35,9 +37,13 @@ export interface ResolverCapabilities {
    * Read a workspace file's text for the `read_file` filter. The engine passes the authored path
    * through **unchanged** and never touches the filesystem itself, so the host reader **must jail to
    * the workspace root and reject path traversal** — that sandbox duty is delegated, not optional, and
-   * is a mandatory-review trigger (docs/standards/security-review.md §When a review is mandatory). May
-   * resolve synchronously or asynchronously. When absent, a `read_file` filter fails with a typed
-   * `InterpolationError` (`read_file_unavailable`), never a crash.
+   * is a mandatory-review trigger (docs/standards/security-review.md §When a review is mandatory). The
+   * `path` argument is whatever the template resolved to and may carry a value the engine cannot prove
+   * non-secret (e.g. `{{inputs.x | read_file}}`), so the host must not log it. The optional `signal`
+   * lets a cancelled run abort a slow or hung read. The reader must be a stable read-once snapshot for
+   * a given path within a run, so a re-resolve on resume is byte-identical (the 1.R determinism
+   * contract). May resolve synchronously or asynchronously. When absent, a `read_file` filter fails
+   * with a typed `InterpolationError` (`read_file_unavailable`), never a crash.
    */
-  readonly readFile?: (path: string) => string | Promise<string>;
+  readonly readFile?: (path: string, signal?: AbortSignalLike) => string | Promise<string>;
 }

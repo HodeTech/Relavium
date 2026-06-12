@@ -59,6 +59,22 @@ describe('getByPath', () => {
     expect(getByPath([10, 20], '[ 1 ]')).toBe(20);
   });
 
+  it('does not read a polluted Array.prototype index (own-index guard)', () => {
+    Reflect.set(Array.prototype, 0, 'POLLUTED');
+    try {
+      expect(getByPath([], '[0]')).toBeUndefined(); // empty array → own index absent → undefined
+      expect(getByPath([{ a: 1 }], '[0].a')).toBe(1); // a real own index still resolves
+    } finally {
+      Reflect.deleteProperty(Array.prototype, 0);
+    }
+  });
+
+  it('rejects a huge (non-safe-integer) or negative numeric index as invalid_path', () => {
+    for (const bad of ['[99999999999999999999]', '[-1]']) {
+      expect(() => getByPath([1, 2, 3], bad)).toThrow(InterpolationError);
+    }
+  });
+
   it('returns undefined for an inherited prototype member (own-property guard)', () => {
     // Without the guard these would resolve live Object.prototype members rather than undefined.
     for (const proto of [

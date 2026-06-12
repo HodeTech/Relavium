@@ -34,7 +34,7 @@ import { templateReferences, type InterpolationReference } from './references.js
  */
 interface TaintSets {
   readonly inputs: ReadonlyMap<string, string | undefined>;
-  readonly ctx: ReadonlyMap<string, string>;
+  readonly ctx: ReadonlyMap<string, string | undefined>;
 }
 
 /**
@@ -91,62 +91,79 @@ export function analyzePreRunReferences(workflow: Workflow): readonly WorkflowIs
 }
 
 /**
- * Compute the taint sets to a fixpoint. Seeds from `secret`-typed inputs, then closes the taint over
- * both intermediates a secret can be laundered through — an `input` default and a `context` value —
- * re-running a full round until it taints nothing new (so declaration order and multi-hop chains
- * through inputs and context all resolve).
+ * Compute the taint sets in **linear** time. Each pre-run field (an `input` default or a `context`
+ * value) is parsed for its references exactly once; a secret source (a `secret`-typed input, or a
+ * field reading `{{secrets.*}}`) seeds a worklist, and taint propagates along reverse-dependency edges
+ * (target symbol → the fields that read it) until the queue drains — O(symbols + references), with no
+ * per-round re-parsing. This is deliberately not a rescan-to-fixpoint loop: that was O(N²) over the
+ * entry count and let a small reversed-laundering-chain YAML stall the synchronous parse gate.
  */
 function computeTaint(spec: Workflow['workflow']): TaintSets {
-  const inputs = new Map<string, string | undefined>();
-  const ctx = new Map<string, string>();
+  // `tainted` maps a symbol id (`inputs.<name>` / `ctx.<key>`) to its deeper "via" (a source = undefined).
+  const tainted = new Map<string, string | undefined>();
+  const dependents = new Map<string, string[]>(); // target symbol → fields that read it
+  const queue: string[] = [];
+
+  const seed = (id: string, via: string | undefined): void => {
+    if (!tainted.has(id)) {
+      tainted.set(id, via);
+      queue.push(id);
+    }
+  };
+  const addEdge = (target: string, dependent: string): void => {
+    const list = dependents.get(target);
+    if (list === undefined) {
+      dependents.set(target, [dependent]);
+    } else {
+      list.push(dependent);
+    }
+  };
+  const scan = (id: string, text: string | undefined): void => {
+    if (text === undefined) {
+      return;
+    }
+    for (const ref of templateReferences(text)) {
+      if (ref.kind === 'secrets') {
+        seed(id, `secrets.${ref.identifier}`); // reads a secret store directly → a source
+      } else if (ref.kind === 'inputs') {
+        addEdge(`inputs.${ref.identifier}`, id);
+      } else if (ref.kind === 'ctx') {
+        addEdge(`ctx.${ref.identifier}`, id);
+      }
+    }
+  };
+
   for (const input of spec.inputs ?? []) {
     if (input.type === 'secret') {
-      inputs.set(input.name, undefined); // a source — no deeper "via"
+      seed(`inputs.${input.name}`, undefined); // a source secret — no deeper "via"
     }
-  }
-  while (taintRound(spec, inputs, ctx)) {
-    /* keep iterating until a full round taints nothing new */
-  }
-  return { inputs, ctx };
-}
-
-/** One taint pass over input defaults then context values; returns whether anything new was tainted. */
-function taintRound(
-  spec: Workflow['workflow'],
-  inputs: Map<string, string | undefined>,
-  ctx: Map<string, string>,
-): boolean {
-  let changed = false;
-  for (const input of spec.inputs ?? []) {
-    if (!inputs.has(input.name) && typeof input.default === 'string') {
-      const reason = firstTaintReason(input.default, { inputs, ctx });
-      if (reason !== undefined) {
-        inputs.set(input.name, reason);
-        changed = true;
-      }
-    }
+    scan(`inputs.${input.name}`, typeof input.default === 'string' ? input.default : undefined);
   }
   for (const entry of spec.context ?? []) {
-    if (!ctx.has(entry.key)) {
-      const reason = firstTaintReason(entry.value, { inputs, ctx });
-      if (reason !== undefined) {
-        ctx.set(entry.key, reason);
-        changed = true;
-      }
-    }
+    scan(`ctx.${entry.key}`, entry.value);
   }
-  return changed;
-}
 
-/** The first tainted symbol any reference in `text` reads, or `undefined` if the text is clean. */
-function firstTaintReason(text: string, taint: TaintSets): string | undefined {
-  for (const ref of templateReferences(text)) {
-    const reason = taintReason(ref, taint);
-    if (reason !== undefined) {
-      return reason;
+  // Propagate: tainting a target taints every field that reads it (via = the target). Each edge once.
+  while (queue.length > 0) {
+    const target = queue.pop();
+    if (target === undefined) {
+      break;
+    }
+    for (const dependent of dependents.get(target) ?? []) {
+      seed(dependent, target);
     }
   }
-  return undefined;
+
+  const inputs = new Map<string, string | undefined>();
+  const ctx = new Map<string, string | undefined>();
+  for (const [id, via] of tainted) {
+    if (id.startsWith('inputs.')) {
+      inputs.set(id.slice('inputs.'.length), via);
+    } else if (id.startsWith('ctx.')) {
+      ctx.set(id.slice('ctx.'.length), via);
+    }
+  }
+  return { inputs, ctx };
 }
 
 /** The tainted symbol a reference reads, or `undefined` if it is clean. Names only — never a value. */

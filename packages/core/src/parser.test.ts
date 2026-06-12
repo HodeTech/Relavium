@@ -264,14 +264,14 @@ describe('parseWorkflow — malformed (each fails with a field-named, secret-fre
   });
 
   it('surfaces a structural message for the `too_small` code path (min-1 string constraint)', () => {
-    // An empty string on context[].key (nonEmptyString = z.string().min(1)) → Zod code `too_small`.
+    // An empty agent `system_prompt` (nonEmptyString = z.string().min(1)) → Zod code `too_small`.
     // messageFor returns issue.message directly — pin that it names the constraint, not the authored value.
     const err = expectValidationError(
       doc(
-        `  id: w\n  context:\n    - key: ''\n      value: v\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
+        `  id: w\n  agents:\n    - id: ag\n      name: A\n      model: claude-sonnet-4-6\n      provider: anthropic\n      system_prompt: ''\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
       ),
     );
-    const issue = err.issues.find((i) => i.field.includes('context'));
+    const issue = err.issues.find((i) => i.field.includes('system_prompt'));
     expect(issue).toBeDefined();
     expect(issue?.message).toMatch(/character|length|least/i);
   });
@@ -424,7 +424,7 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
 describe('parseWorkflow — context referencing run.outputs (1.L2 static gate)', () => {
   it('rejects a context value that references run.outputs (resolved before any node runs)', () => {
     // workflow-yaml-spec.md §Context-and-interpolation: context is eagerly resolved pre-run, so a
-    // node output is unavailable — `analyzeContextReferences` makes this a field-named parse error.
+    // node output is unavailable — `analyzePreRunReferences` makes this a field-named parse error.
     const err = expectValidationError(
       `schema_version: '1.0'\nworkflow:\n  id: w\n  context:\n    - key: snapshot\n      value: '{{run.outputs["some-node"]}}'\n  nodes:\n    - id: some-node\n      type: input\n  edges: []`,
     );

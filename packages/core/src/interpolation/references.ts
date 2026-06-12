@@ -9,11 +9,12 @@
  * `merge_fn` belong to the JS sandbox (1.AB). This module is a pure lexer: text in, structured
  * segments out. It reads no files, touches no environment, and holds no state.
  *
- * The four authored namespaces (workflow-yaml-spec.md §Context-and-interpolation):
+ * The three authored namespaces (workflow-yaml-spec.md §Context-and-interpolation):
  *   - `{{ inputs.<name> }}`            → kind `inputs`
  *   - `{{ ctx.<key> }}`                → kind `ctx`
  *   - `{{ run.outputs["<node-id>"] }}` → kind `node`   (the roadmap's informal `{{ node.output }}`)
- *   - `{{ secrets.<name> }}`           → kind `secrets`
+ * The lexer additionally recognizes `{{ secrets.<name> }}` → kind `secrets` ONLY so the resolver and
+ * the taint gate can reject it with a precise typed error — it is not an authored v1.0 namespace.
  * Anything else is carried as `unknown` (the resolver, not this lexer, judges validity).
  */
 

@@ -9,21 +9,25 @@
  * a re-resolved scope is identical — the property the checkpoint/idempotency model (1.R) relies on.
  */
 
+import type { AbortSignalLike } from '@relavium/shared';
+
 import { InterpolationError } from '../errors.js';
 
 import type { ResolverCapabilities } from './scope.js';
 import type { FilterArg, InterpolationReference, PipeFilter } from './references.js';
 
 /**
- * A filter: the value so far, its parsed args, the host capabilities, and the source ref (for errors).
- * The result is `unknown` (which already subsumes `Promise<unknown>`); the resolver `await`s it, so a
- * filter may be sync (`json`/`length`/`default`) or async (`read_file`).
+ * A filter: the value so far, its parsed args, the host capabilities, the source ref (for errors), and
+ * an optional `AbortSignal` (only `read_file` honors it). The result is `unknown` (which already
+ * subsumes `Promise<unknown>`); the resolver `await`s it, so a filter may be sync (`json`/`length`/
+ * `default`) or async (`read_file`).
  */
 export type FilterFn = (
   value: unknown,
   args: readonly FilterArg[],
   caps: ResolverCapabilities,
   ref: InterpolationReference,
+  signal?: AbortSignalLike,
 ) => unknown;
 
 const FILTERS: Readonly<Record<string, FilterFn>> = {
@@ -52,7 +56,7 @@ const FILTERS: Readonly<Record<string, FilterFn>> = {
     return serialized;
   },
 
-  /** The count of a string's characters, an array's items, or an object's own keys. */
+  /** The count of a string's UTF-16 code units, an array's items, or an object's own keys. */
   length: (value, args, _caps, ref) => {
     requireArity('length', args, 0, ref);
     if (typeof value === 'string' || Array.isArray(value)) {
@@ -74,7 +78,7 @@ const FILTERS: Readonly<Record<string, FilterFn>> = {
   },
 
   /** Read a workspace file's text via the host `readFile` capability (the engine never touches disk). */
-  read_file: async (value, args, caps, ref) => {
+  read_file: async (value, args, caps, ref, signal) => {
     requireArity('read_file', args, 0, ref);
     if (typeof value !== 'string') {
       throw filterType('read_file', 'a file path string', ref);
@@ -87,7 +91,7 @@ const FILTERS: Readonly<Record<string, FilterFn>> = {
       );
     }
     try {
-      return await caps.readFile(value);
+      return await caps.readFile(value, signal);
     } catch (err) {
       // The authored path / host error (which may carry an absolute path) stays on `cause` for logs;
       // the user-facing message names only the reference, never the path value.
@@ -101,7 +105,10 @@ const FILTERS: Readonly<Record<string, FilterFn>> = {
 
 /** Look up a filter by name, or throw a typed `unknown_filter` error naming the offending reference. */
 export function filterFn(filter: PipeFilter, ref: InterpolationReference): FilterFn {
-  const fn = FILTERS[filter.name];
+  // `Object.hasOwn` so an inherited member of the registry object (`toString`, `constructor`,
+  // `__proto__`) is never mistaken for a filter — a bare `FILTERS[name]` would return
+  // `Object.prototype.toString` for `| toString` and then invoke it.
+  const fn = Object.hasOwn(FILTERS, filter.name) ? FILTERS[filter.name] : undefined;
   if (fn === undefined) {
     throw new InterpolationError('unknown_filter', `unknown filter \`${filter.name}\``, {
       location: ref.raw,
