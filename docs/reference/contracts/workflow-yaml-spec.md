@@ -248,7 +248,7 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 
 A condition node evaluates `expression` **once** and selects the branch whose `when` value **strictly equals** (`===`, no type coercion) the result; `when` values must be a boolean, string, or number. If no `when` matches and no `default` is set, the run fails with a typed "no branch matched" error rather than stalling. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
 
-The `expression:` string is a **sandboxed JavaScript expression** — in v1.0 the only `expression_type` is **`js`**, evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared dependency) and deferred to a future ADR. **There is no Python evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
+The `expression:` string is a **sandboxed JavaScript expression** — in v1.0 the only `expression_type` is **`js`**, evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared dependency) and deferred to a future ADR. **There is no Python evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config); the full sandbox contract — scope, allow-list, caps, determinism, and the `sandbox_error` taxonomy — is owned by [expression-sandbox-spec.md](../shared-core/expression-sandbox-spec.md). Note an expression's **JS syntax is checked at evaluation, not at parse** — a typo'd `expression` parses fine and fails the first time its node runs, so test workflows before production. (An `expression_type` other than `js`, by contrast, **is** rejected at parse.)
 
 ### `transform` node
 
@@ -271,10 +271,10 @@ A sandboxed JavaScript expression (`expression_type: js`) whose result becomes t
   type: merge
   merge_strategy: object_merge       # concat | object_merge | first | custom
   merge_fn: |                        # required only when strategy = custom (a `js` expression)
-    { ...a, ...b }
+    { ...branches[0], ...branches[1] }   # `branches` = branch outputs in static `parallel_of` order
 ```
 
-`merge_strategy` is the **authoritative** name for the aggregation behavior; the canvas (`AggregatorNode`) and engine (`fan_in_config`) carry the same value — see the [merge-strategy reconciliation table](../shared-core/node-types.md#merge-strategy-reconciliation). `best_of_n` (a secondary-LLM picker) is **reserved, not v1.0**, and is not a valid `merge_strategy` value in `'1.0'`.
+`merge_strategy` is the **authoritative** name for the aggregation behavior; the canvas (`AggregatorNode`) and engine (`fan_in_config`) carry the same value — see the [merge-strategy reconciliation table](../shared-core/node-types.md#merge-strategy-reconciliation). `best_of_n` (a secondary-LLM picker) is **reserved, not v1.0**, and is not a valid `merge_strategy` value in `'1.0'`. A custom `merge_fn` is a **bare `js` expression** (not a function) evaluated in the [expression sandbox](../shared-core/expression-sandbox-spec.md); it receives `branches` — the branch outputs in **static `parallel_of` declaration order** (never arrival order, so the merge is deterministic) — plus `run.outputs`.
 
 > **`parallel_of` is authoritative for branch membership.** On a `parallel` node, `parallel_of: [...]` alone defines which nodes are the concurrent branches; the parser materializes a fan-out edge to each listed node, so explicit `from: fan-out` edges are **not required**. The complete example below writes them out for readability, but they are redundant with `parallel_of` and must not contradict it — if both are present they must agree (the validator rejects an explicit fan-out edge to a node not in `parallel_of`).
 

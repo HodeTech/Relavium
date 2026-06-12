@@ -38,6 +38,8 @@ This page is the **single source of truth** for the node-type taxonomy; every ot
 
 The canonical name mappings are stated **only here**: `parallel` (YAML) → `FanOutNode` (canvas) → `fan_out` + `fan_in` (engine); `merge` (YAML) → `AggregatorNode` (canvas) → `fan_in` (engine); `human_gate` (YAML) → `HumanGateNode` (canvas) → `human_in_the_loop` (engine); `tool` → `ToolNode` (canvas) / agent `tools:` (YAML) → `tool` (engine).
 
+> **How the `fan_out`/`fan_in` pair is realized.** The conceptual split-join pair spans **two authored nodes**, not one: in YAML v1.0 the `fan_out` is the authored `parallel` node and the `fan_in` of the pair is a paired authored **`merge`** node, with the branches bracketed by explicit edges (`parallel → branches → merge`; see [../contracts/workflow-yaml-spec.md#complete-example](../contracts/workflow-yaml-spec.md#complete-example)). The DAG builder maps `parallel → fan_out` and `merge → fan_in` and **synthesizes no extra join vertex** — a `parallel` whose branches do not converge on a `merge` simply has no fan-in. The compiled plan is specified in [run-plan.md](run-plan.md).
+
 ### Reserved types (forward-compat; not executable/authorable in v1.0)
 
 `loop` and `subworkflow` are **forward-compat engine-enum slots only**. In the first increment they are:
@@ -127,7 +129,7 @@ In the engine's `WorkflowDefinition`, a node carries `id`, `type`, `label`, opti
 
 > The authored YAML uses friendlier field names (e.g. `parallel_of`, `merge_strategy`, `timeout_action`) that map onto the engine config blocks above. The YAML is the user contract — see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md). **Durations are milliseconds on both sides** (`timeout_ms`, `backoff_ms`) — the mapping renames fields but never converts units, so there is no hidden ms↔s boundary. The mapping itself is owned by `@relavium/core` and is exercised on parse against the `WorkflowSchema` Zod definition.
 >
-> **Expression languages (condition / transform).** In v1.0 the only `expression_type` is **`js`** — a **sandboxed JavaScript expression** evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared runtime dependency) and deferred to a future ADR. **There is no Python evaluator** — per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) the engine is pure TypeScript and ships no Python runtime. `workflow-yaml-spec.md` exposes the same set; its bare `condition:` / `transform:` strings are `js` expressions.
+> **Expression languages (condition / transform).** In v1.0 the only `expression_type` is **`js`** — a **sandboxed JavaScript expression** evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared runtime dependency) and deferred to a future ADR. **There is no Python evaluator** — per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) the engine is pure TypeScript and ships no Python runtime. `workflow-yaml-spec.md` exposes the same set; its bare `condition:` / `transform:` strings are `js` expressions. The full sandbox contract — scope, allow-list, determinism, caps, and the `sandbox_error` taxonomy — is owned by [expression-sandbox-spec.md](expression-sandbox-spec.md).
 
 ### Merge-strategy reconciliation
 
@@ -138,7 +140,7 @@ A fan-in / aggregator node combines N branch results with **one** named strategy
 | `concat` | `concat` | `concat` | Concatenate branch outputs into an ordered array. |
 | `object_merge` | `object_merge` | `object_merge` | Shallow-merge branch objects into one object (later branches win on key collision). |
 | `first` | `first` | `first` | Take the first branch to resolve; ignore the rest. Pairs with `join_strategy: wait_first`. |
-| `custom` | `custom` | `custom` | Apply the author-supplied `merge_fn` (a `js` expression over the branch outputs). |
+| `custom` | `custom` | `custom` | Apply the author-supplied `merge_fn` (a `js` expression that receives `branches` — the branch outputs in **static `parallel_of` declaration order** — plus `run.outputs`; see [expression-sandbox-spec.md](expression-sandbox-spec.md#the-expression-scope-the-one-canonical-binding)). |
 | `best_of_n` *(reserved — not v1.0)* | `best_of_n` *(reserved)* | `best_of_n` *(reserved)* | A secondary-LLM picker selects the "best" branch. **Not in the v1.0 YAML contract** — it carries unaccounted extra-LLM cost and event implications (an additional agent call + `cost:updated` events), so it is held as a reserved/forward-compat slot, in parity with `LoopNode`. |
 
 `join_strategy` (`wait_all` / `wait_first` / `wait_n`) is an **orthogonal** axis — it controls *when* the join fires, not *how* outputs are combined; do not conflate it with `merge_strategy`.

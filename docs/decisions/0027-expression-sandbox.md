@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-05
-- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0023-strict-authored-yaml-validation.md](0023-strict-authored-yaml-validation.md), [../standards/security-review.md](../standards/security-review.md), [../reference/shared-core/node-types.md](../reference/shared-core/node-types.md), [../tech-stack.md](../tech-stack.md)
+- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0023-strict-authored-yaml-validation.md](0023-strict-authored-yaml-validation.md), [0029-tool-policy-hardening.md](0029-tool-policy-hardening.md), [../standards/security-review.md](../standards/security-review.md), [../reference/shared-core/node-types.md](../reference/shared-core/node-types.md), [../reference/shared-core/expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md) (the canonical contract this ADR governs), [../tech-stack.md](../tech-stack.md)
 
 ## Context
 
@@ -81,3 +81,92 @@ a vetted, embeddable interpreter that is a true sandbox and is platform-agnostic
   narrowed to `js` and the others marked reserved to keep the contract honest.
 - The sandbox lands on the engine's critical path (it gates the `condition`/`transform` node
   handlers), raising the cost of that milestone slice — recorded so the plan is honest about it.
+
+## Amended 2026-06-12 — sandbox contract hardening (the "what", alongside the "why")
+
+> Append-only addendum ([CLAUDE.md](../../CLAUDE.md) rule 9): the QuickJS-wasm decision above
+> stays **Accepted and unchanged**. A pre-implementation review of this ADR (before workstream
+> **1.AB**) found the *engine choice* sound but the *contract* under-specified — and several of
+> those gaps are security/correctness decisions 1.AB would otherwise default unsafely. This addendum
+> pins those decisions. The exhaustive, living contract now has a single canonical home in
+> [expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md) (one-canonical-home,
+> rule 8); this addendum records the decisions and delegates the detail to it.
+
+**1. Instantiation strategy (platform purity).** `@relavium/core` imports **only** from
+`quickjs-emscripten-core` (the pure-TypeScript bindings, zero platform imports) plus a **single-file,
+synchronous** variant (starting candidate `@jitl/quickjs-singlefile-mjs-release-sync`) whose wasm is
+embedded as bytes and instantiated through the standard `WebAssembly` global. The meta-package
+`quickjs-emscripten` and its default `getQuickJS()` loader are **forbidden** — they statically import
+`node:fs`/`path`, which breaks the zero-platform-imports invariant
+([ADR-0003](0003-pure-ts-engine-not-langgraph-python.md), rule 5) at *import* time (not merely at
+runtime) and fails to load in the Tauri WebView. The `tsconfig` `types: []` fence plus a CI
+import-zone check enforce this statically. The exact variant + version is pinned in the `catalog:` by
+the 1.AB perf spike and mirrored in [tech-stack.md](../tech-stack.md); the engine-deps allowlist
+(`tools/engine-deps/check.mjs`) is edited in the **same commit** as the first import.
+
+**2. Deny-by-default language surface (never created, not deleted).** The context is built with a
+**minimal intrinsic set** so dangerous capabilities are never created: `Eval: false` (QuickJS's `Eval`
+intrinsic is what installs both `eval` and the `Function` constructor, so omitting it creates neither),
+`Date: false`, `Promise: false` (evaluation is **synchronous-only** — `executePendingJobs` is never
+called). `Math.random` is deleted as an own property by the host immediately after `newContext()` (no
+intrinsic flag omits a single `Math` method). The exhaustive allow-list and forbidden set are owned by
+the reference spec.
+
+**3. Marshaling is JSON-only; the global is immutable (prototype-pollution closed).** Scope crosses
+into the VM as **plain JSON data**: the host `JSON.stringify`s `inputs`/`ctx`/`run.outputs` (and
+`branches` for `merge_fn`); the VM `JSON.parse`s it — **no live host object, getter, or function ever
+crosses the boundary.** `JSON.parse` materializes a `__proto__` key as an own data property (never the
+prototype setter), so an attacker-shaped `{"__proto__":…}` arriving via model/tool-derived
+`run.outputs` cannot poison the prototype chain. Each binding is installed on the VM global as a
+**non-writable, non-configurable** property over a deep-frozen value. v1.0 injects **zero custom host
+functions** — only the built-in pure objects; any future host function requires its own ADR amendment
+with a no-`this`, JSON-serializable-return-only boundary.
+
+**4. Determinism catalog + the wall-clock/idempotency resolution.** The guarantee is restated
+precisely: **for an expression that completes within its resource caps, the result is a pure function
+of the injected scope.** Non-determinism is removed at the language level — no `Date`, no
+`Math.random`, no `Promise`/async, no ambient I/O, no `performance`/`crypto` (none are created); sort
+without a comparator is code-point ordered (deterministic), and locale-sensitive output
+(`toLocaleString`/`Intl`) is discouraged in author guidance. **Resolving the timeout tension:**
+quickjs-emscripten exposes a **wall-clock deadline interrupt, not an opcode counter**, so the resource
+caps (timeout, memory, stack) are **non-idempotent safety nets, never a result** — a cap-trip always
+surfaces as the error path (item 6), never as a stable boolean/value. A *successful* evaluation stays
+reproducible across checkpoint/resume; a cap-trip re-executes under the node retry budget (1.S).
+
+**5. Resource-cap defaults (fixed in v1.0).** Per evaluation: **100 ms** wall-clock timeout, **16 MB**
+heap (`setMemoryLimit`), **256 KB** stack (`setMaxStackSize`). The wasm module is instantiated **once**
+per engine instance; **each evaluation gets a fresh runtime + context, disposed after** — full
+isolation between expressions, and OOM-safe (a tripped runtime is discarded, not reused). Caps are
+**fixed engine constants** in v1.0 (expressions are small and infrequent; configurability is a future
+ADR), confirmed/tuned by the 1.AB perf spike. The numbers are owned by the reference spec so every
+surface shares one source of truth.
+
+**6. Error taxonomy (closed `sandbox_error` code).** Every sandbox failure surfaces as the closed
+`ErrorCode` member `sandbox_error` ([sse-event-schema.md](../reference/contracts/sse-event-schema.md#error-code-taxonomy)),
+classified per [error-handling.md](../standards/error-handling.md): a syntax error, a runtime
+Reference/TypeError, a memory/stack overflow, and a non-conforming result (a `condition` result not in
+`{boolean,string,number}`, or a `transform`/`merge_fn` result that is not JSON-serializable) are
+**deterministic → fatal**; only the **wall-clock-timeout safety-net trip is retryable** (it may pass on
+re-execution), bounded by the node retry budget. Messages are **scrubbed to the code + a generic,
+secret-free string** — never the expression source, a variable name, a scope value, or a host stack
+(full detail to internal logs only), matching the `LlmError`-message discipline
+([security-review.md](../standards/security-review.md)).
+
+**7. Result contract.** `condition` results are compared to `when` values by strict `===` (no
+coercion; `when ∈ {boolean,string,number}`). `transform`/`merge_fn` results must be JSON-serializable
+(a non-serializable result is a fatal `sandbox_error`). `merge_fn` additionally receives `branches` —
+an **array in static `parallel_of` declaration order** (never arrival/completion order) — so a parallel
+fan-in merges deterministically.
+
+**8. Secret defense-in-depth.** The [ADR-0029(c)](0029-tool-policy-hardening.md) parse-time taint gate
+(1.L2) remains the primary guarantee that no secret reaches an expression scope. As defense-in-depth,
+the engine caller (1.O) **filters any secret-tainted value out of the injected scope** before
+evaluation, and the scrubbed-error rule (item 6) ensures a sandbox failure cannot echo a secret even if
+one slipped through. (Re-tainting a secret-derived node output into `run.outputs` is the 1.O
+obligation; see [phase-1 §1.O](../roadmap/phases/phase-1-engine-and-llm.md).)
+
+**9. The perf spike is an implementation acceptance gate, not a decision gate.** The QuickJS-wasm
+choice is settled and is **not** conditional on perf data. The 1.AB spike measures cold-start, per-eval
+latency, per-eval RSS, and **per-surface bundle-size impact** (the embedded wasm adds to the Tauri /
+CLI / VS Code bundles) against recorded thresholds, and runs the dependency-provenance / Leakwatch pass
+on the pinned variant. It cannot reopen the engine choice.
