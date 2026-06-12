@@ -49,24 +49,18 @@ function buildSite(location: string, text: string): ReferenceSite | undefined {
 /** Collect reference sites from template fields on a single workflow node. */
 function collectNodeSites(node: WorkflowNode): ReferenceSite[] {
   const sites: ReferenceSite[] = [];
+  const addFieldSite = (label: string, value: string | undefined): void => {
+    if (value !== undefined) {
+      const site = buildSite(label, value);
+      if (site !== undefined) sites.push(site);
+    }
+  };
   if (node.type === 'agent') {
-    if (node.prompt_template !== undefined) {
-      const site = buildSite(`node \`${node.id}\`.prompt_template`, node.prompt_template);
-      if (site !== undefined) sites.push(site);
-    }
-    if (node.system_prompt_append !== undefined) {
-      const site = buildSite(`node \`${node.id}\`.system_prompt_append`, node.system_prompt_append);
-      if (site !== undefined) sites.push(site);
-    }
+    addFieldSite(`node \`${node.id}\`.prompt_template`, node.prompt_template);
+    addFieldSite(`node \`${node.id}\`.system_prompt_append`, node.system_prompt_append);
   } else if (node.type === 'human_gate') {
-    if (node.assignee !== undefined) {
-      const site = buildSite(`node \`${node.id}\`.assignee`, node.assignee);
-      if (site !== undefined) sites.push(site);
-    }
-    if (node.message_template !== undefined) {
-      const site = buildSite(`node \`${node.id}\`.message_template`, node.message_template);
-      if (site !== undefined) sites.push(site);
-    }
+    addFieldSite(`node \`${node.id}\`.assignee`, node.assignee);
+    addFieldSite(`node \`${node.id}\`.message_template`, node.message_template);
   }
   return sites;
 }
