@@ -93,6 +93,13 @@ const FILTERS: Readonly<Record<string, FilterFn>> = {
     try {
       return await caps.readFile(value, signal);
     } catch (err) {
+      if (signal?.aborted === true || isAbortError(err)) {
+        // A cancelled read is not an I/O failure — surface it as the run-wide abort, not read_file_failed.
+        throw new InterpolationError('aborted', `\`read_file\` was aborted`, {
+          location: ref.raw,
+          cause: err,
+        });
+      }
       // The authored path / host error (which may carry an absolute path) stays on `cause` for logs;
       // the user-facing message names only the reference, never the path value.
       throw new InterpolationError('read_file_failed', `\`read_file\` could not read the file`, {
@@ -141,4 +148,9 @@ function filterType(
   return new InterpolationError('filter_type', `filter \`${name}\` expects ${expected}`, {
     location: ref.raw,
   });
+}
+
+/** Whether a thrown value is a standard cancellation (`AbortError` from a host reader honoring a signal). */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
 }

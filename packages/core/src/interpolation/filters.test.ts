@@ -29,13 +29,17 @@ describe('filterFn — registry lookup safety', () => {
   it.each(['toString', 'constructor', '__proto__', 'valueOf', 'hasOwnProperty', 'isPrototypeOf'])(
     'rejects the inherited registry member %j as unknown_filter (no prototype invocation)',
     (name) => {
+      let thrown: unknown;
       try {
         runFilter(name, 'v');
-        throw new Error('expected an unknown_filter throw');
       } catch (err) {
-        expect(err).toBeInstanceOf(InterpolationError);
-        expect((err as InterpolationError).code).toBe('unknown_filter');
+        thrown = err;
       }
+      expect(thrown).toBeInstanceOf(InterpolationError);
+      if (!(thrown instanceof InterpolationError)) {
+        throw new Error('expected an InterpolationError');
+      }
+      expect(thrown.code).toBe('unknown_filter');
     },
   );
 
@@ -115,5 +119,27 @@ describe('read_file filter', () => {
     await expect(runFilter('read_file', 'a.ts')).rejects.toMatchObject({
       code: 'read_file_unavailable',
     });
+  });
+
+  it('classifies a host AbortError as `aborted`, not `read_file_failed`', async () => {
+    const abortErr = new Error('cancelled');
+    abortErr.name = 'AbortError';
+    await expect(
+      runFilter('read_file', 'a.ts', [], {
+        readFile: () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'aborted' });
+  });
+
+  it('classifies a non-abort host error as `read_file_failed`', async () => {
+    await expect(
+      runFilter('read_file', 'a.ts', [], {
+        readFile: () => {
+          throw new Error('ENOENT');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'read_file_failed' });
   });
 });

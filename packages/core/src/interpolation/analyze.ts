@@ -90,70 +90,62 @@ export function analyzePreRunReferences(workflow: Workflow): readonly WorkflowIs
   return issues;
 }
 
-/**
- * Compute the taint sets in **linear** time. Each pre-run field (an `input` default or a `context`
- * value) is parsed for its references exactly once; a secret source (a `secret`-typed input, or a
- * field reading `{{secrets.*}}`) seeds a worklist, and taint propagates along reverse-dependency edges
- * (target symbol → the fields that read it) until the queue drains — O(symbols + references), with no
- * per-round re-parsing. This is deliberately not a rescan-to-fixpoint loop: that was O(N²) over the
- * entry count and let a small reversed-laundering-chain YAML stall the synchronous parse gate.
- */
-function computeTaint(spec: Workflow['workflow']): TaintSets {
-  // `tainted` maps a symbol id (`inputs.<name>` / `ctx.<key>`) to its deeper "via" (a source = undefined).
-  const tainted = new Map<string, string | undefined>();
-  const dependents = new Map<string, string[]>(); // target symbol → fields that read it
-  const queue: string[] = [];
+/** Mutable graph state for the linear taint pass: tainted symbols, reverse edges, and the worklist. */
+interface TaintGraph {
+  readonly tainted: Map<string, string | undefined>; // symbol id (`inputs.<n>`/`ctx.<k>`) → deeper "via"
+  readonly dependents: Map<string, string[]>; // target symbol → the fields that read it
+  readonly queue: string[];
+}
 
-  const seed = (id: string, via: string | undefined): void => {
-    if (!tainted.has(id)) {
-      tainted.set(id, via);
-      queue.push(id);
-    }
-  };
-  const addEdge = (target: string, dependent: string): void => {
-    const list = dependents.get(target);
-    if (list === undefined) {
-      dependents.set(target, [dependent]);
-    } else {
-      list.push(dependent);
-    }
-  };
-  const scan = (id: string, text: string | undefined): void => {
-    if (text === undefined) {
-      return;
-    }
-    for (const ref of templateReferences(text)) {
-      if (ref.kind === 'secrets') {
-        seed(id, `secrets.${ref.identifier}`); // reads a secret store directly → a source
-      } else if (ref.kind === 'inputs') {
-        addEdge(`inputs.${ref.identifier}`, id);
-      } else if (ref.kind === 'ctx') {
-        addEdge(`ctx.${ref.identifier}`, id);
-      }
-    }
-  };
-
-  for (const input of spec.inputs ?? []) {
-    if (input.type === 'secret') {
-      seed(`inputs.${input.name}`, undefined); // a source secret — no deeper "via"
-    }
-    scan(`inputs.${input.name}`, typeof input.default === 'string' ? input.default : undefined);
+/** Mark a symbol tainted (idempotent) and enqueue it for propagation. */
+function seedTaint(graph: TaintGraph, id: string, via: string | undefined): void {
+  if (!graph.tainted.has(id)) {
+    graph.tainted.set(id, via);
+    graph.queue.push(id);
   }
-  for (const entry of spec.context ?? []) {
-    scan(`ctx.${entry.key}`, entry.value);
-  }
+}
 
-  // Propagate: tainting a target taints every field that reads it (via = the target). Each edge once.
-  while (queue.length > 0) {
-    const target = queue.pop();
+/** Record that `dependent` reads `target`, so tainting `target` later taints `dependent`. */
+function addEdge(graph: TaintGraph, target: string, dependent: string): void {
+  const list = graph.dependents.get(target);
+  if (list === undefined) {
+    graph.dependents.set(target, [dependent]);
+  } else {
+    list.push(dependent);
+  }
+}
+
+/** Scan one pre-run field's references: a `secrets.*` read seeds it; an inputs/ctx read adds an edge. */
+function scanField(graph: TaintGraph, id: string, text: string | undefined): void {
+  if (text === undefined) {
+    return;
+  }
+  for (const ref of templateReferences(text)) {
+    if (ref.kind === 'secrets') {
+      seedTaint(graph, id, `secrets.${ref.identifier}`); // reads a secret store directly → a source
+    } else if (ref.kind === 'inputs') {
+      addEdge(graph, `inputs.${ref.identifier}`, id);
+    } else if (ref.kind === 'ctx') {
+      addEdge(graph, `ctx.${ref.identifier}`, id);
+    }
+  }
+}
+
+/** Drain the worklist: tainting a target taints every field that reads it (via = the target). */
+function propagateTaint(graph: TaintGraph): void {
+  while (graph.queue.length > 0) {
+    const target = graph.queue.pop();
     if (target === undefined) {
       break;
     }
-    for (const dependent of dependents.get(target) ?? []) {
-      seed(dependent, target);
+    for (const dependent of graph.dependents.get(target) ?? []) {
+      seedTaint(graph, dependent, target);
     }
   }
+}
 
+/** Split the flat `symbol → via` map back into the per-namespace taint sets the leak check reads. */
+function projectTaint(tainted: ReadonlyMap<string, string | undefined>): TaintSets {
   const inputs = new Map<string, string | undefined>();
   const ctx = new Map<string, string | undefined>();
   for (const [id, via] of tainted) {
@@ -164,6 +156,30 @@ function computeTaint(spec: Workflow['workflow']): TaintSets {
     }
   }
   return { inputs, ctx };
+}
+
+/**
+ * Compute the taint sets in **linear** time. Each pre-run field (an `input` default or a `context`
+ * value) is parsed for its references exactly once; a secret source (a `secret`-typed input, or a
+ * field reading `{{secrets.*}}`) seeds a worklist, and taint propagates along reverse-dependency edges
+ * until the queue drains — O(symbols + references), with no per-round re-parsing. Deliberately not a
+ * rescan-to-fixpoint loop: that was O(N²) over the entry count and let a small reversed-laundering
+ * chain YAML stall the synchronous parse gate.
+ */
+function computeTaint(spec: Workflow['workflow']): TaintSets {
+  const graph: TaintGraph = { tainted: new Map(), dependents: new Map(), queue: [] };
+  for (const input of spec.inputs ?? []) {
+    if (input.type === 'secret') {
+      seedTaint(graph, `inputs.${input.name}`, undefined); // a source secret — no deeper "via"
+    }
+    const fallback = typeof input.default === 'string' ? input.default : undefined;
+    scanField(graph, `inputs.${input.name}`, fallback);
+  }
+  for (const entry of spec.context ?? []) {
+    scanField(graph, `ctx.${entry.key}`, entry.value);
+  }
+  propagateTaint(graph);
+  return projectTaint(graph.tainted);
 }
 
 /** The tainted symbol a reference reads, or `undefined` if it is clean. Names only — never a value. */

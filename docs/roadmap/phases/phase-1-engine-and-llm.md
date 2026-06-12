@@ -505,7 +505,8 @@ of every node, so it is sequenced before 1.M/1.O/1.P.) It is distinct from the J
 
 **Tasks:**
 - Evaluate `{{ … }}` against the run scope — `inputs`, `ctx`, `run.outputs` (keyed by node id), `secrets` —
-  with the pipe-filter registry (`| read_file`, `| json`, `| length`, `| default`, …) per
+  with the pipe-filter registry (`| read_file`, `| json`, `| length`, `| default("…")` — the
+  argument-taking fallback applied when the value is missing, …) per
   [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
 - **Eager-once, immutable cached context:** a node's inputs are resolved once into a frozen snapshot, so a
   re-run/replay is deterministic (aligned with the checkpoint + idempotency model, 1.R).
@@ -613,10 +614,11 @@ Executes a single agent node end-to-end against `@relavium/llm`.
   string, dropping provenance, so a field that drew on `read_file` / `run.outputs` (untrusted) must
   be carried as untrusted into a `user`/`tool` position by this layer, never `system`.
 - **Re-apply secret taint when populating `run.outputs`** (ADR-0029(c) follow-up): the 1.L2
-  parse-time gate covers only the authored `{{ … }}` template graph; a `secret`-typed input
-  surfaced *verbatim* via an `input` node's output (or any node output derived from a secret) would
-  otherwise be referenceable as `{{run.outputs["…"]}}` past the parse gate. The run loop must mark
-  such outputs tainted (or refuse to surface a raw secret as a node output).
+  parse-time gate covers only the authored `{{ … }}` template graph. Any node output derived from a
+  `secret` — e.g. a `secret`-typed input surfaced *verbatim* via an `input` node's output — **must be
+  marked tainted when it is placed into `run.outputs`**, so a later `{{run.outputs["…"]}}` reference
+  into agent/human text is rejected the same way an authored secret reference is. The parse-time gate
+  remains responsible only for the authored template graph.
 
 **Acceptance:** an agent node with a tool streams tokens, performs a tool round-trip,
 emits a correct `cost:updated`, and completes with `node:completed`; a forced

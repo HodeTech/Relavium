@@ -330,7 +330,7 @@ workflow:
   edges: []`);
     const ctx = await resolveContext(wf, {});
     expect(Object.hasOwn(ctx, '__proto__')).toBe(true);
-    expect(ctx['__proto__']).toBe('safe');
+    expect(Reflect.get(ctx, '__proto__')).toBe('safe'); // read via Reflect (the literal accessor is deprecated)
   });
 
   it('a backward context reference is unresolved at runtime (single-pass declared order)', async () => {
@@ -397,9 +397,10 @@ workflow:
 
     const aborted = new AbortController();
     aborted.abort();
+    // The rejection must be the cancellation discriminant, not a generic read failure.
     await expect(
       resolveContext(wf, { path: 'x.ts' }, { readFile: (p) => `FILE(${p})` }, aborted.signal),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: 'aborted' });
   });
 
   it('re-resolves a read_file context identically (determinism across the impurity seam)', async () => {
