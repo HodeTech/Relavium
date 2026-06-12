@@ -3,7 +3,7 @@
  * the first `createExpressionSandbox()` is a genuine cold start (wasm instantiation). It measures
  * cold-start, per-eval latency, and per-eval RSS, logs them for the record, and soft-asserts generous
  * regression ceilings — the QuickJS-wasm *choice* is settled (this is an implementation gate, not a
- * decision gate). The numbers confirm the v1.0 caps (100ms timeout) sit far above legitimate cost.
+ * decision gate). The numbers confirm the v1.0 caps (1000ms timeout) sit far above legitimate cost.
  */
 import { describe, expect, it } from 'vitest';
 

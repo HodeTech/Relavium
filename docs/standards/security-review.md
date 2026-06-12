@@ -242,8 +242,10 @@ security invariants** a review must confirm are:
   / the Node `vm` module are **never used as the sandbox** (none is a boundary).
 - **The wasm VM is the boundary; deny-by-default capabilities.** The VM runs on an isolated wasm heap
   with no host reference reachable (zero host functions injected). Only the audited pure allow-list
-  exists; `Date`, `Math.random`, `Promise`/async, `performance`, `crypto`, `Proxy`/`Reflect`, and all
-  I/O are absent. The `Eval` intrinsic stays on (quickjs `evalCode` needs it), so `eval`/`Function`
+  exists; `Date`, `Math.random`, `Promise`/async, `performance`, `crypto`, `Proxy`, `WeakRef`, `Intl`,
+  and all I/O are absent (the pure reflective globals `BaseObjects` ships — `Reflect`/`Symbol`/`WeakMap`
+  — are present but deterministic and host-unreachable). The `Eval` intrinsic stays on (quickjs
+  `evalCode` needs it), so `eval`/`Function`
   exist *inside* the VM but are contained — they reach no host reference and no forbidden capability,
   so they are harmless; the guarantee rests on the isolation + capability removal, not on deleting
   every reflective handle to `Function`.

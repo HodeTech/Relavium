@@ -339,3 +339,203 @@ describe('limits', () => {
     expect(error.reason).toBe('timeout');
   });
 });
+
+describe('classification keys on type, not author-controlled message text', () => {
+  it.each([
+    ['Error("…interrupted…")', '(function () { throw new Error("the job was interrupted"); })()'],
+    ['Error("…stack overflow…")', '(function () { throw new Error("stack overflow happened"); })()'],
+    ['RangeError("…out of memory…")', '(function () { throw new RangeError("we ran out of memory"); })()'],
+    ['Error("…string too long…")', '(function () { throw new Error("the string too long anyway"); })()'],
+  ])('a thrown %s is a fatal runtime error, never a retryable timeout', (_label, expr) => {
+    const error = evalError({ kind: 'condition', expression: expr, scope: mkScope() });
+    expect(error.reason).toBe('runtime');
+    expect(error.retryable).toBe(false);
+  });
+
+  it('the genuine wall-clock interrupt is the only retryable failure', () => {
+    expect(
+      evalError({
+        kind: 'condition',
+        expression: '(function () { while (true) {} })()',
+        scope: mkScope(),
+        limits: { timeoutMs: 20, memoryBytes: 16 * 1024 * 1024, stackBytes: 256 * 1024 },
+      }).retryable,
+    ).toBe(true);
+  });
+});
+
+describe('a pathologically deep value is a clean SandboxError, never a raw host throw', () => {
+  function deepObject(depth: number): Record<string, unknown> {
+    const root: Record<string, unknown> = {};
+    let cur = root;
+    for (let i = 0; i < depth; i++) {
+      const next: Record<string, unknown> = {};
+      cur['n'] = next;
+      cur = next;
+    }
+    return root;
+  }
+
+  it('a deeply-nested scope value is rejected as a SandboxError (not a host RangeError)', () => {
+    const error = evalError({
+      kind: 'condition',
+      expression: 'true',
+      scope: mkScope({ outputs: { deep: deepObject(20_000) } }),
+    });
+    expect(error).toBeInstanceOf(SandboxError);
+    expect(error.reason).toBe('scope');
+  });
+});
+
+describe('result serialization', () => {
+  it('a transform returning a top-level BigInt is rejected as non-serializable', () => {
+    expect(
+      evalError({ kind: 'transform', expression: '2n ** 64n', scope: mkScope() }).reason,
+    ).toBe('non_serializable');
+  });
+
+  // Map/Set→{} and NaN/Infinity→null are standard JSON.stringify semantics (documented in the spec
+  // author guidance), so these pin the intentional lossy coercion rather than reject it.
+  it('a Map result serializes to {} (JSON semantics)', () => {
+    expect(
+      sandbox.evaluate({ kind: 'transform', expression: 'new Map([["a", 1]])', scope: mkScope() }),
+    ).toEqual({});
+  });
+
+  it('NaN/Infinity coerce to null (JSON semantics)', () => {
+    expect(
+      sandbox.evaluate({
+        kind: 'transform',
+        expression: '({ x: 0 / 0, y: 1 / 0, z: 5 })',
+        scope: mkScope(),
+      }),
+    ).toEqual({ x: null, y: null, z: 5 });
+  });
+});
+
+describe('determinism over scope ordering', () => {
+  it('a sorted iteration is identical for equal-but-reordered run.outputs', () => {
+    const expression = 'Object.keys(run.outputs).sort().join(",")';
+    const first = sandbox.evaluate({
+      kind: 'condition',
+      expression,
+      scope: mkScope({ outputs: { b: 1, a: 2, c: 3 } }),
+    });
+    const second = sandbox.evaluate({
+      kind: 'condition',
+      expression,
+      scope: mkScope({ outputs: { c: 3, a: 2, b: 1 } }),
+    });
+    expect(first).toBe(second);
+    expect(first).toBe('a,b,c');
+  });
+
+  it('an unsorted iteration follows insertion order (the pinned contract)', () => {
+    expect(
+      sandbox.evaluate({
+        kind: 'condition',
+        expression: 'Object.keys(run.outputs).join(",")',
+        scope: mkScope({ outputs: { b: 1, a: 2 } }),
+      }),
+    ).toBe('b,a');
+  });
+
+  it('merge_fn sees branches in static array order regardless of value', () => {
+    expect(
+      sandbox.evaluate({
+        kind: 'merge_fn',
+        expression: 'branches.map(function (b) { return b.id; }).join(",")',
+        scope: mkScope({ branches: [{ id: 'x' }, { id: 'y' }, { id: 'z' }] }),
+      }),
+    ).toBe('x,y,z');
+  });
+});
+
+describe('prototype-pollution containment (deep + cross-eval)', () => {
+  it('a nested/deep __proto__ in untrusted scope cannot pollute the prototype chain', () => {
+    const deepEvil = JSON.parse('{"a":{"b":{"__proto__":{"polluted":1}}}}') as Record<string, unknown>;
+    expect(
+      sandbox.evaluate({
+        kind: 'condition',
+        expression: '({}).polluted === undefined && Object.prototype.polluted === undefined',
+        scope: mkScope({ outputs: { x: deepEvil } }),
+      }),
+    ).toBe(true);
+  });
+
+  it('a within-eval prototype write does not leak to a separate evaluation', () => {
+    // Within one evaluation the prototype is NOT frozen — the write succeeds but is contained by the
+    // fresh runtime+context; a SEPARATE evaluation sees a clean prototype.
+    sandbox.evaluate({
+      kind: 'transform',
+      expression: '(function () { ({}).constructor.prototype.leaked = 1; return {}; })()',
+      scope: mkScope(),
+    });
+    expect(
+      sandbox.evaluate({
+        kind: 'condition',
+        expression: 'Object.prototype.leaked === undefined',
+        scope: mkScope(),
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('the VM surface matches the documented allow-list', () => {
+  it.each(['Reflect', 'Symbol', 'WeakMap', 'WeakSet', 'Map', 'Set', 'JSON', 'RegExp', 'Math'])(
+    '%s is present',
+    (name) => {
+      expect(
+        sandbox.evaluate({
+          kind: 'condition',
+          expression: `typeof ${name} !== "undefined"`,
+          scope: mkScope(),
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    'Date',
+    'Promise',
+    'Proxy',
+    'WeakRef',
+    'FinalizationRegistry',
+    'Intl',
+    'setTimeout',
+    'performance',
+    'crypto',
+    'fetch',
+    'process',
+    'require',
+  ])('%s is absent', (name) => {
+    expect(
+      sandbox.evaluate({ kind: 'condition', expression: `typeof ${name}`, scope: mkScope() }),
+    ).toBe('undefined');
+  });
+
+  it('Math is frozen — Math.random cannot be re-added inside an expression', () => {
+    expect(
+      evalError({
+        kind: 'condition',
+        expression: '(function () { Math.random = function () { return 0.5; }; return Math.random(); })()',
+        scope: mkScope(),
+      }).reason,
+    ).toBe('runtime');
+    expect(
+      sandbox.evaluate({ kind: 'condition', expression: 'typeof Math.random', scope: mkScope() }),
+    ).toBe('undefined');
+  });
+});
+
+describe('error serialization safety', () => {
+  it('a serialized SandboxError does not leak detail (non-enumerable)', () => {
+    const error = evalError({
+      kind: 'condition',
+      expression: '(function () { throw inputs.token; })()',
+      scope: mkScope({ inputs: { token: 'SENSITIVE-XYZ' } }),
+    });
+    expect(error.detail).toContain('SENSITIVE-XYZ'); // readable by an explicit logger
+    expect(JSON.stringify(error)).not.toContain('SENSITIVE-XYZ'); // but not via naive serialization
+  });
+});

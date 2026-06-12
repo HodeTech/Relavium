@@ -124,10 +124,11 @@ into the VM as **plain JSON data**: the host `JSON.stringify`s `inputs`/`ctx`/`r
 `branches` for `merge_fn`); the VM `JSON.parse`s it — **no live host object, getter, or function ever
 crosses the boundary.** `JSON.parse` materializes a `__proto__` key as an own data property (never the
 prototype setter), so an attacker-shaped `{"__proto__":…}` arriving via model/tool-derived
-`run.outputs` cannot poison the prototype chain. Each binding is installed on the VM global as a
-**non-writable, non-configurable** property over a deep-frozen value. v1.0 injects **zero custom host
-functions** — only the built-in pure objects; any future host function requires its own ADR amendment
-with a no-`this`, JSON-serializable-return-only boundary.
+`run.outputs` cannot poison the prototype chain. Each binding is exposed to the expression as an
+immutable, deep-frozen value (Implementation note, 2026-06-12: realized as `const` **lexical** bindings
+inside a strict-mode IIFE — equivalent immutability, never installed on the VM global). v1.0 injects
+**zero custom host functions** — only the built-in pure objects; any future host function requires its
+own ADR amendment with a no-`this`, JSON-serializable-return-only boundary.
 
 **4. Determinism catalog + the wall-clock/idempotency resolution.** The guarantee is restated
 precisely: **for an expression that completes within its resource caps, the result is a pure function
@@ -140,8 +141,12 @@ caps (timeout, memory, stack) are **non-idempotent safety nets, never a result**
 surfaces as the error path (item 6), never as a stable boolean/value. A *successful* evaluation stays
 reproducible across checkpoint/resume; a cap-trip re-executes under the node retry budget (1.S).
 
-**5. Resource-cap defaults (fixed in v1.0).** Per evaluation: **1000 ms** wall-clock timeout, **16 MB**
-heap (`setMemoryLimit`), **256 KB** stack (`setMaxStackSize`). The wasm module is instantiated **once**
+**5. Resource-cap defaults (fixed in v1.0).** Per evaluation: **1000 ms** wall-clock timeout (Implementation
+correction, 2026-06-12: an earlier draft said 100 ms; raised to 1000 ms because 100 ms spuriously trips a
+trivial eval when the host deschedules the process mid-call — a timeout is the one retryable failure, so a
+tight cap only manufactures needless node retries), **16 MB** heap and **256 KB** stack (both via the
+`newRuntime({ memoryLimitBytes, maxStackSizeBytes })` options, not the named setters). The wasm module is
+instantiated **once**
 per engine instance; **each evaluation gets a fresh runtime + context, disposed after** — full
 isolation between expressions, and OOM-safe (a tripped runtime is discarded, not reused). Caps are
 **fixed engine constants** in v1.0 (expressions are small and infrequent; configurability is a future

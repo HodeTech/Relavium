@@ -247,8 +247,9 @@ export type SandboxErrorReason =
  * member `sandbox_error`. The user-facing `message` is a fixed, generic, secret-free string per
  * `reason` — it never echoes the expression source, a variable name, a scope value, or a host stack.
  * Any raw diagnostic (the quickjs `dump()` of the thrown value) is kept on the internal-only
- * {@link detail} for logs, and an `AbortSignal`/host `cause` on the standard `cause` — neither is the
- * user message. Callers narrow on {@link reason} / {@link retryable}, never on `message`.
+ * {@link detail} for logs, and a host `cause` on the standard `cause` — neither is the user message.
+ * Both are **non-enumerable** (like a thrown error's `cause`), so a naive `JSON.stringify(err)` /
+ * spread cannot leak them. Callers narrow on {@link reason} / {@link retryable}, never on `message`.
  */
 export class SandboxError extends Error {
   /** The closed-enum run `ErrorCode` this maps to (sse-event-schema.md). */
@@ -270,7 +271,14 @@ export class SandboxError extends Error {
     this.reason = reason;
     this.retryable = reason === 'timeout';
     if (opts?.detail !== undefined) {
-      this.detail = opts.detail;
+      // Non-enumerable so it does not ride JSON.stringify(err)/spread (matching `cause`'s precedent) —
+      // a structural guard for the documented internal-only, secret-free contract, not just a comment.
+      Object.defineProperty(this, 'detail', {
+        value: opts.detail,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
     }
   }
 }

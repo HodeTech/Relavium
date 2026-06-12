@@ -64,18 +64,22 @@ removed before the expression runs). Available to an expression:
 | Available | Notes |
 |-----------|-------|
 | `Object`, `Array`, `String`, `Number`, `Boolean` | constructors + their pure prototype methods |
-| `Math` | **without `Math.random`** — the sandbox deletes the `Math.random` own property before the expression runs (no intrinsic flag omits a single `Math` method); calling it throws → `sandbox_error` |
+| `Math` | **without `Math.random`** — the sandbox deletes the `Math.random` own property and **freezes `Math`** before the expression runs (no intrinsic flag omits a single `Math` method); calling or re-adding `random` throws → `sandbox_error` |
 | `JSON` | `parse` / `stringify` |
-| `Map`, `Set` | deterministic; insertion-ordered |
+| `Map`, `Set`, `WeakMap`, `WeakSet` | `Map`/`Set` deterministic + insertion-ordered |
 | `RegExp` | deterministic (catastrophic backtracking is bounded by the wall-clock cap) |
+| `Reflect`, `Symbol` | pure, deterministic, and host-unreachable — present but harmless |
+| `BigInt` | present, but a top-level BigInt **result** is rejected as non-serializable (JSON has no BigInt) |
 | `parseInt`, `parseFloat`, `isNaN`, `isFinite` | global numeric helpers |
 
 **Forbidden — not present in the context:** `Date`, `Math.random`, `Promise` / `async` / `await` /
 `queueMicrotask` (evaluation is synchronous — pending jobs are never run), `setTimeout` /
-`setInterval`, `performance`, `crypto`, `Proxy` / `Reflect`, `WeakRef` / `FinalizationRegistry`,
-`import` / `require` / `process`, and any ambient I/O (`fetch`, filesystem, network). No custom host
-function is injected in v1.0 — only the built-in pure objects above (an interpolation filter such as
-`read_file` is a templating-engine concern, **not** part of this sandbox).
+`setInterval`, `performance`, `crypto`, `Proxy`, `WeakRef` / `FinalizationRegistry`, `Intl`,
+`import` / `require` / `process`, and any ambient I/O (`fetch`, filesystem, network). (The pure
+reflective globals `BaseObjects` ships — `Reflect`, `Symbol`, `WeakMap`, `WeakSet` — *are* present;
+they are deterministic and reach nothing.) No custom host function is injected in v1.0 — only the
+built-in pure objects above (an interpolation filter such as `read_file` is a templating-engine
+concern, **not** part of this sandbox).
 
 > **`eval` / `Function` are present but contained — the wasm VM is the boundary, not their absence.**
 > quickjs `evalCode` requires the `Eval` intrinsic to compile, so it stays enabled and `eval` / the
@@ -106,6 +110,17 @@ as the error path, never as a stable value.
   Locale-sensitive operations (`toLocaleString`, `Intl`, locale collation) are **discouraged**: avoid
   them in expressions whose result feeds a branch or persisted output.
 - Use `Number.isNaN(x)` and `Object.is(x, y)` for `NaN` / `-0` checks; `x === NaN` is always `false`.
+- **`run.outputs` iteration follows host insertion order** (and integer-like keys reorder ascending, per
+  ES). The sandbox is a pure function of the scope object, so reproducibility across checkpoint/resume
+  depends on the engine (1.O) building `run.outputs` in a **canonical** (node-id-sorted / declaration)
+  order — the same obligation `merge_fn`'s `branches` already meets. Sort keys explicitly for an
+  order-independent merge.
+
+> **Cancellation (v1.0).** `evaluate` is **synchronous** and a real expression runs ~1 ms, so a run
+> `CANCEL` is bounded by the wall-clock cap rather than threaded as an `AbortSignal`. Threading a
+> signal into the sandbox is deferred to when 1.P/1.N wire it into the run loop; at that point a
+> cancel must be a **distinct fatal reason** checked *before* the timeout path (a deliberate cancel is
+> never a retryable timeout).
 
 ## Resource caps
 
@@ -116,8 +131,8 @@ tripped runtime is discarded, never reused).
 | Cap | Default (v1.0) | Enforced by | On trip |
 |-----|----------------|-------------|---------|
 | Wall-clock timeout | **1000 ms** | `setInterruptHandler(shouldInterruptAfterDeadline(…))`, started **after** runtime/context construction (it bounds execution, not cold setup) | `sandbox_error` — **retryable** (non-idempotent safety net) |
-| Heap memory | **16 MB** | `runtime.setMemoryLimit(bytes)` | `sandbox_error` — **fatal** |
-| Stack size | **256 KB** | `runtime.setMaxStackSize(bytes)` | `sandbox_error` — **fatal** |
+| Heap memory | **16 MB** | `module.newRuntime({ memoryLimitBytes })` | `sandbox_error` — **fatal** |
+| Stack size | **256 KB** | `module.newRuntime({ maxStackSizeBytes })` | `sandbox_error` — **fatal** |
 
 The caps are **fixed engine constants** in v1.0 — expressions are small and infrequent relative to LLM
 calls, so a trip signals a bug or a DoS attempt, not normal variation. The 1.AB perf spike measured a
@@ -131,9 +146,15 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 
 | Node | Required result | Violation |
 |------|-----------------|-----------|
-| `condition` | a `boolean` \| `string` \| `number`, compared to each `when` by strict `===` (no coercion) | a result outside that set, or no `when` match and no `default` → fatal `sandbox_error` ("no branch matched") |
-| `transform` | a JSON-serializable value per `target_key` | a non-serializable result (function, circular, `undefined` top-level) → fatal `sandbox_error` |
+| `condition` | a `boolean` \| `string` \| `number`, compared to each `when` by strict `===` (no coercion) | a result outside that set → fatal `sandbox_error` (`result_type`). *(No-`when`-match-and-no-`default` is the **1.P condition handler's** concern when it applies the result — not the sandbox.)* |
+| `transform` | a JSON-serializable value per `target_key` | a function, symbol, top-level `undefined`, top-level **`BigInt`**, or circular result → fatal `sandbox_error` (`non_serializable`) |
 | `merge_fn` | a JSON-serializable object | as `transform` |
+
+> **Lossy JSON coercion (author guidance).** A `transform`/`merge_fn` result is taken as
+> JSON-serializable, so standard `JSON.stringify` lossy cases apply: `Map`/`Set` → `{}`,
+> `NaN`/`Infinity`/`-Infinity` → `null`, `-0` → `0`. These **pass** validation (they *are*
+> JSON-serializable) but lose information — return plain JSON values to avoid surprise. A top-level
+> `BigInt`, by contrast, is **rejected** (`JSON.stringify` throws on it — it is not serializable).
 
 ## Error taxonomy
 
@@ -142,19 +163,23 @@ Every sandbox failure surfaces as the closed `ErrorCode` member **`sandbox_error
 `node:failed` / `run:failed` events with a user-safe message and an internal correlation id. The
 retryable/fatal split (owned by [error-handling.md](../../standards/error-handling.md)) is:
 
-| Cause | `dump()` surface (quickjs) | Classification | Rationale |
-|-------|----------------------------|----------------|-----------|
-| Syntax error (invalid JS) | `{ name: "SyntaxError", … }` | **fatal** | deterministic — retry repeats it |
-| Runtime error (`ReferenceError`/`TypeError`: undefined var, bad property, `Math.random` call) | `{ name, message, … }` | **fatal** | deterministic |
-| Non-conforming result (bad `condition` type, non-serializable `transform`/`merge_fn`) | host-side validation | **fatal** | deterministic |
-| Memory cap / stack overflow | `InternalError`-class string (exact text implementation-dependent) | **fatal** | deterministic resource blow-up = author bug |
-| Wall-clock timeout (interrupt) | `InternalError`-class string (`"interrupted"`) | **retryable** | non-idempotent — may pass on re-execution; bounded by the node retry budget (1.S) |
+| Cause | `dump()` surface (quickjs) | `reason` | Classification |
+|-------|----------------------------|----------|----------------|
+| Syntax error (invalid JS) | object `{ name: "SyntaxError" }` | `syntax` | **fatal** — deterministic |
+| Runtime error (`ReferenceError`/`TypeError`/a thrown `Error`: undefined var, bad property, `Math.random` call) | object `{ name, message }` | `runtime` | **fatal** — deterministic |
+| Non-conforming result (bad `condition` type; non-serializable `transform`/`merge_fn`) | host-side validation | `result_type` / `non_serializable` | **fatal** — deterministic |
+| Memory / resource limit (out of memory, string too long) | object `{ name: "InternalError" }` | `memory` | **fatal** |
+| Stack overflow | object `{ name: "InternalError", message: "stack overflow" }` | `stack` | **fatal** |
+| Injected scope not serializable (engine/caller fault, before VM eval) | host-side `JSON.stringify` throw, or a too-deep scope | `scope` | **fatal** |
+| Wall-clock timeout (the genuine interrupt) | `{ name: "InternalError", message: "interrupted" }` **and** the host deadline passed | `timeout` | **retryable** — non-idempotent; bounded by the node retry budget (1.S) |
 
-> The exact `dump()` strings are **illustrative, not a stable public API** — an OOM on a tripped runtime
-> may instead surface as `"RuntimeError: memory access out of bounds"`. The sandbox classifies by
-> **category** (interrupt vs OOM/stack vs a thrown error *object* carrying `name`), not by string match;
-> the 1.AB perf spike records the exact strings the pinned variant emits. The classification column holds
-> regardless of the literal.
+> **Classification is by error `name` + the host-side deadline — never an author-controlled message.**
+> The only retryable reason, `timeout`, requires BOTH the engine-emitted `InternalError: interrupted`
+> marker AND the host deadline having passed; a user can forge neither in combination (running long
+> enough to pass the deadline trips the real interrupt first, and anything thrown earlier has
+> `deadlinePassed === false`). So a thrown `Error("…interrupted…")` is a fatal `runtime`, and a
+> deterministic error that merely outlasts the deadline is fatal, not retryable. The exact quickjs
+> strings are implementation-dependent; the perf spike records what the pinned variant emits.
 
 **Message scrubbing (binding).** The user-facing `sandbox_error` message is the code plus a generic,
 secret-free string — it **never** echoes the expression source, a variable name, a scope value, an
@@ -174,13 +199,17 @@ keyed by the correlation id. This mirrors the `LlmError`-message discipline in
   cannot reach a host reference. `JSON.parse` installs a `__proto__` key as an **own data property**
   (never the prototype setter), so an attacker-shaped `{"__proto__":…}` arriving via model/tool-derived
   `run.outputs` cannot poison the prototype chain.
-- **Immutable global.** Each binding (`inputs`, `ctx`, `run`, and `branches` for `merge_fn`) is
-  installed on the VM global as a non-writable, non-configurable property over a deep-frozen value.
+- **Immutable, lexically-bound scope.** The parsed scope is **deep-frozen** (recursive `Object.freeze`)
+  and exposed as `const` lexical bindings (`inputs`, `ctx`, `run`, and `branches` for `merge_fn`) inside
+  a strict-mode IIFE — it is never installed on the VM global, and a write to a binding throws. A
+  pathologically deep scope is rejected (`scope`) before injection (it would overflow the host stack
+  inside `evalCode`).
 - **Fresh context per evaluation.** A new runtime + context is created and disposed for each
   evaluation, so two expressions cannot observe or corrupt each other (no state bleed), and an OOM
   discards only that runtime.
-- **Handle hygiene.** Every VM handle is released (`Scope` / `using` / `dispose`); a leaked handle
-  aborts the runtime on disposal, so the sandbox treats a leak as a bug, not a warning.
+- **Handle hygiene.** Every VM handle is released via explicit `dispose()`; a leaked handle aborts the
+  runtime on disposal, so the sandbox treats a leak as a bug — surfaced as a `sandbox_error` on the
+  success path — not a silent warning.
 
 ## Instantiation (platform purity)
 
