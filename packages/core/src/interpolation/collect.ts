@@ -31,21 +31,53 @@ export interface ReferenceSite {
 // checked against the kebab-id regex (or at minimum `nonEmptyString`) by the Zod schema before
 // reaching this function.  A raw, unvalidated string can never appear here.
 // If the schema ever relaxes those constraints, add a SAFE_LABEL guard here in the same change.
+
+type WorkflowNode = Workflow['workflow']['nodes'][number];
+
+/** Build a ReferenceSite for `text` if it contains at least one interpolation reference. */
+function buildSite(location: string, text: string): ReferenceSite | undefined {
+  const segments = parseTemplate(text);
+  const references: InterpolationReference[] = [];
+  for (const segment of segments) {
+    if (segment.kind === 'reference') {
+      references.push(segment.reference);
+    }
+  }
+  return references.length > 0 ? { location, segments, references } : undefined;
+}
+
+/** Collect reference sites from template fields on a single workflow node. */
+function collectNodeSites(node: WorkflowNode): ReferenceSite[] {
+  const sites: ReferenceSite[] = [];
+  if (node.type === 'agent') {
+    if (node.prompt_template !== undefined) {
+      const site = buildSite(`node \`${node.id}\`.prompt_template`, node.prompt_template);
+      if (site !== undefined) sites.push(site);
+    }
+    if (node.system_prompt_append !== undefined) {
+      const site = buildSite(`node \`${node.id}\`.system_prompt_append`, node.system_prompt_append);
+      if (site !== undefined) sites.push(site);
+    }
+  } else if (node.type === 'human_gate') {
+    if (node.assignee !== undefined) {
+      const site = buildSite(`node \`${node.id}\`.assignee`, node.assignee);
+      if (site !== undefined) sites.push(site);
+    }
+    if (node.message_template !== undefined) {
+      const site = buildSite(`node \`${node.id}\`.message_template`, node.message_template);
+      if (site !== undefined) sites.push(site);
+    }
+  }
+  return sites;
+}
+
 export function collectReferences(workflow: Workflow): readonly ReferenceSite[] {
   const sites: ReferenceSite[] = [];
   const spec = workflow.workflow;
 
-  const visit = (location: string, text: string): void => {
-    const segments = parseTemplate(text);
-    const references: InterpolationReference[] = [];
-    for (const segment of segments) {
-      if (segment.kind === 'reference') {
-        references.push(segment.reference);
-      }
-    }
-    if (references.length > 0) {
-      sites.push({ location, segments, references });
-    }
+  const push = (location: string, text: string): void => {
+    const site = buildSite(location, text);
+    if (site !== undefined) sites.push(site);
   };
 
   // TODO(1.M): workflow-yaml-spec.md §Context-and-interpolation forbids `{{run.outputs[...]}}` in
@@ -56,34 +88,20 @@ export function collectReferences(workflow: Workflow): readonly ReferenceSite[] 
   // output is collected with kind:'node' and will be caught by the DAG builder when it finds no
   // satisfying edge for it. See the pinned test in parser.test.ts ("permits a context value …").
   for (const entry of spec.context ?? []) {
-    visit(`context \`${entry.key}\`.value`, entry.value);
+    push(`context \`${entry.key}\`.value`, entry.value);
   }
   for (const input of spec.inputs ?? []) {
     if (typeof input.default === 'string') {
-      visit(`input \`${input.name}\`.default`, input.default);
+      push(`input \`${input.name}\`.default`, input.default);
     }
   }
   for (const agent of spec.agents ?? []) {
     if (!('$ref' in agent)) {
-      visit(`agent \`${agent.id}\`.system_prompt`, agent.system_prompt);
+      push(`agent \`${agent.id}\`.system_prompt`, agent.system_prompt);
     }
   }
   for (const node of spec.nodes) {
-    if (node.type === 'agent') {
-      if (node.prompt_template !== undefined) {
-        visit(`node \`${node.id}\`.prompt_template`, node.prompt_template);
-      }
-      if (node.system_prompt_append !== undefined) {
-        visit(`node \`${node.id}\`.system_prompt_append`, node.system_prompt_append);
-      }
-    } else if (node.type === 'human_gate') {
-      if (node.assignee !== undefined) {
-        visit(`node \`${node.id}\`.assignee`, node.assignee);
-      }
-      if (node.message_template !== undefined) {
-        visit(`node \`${node.id}\`.message_template`, node.message_template);
-      }
-    }
+    sites.push(...collectNodeSites(node));
   }
   return sites;
 }

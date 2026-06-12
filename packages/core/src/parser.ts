@@ -42,7 +42,7 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
   if (yamlText.length > MAX_SOURCE_CHARS) {
     throw new WorkflowSyntaxError(
       `the source exceeds the ${MAX_SOURCE_CHARS}-character parse limit`,
-      source !== undefined ? { source } : undefined,
+      source === undefined ? undefined : { source },
     );
   }
 
@@ -72,7 +72,7 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
     const issues = result.error.issues.map((issue) => describeIssue(issue, raw));
     // No `cause`: the raw ZodError can carry an authored `received` value (an enum/literal/discriminator)
     // and `cause` is publicly reachable — the curated, secret-free `issues` are the diagnostic surface.
-    throw new WorkflowValidationError(issues, source !== undefined ? { source } : undefined);
+    throw new WorkflowValidationError(issues, source === undefined ? undefined : { source });
   }
   return result.data;
 }
@@ -91,8 +91,8 @@ function syntaxErrorFrom(
     const posOffset = err.pos[0];
     const pos = posOffset >= 0 ? lineCounter.linePos(posOffset) : undefined;
     return new WorkflowSyntaxError(err.message, {
-      ...(source !== undefined ? { source } : {}),
-      ...(pos !== undefined ? { line: pos.line, column: pos.col } : {}),
+      ...(source === undefined ? {} : { source }),
+      ...(pos === undefined ? {} : { line: pos.line, column: pos.col }),
       cause: err,
     });
   }
@@ -100,12 +100,12 @@ function syntaxErrorFrom(
     // `maxAliasCount: 0` makes the resolver throw a plain `ReferenceError` (no position) on any
     // anchor/alias use — surface a clear, source-free message rather than the generic fallback.
     return new WorkflowSyntaxError('anchors and aliases are not supported', {
-      ...(source !== undefined ? { source } : {}),
+      ...(source === undefined ? {} : { source }),
       cause: err,
     });
   }
   return new WorkflowSyntaxError('the file is not valid YAML', {
-    ...(source !== undefined ? { source } : {}),
+    ...(source === undefined ? {} : { source }),
     cause: err,
   });
 }
@@ -198,9 +198,15 @@ function messageFor(issue: ZodIssue): string {
         .map((key) => `\`${key}\``)
         .join(', ')}`;
     case 'invalid_enum_value':
-      return `invalid value — expected one of: ${issue.options.map((o) => String(o)).join(', ')}`;
+      return `invalid value — expected one of: ${issue.options.map(String).join(', ')}`;
     case 'invalid_union_discriminator':
-      return `expected one of: ${issue.options.map((o) => String(o)).join(', ')}`;
+      return `expected one of: ${issue.options.map(String).join(', ')}`;
+    case 'invalid_string':
+    case 'too_small':
+    case 'too_big':
+      // Zod's built-in messages for these codes are purely structural (constraint metadata, not the
+      // authored value), so they are safe to surface directly.
+      return issue.message;
     case 'custom':
       // All @relavium/shared superRefines emit structural-only messages — see the comment above.
       return issue.message;

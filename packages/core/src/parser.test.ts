@@ -215,8 +215,8 @@ describe('parseWorkflow — malformed (each fails with a field-named, secret-fre
     let thrown: unknown;
     try {
       parseWorkflow(`schema_version: '1.0'\nworkflow:\n  id: "unterminated`);
-    } catch (caught) {
-      thrown = caught;
+    } catch (error_) {
+      thrown = error_;
     }
     expect(thrown).toBeInstanceOf(WorkflowSyntaxError);
     const err = thrown as WorkflowSyntaxError;
@@ -259,8 +259,8 @@ describe('parseWorkflow — hardened decode (ADR-0035)', () => {
       parseWorkflow(
         `schema_version: '1.0'\nworkflow: &w\n  id: w\n  self: *w\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
       );
-    } catch (caught) {
-      thrown = caught;
+    } catch (error_) {
+      thrown = error_;
     }
     expect(thrown).toBeInstanceOf(WorkflowSyntaxError);
     expect((thrown as WorkflowSyntaxError).message).toMatch(/anchors and aliases/);
@@ -270,8 +270,8 @@ describe('parseWorkflow — hardened decode (ADR-0035)', () => {
     let thrown: unknown;
     try {
       parseWorkflow('a'.repeat(2 * 1024 * 1024 + 1));
-    } catch (caught) {
-      thrown = caught;
+    } catch (error_) {
+      thrown = error_;
     }
     expect(thrown).toBeInstanceOf(WorkflowSyntaxError);
     expect((thrown as WorkflowSyntaxError).code).toBe('invalid_yaml');
@@ -365,8 +365,8 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
     let thrown: unknown;
     try {
       parseWorkflow(`workflow:\n  id: "x`, { source: 'f.yaml' });
-    } catch (caught) {
-      thrown = caught;
+    } catch (error_) {
+      thrown = error_;
     }
     expect(thrown).toBeInstanceOf(WorkflowSyntaxError);
     expect((thrown as WorkflowSyntaxError).source).toBe('f.yaml');
@@ -376,8 +376,8 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
     let thrown: unknown;
     try {
       parseWorkflow('a'.repeat(2 * 1024 * 1024 + 1), { source: 'big.yaml' });
-    } catch (caught) {
-      thrown = caught;
+    } catch (error_) {
+      thrown = error_;
     }
     expect((thrown as WorkflowSyntaxError).source).toBe('big.yaml');
   });

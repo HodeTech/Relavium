@@ -7,7 +7,7 @@ the Bun API. The most important package.
 The whole package is the platform-free zone: `tsconfig.json` sets `types: []`, so a stray
 `process`/`Buffer`/`node:*` is a type error (CLAUDE.md rule 5,
 [ADR-0011](../../docs/decisions/0011-internal-llm-abstraction.md)). Runtime dependencies are
-confined to `@relavium/shared`, `@relavium/llm`, `zod`, and the pure-JS `yaml` loader
+confined to `@relavium/shared`, `zod`, and the pure-JS `yaml` loader
 ([ADR-0035](../../docs/decisions/0035-yaml-parser-dependency.md)) — enforced by the engine-deps
 guard (`tools/engine-deps/check.mjs`).
 

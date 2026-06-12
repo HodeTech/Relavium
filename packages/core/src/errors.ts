@@ -74,6 +74,7 @@ function summarize(issues: readonly WorkflowIssue[]): string {
     return 'workflow validation failed';
   }
   const rest = issues.length - 1;
-  const more = rest > 0 ? ` (and ${rest} more issue${rest === 1 ? '' : 's'})` : '';
+  const suffix = rest === 1 ? '' : 's';
+  const more = rest > 0 ? ` (and ${rest} more issue${suffix})` : '';
   return `${first.field}: ${first.message}${more}`;
 }

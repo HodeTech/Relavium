@@ -9,7 +9,7 @@ import {
 
 /** Narrow a segment to its reference, failing the test if it is a literal. */
 function refOf(segment: TemplateSegment | undefined): InterpolationReference {
-  if (segment === undefined || segment.kind !== 'reference') {
+  if (segment?.kind !== 'reference') {
     throw new Error('expected a reference segment');
   }
   return segment.reference;

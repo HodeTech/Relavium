@@ -119,7 +119,7 @@ function findClose(text: string, from: number): number {
       } else if (ch === quote) {
         quote = undefined;
       }
-    } else if (ch === '"' || ch === "'") {
+    } else if (isQuoteChar(ch)) {
       quote = ch;
     } else if (ch === '[' || ch === '(') {
       depth += 1;
@@ -140,8 +140,11 @@ function parseReference(inner: string, raw: string): InterpolationReference {
   return { kind, identifier, path, filters, raw };
 }
 
-const NODE_OUTPUT = /^run\.outputs\[\s*(['"])([\s\S]*?)\1\s*\]([\s\S]*)$/;
-const NAMESPACED = /^(inputs|ctx|secrets)\.([A-Za-z0-9_-]+)([\s\S]*)$/;
+// The `s` (dotAll) flag replaces `[\s\S]` throughout — avoids the character-class alternation that
+// Sonar flags as a potential super-linear backtracking risk. Inputs are bounded by the 2 MiB parse
+// cap, but dotAll is simpler and faster regardless.
+const NODE_OUTPUT = /^run\.outputs\[\s*(['"])([^'"]*?)\1\s*\](.*)$/s;
+const NAMESPACED = /^(inputs|ctx|secrets)\.([A-Za-z0-9_-]+)(.*)$/s;
 
 function parseHead(head: string): Pick<InterpolationReference, 'kind' | 'identifier' | 'path'> {
   const nodeMatch = NODE_OUTPUT.exec(head);
@@ -156,7 +159,7 @@ function parseHead(head: string): Pick<InterpolationReference, 'kind' | 'identif
   return { kind: 'unknown', identifier: head, path: '' };
 }
 
-const FILTER = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([\s\S]*)\))?$/;
+const FILTER = /^([A-Za-z_]\w*)\s*(?:\((.*)\))?$/s;
 
 function parseFilter(part: string): PipeFilter {
   const trimmed = part.trim();
@@ -200,6 +203,11 @@ function parseArg(piece: string): FilterArg | undefined {
   return { type: 'string', value: trimmed };
 }
 
+/** Returns true for the two quote characters that delimit filter string arguments. */
+function isQuoteChar(ch: string | undefined): boolean {
+  return ch === '"' || ch === "'";
+}
+
 /**
  * Split `s` on top-level occurrences of `delim`, ignoring delimiters inside quotes or `[]`/`()`.
  * Keeps `default("a|b")` and `run.outputs["x|y"]` intact when splitting on `|`.
@@ -225,7 +233,7 @@ function splitTopLevel(s: string, delim: string): string[] {
       }
       continue;
     }
-    if (ch === '"' || ch === "'") {
+    if (isQuoteChar(ch)) {
       quote = ch;
       buf += ch;
     } else if (ch === '[' || ch === '(') {
