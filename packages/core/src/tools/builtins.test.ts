@@ -1,0 +1,149 @@
+import { describe, expect, it } from 'vitest';
+
+import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
+import { ToolUnavailableError } from './errors.js';
+import type { ToolDef, ToolDispatchContext, ToolHost } from './types.js';
+
+function tool(id: string): ToolDef {
+  const found = BUILTIN_TOOLS.find((candidate) => candidate.id === id);
+  if (found === undefined) {
+    throw new Error(`no built-in tool: ${id}`);
+  }
+  return found;
+}
+
+function fullHost(): ToolHost {
+  return {
+    fs: {
+      readFile: (path) => Promise.resolve({ content: `c:${path}`, mimeType: 'text/plain', sizeBytes: 1, lastModified: 't' }),
+      writeFile: (path, data) => Promise.resolve({ path, bytesWritten: data.length }),
+      listDirectory: () => Promise.resolve({ entries: [{ name: 'a', type: 'file', sizeBytes: 1, lastModified: 't' }] }),
+    },
+    process: { spawn: () => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }) },
+    egress: { fetch: () => Promise.resolve({ status: 200, headers: {}, body: '{}' }) },
+    os: { readClipboard: () => Promise.resolve('clip'), notify: () => Promise.resolve() },
+    mcp: { call: () => Promise.resolve({ ok: true }) },
+    outputStore: { spill: (text) => Promise.resolve({ ref: 'spill://1', byteLength: text.length }) },
+  };
+}
+
+const ctx: ToolDispatchContext = {
+  nodeId: 'n',
+  grantedToolIds: new Set(BUILTIN_TOOL_IDS),
+  config: {},
+  toolPolicy: {},
+  fsScope: 'sandboxed',
+  gateApproved: true,
+};
+
+// `requireX` throws synchronously inside the dispatch arrow (the registry catches it in its
+// `try { await dispatch() }`), so a thunk-wrapper is needed to surface it as a rejection in tests.
+async function rejection(thunk: () => unknown): Promise<unknown> {
+  try {
+    await thunk();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the dispatch to fail, but it succeeded');
+}
+
+interface ToolCase {
+  readonly id: string;
+  readonly args: unknown;
+  readonly cap?: string;
+}
+
+// One representative valid call per tool (covers each dispatch arrow + its `?? []`/`?? {}` branches).
+const CASES: readonly ToolCase[] = [
+  { id: 'read_file', args: { path: 'a', glob: true }, cap: 'fs' },
+  { id: 'write_file', args: { path: 'a', content: 'x', append: true, createDirs: true }, cap: 'fs' },
+  { id: 'list_directory', args: { path: 'a', recursive: true, glob: '*.ts' }, cap: 'fs' },
+  { id: 'run_command', args: { command: 'ls', args: ['-l'], cwd: '/w', timeoutMs: 5, env: { X: '1' } }, cap: 'process' },
+  { id: 'git_status', args: { command: 'log', args: ['--oneline'] }, cap: 'process' },
+  { id: 'git_commit', args: { message: 'm', files: ['a.ts'] }, cap: 'process' },
+  { id: 'http_request', args: { method: 'POST', url: 'https://x', headers: { a: 'b' }, body: '{}' }, cap: 'egress' },
+  { id: 'web_search', args: { query: 'q', endpoint: 'https://s', credentialRef: 'r' }, cap: 'egress' },
+  { id: 'mcp_call', args: { server: 's', tool: 't', args: { a: 1 } }, cap: 'mcp' },
+  { id: 'read_clipboard', args: {}, cap: 'os' },
+  { id: 'notify', args: { title: 't', body: 'b' }, cap: 'os' },
+];
+
+describe('built-in catalog', () => {
+  it('registers 12 unique built-ins, all sourced "builtin"', () => {
+    expect(BUILTIN_TOOLS).toHaveLength(12);
+    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(12);
+    expect(BUILTIN_TOOLS.every((candidate) => candidate.source === 'builtin')).toBe(true);
+  });
+
+  it('never exposes a config-only param in the LLM-visible schema', () => {
+    for (const candidate of BUILTIN_TOOLS) {
+      const props = (candidate.llmVisibleParams['properties'] ?? {}) as Record<string, unknown>;
+      for (const configOnly of candidate.configOnlyParams ?? []) {
+        expect(props).not.toHaveProperty(configOnly);
+      }
+    }
+  });
+});
+
+describe('built-in dispatch', () => {
+  it.each(CASES)('$id dispatches through the host capability', async ({ id, args }) => {
+    const target = tool(id);
+    const result = await target.dispatch(target.parseArgs(args), fullHost(), ctx);
+    expect(result).toBeDefined();
+  });
+
+  it.each(CASES.filter((toolCase): toolCase is ToolCase & { cap: string } => toolCase.cap !== undefined))(
+    '$id fails with a typed ToolUnavailableError when the $cap capability is absent',
+    async ({ id, args, cap }) => {
+      const target = tool(id);
+      const err = await rejection(() => target.dispatch(target.parseArgs(args), {}, ctx));
+      expect(err).toBeInstanceOf(ToolUnavailableError);
+      expect(err).toMatchObject({ capability: cap });
+    },
+  );
+
+  it('invoke_agent delegates to ctx.invokeAgent and fails typed without it', async () => {
+    const target = tool('invoke_agent');
+    const out = await target.dispatch(target.parseArgs({ nodeId: 'n2', input: 1 }), {}, {
+      ...ctx,
+      invokeAgent: (nodeId) => Promise.resolve({ ranNode: nodeId }),
+    });
+    expect(out).toEqual({ ranNode: 'n2' });
+    const err = await rejection(() => target.dispatch(target.parseArgs({ nodeId: 'n2' }), {}, ctx));
+    expect(err).toBeInstanceOf(ToolUnavailableError);
+  });
+
+  it('notify acknowledges delivery', async () => {
+    const target = tool('notify');
+    expect(await target.dispatch(target.parseArgs({ title: 't', body: 'b' }), fullHost(), ctx)).toEqual({ delivered: true });
+  });
+});
+
+describe('built-in policy targets', () => {
+  it('run_command resolves the full command string for the allowlist', () => {
+    const target = tool('run_command');
+    expect(target.policyTarget?.(target.parseArgs({ command: 'npm', args: ['run', 'build'] }))).toEqual({
+      command: 'npm run build',
+    });
+  });
+
+  it('http_request exposes its url as the egress policy target', () => {
+    const target = tool('http_request');
+    expect(target.policyTarget?.(target.parseArgs({ url: 'https://x/y' }))).toEqual({ url: 'https://x/y' });
+  });
+
+  it('a pre-approved git_status has no policy target', () => {
+    expect(tool('git_status').policyTarget).toBeUndefined();
+  });
+});
+
+describe('built-in arg validation', () => {
+  it('rejects an unknown key (strict)', () => {
+    expect(() => tool('read_file').parseArgs({ path: 'a', surprise: 1 })).toThrow();
+  });
+
+  it('rejects a missing required field', () => {
+    expect(() => tool('git_commit').parseArgs({})).toThrow();
+    expect(() => tool('mcp_call').parseArgs({ server: 's' })).toThrow();
+  });
+});
