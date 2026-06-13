@@ -195,7 +195,7 @@ export type SessionEvent =
   | SessionExportedEvent;     // 'session:exported'  — { workflowPath } (chat-to-workflow export)
 ```
 
-A turn that fails (provider error, rate limit, cancellation) still emits `session:turn_completed` with an `error?: { code, message, retryable }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy as run events — so a surface can render the failure rather than a silent stall.
+A turn that fails (provider error, rate limit, cancellation) still emits `session:turn_completed` with an `error?: { code, message, retryable, correlationId? }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy and secret-free correlation id as run events (ADR-0036) — so a surface can render the failure rather than a silent stall.
 
 Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)). So the **complete typed event stream for a session** is the five `session:*` lifecycle events (the `SessionEvent` union above) **plus** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` carrying `sessionId` — this full set is exactly what `relavium chat --json` emits.
 

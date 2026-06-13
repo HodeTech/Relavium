@@ -117,4 +117,30 @@ describe('RunEventBus — delivery and subscription', () => {
     expect(onListenerError).toHaveBeenCalledTimes(1);
     expect(onListenerError).toHaveBeenCalledWith(expect.any(Error), event);
   });
+
+  it('with no sink: isolates a throwing subscriber and surfaces the error out-of-band, not swallowed', async () => {
+    const bus = new RunEventBus({ now: fakeNow() }); // no onListenerError → the #surfaceOutOfBand path
+    const sibling: RunEvent[] = [];
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    // Capture the deferred re-throw so it does not escape as a process-level unhandled rejection.
+    process.on('unhandledRejection', onRejection);
+    try {
+      const boom = new Error('subscriber boom');
+      bus.subscribe(() => {
+        throw boom;
+      });
+      bus.subscribe((event) => sibling.push(event));
+      // deliver() must NOT throw into the producer, and the sibling still receives the event.
+      expect(() => bus.emit(nodeStarted('run-1', 'a'))).not.toThrow();
+      expect(sibling).toHaveLength(1);
+      // Flush microtasks (a macrotask tick) so the deferred re-throw becomes the rejection we captured.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rejections).toContain(boom); // surfaced, not silently swallowed
+    } finally {
+      process.removeListener('unhandledRejection', onRejection);
+    }
+  });
 });

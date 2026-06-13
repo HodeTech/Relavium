@@ -143,6 +143,8 @@ class RunExecution {
   #scheduling = false;
   #rerun = false;
   #pauseEpisode = false;
+  /** Serializes event DELIVERY by sequenceNumber so an async store can't deliver events out of order. */
+  #deliveryTail: Promise<void> = Promise.resolve();
   #startEpochMs = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
@@ -717,27 +719,42 @@ class RunExecution {
     // **non-terminal** event we additionally fail the run (we must never report progress the durable
     // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
     // the durable record on restart.
+    //
+    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. `#bus.next` assigns the
+    // seq synchronously in call order, and #emitDurable is invoked synchronously at the top of each
+    // settle path before any await — so chaining each deliver onto a single per-run #deliveryTail makes
+    // a higher-seq event wait for the lower-seq event's deliver. Persists stay concurrent; only delivery
+    // is serialized. Without this, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud)
+    // could resolve out of order — delivering a later node:completed (or the terminal) first, closing
+    // the stream, and dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore
+    // resolves synchronously, which masks it; the seam exists precisely so an async store plugs in.
     const event = this.#bus.next(draft);
-    try {
-      await this.#host.store.persistEvent(event);
-    } catch {
-      if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
-        this.#failure = {
-          error: {
-            code: 'internal',
-            message: 'a durable run-event write failed',
-            retryable: false,
-          },
-        };
-        this.#abort.abort();
-        // Re-enter the scheduler so the run actually settles. Most callers re-schedule after
-        // #emitDurable (begin/resume) or via #onOutcome's unconditional #schedule, but #emitPausedOnce
-        // (the run:paused path) returns straight to #step's bare `return` — without this, a gate-pause
-        // persist failure would set #failure yet never reach #settle, re-creating the zombie run.
-        this.#schedule();
+    const prior = this.#deliveryTail;
+    const settled = (async (): Promise<void> => {
+      try {
+        await this.#host.store.persistEvent(event);
+      } catch {
+        if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
+          this.#failure = {
+            error: {
+              code: 'internal',
+              message: 'a durable run-event write failed',
+              retryable: false,
+            },
+          };
+          this.#abort.abort();
+          // Re-enter the scheduler so the run actually settles. Most callers re-schedule after
+          // #emitDurable (begin/resume) or via #onOutcome's unconditional #schedule, but #emitPausedOnce
+          // (the run:paused path) returns straight to #step's bare `return` — without this, a gate-pause
+          // persist failure would set #failure yet never reach #settle, re-creating the zombie run.
+          this.#schedule();
+        }
       }
-    }
-    this.#bus.deliver(event);
+      await prior; // deliver in seq order: the lower-seq event's deliver must land first
+      this.#bus.deliver(event);
+    })();
+    this.#deliveryTail = settled.catch(() => undefined);
+    await settled;
   }
 
   #elapsedMs(): number {

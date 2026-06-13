@@ -34,6 +34,13 @@ describe('boundForModel', () => {
     expect(bounded.summary).toContain('ok');
   });
 
+  it('summary collapses whitespace and caps at 500 chars + an ellipsis marker', async () => {
+    const bounded = await boundForModel('a   b\n\n  c'.padEnd(2000, ' x'), BIG, host());
+    expect(bounded.summary.length).toBeLessThanOrEqual(501); // SUMMARY_MAX (500) + '…'
+    expect(bounded.summary).not.toMatch(/\s\s/); // whitespace runs collapsed to single spaces
+    expect(bounded.summary.endsWith('…')).toBe(true); // capped → ellipsis marker, never the raw full text
+  });
+
   it('truncates an over-byte result and spills via the output store', async () => {
     const spill = vi.fn((text: string) =>
       Promise.resolve({ ref: 'spill://abc', byteLength: text.length }),

@@ -110,6 +110,57 @@ describe('InMemoryRunStore', () => {
     expect(interrupted[0]?.runId).toBe('r1');
     expect(interrupted[0]?.resumable).toBe(false); // mid-execution crash, not parked at a gate
   });
+
+  it('reports a run parked at a suspension event as interrupted (resumable: true)', async () => {
+    // Pin every RESUMABLE_LAST_TYPES member directly against the store — incl. run:paused / budget:paused
+    // that the engine path does not seed in these tests.
+    const at = '2026-06-13T00:00:00.000Z';
+    const lastEvents: RunEvent[] = [
+      {
+        type: 'human_gate:paused',
+        runId: 'r1',
+        timestamp: at,
+        sequenceNumber: 1,
+        nodeId: 'g',
+        gateId: 'gid',
+        gateType: 'approval',
+        message: 'approve?',
+      },
+      {
+        type: 'run:paused',
+        runId: 'r1',
+        timestamp: at,
+        sequenceNumber: 1,
+        pendingGateCount: 1,
+        gateIds: ['gid'],
+      },
+      {
+        type: 'budget:paused',
+        runId: 'r1',
+        timestamp: at,
+        sequenceNumber: 1,
+        spentMicrocents: 100,
+        limitMicrocents: 50,
+      },
+    ];
+    for (const last of lastEvents) {
+      const store = new InMemoryRunStore();
+      await store.persistEvent({
+        type: 'run:started',
+        runId: 'r1',
+        timestamp: at,
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000001',
+        inputs: {},
+        executionMode: 'local',
+      });
+      await store.persistEvent(last);
+      const interrupted = await store.listInterruptedRuns();
+      expect(interrupted, last.type).toHaveLength(1);
+      expect(interrupted[0]?.resumable, last.type).toBe(true);
+      expect(interrupted[0]?.lastSequenceNumber, last.type).toBe(1);
+    }
+  });
 });
 
 describe('createInMemoryHost', () => {

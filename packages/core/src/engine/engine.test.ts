@@ -265,6 +265,45 @@ describe('WorkflowEngine — cancellation', () => {
     // `done` is downstream of the cancelled node — it must never have started.
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'done')).toBe(false);
   });
+
+  it('cancel wins a racing node failure: a node that fails while cancelling ends in run:cancelled', async () => {
+    const engine = engineWith({
+      slow: (ctx) =>
+        new Promise<NodeOutcome>((resolve) => {
+          const onAbort = (): void =>
+            resolve({
+              kind: 'failed',
+              error: { code: 'tool_failed', message: 'failed during cancel', retryable: false },
+            });
+          if (ctx.signal.aborted) {
+            onAbort();
+            return;
+          }
+          ctx.signal.addEventListener('abort', onAbort);
+        }),
+    });
+    const handle = engine.start({
+      workflow: workflow(`  id: cancelfail
+  nodes:
+    - { id: start, type: input }
+    - { id: slow, type: transform, transform: 's' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: slow }
+    - { from: slow, to: done }`),
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:started' && event.nodeId === 'slow') {
+        engine.cancel(handle.runId); // abort fires; the in-flight node then settles as `failed`
+      }
+    }
+    assertGapFreeSeq(events);
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:cancelled'); // cancel wins the late failure (ADR-0036)
+    expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'done')).toBe(false);
+  });
 });
 
 // --- condition skip-propagation + fan-in over a skipped branch --------------------------------
@@ -329,6 +368,43 @@ describe('WorkflowEngine — condition skip-propagation', () => {
     expect(startedNodes).not.toContain('out'); // and everything below it
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
+
+  it('skips a multi-hop dead chain while the live sibling still joins (fixpoint convergence)', async () => {
+    // gate -> a -> b -> join (dead chain) and gate -> c -> join (live). `a`/`b` are declared in
+    // anti-topological order (b before a) so a single forward skip pass is insufficient — the
+    // #propagateSkips while(changed) loop must re-iterate to skip the whole chain.
+    const events = await drain(
+      engineWith({
+        gate: () => ({ kind: 'branch', output: 'go', selected: ['c'] }),
+      }).start({
+        workflow: workflow(`  id: deepskip
+  nodes:
+    - { id: start, type: input }
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: c }, { when: false, target_node: a }] }
+    - { id: b, type: transform, transform: 'b' }
+    - { id: a, type: transform, transform: 'a' }
+    - { id: c, type: transform, transform: 'c' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: gate }
+    - { from: a, to: b }
+    - { from: b, to: join }
+    - { from: c, to: join }
+    - { from: join, to: out }`),
+      }),
+    );
+    const startedNodes = events
+      .filter((e) => e.type === 'node:started')
+      .map((e) => (e.type === 'node:started' ? e.nodeId : ''));
+    expect(startedNodes).toContain('c');
+    expect(startedNodes).toContain('join'); // the live sibling lets the fan-in join…
+    expect(startedNodes).toContain('out');
+    expect(startedNodes).not.toContain('a'); // …while the whole dead chain a -> b is skipped
+    expect(startedNodes).not.toContain('b');
+    assertGapFreeSeq(events);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
 });
 
 // --- exactly-one-terminal-event guarantees ----------------------------------------------------
@@ -356,9 +432,10 @@ describe('WorkflowEngine — the exactly-one-terminal-event invariant', () => {
     // The user-safe message never leaks the thrown error text.
     expect(failed.error.message).not.toContain('kaboom');
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'done')).toBe(false);
+    assertGapFreeSeq(events);
   });
 
-  it('maps a classified node failure to node:failed then a single run:failed', async () => {
+  it('maps a classified node failure to node:failed (with correlationId) then a single run:failed', async () => {
     const events = await drain(
       engineWith({
         work: () => ({
@@ -367,10 +444,25 @@ describe('WorkflowEngine — the exactly-one-terminal-event invariant', () => {
         }),
       }).start({ workflow: workflow(SEQUENTIAL) }),
     );
-    expect(typesIn(events)).toContain('node:failed');
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    if (nodeFailed?.type !== 'node:failed') {
+      throw new Error('expected node:failed');
+    }
+    expect(nodeFailed.nodeId).toBe('work');
+    // The correlation id is stamped on node:failed itself (ADR-0036), not only on the run:failed aggregate.
+    expect(typeof nodeFailed.error.correlationId).toBe('string');
+    expect(nodeFailed.error.correlationId).not.toBe('');
     const terminals = terminalsIn(events);
     expect(terminals).toHaveLength(1);
-    expect(terminals[0]?.type).toBe('run:failed');
+    const failed = terminals[0];
+    if (failed?.type !== 'run:failed') {
+      throw new Error('expected run:failed');
+    }
+    // partialOutputs carries the already-completed `start`, never the failed `work` or the unreached `done`.
+    expect(Object.keys(failed.partialOutputs)).toContain('start');
+    expect(failed.partialOutputs).not.toHaveProperty('work');
+    expect(failed.partialOutputs).not.toHaveProperty('done');
+    assertGapFreeSeq(events);
   });
 });
 
@@ -639,6 +731,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     if (terminals[0]?.type === 'run:failed') {
       expect(terminals[0].error.code).toBe('internal');
     }
+    assertGapFreeSeq(events);
   });
 
   it('cancels via the handle, and a second cancel while cancelling is an idempotent no-op', async () => {
@@ -670,6 +763,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
         handle.cancel(); // idempotent — must not throw or emit a second terminal
       }
     }
+    assertGapFreeSeq(events);
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:cancelled');
   });
@@ -692,6 +786,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     );
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    assertGapFreeSeq(events);
   });
 
   it('delivers the terminal run:completed even when only the terminal durable write fails', async () => {
@@ -715,6 +810,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     );
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    assertGapFreeSeq(events);
   });
 
   it('handle.cancel() after the run terminated is an idempotent no-op (does not throw)', async () => {
@@ -760,6 +856,91 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     );
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    assertGapFreeSeq(events);
+  });
+
+  it('orders delivery by sequenceNumber under an async store whose writes resolve out of order', async () => {
+    // Regression for the gap-free/no-drop contract under an ASYNC store (1.R SQLite, cloud): with two
+    // parallel leaf nodes, the FIRST node:completed's persist is made slower than the second's. Without
+    // seq-ordered delivery, the faster (higher-seq) event — and the terminal — would land first, close
+    // the stream, and DROP the slower lower-seq event. The #deliveryTail must keep the delivered set gap-free.
+    const inner = new InMemoryRunStore();
+    let nodeCompletedSeen = 0;
+    const host: ExecutionHost = {
+      ...createInMemoryHost(),
+      store: {
+        resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
+        persistEvent: (event) => {
+          if (event.type === 'node:completed' && ['b1', 'b2'].includes(event.nodeId)) {
+            // Make the first branch's write resolve LATER than the second's (out-of-order completion).
+            const delay = ++nodeCompletedSeen === 1 ? 20 : 1;
+            return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() =>
+              inner.persistEvent(event),
+            );
+          }
+          return inner.persistEvent(event);
+        },
+        listInterruptedRuns: () => inner.listInterruptedRuns(),
+      },
+    };
+    const events = await drain(
+      new WorkflowEngine({ host, executor: new StubExecutor() }).start({
+        workflow: workflow(`  id: par2
+  max_parallel: 2
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [b1, b2] }
+    - { id: b1, type: output }
+    - { id: b2, type: output }
+  edges:
+    - { from: start, to: fan }`),
+      }),
+    );
+    assertGapFreeSeq(events); // no dropped lower-seq event despite out-of-order persist resolution
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run via the settle-time backstop when stamping a node event throws (no node:failed)', async () => {
+    // Poison exactly the work node:completed TIMESTAMP so RunEventBus.next's Zod parse throws inside
+    // #emitDurable, reaching the #onOutcome backstop (#failNodeInternal). After the work executor returns,
+    // #settleCompleted reads the clock once for durationMs (#elapsedMs) and then once for the stamp — so a
+    // 2-step countdown lands the malformed value on the stamp. The run still terminates once as
+    // run:failed{internal} and emits NO node:failed (the documented backstop deviation).
+    let countdown = 0;
+    let t = 1_700_000_000_000;
+    const host: ExecutionHost = {
+      ...createInMemoryHost(),
+      clock: {
+        now: () => {
+          if (countdown > 0) {
+            countdown -= 1;
+            if (countdown === 0) {
+              return 'not-a-timestamp';
+            }
+          }
+          return new Date(t++).toISOString();
+        },
+      },
+    };
+    const events = await drain(
+      new WorkflowEngine({
+        host,
+        executor: new StubExecutor({
+          work: () => {
+            countdown = 2; // next read = durationMs (#elapsedMs, valid); the one after = the stamp (poisoned)
+            return { kind: 'completed', output: 'w' };
+          },
+        }),
+      }).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const terminals = terminalsIn(events);
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.type).toBe('run:failed');
+    if (terminals[0]?.type === 'run:failed') {
+      expect(terminals[0].error.code).toBe('internal');
+    }
+    expect(events.some((e) => e.type === 'node:failed')).toBe(false); // backstop emits no node:failed
   });
 
   it('reconcile() skips a run whose terminal write fails and still reconciles the others', async () => {

@@ -188,6 +188,11 @@ function makePreview(text: string, limits: ToolResultLimits): string {
     tailSrc = text;
   }
   const byteBudget = Math.max(0, limits.maxBytes);
+  // The `head\n…\ntail` shape spends 3 lines; below that ceiling there's no room for a separate tail
+  // line, so emit head-only to keep the preview within maxLines.
+  if (limits.maxLines < 3) {
+    return sliceToBytes(headSrc, byteBudget, false);
+  }
   const head = sliceToBytes(headSrc, Math.floor(byteBudget * 0.7), false);
   const tail = sliceToBytes(tailSrc, Math.floor(byteBudget * 0.3), true);
   return tail === '' ? head : `${head}\n…\n${tail}`;

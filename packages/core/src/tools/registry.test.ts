@@ -118,6 +118,10 @@ describe('ToolRegistry — happy path and outcome shape', () => {
     expect(out.events.call).toEqual({ toolId: 'read_file', toolInput: { path: 'a.txt' } });
     expect(out.events.result.success).toBe(true);
     expect(out.events.result.toolId).toBe('read_file');
+    // The result event carries a bounded, non-empty summary (registry → bounding wiring), not raw/empty.
+    expect(typeof out.events.result.outputSummary).toBe('string');
+    expect(out.events.result.outputSummary.length).toBeGreaterThan(0);
+    expect(out.events.result.outputSummary).toContain('body:a.txt');
   });
 
   it('exposes has() and a sorted list() of every built-in', () => {
