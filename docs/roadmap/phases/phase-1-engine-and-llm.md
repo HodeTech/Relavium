@@ -16,8 +16,11 @@
 > (runtime resolver + pipe-filter registry) plus the parse-time transitive secret-taint gate
 > (ADR-0029(c)). **1.M (DAG builder + `RunPlan`) and 1.AB (the QuickJS-wasm expression sandbox) are
 > ✅ Done (PR #16, 2026-06-13)** — the plan layer and the deterministic `condition`/`transform`/`merge_fn`
-> evaluator. The engine lane continues at **1.N → 1.R**, converging at the **1.O** join toward
-> **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
+> evaluator. **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (built-in `ToolRegistry`) are ✅ Done
+> (PR #17, 2026-06-13)**, completing **1.m3** (parse → DAG → run loop emits the canonical event stream).
+> With 1.K, 1.N, and 1.T all landed, the engine lane converges at the **1.O `AgentRunner` join** — now
+> fully unblocked — toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature
+> — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -543,7 +546,7 @@ Turn the validated definition into an executable plan.
 fan-out/fan-in, and conditional graphs; a cyclic graph is rejected; a `parallel`
 block expands to `fan_out` + `fan_in` with the right config halves.
 
-### 1.N — `WorkflowEngine` + `RunEventBus` (the run loop) — *critical path*
+### 1.N — `WorkflowEngine` + `RunEventBus` (the run loop) — *critical path* · ✅ **Done (PR #17, 2026-06-13)**
 
 The loop that dispatches ready nodes and emits the canonical event stream.
 
@@ -730,7 +733,7 @@ correctly.
 then fails with `node:failed`; a transient failure recovers within budget; cost is
 recorded for every attempt across both layers.
 
-### 1.T — Built-in `ToolRegistry` + dispatch
+### 1.T — Built-in `ToolRegistry` + dispatch · ✅ **Done (PR #17, 2026-06-13)**
 
 The engine-side registry that dispatches built-in tools the `AgentRunner` invokes.
 
@@ -911,7 +914,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m1 | Seam frozen; first adapter + conformance harness green (Anthropic) | 1.A, 1.C, 1.E, 1.F |
 | **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR — live-nightly lane reserved/pending keys; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 ✅ | Policy layers complete: fallback runner + cost tracker (**1.B PR #7, 1.K PR #13**) | 1.B, 1.K |
-| 1.m3 | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
+| 1.m3 ✅ | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream (**all components landed — 1.N closed it, PR #17, 2026-06-13**) | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
@@ -1058,9 +1061,9 @@ flowchart LR
 | 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ — **Done (PR #14)** |
 | 1.L2 | B | 1.L | 1.M | ✅ — **Done (PR #15)** |
 | 1.M | B | 1.L2 | 1.N | ✅ — **Done (PR #16)** |
-| 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ |
+| 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ — **Done (PR #17)** |
 | 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
-| 1.T | B | 1.E | 1.O, 1.U | ⬤ |
+| 1.T | B | 1.E | 1.O, 1.U | ⬤ — **Done (PR #17)** |
 | 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P — **Done (PR #16)** |
 | 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ |
 | 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
