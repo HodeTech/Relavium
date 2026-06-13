@@ -44,7 +44,9 @@ export interface AbortControllerLike {
 /**
  * An in-house, platform-free {@link AbortControllerLike} — no ambient `AbortController`. Enough for the
  * engine and stub executors (observe `aborted`, fire `abort` listeners once); a real surface injects a
- * native controller whose signal also drives `fetch`.
+ * native controller whose signal also drives `fetch`. Matching a native `AbortSignal`, a listener
+ * registered **after** the signal has aborted never fires — a caller checks `signal.aborted` first
+ * (the pattern the engine's node executors follow).
  */
 export function createAbortController(): AbortControllerLike {
   let aborted = false;
@@ -108,7 +110,12 @@ export interface RunStore {
   listInterruptedRuns: () => Promise<readonly InterruptedRun[]>;
 }
 
-/** The injected execution-mode seam: clock + id source + persistence + abort, nothing platform-specific. */
+/**
+ * The injected execution-mode seam: clock + id source + persistence + abort, nothing platform-specific.
+ * The Phase-1 slice ships `clock.now()`; the one-shot **timer** port (for gate / run `timeout_ms`
+ * deadlines — ADR-0036 Decision 5) is added when the human gate (1.Q) and budget governor (1.AC) wire
+ * timeouts, since 1.N arms no timers.
+ */
 export interface ExecutionHost {
   readonly clock: Clock;
   readonly ids: IdSource;

@@ -60,6 +60,13 @@ interface VertexState {
 /** A vertex status counts as *settled* (its dependents can evaluate) when it is one of these. */
 const SETTLED: ReadonlySet<VertexStatus> = new Set<VertexStatus>(['completed', 'failed', 'skipped']);
 
+/** The three events that close a run — exactly one ever fires (ADR-0036). */
+const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>([
+  'run:completed',
+  'run:failed',
+  'run:cancelled',
+]);
+
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
   /** The parsed, validated workflow (the host read the file and called `parseWorkflow`). */
@@ -167,7 +174,16 @@ class RunExecution {
       params.bus,
       params.runId,
       () => {
-        this.requestCancel();
+        // The handle's cancel is a best-effort surface action (e.g. a UI button): idempotent and safe
+        // to call after the run has already terminated. The programmatic `engine.cancel(runId)` keeps
+        // the strict contract (throws `run_already_terminal` on misuse).
+        try {
+          this.requestCancel();
+        } catch (error) {
+          if (!(error instanceof EngineStateError && error.code === 'run_already_terminal')) {
+            throw error;
+          }
+        }
       },
       params.capacity,
     );
@@ -662,14 +678,28 @@ class RunExecution {
     }
   }
 
-  #emitDurable(draft: RunEventDraft): Promise<void> {
-    // Persist the boundary/terminal event BEFORE delivery (ADR-0036): the sequenceNumber is assigned by
-    // the bus (the single authoritative point) at `next`, then persisted, then delivered — so a crash
-    // between persist and delivery cannot re-run a completed node or lose its output.
+  async #emitDurable(draft: RunEventDraft): Promise<void> {
+    // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
+    // can never re-run a completed node or lose its output). This method is **total**: a store fault
+    // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
+    // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
+    // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free
+    // and guaranteeing a terminal always closes the consumer's `for await`. On a persist failure of a
+    // **non-terminal** event we additionally fail the run (we must never report progress the durable
+    // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
+    // the durable record on restart.
     const event = this.#bus.next(draft);
-    return this.#host.store.persistEvent(event).then(() => {
-      this.#bus.deliver(event);
-    });
+    try {
+      await this.#host.store.persistEvent(event);
+    } catch {
+      if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
+        this.#failure = {
+          error: { code: 'internal', message: 'a durable run-event write failed', retryable: false },
+        };
+        this.#abort.abort();
+      }
+    }
+    this.#bus.deliver(event);
   }
 
   #elapsedMs(): number {
@@ -773,6 +803,7 @@ export class WorkflowEngine {
           code: 'internal',
           message: 'the run was interrupted before completion and reconciled on restart',
           retryable: false,
+          correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
         },
         partialOutputs: {},
       });

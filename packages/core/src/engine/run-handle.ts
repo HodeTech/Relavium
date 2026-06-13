@@ -131,7 +131,11 @@ export interface RunHandle {
   readonly events: AsyncIterable<RunEvent>;
   /** Attach an additional passive observer (cost / UI); returns an idempotent unsubscribe. */
   subscribe: (listener: RunEventListener) => () => void;
-  /** Request cooperative cancellation of this run (delegates to the engine). */
+  /**
+   * Request cooperative cancellation of this run (delegates to the engine). A best-effort surface
+   * action: **idempotent and safe to call after the run has terminated** (a no-op then), unlike the
+   * strict programmatic `engine.cancel(runId)`.
+   */
   cancel: () => void;
   /** Resolves when the primary consumer's buffer has drained below capacity — the engine awaits it to throttle. */
   whenConsumersReady: () => Promise<void>;

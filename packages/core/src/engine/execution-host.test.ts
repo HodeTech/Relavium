@@ -24,6 +24,15 @@ describe('createAbortController — platform-free abort', () => {
     controller.abort();
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it('does not fire a listener registered after abort (matches native AbortSignal; check .aborted)', () => {
+    const controller = createAbortController();
+    controller.abort();
+    const lateListener = vi.fn();
+    controller.signal.addEventListener('abort', lateListener);
+    expect(lateListener).not.toHaveBeenCalled(); // a caller must check signal.aborted instead
+    expect(controller.signal.aborted).toBe(true);
+  });
 });
 
 describe('InMemoryRunStore', () => {

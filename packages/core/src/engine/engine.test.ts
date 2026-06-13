@@ -63,6 +63,11 @@ const terminalsIn = (events: readonly RunEvent[]): readonly RunEvent[] =>
   events.filter((e) => TERMINALS.has(e.type));
 const typesIn = (events: readonly RunEvent[]): readonly string[] => events.map((e) => e.type);
 
+/** Assert the delivered stream is gap-free: sequenceNumbers are the contiguous run 0..n-1. */
+function assertGapFreeSeq(events: readonly RunEvent[]): void {
+  events.forEach((event, index) => expect(event.sequenceNumber).toBe(index));
+}
+
 /** Assert a synchronous call throws an {@link EngineStateError} with the given code. */
 function expectThrowsCode(fn: () => void, code: string): void {
   try {
@@ -218,6 +223,7 @@ describe('WorkflowEngine — cancellation', () => {
     }
 
     expect(abortObserved).toBe(true); // the in-flight node actually saw the AbortSignal
+    assertGapFreeSeq(events); // the stream stays gap-free across a mid-run cancel
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:cancelled');
     // `done` is downstream of the cancelled node — it must never have started.
@@ -254,6 +260,7 @@ describe('WorkflowEngine — condition skip-propagation', () => {
     expect(startedNodes).toContain('approve');
     expect(startedNodes).not.toContain('reject'); // skipped — no node:started, no node:completed
     expect(startedNodes).toContain('join'); // the fan-in joined despite the skipped branch
+    assertGapFreeSeq(events); // skipped nodes emit nothing, so the stream stays gap-free
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 
@@ -353,6 +360,7 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     expect(paused.gateIds).toHaveLength(1);
     expect(typesIn(events)).toContain('human_gate:paused');
     expect(typesIn(events)).toContain('human_gate:resumed');
+    assertGapFreeSeq(events); // gap-free across pause + resume
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
   });
@@ -464,9 +472,14 @@ describe('WorkflowEngine — crash reconciliation', () => {
 
     const reconciled = await engine.reconcile();
     expect(reconciled).toHaveLength(1);
-    expect(reconciled[0]?.type).toBe('run:failed');
-    expect(reconciled[0]?.runId).toBe('crashed-1');
-    expect(reconciled[0]?.sequenceNumber).toBe(1); // continues from the last persisted seq (0)
+    const reconciledEvent = reconciled[0];
+    expect(reconciledEvent?.type).toBe('run:failed');
+    expect(reconciledEvent?.runId).toBe('crashed-1');
+    expect(reconciledEvent?.sequenceNumber).toBe(1); // continues from the last persisted seq (0)
+    if (reconciledEvent?.type === 'run:failed') {
+      // reconcile stamps a correlationId like every other run:failed producer
+      expect(typeof reconciledEvent.error.correlationId).toBe('string');
+    }
     const persisted = store.eventsFor('crashed-1');
     expect(persisted.some((e) => e.type === 'run:failed')).toBe(true);
   });
@@ -631,5 +644,55 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     }
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:cancelled');
+  });
+
+  it('terminates with exactly one terminal event even when EVERY durable write rejects (no zombie run)', async () => {
+    // The store-fully-unavailable case: persist-before-deliver must never strand the consumer stream.
+    // `drain` resolving (not hanging) is the no-zombie assertion; a regression here would time out.
+    const host: ExecutionHost = {
+      ...createInMemoryHost(),
+      store: {
+        resolveWorkflowId: () => Promise.resolve('00000000-0000-4000-8000-000000000001'),
+        persistEvent: () => Promise.reject(new Error('store fully unavailable')),
+        listInterruptedRuns: () => Promise.resolve([]),
+      },
+    };
+    const events = await drain(
+      new WorkflowEngine({ host, executor: new StubExecutor() }).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+  });
+
+  it('delivers the terminal run:completed even when only the terminal durable write fails', async () => {
+    // A store fault confined to the terminal write must still close the stream (reconcile repairs durability).
+    const inner = new InMemoryRunStore();
+    const host: ExecutionHost = {
+      ...createInMemoryHost(),
+      store: {
+        resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
+        persistEvent: (event) =>
+          event.type === 'run:completed'
+            ? Promise.reject(new Error('terminal write failed'))
+            : inner.persistEvent(event),
+        listInterruptedRuns: () => inner.listInterruptedRuns(),
+      },
+    };
+    const events = await drain(
+      new WorkflowEngine({ host, executor: new StubExecutor() }).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('handle.cancel() after the run terminated is an idempotent no-op (does not throw)', async () => {
+    const engine = engineWith();
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    await drain(handle);
+    expect(() => handle.cancel()).not.toThrow();
   });
 });
