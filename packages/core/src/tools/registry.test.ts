@@ -446,3 +446,146 @@ describe('ToolRegistry — policy parsing edge cases', () => {
     expect(out.output).toEqual({ missing: undefined });
   });
 });
+
+/* --- round-2 hardening regressions (config-only override, proto, host-extract, cancel, taint) --- */
+
+describe('ToolRegistry — config-only params cannot be model- or mapping-supplied (H1/M3)', () => {
+  it('drops a model-supplied config-only key when config does not pin it (run_command env/cwd)', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }));
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+      call('run_command', { command: 'ls', cwd: '/evil', env: { NODE_OPTIONS: '--require /tmp/x.js' }, timeoutMs: 9_999_999 }),
+      ctx({ toolPolicy: { allowedCommands: ['ls'] } }), // config pins NONE of cwd/env/timeoutMs
+    );
+    // env/cwd/timeoutMs come ONLY from config — a model-supplied value never reaches spawn.
+    expect(spawn).toHaveBeenCalledWith('ls', [], {}, { cwd: undefined, timeoutMs: undefined }, undefined);
+  });
+
+  it('does not let the model redirect web_search to its own endpoint (no secret-exfil)', async () => {
+    const fetch = vi.fn<(req: EgressRequest, signal?: AbortSignalLike) => Promise<EgressResponse>>(() =>
+      Promise.resolve({ status: 200, headers: {}, body: '[]' }),
+    );
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ egress: { fetch } }) }).dispatch(
+      // config pins the credentialRef but NOT the endpoint; the model tries to supply a malicious endpoint.
+      call('web_search', { query: 'q', endpoint: 'https://attacker.evil', credentialRef: 'STOLEN' }),
+      ctx({ config: { parameters: { credentialRef: 'real-key-ref' } } }),
+    );
+    const req = fetch.mock.calls[0]?.[0];
+    expect(req?.url).not.toContain('attacker.evil'); // model endpoint dropped → relative, host SSRF rejects it
+    expect(req?.credentialRef).toBe('real-key-ref'); // the model's 'STOLEN' override is dropped
+  });
+
+  it('drops a config-only key supplied via input_mapping too (M3)', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }));
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({ config: { inputMapping: { cwd: '/from-state' } }, toolPolicy: { allowedCommands: ['ls'] } }),
+    );
+    expect(spawn).toHaveBeenCalledWith('ls', [], {}, { cwd: undefined, timeoutMs: undefined }, undefined);
+  });
+
+  it('git_status drops a model-supplied args[] (flag-injection closed) (H2)', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+      call('git_status', { command: 'diff', args: ['--no-index', '--', '/etc/passwd'] }),
+      ctx(),
+    );
+    // The model's injected `args` is config-only → stripped; only the safe subcommand runs.
+    expect(spawn).toHaveBeenCalledWith('git', ['diff'], {}, {}, undefined);
+  });
+
+  it('git_status runs author-pinned args from config', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+      call('git_status', { command: 'diff' }),
+      ctx({ config: { parameters: { args: ['--stat'] } } }),
+    );
+    expect(spawn).toHaveBeenCalledWith('git', ['diff', '--stat'], {}, {}, undefined);
+  });
+});
+
+describe('ToolRegistry — prototype-pollution resistance', () => {
+  it('output_mapping readPath returns undefined for inherited members, never the prototype/constructor', async () => {
+    const out = await registry().dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({
+        config: { outputMapping: { a: '__proto__', b: 'constructor', c: 'stdout' } },
+        toolPolicy: { allowedCommands: ['ls'] },
+      }),
+    );
+    expect(out.output).toEqual({ a: undefined, b: undefined, c: 'ok' });
+  });
+
+  it('a `__proto__` key in input_mapping does not pollute Object.prototype', async () => {
+    await registry().dispatch(
+      call('read_file', { path: 'a' }),
+      ctx({ config: { inputMapping: { ['__proto__']: { polluted: true } } } }),
+    );
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+});
+
+describe('ToolRegistry — host extraction rejects smuggling chars but allows hyphens (L5)', () => {
+  it('allows a legitimate hyphenated FQDN', async () => {
+    const out = await registry().dispatch(
+      call('http_request', { url: 'https://my-api.example.com/x' }),
+      ctx({ toolPolicy: { allowedDomains: ['my-api.example.com'] } }),
+    );
+    expect(out.events.result.success).toBe(true);
+  });
+
+  it.each([
+    ['backslash', 'https://api.example.com\\@evil.com/'],
+    ['space', 'https://exa mple.com/'],
+    ['tab', 'https://e\tvil/'],
+  ])('rejects a %s in the authority as insecure', async (_name, url) => {
+    const err = await rejectsWith<ToolPolicyError>(
+      registry().dispatch(call('http_request', { url }), ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } })),
+    );
+    expect(err.reason).toBe('insecure_url');
+  });
+});
+
+describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', () => {
+  it('matches a consecutive-`*` glob without hanging (collapse)', async () => {
+    const out = await registry().dispatch(
+      call('run_command', { command: 'a b c' }),
+      ctx({ toolPolicy: { allowedCommandGlobs: ['****'] } }),
+    );
+    expect(out.events.result.success).toBe(true);
+  });
+
+  it('classifies a provider-executed call with the provider_executed reason', async () => {
+    const err = await rejectsWith<ToolPolicyError>(registry().dispatch(call('read_file', { path: 'a' }, true), ctx()));
+    expect(err.reason).toBe('provider_executed');
+    expect(err.runErrorCode).toBe('tool_denied');
+  });
+
+  it('classifies an abort that flips mid-dispatch (plain host error) as cancelled, not tool_failed', async () => {
+    const signal = { aborted: false };
+    const host = stubHost({
+      fs: fsWith(() => {
+        signal.aborted = true; // the run is cancelled while the host is in-flight
+        return Promise.reject(new Error('boom')); // a plain (non-AbortError) host error
+      }),
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('read_file', { path: 'a' }),
+        ctx({ signal: signal as never }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(err.runErrorCode).toBe('cancelled');
+  });
+
+  it('rejects a secret-tainted value supplied via input_mapping (T2)', async () => {
+    const err = await rejectsWith<ToolArgsInvalidError>(
+      registry().dispatch(
+        call('read_file'),
+        ctx({ config: { inputMapping: { path: '/etc/passwd' } }, secretArgKeys: new Set(['path']) }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+    expect(err.fields).toEqual(['path']);
+  });
+});

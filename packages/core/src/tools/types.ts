@@ -8,9 +8,13 @@
  * `ResolverCapabilities` (1.L2) and the injected HTTP transport (ADR-0018).
  */
 
-import type { AbortSignalLike, ContentPart } from '@relavium/shared';
+import type { AbortSignalLike, ContentPart, FsScopeTier } from '@relavium/shared';
 
 import type { Untrusted } from './untrusted.js';
+
+// Re-export the canonical FS scope tier (`'sandboxed' | 'project' | 'full'`, constants.ts) rather than
+// redefining it — the engine binds `ToolDispatchContext.fsScope` to the shared source of truth.
+export type { FsScopeTier };
 
 /** A canonical, engine-executed tool-call content part (the `provider_executed` arm is never dispatched). */
 export type ToolCallPart = Extract<ContentPart, { type: 'tool_call' }>;
@@ -235,7 +239,6 @@ export interface ToolDispatchContext {
   readonly signal?: AbortSignalLike;
 }
 
-export type FsScopeTier = 'sandboxed' | 'project-scoped' | 'full';
 
 export interface ToolDef<Args = unknown, Result = unknown> {
   readonly id: ToolId;

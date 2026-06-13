@@ -49,6 +49,16 @@ interface ToolDef<Args = unknown, Result = unknown> {
   readonly policy: ToolPolicyClass;
 
   /**
+   * Where this tool's guardrail target lives in the effective args, so the registry enforces the
+   * allowlist generically: a `spawnsProcess` tool returns the resolved `command` string the
+   * `allowedCommands` allowlist matches; an `http` egress tool returns the `url`. Omitted ⇒ no target
+   * (the generic allowlist check is skipped — e.g. a pre-approved `git_status` or an `os`/delegate tool).
+   * SECURITY: a `spawnsProcess` / `egress:'http'` tool that omits this has its allowlist check silently
+   * skipped (fail-open) — supply it, or pin the model-controlled args as config-only.
+   */
+  readonly policyTarget?: (args: Args) => PolicyTarget; // { command?: string; url?: string }
+
+  /**
    * Pure dispatcher: validated+merged effective args in, the FULL result out. Performs side effects
    * ONLY via `host`; never imports `node:*`/`fetch`. Threads `ctx.signal` (cooperative cancel). The
    * model-facing bounding (built-in-tools.md) is applied by the pipeline AFTER `output_mapping`, never
@@ -146,7 +156,7 @@ host is touched once, in the middle.
 4. **Enforce the guardrail policy on the EFFECTIVE args** (the resolved command / URL is now the real value): exact `allowedCommands` (+ opt-in `allowedCommandGlobs`, deny-all-empty); per egress kind (table below); `git_commit` refused unless `ctx.gateApproved`. A denial → `ToolPolicyError` → **before any host call**.
 5. **Call the host capability** (the single side effect), threading `ctx.signal`. Absent capability → `ToolUnavailableError`; an `AbortSignal`-origin failure → the **cancellation** path (`cancelled`, never `tool_failed` — preserves ADR-0036 cancel precedence); any other host throw → `ToolExecutionError`.
 6. **Apply `output_mapping` to the FULL result** → workflow state gets the real value, never the bounded preview.
-7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the (streamed) result via `ctx.limits` + the host `outputStore` — the full bytes are never buffered in the engine.
+7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
 > **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are first returned to the agent loop (1.O) as a correctable `isError` `tool_result` so the model can fix its call; they escalate to a node `ErrorCode` only if the loop gives up. A `ToolPolicyError` is structurally fatal and never loop-retried.
@@ -157,10 +167,14 @@ interface ToolDispatchContext {
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
   readonly config: ToolNodeConfig;        // resolved tool_config/agent_config block: configOnly VALUES + input/output_mapping (node-types.md)
   readonly toolPolicy: ToolPolicy;         // resolved allowedCommands/-Globs/-Domains (@relavium/shared)
-  readonly fsScope: FsScopeTier;           // sandboxed | project-scoped | full (built-in-tools.md)
+  readonly fsScope: FsScopeTier;           // 'sandboxed' | 'project' | 'full' (the @relavium/shared source of truth)
   readonly gateApproved: boolean;          // a human-gate decision is present for this dispatch (1.Q)
-  readonly invokeAgent: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate
-  readonly limits: ToolResultLimits;       // the result-bounding ceilings (built-in-tools.md)
+  // The effective-arg keys whose resolved value is secret-tainted (ADR-0029(c)); the registry rejects
+  // any present one from tool args (re-applying the parse-time taint gate on the effective set). 1.O/1.V
+  // produces this; absent ⇒ no taint check (no producer yet).
+  readonly secretArgKeys?: ReadonlySet<string>;
+  readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
+  readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
   readonly signal?: AbortSignalLike;
 }
 ```
@@ -185,7 +199,7 @@ The canonical guardrail home is [security-review.md §Sandbox-and-tool-policy](.
 | `mcp_call` (egress `mcp`) | configured MCP **server** URL (not `allowedDomains`); secrets injected host-side | `mcp` transport runs the same SSRF primitive (0029(d); 2.R) |
 | `git_commit` | refused unless `ctx.gateApproved` (human-gate, 1.Q) in an automated workflow | `process.spawn` |
 | node `tools:` narrowing | already parser-enforced (narrow-only, 0029(b)/[ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)) | — |
-| secret args | `secret`-typed values reach only credential/header fields, rejected at parse from tool text (transitive taint, 0029(c)); re-checked on the effective set (step 3) | host attaches a resolved `credentialRef` inside its trust boundary |
+| secret args | `secret`-typed values reach only credential/header fields, rejected at parse from tool text (transitive taint, 0029(c)); re-checked on the **top-level** effective-arg keys (step 3) — by contract the 1.O/1.V taint producer flattens a tainted *nested* path to a top-level deny before it reaches `secretArgKeys`; the actual secret never travels as an arg value (it is a host-resolved `credentialRef`) | host attaches a resolved `credentialRef` inside its trust boundary |
 | FS scope tier | tool flagged `fsScoped` | `fs.*` jails to the tier + rejects path traversal |
 
 ## Result bounding and spill-to-file
@@ -195,7 +209,7 @@ distinct from the *event* `outputSummary`, which is truncated separately at the 
 ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). Three rules:
 
 - **Bounding is model-facing only.** `output_mapping` runs on the **full** result (step 6) so workflow state holds the real value; only the model-facing `tool_result` is replaced by a **bounded preview + an explicit truncation marker + the spill path** (step 7).
-- **The full bytes are never buffered in the engine.** A potentially-large result is streamed; past the ceiling the **host `outputStore`** spills it (incrementally) to a run-scoped file and returns a handle — the engine holds only the preview window. This closes the DoS surface for real (buffer-then-spill would not). The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
+- **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. The **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) is a **host-capability obligation** — push a `maxBytes` into `FsReadOpts` / `EgressRequest` so the host truncates at the source — landed with the first genuinely-streamed large source (the residual engine-memory exposure until then is bounded by the FS scope tier + the host process budget; egress is gated to 1.AE). The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
 - **Reclaimed at the terminal event.** Spilled output is run-scoped and swept when the run reaches a terminal event (the ADR-0036 terminal-state sweep), like other run-scoped artifacts.
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import { ToolUnavailableError } from './errors.js';
@@ -145,5 +145,27 @@ describe('built-in arg validation', () => {
   it('rejects a missing required field', () => {
     expect(() => tool('git_commit').parseArgs({})).toThrow();
     expect(() => tool('mcp_call').parseArgs({ server: 's' })).toThrow();
+  });
+});
+
+describe('built-in git tool hardening', () => {
+  it('git_status exposes only the subcommand to the model; args is config-only (H2)', () => {
+    const props = (tool('git_status').llmVisibleParams['properties'] ?? {}) as Record<string, unknown>;
+    expect(props).toHaveProperty('command');
+    expect(props).not.toHaveProperty('args'); // a model cannot inject git flags
+    expect(tool('git_status').configOnlyParams).toContain('args');
+  });
+
+  it('git_commit rejects a pathspec starting with "-" (option injection) (M1)', () => {
+    expect(() => tool('git_commit').parseArgs({ message: 'm', files: ['--amend'] })).toThrow();
+    expect(() => tool('git_commit').parseArgs({ message: 'm', files: ['--no-verify'] })).toThrow();
+    expect(() => tool('git_commit').parseArgs({ message: 'm', files: ['ok.ts'] })).not.toThrow();
+  });
+
+  it('git_commit inserts a `--` separator before pathspecs (M1)', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    const target = tool('git_commit');
+    await target.dispatch(target.parseArgs({ message: 'm', files: ['a.ts', 'b.ts'] }), { process: { spawn } }, ctx);
+    expect(spawn).toHaveBeenCalledWith('git', ['commit', '-m', 'm', '--', 'a.ts', 'b.ts'], {}, {}, undefined);
   });
 });

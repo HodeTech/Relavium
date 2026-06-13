@@ -75,19 +75,93 @@ function toText(result: unknown): string {
 }
 
 function makeSummary(text: string): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  // Cap the scanned input so the whitespace-collapse never runs over an oversized result (the summary
+  // is bounded to SUMMARY_MAX regardless).
+  const slice = text.length > SUMMARY_MAX * 8 ? text.slice(0, SUMMARY_MAX * 8) : text;
+  const oneLine = slice.replace(/\s+/g, ' ').trim();
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 
-function makePreview(text: string, limits: ToolResultLimits): string {
-  // A char budget proxies the byte ceiling for the preview (the model only needs a readable window).
-  const budget = Math.max(0, limits.maxBytes);
-  if (text.length <= budget) {
-    return text;
+/** UTF-8 byte width of one code point. */
+function codePointBytes(cp: number): number {
+  if (cp < 0x80) {
+    return 1;
   }
-  const head = text.slice(0, Math.floor(budget * 0.7));
-  const tail = text.slice(text.length - Math.floor(budget * 0.3));
-  return `${head}\n…\n${tail}`;
+  if (cp < 0x800) {
+    return 2;
+  }
+  if (cp < 0x10000) {
+    return 3;
+  }
+  return 4;
+}
+
+/** Slice up to `maxBytes` UTF-8 bytes from the head (or, when `fromEnd`, the tail), never splitting a code point. */
+function sliceToBytes(text: string, maxBytes: number, fromEnd: boolean): string {
+  if (maxBytes <= 0) {
+    return '';
+  }
+  let bytes = 0;
+  if (!fromEnd) {
+    let i = 0;
+    while (i < text.length) {
+      const cp = text.codePointAt(i);
+      if (cp === undefined) {
+        break;
+      }
+      const width = codePointBytes(cp);
+      if (bytes + width > maxBytes) {
+        break;
+      }
+      bytes += width;
+      i += cp > 0xffff ? 2 : 1;
+    }
+    return text.slice(0, i);
+  }
+  let i = text.length;
+  while (i > 0) {
+    let start = i - 1;
+    const unit = text.charCodeAt(start);
+    if (unit >= 0xdc00 && unit <= 0xdfff && start > 0) {
+      start -= 1; // a low surrogate — include its leading high surrogate
+    }
+    const cp = text.codePointAt(start);
+    if (cp === undefined) {
+      break;
+    }
+    const width = codePointBytes(cp);
+    if (bytes + width > maxBytes) {
+      break;
+    }
+    bytes += width;
+    i = start;
+  }
+  return text.slice(i);
+}
+
+/**
+ * A bounded preview honoring BOTH the line ceiling and the byte ceiling. Over the line ceiling → a
+ * head+tail LINE window; otherwise (byte-only truncation) a head+tail of the whole text. Each part is
+ * then byte-bounded (code-point-safe) against the byte budget, so the preview never exceeds ~maxBytes
+ * and never emits a lone surrogate.
+ */
+function makePreview(text: string, limits: ToolResultLimits): string {
+  let headSrc: string;
+  let tailSrc: string;
+  const lines = text.split('\n');
+  if (lines.length > limits.maxLines) {
+    const headLines = Math.max(1, Math.floor(limits.maxLines * 0.7));
+    const tailLines = Math.max(1, limits.maxLines - headLines);
+    headSrc = lines.slice(0, headLines).join('\n');
+    tailSrc = lines.slice(lines.length - tailLines).join('\n');
+  } else {
+    headSrc = text;
+    tailSrc = text;
+  }
+  const byteBudget = Math.max(0, limits.maxBytes);
+  const head = sliceToBytes(headSrc, Math.floor(byteBudget * 0.7), false);
+  const tail = sliceToBytes(tailSrc, Math.floor(byteBudget * 0.3), true);
+  return tail === '' ? head : `${head}\n…\n${tail}`;
 }
 
 /**
@@ -115,13 +189,24 @@ export async function boundForModel(
   }
 
   let ref: string | undefined;
+  let unavailableNote = 'no output store';
   if (host.outputStore) {
-    const spilled = await host.outputStore.spill(text, limits, signal);
-    ref = spilled.ref;
+    try {
+      const spilled = await host.outputStore.spill(text, limits, signal);
+      ref = spilled.ref;
+    } catch (cause) {
+      // An abort DURING spill must surface on the cancellation path (ADR-0036 precedence); any other
+      // spill failure degrades to a preview-only result rather than failing a tool that already SUCCEEDED
+      // (re-running a non-idempotent tool to retry a spill would double its side effects).
+      if (signal?.aborted === true || (cause instanceof Error && cause.name === 'AbortError')) {
+        throw cause;
+      }
+      unavailableNote = 'spill failed';
+    }
   }
   const marker =
     ref === undefined
-      ? `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output unavailable (no output store) …]`
+      ? `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output unavailable (${unavailableNote}) …]`
       : `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output at ${ref} …]`;
   return { value: makePreview(text, limits) + marker, truncated: true, summary };
 }

@@ -71,4 +71,46 @@ describe('boundForModel', () => {
     expect(bounded.truncated).toBe(false);
     expect(bounded.summary).toBe('[unserializable]');
   });
+
+  it('enforces the LINE ceiling in the preview, not just the spill trigger (H4)', async () => {
+    const spill = vi.fn(() => Promise.resolve({ ref: 'spill://lines', byteLength: 1 }));
+    const text = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n'); // small bytes, many lines
+    const bounded = await boundForModel(text, { maxBytes: 50_000, maxLines: 5 }, host({ outputStore: { spill } }));
+    expect(bounded.truncated).toBe(true);
+    // The model-facing preview must be line-bounded — NOT the full 200-line text returned verbatim.
+    const previewLines = String(bounded.value).split('\n').length;
+    expect(previewLines).toBeLessThan(200);
+    expect(String(bounded.value)).not.toContain('line 150');
+  });
+
+  it('byte-bounds a multibyte preview without splitting a code point (L4)', async () => {
+    const text = '😀'.repeat(2000); // 4 bytes each → 8000 bytes
+    const bounded = await boundForModel(text, { maxBytes: 200, maxLines: 2000 }, host());
+    expect(bounded.truncated).toBe(true);
+    // No lone surrogate: every UTF-16 unit in the preview pairs up (emoji stay whole).
+    const preview = String(bounded.value);
+    for (let i = 0; i < preview.length; i++) {
+      const code = preview.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = preview.charCodeAt(i + 1);
+        expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+        i++;
+      } else {
+        expect(code >= 0xdc00 && code <= 0xdfff).toBe(false); // never a lone low surrogate
+      }
+    }
+  });
+
+  it('degrades a non-abort spill failure to a preview-only result (tool already succeeded) (M2)', async () => {
+    const spill = vi.fn(() => Promise.reject(new Error('disk full')));
+    const bounded = await boundForModel('z'.repeat(500), TINY, host({ outputStore: { spill } }));
+    expect(bounded.truncated).toBe(true);
+    expect(String(bounded.value)).toContain('spill failed');
+  });
+
+  it('rethrows an abort that occurs during spill (cancel precedence) (M2)', async () => {
+    const signal = { aborted: true } as never;
+    const spill = vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await expect(boundForModel('z'.repeat(500), TINY, host({ outputStore: { spill } }), signal)).rejects.toThrow(/aborted/);
+  });
 });

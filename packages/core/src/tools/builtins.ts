@@ -210,19 +210,21 @@ const runCommandTool = defineBuiltin({
 
 const gitStatusTool = defineBuiltin({
   id: 'git_status',
-  description: 'Run git status / log / diff in the workspace (pre-approved git allowlist).',
+  description: 'Run git status / log / diff in the workspace; extra flags are author-pinned via config, not model-supplied.',
+  // SECURITY: `args` is CONFIG-ONLY, not model-facing. A model-supplied `git diff` flag set
+  // (e.g. `--no-index -- /etc/passwd`, `log -p --all`) would otherwise read arbitrary files / dump
+  // history, since this pre-approved tool has no allowedCommands gate. The model picks only the
+  // (safe, read-only) subcommand; any extra flags must be pinned by the trusted workflow author.
   args: z
     .object({ command: z.enum(['status', 'log', 'diff']).optional(), args: z.array(z.string()).optional() })
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: {
-      command: { type: 'string', enum: ['status', 'log', 'diff'] },
-      args: { type: 'array', items: { type: 'string' } },
-    },
+    properties: { command: { type: 'string', enum: ['status', 'log', 'diff'] } },
     additionalProperties: false,
   },
-  // Pre-approved: no policyTarget command, so the generic allowedCommands check is skipped.
+  configOnlyParams: ['args'],
+  // Pre-approved subcommands with no model-controlled args ⇒ no allowedCommands gate needed.
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
   dispatch: (args, host, ctx) =>
     requireProcess(host, 'git_status').spawn(
@@ -236,8 +238,17 @@ const gitStatusTool = defineBuiltin({
 
 const gitCommitTool = defineBuiltin({
   id: 'git_commit',
-  description: 'Stage files and create a commit — requires a human-gate approval in automated workflows.',
-  args: z.object({ message: z.string().min(1), files: z.array(z.string()).optional() }).strict(),
+  description:
+    'Create a commit, optionally restricting it to the given pathspecs — requires a human-gate approval in automated workflows.',
+  args: z
+    .object({
+      message: z.string().min(1),
+      // A pathspec must not start with `-`, so a model cannot smuggle a git OPTION (`--amend`,
+      // `--no-verify`, `--author=…`) through `files` past the human gate (the `--` separator below is
+      // the structural backstop; this refine gives a field-named parse error).
+      files: z.array(z.string().min(1).refine((f) => !f.startsWith('-'), { message: 'a pathspec must not start with "-"' })).optional(),
+    })
+    .strict(),
   llmVisibleParams: {
     type: 'object',
     properties: { message: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } },
@@ -246,9 +257,10 @@ const gitCommitTool = defineBuiltin({
   },
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: true },
   dispatch: (args, host, ctx) =>
+    // `--` terminates option parsing so every `files` entry is an operand (pathspec), never an option.
     requireProcess(host, 'git_commit').spawn(
       'git',
-      ['commit', '-m', args.message, ...(args.files ?? [])],
+      ['commit', '-m', args.message, '--', ...(args.files ?? [])],
       {},
       {},
       ctx.signal,

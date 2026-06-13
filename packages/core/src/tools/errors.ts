@@ -75,6 +75,7 @@ export class ToolPolicyError extends ToolDispatchError {
 }
 export type ToolPolicyDenyReason =
   | 'not_granted' // the id is registered but not in the node's grant (registered ≠ authorized)
+  | 'provider_executed' // a provider-executed tool_call the engine must not dispatch (content.ts; ADR-0030)
   | 'command_not_allowed' // the resolved command is not in allowedCommands / allowedCommandGlobs (or empty ⇒ deny-all)
   | 'domain_not_allowed' // the URL host is not in allowedDomains (or empty ⇒ deny-all)
   | 'insecure_url' // the URL is not HTTPS (or has credentials-in-URL)

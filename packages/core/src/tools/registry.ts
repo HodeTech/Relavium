@@ -64,7 +64,7 @@ async function dispatch(
   if (toolCall.providerExecuted === true) {
     throw new ToolPolicyError(
       toolCall.name,
-      'not_granted',
+      'provider_executed',
       `tool \`${toolCall.name}\` is provider-executed and is not dispatched by the engine`,
     );
   }
@@ -97,12 +97,24 @@ async function dispatch(
   // 4. Enforce the guardrail policy on the EFFECTIVE args (the resolved command/URL is now real).
   enforcePolicy(def, args, ctx);
 
-  // 5. The single side effect. An AbortSignal-origin failure is the cancellation path, not tool_failed.
-  let output: unknown;
+  // 5-7. The single side effect + output_mapping (FULL result) + model-facing bounding — all under one
+  // classification ladder so a spill-time abort surfaces as `cancelled` (ADR-0036 precedence) and any
+  // other tail failure is a classified tool error, never a raw escape.
+  let outputMapped: unknown;
+  let bounded: Awaited<ReturnType<typeof boundForModel>>;
   try {
     throwIfAborted(ctx, def.id);
-    output = await def.dispatch(args, host, ctx);
+    const output = await def.dispatch(args, host, ctx);
+    // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
+    throwIfAborted(ctx, def.id);
+    // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
+    outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
+    // 7. Bound the MODEL-FACING result (the full result is untouched above).
+    bounded = await boundForModel(output, ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS, host, ctx.signal);
   } catch (cause) {
+    if (cause instanceof ToolCancelledError) {
+      throw cause; // already classified (e.g. throwIfAborted) — never double-wrap
+    }
     if (isAbort(cause, ctx)) {
       throw new ToolCancelledError(def.id, cause);
     }
@@ -111,13 +123,6 @@ async function dispatch(
     }
     throw new ToolExecutionError(def.id, `tool \`${def.id}\` failed`, cause);
   }
-
-  // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
-  const outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
-
-  // 7. Bound the MODEL-FACING result (the full result is untouched above).
-  const limits = ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS;
-  const bounded = await boundForModel(output, limits, host, ctx.signal);
 
   // 8. Brand the model-facing result untrusted + shape the sanitized event payloads.
   const toolResult: ToolResultPart = {
@@ -138,29 +143,56 @@ async function dispatch(
 
 /* ------------------------------------------------------------------------------------------------ *
  * Step 2 — effective args. Precedence: model args (base) < input_mapping (author-wired) < config-only.
+ * A config-only param's value comes ONLY from `ctx.config.parameters` — neither a model argument nor an
+ * `input_mapping` value may supply one (ADR-0037: "a model argument can never override one", enforced by
+ * the engine, not by convention). Prototype-polluting keys are dropped from every source.
  * ------------------------------------------------------------------------------------------------ */
+
+/** Keys that would walk/poison the prototype chain — never a legitimate tool argument name. */
+const UNSAFE_ARG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function assembleArgs(
   def: ToolDef,
   modelArgs: unknown,
   ctx: ToolDispatchContext,
 ): Record<string, unknown> {
-  const effective: Record<string, unknown> = isRecord(modelArgs) ? { ...modelArgs } : {};
-  const mapping = ctx.config.inputMapping;
-  if (mapping !== undefined) {
-    for (const [key, value] of Object.entries(mapping)) {
-      effective[key] = value;
-    }
-  }
+  const configOnly = new Set(def.configOnlyParams ?? []);
+  const effective: Record<string, unknown> = {};
+  // 1. Model-supplied args are the base — but a config-only key from the model is dropped (config is its
+  //    only source) and a prototype-polluting key is never copied.
+  copyArgs(effective, modelArgs, configOnly);
+  // 2. Author-wired input_mapping — same exclusions, so a config-only value cannot enter via state either.
+  copyArgs(effective, ctx.config.inputMapping, configOnly);
+  // 3. Config-only params — the ONE source for these (config wins; absent ⇒ the tool's own default).
   const params = ctx.config.parameters;
-  if (def.configOnlyParams !== undefined && params !== undefined) {
-    for (const key of def.configOnlyParams) {
+  if (params !== undefined) {
+    for (const key of configOnly) {
+      if (UNSAFE_ARG_KEYS.has(key)) {
+        continue;
+      }
       if (Object.prototype.hasOwnProperty.call(params, key)) {
         effective[key] = params[key];
       }
     }
   }
   return effective;
+}
+
+/** Copy own keys from `source` into `target`, skipping the `exclude` set and prototype-polluting names. */
+function copyArgs(
+  target: Record<string, unknown>,
+  source: unknown,
+  exclude: ReadonlySet<string>,
+): void {
+  if (!isRecord(source)) {
+    return;
+  }
+  for (const key of Object.keys(source)) {
+    if (UNSAFE_ARG_KEYS.has(key) || exclude.has(key)) {
+      continue;
+    }
+    target[key] = source[key];
+  }
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -293,7 +325,13 @@ function extractHttpsHost(url: string): { host: string; hasCredentials: boolean 
   if (match === null) {
     return null;
   }
-  let authority = match[1] ?? '';
+  const rawAuthority = match[1] ?? '';
+  // Fail closed on smuggling chars (backslash / whitespace / control) that the WHATWG parser the host
+  // SSRF primitive uses may treat differently — a real FQDN never contains them.
+  if (hasSmugglingChar(rawAuthority)) {
+    return null;
+  }
+  let authority = rawAuthority;
   let hasCredentials = false;
   const at = authority.lastIndexOf('@');
   if (at !== -1) {
@@ -311,20 +349,33 @@ function extractHttpsHost(url: string): { host: string; hasCredentials: boolean 
   return { host: host.toLowerCase(), hasCredentials };
 }
 
-/** A minimal, well-bounded glob: `*` (any run) and `?` (one char), everything else literal, full match. */
+/**
+ * A minimal, well-bounded glob: `*` (any run) and `?` (one char), everything else literal, full match.
+ * Consecutive `*` collapse to a single `.*` (no `(.*)+`-style catastrophic backtracking on a degenerate
+ * author glob), and compiled patterns are cached (author globs are a small fixed set).
+ */
+const globCache = new Map<string, RegExp>();
 function globMatch(glob: string, value: string): boolean {
-  let pattern = '^';
-  for (const ch of glob) {
-    if (ch === '*') {
-      pattern += '.*';
-    } else if (ch === '?') {
-      pattern += '.';
-    } else {
-      pattern += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let compiled = globCache.get(glob);
+  if (compiled === undefined) {
+    let pattern = '^';
+    let prevStar = false;
+    for (const ch of glob) {
+      if (ch === '*') {
+        if (!prevStar) {
+          pattern += '.*';
+        }
+        prevStar = true;
+        continue;
+      }
+      prevStar = false;
+      pattern += ch === '?' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
+    pattern += '$';
+    compiled = new RegExp(pattern);
+    globCache.set(glob, compiled);
   }
-  pattern += '$';
-  return new RegExp(pattern).test(value);
+  return compiled.test(value);
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -345,14 +396,19 @@ function applyOutputMapping(
   return out;
 }
 
-/** Read a simple dot-path (`a.b.c`) from a value; undefined when any segment is absent. */
+/**
+ * Read a simple dot-path (`a.b.c`) from a value; undefined when any segment is absent. Walks ONLY own
+ * data properties (`Object.hasOwn`) — a segment naming an inherited member (`__proto__`, `constructor`,
+ * `toString`) returns undefined, never the prototype/constructor function. Mirrors the hardened
+ * `interpolation/path.ts` reader; do not regress to a bare `cursor[segment]`.
+ */
 function readPath(value: unknown, path: string): unknown {
   if (path === '') {
     return value;
   }
   let cursor = value;
   for (const segment of path.split('.')) {
-    if (!isRecord(cursor)) {
+    if (!isRecord(cursor) || !Object.hasOwn(cursor, segment)) {
       return undefined;
     }
     cursor = cursor[segment];
@@ -401,4 +457,20 @@ function isAbort(cause: unknown, ctx: ToolDispatchContext): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * True if an authority carries a backslash, whitespace/space, or a C0/DEL control char — chars the
+ * WHATWG parser the host SSRF primitive uses may treat differently, so the engine fails closed. A real
+ * FQDN/authority never contains them (a hyphen `-` (0x2d) and dot `.` (0x2e) ARE allowed). A char-scan,
+ * not a regex, so no control byte ever lands in this source file.
+ */
+function hasSmugglingChar(authority: string): boolean {
+  for (let i = 0; i < authority.length; i++) {
+    const code = authority.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f || code === 0x5c) {
+      return true; // <=0x20: C0 controls + space; 0x7f: DEL; 0x5c: backslash
+    }
+  }
+  return false;
 }
