@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
-import type { StreamChunk } from '../types.js';
+import type { LlmMessage, StreamChunk } from '../types.js';
 import {
   anthropicErrorToLlmError,
   anthropicAdapter,
@@ -818,5 +818,69 @@ describe('AnthropicAdapter — reasoning + structured output (ADR-0030)', () => 
     expect(sent['output_config']).toEqual({
       format: { type: 'json_schema', schema: { type: 'object' } },
     });
+  });
+});
+
+describe('toAnthropicMessage — signed-reasoning replay (ADR-0039)', () => {
+  /** Capture the wire request body the adapter sends for a given message list. */
+  function captureBody(messages: LlmMessage[]): Promise<string> {
+    let body = '{}';
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        body = JSON.stringify(parseJsonBody(init));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-opus-4-8',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    return adapter
+      .generate({ model: 'claude-opus-4-8', maxTokens: 16, messages }, 'k')
+      .then(() => body);
+  }
+
+  it('lowers a SIGNED reasoning part back to a thinking block on the wire', async () => {
+    const body = await captureBody([
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'deliberating', signature: 'sig-1' },
+          { type: 'tool_call', id: 'c1', name: 'echo', args: {} },
+        ],
+      },
+      { role: 'tool', content: [{ type: 'tool_result', toolCallId: 'c1', result: 'ok' }] },
+    ]);
+    expect(body).toContain('"type":"thinking"');
+    expect(body).toContain('"signature":"sig-1"');
+    expect(body).toContain('"thinking":"deliberating"');
+  });
+
+  it('drops a redacted or signatureless reasoning part (no opaque carrier — deferred)', async () => {
+    const body = await captureBody([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: '', redacted: true },
+          { type: 'reasoning', text: 'unsigned' },
+          { type: 'text', text: 'hi' },
+        ],
+      },
+    ]);
+    expect(body).not.toContain('thinking');
+    expect(body).not.toContain('redacted_thinking');
+    expect(body).toContain('"text":"hi"'); // the non-reasoning content still rides the wire
   });
 });

@@ -1240,3 +1240,70 @@ describe('withFallback façade', () => {
     expect(out.content).toEqual([{ type: 'text', text: 'facade' }]);
   });
 });
+
+describe('cross-call reasoning strip latch (ADR-0039)', () => {
+  const reasoningResult = (): LlmResult => ({
+    content: [
+      { type: 'reasoning', text: 'thinking', signature: 'sig-1' },
+      { type: 'text', text: 'a1' },
+    ],
+    stopReason: 'stop',
+    usage: USAGE,
+    raw: undefined,
+  });
+
+  const hasReasoning = (req: LlmRequest): boolean =>
+    req.messages.some((m) => m.content.some((c) => c.type === 'reasoning'));
+
+  /** The continuation request a tool loop builds: prior messages + the assistant turn (with reasoning). */
+  const continuation = (content: LlmResult['content']): LlmRequest => ({
+    ...userReq,
+    messages: [...userReq.messages, { role: 'assistant', content: [...content] }],
+  });
+
+  it('strips a prior provider’s reasoning on the NEXT call after a non-cooldown failover (multi-turn hole)', async () => {
+    // Call 1: primary times out (retryable, NO cooldown) → fails over to the fallback, which returns a
+    // SIGNED reasoning turn. Call 2 re-issues at the primary; the cross-call latch must strip the
+    // fallback's reasoning before the primary ever sees it.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: (_req, _key, call) =>
+        call === 1 ? rejects('anthropic', 'timeout')() : resolves('p2')(),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      generate: () => Promise.resolve(reasoningResult()),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt')],
+      options,
+    );
+
+    const first = await chain.generate(userReq);
+    expect(
+      hasReasoning({ ...userReq, messages: [{ role: 'assistant', content: first.content }] }),
+    ).toBe(true);
+
+    await chain.generate(continuation(first.content));
+    // The primary's SECOND request must carry NO reasoning (latch = the fallback, a provider boundary).
+    expect(primary.calls).toHaveLength(2);
+    expect(hasReasoning(primary.calls[1] as LlmRequest)).toBe(false);
+  });
+
+  it('preserves reasoning across calls on the SAME provider (same-provider replay)', async () => {
+    const only = makeProvider({
+      id: 'anthropic',
+      generate: (_req, _key, call) =>
+        call === 1 ? Promise.resolve(reasoningResult()) : resolves('a2')(),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(only, 'claude-opus-4-8')], options);
+
+    const first = await chain.generate(userReq);
+    await chain.generate(continuation(first.content));
+    // Same provider both calls → no boundary → the signed reasoning is replayed, not stripped.
+    expect(only.calls).toHaveLength(2);
+    expect(hasReasoning(only.calls[1] as LlmRequest)).toBe(true);
+  });
+});

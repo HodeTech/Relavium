@@ -206,9 +206,9 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
-// Reasoning parts are filtered out before this point (ephemeral, not replayed to the wire — ADR-0030)
+// Reasoning is lowered separately in `toAnthropicMessage` (a signed part → a `thinking` block, ADR-0039)
 // and media was rejected pre-flight by `assertNoMediaRequested` (shape-only until 1.AE — ADR-0031),
-// so the wire-able content is the closed text / tool_call / tool_result set.
+// so the wire-able content this handles is the closed text / tool_call / tool_result set.
 function toAnthropicBlock(
   part: Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }>,
 ): Anthropic.ContentBlockParam {
@@ -238,17 +238,28 @@ function toAnthropicBlock(
 }
 
 function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
-  // Anthropic has only user/assistant roles; tool results ride in a user-role message. Reasoning
-  // parts are ephemeral (ADR-0030) and dropped here — they are never replayed to the provider.
-  return {
-    role: message.role === 'assistant' ? 'assistant' : 'user',
-    content: message.content
-      .filter(
-        (part): part is Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }> =>
-          part.type !== 'reasoning' && part.type !== 'media',
-      )
-      .map(toAnthropicBlock),
-  };
+  // Anthropic has only user/assistant roles; tool results ride in a user-role message. A SIGNED
+  // reasoning part is lowered back to a `thinking` block so a same-provider continuation replays it
+  // (ADR-0039); the `FallbackChain` has already stripped reasoning on a cross-provider advance, so any
+  // reasoning part that reaches here is replay-safe for THIS provider. A redacted / signatureless
+  // reasoning part cannot be replayed (its opaque continuation token is absent) and is dropped — a
+  // recorded follow-up (redacted_thinking + Gemini part-level signatures need a canonical carrier).
+  // Media is dropped (shape-only until 1.AE).
+  const content: Anthropic.ContentBlockParam[] = [];
+  for (const part of message.content) {
+    if (part.type === 'media') {
+      continue;
+    }
+    if (part.type === 'reasoning') {
+      if (part.redacted === true || part.signature === undefined) {
+        continue;
+      }
+      content.push({ type: 'thinking', thinking: part.text, signature: part.signature });
+      continue;
+    }
+    content.push(toAnthropicBlock(part));
+  }
+  return { role: message.role === 'assistant' ? 'assistant' : 'user', content };
 }
 
 function toAnthropicToolChoice(choice: ToolChoice): Anthropic.ToolChoice {
