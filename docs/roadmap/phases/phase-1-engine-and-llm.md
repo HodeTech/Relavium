@@ -633,6 +633,25 @@ Executes a single agent node end-to-end against `@relavium/llm`.
 emits a correct `cost:updated`, and completes with `node:completed`; a forced
 provider error drives the fallback chain before the node is considered failed; a `secret`-typed
 input cannot reach agent/human text through a node output (taint re-applied at `run.outputs`).
+When the resolved agent/node carries `output_schema`, it lowers to `LlmRequest.responseFormat` **and**
+the model output is validated **node-side** (a miss ⇒ `validation`) — the seam's `responseFormat` is a
+request hint only.
+
+> **Implementation notes (the boundary 1.O lands — canonical home [agent-runner.md](../../reference/shared-core/agent-runner.md)).**
+> 1.O depends on the platform-free `FallbackChain` + a **host-injected `resolveProvider`**
+> (provider-id → concrete adapter) and forwards the existing `keyFor`/`sleep`/`onAuthError` into the
+> chain; the credential never crosses into core storage/logs ([ADR-0038](../../decisions/0038-agentrunner-llm-call-boundary.md),
+> not "no key crosses the seam"). The **same-provider signed-reasoning re-feed** is an *adapter* +
+> *chain* change ([ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md) — the
+> Anthropic adapter lowers a surviving signed reasoning part; the `FallbackChain`'s strip latch is
+> chain-instance-scoped), not a pure-engine change — 1.O only carries the part through. 1.O bounds the
+> tool-call loop with a **runner-default max-tool-turns cap** (an infinite `tool_use` loop is a DoS;
+> the authored hard cap + the loud `turn_limit` surfacing is the 1.V session knob). 1.O leaves a pure
+> **always-pass pre-egress hook** before each seam call (the [ADR-0028](../../decisions/0028-workflow-resource-governance.md)
+> insertion point **1.AC** fills) and emits **no** `budget:*`/`run_timeout`. The secret-into-`run.outputs`
+> runtime taint is **not** an agent-node concern (it cannot launder a secret into state) — it is a
+> transform/sandbox-node follow-up ([deferred-tasks.md](../deferred-tasks.md)); 1.O's structural
+> guarantee is `system` = authored text only, the resolved prompt in a `user` position.
 
 ### 1.P — Node-type handlers (condition / fan-out / fan-in / transform / input / output)
 
