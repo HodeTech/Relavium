@@ -33,9 +33,5 @@ export function unwrapUntrusted<T>(wrapped: Untrusted<T>): T {
 
 /** Type guard for an untrusted wrapper. */
 export function isUntrusted(value: unknown): value is Untrusted<unknown> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as Record<symbol, unknown>)[UNTRUSTED] === true
-  );
+  return typeof value === 'object' && value !== null && Reflect.get(value, UNTRUSTED) === true;
 }

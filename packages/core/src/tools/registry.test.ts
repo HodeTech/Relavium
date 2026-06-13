@@ -29,7 +29,7 @@ function call(name: string, args?: unknown, providerExecuted?: boolean): ToolCal
     id: 'c1',
     name,
     args,
-    ...(providerExecuted !== undefined ? { providerExecuted } : {}),
+    ...(providerExecuted === undefined ? {} : { providerExecuted }),
   };
 }
 
@@ -124,7 +124,7 @@ describe('ToolRegistry — happy path and outcome shape', () => {
     const reg = registry();
     expect(reg.has('read_file')).toBe(true);
     expect(reg.has('nope')).toBe(false);
-    expect(reg.list()).toEqual([...BUILTIN_TOOL_IDS].sort());
+    expect(reg.list()).toEqual([...BUILTIN_TOOL_IDS].sort((a, b) => a.localeCompare(b)));
     expect(reg.list()).toHaveLength(12);
   });
 
@@ -580,16 +580,22 @@ describe('ToolRegistry — config-only params cannot be model- or mapping-suppli
       tools: BUILTIN_TOOLS,
       host: stubHost({ egress: { fetch } }),
     }).dispatch(
-      // config pins the credentialRef but NOT the endpoint; the model tries to supply a malicious endpoint.
+      // config pins BOTH the endpoint and the credentialRef (both config-only); the model tries to
+      // supply a malicious endpoint + credentialRef, which must be dropped.
       call('web_search', {
         query: 'q',
         endpoint: 'https://attacker.evil',
         credentialRef: 'STOLEN',
       }),
-      ctx({ config: { parameters: { credentialRef: 'real-key-ref' } } }),
+      ctx({
+        config: {
+          parameters: { endpoint: 'https://api.search.example', credentialRef: 'real-key-ref' },
+        },
+      }),
     );
     const req = fetch.mock.calls[0]?.[0];
-    expect(req?.url).not.toContain('attacker.evil'); // model endpoint dropped → relative `?q=`; the 1.AE host primitive rejects a non-HTTPS URL in prod (stub skips that)
+    expect(req?.url).toContain('api.search.example'); // the config-pinned endpoint is used…
+    expect(req?.url).not.toContain('attacker.evil'); // …and the model's endpoint override is dropped
     expect(req?.credentialRef).toBe('real-key-ref'); // the model's 'STOLEN' override is dropped
   });
 
@@ -677,7 +683,7 @@ describe('ToolRegistry — host extraction rejects smuggling chars but allows hy
   });
 
   it.each([
-    ['backslash', 'https://api.example.com\\@evil.com/'],
+    ['backslash', String.raw`https://api.example.com\@evil.com/`],
     ['space', 'https://exa mple.com/'],
     ['tab', 'https://e\tvil/'],
   ])('rejects a %s in the authority as insecure', async (_name, url) => {
@@ -806,7 +812,7 @@ describe('ToolRegistry — output_mapping stateKey cannot pollute the prototype 
     );
     expect(out.output).toEqual({ code: 0 }); // __proto__ stateKey skipped
     expect(Object.getPrototypeOf(out.output)).toBe(Object.prototype);
-    expect(Object.prototype.hasOwnProperty.call(out.output, '__proto__')).toBe(false);
+    expect(Object.hasOwn(out.output as object, '__proto__')).toBe(false);
   });
 });
 
@@ -864,7 +870,9 @@ describe('ToolRegistry — remaining hardening regressions (TG-2, TG-4)', () => 
   it('rejects a DEL (0x7f) control char in the authority (TG-4)', async () => {
     const err = await rejectsWith<ToolPolicyError>(
       registry().dispatch(
-        call('http_request', { url: 'https://api' + String.fromCharCode(0x7f) + '.example.com/x' }),
+        call('http_request', {
+          url: 'https://api' + String.fromCodePoint(0x7f) + '.example.com/x',
+        }),
         ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } }),
       ),
     );

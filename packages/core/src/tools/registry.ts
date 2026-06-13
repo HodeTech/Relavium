@@ -46,7 +46,7 @@ export function createToolRegistry(options: CreateToolRegistryOptions): {
 
   return {
     has: (id) => tools.has(id),
-    list: () => [...tools.keys()].sort(),
+    list: () => [...tools.keys()].sort((a, b) => a.localeCompare(b)),
     dispatch: (toolCall, ctx) => dispatch(tools, host, toolCall, ctx),
   };
 }
@@ -181,7 +181,7 @@ function assembleArgs(
       if (UNSAFE_ARG_KEYS.has(key)) {
         continue;
       }
-      if (Object.prototype.hasOwnProperty.call(params, key)) {
+      if (Object.hasOwn(params, key)) {
         effective[key] = params[key];
       }
     }
@@ -220,12 +220,13 @@ function assertNoTaintedArgs(
   }
   const tainted = Object.keys(effective).filter((key) => secretArgKeys.has(key));
   if (tainted.length > 0) {
+    const sorted = tainted.toSorted((a, b) => a.localeCompare(b));
     throw new ToolArgsInvalidError(
       toolId,
-      tainted.sort(),
-      `tool \`${toolId}\`: a secret-typed value cannot flow into tool arguments (${tainted
-        .sort()
-        .join(', ')}) — use a credential reference (ADR-0029)`,
+      sorted,
+      `tool \`${toolId}\`: a secret-typed value cannot flow into tool arguments (${sorted.join(
+        ', ',
+      )}) — use a credential reference (ADR-0029)`,
     );
   }
 }
@@ -255,11 +256,11 @@ function zodIssuePaths(cause: unknown): readonly string[] {
     if (isRecord(issue)) {
       const path = issue['path'];
       if (Array.isArray(path)) {
-        paths.add(path.map((segment: unknown) => String(segment)).join('.') || '(root)');
+        paths.add(path.map(String).join('.') || '(root)');
       }
     }
   }
-  return [...paths].sort();
+  return [...paths].sort((a, b) => a.localeCompare(b));
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -488,7 +489,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function hasSmugglingChar(authority: string): boolean {
   for (let i = 0; i < authority.length; i++) {
-    const code = authority.charCodeAt(i);
+    const code = authority.codePointAt(i) ?? Number.NaN;
     if (code <= 0x20 || code === 0x7f || code === 0x5c) {
       return true; // <=0x20: C0 controls + space; 0x7f: DEL; 0x5c: backslash
     }

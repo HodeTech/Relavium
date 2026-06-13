@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 
-import { ToolUnavailableError } from './errors.js';
+import { ToolArgsInvalidError, ToolUnavailableError } from './errors.js';
 import {
   type EgressCapability,
   type FsCapability,
@@ -43,7 +43,9 @@ interface BuiltinSpec<A> {
   readonly dispatch: (args: A, host: ToolHost, ctx: ToolDispatchContext) => Promise<unknown>;
 }
 
-function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef {
+// Returns `ToolDef<A>` so each tool keeps its precise validated-arg type; the single controlled
+// widening to the heterogeneous `ToolDef` (`Args = unknown`) happens once at the catalog boundary.
+function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
   const def: ToolDef<A> = {
     id: spec.id,
     source: 'builtin',
@@ -55,10 +57,32 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef {
     ...(spec.policyTarget !== undefined ? { policyTarget: spec.policyTarget } : {}),
     dispatch: spec.dispatch,
   };
-  // Erase the `Args` generic so heterogeneous tools share one `ToolDef[]`. The cast is necessary —
-  // `policyTarget`'s parameter is contravariant — and safe by construction: the registry validates via
-  // `parseArgs` BEFORE it ever calls `dispatch`/`policyTarget`, so the value those receive is exactly `A`.
-  return def as ToolDef;
+  return def;
+}
+
+/**
+ * Build the `web_search` request URL from the config-pinned endpoint. Throws a typed
+ * `ToolArgsInvalidError` (field: `endpoint`) when the endpoint is not an absolute `https://` URL — so
+ * the caller never forwards a `credentialRef` against a missing/insecure target. The separator is
+ * chosen dynamically (`&` when the endpoint already carries a query string, else `?`) to avoid a
+ * double `?`, and every parameter value is percent-encoded.
+ */
+function buildSearchUrl(endpoint: string, query: string, maxResults: number | undefined): string {
+  // Validate without the platform `URL` global (absent from the engine-purity lib, CLAUDE.md rule 5):
+  // require an absolute https:// URL with a host. A non-HTTPS / relative endpoint is rejected here,
+  // before any credentialRef is attached; deep URL parsing + the SSRF range checks live behind the
+  // egress host capability (ADR-0029(d)).
+  if (!/^https:\/\/[^/?#\s]+/i.test(endpoint)) {
+    throw new ToolArgsInvalidError(
+      'web_search',
+      ['endpoint'],
+      'web_search `endpoint` must be an absolute https:// URL',
+    );
+  }
+  const sep = endpoint.includes('?') ? '&' : '?';
+  const max =
+    maxResults === undefined ? '' : `&maxResults=${encodeURIComponent(String(maxResults))}`;
+  return `${endpoint}${sep}q=${encodeURIComponent(query)}${max}`;
 }
 
 function requireFs(host: ToolHost, toolId: ToolId): FsCapability {
@@ -338,8 +362,12 @@ const webSearchTool = defineBuiltin({
     .object({
       query: z.string().min(1),
       maxResults: z.number().int().positive().optional(),
-      // Config-pinned: the provider endpoint + the opaque secret-store reference (never a raw key).
-      endpoint: z.string().optional(),
+      // Config-pinned and REQUIRED: a non-HTTPS or missing endpoint must never be paired with a
+      // credentialRef, so the provider endpoint is mandatory rather than defaulted to '' (the empty
+      // string silently produced a credentialed request against a bogus URL). The host still runs the
+      // shared SSRF primitive; this is the engine-side floor.
+      endpoint: z.string().min(1),
+      // The opaque secret-store reference (never a raw key), resolved host-side inside its boundary.
       credentialRef: z.string().optional(),
     })
     .strict(),
@@ -352,8 +380,9 @@ const webSearchTool = defineBuiltin({
   configOnlyParams: ['endpoint', 'credentialRef'],
   policy: { fsScoped: false, spawnsProcess: false, egress: 'search', requiresGateApproval: false },
   dispatch: (args, host, ctx) => {
-    const endpoint = args.endpoint ?? '';
-    const url = `${endpoint}?q=${encodeURIComponent(args.query)}`;
+    // Reject a non-absolute / non-HTTPS endpoint BEFORE attaching the credentialRef — a credential
+    // must never be forwarded for an invalid URL. Field names only (the value may be config-secret).
+    const url = buildSearchUrl(args.endpoint, args.query, args.maxResults);
     return requireEgress(host, 'web_search').fetch(
       { method: 'GET', url, credentialRef: args.credentialRef },
       ctx.signal,
@@ -436,7 +465,14 @@ const invokeAgentTool = defineBuiltin({
  * The catalog.
  * ------------------------------------------------------------------------------------------------ */
 
-/** The built-in tool catalog (built-in-tools.md). Register these into a `ToolRegistry` with a host. */
+/**
+ * The built-in tool catalog (built-in-tools.md). Register these into a `ToolRegistry` with a host.
+ *
+ * The single controlled widening lives HERE: each tool keeps its precise `ToolDef<A>` up to this
+ * boundary, where the heterogeneous catalog erases the per-tool `Args` to the shared `ToolDef`
+ * (`Args = unknown`). This is safe by construction — the registry validates via `parseArgs` BEFORE it
+ * ever calls `dispatch`/`policyTarget`, so the value those receive is exactly the tool's own `A`.
+ */
 export const BUILTIN_TOOLS: readonly ToolDef[] = [
   readFileTool,
   writeFileTool,
@@ -450,7 +486,9 @@ export const BUILTIN_TOOLS: readonly ToolDef[] = [
   readClipboardTool,
   notifyTool,
   invokeAgentTool,
-];
+] as readonly ToolDef[];
 
 /** The built-in tool ids (sorted), for grant construction and tests. */
-export const BUILTIN_TOOL_IDS: readonly ToolId[] = BUILTIN_TOOLS.map((tool) => tool.id).sort();
+export const BUILTIN_TOOL_IDS: readonly ToolId[] = BUILTIN_TOOLS.map((tool) => tool.id).sort(
+  (a, b) => a.localeCompare(b),
+);

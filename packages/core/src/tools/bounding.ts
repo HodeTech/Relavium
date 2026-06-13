@@ -57,7 +57,7 @@ function countLines(text: string): number {
   }
   let lines = 1;
   for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) === 0x0a) {
+    if (text.codePointAt(i) === 0x0a) {
       lines++;
     }
   }
@@ -103,40 +103,48 @@ function codePointBytes(cp: number): number {
   return 4;
 }
 
-/** Slice up to `maxBytes` UTF-8 bytes from the head (or, when `fromEnd`, the tail), never splitting a code point. */
-function sliceToBytes(text: string, maxBytes: number, fromEnd: boolean): string {
-  if (maxBytes <= 0) {
-    return '';
-  }
+/** Head-anchored slice: scan forward, never exceeding `maxBytes`, never splitting a code point. */
+function sliceHeadToBytes(text: string, maxBytes: number): string {
   let bytes = 0;
-  if (!fromEnd) {
-    let i = 0;
-    while (i < text.length) {
-      const cp = text.codePointAt(i);
-      if (cp === undefined) {
-        break;
-      }
-      const width = codePointBytes(cp);
-      if (bytes + width > maxBytes) {
-        break;
-      }
-      bytes += width;
-      i += cp > 0xffff ? 2 : 1;
+  let i = 0;
+  while (i < text.length) {
+    const cp = text.codePointAt(i);
+    if (cp === undefined) {
+      break;
     }
-    return text.slice(0, i);
+    const width = codePointBytes(cp);
+    if (bytes + width > maxBytes) {
+      break;
+    }
+    bytes += width;
+    i += cp > 0xffff ? 2 : 1;
   }
+  return text.slice(0, i);
+}
+
+/**
+ * Index of the code point that ends at `end` (exclusive). Backs up to the leading high surrogate ONLY
+ * for a real pair; a LONE low surrogate is its own 3-byte (WTF-8) unit (`codePointAt` returns the
+ * surrogate value → codePointBytes = 3).
+ */
+function codePointStartBefore(text: string, end: number): number {
+  const start = end - 1;
+  const unit = text.charCodeAt(start);
+  if (unit >= 0xdc00 && unit <= 0xdfff && start > 0) {
+    const prev = text.charCodeAt(start - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) {
+      return start - 1;
+    }
+  }
+  return start;
+}
+
+/** Tail-anchored slice: scan backward, never exceeding `maxBytes`, never splitting a code point. */
+function sliceTailToBytes(text: string, maxBytes: number): string {
+  let bytes = 0;
   let i = text.length;
   while (i > 0) {
-    let start = i - 1;
-    const unit = text.charCodeAt(start);
-    // Back up to the leading high surrogate ONLY for a real pair; a LONE low surrogate is its own
-    // 3-byte (WTF-8) unit (`codePointAt` returns the surrogate value → codePointBytes = 3).
-    if (unit >= 0xdc00 && unit <= 0xdfff && start > 0) {
-      const prev = text.charCodeAt(start - 1);
-      if (prev >= 0xd800 && prev <= 0xdbff) {
-        start -= 1;
-      }
-    }
+    const start = codePointStartBefore(text, i);
     const cp = text.codePointAt(start);
     if (cp === undefined) {
       break;
@@ -149,6 +157,14 @@ function sliceToBytes(text: string, maxBytes: number, fromEnd: boolean): string 
     i = start;
   }
   return text.slice(i);
+}
+
+/** Slice up to `maxBytes` UTF-8 bytes from the head (or, when `fromEnd`, the tail), never splitting a code point. */
+function sliceToBytes(text: string, maxBytes: number, fromEnd: boolean): string {
+  if (maxBytes <= 0) {
+    return '';
+  }
+  return fromEnd ? sliceTailToBytes(text, maxBytes) : sliceHeadToBytes(text, maxBytes);
 }
 
 /**

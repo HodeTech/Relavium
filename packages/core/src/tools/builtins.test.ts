@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
-import { ToolUnavailableError } from './errors.js';
+import { ToolArgsInvalidError, ToolUnavailableError } from './errors.js';
 import type { ToolDef, ToolDispatchContext, ToolHost } from './types.js';
 
 function tool(id: string): ToolDef {
@@ -153,6 +153,90 @@ describe('built-in dispatch', () => {
     expect(
       await target.dispatch(target.parseArgs({ title: 't', body: 'b' }), fullHost(), ctx),
     ).toEqual({ delivered: true });
+  });
+});
+
+describe('web_search url construction + endpoint validation', () => {
+  function captureFetch(): {
+    host: ToolHost;
+    calls: Array<{ url: string; credentialRef: string | undefined }>;
+  } {
+    const calls: Array<{ url: string; credentialRef: string | undefined }> = [];
+    const host: ToolHost = {
+      egress: {
+        fetch: (request) => {
+          calls.push({ url: request.url, credentialRef: request.credentialRef });
+          return Promise.resolve({ status: 200, headers: {}, body: '{}' });
+        },
+      },
+    };
+    return { host, calls };
+  }
+
+  it('appends `?q=` when the endpoint has no query string', async () => {
+    const target = tool('web_search');
+    const { host, calls } = captureFetch();
+    await target.dispatch(
+      target.parseArgs({ query: 'a b', endpoint: 'https://s.example/search' }),
+      host,
+      ctx,
+    );
+    expect(calls[0]?.url).toBe('https://s.example/search?q=a%20b');
+  });
+
+  it('uses `&` (not a double `?`) when the endpoint already has a query string', async () => {
+    const target = tool('web_search');
+    const { host, calls } = captureFetch();
+    await target.dispatch(
+      target.parseArgs({ query: 'q', endpoint: 'https://s.example/search?engine=foo' }),
+      host,
+      ctx,
+    );
+    expect(calls[0]?.url).toBe('https://s.example/search?engine=foo&q=q');
+  });
+
+  it('threads a validated maxResults into the url, encoded', async () => {
+    const target = tool('web_search');
+    const { host, calls } = captureFetch();
+    await target.dispatch(
+      target.parseArgs({ query: 'q', maxResults: 5, endpoint: 'https://s.example/search' }),
+      host,
+      ctx,
+    );
+    expect(calls[0]?.url).toBe('https://s.example/search?q=q&maxResults=5');
+  });
+
+  it('rejects a missing endpoint at parse time (config-only, required)', () => {
+    expect(() => tool('web_search').parseArgs({ query: 'q' })).toThrow();
+  });
+
+  it('rejects a non-HTTPS endpoint and never forwards the credentialRef', async () => {
+    const target = tool('web_search');
+    const { host, calls } = captureFetch();
+    const err = await rejection(() =>
+      target.dispatch(
+        target.parseArgs({ query: 'q', endpoint: 'http://s.example', credentialRef: 'r' }),
+        host,
+        ctx,
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+    expect(err).toMatchObject({ fields: ['endpoint'] });
+    expect(calls).toHaveLength(0); // no egress, so no credentialRef leaked to the host
+  });
+
+  it('rejects a non-absolute endpoint with a typed args error', async () => {
+    const target = tool('web_search');
+    const { host, calls } = captureFetch();
+    const err = await rejection(() =>
+      target.dispatch(
+        target.parseArgs({ query: 'q', endpoint: '/relative/path', credentialRef: 'r' }),
+        host,
+        ctx,
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+    expect(calls).toHaveLength(0);
   });
 });
 

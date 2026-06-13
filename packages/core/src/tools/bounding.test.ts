@@ -1,3 +1,4 @@
+import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { boundForModel, utf8ByteLength } from './bounding.js';
@@ -125,7 +126,11 @@ describe('boundForModel', () => {
   });
 
   it('rethrows an abort that occurs during spill (cancel precedence) (M2)', async () => {
-    const signal = { aborted: true } as never;
+    const signal: AbortSignalLike = {
+      aborted: true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
     const spill = vi.fn(() =>
       Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
     );

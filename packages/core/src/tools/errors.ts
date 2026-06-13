@@ -48,7 +48,7 @@ export class UnknownToolError extends ToolDispatchError {
 
   constructor(toolId: ToolId, availableIds: readonly ToolId[]) {
     super(
-      `unknown tool \`${toolId}\` — available tools: ${[...availableIds].sort().join(', ')}`,
+      `unknown tool \`${toolId}\` — available tools: ${[...availableIds].sort((a, b) => a.localeCompare(b)).join(', ')}`,
       toolId,
       undefined,
     );
