@@ -83,9 +83,9 @@ export type RunEvent =
 
 ### Selected definitions
 
-> These TypeScript shapes are **illustrative**. The enforced, runtime-validated source
-> of truth is the Zod schema set in `@relavium/shared` (`run-event.ts`), from which the
-> TS types are inferred ([ADR-0020](../../decisions/0020-zod-runtime-schema-library.md)).
+> These TypeScript shapes are **illustrative**. The enforced, runtime-validated
+> implementation is the Zod schema set in `@relavium/shared` (`run-event.ts`), from which
+> the TS types are inferred ([ADR-0020](../../decisions/0020-zod-runtime-schema-library.md)).
 > This document remains the canonical **contract** (the human-readable spec the schema
 > implements); if the two ever diverge, this spec wins and the schema is corrected to it.
 

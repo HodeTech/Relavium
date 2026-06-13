@@ -292,7 +292,7 @@ function enforcePolicy(def: ToolDef, args: unknown, ctx: ToolDispatchContext): v
     enforceHttpEgress(def.id, target.url, ctx);
   }
   // egress 'search' / 'mcp' reach a CONFIGURED provider/server (not an allowedDomains allowlist); the
-  // SSRF range-block runs inside the host egress capability (1.AE). No engine allowlist check here.
+  // SSRF range-block runs inside the host egress capability. No engine allowlist check here.
 }
 
 function commandAllowed(command: string, policy: import('@relavium/shared').ToolPolicy): boolean {
