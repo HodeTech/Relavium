@@ -14,6 +14,12 @@ describe('utf8ByteLength', () => {
     expect(utf8ByteLength('😀')).toBe(4); // U+1F600 surrogate pair
     expect(utf8ByteLength('')).toBe(0);
   });
+
+  it('counts a LONE high surrogate as 3 bytes without skipping the next char (L-1)', () => {
+    expect(utf8ByteLength('\ud83d€')).toBe(6); // lone high (3) + € (3), not 4-with-skip
+    expect(utf8ByteLength('\ud83d')).toBe(3); // lone high at end of string
+    expect(utf8ByteLength('\udc00')).toBe(3); // lone low surrogate
+  });
 });
 
 describe('boundForModel', () => {

@@ -111,10 +111,16 @@ async function dispatch(
     outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
     // 7. Bound the MODEL-FACING result (the full result is untouched above).
     bounded = await boundForModel(output, ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS, host, ctx.signal);
+    // An abort that lands during bounding (its async fast path yields a microtask) must still classify
+    // as cancelled, not a success — the symmetric guard to line 109 after the dispatch await.
+    throwIfAborted(ctx, def.id);
   } catch (cause) {
     if (cause instanceof ToolCancelledError) {
       throw cause; // already classified (e.g. throwIfAborted) — never double-wrap
     }
+    // Cancel-wins-all (ADR-0036 cancel precedence): once the run's signal is aborted, any failure on
+    // this path closes the step as `cancelled`, even a typed ToolDispatchError (e.g. a capability gap).
+    // The deterministic error re-surfaces on the next, non-cancelled run; a torn-down run stays cancelled.
     if (isAbort(cause, ctx)) {
       throw new ToolCancelledError(def.id, cause);
     }
@@ -350,32 +356,37 @@ function extractHttpsHost(url: string): { host: string; hasCredentials: boolean 
 }
 
 /**
- * A minimal, well-bounded glob: `*` (any run) and `?` (one char), everything else literal, full match.
- * Consecutive `*` collapse to a single `.*` (no `(.*)+`-style catastrophic backtracking on a degenerate
- * author glob), and compiled patterns are cached (author globs are a small fixed set).
+ * A minimal glob: `*` (any run, incl. empty) and `?` (exactly one char); everything else is literal;
+ * full-string match. Implemented as a **linear-time** iterative matcher with a single backtrack point
+ * for the last `*` — NOT a compiled RegExp. A RegExp translation (`a*a*a*…`) backtracks catastrophically
+ * (ReDoS) on an author-supplied pathological glob; this matcher is O(len(value) × len(glob)) worst case,
+ * with no exponential blowup. (`allowedCommandGlobs` is opt-in and author-controlled, but a community /
+ * imported workflow is a real threat surface — see ADR-0029.)
  */
-const globCache = new Map<string, RegExp>();
 function globMatch(glob: string, value: string): boolean {
-  let compiled = globCache.get(glob);
-  if (compiled === undefined) {
-    let pattern = '^';
-    let prevStar = false;
-    for (const ch of glob) {
-      if (ch === '*') {
-        if (!prevStar) {
-          pattern += '.*';
-        }
-        prevStar = true;
-        continue;
-      }
-      prevStar = false;
-      pattern += ch === '?' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let g = 0; // index into glob
+  let v = 0; // index into value
+  let star = -1; // glob index just past the last `*` seen, or -1
+  let mark = 0; // value index to resume from when backtracking the last `*`
+  while (v < value.length) {
+    const gc = glob[g];
+    if (gc === '?' || (gc !== undefined && gc !== '*' && gc === value[v])) {
+      g++;
+      v++;
+    } else if (gc === '*') {
+      star = ++g; // `*` matches zero chars first; remember where to extend it
+      mark = v;
+    } else if (star !== -1) {
+      g = star; // mismatch — let the last `*` swallow one more char of value
+      v = ++mark;
+    } else {
+      return false;
     }
-    pattern += '$';
-    compiled = new RegExp(pattern);
-    globCache.set(glob, compiled);
   }
-  return compiled.test(value);
+  while (glob[g] === '*') {
+    g++; // trailing `*`s match the empty remainder
+  }
+  return g === glob.length;
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -391,6 +402,9 @@ function applyOutputMapping(
   }
   const out: Record<string, unknown> = {};
   for (const [stateKey, path] of Object.entries(mapping)) {
+    if (UNSAFE_ARG_KEYS.has(stateKey)) {
+      continue; // a `__proto__` stateKey would mutate `out`'s prototype, not add an own property
+    }
     out[stateKey] = readPath(full, path);
   }
   return out;

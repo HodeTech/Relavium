@@ -168,4 +168,11 @@ describe('built-in git tool hardening', () => {
     await target.dispatch(target.parseArgs({ message: 'm', files: ['a.ts', 'b.ts'] }), { process: { spawn } }, ctx);
     expect(spawn).toHaveBeenCalledWith('git', ['commit', '-m', 'm', '--', 'a.ts', 'b.ts'], {}, {}, undefined);
   });
+
+  it('git_commit with no files still terminates options with `--` (TG-6)', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    const target = tool('git_commit');
+    await target.dispatch(target.parseArgs({ message: 'm' }), { process: { spawn } }, ctx);
+    expect(spawn).toHaveBeenCalledWith('git', ['commit', '-m', 'm', '--'], {}, {}, undefined);
+  });
 });

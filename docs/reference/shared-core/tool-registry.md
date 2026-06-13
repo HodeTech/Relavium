@@ -1,6 +1,6 @@
 # Tool Registry & the `ToolHost` Seam
 
-- **Status**: Draft — pending [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md) acceptance (flips to **Stable** when the ADR is Accepted)
+- **Status**: Stable ([ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md) is Accepted)
 - **Canonical home**: the contract for the engine-side `ToolRegistry` + dispatch in `packages/core` (`@relavium/core`) and the host-injected `ToolHost` capability seam it performs side effects through — workstream **1.T**
 - **Related**: [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md) (the decision), [../../decisions/0029-tool-policy-hardening.md](../../decisions/0029-tool-policy-hardening.md) (the guardrails), [built-in-tools.md](built-in-tools.md) (the tool catalog + the concrete result-bounding / config-only-param shapes), [node-types.md](node-types.md) (the `tool_config` / `agent_config` blocks that carry `parameters` / `input_mapping` / `output_mapping`), [mcp-integration.md](mcp-integration.md) (the MCP tool transport, 2.R), [llm-provider-seam.md](llm-provider-seam.md) (the canonical `ToolDef` the `ToolNormalizer` lowers), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxonomy) (`agent:tool_call` / `agent:tool_result` payloads + the `tool_denied` / `tool_failed` codes), [../../standards/security-review.md](../../standards/security-review.md#prompt-injection-posture) (the untrusted-data + SSRF + secret rules), [../../standards/error-handling.md](../../standards/error-handling.md) (the retryable/fatal mapping), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) (the sibling `ExecutionHost` seam + the single event-translation point), [../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (durable media handles)
 
@@ -32,11 +32,13 @@ interface ToolDef<Args = unknown, Result = unknown> {
 
   /**
    * The LLM-VISIBLE projection of the parameter shape — and ONLY this — is what the `ToolNormalizer`
-   * (1.E) lowers to each provider's wire shape; a model can supply only these. It is derived from the
-   * LLM-visible subset of the args schema (an in-house emitter or a hand-maintained projection — an
-   * implementation detail), excluding every `configOnlyParams` entry.
+   * (1.E) lowers to each provider's wire shape; a model can supply only these. Derived from the
+   * LLM-visible subset of the args schema (an in-house emitter or a hand-maintained projection),
+   * excluding every `configOnlyParams` entry. Typed `JsonSchema` (= `Readonly<Record<string, unknown>>`,
+   * exported by `@relavium/core`) — opaque data the engine carries, NOT the `@types/json-schema`
+   * `JSONSchema7` type (the engine never imports it).
    */
-  readonly llmVisibleParams: JSONSchema7;
+  readonly llmVisibleParams: JsonSchema;
 
   /**
    * Names of CONFIG-PINNED parameters: their VALUES come from the node's `tool_config` / `agent_config`
@@ -124,7 +126,8 @@ interface EgressCapability {
    * per-hop-redirect-revalidate — security-review.md). A `credentialRef` is an OPAQUE secret-store
    * reference (the `web_search` provider key, an auth header value) the host resolves and attaches
    * INSIDE its trusted boundary — the ADR-0006/0018 key-reference pattern, so the raw secret never
-   * enters the engine / WebView. Streams the response and enforces `ctx.limits` while streaming.
+   * enters the engine / WebView. v1.0 bounding is applied post-hoc by the registry over the in-memory
+   * `EgressResponse.body`; a future `maxBytes` on `EgressRequest` (with 1.AE) enables source-side truncation.
    * Ships feature-flag-OFF until the shared primitive lands at 1.AE.
    */
   fetch(request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse>;
@@ -150,6 +153,7 @@ half-populated args (a `tool` node has no model args — every value arrives via
 policy that ran before assembly would inspect nothing and a command allowlist would be bypassed). The
 host is touched once, in the middle.
 
+0. **Reject a provider-executed call.** If `toolCall.providerExecuted === true`, reject immediately with `ToolPolicyError(reason: 'provider_executed')` **before** id resolution — the engine never dispatches a provider-executed `tool_call` (content.ts; ADR-0030/0029).
 1. **Resolve by exact id, then check the grant.** Look up `toolCall.name` by **exact match** — unknown / misspelled → `UnknownToolError` listing the available ids (**never** fuzzy / nearest-name, [ADR-0029](../../decisions/0029-tool-policy-hardening.md)). Then verify the id is in `ctx.grantedToolIds` (the node's narrowed grant, 0029(b)); a registered-but-not-granted tool (e.g. a hallucinated / injected `tool_call`) → `ToolPolicyError`. The registry holding a `ToolDef` is **not** authorization to dispatch it.
 2. **Assemble the effective argument set.** Start from the model-supplied args (for an agent tool-call) and/or `ctx.config.input_mapping` (for a `tool` node, where there are no model args), apply `input_mapping`, then merge `configOnlyParams` **last (config wins)**.
 3. **Validate the COMPLETE effective set** via `tool.parseArgs` **and** the secret-taint check — `input_mapping`/config-derived values are validated identically to model args; a secret-tainted value reaching a non-credential arg is rejected (0029(c)). A miss → `ToolArgsInvalidError`.
@@ -253,7 +257,7 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 | Error | When | Run `ErrorCode` | Class |
 |-------|------|-----------------|-------|
 | `UnknownToolError` | id not an exact match | `tool_failed` | fatal (loop-correctable first) |
-| `ToolPolicyError` | a guardrail / grant denial (unlisted command, blocked domain, not granted, missing gate) | `tool_denied` | **fatal** (never retried) |
+| `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required` (the full `ToolPolicyDenyReason` union) | `tool_denied` | **fatal** (never retried) |
 | `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint | `validation` | fatal (loop-correctable first) |
 | `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `internal` | fatal |
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |

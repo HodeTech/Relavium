@@ -35,8 +35,15 @@ export function utf8ByteLength(text: string): number {
     } else if (code < 0x800) {
       bytes += 2;
     } else if (code >= 0xd800 && code <= 0xdbff) {
-      bytes += 4; // a surrogate pair encodes one 4-byte code point
-      i++;
+      // A high surrogate: only a 4-byte code point when FOLLOWED by a low surrogate. A lone high surrogate
+      // is 3 bytes (WTF-8) and must not consume the next unit.
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i++;
+      } else {
+        bytes += 3;
+      }
     } else {
       bytes += 3;
     }
@@ -122,8 +129,13 @@ function sliceToBytes(text: string, maxBytes: number, fromEnd: boolean): string 
   while (i > 0) {
     let start = i - 1;
     const unit = text.charCodeAt(start);
+    // Back up to the leading high surrogate ONLY for a real pair; a LONE low surrogate is its own
+    // 3-byte (WTF-8) unit (`codePointAt` returns the surrogate value → codePointBytes = 3).
     if (unit >= 0xdc00 && unit <= 0xdfff && start > 0) {
-      start -= 1; // a low surrogate — include its leading high surrogate
+      const prev = text.charCodeAt(start - 1);
+      if (prev >= 0xd800 && prev <= 0xdbff) {
+        start -= 1;
+      }
     }
     const cp = text.codePointAt(start);
     if (cp === undefined) {

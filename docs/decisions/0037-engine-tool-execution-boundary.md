@@ -1,6 +1,6 @@
 # ADR-0037: Engine-side tool-execution boundary — the `ToolHost` capability seam, the policy/mechanism split, and bounded tool results
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-06-13
 - **Related**: [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md), [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0018](0018-desktop-execution-and-rust-egress.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0023](0023-strict-authored-yaml-validation.md), [ADR-0027](0027-expression-sandbox.md), [ADR-0028](0028-workflow-resource-governance.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0034](0034-mcp-client-sdk-dependency.md), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md), [tool-registry.md](../reference/shared-core/tool-registry.md), [built-in-tools.md](../reference/shared-core/built-in-tools.md), [mcp-integration.md](../reference/shared-core/mcp-integration.md), [security-review.md](../standards/security-review.md), [error-handling.md](../standards/error-handling.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md), [architectural-principles.md](../standards/architectural-principles.md)
 

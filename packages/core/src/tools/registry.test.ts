@@ -470,7 +470,7 @@ describe('ToolRegistry — config-only params cannot be model- or mapping-suppli
       ctx({ config: { parameters: { credentialRef: 'real-key-ref' } } }),
     );
     const req = fetch.mock.calls[0]?.[0];
-    expect(req?.url).not.toContain('attacker.evil'); // model endpoint dropped → relative, host SSRF rejects it
+    expect(req?.url).not.toContain('attacker.evil'); // model endpoint dropped → relative `?q=`; the 1.AE host primitive rejects a non-HTTPS URL in prod (stub skips that)
     expect(req?.credentialRef).toBe('real-key-ref'); // the model's 'STOLEN' override is dropped
   });
 
@@ -587,5 +587,110 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
     );
     expect(err).toBeInstanceOf(ToolArgsInvalidError);
     expect(err.fields).toEqual(['path']);
+  });
+});
+
+/* --- round-3 regressions: the round-2 (Sonnet) findings --- */
+
+describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 post-bounding)', () => {
+  it('classifies an abort that lands after the host RESOLVES (M-3 / line 109)', async () => {
+    const signal = { aborted: false };
+    const host = stubHost({
+      fs: fsWith(() => {
+        signal.aborted = true; // cancelled while in-flight, but the host RESOLVES (no throw)
+        return Promise.resolve({ content: 'ok', mimeType: 'text/plain', sizeBytes: 2, lastModified: 't' });
+      }),
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(call('read_file', { path: 'a' }), ctx({ signal: signal as never })),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+  });
+
+  it('classifies an abort that lands during bounding (H-1 / post-boundForModel guard)', async () => {
+    const signal = { aborted: false };
+    const big = 'z'.repeat(5000);
+    const host = stubHost({
+      fs: fsWith(() => Promise.resolve({ content: big, mimeType: 'text/plain', sizeBytes: 5000, lastModified: 't' })),
+      outputStore: {
+        spill: (text) => {
+          signal.aborted = true; // the run is cancelled during the spill, but spill RESOLVES (no throw)
+          return Promise.resolve({ ref: 'spill://x', byteLength: text.length });
+        },
+      },
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('read_file', { path: 'a' }),
+        ctx({ signal: signal as never, limits: { maxBytes: 10, maxLines: 1 } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+  });
+});
+
+describe('ToolRegistry — output_mapping stateKey cannot pollute the prototype (M-2)', () => {
+  it('drops a __proto__ stateKey, leaving the result a clean Object.prototype object', async () => {
+    const out = await registry().dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({
+        config: { outputMapping: { ['__proto__']: 'stdout', code: 'exitCode' } },
+        toolPolicy: { allowedCommands: ['ls'] },
+      }),
+    );
+    expect(out.output).toEqual({ code: 0 }); // __proto__ stateKey skipped
+    expect(Object.getPrototypeOf(out.output)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(out.output, '__proto__')).toBe(false);
+  });
+});
+
+describe('ToolRegistry — globMatch is linear-time (no ReDoS) and correct (M-1)', () => {
+  it('rejects a pathological alternating glob without hanging', async () => {
+    const evilGlob = 'a*'.repeat(20) + 'X'; // the classic ReDoS shape against a long non-match
+    const start = performance.now();
+    const err = await rejectsWith<ToolPolicyError>(
+      registry().dispatch(call('run_command', { command: 'a'.repeat(60) }), ctx({ toolPolicy: { allowedCommandGlobs: [evilGlob] } })),
+    );
+    expect(performance.now() - start).toBeLessThan(1000); // linear matcher returns near-instantly
+    expect(err.reason).toBe('command_not_allowed');
+  });
+
+  it.each([
+    ['a*b*c', 'aXXbYYc', true],
+    ['a*X', 'aYYYX', true],
+    ['a*X', 'aYYY', false],
+    ['*', 'anything at all', true],
+    ['gi?', 'git', true],
+    ['gi?', 'gie', true],
+    ['gi?', 'giff', false],
+  ])('glob %s vs %s = %s', async (glob, command, allowed) => {
+    const run = registry().dispatch(call('run_command', { command }), ctx({ toolPolicy: { allowedCommandGlobs: [glob] } }));
+    if (allowed) {
+      expect((await run).events.result.success).toBe(true);
+    } else {
+      const err = await rejectsWith<ToolPolicyError>(run);
+      expect(err.reason).toBe('command_not_allowed');
+    }
+  });
+});
+
+describe('ToolRegistry — remaining hardening regressions (TG-2, TG-4)', () => {
+  it('git_status drops an args[] supplied via input_mapping (TG-2)', async () => {
+    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+      call('git_status', { command: 'diff' }),
+      ctx({ config: { inputMapping: { args: ['--no-index', '/etc/passwd'] } } }),
+    );
+    expect(spawn).toHaveBeenCalledWith('git', ['diff'], {}, {}, undefined); // args is config-only; input_mapping cannot supply it
+  });
+
+  it('rejects a DEL (0x7f) control char in the authority (TG-4)', async () => {
+    const err = await rejectsWith<ToolPolicyError>(
+      registry().dispatch(
+        call('http_request', { url: 'https://api' + String.fromCharCode(0x7f) + '.example.com/x' }),
+        ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } }),
+      ),
+    );
+    expect(err.reason).toBe('insecure_url');
   });
 });
