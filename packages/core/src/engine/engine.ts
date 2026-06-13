@@ -397,6 +397,7 @@ class RunExecution {
         vertex,
         runOutputs: this.#completedOutputs(),
         inputs: this.#inputs,
+        toolPolicy: this.#workflow.workflow.tools ?? {},
         emit: (event) => {
           this.#nodeEmit(event);
         },
