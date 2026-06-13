@@ -2,7 +2,18 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-07
-- **Related**: [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md) (the seam ADR this amends), [0029-tool-policy-hardening.md](0029-tool-policy-hardening.md) (the same "tighten the contract before it has consumers" move; the tool allowlist that makes `providerExecuted` matter), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) (the seam's one canonical home), [../standards/error-handling.md](../standards/error-handling.md)
+- **Related**: [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md) (the seam ADR this amends), [0029-tool-policy-hardening.md](0029-tool-policy-hardening.md) (the same "tighten the contract before it has consumers" move; the tool allowlist that makes `providerExecuted` matter), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0039-same-provider-reasoning-replay.md](0039-same-provider-reasoning-replay.md) (**adds the same-provider reasoning-replay *behavior* the channel below left shape-only**), [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) (the seam's one canonical home), [../standards/error-handling.md](../standards/error-handling.md)
+
+> **Amended 2026-06-14 by [ADR-0039](0039-same-provider-reasoning-replay.md)** (append-only — this body
+> is unchanged): the reasoning channel below was landed **shape-only**, with the intent that "only the
+> originating adapter feeds it back." ADR-0039 supplies the missing **replay behavior** — the originating
+> Anthropic adapter lowers a *surviving* signed reasoning part back to a `thinking` block (at both the
+> `toAnthropicBlock` type and the `toAnthropicMessage` filter), the `FallbackChain`'s cross-provider
+> strip-latch (`#lastProvider`) moves from per-call `ChainRun` scope to **chain-instance** scope so it
+> survives a multi-turn tool loop, and the `AgentRunner` carries the signed part through a same-provider
+> continuation. **Anthropic `redacted_thinking` replay** (the opaque `data` is dropped on the way in) and
+> **Gemini part-level `thoughtSignature`** (incl. on a `functionCall`) need a canonical opaque-continuation
+> carrier and are recorded follow-ups against this ADR's shape.
 
 ## Context
 

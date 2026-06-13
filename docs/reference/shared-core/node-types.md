@@ -116,7 +116,7 @@ In the engine's `WorkflowDefinition`, a node carries `id`, `type`, `label`, opti
 
 | Engine config block | Present when `type =` | Notable fields |
 | --- | --- | --- |
-| `agent_config` | `agent` | `agent_id`, `model_override_id`, `system_prompt_append`, `input_mapping`, `output_mapping`, `output_schema` (optional; validated on completion), `config_override` |
+| `agent_config` | `agent` | `agent_ref` (resolves to the agent definition), `system_prompt_append`, `prompt_template`, `tools` (**narrows** the agent's grant — never widens, [ADR-0029](../../decisions/0029-tool-policy-hardening.md)), `model`, `temperature`, `max_tokens`, `output_schema` (optional; node override wins over the agent default; validated **node-side** on completion — [ADR-0038](../../decisions/0038-agentrunner-llm-call-boundary.md)), `timeout_ms`, `retry` (fields are inline on the `agent` node — `AgentNodeSchema`; there is no nested `agent_config` object) |
 | `condition_config` | `condition` | `expression_type` (`js` in v1.0; `jmespath`/`jsonlogic` reserved — [ADR-0027](../../decisions/0027-expression-sandbox.md)), `expression` (evaluated once), `branches[]` (each `{ when, target_node_id }` — `when` is **strictly** matched, `===`, against the result), `default_target_node_id` (taken when no `when` matches) |
 | `tool_config` | `tool` | `tool_name`, `tool_source` (`builtin`/`mcp`), `mcp_server`, `parameters`, `input_mapping`, `output_mapping` |
 | `transform_config` | `transform` | `expression_type` (`js` in v1.0; `jmespath`/`jsonlogic` reserved — [ADR-0027](../../decisions/0027-expression-sandbox.md)), `transformations[]` (`target_key`, `expression`), `output_schema` (optional) |

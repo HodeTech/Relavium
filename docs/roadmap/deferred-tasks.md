@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-12
+> Last updated: 2026-06-14
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -206,6 +206,34 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (esp. with a reviver, or merged into `{}`) can re-materialize `__proto__` as a real setter. The 1.R
   checkpoint/resume layer MUST transport the frozen scope with `structuredClone`, never a JSON round-trip;
   pin it with a test when the checkpointer lands. *(packages/core/src/interpolation/resolve.ts; 1.R)*
+
+## AgentRunner (1.O) / reasoning-replay follow-ups
+
+> **2026-06-14 1.O pre-implementation review.** [ADR-0039](../decisions/0039-same-provider-reasoning-replay.md)
+> scopes the same-provider signed-reasoning replay to **Anthropic signed (non-redacted) thinking** — the case
+> 1.O's headline acceptance needs. Two harder per-provider cases are explicitly deferred (recorded here, not
+> shipped half-built) because each needs a canonical opaque-continuation carrier (a seam-shape addition tracked
+> against [ADR-0030](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)).
+
+- [ ] **Anthropic `redacted_thinking` replay** — the inbound fold drops the opaque `data`
+  (`{ type: 'reasoning', text: '', redacted: true }`), so a redacted block can never be lowered back. Faithful
+  replay needs the canonical reasoning `ContentPart` to carry an opaque continuation payload; until then a
+  `redacted` part is carried as-is and not replayed, and redacted-thinking continuations are out of 1.O scope.
+  *(high · packages/llm/src/adapters/anthropic.ts:126-127, packages/shared/src/content.ts:447-450; ADR-0030 follow-up)*
+- [ ] **Gemini part-level `thoughtSignature` replay** — Gemini carries the continuity signature on **any** `Part`
+  including a `functionCall`; the adapter drops it (`mapContent` reads only name/args) and the canonical
+  `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
+  themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
+  adapter capture/replay. *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
+- [ ] **DeepSeek surviving-reasoning replay** — the same per-provider contract applies; confirm whether the
+  OpenAI-compatible adapter normalizes/replays `reasoning_content` on a same-provider continuation, or currently
+  drops it. *(medium · packages/llm/src/adapters/openai.ts; ADR-0030 follow-up)*
+- [ ] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
+  secret into `run.outputs` (it emits LLM text only), so this is **not** 1.O's to own; it belongs to the
+  `transform` / sandbox node (1.P / 1.AB) that can return a secret-derived value. 1.O's only obligation is to
+  refuse a tainted `{{ run.outputs[…] }}` reference *if* such a marker reaches it; the static parse-time
+  `analyzeSecretTaint` gate covers the authored template graph. Record as a scoped ADR-0029 amendment when 1.P/1.AB
+  lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)*
 
 ## Schema / validation hardening
 
