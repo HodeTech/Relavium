@@ -112,9 +112,8 @@ class RunEventStream implements AsyncIterableIterator<RunEvent> {
 
   /** Consumer abandoned the loop (`break` / `return`) — release the stream. */
   return(): Promise<IteratorResult<RunEvent>> {
-    this.#closed = true;
-    this.#buffer.length = 0;
-    this.#wakeDrainWaiters();
+    this.close(); // settles any parked next() deterministically (don't duplicate that logic here)
+    this.#buffer.length = 0; // discard anything still buffered on an early abandon
     return Promise.resolve({ value: undefined, done: true });
   }
 
@@ -144,7 +143,11 @@ export interface RunHandle {
 /**
  * Wire a {@link RunHandle} over a bus. Subscribes the primary stream at construction (before
  * `run:started`), and on a terminal event closes the stream and unsubscribes so the `for await`
- * completes exactly once and nothing leaks.
+ * completes exactly once and nothing leaks. Both the primary subscription and the exposed
+ * {@link RunHandle.subscribe} are **scoped to this run's `runId`** — so even on a bus shared across
+ * runs/sessions (the ADR-0036 "one bus, two namespaces" model) a handle only ever sees its own run's
+ * events. (The engine instantiates a bus per run today, so the filter is also a guard against a future
+ * shared bus.)
  */
 export function createRunHandle(
   bus: RunEventBus,
@@ -154,6 +157,9 @@ export function createRunHandle(
 ): RunHandle {
   const primary = new RunEventStream(capacity);
   const unsubscribe = bus.subscribe((event) => {
+    if (event.runId !== runId) {
+      return; // not this run's event
+    }
     primary.push(event);
     if (TERMINAL_TYPES.has(event.type)) {
       primary.close();
@@ -163,7 +169,12 @@ export function createRunHandle(
   return {
     runId,
     events: primary,
-    subscribe: (listener) => bus.subscribe(listener),
+    subscribe: (listener) =>
+      bus.subscribe((event) => {
+        if (event.runId === runId) {
+          listener(event);
+        }
+      }),
     cancel,
     whenConsumersReady: () => primary.whenDrained(),
   };

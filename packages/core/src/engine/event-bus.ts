@@ -129,12 +129,26 @@ export class RunEventBus {
 
   #reportListenerError(error: unknown, event: RunEvent): void {
     if (this.#onListenerError !== undefined) {
-      this.#onListenerError(error, event);
-      return;
+      try {
+        this.#onListenerError(error, event);
+        return;
+      } catch (sinkError) {
+        // The sink itself threw — it must NEVER bubble back into deliver() and break the producer or
+        // sibling subscribers. Surface the secondary failure out-of-band instead.
+        this.#surfaceOutOfBand(sinkError);
+        return;
+      }
     }
     // No sink: surface out-of-band rather than swallow (no-silent-catch) and without breaking the
-    // producer or sibling subscribers. A deferred `Promise` throw is the ES-only (no DOM/Node lib)
-    // equivalent of `queueMicrotask` — it becomes an unhandled rejection the host can observe.
+    // producer or sibling subscribers.
+    this.#surfaceOutOfBand(error);
+  }
+
+  /**
+   * Re-throw out-of-band on a microtask so it becomes an observable unhandled rejection — the ES-only
+   * (no DOM/Node lib) equivalent of `queueMicrotask`, never breaking the in-progress `deliver()`.
+   */
+  #surfaceOutOfBand(error: unknown): void {
     void Promise.resolve().then(() => {
       throw error;
     });

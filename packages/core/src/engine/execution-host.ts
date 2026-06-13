@@ -185,7 +185,7 @@ export class InMemoryRunStore implements RunStore {
       if (events.some((e) => TERMINAL_TYPES.has(e.type))) {
         continue; // already settled
       }
-      const last = events[events.length - 1];
+      const last = events.at(-1);
       interrupted.push({
         runId,
         workflowId: started.workflowId,

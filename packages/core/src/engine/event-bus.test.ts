@@ -68,16 +68,17 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
 
   it('does not advance the counter when validation rejects the event', () => {
     const bus = new RunEventBus({ now: fakeNow() });
-    const bad = {
+    // Statically valid (a number), runtime-invalid (nonNegativeInt rejects -1) — no cast needed.
+    const bad: RunEventDraft = {
       type: 'cost:updated',
       runId: 'run-1',
       nodeId: 'n',
       model: 'm',
       inputTokens: 0,
       outputTokens: 0,
-      costMicrocents: -1, // nonNegativeInt — rejected
+      costMicrocents: -1,
       cumulativeCostMicrocents: 0,
-    } as unknown as RunEventDraft;
+    };
     expect(() => bus.next(bad)).toThrow();
     // The next valid event still gets sequence 0 — the failed stamp did not consume a number.
     expect(bus.next(nodeStarted('run-1', 'a')).sequenceNumber).toBe(0);

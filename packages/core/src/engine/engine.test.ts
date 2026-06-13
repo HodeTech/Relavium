@@ -85,6 +85,35 @@ function expectThrowsCode(fn: () => void, code: string): void {
   throw new Error(`expected an EngineStateError with code ${code}`);
 }
 
+/** Seed a store with a `run:started` (and optionally a trailing event) to simulate a crashed run. */
+function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']): Promise<void> {
+  const startedAt = '2026-06-13T00:00:00.000Z';
+  const events: RunEvent[] = [
+    {
+      type: 'run:started',
+      runId,
+      timestamp: startedAt,
+      sequenceNumber: 0,
+      workflowId: '00000000-0000-4000-8000-000000000099',
+      inputs: {},
+      executionMode: 'local',
+    },
+  ];
+  if (lastType === 'human_gate:paused') {
+    events.push({
+      type: 'human_gate:paused',
+      runId,
+      timestamp: startedAt,
+      sequenceNumber: 1,
+      nodeId: 'g',
+      gateId: 'gid',
+      gateType: 'approval',
+      message: 'approve?',
+    });
+  }
+  return Promise.all(events.map((e) => store.persistEvent(e))).then(() => undefined);
+}
+
 const SEQUENTIAL = `  id: seq
   nodes:
     - { id: start, type: input }
@@ -391,10 +420,8 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
       g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }),
     });
     const handle = engine.start({ workflow: workflow(GATED) });
-    const events: RunEvent[] = [];
     let caught: unknown;
     for await (const event of handle.events) {
-      events.push(event);
       if (event.type === 'human_gate:paused') {
         try {
           await engine.resume(handle.runId, 'not-a-real-gate', {
@@ -459,34 +486,6 @@ describe('WorkflowEngine — max_parallel concurrency cap', () => {
 // --- crash reconciliation ---------------------------------------------------------------------
 
 describe('WorkflowEngine — crash reconciliation', () => {
-  function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']): Promise<void> {
-    const startedAt = '2026-06-13T00:00:00.000Z';
-    const events: RunEvent[] = [
-      {
-        type: 'run:started',
-        runId,
-        timestamp: startedAt,
-        sequenceNumber: 0,
-        workflowId: '00000000-0000-4000-8000-000000000099',
-        inputs: {},
-        executionMode: 'local',
-      },
-    ];
-    if (lastType === 'human_gate:paused') {
-      events.push({
-        type: 'human_gate:paused',
-        runId,
-        timestamp: startedAt,
-        sequenceNumber: 1,
-        nodeId: 'g',
-        gateId: 'gid',
-        gateType: 'approval',
-        message: 'approve?',
-      });
-    }
-    return Promise.all(events.map((e) => store.persistEvent(e))).then(() => undefined);
-  }
-
   it('fails a crashed, non-resumable run with a single run:failed continuing its sequence', async () => {
     const store = new InMemoryRunStore();
     await seedStarted(store, 'crashed-1');

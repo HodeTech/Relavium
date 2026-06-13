@@ -105,6 +105,39 @@ describe('RunHandle — the async-iterable event stream', () => {
     expect(observed.map((e) => e.type)).toEqual(['node:started', 'run:completed']);
   });
 
+  it('scopes each handle to its own run on a shared bus (no cross-run leakage)', async () => {
+    const b = bus();
+    const h1 = createRunHandle(b, 'run-1', () => undefined);
+    const h2 = createRunHandle(b, 'run-2', () => undefined);
+    const ns = (runId: string, nodeId: string): RunEventDraft => ({
+      type: 'node:started',
+      runId,
+      nodeId,
+      nodeType: 'input',
+    });
+    const done = (runId: string): RunEventDraft => ({
+      type: 'run:completed',
+      runId,
+      outputs: {},
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    });
+
+    b.emit(ns('run-1', 'a'));
+    b.emit(ns('run-2', 'x'));
+    b.emit(done('run-1')); // terminal for run-1 only — must not close run-2
+
+    const e1 = await drain(h1.events);
+    expect(e1.every((e) => e.runId === 'run-1')).toBe(true);
+    expect(e1.map((e) => e.type)).toEqual(['node:started', 'run:completed']);
+
+    b.emit(done('run-2')); // now close run-2
+    const e2 = await drain(h2.events);
+    expect(e2.every((e) => e.runId === 'run-2')).toBe(true);
+    expect(e2.map((e) => e.type)).toEqual(['node:started', 'run:completed']);
+  });
+
   it('cancel() delegates to the injected canceller', () => {
     const cancel = vi.fn();
     const handle = createRunHandle(bus(), 'run-1', cancel);

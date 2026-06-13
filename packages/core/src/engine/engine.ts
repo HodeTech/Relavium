@@ -45,9 +45,11 @@ import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
+  GateRequest,
   NodeExecContext,
   NodeExecutor,
   NodeFailure,
+  NodeOutcome,
   NodeStreamEvent,
 } from './node-executor.js';
 import { createRunHandle, type RunHandle } from './run-handle.js';
@@ -261,7 +263,7 @@ class RunExecution {
       nodeId: gate.vertexId,
       decision: decision.decision,
       decidedBy: decision.decidedBy,
-      ...(decision.payload !== undefined ? { payload: decision.payload } : {}),
+      ...(decision.payload === undefined ? {} : { payload: decision.payload }),
     });
     const state = this.#states.get(gate.vertexId);
     if (state !== undefined) {
@@ -327,22 +329,7 @@ class RunExecution {
 
     const ready = this.#claimReady(running);
     if (ready.length === 0) {
-      if (running === 0) {
-        if (this.#pendingGates.size > 0) {
-          await this.#emitPausedOnce();
-        } else {
-          // A valid DAG always makes progress while nothing runs and no gate is pending; reaching here
-          // is an engine-invariant breach (e.g. a skip-propagation bug) — fail loudly, never hang.
-          this.#failure = {
-            error: {
-              code: 'internal',
-              message: 'run stalled with no runnable node',
-              retryable: false,
-            },
-          };
-          this.#schedule();
-        }
-      }
+      await this.#handleIdle(running);
       return;
     }
     // The vertices are already marked `running` (claimed synchronously above), so these awaits cannot
@@ -359,6 +346,23 @@ class RunExecution {
     }
   }
 
+  /** Nothing was ready this step: while idle, pause if a gate pends, else stall loudly (invariant). */
+  async #handleIdle(running: number): Promise<void> {
+    if (running > 0) {
+      return; // still executing — wait for the next settlement to re-evaluate
+    }
+    if (this.#pendingGates.size > 0) {
+      await this.#emitPausedOnce();
+      return;
+    }
+    // A valid DAG always makes progress while nothing runs and no gate is pending; reaching here is an
+    // engine-invariant breach (e.g. a skip-propagation bug) — fail loudly, never hang.
+    this.#failure = {
+      error: { code: 'internal', message: 'run stalled with no runnable node', retryable: false },
+    };
+    this.#schedule();
+  }
+
   /** Synchronously claim every dispatchable vertex (up to the cap), marking it `running`. */
   #claimReady(alreadyRunning: number): PlanVertex[] {
     const cap = this.#plan.maxParallel ?? Number.POSITIVE_INFINITY;
@@ -370,7 +374,7 @@ class RunExecution {
       }
       const vertex = this.#plan.vertices.get(vertexId);
       const state = this.#states.get(vertexId);
-      if (vertex === undefined || state === undefined || state.status !== 'pending') {
+      if (vertex === undefined || state?.status !== 'pending') {
         continue;
       }
       if (!this.#allDepsSettled(vertex) || !this.#hasLiveEdge(vertex)) {
@@ -413,101 +417,112 @@ class RunExecution {
     await this.#onOutcome(vertex, outcome, startedAtMs);
   }
 
-  async #onOutcome(
-    vertex: PlanVertex,
-    outcome: Awaited<ReturnType<NodeExecutor['execute']>>,
-    startedAtMs: number,
-  ): Promise<void> {
+  async #onOutcome(vertex: PlanVertex, outcome: NodeOutcome, startedAtMs: number): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
     }
-    const state = this.#states.get(vertex.id);
     try {
       switch (outcome.kind) {
         case 'completed':
-        case 'branch': {
-          // Update status SYNCHRONOUSLY before emitting, so `#countRunning` is consistent the instant
-          // this vertex settles — a concurrent step never sees it as still running.
-          if (state !== undefined) {
-            state.status = 'completed';
-            state.output = outcome.output;
-            if (outcome.kind === 'branch') {
-              state.selectedTargets = new Set(outcome.selected);
-            }
-          }
-          const tokens: TokensUsed = outcome.tokensUsed ?? { input: 0, output: 0 };
-          this.#totalInputTokens += tokens.input;
-          this.#totalOutputTokens += tokens.output;
-          await this.#emitDurable({
-            type: 'node:completed',
-            runId: this.runId,
-            nodeId: vertex.id,
-            output: outcome.output,
-            tokensUsed: tokens,
-            durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
-          });
+        case 'branch':
+          await this.#settleCompleted(vertex, outcome, startedAtMs);
           break;
-        }
-        case 'failed': {
-          if (state !== undefined) {
-            state.status = 'failed';
-          }
-          // First failure is the root cause; cancel wins, so do not set #failure while cancelling.
-          if (this.#failure === undefined && !this.#cancelling) {
-            this.#failure = { nodeId: vertex.id, error: outcome.error };
-            this.#abort.abort(); // cooperatively cancel sibling branches
-          }
-          await this.#emitDurable({
-            type: 'node:failed',
-            runId: this.runId,
-            nodeId: vertex.id,
-            // Stamp a secret-free correlation id at this single translation point (ADR-0036) so a
-            // surface can quote it and it joins to the structured internal log.
-            error: { ...outcome.error, correlationId: this.#host.ids.newId() },
-          });
+        case 'failed':
+          await this.#settleFailed(vertex, outcome.error);
           break;
-        }
-        case 'paused': {
-          const gateId = outcome.gate.gateId ?? this.#host.ids.newId();
-          if (state !== undefined) {
-            state.status = 'paused';
-          }
-          this.#pendingGates.set(gateId, { vertexId: vertex.id });
-          await this.#emitDurable({
-            type: 'human_gate:paused',
-            runId: this.runId,
-            nodeId: vertex.id,
-            gateId,
-            gateType: outcome.gate.gateType,
-            message: outcome.gate.message,
-            ...(outcome.gate.assignee !== undefined ? { assignee: outcome.gate.assignee } : {}),
-            ...(outcome.gate.timeoutMs !== undefined ? { timeoutMs: outcome.gate.timeoutMs } : {}),
-            ...(outcome.gate.expiresAt !== undefined ? { expiresAt: outcome.gate.expiresAt } : {}),
-          });
+        case 'paused':
+          await this.#settlePaused(vertex, outcome.gate);
           break;
-        }
       }
     } catch {
       // Backstop for an UNEXPECTED throw while settling a node — e.g. a bus/Zod stamp failure on a
       // malformed event. (A durable persist rejection no longer reaches here: #emitDurable is total.)
-      // Never leave the run hanging: mark this vertex failed and fail the run (unless already
-      // cancelling/failing).
-      if (state !== undefined && state.status === 'running') {
-        state.status = 'failed';
-      }
-      if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
-        this.#failure = {
-          nodeId: vertex.id,
-          error: {
-            code: 'internal',
-            message: 'the engine failed while settling a node',
-            retryable: false,
-          },
-        };
-        this.#abort.abort();
-      }
+      this.#failNodeInternal(vertex, 'the engine failed while settling a node');
     }
     this.#schedule();
+  }
+
+  /** A `completed` / `branch` outcome: record output (+ selected branches), tally tokens, emit. */
+  async #settleCompleted(
+    vertex: PlanVertex,
+    outcome: Extract<NodeOutcome, { kind: 'completed' | 'branch' }>,
+    startedAtMs: number,
+  ): Promise<void> {
+    // Update status SYNCHRONOUSLY before emitting, so `#countRunning` is consistent the instant this
+    // vertex settles — a concurrent step never sees it as still running.
+    const state = this.#states.get(vertex.id);
+    if (state !== undefined) {
+      state.status = 'completed';
+      state.output = outcome.output;
+      if (outcome.kind === 'branch') {
+        state.selectedTargets = new Set(outcome.selected);
+      }
+    }
+    const tokens: TokensUsed = outcome.tokensUsed ?? { input: 0, output: 0 };
+    this.#totalInputTokens += tokens.input;
+    this.#totalOutputTokens += tokens.output;
+    await this.#emitDurable({
+      type: 'node:completed',
+      runId: this.runId,
+      nodeId: vertex.id,
+      output: outcome.output,
+      tokensUsed: tokens,
+      durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
+    });
+  }
+
+  /** A `failed` outcome: record the root cause (cancel wins), then emit `node:failed`. */
+  async #settleFailed(vertex: PlanVertex, error: NodeFailure): Promise<void> {
+    const state = this.#states.get(vertex.id);
+    if (state !== undefined) {
+      state.status = 'failed';
+    }
+    // First failure is the root cause; cancel wins, so do not set #failure while cancelling.
+    if (this.#failure === undefined && !this.#cancelling) {
+      this.#failure = { nodeId: vertex.id, error };
+      this.#abort.abort(); // cooperatively cancel sibling branches
+    }
+    await this.#emitDurable({
+      type: 'node:failed',
+      runId: this.runId,
+      nodeId: vertex.id,
+      // Stamp a secret-free correlation id at this single translation point (ADR-0036) so a surface
+      // can quote it and it joins to the structured internal log.
+      error: { ...error, correlationId: this.#host.ids.newId() },
+    });
+  }
+
+  /** A `paused` outcome: park the gate and emit `human_gate:paused`. */
+  async #settlePaused(vertex: PlanVertex, gate: GateRequest): Promise<void> {
+    const gateId = gate.gateId ?? this.#host.ids.newId();
+    const state = this.#states.get(vertex.id);
+    if (state !== undefined) {
+      state.status = 'paused';
+    }
+    this.#pendingGates.set(gateId, { vertexId: vertex.id });
+    await this.#emitDurable({
+      type: 'human_gate:paused',
+      runId: this.runId,
+      nodeId: vertex.id,
+      gateId,
+      gateType: gate.gateType,
+      message: gate.message,
+      ...(gate.assignee === undefined ? {} : { assignee: gate.assignee }),
+      ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
+      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+    });
+  }
+
+  /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
+  #failNodeInternal(vertex: PlanVertex, message: string): void {
+    const state = this.#states.get(vertex.id);
+    if (state?.status === 'running') {
+      state.status = 'failed';
+    }
+    if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
+      this.#failure = { nodeId: vertex.id, error: { code: 'internal', message, retryable: false } };
+      this.#abort.abort();
+    }
   }
 
   async #emitPausedOnce(): Promise<void> {
@@ -550,7 +565,7 @@ class RunExecution {
         runId: this.runId,
         error: {
           ...failure.error,
-          ...(failure.nodeId !== undefined ? { nodeId: failure.nodeId } : {}),
+          ...(failure.nodeId === undefined ? {} : { nodeId: failure.nodeId }),
           correlationId: this.#host.ids.newId(),
         },
         partialOutputs: this.#collectOutputs('completed'),
@@ -662,9 +677,12 @@ class RunExecution {
 
   #nodeEmit(event: NodeStreamEvent): void {
     const runId = this.runId;
-    // Narrow per-type before spreading: spreading the union value directly would collapse to its common
-    // fields. The engine owns the run-wide `cumulativeCostMicrocents` (a per-node executor cannot know
-    // it), so it is recomputed here authoritatively; the rest pass through with the correlation key added.
+    // The four non-cost cases look identical, but each must NARROW `event` to a single union member so
+    // the `{ ...event, runId }` spread keeps that member's required fields — spreading the union value
+    // directly collapses to its common fields (a type error), and bridging that with a cast would
+    // violate the no-unsafe-`as` rule. So the apparent duplication is the type-safe choice. The engine
+    // owns the run-wide `cumulativeCostMicrocents` (a per-node executor cannot know it), so cost is
+    // recomputed here authoritatively; the rest pass through with only the correlation key added.
     switch (event.type) {
       case 'agent:token':
         this.#bus.emit({ ...event, runId });
@@ -812,6 +830,11 @@ export class WorkflowEngine {
     const reconciled: RunEvent[] = [];
     for (const run of interrupted) {
       if (run.resumable) {
+        // A run parked at a gate is intentionally left for the checkpoint/resume path (1.R):
+        // rehydrating its full RunExecution from the persisted step_executions + run_events is the
+        // Checkpointer's job, not 1.N's, and failing it here would destroy the resumability 1.R
+        // restores. Until 1.R wires that rehydration, resume() on a not-yet-rehydrated run throws
+        // unknown_run by design — never silently, and never a corrupted half-run.
         continue;
       }
       const event = RunEventSchema.parse({
