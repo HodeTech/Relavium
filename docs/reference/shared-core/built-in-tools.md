@@ -19,7 +19,7 @@ A tool declaration in YAML has a `type` discriminator:
 
 | Tool id | Purpose | Returns (shape) | Notes |
 | --- | --- | --- | --- |
-| `read_file` | Read file content as UTF-8 (or base64 for binary). Supports glob for reading multiple files. | `{ content, mimeType, sizeBytes, lastModified }` | Respects the workflow's FS scope tier. |
+| `read_file` | Read text file content as UTF-8. Supports glob for reading multiple files. | `{ content, mimeType, sizeBytes, lastModified }`; **binary/media content returns a durable media handle** (`tool_result.media`, [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), never inline base64 | Respects the workflow's FS scope tier. |
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
 | `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }` | Respects FS scope. |
 | `run_command` | Spawn a shell command via the shell plugin. Streams stdout/stderr as events. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** — see below. Never runs unlisted commands. |
@@ -38,6 +38,27 @@ A tool declaration in YAML has a `type` discriminator:
 
 A `tool` node (direct tool execution without an LLM) and an agent's tool call both use `input_mapping` / `output_mapping` to wire workflow state into the tool and the result back out. Tool credentials are referenced by id from the secret store and are **never** inlined into the workflow JSON or echoed into event payloads (`agent:tool_call.toolInput` is sanitized; see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 
+## Config-only parameters
+
+A built-in tool's parameters split into two tiers. **LLM-visible** parameters form the JSON Schema the `ToolNormalizer` lowers to each provider's wire shape — the only parameters a model may supply. **Config-only** parameters take their **values from the node's `tool_config` / `agent_config` block** ([node-types.md](node-types.md) — `parameters`), are merged at dispatch (config wins), and **never** appear in the LLM-facing schema: a model-supplied argument can never override one. This keeps prompts small and pins safety-relevant values (a root path, a base URL, a timeout) out of the model's reach. The `ToolDef` field shape and the dispatch-time merge are canonical in [tool-registry.md](tool-registry.md); the decision is [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md).
+
+## Tool result bounding
+
+The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview**, an explicit **truncation marker**, and the **path** to the full output. The full bytes are **never buffered in the engine** — a large result streams and, past the ceiling, the host's run-scoped **output store** spills it incrementally (reclaimed at the run's terminal event), so the cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's context window — actually closes. The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
+
+| Knob | v1.0 default | Note |
+| --- | --- | --- |
+| Byte ceiling | 50 KB | over ⇒ spill + preview (model-facing only) |
+| Line ceiling | 2000 lines | over ⇒ spill + preview (model-facing only) |
+| Preview | head + tail slice within the ceiling | the marker names the omitted span |
+| Spill | the host's run-scoped output store; reclaimed at the terminal event | the path is handed to the model; readable via the FS-scope-tiered tools |
+
+The ceiling is a **byte/line** bound — no token count, which would need a provider-specific tokenizer and break engine purity. These defaults are tunable and revisited if real workflows hit them (the [deferred-tasks.md](../../roadmap/deferred-tasks.md) tool-output-gate framing). The dispatch lifecycle that applies them is in [tool-registry.md](tool-registry.md#result-bounding-and-spill-to-file).
+
+## Subprocess environment
+
+A tool that spawns a process (`run_command`, `git_*`) runs with **`shell: false`** under an **explicitly-constructed environment** — **never** a blanket copy of the host environment, which would hand every subprocess the host's secrets and hijack vectors (`PATH`, `NODE_OPTIONS`, …). Because the engine is platform-free it cannot build a platform base env or resolve an executable on `PATH`, so the split is: the **engine** supplies the policy (the allowlist-checked command) plus the declared extra variables; the **host** resolves the executable, supplies the platform-minimal base env, and merges only the declared variables under an audited allowlist. The seam is in [tool-registry.md](tool-registry.md#the-toolhost-capability-seam).
+
 ## Filesystem permission tiers
 
 Every file-touching tool runs under a per-workflow filesystem **scope tier**. The tier is enforced by the desktop's scoped filesystem layer and the Tauri v2 capability system — paths are validated before any syscall (see [../desktop/tauri-plugins.md](../desktop/tauri-plugins.md)).
@@ -53,3 +74,5 @@ The active tier is set in project config (see [../contracts/config-spec.md](../c
 ## Where tools run
 
 Built-in tools execute inside `@relavium/core`. On the desktop the engine and its tool dispatch run in the **WebView's JS runtime** (a Tauri WebView has no backing Node context); privileged side-effects are delegated to the Rust core through explicit Tauri commands — the authenticated LLM HTTPS egress goes through the `llm_stream` command ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)), and `run_command` and similar shell executions spawn real OS child processes through the shell plugin under the allowlist. In the CLI and VS Code surfaces the same tools run in the Node.js host process. The behavior and the result shapes are identical across surfaces because the engine is shared. See [../../architecture/execution-model.md](../../architecture/execution-model.md) and [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md).
+
+Because `@relavium/core` has **zero platform-specific imports**, the engine cannot itself touch the filesystem, spawn a process, or open a socket. It owns the tool **policy and dispatch** (registration, exact-match resolution, argument validation, the guardrails below, result bounding, untrusted-data tainting) and performs every side effect through a host-injected **`ToolHost`** capability seam — the same purity seam as the `read_file` interpolation filter ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)'s injected transport, generalized). The seam, the dispatch lifecycle, and the `ToolDef` shape are canonical in [tool-registry.md](tool-registry.md); the decision is [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md).

@@ -80,6 +80,7 @@ flowchart TD
 | 0034 | [MCP client implementation — the official TypeScript SDK, scheduled in build phase 2](0034-mcp-client-sdk-dependency.md) | Accepted | 2026-06-10 |
 | 0035 | [YAML parser for the engine — the `yaml` package, confined to `@relavium/core`](0035-yaml-parser-dependency.md) | Accepted | 2026-06-11 |
 | 0036 | [Run-loop substrate — in-house `RunEventBus`, the `ExecutionHost` seam, and the exactly-one-terminal-event invariant](0036-run-loop-substrate-event-bus-and-execution-host.md) | Accepted | 2026-06-13 |
+| 0037 | [Engine-side tool-execution boundary — the `ToolHost` capability seam, policy/mechanism split, bounded results](0037-engine-tool-execution-boundary.md) | Proposed | 2026-06-13 |
 
 ## Creating a new ADR
 
