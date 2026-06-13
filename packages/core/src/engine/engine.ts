@@ -44,7 +44,12 @@ import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
-import type { NodeExecContext, NodeExecutor, NodeFailure, NodeStreamEvent } from './node-executor.js';
+import type {
+  NodeExecContext,
+  NodeExecutor,
+  NodeFailure,
+  NodeStreamEvent,
+} from './node-executor.js';
 import { createRunHandle, type RunHandle } from './run-handle.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
@@ -58,7 +63,11 @@ interface VertexState {
 }
 
 /** A vertex status counts as *settled* (its dependents can evaluate) when it is one of these. */
-const SETTLED: ReadonlySet<VertexStatus> = new Set<VertexStatus>(['completed', 'failed', 'skipped']);
+const SETTLED: ReadonlySet<VertexStatus> = new Set<VertexStatus>([
+  'completed',
+  'failed',
+  'skipped',
+]);
 
 /** The three events that close a run — exactly one ever fires (ADR-0036). */
 const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>([
@@ -696,7 +705,11 @@ class RunExecution {
     } catch {
       if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
         this.#failure = {
-          error: { code: 'internal', message: 'a durable run-event write failed', retryable: false },
+          error: {
+            code: 'internal',
+            message: 'a durable run-event write failed',
+            retryable: false,
+          },
         };
         this.#abort.abort();
         // Re-enter the scheduler so the run actually settles. Most callers re-schedule after

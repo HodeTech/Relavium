@@ -37,7 +37,13 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
   it('keys the counter on sessionId for a session-correlated (dual-envelope) event', () => {
     const bus = new RunEventBus({ now: fakeNow() });
     // agent:token is a dual-envelope event — on a session it carries sessionId, not runId.
-    const tok: RunEventDraft = { type: 'agent:token', sessionId: 's1', nodeId: 'n', token: 'x', model: 'm' };
+    const tok: RunEventDraft = {
+      type: 'agent:token',
+      sessionId: 's1',
+      nodeId: 'n',
+      token: 'x',
+      model: 'm',
+    };
     expect(bus.next(tok).sequenceNumber).toBe(0);
     expect(bus.next(tok).sequenceNumber).toBe(1);
     // A run on the same bus keeps its own sequence (disjoint correlation keys).
@@ -52,7 +58,11 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
   it('throws when a draft carries neither runId nor sessionId (an engine invariant breach)', () => {
     const bus = new RunEventBus({ now: fakeNow() });
     // A structurally-incomplete draft — the engine always sets exactly one key, so this is a guard.
-    const orphan = { type: 'node:started', nodeId: 'a', nodeType: 'input' } as unknown as RunEventDraft;
+    const orphan = {
+      type: 'node:started',
+      nodeId: 'a',
+      nodeType: 'input',
+    } as unknown as RunEventDraft;
     expect(() => bus.next(orphan)).toThrow(/neither runId nor sessionId/);
   });
 

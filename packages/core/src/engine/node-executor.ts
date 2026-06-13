@@ -17,7 +17,12 @@
  * before emitting — the producer-side translation point validates, it does not redact.
  */
 
-import type { AbortSignalLike, ErrorCode, HumanGatePausedEvent, TokensUsed } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  ErrorCode,
+  HumanGatePausedEvent,
+  TokensUsed,
+} from '@relavium/shared';
 
 import type { RunEventDraft } from './event-bus.js';
 import type { PlanVertex } from '../run-plan.js';
