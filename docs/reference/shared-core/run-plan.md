@@ -49,7 +49,7 @@ A `fan_in` vertex carries `config.branchNodeIds` — the branch ids in the **sta
 
 A branch a `condition` routed away from is **skipped** by the run loop's skip-propagation ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). A skipped branch **counts as settled** against the join — so a `wait_all` fan-in fires instead of hanging on it — and is **omitted** from the `branches` array surfaced to `merge_fn` / `concat`, preserving the *relative order* of the surviving branches; a fan-in all of whose branches were skipped is itself skipped.
 
-> **Retry is not lifted onto the plan.** Unlike an agent's `fallbackChain` (lifted onto `AgentPlanConfig` for the run loop's convenience), a node's `retry_config` is **not** copied onto the vertex. The run loop (1.N) makes no retry decision; node-level retry above the provider fallback chain is layered by 1.S, which reads `retry_config` from the authored node (`config.node`). 1.N treats a node failure as terminal for the run.
+> **Retry is not lifted onto the plan.** Unlike an agent's `fallbackChain` (lifted onto `AgentPlanConfig` for the run loop's convenience), a node's `retry_config` is **not** copied onto the vertex. The run loop (1.N) makes no retry decision: a node failure is terminal only for that **attempt**, which — *without 1.S* — fails the run. Node-level retry above the provider fallback chain is layered by **1.S**, which reads `retry_config` from the authored node (`config.node`) and re-attempts before a node is considered finally failed.
 
 ## The dependency graph
 

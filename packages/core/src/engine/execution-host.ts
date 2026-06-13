@@ -178,8 +178,10 @@ export class InMemoryRunStore implements RunStore {
   listInterruptedRuns(): Promise<readonly InterruptedRun[]> {
     const interrupted: InterruptedRun[] = [];
     for (const [runId, events] of this.#events) {
-      const started = events.find((e) => e.type === 'run:started');
-      if (started === undefined || started.type !== 'run:started') {
+      const started = events.find(
+        (e): e is Extract<RunEvent, { type: 'run:started' }> => e.type === 'run:started',
+      );
+      if (started === undefined) {
         continue;
       }
       if (events.some((e) => TERMINAL_TYPES.has(e.type))) {

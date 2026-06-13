@@ -53,8 +53,8 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     parseArgs: (raw: unknown): A => spec.args.parse(raw),
     llmVisibleParams: spec.llmVisibleParams,
     policy: spec.policy,
-    ...(spec.configOnlyParams !== undefined ? { configOnlyParams: spec.configOnlyParams } : {}),
-    ...(spec.policyTarget !== undefined ? { policyTarget: spec.policyTarget } : {}),
+    ...(spec.configOnlyParams === undefined ? {} : { configOnlyParams: spec.configOnlyParams }),
+    ...(spec.policyTarget === undefined ? {} : { policyTarget: spec.policyTarget }),
     dispatch: spec.dispatch,
   };
   return def;

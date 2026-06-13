@@ -596,8 +596,8 @@ class RunExecution {
     }
     for (const dep of vertex.dependencies) {
       const state = this.#states.get(dep);
-      if (state === undefined || state.status !== 'completed') {
-        continue; // a skipped or failed dependency carries no live edge
+      if (state?.status !== 'completed') {
+        continue; // an unknown, skipped, or failed dependency carries no live edge
       }
       const depVertex = this.#plan.vertices.get(dep);
       if (depVertex?.type === 'condition') {

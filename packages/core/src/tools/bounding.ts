@@ -178,8 +178,9 @@ function makePreview(text: string, limits: ToolResultLimits): string {
   let tailSrc: string;
   const lines = text.split('\n');
   if (lines.length > limits.maxLines) {
-    const headLines = Math.max(1, Math.floor(limits.maxLines * 0.7));
-    const tailLines = Math.max(1, limits.maxLines - headLines);
+    // Reserve one line for the inserted `…` marker so head + tail + ellipsis never exceeds maxLines.
+    const headLines = Math.max(1, Math.floor((limits.maxLines - 1) * 0.7));
+    const tailLines = Math.max(1, limits.maxLines - 1 - headLines);
     headSrc = lines.slice(0, headLines).join('\n');
     tailSrc = lines.slice(lines.length - tailLines).join('\n');
   } else {

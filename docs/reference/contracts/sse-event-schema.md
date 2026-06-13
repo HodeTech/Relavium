@@ -1,7 +1,7 @@
 # Run Event Schema
 
 - **Status**: Stable
-- **Canonical type**: `RunEvent` (discriminated union) **defined in `@relavium/shared`** (`run-event.ts`, the runtime-validated source of truth); `@relavium/core` **consumes and re-exports** it
+- **Canonical type**: the `RunEvent` discriminated-union Zod schema lives in `@relavium/shared` (`run-event.ts`) and is **consumed / re-exported** by `@relavium/core`. **This document is the authoritative contract**; the schema is its runtime-validated implementation — if the two ever diverge, the doc wins and the schema is corrected to it (see the note under [Selected definitions](#selected-definitions))
 - **Transport**: Phase 1 — in-process `RunEventBus` (the engine runs in-process on **every** surface, including the desktop WebView). Phase 2 — HTTP `text/event-stream` (SSE) from the cloud API.
 - **Related**: [ipc-contract.md](ipc-contract.md), [workflow-yaml-spec.md](workflow-yaml-spec.md), [../shared-core/store-shapes.md](../shared-core/store-shapes.md), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md) (canonical `costMicrocents` unit + the `cost:updated` figures), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/state-management.md](../../architecture/state-management.md), [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)
 

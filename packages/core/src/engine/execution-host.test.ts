@@ -93,6 +93,23 @@ describe('InMemoryRunStore', () => {
     });
     expect(await store.listInterruptedRuns()).toHaveLength(0);
   });
+
+  it('reports a started-but-unfinished run as interrupted (resumable: false)', async () => {
+    const store = new InMemoryRunStore();
+    await store.persistEvent({
+      type: 'run:started',
+      runId: 'r1',
+      timestamp: '2026-06-13T00:00:00.000Z',
+      sequenceNumber: 0,
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      inputs: {},
+      executionMode: 'local',
+    });
+    const interrupted = await store.listInterruptedRuns();
+    expect(interrupted).toHaveLength(1);
+    expect(interrupted[0]?.runId).toBe('r1');
+    expect(interrupted[0]?.resumable).toBe(false); // mid-execution crash, not parked at a gate
+  });
 });
 
 describe('createInMemoryHost', () => {

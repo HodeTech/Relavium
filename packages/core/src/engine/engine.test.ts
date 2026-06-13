@@ -79,7 +79,9 @@ function expectThrowsCode(fn: () => void, code: string): void {
     fn();
   } catch (error) {
     expect(error).toBeInstanceOf(EngineStateError);
-    expect((error as EngineStateError).code).toBe(code);
+    if (error instanceof EngineStateError) {
+      expect(error.code).toBe(code);
+    }
     return;
   }
   throw new Error(`expected an EngineStateError with code ${code}`);
@@ -436,7 +438,9 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
       }
     }
     expect(caught).toBeInstanceOf(EngineStateError);
-    expect((caught as EngineStateError).code).toBe('unknown_gate');
+    if (caught instanceof EngineStateError) {
+      expect(caught.code).toBe('unknown_gate');
+    }
   });
 });
 
@@ -529,7 +533,8 @@ describe('WorkflowEngine — API-boundary errors (EngineStateError)', () => {
     const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
     await drain(handle); // run to completion so the run exists in the map
     await expect(
-      engine.resume(handle.runId, 'g', { decision: 'maybe' } as never),
+      // @ts-expect-error — an intentionally invalid decision value; resume must reject it via safeParse
+      engine.resume(handle.runId, 'g', { decision: 'maybe', decidedBy: 't' }),
     ).rejects.toMatchObject({ code: 'invalid_decision' });
   });
 
@@ -573,7 +578,9 @@ describe('WorkflowEngine — API-boundary errors (EngineStateError)', () => {
       }
     }
     expect(caught).toBeInstanceOf(EngineStateError);
-    expect((caught as EngineStateError).code).toBe('run_not_paused');
+    if (caught instanceof EngineStateError) {
+      expect(caught.code).toBe('run_not_paused');
+    }
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 

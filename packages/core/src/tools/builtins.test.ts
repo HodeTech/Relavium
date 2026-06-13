@@ -156,23 +156,24 @@ describe('built-in dispatch', () => {
   });
 });
 
-describe('web_search url construction + endpoint validation', () => {
-  function captureFetch(): {
-    host: ToolHost;
-    calls: Array<{ url: string; credentialRef: string | undefined }>;
-  } {
-    const calls: Array<{ url: string; credentialRef: string | undefined }> = [];
-    const host: ToolHost = {
-      egress: {
-        fetch: (request) => {
-          calls.push({ url: request.url, credentialRef: request.credentialRef });
-          return Promise.resolve({ status: 200, headers: {}, body: '{}' });
-        },
+/** A ToolHost whose egress records each fetch's url + credentialRef — for the web_search url tests. */
+function captureFetch(): {
+  host: ToolHost;
+  calls: Array<{ url: string; credentialRef: string | undefined }>;
+} {
+  const calls: Array<{ url: string; credentialRef: string | undefined }> = [];
+  const host: ToolHost = {
+    egress: {
+      fetch: (request) => {
+        calls.push({ url: request.url, credentialRef: request.credentialRef });
+        return Promise.resolve({ status: 200, headers: {}, body: '{}' });
       },
-    };
-    return { host, calls };
-  }
+    },
+  };
+  return { host, calls };
+}
 
+describe('web_search url construction + endpoint validation', () => {
   it('appends `?q=` when the endpoint has no query string', async () => {
     const target = tool('web_search');
     const { host, calls } = captureFetch();
