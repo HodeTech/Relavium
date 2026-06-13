@@ -82,6 +82,17 @@ We distinguish the two and never leak one as the other:
   session), not something a runner retries into. Note `budget_exceeded` is the
   **fail-path** code only: ADR-0028's `on_exceed: warn` / `pause_for_approval` branches
   emit `budget:warning` / `budget:paused` events and do not use this code.
+- **Tool-dispatch codes split on policy vs execution.** A tool **policy / grant denial**
+  ([tool-registry.md](../reference/shared-core/tool-registry.md),
+  [ADR-0029](../decisions/0029-tool-policy-hardening.md)) carries `tool_denied` and is **fatal** — a
+  denied call is deterministic, never retried (re-issuing it just re-denies). A tool **execution
+  failure** (the host capability threw a transient/runtime error) carries `tool_failed` and is
+  **retryable** within the node retry budget. An absent host capability is `internal` (a host/config
+  gap, not the model's fault). A tool aborted by the run's `AbortSignal` surfaces on the
+  **cancellation** path (`cancelled`), never `tool_failed`, so it composes with the
+  [ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) cancel-precedence
+  rule. Messages stay scrubbed to the code + a user-safe string (the tool id / field, never an
+  argument value or a host stack).
 - **`sandbox_error` splits on determinism.** An expression-sandbox failure
   ([ADR-0027](../decisions/0027-expression-sandbox.md),
   [expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md)) carries the closed
@@ -90,6 +101,13 @@ We distinguish the two and never leak one as the other:
   **wall-clock-timeout** trip is **retryable** (a non-idempotent safety net that may pass on
   re-execution, bounded by the node retry budget). The message is scrubbed to the code + a generic
   string — never the expression source, a variable name, or a scope value.
+- **The catch-all is `internal`, never a silent stop.** An uncaught throw from a node handler with no
+  more specific classification maps to `internal` with `retryable: false` (a tool throw is
+  `tool_failed`, a sandbox throw is `sandbox_error` per its determinism split, above). The run loop
+  ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) catches it, emits a
+  single `run:failed{internal}` rather than hanging, and stamps a secret-free `correlationId` joining
+  the user-safe message to the internal log — so an unexpected engine fault is always loud and
+  attributable, never a zombie run.
 
 ## Validation at boundaries
 

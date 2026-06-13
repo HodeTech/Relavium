@@ -48,8 +48,10 @@ ADR-0030 seam-shape amendment — and the **ADR-0031 multimodal seam-shape amend
 reserved generator methods, shape-only, landed before the seam's exhaustive consumers. The
 `FallbackChain` runner (1.K, PR #13) is now landed and fully covered. The
 [`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md) lane has since landed the
-**`WorkflowYAMLParser` (1.L, PR #14)** and the **`{{ … }}` interpolation engine + parse-time secret-taint
-gate (1.L2, PR #15)**; active work continues with the **DAG builder + `RunPlan` (1.M)**; see
+**`WorkflowYAMLParser` (1.L, PR #14)**, the **`{{ … }}` interpolation engine + parse-time secret-taint
+gate (1.L2, PR #15)**, and the **DAG builder + `RunPlan` (1.M)** plus the **QuickJS-wasm expression
+sandbox (1.AB)** (PR #16, 2026-06-13); active work continues with the **run loop — `WorkflowEngine` +
+`RunEventBus` (1.N)**; see
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 
 ## Non-negotiable rules for AI agents

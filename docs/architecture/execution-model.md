@@ -138,9 +138,17 @@ After every node completes, the engine writes a checkpoint to local SQLite — r
 status, per-node states, completed and pending node IDs, and (for an orchestrator)
 its message history. This is the foundation for resume and retry; see
 [shared-core-engine.md](shared-core-engine.md#checkpoint-and-resume). There is **no separate
-checkpoint table** — the checkpoint is reconstructed (by a `Checkpointer`) from `step_executions`
-+ `run_events` (+ `messages` for an orchestrator's history), all defined in
+checkpoint table** — the checkpoint is reconstructed (by a `Checkpointer`) from `step_executions`,
+`run_events` (and `messages` for an orchestrator's history), all defined in
 [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
+
+Three run-loop substrate rules make this reliable ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)):
+a node-boundary / terminal event is **persisted before it is delivered** to consumers, so a crash
+between emit and write can never re-run a completed node or lose its output; the
+**monotonic, gap-free `sequenceNumber` is assigned at a single producer-side point** (one counter per
+run/session), so concurrent fan-out branches cannot duplicate or invert numbers; and gate / run
+`timeout_ms` deadlines are armed as **one-shot timers from an injected clock — not a sleep/poll loop**,
+so the completion-driven scheduler stays event-driven.
 
 ### 6. Finish
 

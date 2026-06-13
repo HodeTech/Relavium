@@ -539,3 +539,50 @@ describe('MaskedSecretSchema', () => {
     ).toBe(false);
   });
 });
+
+describe('correlationId on the shared error shape (ADR-0036)', () => {
+  it('accepts a non-empty correlationId on node:failed and run:failed', () => {
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['node:failed'],
+        error: { code: 'tool_failed', message: 'boom', retryable: false, correlationId: 'corr-1' },
+      }).success,
+    ).toBe(true);
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['run:failed'],
+        error: { code: 'internal', message: 'boom', retryable: false, correlationId: 'corr-1' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an empty correlationId (nonEmptyString) on node:failed', () => {
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['node:failed'],
+        error: { code: 'tool_failed', message: 'boom', retryable: false, correlationId: '' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a correlationId on a session:turn_completed error and rejects an empty one', () => {
+    const base = { ...validSession['session:turn_completed'] };
+    expect(
+      SessionEventSchema.safeParse({
+        ...base,
+        error: {
+          code: 'provider_rate_limit',
+          message: 'slow',
+          retryable: true,
+          correlationId: 'c1',
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      SessionEventSchema.safeParse({
+        ...base,
+        error: { code: 'provider_rate_limit', message: 'slow', retryable: true, correlationId: '' },
+      }).success,
+    ).toBe(false);
+  });
+});

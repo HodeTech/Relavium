@@ -47,6 +47,10 @@ The author brackets the branches with explicit edges (`parallel → branches →
 
 A `fan_in` vertex carries `config.branchNodeIds` — the branch ids in the **stable order** the run loop must surface them to a `custom` `merge_fn` (the sandbox's `ExpressionScope.branches`) and to a `concat` result. It is the paired `parallel`'s **`parallel_of` declaration order** when the merge joins exactly that parallel's branches (the common authored shape), with any extra non-parallel incoming branches appended in authored order; with no unique paired parallel, it is the merge's incoming branches in authored order. This is needed because a vertex's `dependencies` are sorted by **authored index**, which is *not* `parallel_of` order — so neither the run loop nor the sandbox could reconstruct the contract order from the vertex alone. Pinning it on the plan keeps the merge **deterministic** (a reproducible `merge_fn`/`concat` is required for checkpoint/resume, ADR-0027).
 
+A branch a `condition` routed away from is **skipped** by the run loop's skip-propagation ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). A skipped branch **counts as settled** against the join — so a `wait_all` fan-in fires instead of hanging on it — and is **omitted** from the `branches` array surfaced to `merge_fn` / `concat`, preserving the *relative order* of the surviving branches; a fan-in all of whose branches were skipped is itself skipped.
+
+> **Retry is not lifted onto the plan.** Unlike an agent's `fallbackChain` (lifted onto `AgentPlanConfig` for the run loop's convenience), a node's `retry_config` is **not** copied onto the vertex. The run loop (1.N) makes no retry decision: a node failure is terminal only for that **attempt**, which — *without 1.S* — fails the run. Node-level retry above the provider fallback chain is layered by **1.S**, which reads `retry_config` from the authored node (`config.node`) and re-attempts before a node is considered finally failed.
+
 ## The dependency graph
 
 The builder unions three edge sources into one DAG over node ids:

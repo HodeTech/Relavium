@@ -14,7 +14,9 @@
 > CostTracker, 1.B). **1.L ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is scaffolded with the
 > `WorkflowYAMLParser` — and **1.L2 ✅ Done (PR #15, 2026-06-12)** — the `{{ … }}` interpolation engine
 > (runtime resolver + pipe-filter registry) plus the parse-time transitive secret-taint gate
-> (ADR-0029(c)). The engine lane continues at **1.M → 1.N → 1.R**, converging at the **1.O** join toward
+> (ADR-0029(c)). **1.M (DAG builder + `RunPlan`) and 1.AB (the QuickJS-wasm expression sandbox) are
+> ✅ Done (PR #16, 2026-06-13)** — the plan layer and the deterministic `condition`/`transform`/`merge_fn`
+> evaluator. The engine lane continues at **1.N → 1.R**, converging at the **1.O** join toward
 > **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
@@ -523,7 +525,7 @@ of every node, so it is sequenced before 1.M/1.O/1.P.) It is distinct from the J
 **Acceptance:** interpolation resolves refs + filters correctly; a secret routed into prompt/tool text is
 rejected at parse with a field-named, secret-free error; re-resolving a node yields an identical frozen scope.
 
-### 1.M — DAG builder + `RunPlan` (topological order) — *critical path*
+### 1.M — DAG builder + `RunPlan` (topological order) — *critical path* · ✅ **Done (PR #16, 2026-06-13)**
 
 Turn the validated definition into an executable plan.
 
@@ -549,8 +551,9 @@ The loop that dispatches ready nodes and emits the canonical event stream.
 - Implement `WorkflowEngine.start(workflowId, input)` / `resume` / `cancel`, walking
   the `RunPlan` and dispatching every node whose dependencies are satisfied
   (independent branches concurrently).
-- Implement the `RunEventBus` (`EventEmitter`) and emit the canonical
-  colon-namespaced events with a **monotonically increasing `sequenceNumber`** per
+- Implement the `RunEventBus` (an in-house, platform-free typed event bus — **not** Node's
+  `node:events`, which the engine-purity fence bans; [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md))
+  and emit the canonical colon-namespaced events with a **monotonically increasing `sequenceNumber`** per
   run: `run:started`, `node:started`, `agent:token`, `agent:tool_call`,
   `agent:tool_result`, `cost:updated`, `node:completed`, `node:failed`,
   `human_gate:paused`/`:resumed`, `run:completed`, `run:failed`, `run:cancelled`
@@ -801,7 +804,7 @@ These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agen
 - **1.Z — Export-to-workflow serializer.** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Includes a **`WorkflowDefinition` → YAML emitter** (deterministic key ordering, the `metadata` transcript block, secret exclusion) — 1.L is parse-only, so this workstream owns serialization. *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; **parse → serialize round-trips** (including `metadata`); no `secret` value is serialized; and **no reasoning `signature` is serialized** (ADR-0030 ephemerality — the signature is a transient same-provider token, never written to a committable artifact, same exclusion as `secret`).
 - **1.AA — Node-harness chat regression.** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI.
 
-### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P
+### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P · ✅ **Done (PR #16, 2026-06-13)**
 
 Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, resource-capped QuickJS-wasm sandbox for `condition` / `transform` / `merge_fn`, instantiated via the `WebAssembly` global from embedded bytes (no `node:fs`/`fetch`/DOM, no wall-clock/RNG, no `new Function()`). **On the M2 critical path** — the 1.P node handlers must not ship an unspecified evaluator, so this is sequenced into 1.P (it raises the 1.m4 cost). **First task — a perf spike:** select and benchmark the QuickJS-wasm package (candidate `quickjs-emscripten`) on the expression hot path and pin it in the `catalog:` ([tech-stack.md](../../tech-stack.md)); the rest of 1.AB builds on the confirmed package.
 
@@ -1054,11 +1057,11 @@ flowchart LR
 | 1.K | A | 1.B, 1.I, 1.J, 1.AD (media shape) | 1.O | ✅ — **Done (PR #13)** |
 | 1.L | B | 1.L.0 | 1.L2, 1.Z | ✅ — **Done (PR #14)** |
 | 1.L2 | B | 1.L | 1.M | ✅ — **Done (PR #15)** |
-| 1.M | B | 1.L2 | 1.N | ✅ |
+| 1.M | B | 1.L2 | 1.N | ✅ — **Done (PR #16)** |
 | 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ |
 | 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
 | 1.T | B | 1.E | 1.O, 1.U | ⬤ |
-| 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P |
+| 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P — **Done (PR #16)** |
 | 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ |
 | 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
 | 1.S | B | 1.O, 1.R | 1.U | ✅ |

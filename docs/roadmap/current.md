@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-12
+> Last updated: 2026-06-13
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -125,8 +125,11 @@ and a hardened YAML decode profile ([ADR-0035](../decisions/0035-yaml-parser-dep
 **1.L2 (the `{{ … }}` interpolation engine) ✅ Done (PR #15, 2026-06-12)**: the runtime resolver +
 pipe-filter registry (`json`/`length`/`default`/host-injected `read_file`) and the **parse-time
 transitive secret-taint gate** ([ADR-0029(c)](../decisions/0029-tool-policy-hardening.md)), still
-zero platform imports. The engine lane continues: **1.M → 1.N → 1.R**, converging at the **1.O join**
-(whose `FallbackChain` dependency, 1.K, is now satisfied) toward **M2**.
+zero platform imports. **1.M (DAG builder + `RunPlan`) and 1.AB (the QuickJS-wasm expression sandbox)
+are ✅ Done (PR #16, 2026-06-13)** — the plan layer (a deterministic topological `RunPlan`) and the
+deterministic, resource-capped `condition`/`transform`/`merge_fn` evaluator ([ADR-0027](../decisions/0027-expression-sandbox.md)),
+both pure-engine (zero platform imports). The engine lane continues: **1.N → 1.R**, converging at the
+**1.O join** (whose `FallbackChain` dependency, 1.K, is now satisfied) toward **M2**.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -150,7 +153,8 @@ zero platform imports. The engine lane continues: **1.M → 1.N → 1.R**, conve
 > pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)**, and
 > **1.L has since landed (PR #14, 2026-06-12)** and **1.L2 (the `{{ … }}` interpolation engine + the
 > parse-time secret-taint gate) is ✅ Done (PR #15, merged 2026-06-12)**; **1.M (DAG builder +
-> `RunPlan`) is the next workstream**.
+> `RunPlan`) and 1.AB (the expression sandbox) have since landed (PR #16, merged 2026-06-13)** —
+> **1.N (`WorkflowEngine` + `RunEventBus`) is the next workstream**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

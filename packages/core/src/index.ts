@@ -84,3 +84,99 @@ export type {
   ExpressionKind,
   SandboxLimits,
 } from './expression/sandbox.js';
+
+// WorkflowEngine + RunEventBus (1.N) — the run loop. Walks the RunPlan, dispatches ready nodes through
+// the injected NodeExecutor seam (1.O/1.P fill it), and emits the canonical RunEvent stream with the
+// exactly-one-terminal-event guarantee (ADR-0036; sse-event-schema.md). Platform-free: host concerns
+// (clock / ids / persistence / abort) are injected via ExecutionHost.
+export { WorkflowEngine } from './engine/engine.js';
+export type { StartInput, WorkflowEngineDeps } from './engine/engine.js';
+export { RunEventBus } from './engine/event-bus.js';
+export type { RunEventBusOptions, RunEventListener, RunEventDraft } from './engine/event-bus.js';
+export type { RunHandle } from './engine/run-handle.js';
+export {
+  InMemoryRunStore,
+  createInMemoryHost,
+  createAbortController,
+} from './engine/execution-host.js';
+export type {
+  ExecutionHost,
+  RunStore,
+  Clock,
+  IdSource,
+  AbortControllerLike,
+  InterruptedRun,
+} from './engine/execution-host.js';
+export type {
+  NodeExecutor,
+  NodeExecContext,
+  NodeOutcome,
+  NodeFailure,
+  NodeStreamEvent,
+  GateRequest,
+  GateType,
+} from './engine/node-executor.js';
+
+// Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
+export { EngineStateError } from './engine/errors.js';
+export type { EngineStateErrorCode } from './engine/errors.js';
+
+// Built-in ToolRegistry + dispatch (1.T) — the engine-side registry the AgentRunner (1.O) and
+// AgentSession (1.V) invoke; side effects go through the injected ToolHost seam (ADR-0037;
+// tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.
+export { createToolRegistry } from './tools/registry.js';
+export { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './tools/builtins.js';
+export { DEFAULT_TOOL_RESULT_LIMITS } from './tools/types.js';
+export { markUntrusted, unwrapUntrusted, isUntrusted } from './tools/untrusted.js';
+export {
+  ToolDispatchError,
+  UnknownToolError,
+  ToolPolicyError,
+  ToolArgsInvalidError,
+  ToolUnavailableError,
+  ToolExecutionError,
+  ToolCancelledError,
+} from './tools/errors.js';
+export type { ToolErrorCode, ToolPolicyDenyReason } from './tools/errors.js';
+export type { Untrusted } from './tools/untrusted.js';
+export type {
+  ToolRegistry,
+  CreateToolRegistryOptions,
+  ToolDef,
+  ToolId,
+  ToolSource,
+  JsonSchema,
+  EgressKind,
+  ToolPolicyClass,
+  PolicyTarget,
+  ToolHost,
+  FsCapability,
+  ProcessCapability,
+  EgressCapability,
+  OsCapability,
+  McpCapability,
+  ToolOutputStore,
+  FileRead,
+  FileWritten,
+  DirEntry,
+  DirListing,
+  ProcessResult,
+  EgressRequest,
+  EgressResponse,
+  SpilledResult,
+  NotifyInput,
+  McpCallInput,
+  FsReadOpts,
+  FsWriteOpts,
+  FsListOpts,
+  SpawnOpts,
+  ToolNodeConfig,
+  ToolDispatchContext,
+  ToolDispatchOutcome,
+  ToolCallPart,
+  ToolResultPart,
+  ToolCallEventData,
+  ToolResultEventData,
+  ToolResultLimits,
+  FsScopeTier,
+} from './tools/types.js';
