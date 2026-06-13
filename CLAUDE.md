@@ -46,9 +46,10 @@ Gemini), green on one shared conformance suite with no vendor type crossing the 
 ADR-0030 seam-shape amendment — and the **ADR-0031 multimodal seam-shape amendment (1.AD, PR #11,
 2026-06-10)**: the media content/stream union members, the per-modality capability matrix, and the
 reserved generator methods, shape-only, landed before the seam's exhaustive consumers. The
-`FallbackChain` runner (1.K, PR #13) is now landed and fully covered; active work continues on the
-[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md), starting with the YAML
-parser (1.L); see
+`FallbackChain` runner (1.K, PR #13) is now landed and fully covered. The
+[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md) lane has since landed the
+**`WorkflowYAMLParser` (1.L, PR #14)** and the **`{{ … }}` interpolation engine + parse-time secret-taint
+gate (1.L2, PR #15)**; active work continues with the **DAG builder + `RunPlan` (1.M)**; see
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 
 ## Non-negotiable rules for AI agents

@@ -1,5 +1,7 @@
 {
-  "extends": "./tsconfig.json",
+  // Extends the PURITY gate (not tsconfig.json), so the emitted engine is built with `types: []` —
+  // no Node/DOM types reach shipping `dist`. Tests are already excluded by tsconfig.purity.json.
+  "extends": "./tsconfig.purity.json",
   "compilerOptions": {
     "noEmit": false,
     "rootDir": "src",

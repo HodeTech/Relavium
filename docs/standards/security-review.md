@@ -230,16 +230,35 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
 never hand-roll a security primitive; rule #2: a new runtime dependency needs an ADR) and these are
 **binding** invariants a review must confirm:
 
-- **QuickJS-wasm, instantiated only via the standard `WebAssembly` global from embedded wasm bytes.**
-  Never loaded via `node:fs`, `fetch`, or the DOM — that would break `@relavium/core`'s zero
-  platform-specific imports ([ADR-0003](../decisions/0003-pure-ts-engine-not-langgraph-python.md)).
-  `new Function()` / `eval` / the Node `vm` module are **forbidden** (none is a security boundary).
-- **No ambient globals, no I/O.** Only an explicit, audited allow-list is injected (e.g. `JSON`,
-  `Math` *without* `Math.random`, pure `Array`/`Object`/`String`/`Number`).
-- **Deterministic.** No wall-clock and no random source, so the same inputs always produce the same
-  result — which is what keeps checkpoint/resume and retry-from-node reproducible.
-- **Resource-capped.** Every evaluation runs under a CPU/instruction budget, a memory cap, and a
-  wall-clock timeout; a runaway expression is terminated with a typed, secret-free error.
+The full contract (scope, exhaustive allow-list, caps, error taxonomy) is owned by
+[expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md); the **binding
+security invariants** a review must confirm are:
+
+- **QuickJS-wasm via embedded bytes only.** Instantiated only through the standard `WebAssembly`
+  global from embedded wasm bytes — `@relavium/core` imports `quickjs-emscripten-core` plus a
+  single-file **sync** variant, never the meta-package's default `getQuickJS()` loader (it statically
+  imports `node:fs`/`path` and breaks the zero-platform-imports invariant,
+  [ADR-0003](../decisions/0003-pure-ts-engine-not-langgraph-python.md)). Host `new Function()` / `eval`
+  / the Node `vm` module are **never used as the sandbox** (none is a boundary).
+- **The wasm VM is the boundary; deny-by-default capabilities.** The VM runs on an isolated wasm heap
+  with no host reference reachable (zero host functions injected). Only the audited pure allow-list
+  exists; `Date`, `Math.random`, `Promise`/async, `performance`, `crypto`, `Proxy`, `WeakRef`, `Intl`,
+  and all I/O are absent (the pure reflective globals `BaseObjects` ships — `Reflect`/`Symbol`/`WeakMap`
+  — are present but deterministic and host-unreachable). The `Eval` intrinsic stays on (quickjs
+  `evalCode` needs it), so `eval`/`Function`
+  exist *inside* the VM but are contained — they reach no host reference and no forbidden capability,
+  so they are harmless; the guarantee rests on the isolation + capability removal, not on deleting
+  every reflective handle to `Function`.
+- **JSON-only marshaling, immutable global.** Scope crosses the boundary as plain JSON (host
+  `stringify` → VM `parse`), so no live host object/getter/function leaks in and a `{"__proto__":…}`
+  in model/tool-derived `run.outputs` cannot poison the prototype chain; each binding is installed
+  non-writable/non-configurable over a deep-frozen value.
+- **Deterministic within caps; caps are non-idempotent safety nets.** A successful evaluation is a
+  pure function of the scope (no clock/RNG/async). The wall-clock timeout, memory, and stack caps are
+  safety nets, not results — a trip surfaces as a typed `sandbox_error`, never a stable value.
+- **Secret-free, scrubbed errors.** Secrets are never injected (ADR-0029(c) gate + an injection-time
+  filter); a `sandbox_error` message is the code + a generic string — never the expression source, a
+  variable name, a scope value, or a host stack.
 
 ## Prompt-injection posture
 

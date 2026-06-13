@@ -35,8 +35,10 @@ const ENGINE_ALLOWLISTS = {
   // (ADR-0011 — SDK types stay confined to packages/llm/src/adapters/*).
   'packages/llm': ['@relavium/shared', 'zod', '@anthropic-ai/sdk', 'openai', '@google/genai'],
   // The engine: Relavium packages + Zod + the pure-JS `yaml` loader (ADR-0035, the YAML→object
-  // decode for the 1.L parser), plus the ADR-0027 sandbox runtime once the 1.AB perf spike pins
-  // the package (added here, with the catalog pin, in that change).
+  // decode for the 1.L parser), plus the ADR-0027 expression-sandbox runtime (1.AB):
+  // `quickjs-emscripten-core` (pure-TS bindings) + a singlefile-SYNC variant that embeds the
+  // wasm as bytes — instantiated via the WebAssembly global, never the node:fs-importing default
+  // loader, so the engine stays platform-free (CLAUDE.md rule 5). See expression-sandbox-spec.md.
   // @relavium/db is deliberately ABSENT: the engine runs in the Tauri WebView with zero
   // platform imports (CLAUDE.md rule 5), and @relavium/db pulls the native better-sqlite3
   // runtime. Core may use its TYPES via a devDependency (the Checkpointer interface /
@@ -45,7 +47,13 @@ const ENGINE_ALLOWLISTS = {
   // to the allowlist before declaring it in package.json defeats the guard: the commit that
   // introduces the runtime dependency must touch both package.json AND this allowlist — that
   // co-location is the gate's whole purpose. Re-add @relavium/llm here in that same change.
-  'packages/core': ['@relavium/shared', 'zod', 'yaml'],
+  'packages/core': [
+    '@relavium/shared',
+    'zod',
+    'yaml',
+    'quickjs-emscripten-core',
+    '@jitl/quickjs-singlefile-mjs-release-sync',
+  ],
 };
 
 let failed = false;

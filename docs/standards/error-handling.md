@@ -82,6 +82,14 @@ We distinguish the two and never leak one as the other:
   session), not something a runner retries into. Note `budget_exceeded` is the
   **fail-path** code only: ADR-0028's `on_exceed: warn` / `pause_for_approval` branches
   emit `budget:warning` / `budget:paused` events and do not use this code.
+- **`sandbox_error` splits on determinism.** An expression-sandbox failure
+  ([ADR-0027](../decisions/0027-expression-sandbox.md),
+  [expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md)) carries the closed
+  `sandbox_error` code. The **deterministic** causes — a syntax error, a runtime `Reference`/`TypeError`,
+  a memory/stack overflow, or a non-conforming result — are **fatal** (a retry repeats them); only a
+  **wall-clock-timeout** trip is **retryable** (a non-idempotent safety net that may pass on
+  re-execution, bounded by the node retry budget). The message is scrubbed to the code + a generic
+  string — never the expression source, a variable name, or a scope value.
 
 ## Validation at boundaries
 

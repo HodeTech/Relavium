@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The engine-purity GATE. The SHIPPING (non-test) engine source must compile with NO ambient
+    // Node/DOM types, so a stray `process` / `Buffer` / `node:*` in source is a TS error — CLAUDE.md
+    // rule 5: the engine runs identically in Node, the Tauri WebView, the VS Code host, and Bun. Tests
+    // are excluded because a `*.test.ts` imports `vitest` → `@types/node`, which would re-introduce the
+    // platform types and silently defeat this gate for the whole program (the full tsconfig.json still
+    // type-checks the tests, with `types: ["node"]`). Mirrors @relavium/llm's tsconfig.seam.json.
+    "types": []
+  },
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+}

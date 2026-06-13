@@ -37,7 +37,9 @@ vendor type crossing it (PR #7–#9), followed by the **ADR-0031 multimodal seam
 (1.AD)** — the media content/stream union members, the per-modality capability matrix, and the
 reserved generator methods, landed **shape-only** before the seam's exhaustive consumers exist
 (PR #11, 2026-06-10). The seam's last policy layer — the `FallbackChain` runner (1.K) — then landed
-(PR #13, 2026-06-11), completing the LLM lane. Next on the critical path: the `@relavium/core` engine
-— parser, run loop, checkpoint/resume, retry, plus the **AgentSession** runtime + export-to-workflow
-sub-spine. See [docs/roadmap/current.md](docs/roadmap/current.md) for
-live status.
+(PR #13, 2026-06-11), completing the LLM lane. The `@relavium/core` engine lane has since landed the
+**`WorkflowYAMLParser`** (1.L, PR #14) and the **`{{ … }}` interpolation engine + parse-time
+secret-taint gate** (1.L2, PR #15) — both with zero platform imports. Next on the critical path: the
+**DAG builder + `RunPlan`** (1.M), then the run loop, checkpoint/resume, and retry, plus the
+**AgentSession** runtime + export-to-workflow sub-spine. See
+[docs/roadmap/current.md](docs/roadmap/current.md) for live status.

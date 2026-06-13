@@ -119,12 +119,14 @@ the seam's last Phase-1 policy layer, **completing 1.m2** with the cost tracker
 [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)). *(PR #13 also refreshed the
 model-pricing table to current provider models and added Claude Fable 5.)* The active work is now the
 **engine lane**: **1.L (`WorkflowYAMLParser`) ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is
-now scaffolded with a pure-TypeScript `WorkflowYAMLParser` that parses and validates
-`.relavium.yaml` against the reconciled `WorkflowSchema`, with typed, field-named errors
-(**zero platform imports**) and a hardened YAML decode profile
-([ADR-0035](../decisions/0035-yaml-parser-dependency.md)). The engine lane continues:
-**1.L2 → 1.M → 1.N → 1.R**, converging at the **1.O join** (whose `FallbackChain` dependency,
-1.K, is now satisfied) toward **M2**.
+scaffolded with a pure-TypeScript `WorkflowYAMLParser` that parses and validates `.relavium.yaml`
+against the reconciled `WorkflowSchema`, with typed, field-named errors (**zero platform imports**)
+and a hardened YAML decode profile ([ADR-0035](../decisions/0035-yaml-parser-dependency.md)) — and
+**1.L2 (the `{{ … }}` interpolation engine) ✅ Done (PR #15, 2026-06-12)**: the runtime resolver +
+pipe-filter registry (`json`/`length`/`default`/host-injected `read_file`) and the **parse-time
+transitive secret-taint gate** ([ADR-0029(c)](../decisions/0029-tool-policy-hardening.md)), still
+zero platform imports. The engine lane continues: **1.M → 1.N → 1.R**, converging at the **1.O join**
+(whose `FallbackChain` dependency, 1.K, is now satisfied) toward **M2**.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -146,8 +148,8 @@ now scaffolded with a pure-TypeScript `WorkflowYAMLParser` that parses and valid
 > the `[chat].max_messages` trim threshold); the **reserved `on_error` edge kind**
 > (workflow-yaml-spec.md, not authorable in v1.0); and a CI **engine dependency-allowlist guard** + the
 > pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)**, and
-> **1.L has since landed (PR #14, 2026-06-12)**; **1.L2 (the `{{ … }}` interpolation engine + the
-> parse-time secret-taint gate) is in review (PR #15)** — once it merges, **1.M (DAG builder +
+> **1.L has since landed (PR #14, 2026-06-12)** and **1.L2 (the `{{ … }}` interpolation engine + the
+> parse-time secret-taint gate) is ✅ Done (PR #15, merged 2026-06-12)**; **1.M (DAG builder +
 > `RunPlan`) is the next workstream**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1

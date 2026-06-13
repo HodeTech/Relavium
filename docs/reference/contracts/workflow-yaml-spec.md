@@ -121,7 +121,7 @@ inputs:
 
 ## Context and interpolation
 
-`context` declares named values available throughout the workflow as `{{ctx.key}}`. Interpolation uses `{{ ... }}` syntax everywhere (inputs, context, prompt templates, message templates, edge/condition expressions). A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
+`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `inputs` defaults, `context` values, agent `prompt_template` / `system_prompt_append`, and human-gate `assignee` / `message_template`. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition`** is the same JS-expression family but has **no `expression_type` field** (always `js`) and is evaluated by the run loop (1.N), not a named 1.AB sandbox kind. A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
 
 ```yaml
 context:
@@ -135,7 +135,7 @@ Common interpolation namespaces:
 
 - `{{inputs.<name>}}` — declared workflow inputs.
 - `{{ctx.<key>}}` — context entries.
-- `{{run.outputs["<node-id>"]}}` — a completed node's output (used in conditions, templates, and merges).
+- `{{run.outputs["<node-id>"]}}` — a completed node's output, in a template field; the same data is read as bare `run.outputs["<node-id>"]` (no `{{ }}`) inside a `condition` / `transform` / `merge_fn` expression.
 - Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`.
 
 > **Evaluation timing.** `context` entries are evaluated **eagerly, exactly once, before any node runs**, and the resolved values are immutable and cached for the whole run. A pipe-filter failure (e.g. `read_file` on a missing path) is a **validation error** that fails the run before it starts (CLI exit code 2), never a mid-run surprise. A `context` value may reference `{{inputs.*}}` but **not** `{{run.outputs[...]}}` (no node has run yet) — doing so is a parse error.
@@ -248,7 +248,7 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 
 A condition node evaluates `expression` **once** and selects the branch whose `when` value **strictly equals** (`===`, no type coercion) the result; `when` values must be a boolean, string, or number. If no `when` matches and no `default` is set, the run fails with a typed "no branch matched" error rather than stalling. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
 
-The `expression:` string is a **sandboxed JavaScript expression** — in v1.0 the only `expression_type` is **`js`**, evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared dependency) and deferred to a future ADR. **There is no Python evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config).
+The `expression:` string is a **sandboxed JavaScript expression** — in v1.0 the only `expression_type` is **`js`**, evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared dependency) and deferred to a future ADR. **There is no Python evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config); the full sandbox contract — scope, allow-list, caps, determinism, and the `sandbox_error` taxonomy — is owned by [expression-sandbox-spec.md](../shared-core/expression-sandbox-spec.md). Note an expression's **JS syntax is checked at evaluation, not at parse** — a typo'd `expression` parses fine and fails the first time its node runs, so test workflows before production. (An `expression_type` other than `js`, by contrast, **is** rejected at parse.)
 
 ### `transform` node
 
@@ -271,10 +271,10 @@ A sandboxed JavaScript expression (`expression_type: js`) whose result becomes t
   type: merge
   merge_strategy: object_merge       # concat | object_merge | first | custom
   merge_fn: |                        # required only when strategy = custom (a `js` expression)
-    { ...a, ...b }
+    { ...branches[0], ...branches[1] }   # `branches` = branch outputs in static `parallel_of` order
 ```
 
-`merge_strategy` is the **authoritative** name for the aggregation behavior; the canvas (`AggregatorNode`) and engine (`fan_in_config`) carry the same value — see the [merge-strategy reconciliation table](../shared-core/node-types.md#merge-strategy-reconciliation). `best_of_n` (a secondary-LLM picker) is **reserved, not v1.0**, and is not a valid `merge_strategy` value in `'1.0'`.
+`merge_strategy` is the **authoritative** name for the aggregation behavior; the canvas (`AggregatorNode`) and engine (`fan_in_config`) carry the same value — see the [merge-strategy reconciliation table](../shared-core/node-types.md#merge-strategy-reconciliation). `best_of_n` (a secondary-LLM picker) is **reserved, not v1.0**, and is not a valid `merge_strategy` value in `'1.0'`. A custom `merge_fn` is a **bare `js` expression** (not a function) evaluated in the [expression sandbox](../shared-core/expression-sandbox-spec.md); it receives `branches` — the branch outputs in **static `parallel_of` declaration order** (never arrival order, so the merge is deterministic) — plus `run.outputs`.
 
 > **`parallel_of` is authoritative for branch membership.** On a `parallel` node, `parallel_of: [...]` alone defines which nodes are the concurrent branches; the parser materializes a fan-out edge to each listed node, so explicit `from: fan-out` edges are **not required**. The complete example below writes them out for readability, but they are redundant with `parallel_of` and must not contradict it — if both are present they must agree (the validator rejects an explicit fan-out edge to a node not in `parallel_of`).
 

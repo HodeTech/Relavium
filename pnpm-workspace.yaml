@@ -30,6 +30,14 @@ catalog:
   # The engine's YAML loader — pure-JS, confined to @relavium/core (ADR-0035). Decodes an
   # authored `.relavium.yaml` to a plain JS object that the strict WorkflowSchema validates.
   yaml: ^2.9.0
+  # The engine's expression sandbox — QuickJS-wasm for condition/transform/merge_fn
+  # (ADR-0027 + reference/shared-core/expression-sandbox-spec.md). `quickjs-emscripten-core`
+  # is the pure-TS bindings; the singlefile-SYNC variant embeds the wasm as bytes (no
+  # node:fs/fetch), instantiated via the standard WebAssembly global so the engine stays
+  # platform-free in Node, the Tauri WebView, the VS Code host, and Bun. The default
+  # `getQuickJS()` loader is NOT used (it imports node:fs). Pinned by the 1.AB perf spike.
+  quickjs-emscripten-core: ^0.32.0
+  '@jitl/quickjs-singlefile-mjs-release-sync': ^0.32.0
   # @relavium/db persistence stack — Drizzle ORM (ADR-0005) over better-sqlite3,
   # the pinned Node-side SQLite driver (ADR-0021).
   drizzle-orm: ^0.45.2

@@ -1,14 +1,19 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
-    // `types: []` is the platform-type boundary — the engine has ZERO platform-specific
-    // imports (CLAUDE.md rule 5, ADR-0011), so a stray `process`/`Buffer`/`node:*` is a TS
-    // error. The whole package is the platform-free zone (unlike `@relavium/llm`, which needs
-    // a separate tsconfig.seam.json to fence its Node-typed adapter zone); this single config
-    // suffices. The YAML loader (`yaml`, ADR-0035) is pure-JS, so it needs no ambient types.
+    // The default typecheck + the ESLint project-service config — it covers the WHOLE package,
+    // INCLUDING the `*.test.ts` files (which import `vitest`, transitively pulling in `@types/node`;
+    // e.g. sandbox.perf.test.ts legitimately reads `process.memoryUsage()`). So `types: ["node"]`
+    // here. No emit — rootDir/outDir live in tsconfig.build.json.
+    //
+    // The platform-free GUARD (CLAUDE.md rule 5 — the engine runs identically in Node, the Tauri
+    // WebView, the VS Code host, and Bun) is a SEPARATE run: tsconfig.purity.json (`types: []`, tests
+    // excluded), invoked alongside this by the `typecheck` script. It MUST be separate: including the
+    // tests here pulls `@types/node` into the program, so a single `types: []` config would silently
+    // typecheck a stray `process`/`Buffer`/`node:*` in SHIPPING source as clean. Mirrors
+    // @relavium/llm's tsconfig.json / tsconfig.seam.json split.
     "noEmit": true,
-    "types": []
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

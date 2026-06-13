@@ -62,6 +62,36 @@ export function analyzeSecretTaint(workflow: Workflow): readonly SecretLeak[] {
 }
 
 /**
+ * Re-check resolved `$ref`/registry agent prompts against the workflow's secret taint (1.M).
+ *
+ * The parser (1.L2) taint-checks every *inline* agent's `system_prompt`, but a `$ref` agent's prompt
+ * lives in another file the pure parser never reads. Once the DAG builder resolves those refs (via a
+ * host-supplied registry), it must run their prompts through this same gate so a secret cannot hide
+ * behind a ref (ADR-0029(c); closes the `collectReferences` `$ref` gap). Each `texts` entry is
+ * `{ location, text }` for one resolved-but-not-inline agent's `system_prompt`. Taint is computed once
+ * from the workflow's inputs/context; the returned leaks name only fields and symbols, never a value.
+ */
+export function analyzeResolvedAgentTaint(
+  workflow: Workflow,
+  texts: readonly { readonly location: string; readonly text: string }[],
+): readonly SecretLeak[] {
+  if (texts.length === 0) {
+    return [];
+  }
+  const taint = computeTaint(workflow.workflow);
+  const leaks: SecretLeak[] = [];
+  for (const { location, text } of texts) {
+    for (const ref of templateReferences(text)) {
+      const reason = taintReason(ref, taint);
+      if (reason !== undefined) {
+        leaks.push(toLeak(location, reason, taint));
+      }
+    }
+  }
+  return leaks;
+}
+
+/**
  * Find a value resolved before any node runs that references a node output. Empty when clean; the
  * parser turns a non-empty result into a `WorkflowValidationError` (a field-named parse error).
  */
