@@ -105,7 +105,11 @@ export class ToolUnavailableError extends ToolDispatchError {
   readonly capability: string;
 
   constructor(toolId: ToolId, capability: string) {
-    super(`tool \`${toolId}\` requires the host \`${capability}\` capability, which is not wired`, toolId, undefined);
+    super(
+      `tool \`${toolId}\` requires the host \`${capability}\` capability, which is not wired`,
+      toolId,
+      undefined,
+    );
     this.name = 'ToolUnavailableError';
     this.capability = capability;
   }
@@ -133,7 +137,11 @@ export class ToolCancelledError extends ToolDispatchError {
   readonly retryable = false;
 
   constructor(toolId: ToolId | undefined, cause?: unknown) {
-    super(toolId === undefined ? 'tool dispatch cancelled' : `tool \`${toolId}\` cancelled`, toolId, cause);
+    super(
+      toolId === undefined ? 'tool dispatch cancelled' : `tool \`${toolId}\` cancelled`,
+      toolId,
+      cause,
+    );
     this.name = 'ToolCancelledError';
   }
 }

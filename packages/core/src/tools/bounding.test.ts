@@ -34,7 +34,9 @@ describe('boundForModel', () => {
   });
 
   it('truncates an over-byte result and spills via the output store', async () => {
-    const spill = vi.fn((text: string) => Promise.resolve({ ref: 'spill://abc', byteLength: text.length }));
+    const spill = vi.fn((text: string) =>
+      Promise.resolve({ ref: 'spill://abc', byteLength: text.length }),
+    );
     const text = 'x'.repeat(500);
     const bounded = await boundForModel(text, TINY, host({ outputStore: { spill } }));
     expect(bounded.truncated).toBe(true);
@@ -46,7 +48,11 @@ describe('boundForModel', () => {
   it('truncates over the LINE ceiling too', async () => {
     const spill = vi.fn(() => Promise.resolve({ ref: 'spill://lines', byteLength: 1 }));
     const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
-    const bounded = await boundForModel(text, { maxBytes: 50_000, maxLines: 3 }, host({ outputStore: { spill } }));
+    const bounded = await boundForModel(
+      text,
+      { maxBytes: 50_000, maxLines: 3 },
+      host({ outputStore: { spill } }),
+    );
     expect(bounded.truncated).toBe(true);
     expect(spill).toHaveBeenCalledOnce();
   });
@@ -81,7 +87,11 @@ describe('boundForModel', () => {
   it('enforces the LINE ceiling in the preview, not just the spill trigger (H4)', async () => {
     const spill = vi.fn(() => Promise.resolve({ ref: 'spill://lines', byteLength: 1 }));
     const text = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n'); // small bytes, many lines
-    const bounded = await boundForModel(text, { maxBytes: 50_000, maxLines: 5 }, host({ outputStore: { spill } }));
+    const bounded = await boundForModel(
+      text,
+      { maxBytes: 50_000, maxLines: 5 },
+      host({ outputStore: { spill } }),
+    );
     expect(bounded.truncated).toBe(true);
     // The model-facing preview must be line-bounded — NOT the full 200-line text returned verbatim.
     const previewLines = String(bounded.value).split('\n').length;
@@ -116,7 +126,11 @@ describe('boundForModel', () => {
 
   it('rethrows an abort that occurs during spill (cancel precedence) (M2)', async () => {
     const signal = { aborted: true } as never;
-    const spill = vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-    await expect(boundForModel('z'.repeat(500), TINY, host({ outputStore: { spill } }), signal)).rejects.toThrow(/aborted/);
+    const spill = vi.fn(() =>
+      Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+    );
+    await expect(
+      boundForModel('z'.repeat(500), TINY, host({ outputStore: { spill } }), signal),
+    ).rejects.toThrow(/aborted/);
   });
 });

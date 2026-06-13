@@ -15,15 +15,28 @@ function tool(id: string): ToolDef {
 function fullHost(): ToolHost {
   return {
     fs: {
-      readFile: (path) => Promise.resolve({ content: `c:${path}`, mimeType: 'text/plain', sizeBytes: 1, lastModified: 't' }),
+      readFile: (path) =>
+        Promise.resolve({
+          content: `c:${path}`,
+          mimeType: 'text/plain',
+          sizeBytes: 1,
+          lastModified: 't',
+        }),
       writeFile: (path, data) => Promise.resolve({ path, bytesWritten: data.length }),
-      listDirectory: () => Promise.resolve({ entries: [{ name: 'a', type: 'file', sizeBytes: 1, lastModified: 't' }] }),
+      listDirectory: () =>
+        Promise.resolve({
+          entries: [{ name: 'a', type: 'file', sizeBytes: 1, lastModified: 't' }],
+        }),
     },
-    process: { spawn: () => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }) },
+    process: {
+      spawn: () => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    },
     egress: { fetch: () => Promise.resolve({ status: 200, headers: {}, body: '{}' }) },
     os: { readClipboard: () => Promise.resolve('clip'), notify: () => Promise.resolve() },
     mcp: { call: () => Promise.resolve({ ok: true }) },
-    outputStore: { spill: (text) => Promise.resolve({ ref: 'spill://1', byteLength: text.length }) },
+    outputStore: {
+      spill: (text) => Promise.resolve({ ref: 'spill://1', byteLength: text.length }),
+    },
   };
 }
 
@@ -56,13 +69,29 @@ interface ToolCase {
 // One representative valid call per tool (covers each dispatch arrow + its `?? []`/`?? {}` branches).
 const CASES: readonly ToolCase[] = [
   { id: 'read_file', args: { path: 'a', glob: true }, cap: 'fs' },
-  { id: 'write_file', args: { path: 'a', content: 'x', append: true, createDirs: true }, cap: 'fs' },
+  {
+    id: 'write_file',
+    args: { path: 'a', content: 'x', append: true, createDirs: true },
+    cap: 'fs',
+  },
   { id: 'list_directory', args: { path: 'a', recursive: true, glob: '*.ts' }, cap: 'fs' },
-  { id: 'run_command', args: { command: 'ls', args: ['-l'], cwd: '/w', timeoutMs: 5, env: { X: '1' } }, cap: 'process' },
+  {
+    id: 'run_command',
+    args: { command: 'ls', args: ['-l'], cwd: '/w', timeoutMs: 5, env: { X: '1' } },
+    cap: 'process',
+  },
   { id: 'git_status', args: { command: 'log', args: ['--oneline'] }, cap: 'process' },
   { id: 'git_commit', args: { message: 'm', files: ['a.ts'] }, cap: 'process' },
-  { id: 'http_request', args: { method: 'POST', url: 'https://x', headers: { a: 'b' }, body: '{}' }, cap: 'egress' },
-  { id: 'web_search', args: { query: 'q', endpoint: 'https://s', credentialRef: 'r' }, cap: 'egress' },
+  {
+    id: 'http_request',
+    args: { method: 'POST', url: 'https://x', headers: { a: 'b' }, body: '{}' },
+    cap: 'egress',
+  },
+  {
+    id: 'web_search',
+    args: { query: 'q', endpoint: 'https://s', credentialRef: 'r' },
+    cap: 'egress',
+  },
   { id: 'mcp_call', args: { server: 's', tool: 't', args: { a: 1 } }, cap: 'mcp' },
   { id: 'read_clipboard', args: {}, cap: 'os' },
   { id: 'notify', args: { title: 't', body: 'b' }, cap: 'os' },
@@ -92,7 +121,9 @@ describe('built-in dispatch', () => {
     expect(result).toBeDefined();
   });
 
-  it.each(CASES.filter((toolCase): toolCase is ToolCase & { cap: string } => toolCase.cap !== undefined))(
+  it.each(
+    CASES.filter((toolCase): toolCase is ToolCase & { cap: string } => toolCase.cap !== undefined),
+  )(
     '$id fails with a typed ToolUnavailableError when the $cap capability is absent',
     async ({ id, args, cap }) => {
       const target = tool(id);
@@ -104,10 +135,14 @@ describe('built-in dispatch', () => {
 
   it('invoke_agent delegates to ctx.invokeAgent and fails typed without it', async () => {
     const target = tool('invoke_agent');
-    const out = await target.dispatch(target.parseArgs({ nodeId: 'n2', input: 1 }), {}, {
-      ...ctx,
-      invokeAgent: (nodeId) => Promise.resolve({ ranNode: nodeId }),
-    });
+    const out = await target.dispatch(
+      target.parseArgs({ nodeId: 'n2', input: 1 }),
+      {},
+      {
+        ...ctx,
+        invokeAgent: (nodeId) => Promise.resolve({ ranNode: nodeId }),
+      },
+    );
     expect(out).toEqual({ ranNode: 'n2' });
     const err = await rejection(() => target.dispatch(target.parseArgs({ nodeId: 'n2' }), {}, ctx));
     expect(err).toBeInstanceOf(ToolUnavailableError);
@@ -115,21 +150,27 @@ describe('built-in dispatch', () => {
 
   it('notify acknowledges delivery', async () => {
     const target = tool('notify');
-    expect(await target.dispatch(target.parseArgs({ title: 't', body: 'b' }), fullHost(), ctx)).toEqual({ delivered: true });
+    expect(
+      await target.dispatch(target.parseArgs({ title: 't', body: 'b' }), fullHost(), ctx),
+    ).toEqual({ delivered: true });
   });
 });
 
 describe('built-in policy targets', () => {
   it('run_command resolves the full command string for the allowlist', () => {
     const target = tool('run_command');
-    expect(target.policyTarget?.(target.parseArgs({ command: 'npm', args: ['run', 'build'] }))).toEqual({
+    expect(
+      target.policyTarget?.(target.parseArgs({ command: 'npm', args: ['run', 'build'] })),
+    ).toEqual({
       command: 'npm run build',
     });
   });
 
   it('http_request exposes its url as the egress policy target', () => {
     const target = tool('http_request');
-    expect(target.policyTarget?.(target.parseArgs({ url: 'https://x/y' }))).toEqual({ url: 'https://x/y' });
+    expect(target.policyTarget?.(target.parseArgs({ url: 'https://x/y' }))).toEqual({
+      url: 'https://x/y',
+    });
   });
 
   it('a pre-approved git_status has no policy target', () => {
@@ -150,7 +191,10 @@ describe('built-in arg validation', () => {
 
 describe('built-in git tool hardening', () => {
   it('git_status exposes only the subcommand to the model; args is config-only (H2)', () => {
-    const props = (tool('git_status').llmVisibleParams['properties'] ?? {}) as Record<string, unknown>;
+    const props = (tool('git_status').llmVisibleParams['properties'] ?? {}) as Record<
+      string,
+      unknown
+    >;
     expect(props).toHaveProperty('command');
     expect(props).not.toHaveProperty('args'); // a model cannot inject git flags
     expect(tool('git_status').configOnlyParams).toContain('args');
@@ -163,14 +207,28 @@ describe('built-in git tool hardening', () => {
   });
 
   it('git_commit inserts a `--` separator before pathspecs (M1)', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+    );
     const target = tool('git_commit');
-    await target.dispatch(target.parseArgs({ message: 'm', files: ['a.ts', 'b.ts'] }), { process: { spawn } }, ctx);
-    expect(spawn).toHaveBeenCalledWith('git', ['commit', '-m', 'm', '--', 'a.ts', 'b.ts'], {}, {}, undefined);
+    await target.dispatch(
+      target.parseArgs({ message: 'm', files: ['a.ts', 'b.ts'] }),
+      { process: { spawn } },
+      ctx,
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      'git',
+      ['commit', '-m', 'm', '--', 'a.ts', 'b.ts'],
+      {},
+      {},
+      undefined,
+    );
   });
 
   it('git_commit with no files still terminates options with `--` (TG-6)', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+    );
     const target = tool('git_commit');
     await target.dispatch(target.parseArgs({ message: 'm' }), { process: { spawn } }, ctx);
     expect(spawn).toHaveBeenCalledWith('git', ['commit', '-m', 'm', '--'], {}, {}, undefined);

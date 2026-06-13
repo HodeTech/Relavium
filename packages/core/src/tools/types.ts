@@ -103,7 +103,12 @@ export interface EgressResponse {
 
 export interface FsCapability {
   readFile(path: string, opts: FsReadOpts, signal?: AbortSignalLike): Promise<FileRead>;
-  writeFile(path: string, data: string, opts: FsWriteOpts, signal?: AbortSignalLike): Promise<FileWritten>;
+  writeFile(
+    path: string,
+    data: string,
+    opts: FsWriteOpts,
+    signal?: AbortSignalLike,
+  ): Promise<FileWritten>;
   listDirectory(path: string, opts: FsListOpts, signal?: AbortSignalLike): Promise<DirListing>;
 }
 // `| undefined` on these forwarded-from-optional-args fields (exactOptionalPropertyTypes pass-through).
@@ -238,7 +243,6 @@ export interface ToolDispatchContext {
   readonly limits?: ToolResultLimits;
   readonly signal?: AbortSignalLike;
 }
-
 
 export interface ToolDef<Args = unknown, Result = unknown> {
   readonly id: ToolId;

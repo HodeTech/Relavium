@@ -92,8 +92,16 @@ function requireMcp(host: ToolHost, toolId: ToolId): McpCapability {
   return host.mcp;
 }
 
-const FS_POLICY: ToolPolicyClass = { fsScoped: true, spawnsProcess: false, requiresGateApproval: false };
-const OS_POLICY: ToolPolicyClass = { fsScoped: false, spawnsProcess: false, requiresGateApproval: false };
+const FS_POLICY: ToolPolicyClass = {
+  fsScoped: true,
+  spawnsProcess: false,
+  requiresGateApproval: false,
+};
+const OS_POLICY: ToolPolicyClass = {
+  fsScoped: false,
+  spawnsProcess: false,
+  requiresGateApproval: false,
+};
 
 /* ------------------------------------------------------------------------------------------------ *
  * Filesystem tools.
@@ -150,7 +158,11 @@ const listDirectoryTool = defineBuiltin({
   id: 'list_directory',
   description: 'List directory contents, optionally recursive with a glob filter.',
   args: z
-    .object({ path: z.string().min(1), recursive: z.boolean().optional(), glob: z.string().optional() })
+    .object({
+      path: z.string().min(1),
+      recursive: z.boolean().optional(),
+      glob: z.string().optional(),
+    })
     .strict(),
   llmVisibleParams: {
     type: 'object',
@@ -177,7 +189,8 @@ const listDirectoryTool = defineBuiltin({
 
 const runCommandTool = defineBuiltin({
   id: 'run_command',
-  description: 'Spawn an allowlisted shell command (shell:false) and capture stdout/stderr/exit code.',
+  description:
+    'Spawn an allowlisted shell command (shell:false) and capture stdout/stderr/exit code.',
   args: z
     .object({
       command: z.string().min(1),
@@ -210,13 +223,17 @@ const runCommandTool = defineBuiltin({
 
 const gitStatusTool = defineBuiltin({
   id: 'git_status',
-  description: 'Run git status / log / diff in the workspace; extra flags are author-pinned via config, not model-supplied.',
+  description:
+    'Run git status / log / diff in the workspace; extra flags are author-pinned via config, not model-supplied.',
   // SECURITY: `args` is CONFIG-ONLY, not model-facing. A model-supplied `git diff` flag set
   // (e.g. `--no-index -- /etc/passwd`, `log -p --all`) would otherwise read arbitrary files / dump
   // history, since this pre-approved tool has no allowedCommands gate. The model picks only the
   // (safe, read-only) subcommand; any extra flags must be pinned by the trusted workflow author.
   args: z
-    .object({ command: z.enum(['status', 'log', 'diff']).optional(), args: z.array(z.string()).optional() })
+    .object({
+      command: z.enum(['status', 'log', 'diff']).optional(),
+      args: z.array(z.string()).optional(),
+    })
     .strict(),
   llmVisibleParams: {
     type: 'object',
@@ -246,12 +263,22 @@ const gitCommitTool = defineBuiltin({
       // A pathspec must not start with `-`, so a model cannot smuggle a git OPTION (`--amend`,
       // `--no-verify`, `--author=…`) through `files` past the human gate (the `--` separator below is
       // the structural backstop; this refine gives a field-named parse error).
-      files: z.array(z.string().min(1).refine((f) => !f.startsWith('-'), { message: 'a pathspec must not start with "-"' })).optional(),
+      files: z
+        .array(
+          z
+            .string()
+            .min(1)
+            .refine((f) => !f.startsWith('-'), { message: 'a pathspec must not start with "-"' }),
+        )
+        .optional(),
     })
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { message: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } },
+    properties: {
+      message: { type: 'string' },
+      files: { type: 'array', items: { type: 'string' } },
+    },
     required: ['message'],
     additionalProperties: false,
   },
@@ -273,7 +300,8 @@ const gitCommitTool = defineBuiltin({
 
 const httpRequestTool = defineBuiltin({
   id: 'http_request',
-  description: 'Outbound HTTPS request to an allowedDomains host (HTTPS-only, exact-FQDN, SSRF-guarded).',
+  description:
+    'Outbound HTTPS request to an allowedDomains host (HTTPS-only, exact-FQDN, SSRF-guarded).',
   args: z
     .object({
       method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional(),
@@ -304,7 +332,8 @@ const httpRequestTool = defineBuiltin({
 
 const webSearchTool = defineBuiltin({
   id: 'web_search',
-  description: 'Search the web via the configured provider (key resolved host-side via a credential ref).',
+  description:
+    'Search the web via the configured provider (key resolved host-side via a credential ref).',
   args: z
     .object({
       query: z.string().min(1),
@@ -334,8 +363,11 @@ const webSearchTool = defineBuiltin({
 
 const mcpCallTool = defineBuiltin({
   id: 'mcp_call',
-  description: 'Invoke a tool on a configured MCP server (server URL runs the same SSRF primitive).',
-  args: z.object({ server: z.string().min(1), tool: z.string().min(1), args: z.unknown().optional() }).strict(),
+  description:
+    'Invoke a tool on a configured MCP server (server URL runs the same SSRF primitive).',
+  args: z
+    .object({ server: z.string().min(1), tool: z.string().min(1), args: z.unknown().optional() })
+    .strict(),
   llmVisibleParams: {
     type: 'object',
     properties: { server: { type: 'string' }, tool: { type: 'string' }, args: {} },
@@ -344,7 +376,10 @@ const mcpCallTool = defineBuiltin({
   },
   policy: { fsScoped: false, spawnsProcess: false, egress: 'mcp', requiresGateApproval: false },
   dispatch: (args, host, ctx) =>
-    requireMcp(host, 'mcp_call').call({ server: args.server, tool: args.tool, args: args.args }, ctx.signal),
+    requireMcp(host, 'mcp_call').call(
+      { server: args.server, tool: args.tool, args: args.args },
+      ctx.signal,
+    ),
 });
 
 /* ------------------------------------------------------------------------------------------------ *

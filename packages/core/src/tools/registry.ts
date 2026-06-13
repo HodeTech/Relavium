@@ -110,7 +110,12 @@ async function dispatch(
     // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
     outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
     // 7. Bound the MODEL-FACING result (the full result is untouched above).
-    bounded = await boundForModel(output, ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS, host, ctx.signal);
+    bounded = await boundForModel(
+      output,
+      ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS,
+      host,
+      ctx.signal,
+    );
     // An abort that lands during bounding (its async fast path yields a microtask) must still classify
     // as cancelled, not a success — the symmetric guard to line 109 after the dispatch await.
     throwIfAborted(ctx, def.id);
@@ -228,7 +233,12 @@ function assertNoTaintedArgs(
 function toArgsInvalid(toolId: ToolId, cause: unknown): ToolArgsInvalidError {
   const fields = zodIssuePaths(cause);
   const where = fields.length > 0 ? ` (${fields.join(', ')})` : '';
-  return new ToolArgsInvalidError(toolId, fields, `tool \`${toolId}\`: invalid arguments${where}`, cause);
+  return new ToolArgsInvalidError(
+    toolId,
+    fields,
+    `tool \`${toolId}\`: invalid arguments${where}`,
+    cause,
+  );
 }
 
 /** Extract field paths from a ZodError-shaped cause — names only, never the received value. */
@@ -284,10 +294,7 @@ function enforcePolicy(def: ToolDef, args: unknown, ctx: ToolDispatchContext): v
   // SSRF range-block runs inside the host egress capability (1.AE). No engine allowlist check here.
 }
 
-function commandAllowed(
-  command: string,
-  policy: import('@relavium/shared').ToolPolicy,
-): boolean {
+function commandAllowed(command: string, policy: import('@relavium/shared').ToolPolicy): boolean {
   const exact = policy.allowedCommands ?? [];
   if (exact.includes(command)) {
     return true; // exact match (ADR-0029(a)) — `git` never authorizes `git push --force`
