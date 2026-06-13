@@ -43,12 +43,13 @@ const ENGINE_ALLOWLISTS = {
   // platform imports (CLAUDE.md rule 5), and @relavium/db pulls the native better-sqlite3
   // runtime. Core may use its TYPES via a devDependency (the Checkpointer interface /
   // Drizzle schema types); the store itself is injected by the host surface (1.R).
-  // @relavium/llm is deliberately ABSENT until the runner actually imports it (1.M+). Adding it
-  // to the allowlist before declaring it in package.json defeats the guard: the commit that
-  // introduces the runtime dependency must touch both package.json AND this allowlist — that
-  // co-location is the gate's whole purpose. Re-add @relavium/llm here in that same change.
+  // @relavium/llm joins at 1.O (the AgentRunner) — core imports ONLY the seam BARREL (LlmProvider /
+  // FallbackChain / CostTracker / content types), never an adapter (vendor SDK + node types), which
+  // the ESLint engine-purity fence + tsconfig.purity.json block. The host injects the concrete
+  // adapter instances via AgentRunnerDeps.resolveProvider (ADR-0038), so core never constructs one.
   'packages/core': [
     '@relavium/shared',
+    '@relavium/llm',
     'zod',
     'yaml',
     'quickjs-emscripten-core',

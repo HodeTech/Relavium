@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@relavium/shared": "workspace:*",
+    "@relavium/llm": "workspace:*",
     "@jitl/quickjs-singlefile-mjs-release-sync": "catalog:",
     "quickjs-emscripten-core": "catalog:",
     "yaml": "catalog:",

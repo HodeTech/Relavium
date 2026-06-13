@@ -116,6 +116,16 @@ const NODE_BUILTINS = [
   'worker_threads',
   'zlib',
 ];
+// packages/core consumes the @relavium/llm SEAM, but only the curated barrel — never a subpath
+// like `@relavium/llm/adapters/*` (a vendor SDK + @types/node graph that would break engine purity,
+// ADR-0038). The package only exports `.`, so a deep import is already unresolvable and the
+// purity tsconfig would break on the adapter types; this named block makes the failure a clear
+// lint error at the import site rather than an obscure type/resolution error.
+const LLM_SUBPATH_MESSAGE =
+  'packages/core imports only the @relavium/llm seam barrel (`@relavium/llm`) — never a subpath ' +
+  'like `@relavium/llm/adapters/*`, which pulls a provider SDK + @types/node and breaks engine ' +
+  'purity (CLAUDE.md rule 5, ADR-0038). The concrete adapter is host-injected via ' +
+  'AgentRunnerDeps.resolveProvider.';
 // The seam fence (vendor SDKs) + the node fence, in one entry — core source keeps both.
 const enginePurityImportEntry = /** @type {const} */ ([
   'error',
@@ -125,6 +135,7 @@ const enginePurityImportEntry = /** @type {const} */ ([
       ...seamImportOptions.patterns,
       { group: ['node:*'], message: ENGINE_PURITY_MESSAGE },
       { group: NODE_BUILTINS, message: ENGINE_PURITY_MESSAGE },
+      { group: ['@relavium/llm/*'], message: LLM_SUBPATH_MESSAGE },
     ],
   },
 ]);
