@@ -63,9 +63,14 @@ const terminalsIn = (events: readonly RunEvent[]): readonly RunEvent[] =>
   events.filter((e) => TERMINALS.has(e.type));
 const typesIn = (events: readonly RunEvent[]): readonly string[] => events.map((e) => e.type);
 
-/** Assert the delivered stream is gap-free: sequenceNumbers are the contiguous run 0..n-1. */
+/**
+ * Assert the delivered stream is gap-free: the SET of sequenceNumbers is exactly {0..n-1} — no gap,
+ * no duplicate. Checks the sorted set, not delivery position, so it stays valid once 1.O streams
+ * tokens concurrently (delivery order may then differ from emission order, but the set must not gap).
+ */
 function assertGapFreeSeq(events: readonly RunEvent[]): void {
-  events.forEach((event, index) => expect(event.sequenceNumber).toBe(index));
+  const seqs = events.map((event) => event.sequenceNumber).sort((a, b) => a - b);
+  seqs.forEach((seq, index) => expect(seq).toBe(index));
 }
 
 /** Assert a synchronous call throws an {@link EngineStateError} with the given code. */
@@ -277,6 +282,22 @@ describe('WorkflowEngine — condition skip-propagation', () => {
     expect(startedNodes).toContain('reject');
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
+
+  it('skips a fan-in whose every branch was skipped (an all-skipped join is itself skipped)', async () => {
+    const events = await drain(
+      engineWith({
+        gate: () => ({ kind: 'branch', output: 'none', selected: [] }), // routes to neither branch
+      }).start({ workflow: workflow(CONDITIONAL) }),
+    );
+    const startedNodes = events
+      .filter((e) => e.type === 'node:started')
+      .map((e) => (e.type === 'node:started' ? e.nodeId : ''));
+    expect(startedNodes).not.toContain('approve');
+    expect(startedNodes).not.toContain('reject');
+    expect(startedNodes).not.toContain('join'); // both branches skipped → the fan-in skips too
+    expect(startedNodes).not.toContain('out'); // and everything below it
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
 });
 
 // --- exactly-one-terminal-event guarantees ----------------------------------------------------
@@ -430,6 +451,7 @@ describe('WorkflowEngine — max_parallel concurrency cap', () => {
       (e) => e.type === 'node:completed' && ['b1', 'b2', 'b3'].includes(e.nodeId),
     );
     expect(completedBranches).toHaveLength(3);
+    assertGapFreeSeq(events); // gap-free even under concurrent fan-out
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 });
@@ -694,5 +716,74 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
     await drain(handle);
     expect(() => handle.cancel()).not.toThrow();
+  });
+
+  it('terminates (no zombie) when the run:paused durable write fails at a gate', async () => {
+    // Regression for the gate-pause persist-failure path: #emitPausedOnce -> #emitDurable(run:paused)
+    // must re-enter the scheduler so the run settles, never hang. A working store for everything else,
+    // a fault confined to run:paused.
+    const inner = new InMemoryRunStore();
+    const host: ExecutionHost = {
+      ...createInMemoryHost(),
+      store: {
+        resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
+        persistEvent: (event) =>
+          event.type === 'run:paused'
+            ? Promise.reject(new Error('paused write failed'))
+            : inner.persistEvent(event),
+        listInterruptedRuns: () => inner.listInterruptedRuns(),
+      },
+    };
+    const engine = new WorkflowEngine({
+      host,
+      executor: new StubExecutor({
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }),
+      }),
+    });
+    const events = await drain(
+      engine.start({
+        workflow: workflow(`  id: gatefail
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+  });
+
+  it('reconcile() skips a run whose terminal write fails and still reconciles the others', async () => {
+    const store = new InMemoryRunStore();
+    const startedAt = '2026-06-13T00:00:00.000Z';
+    for (const runId of ['crash-a', 'crash-b']) {
+      await store.persistEvent({
+        type: 'run:started',
+        runId,
+        timestamp: startedAt,
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000099',
+        inputs: {},
+        executionMode: 'local',
+      });
+    }
+    // A store that rejects the reconcile write for crash-a only.
+    const host: ExecutionHost = {
+      ...createInMemoryHost(),
+      store: {
+        resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+        persistEvent: (event) =>
+          event.type === 'run:failed' && event.runId === 'crash-a'
+            ? Promise.reject(new Error('write failed'))
+            : store.persistEvent(event),
+        listInterruptedRuns: () => store.listInterruptedRuns(),
+      },
+    };
+    const reconciled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();
+    // crash-a's write failed and is skipped; crash-b still reconciled — one fault doesn't abandon the rest.
+    expect(reconciled.map((e) => e.runId)).toEqual(['crash-b']);
   });
 });

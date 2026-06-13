@@ -479,8 +479,10 @@ class RunExecution {
         }
       }
     } catch {
-      // An engine-internal failure while settling a node (e.g. a durable persist rejected). Never leave
-      // the run hanging: mark this vertex failed and fail the run (unless already cancelling/failing).
+      // Backstop for an UNEXPECTED throw while settling a node — e.g. a bus/Zod stamp failure on a
+      // malformed event. (A durable persist rejection no longer reaches here: #emitDurable is total.)
+      // Never leave the run hanging: mark this vertex failed and fail the run (unless already
+      // cancelling/failing).
       if (state !== undefined && state.status === 'running') {
         state.status = 'failed';
       }
@@ -697,6 +699,11 @@ class RunExecution {
           error: { code: 'internal', message: 'a durable run-event write failed', retryable: false },
         };
         this.#abort.abort();
+        // Re-enter the scheduler so the run actually settles. Most callers re-schedule after
+        // #emitDurable (begin/resume) or via #onOutcome's unconditional #schedule, but #emitPausedOnce
+        // (the run:paused path) returns straight to #step's bare `return` — without this, a gate-pause
+        // persist failure would set #failure yet never reach #settle, re-creating the zombie run.
+        this.#schedule();
       }
     }
     this.#bus.deliver(event);
@@ -807,8 +814,13 @@ export class WorkflowEngine {
         },
         partialOutputs: {},
       });
-      await this.#host.store.persistEvent(event);
-      reconciled.push(event);
+      try {
+        await this.#host.store.persistEvent(event);
+        reconciled.push(event);
+      } catch {
+        // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
+        // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
+      }
     }
     return reconciled;
   }
