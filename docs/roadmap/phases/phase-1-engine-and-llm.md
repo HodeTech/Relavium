@@ -551,8 +551,9 @@ The loop that dispatches ready nodes and emits the canonical event stream.
 - Implement `WorkflowEngine.start(workflowId, input)` / `resume` / `cancel`, walking
   the `RunPlan` and dispatching every node whose dependencies are satisfied
   (independent branches concurrently).
-- Implement the `RunEventBus` (`EventEmitter`) and emit the canonical
-  colon-namespaced events with a **monotonically increasing `sequenceNumber`** per
+- Implement the `RunEventBus` (an in-house, platform-free typed event bus — **not** Node's
+  `node:events`, which the engine-purity fence bans; [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md))
+  and emit the canonical colon-namespaced events with a **monotonically increasing `sequenceNumber`** per
   run: `run:started`, `node:started`, `agent:token`, `agent:tool_call`,
   `agent:tool_result`, `cost:updated`, `node:completed`, `node:failed`,
   `human_gate:paused`/`:resumed`, `run:completed`, `run:failed`, `run:cancelled`

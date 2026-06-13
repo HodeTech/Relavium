@@ -86,11 +86,18 @@ export const ErrorCodeSchema = z.enum(ERROR_CODES);
 /** The five-value LLM stop reason. Canonical home — the `@relavium/llm` seam re-exports this. */
 export const StopReasonSchema = z.enum(STOP_REASONS);
 
-/** The shared failure shape: a closed `code`, a user-safe `message`, and `retryable`. */
+/**
+ * The shared failure shape: a closed `code`, a user-safe `message`, `retryable`, and an optional,
+ * secret-free `correlationId` the engine stamps at the single producer-side translation point so a
+ * surface can quote it and an operator can join it to the structured internal log (reconciles
+ * error-handling.md's "user-safe message plus an internal correlation id"; ADR-0036). Additive and
+ * forward-compatible — an emitter may omit it.
+ */
 const eventErrorFields = {
   code: ErrorCodeSchema,
   message: z.string(),
   retryable: z.boolean(),
+  correlationId: nonEmptyString.optional(),
 };
 
 /**

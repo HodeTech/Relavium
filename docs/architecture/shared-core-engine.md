@@ -85,9 +85,10 @@ The artifact contracts it consumes and produces live in
   [../standards/architectural-principles.md](../standards/architectural-principles.md).) See
   [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md)
   and [../reference/shared-core/mcp-integration.md](../reference/shared-core/mcp-integration.md).
-- **`RunEventBus`** — an `EventEmitter` that carries the typed run events
-  surfaces subscribe to. The event contract is the
-  [SSE event schema](../reference/contracts/sse-event-schema.md).
+- **`RunEventBus`** — an in-house, **platform-free** typed event bus (pub/sub) over the `RunEvent`
+  union that surfaces subscribe to. It is built in `packages/core`, **not** Node's `node:events` (the
+  engine has zero platform imports — [ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).
+  The event contract is the [SSE event schema](../reference/contracts/sse-event-schema.md).
 
 ## YAML → DAG compilation
 

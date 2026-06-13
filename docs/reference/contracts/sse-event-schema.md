@@ -1,7 +1,7 @@
 # Run Event Schema
 
 - **Status**: Stable
-- **Canonical type**: `RunEvent` (discriminated union) in `@relavium/core` / re-exported from `@relavium/shared`
+- **Canonical type**: `RunEvent` (discriminated union) **defined in `@relavium/shared`** (`run-event.ts`, the runtime-validated source of truth); `@relavium/core` **consumes and re-exports** it
 - **Transport**: Phase 1 — in-process `RunEventBus` (the engine runs in-process on **every** surface, including the desktop WebView). Phase 2 — HTTP `text/event-stream` (SSE) from the cloud API.
 - **Related**: [ipc-contract.md](ipc-contract.md), [workflow-yaml-spec.md](workflow-yaml-spec.md), [../shared-core/store-shapes.md](../shared-core/store-shapes.md), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md) (canonical `costMicrocents` unit + the `cost:updated` figures), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/state-management.md](../../architecture/state-management.md), [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)
 
@@ -12,8 +12,8 @@ The **transport** differs by surface and phase, but the **event shape does not**
 ```mermaid
 flowchart LR
   E["@relavium/core\nRunEventBus\n(runs in-process on every surface)"] -->|in-process, WebView-side| D[Desktop WebView stores]
-  E -->|in-process EventEmitter| C[CLI ink renderer]
-  E -->|in-process EventEmitter| V[VS Code extension host]
+  E -->|in-process bus| C[CLI ink renderer]
+  E -->|in-process bus| V[VS Code extension host]
   E -. Phase 2 .->|HTTP SSE| P[Cloud Portal]
 ```
 
@@ -73,12 +73,12 @@ export type RunEvent =
 | `agent:file_patch_proposed` | An agent proposed a file change (**gated — no write until the user accepts**; e.g. the VS Code inline-diff review). | `nodeId`, `patches: [{ uri, unifiedDiff }]` (≥1 — an empty proposal is meaningless), `attemptNumber?` |
 | `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model?}` (`model` only for LLM nodes), `durationMs`, `attemptNumber?` |
-| `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable}` (`code` is an [`ErrorCode`](#error-code-taxonomy)) |
+| `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable, correlationId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `correlationId` is a secret-free id joined to the internal log — ADR-0036) |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
 | `run:paused` | The run is suspended with **≥1 gate pending** — the multi-gate aggregate that backs the pending-gate queue (parallel branches may each reach a gate). | `pendingGateCount`, `gateIds[]` |
 | `run:completed` | The run finished. | `outputs`, `totalTokensUsed`, `totalCostMicrocents` (integer micro-cents closing total for the whole run), `durationMs` |
-| `run:failed` | The run failed. | `error: {code, message, retryable, nodeId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `nodeId` is the root-cause node), `partialOutputs` |
+| `run:failed` | The run failed. | `error: {code, message, retryable, nodeId?, correlationId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `nodeId` is the root-cause node; `correlationId` joins to the internal log — ADR-0036), `partialOutputs` |
 | `run:cancelled` | The run was cancelled. | (base only) |
 
 ### Selected definitions
@@ -209,6 +209,8 @@ Within a turn, the conversational work reuses the **same** `agent:token` / `agen
 | `budget:paused` | Spend would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via the `resume_budget` IPC command. | `spentMicrocents`, `limitMicrocents` |
 | `run:timeout` | The run hit its `timeout_ms`. | `elapsedMs`, `timeoutMs` |
 
+These three (and `run:paused` / `human_gate:paused`) are **non-terminal** — they signal a governance/suspension state, not the run's end. A run that cannot continue past a timeout or budget cap still closes with **exactly one** `run:failed` carrying `code: run_timeout` / `budget_exceeded`. The exactly-one-terminal-event invariant (`run:completed | run:failed | run:cancelled`) and its precedence are owned by [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md).
+
 **Reserved (declared, but emitted by no Phase-1 code):**
 
 - **Loops** ([loops ADR, 0030+](../../decisions/README.md)): `iteration:started` / `iteration:completed`, and an optional `iterationIndex?` / `iterationTotal?` on node-level events. Reserved so the schema is future-proof without Phase-1 bloat.
@@ -236,7 +238,7 @@ Removing or repurposing an existing field/type is a breaking change and is not d
 ### Phase 1 — local (in-process on every surface)
 
 - **Desktop**: the engine runs in the WebView's JS runtime ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)), so run events are delivered **WebView-side** over the engine's in-process `RunEventBus` — they do **not** cross IPC as `RunEvent`s. The one Rust→WebView channel on the hot path is the delegated LLM egress's typed, backpressure-aware `Channel<StreamChunk>`: if the WebView consumer lags, the Rust sender awaits, throttling the egress without dropping chunks; the adapter folds those chunks into `agent:token` events on the WebView-side bus. See [ipc-contract.md](ipc-contract.md#run-events-are-webview-side).
-- **CLI / VS Code**: the engine runs in-process; events are delivered via the engine's `RunEventBus` (`EventEmitter`) or the `RunHandle.events` async iterable.
+- **CLI / VS Code**: the engine runs in-process; events are delivered via the engine's `RunEventBus` (a platform-free, in-house typed event bus — **not** Node's `node:events`; [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) or the co-equal `RunHandle.events` async iterable.
 
 ### Phase 2 — cloud (HTTP SSE)
 
