@@ -121,6 +121,15 @@ export type {
 export { EngineStateError } from './engine/errors.js';
 export type { EngineStateErrorCode } from './engine/errors.js';
 
+// AgentRunner (1.O) — the single dispatching NodeExecutor for `agent` vertices; a surface constructs
+// it with host capabilities (resolveProvider + the chain's keyFor/sleep) and injects it as
+// WorkflowEngineDeps.executor (ADR-0038). The correlation-agnostic turn core it wraps stays internal
+// to the package — AgentSession (1.V) imports it intra-package, not from this curated surface.
+export { createAgentNodeExecutor } from './engine/agent-runner.js';
+export type { AgentRunnerDeps } from './engine/agent-runner.js';
+export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
+export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
+
 // Built-in ToolRegistry + dispatch (1.T) — the engine-side registry the AgentRunner (1.O) and
 // AgentSession (1.V) invoke; side effects go through the injected ToolHost seam (ADR-0037;
 // tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.
