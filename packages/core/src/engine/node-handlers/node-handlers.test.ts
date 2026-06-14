@@ -496,6 +496,48 @@ describe('fan_out / input / output handlers (1.P)', () => {
     const out = await exec.execute(makeCtx(v)); // 'gone' absent
     expect(out).toEqual({ kind: 'completed', output: null });
   });
+
+  it('a multi-declared-feeder output captures the single LIVE feeder verbatim (condition branches converge)', async () => {
+    const exec = createOutputNodeExecutor();
+    const v = makeVertex(
+      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { dependencies: ['hi', 'lo'] }, // two mutually-exclusive condition branches feed here
+    );
+    const runOutputs = new Map<string, unknown>([['lo', { label: 'low' }]]); // only 'lo' is live
+    const out = await exec.execute(makeCtx(v, { runOutputs }));
+    // Captured verbatim (NOT `{ lo: … }`) — the canonical condition→output pattern relies on this; the
+    // e2e's `out` node, fed by `hi`/`lo`, would otherwise surface a one-key wrapper.
+    expect(out).toEqual({ kind: 'completed', output: { label: 'low' } });
+  });
+
+  it('the structural handlers (fan_out / input / output) return `cancelled` when already aborted', async () => {
+    const fanOut = createFanOutNodeExecutor();
+    const input = createInputNodeExecutor();
+    const output = createOutputNodeExecutor();
+    const aborted = { signal: ABORTED };
+    expect(
+      await fanOut.execute(
+        makeCtx(
+          makeVertex({
+            kind: 'fan_out',
+            node: { id: 'p', type: 'parallel', parallel_of: ['x'] },
+            branchNodeIds: ['x'],
+          }),
+          aborted,
+        ),
+      ),
+    ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+    expect(
+      await input.execute(
+        makeCtx(makeVertex({ kind: 'input', node: { id: 'i', type: 'input' } }), aborted),
+      ),
+    ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+    expect(
+      await output.execute(
+        makeCtx(makeVertex({ kind: 'output', node: { id: 'o', type: 'output' } }), aborted),
+      ),
+    ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+  });
 });
 
 describe('secret-input masking (1.P security — BLOCKER fix)', () => {

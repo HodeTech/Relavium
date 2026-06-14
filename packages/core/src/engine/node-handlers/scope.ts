@@ -37,11 +37,22 @@ export function cancelled(): NodeOutcome {
  * `completed` upstream outputs, so a skipped/failed/not-yet-run producer is simply absent.
  */
 export function outputsRecord(runOutputs: ReadonlyMap<string, unknown>): Record<string, unknown> {
-  const record: Record<string, unknown> = {};
-  for (const id of [...runOutputs.keys()].sort()) {
+  // A null-prototype record (defense-in-depth: a node id cannot be `__proto__` under the kebab grammar,
+  // but a plain object would let one pollute Object.prototype) — consistent with the fan-in accumulator.
+  const record: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  // Sort by UTF-16 code unit via an explicit comparator (NOT `localeCompare` — locale-dependent ordering
+  // would break the cross-environment resume determinism this sort exists for).
+  for (const id of [...runOutputs.keys()].sort(byCodeUnit)) {
     record[id] = runOutputs.get(id);
   }
   return record;
+}
+
+/** Deterministic, locale-independent string order (UTF-16 code unit) — for resume-reproducible records. */
+export function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 /**
@@ -55,7 +66,9 @@ export function maskSecretInputs(
   inputs: Readonly<Record<string, unknown>>,
   secretInputNames: ReadonlySet<string>,
 ): Record<string, unknown> {
-  const masked: Record<string, unknown> = {};
+  // A null-prototype record: an input name MAY be `__proto__` (the input-name grammar is `[A-Za-z0-9_-]+`,
+  // which permits `_`), so a plain object would let `masked['__proto__'] = …` pollute Object.prototype.
+  const masked: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(inputs)) {
     masked[key] = secretInputNames.has(key)
       ? ({ secret: true, ref: `inputs.${key}` } satisfies MaskedSecret)

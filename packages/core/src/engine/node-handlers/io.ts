@@ -12,7 +12,7 @@
  */
 
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from '../node-executor.js';
-import { cancelled, failed, maskSecretInputs } from './scope.js';
+import { byCodeUnit, cancelled, failed, maskSecretInputs } from './scope.js';
 
 function runInput(ctx: NodeExecContext): NodeOutcome {
   const { config } = ctx.vertex;
@@ -36,15 +36,28 @@ function runOutput(ctx: NodeExecContext): NodeOutcome {
   if (ctx.signal.aborted) {
     return cancelled();
   }
-  const feeders = [...ctx.vertex.dependencies].sort().filter((id) => ctx.runOutputs.has(id));
+  // Capture the SETTLED feeders (the upstream nodes that actually produced an output). A single live
+  // feeder — the canonical case, including a `condition`'s one taken branch converging here — is
+  // captured VERBATIM; several live feeders become a record keyed by feeder id; no live feeder is null.
+  // (The shape follows the live count, not the declared count, precisely so a condition→output pattern
+  // surfaces the taken branch's value, not a one-key wrapper.)
+  const feeders = [...ctx.vertex.dependencies]
+    .sort(byCodeUnit)
+    .filter((id) => ctx.runOutputs.has(id));
   if (feeders.length === 0) {
     return { kind: 'completed', output: null };
   }
   if (feeders.length === 1) {
     const [only] = feeders;
-    return { kind: 'completed', output: only === undefined ? null : ctx.runOutputs.get(only) };
+    if (only === undefined) {
+      // Unreachable (feeders is non-empty) — the guard narrows `only` from `string | undefined` to `string`.
+      return { kind: 'completed', output: null };
+    }
+    return { kind: 'completed', output: ctx.runOutputs.get(only) };
   }
-  const captured: Record<string, unknown> = {};
+  // A null-prototype record (a node id cannot be `__proto__` under the kebab grammar — defense-in-depth),
+  // keyed by settled feeder id in deterministic code-unit order.
+  const captured: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const id of feeders) {
     captured[id] = ctx.runOutputs.get(id);
   }

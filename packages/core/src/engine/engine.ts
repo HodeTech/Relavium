@@ -104,7 +104,9 @@ function maskInputs(
   inputs: Readonly<Record<string, unknown>>,
   secretNames: ReadonlySet<string>,
 ): Record<string, unknown> {
-  const masked: Record<string, unknown> = {};
+  // Null-prototype: an input name MAY be `__proto__` (the `[A-Za-z0-9_-]+` grammar permits `_`), so a
+  // plain object would let `masked['__proto__'] = …` pollute Object.prototype.
+  const masked: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(inputs)) {
     masked[key] = secretNames.has(key)
       ? ({ secret: true, ref: `inputs.${key}` } satisfies MaskedSecret)

@@ -237,8 +237,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
   passes as `completed`). **1.P shares this gap for the `transform` node's optional `output_schema`** — the
   sandbox guarantees the result is JSON-serializable but does **not** check it against the declared schema.
-  Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), a new runtime
-  dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
+  Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
+  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
   packages/core/src/engine/node-handlers/transform.ts; error-handling.md)*
 - [ ] **Per-attempt model attribution for `agent:token`** — `cost:updated` is always per-attempt-accurate, but
   `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
