@@ -17,6 +17,8 @@
 
 import type { AbortSignalLike, RunEvent } from '@relavium/shared';
 
+import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
+
 /** A platform-free ISO-8601 timestamp source — injected so the engine never reads an ambient clock. */
 export interface Clock {
   /** An ISO-8601 timestamp with offset (`…Z` or `±HH:MM`), matching the run-event envelope. */
@@ -120,6 +122,12 @@ export interface ExecutionHost {
   readonly clock: Clock;
   readonly ids: IdSource;
   readonly store: RunStore;
+  /**
+   * The read side that reconstructs a run's {@link CheckpointState} from persisted rows so an interrupted
+   * run (crash, or suspended at a gate) can resume (1.R). Kept separate from the write `store` port. The
+   * real SQLite/cloud one is Phase-2/CLI; the in-memory reference is {@link createInMemoryCheckpointer}.
+   */
+  readonly checkpointer: Checkpointer;
   /** Create a fresh abort controller for a run — injected so core never names the ambient global. */
   readonly newAbortController: () => AbortControllerLike;
 }
@@ -211,14 +219,33 @@ export class InMemoryRunStore implements RunStore {
  */
 export function createInMemoryHost(options?: {
   store?: RunStore;
+  checkpointer?: Checkpointer;
   baseEpochMs?: number;
 }): ExecutionHost & { store: RunStore } {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
+  const store = options?.store ?? new InMemoryRunStore();
   return {
     clock: { now: () => new Date(tick++).toISOString() },
     ids: { newId: () => `id-${++idCounter}` },
-    store: options?.store ?? new InMemoryRunStore(),
+    store,
+    checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
     newAbortController: createAbortController,
+  };
+}
+
+/**
+ * The in-memory reference {@link Checkpointer}: reconstructs from an {@link InMemoryRunStore}'s event log
+ * ({@link reconstructCheckpointState}). For any other (opaque) store it returns `undefined` — a custom
+ * store must supply its own checkpointer. Deterministic + dependency-free, for the engine tests.
+ */
+export function createInMemoryCheckpointer(store: RunStore): Checkpointer {
+  return {
+    load: (runId) =>
+      Promise.resolve(
+        store instanceof InMemoryRunStore
+          ? reconstructCheckpointState(store.eventsFor(runId))
+          : undefined,
+      ),
   };
 }

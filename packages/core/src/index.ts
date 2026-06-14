@@ -97,8 +97,18 @@ export type { RunHandle } from './engine/run-handle.js';
 export {
   InMemoryRunStore,
   createInMemoryHost,
+  createInMemoryCheckpointer,
   createAbortController,
 } from './engine/execution-host.js';
+// Checkpointer + resume (1.R) — reconstruct a run's state from its persisted event stream (no checkpoint
+// table; ADR-0003). The in-memory reference ships here; the SQLite/cloud one is Phase-2/CLI.
+export { reconstructCheckpointState, CHECKPOINT_SCHEMA_VERSION } from './engine/checkpoint.js';
+export type {
+  Checkpointer,
+  CheckpointState,
+  CheckpointNodeState,
+  CheckpointPendingGate,
+} from './engine/checkpoint.js';
 export type {
   ExecutionHost,
   RunStore,

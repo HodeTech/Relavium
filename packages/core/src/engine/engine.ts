@@ -482,6 +482,8 @@ class RunExecution {
       output: outcome.output,
       tokensUsed: tokens,
       durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
+      // A condition's branch selection — persisted so resume can restore `selectedTargets` (1.R).
+      ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
     });
   }
 

@@ -202,6 +202,10 @@ export const NodeCompletedEventSchema = z.object({
   tokensUsed: TokensUsedSchema,
   durationMs: nonNegativeInt,
   attemptNumber: positiveInt.optional(), // 1-based retry attempt (matches cost:updated)
+  // The immediate downstream ids a `condition` kept live (its branch selection). Present ONLY for a
+  // condition's branch outcome — it is the authoritative record checkpoint/resume (1.R) reconstructs
+  // `selectedTargets` from, so a selected branch that was mid-flight at a crash re-runs (not skipped).
+  selected: z.array(nonEmptyString).optional(),
 });
 
 export const NodeFailedEventSchema = z.object({
