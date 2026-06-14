@@ -134,6 +134,7 @@ human decision: `approve` **auto-resolves** the gate as approved (`decidedBy: 't
 continues); `reject` **fails** the run with `run_timeout` (the `AwaitingGate → Failed` edge above) —
 this is what stops a forgotten gate from blocking a run forever. A decision that arrives first
 disarms the timer.
+
 The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the
 [IPC contract](../reference/contracts/ipc-contract.md).

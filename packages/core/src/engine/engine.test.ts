@@ -628,6 +628,55 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     }
   });
 
+  it('a human rejected decision completes the gate (carrying the decision) and continues the run', async () => {
+    const engine = engineWith({
+      g: () => gate({}),
+      // Echo the gate's settled output so the test can observe the decision reached run.outputs (the real
+      // output handler captures its feeder verbatim; the stub otherwise returns its own id).
+      out: (ctx): NodeOutcome => ({ kind: 'completed', output: ctx.runOutputs.get('g') }),
+    });
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'rejected', decidedBy: 'human' });
+        }
+      }
+    }
+    const resumed = events.find((e) => e.type === 'human_gate:resumed');
+    expect(resumed?.type === 'human_gate:resumed' ? resumed.decision : undefined).toBe('rejected');
+    // A rejected decision is NOT a run failure (execution-model.md §4): the gate vertex completes carrying
+    // {decision:'rejected'} as its output (signalled by human_gate:resumed, not a node:completed), the run
+    // continues, and the value flows downstream — `out` captures its single feeder (the gate) verbatim, so
+    // a downstream condition could route on it.
+    const outDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'out');
+    expect(outDone?.type === 'node:completed' ? outDone.output : undefined).toEqual({
+      decision: 'rejected',
+    });
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('disarms an armed gate timer when the run terminates for an unrelated reason (cancel)', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        expect(host.armedCount()).toBe(1); // the gate timer is armed
+        engine.cancel(handle.runId); // cancel for an unrelated reason while the timer is still armed
+      }
+    }
+    expect(terminalsIn(events)[0]?.type).toBe('run:cancelled');
+    expect(host.armedCount()).toBe(0); // #settle disarmed the armed timer on terminal close
+    host.fireTimers(); // a no-op now — nothing armed; must not emit anything after the terminal
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
   it('a reject-timeout marks the gate resolved, so a late re-delivery of its decision is a no-op (not a throw)', async () => {
     const host = createInMemoryHost();
     const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
@@ -922,7 +971,12 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(store.eventsFor(runId).some((e) => e.type === 'run:completed')).toBe(false);
 
     // Process C: the gate is already resolved (resolvedGateIds), the run is non-terminal → kick(), which
-    // re-runs the unfinished `out` and completes WITHOUT a second human_gate:resumed.
+    // re-runs the unfinished `out` and completes WITHOUT a second human_gate:resumed. Snapshot the last
+    // persisted seq BEFORE the call — kick() emits synchronously, so a later read would include C's own
+    // first event.
+    const lastPersistedBeforeC = store
+      .eventsFor(runId)
+      .reduce((max, e) => Math.max(max, e.sequenceNumber), -1);
     const engineC = engineWith({}, createInMemoryHost({ store }));
     const handleC = await engineC.resumeFromCheckpoint({
       runId,
@@ -934,6 +988,10 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(eventsC.some((e) => e.type === 'human_gate:resumed')).toBe(false); // never re-applied
     expect(eventsC.some((e) => e.type === 'node:completed' && e.nodeId === 'out')).toBe(true);
     expect(terminalsIn(eventsC)[0]?.type).toBe('run:completed');
+    // The kick path shares #seedFromCheckpoint's seedSequence — its stream must also continue gap-free.
+    eventsC.forEach((event, index) =>
+      expect(event.sequenceNumber).toBe(lastPersistedBeforeC + 1 + index),
+    );
   });
 
   it('arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)', async () => {
@@ -951,8 +1009,17 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
         break;
       }
     }
-    // Process B rehydrates: no timer is armed (armedCount stays 0) — the resumed gate is decided at once.
-    const hostB = createInMemoryHost({ store });
+    // Process B rehydrates. Spy on setTimer to prove it is NEVER called during rehydration — distinguishing
+    // "never armed" from "armed then disarmed on resume" (which armedCount alone could not).
+    const baseHostB = createInMemoryHost({ store });
+    let armCalls = 0;
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      setTimer: (ms, onFire) => {
+        armCalls += 1;
+        return baseHostB.setTimer(ms, onFire);
+      },
+    };
     const engineB = engineWith({}, hostB);
     const handleB = await engineB.resumeFromCheckpoint({
       runId: handleA.runId,
@@ -961,7 +1028,7 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
       decision: { decision: 'approved', decidedBy: 'h' },
     });
     await drain(handleB);
-    expect(hostB.armedCount()).toBe(0);
+    expect(armCalls).toBe(0); // rehydration armed no timer at all (re-arm is a Phase-2 concern)
   });
 });
 

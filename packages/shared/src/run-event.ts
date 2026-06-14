@@ -418,6 +418,7 @@ export type AgentToolResultEvent = z.infer<typeof AgentToolResultEventSchema>;
 export type AgentFilePatchProposedEvent = z.infer<typeof AgentFilePatchProposedEventSchema>;
 export type NodeCompletedEvent = z.infer<typeof NodeCompletedEventSchema>;
 export type NodeFailedEvent = z.infer<typeof NodeFailedEventSchema>;
+export type NodeSkippedEvent = z.infer<typeof NodeSkippedEventSchema>;
 export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
 export type RunFailedEvent = z.infer<typeof RunFailedEventSchema>;
 export type RunCancelledEvent = z.infer<typeof RunCancelledEventSchema>;

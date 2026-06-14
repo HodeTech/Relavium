@@ -617,15 +617,19 @@ class RunExecution {
     // Compute the wall-clock deadline from the host clock (the handler has none) and arm a one-shot timer
     // (1.Q). On fire, an `approve` action auto-resolves the gate; a `reject` (the safe default) fails the
     // run with run_timeout. The timer is disarmed on resume / terminal settle so it never fires twice.
+    // The EFFECTIVE on-timeout policy (default the safe `reject`) — used for BOTH the armed timer and the
+    // emitted event, so the persisted `human_gate:paused` always carries the exact policy the engine acts
+    // on (even when a handler set timeoutMs but left timeoutAction implicit). A Phase-2 crash-resume reads
+    // it back to re-arm. `undefined` only when no timeout is configured.
+    const effectiveAction = gate.timeoutMs === undefined ? undefined : (gate.timeoutAction ?? 'reject');
     const expiresAt =
       gate.expiresAt ??
       (gate.timeoutMs === undefined
         ? undefined
         : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
-    if (gate.timeoutMs !== undefined) {
-      const action = gate.timeoutAction ?? 'reject';
+    if (gate.timeoutMs !== undefined && effectiveAction !== undefined) {
       const disarm = this.#host.setTimer(gate.timeoutMs, () => {
-        void this.#onGateTimeout(gateId, vertex.id, action);
+        void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
       });
       this.#gateTimers.set(gateId, disarm);
     }
@@ -638,7 +642,7 @@ class RunExecution {
       message: gate.message,
       ...(gate.assignee === undefined ? {} : { assignee: gate.assignee }),
       ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
-      ...(gate.timeoutAction === undefined ? {} : { timeoutAction: gate.timeoutAction }),
+      ...(effectiveAction === undefined ? {} : { timeoutAction: effectiveAction }),
       ...(expiresAt === undefined ? {} : { expiresAt }),
     });
   }
@@ -1057,6 +1061,9 @@ export class WorkflowEngine {
         runId: input.runId,
       });
     }
+    // Only CHECKPOINT_SCHEMA_VERSION (v1) exists today, so no migration/guard runs here yet. When the
+    // derivation shape changes, this is the single point a future engine must refuse or migrate an older
+    // `checkpoint.schemaVersion` before consuming the state (the field exists precisely for that, 1.R).
     // Identity guard: the workflow handed in must be the one the run started on. Comparing the surrogate
     // `workflows.id` UUID catches resuming the wrong workflow entirely (a different slug). A subtler
     // same-slug-edited-content drift needs a content hash on `run:started` — deferred (a canonical event
