@@ -586,6 +586,21 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
   });
 
+  it('does not double-report: a condition edge to a NONEXISTENT target is only unknown_edge_target', () => {
+    const err = expectGraphError(
+      doc(`  id: condedgemissingtarget
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: gate, to: ghost }`),
+    );
+    // The missing `to` is the real fault; the condition-routing check is guarded on a real target, so it
+    // does NOT also push a redundant/confusing invalid_handle for the same edge.
+    expect(err.issues.some((i) => i.kind === 'unknown_edge_target')).toBe(true);
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(false);
+  });
+
   it('accepts a numeric condition handle (when value stringified)', () => {
     const p = plan(
       doc(`  id: numhandle
