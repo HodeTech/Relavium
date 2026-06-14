@@ -459,6 +459,36 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     });
   });
 
+  it('re-checks the signal after the preEgress await — a cancel there costs no provider egress', async () => {
+    const aborted = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    let streamed = false;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('generate not used in these tests');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        streamed = true;
+        return streamOf([{ type: 'text_delta', text: 'must not run' }, STOP()]);
+      },
+    };
+    // The budget hook is awaited, so the signal can fire during that await; simulate it firing there.
+    const params = baseParams(provider, {
+      signal: aborted,
+      preEgress: () => {
+        aborted.aborted = true;
+        return Promise.resolve();
+      },
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'cancelled' });
+    expect(streamed).toBe(false); // the re-check fired before the provider was engaged
+  });
+
   it('carries the signed reasoning part into the next request on a tool continuation (ADR-0039)', async () => {
     const captured: { reasoningOnContinuation?: boolean } = {};
     const provider: LlmProvider = {

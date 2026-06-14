@@ -303,7 +303,9 @@ workflow:
     expect(events.filter((e) => e.type === 'node:completed')).toHaveLength(2);
     // Each node's tokens carry its own nodeId — no cross-node emit/cost bleed on the shared executor.
     const tokenNodes = new Set(
-      events.filter((e) => e.type === 'agent:token').map((e) => (e.type === 'agent:token' ? e.nodeId : '')),
+      events
+        .filter((e) => e.type === 'agent:token')
+        .map((e) => (e.type === 'agent:token' ? e.nodeId : '')),
     );
     expect(tokenNodes).toEqual(new Set(['n1', 'n2']));
   });
