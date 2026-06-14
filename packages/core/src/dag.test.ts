@@ -556,6 +556,21 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
   });
 
+  it('rejects a plain (handle-less) edge from a condition node (routes nowhere)', () => {
+    const err = expectGraphError(
+      doc(`  id: plaincondedge
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+    - { id: stray, type: output }
+  edges:
+    - { from: gate, to: stray }`),
+    );
+    // A handle-less edge from a condition would make `stray` a dependent the branch `selected` never
+    // names — rejected at parse rather than left as a silently-dead node.
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
+  });
+
   it('accepts a numeric condition handle (when value stringified)', () => {
     const p = plan(
       doc(`  id: numhandle

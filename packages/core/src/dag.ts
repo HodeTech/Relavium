@@ -279,6 +279,18 @@ function validateStructuralEdge(
     }
     return; // a handled edge's dependency comes from branch materialization, never a second edge here
   }
+  if (fromNode?.type === 'condition') {
+    // A `condition` routes ONLY via `branches[].target_node` (materialized) + the `nodeId:when` handle
+    // edge. A plain (handle-less) edge from it would wire a dependent the handler's `selected` never
+    // names — a silently dead downstream the run loop always skips. Require the handle form. (The
+    // condition node id is safe to echo; the unconstrained handle suffix is absent on this path.)
+    issues.push({
+      kind: 'invalid_handle',
+      field: locator,
+      message: `a plain edge from condition \`${fromBase}\` must name a branch handle (\`${fromBase}:<when>\`); a handle-less edge from a condition routes to a node its branch selection never activates`,
+    });
+    return;
+  }
   addEdge(fromBase, edge.to);
 }
 

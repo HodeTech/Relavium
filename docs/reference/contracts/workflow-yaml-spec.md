@@ -324,7 +324,7 @@ The cost cap is **pre-egress**: before each LLM call the engine checks `cumulati
 
 ## Edges
 
-Edges are explicit directed connections. An edge from a `condition`/branching node uses the `nodeId:handleName` form to reference a named output handle/branch.
+Edges are explicit directed connections. An edge from a `condition`/branching node uses the `nodeId:handleName` form to reference a named output handle/branch. **A plain (handle-less) edge whose `from` is a `condition` node is rejected at parse** — a `condition` routes only via its `branches[].target_node` (and the optional `nodeId:when` handle edge), so a handle-less edge from it would name a downstream the branch selection never activates (a silently dead node). Use the `nodeId:when` form, or rely on `branches[].target_node` alone (the routing edge is materialized either way).
 
 ```yaml
 edges:
