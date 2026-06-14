@@ -250,12 +250,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
   dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot, but a parallel-tool
   provider should order by the accumulator's `toolOrder` before 1.V reuses the core. *(low · packages/core/src/engine/agent-turn.ts; 1.V)*
-- [ ] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
+- [x] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
   secret into `run.outputs` (it emits LLM text only), so this is **not** 1.O's to own; it belongs to the
   `transform` / sandbox node (1.P / 1.AB) that can return a secret-derived value. 1.O's only obligation is to
   refuse a tainted `{{ run.outputs[…] }}` reference *if* such a marker reaches it; the static parse-time
   `analyzeSecretTaint` gate covers the authored template graph. Record as a scoped ADR-0029 amendment when 1.P/1.AB
-  lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)*
+  lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)* **✅ Closed at the source
+  by 1.P (PR #20):** `buildExpressionScope` (scope.ts) masks `secret`-typed inputs out of the sandbox scope, so a
+  `transform` / `condition` / fan_in `merge_fn` reads the `{ secret, ref }` marker — never the raw secret — and
+  therefore cannot derive a secret value to launder into `run.outputs`. The vector is cut at the read, so no runtime taint
+  on the output is needed. (The only remaining secret-into-egress path is the agent prompt — tracked separately
+  below as a 1.O policy item, and it is provider egress, not an event-payload leak.)
 
 > **2026-06-14 (PR #18 final review follow-ups).** Confirmed by the multi-dimensional pre-merge review;
 > non-blocking, recorded so they aren't dropped.
@@ -305,7 +310,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `merge_fn` sandbox scope (and the AgentRunner's prompt `RunScope`) currently bind `ctx: {}` — the authored
   `context:` namespace is not yet resolved and threaded to handlers (a `{{ctx.key}}` template still resolves,
   but a bare `ctx.key` JS-expression read sees `{}`). A cross-cutting change for **both** 1.O and 1.P when the
-  engine resolves the workflow `context:` map. *(medium · packages/core/src/engine/node-handlers/scope.ts, packages/core/src/engine/agent-runner.ts)*
+  engine resolves the workflow `context:` map. **NB (2026-06-14 triage):** this is not a drive-by — `resolveContext`
+  is **async** (a context value may `read_file`), so it needs a new **run-start async resolution step** in the
+  engine (with resolver capabilities + a context-resolution-failure path) plus the `NodeExecContext` seam field.
+  Best done as its own focused task or folded into **1.Q/1.R** (which already touch the run lifecycle); it is the
+  highest-value open engine gap (a bare `ctx.key` silently reads `undefined` today — a mis-route risk). *(medium ·
+  packages/core/src/engine/engine.ts, node-handlers/scope.ts, agent-runner.ts; resolveContext is 1.L2)*
 - [ ] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
   resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**
@@ -313,13 +323,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   enforces), but whether a `secret`-typed input should be silently interpolated into a prompt — vs masked /
   rejected at parse — is a policy call. Evaluate alongside the secret-handling story; if masked, reuse
   `maskSecretInputs`. *(low · packages/core/src/engine/agent-runner.ts; security-review.md)*
-- [ ] **Reject a plain (handle-less) edge whose `from` is a `condition` node (1.M validation)** — a `condition`
+- [x] **Reject a plain (handle-less) edge whose `from` is a `condition` node (1.M validation)** — a `condition`
   routes only via `branches[].target_node`/`default` (materialized edges); a separately-authored plain edge
   `from: <condition>` (no `:handle`) makes its target a dependent that the handler's `selected` never names, so
   the run loop skip-propagates it — a silently-dead downstream rather than a parse error. Add a structural
   validation in `dag.ts` (`validateStructuralEdge`) rejecting a handle-less edge out of a condition (reuse
   `invalid_handle`, or a `condition_requires_handle` kind). Pre-existing 1.M edge-validation gap, not a 1.P
-  handler defect. *(low · packages/core/src/dag.ts; workflow-yaml-spec.md §edges)*
+  handler defect. *(low · packages/core/src/dag.ts; workflow-yaml-spec.md §edges)* **✅ Fixed (2026-06-14
+  hardening pass):** `validateStructuralEdge` rejects a handle-less edge from a `condition` with an
+  `invalid_handle` issue (no existing fixture/spec used one — the spec routes via `branches` + `nodeId:when`
+  handles); pinned by `dag.test.ts` and documented in workflow-yaml-spec.md §edges.
 
 ## Schema / validation hardening
 
@@ -489,7 +502,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 - [x] **`readBracket` cognitive complexity (1.L2)** — Sonar 17 > 15; extract the numeric-index vs
   quoted-key branches into helpers. *(critical · packages/core/src/interpolation/path.ts:96)* **✅ Fixed:**
-  extracted `readQuotedKey` + `readNumericIndex`; `readBracket` is now a 3-line dispatcher.
+  extracted `readQuotedKey` + `readNumericIndex`; `readBracket` is now a thin dispatcher that delegates
+  to them (cognitive complexity well under the threshold).
 - [x] **`splitTopLevel` cognitive complexity (1.L)** — Sonar 16 > 15; extract the quote/bracket
   depth-tracking into a small state helper. *(critical · packages/core/src/interpolation/references.ts:217)*
   **✅ Fixed:** extracted a `SplitState` + `splitStep`/`splitStepOutsideQuote` pair; the loop body is one call.

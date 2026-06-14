@@ -140,11 +140,16 @@ separate `AgentRunner` (1.O) join prerequisite — it does **not** close 1.m3. T
 landed the **1.O `AgentRunner` join ✅ Done (PR #18, 2026-06-14)** — per-node LLM execution behind the
 `@relavium/llm` seam: the host-injected provider-resolution boundary ([ADR-0038](../decisions/0038-agentrunner-llm-call-boundary.md)),
 the correlation-agnostic turn core (reused by 1.V), the tool-call loop + classified failure ladder, and
-the same-provider signed-reasoning replay ([ADR-0039](../decisions/0039-same-provider-reasoning-replay.md)).
-The lane now continues at the remaining **1.m4** workstreams toward **M2** — the **node-type handlers
-(1.P)**, the **human gate (1.Q)**, **checkpoint/resume (1.R)**, **node retry (1.S)**, and the
-**pre-egress budget governor (1.AC)** — and the agent-first sub-spine (**1.V–1.AA**, Lane C) opens now
-that 1.O exists.
+the same-provider signed-reasoning replay ([ADR-0039](../decisions/0039-same-provider-reasoning-replay.md)) —
+and the **node-type handlers (1.P) ✅ Done (PR #20, 2026-06-14)**: the six non-agent `NodeExecutor` arms
+(condition / transform / fan_out / fan_in / input / output) composed by a `createDispatchingNodeExecutor`
+alongside the 1.O agent arm — executor-only, no `engine.ts` change (the run loop already owns readiness,
+skip-propagation, fan-in join scheduling, events, cancellation), `wait_first` executor-only (true
+loser-cancel deferred), and a pre-merge BLOCKER secret-leak (the `input` handler emitting raw
+`secret`-typed inputs into events) fixed via a `secretInputNames` masking gate on `NodeExecContext`.
+The lane now continues at the remaining **1.m4** workstreams toward **M2** — the **human gate (1.Q)**,
+**checkpoint/resume (1.R)**, **node retry (1.S)**, and the **pre-egress budget governor (1.AC)** — and the
+agent-first sub-spine (**1.V–1.AA**, Lane C) opens now that 1.O exists.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -171,8 +176,9 @@ that 1.O exists.
 > `RunPlan`) and 1.AB (the expression sandbox) have since landed (PR #16, merged 2026-06-13)**; and
 > **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (the built-in `ToolRegistry`) are ✅ Done (PR #17,
 > merged 2026-06-13)** — **1.N closes 1.m3** (its last component); **1.T** (a 1.m4 component) is the
-> other 1.O join prerequisite; and **the `AgentRunner` join (1.O) is ✅ Done (PR #18, 2026-06-14)**. The
-> **node-type handlers (1.P)** are the next workstream.
+> other 1.O join prerequisite; **the `AgentRunner` join (1.O) is ✅ Done (PR #18, 2026-06-14)**; and the
+> **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**. The **human gate (1.Q)** is the next
+> workstream.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

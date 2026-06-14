@@ -556,6 +556,51 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
   });
 
+  it('rejects a plain (handle-less) edge from a condition node (routes nowhere)', () => {
+    const err = expectGraphError(
+      doc(`  id: plaincondedge
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+    - { id: stray, type: output }
+  edges:
+    - { from: gate, to: stray }`),
+    );
+    // A handle-less edge from a condition would make `stray` a dependent the branch `selected` never
+    // names — rejected at parse rather than left as a silently-dead node.
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
+  });
+
+  it('rejects a plain edge from a condition even to its OWN branch target (rejection is unconditional)', () => {
+    const err = expectGraphError(
+      doc(`  id: plaincondedgetotarget
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: gate, to: out }`),
+    );
+    // Unlike `parallel_of` (a redundant fan-out edge that AGREES is allowed), a plain edge from a
+    // condition is ALWAYS rejected — even to the branch's own target — because routing from a condition
+    // must use the `nodeId:when` handle form (the dependency is materialized from `branches` regardless).
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
+  });
+
+  it('does not double-report: a condition edge to a NONEXISTENT target is only unknown_edge_target', () => {
+    const err = expectGraphError(
+      doc(`  id: condedgemissingtarget
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: gate, to: ghost }`),
+    );
+    // The missing `to` is the real fault; the condition-routing check is guarded on a real target, so it
+    // does NOT also push a redundant/confusing invalid_handle for the same edge.
+    expect(err.issues.some((i) => i.kind === 'unknown_edge_target')).toBe(true);
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(false);
+  });
+
   it('accepts a numeric condition handle (when value stringified)', () => {
     const p = plan(
       doc(`  id: numhandle

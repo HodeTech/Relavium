@@ -35,6 +35,13 @@ export function cancelled(): NodeOutcome {
  * checkpoint/resume replay — a determinism obligation the sandbox cannot enforce itself
  * (expression-sandbox-spec.md §run.outputs ordering; ADR-0027). `ctx.runOutputs` holds only
  * `completed` upstream outputs, so a skipped/failed/not-yet-run producer is simply absent.
+ *
+ * **Secret invariant (load-bearing):** this does NOT re-mask — it passes node outputs through verbatim.
+ * The guarantee that `run.outputs` never carries a raw `secret`-typed value rests entirely on the
+ * **`input` handler masking at the ingress** (io.ts `maskSecretInputs`) and on every expression handler
+ * reading inputs through {@link buildExpressionScope} (also masked). Any future node-type handler that
+ * writes `ctx.inputs`-derived data into its returned output MUST mask it (`maskSecretInputs`) first, or a
+ * raw secret would enter `run.outputs` here unmasked and then a `node:completed` event payload.
  */
 export function outputsRecord(runOutputs: ReadonlyMap<string, unknown>): Record<string, unknown> {
   // A null-prototype record (defense-in-depth: a node id cannot be `__proto__` under the kebab grammar,

@@ -136,6 +136,8 @@ export interface HumanGatePausedEvent extends BaseEvent {
 
 `agent:tool_call.toolInput` is sanitized (no secrets) and `agent:tool_result.outputSummary` is truncated. `run:started.inputs` carries workflow inputs, but any **secret-typed** input is **masked** — the value is replaced with `{ secret: true, ref }` (the keychain/env reference), never the raw value. API keys and other secrets never appear in any event payload — this holds across the in-process bus, HTTP SSE, and any persisted run log. (On the desktop the raw provider key never even reaches the WebView: egress is Rust-delegated, [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md).)
 
+The same `{ secret: true, ref }` **`MaskedSecret`** marker can also appear in **`node:completed.output`** (for an `input` node, which emits the masked inputs) and therefore in **`run:completed.outputs`** / **`run:failed.partialOutputs`** wherever a `secret`-typed input would otherwise surface — the engine masks `secret` inputs at the ingress so a raw secret never reaches an output payload (see [run-plan.md §output capture](../shared-core/run-plan.md)). **Any surface rendering of node/run outputs must treat a `MaskedSecret` object as a redacted placeholder, not displayable data.**
+
 ## Consuming the stream
 
 The consumer pattern is identical for every surface, local or cloud:

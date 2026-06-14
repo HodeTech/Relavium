@@ -279,6 +279,20 @@ function validateStructuralEdge(
     }
     return; // a handled edge's dependency comes from branch materialization, never a second edge here
   }
+  // Validate condition routing only when BOTH endpoints are real nodes — a missing `from`/`to` is
+  // already reported as `unknown_edge_target` above, so checking here too would double-report one edge.
+  if (fromNode?.type === 'condition' && nodesById.has(edge.to)) {
+    // A `condition` routes ONLY via `branches[].target_node` (materialized) + the `nodeId:when` handle
+    // edge. A plain (handle-less) edge from it is always rejected — either redundant with a dependency
+    // already materialized from a branch target, or it wires a dependent the handler's `selected` never
+    // names (a node the run loop always skips). (The condition node id is safe to echo.)
+    issues.push({
+      kind: 'invalid_handle',
+      field: locator,
+      message: `a plain edge from condition \`${fromBase}\` is not allowed — route via \`branches[].target_node\` or the \`${fromBase}:<when>\` handle form`,
+    });
+    return;
+  }
   addEdge(fromBase, edge.to);
 }
 
