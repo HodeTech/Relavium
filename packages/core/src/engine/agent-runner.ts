@@ -331,9 +331,21 @@ async function resolvePrompt(
 
 const PARSE_FAILED = Symbol('parse-failed');
 
+/**
+ * Parse the model's output as JSON, tolerating a ```json … ``` markdown fence — models commonly wrap
+ * structured output in one even under a `responseFormat` hint, and an unwrapped `JSON.parse` would
+ * turn that into a spurious `validation` failure.
+ */
 function tryParseJson(text: string): unknown {
+  let cleaned = text.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+  }
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(cleaned) as unknown;
   } catch {
     return PARSE_FAILED;
   }

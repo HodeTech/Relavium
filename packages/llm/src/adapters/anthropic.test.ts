@@ -34,6 +34,35 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return chunks;
 }
 
+/** Capture the wire request body the adapter sends for a given message list (the ADR-0039 replay tests). */
+function captureBody(messages: LlmMessage[]): Promise<string> {
+  let body = '{}';
+  const adapter = createAnthropicAdapter({
+    fetch: (_input, init) => {
+      body = JSON.stringify(parseJsonBody(init));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'm',
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-opus-4-8',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    },
+    maxRetries: 0,
+  });
+  return adapter
+    .generate({ model: 'claude-opus-4-8', maxTokens: 16, messages }, 'k')
+    .then(() => body);
+}
+
 describe('AnthropicAdapter', () => {
   it('exposes the anthropic id and the full capability surface', () => {
     expect(anthropicAdapter.id).toBe('anthropic');
@@ -822,35 +851,6 @@ describe('AnthropicAdapter — reasoning + structured output (ADR-0030)', () => 
 });
 
 describe('toAnthropicMessage — signed-reasoning replay (ADR-0039)', () => {
-  /** Capture the wire request body the adapter sends for a given message list. */
-  function captureBody(messages: LlmMessage[]): Promise<string> {
-    let body = '{}';
-    const adapter = createAnthropicAdapter({
-      fetch: (_input, init) => {
-        body = JSON.stringify(parseJsonBody(init));
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              id: 'm',
-              type: 'message',
-              role: 'assistant',
-              model: 'claude-opus-4-8',
-              content: [{ type: 'text', text: 'ok' }],
-              stop_reason: 'end_turn',
-              stop_sequence: null,
-              usage: { input_tokens: 1, output_tokens: 1 },
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      },
-      maxRetries: 0,
-    });
-    return adapter
-      .generate({ model: 'claude-opus-4-8', maxTokens: 16, messages }, 'k')
-      .then(() => body);
-  }
-
   it('lowers a SIGNED reasoning part back to a thinking block on the wire', async () => {
     const body = await captureBody([
       { role: 'user', content: [{ type: 'text', text: 'q' }] },

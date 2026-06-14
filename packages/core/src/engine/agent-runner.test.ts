@@ -102,9 +102,11 @@ function agentVertex(): PlanVertex {
   return vertexFor({ kind: 'agent', node: agentNode(), resolvedAgent: AGENT });
 }
 
+const DEFAULT_INPUTS: Record<string, unknown> = { text: 'hi' };
+
 function ctxFor(
   vertex: PlanVertex,
-  inputs: Record<string, unknown> = { text: 'hi' },
+  inputs: Record<string, unknown> = DEFAULT_INPUTS,
 ): {
   ctx: NodeExecContext;
   events: NodeStreamEvent[];
@@ -186,6 +188,22 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     const outcome = await exec.execute(ctx);
     expect(outcome.kind).toBe('completed');
     if (outcome.kind === 'completed') expect(outcome.output).toEqual({ n: 1 });
+  });
+
+  it('tolerates a ```json markdown fence around the structured output', async () => {
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '```json\n{"n":2}\n```' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: SCHEMA }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') expect(outcome.output).toEqual({ n: 2 });
   });
 
   it('fails with validation when output_schema is set but the output is not JSON', async () => {

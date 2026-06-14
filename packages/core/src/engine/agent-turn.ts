@@ -283,49 +283,56 @@ function foldChunk(
   params: AgentTurnParams,
   getModel: () => string,
 ): void {
-  switch (chunk.type) {
-    case 'text_delta':
-      acc.text += chunk.text;
-      params.emit({
-        type: 'agent:token',
-        nodeId: params.nodeId,
-        token: chunk.text,
-        model: getModel(),
-      });
-      return;
-    case 'tool_call_start':
-      if (!acc.toolArgs.has(chunk.id)) {
-        acc.toolArgs.set(chunk.id, { name: chunk.name, json: '' });
-        acc.toolOrder.push(chunk.id);
-      }
-      return;
-    case 'tool_call_delta': {
-      const call = acc.toolArgs.get(chunk.id);
-      if (call !== undefined) call.json += chunk.argsJsonDelta;
-      return;
+  if (chunk.type === 'text_delta') {
+    acc.text += chunk.text;
+    params.emit({
+      type: 'agent:token',
+      nodeId: params.nodeId,
+      token: chunk.text,
+      model: getModel(),
+    });
+    return;
+  }
+  foldToolCallChunk(chunk, acc);
+  foldReasoningChunk(chunk, acc);
+  // tool_call_end / stop / error / media_* / tool_result are no-ops in both sub-folders.
+}
+
+/** Accumulate a `tool_call_*` delta into the in-progress tool call (by id), preserving emission order. */
+function foldToolCallChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
+  if (chunk.type === 'tool_call_start') {
+    if (!acc.toolArgs.has(chunk.id)) {
+      acc.toolArgs.set(chunk.id, { name: chunk.name, json: '' });
+      acc.toolOrder.push(chunk.id);
     }
-    case 'reasoning_start':
-      if (!acc.reasoning.has(chunk.id)) {
-        acc.reasoning.set(chunk.id, { text: '' });
-        acc.reasoningOrder.push(chunk.id);
-      }
-      return;
-    case 'reasoning_delta': {
-      const r = acc.reasoning.get(chunk.id);
-      if (r !== undefined) r.text += chunk.text;
-      return;
+    return;
+  }
+  if (chunk.type === 'tool_call_delta') {
+    const call = acc.toolArgs.get(chunk.id);
+    if (call !== undefined) call.json += chunk.argsJsonDelta;
+  }
+}
+
+/** Accumulate a `reasoning_*` delta; `reasoning_end` carries the optional signature / redacted flag. */
+function foldReasoningChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
+  if (chunk.type === 'reasoning_start') {
+    if (!acc.reasoning.has(chunk.id)) {
+      acc.reasoning.set(chunk.id, { text: '' });
+      acc.reasoningOrder.push(chunk.id);
     }
-    case 'reasoning_end': {
-      const r = acc.reasoning.get(chunk.id);
-      if (r !== undefined) {
-        if (chunk.signature !== undefined) r.signature = chunk.signature;
-        if (chunk.redacted !== undefined) r.redacted = chunk.redacted;
-      }
-      return;
+    return;
+  }
+  if (chunk.type === 'reasoning_delta') {
+    const r = acc.reasoning.get(chunk.id);
+    if (r !== undefined) r.text += chunk.text;
+    return;
+  }
+  if (chunk.type === 'reasoning_end') {
+    const r = acc.reasoning.get(chunk.id);
+    if (r !== undefined) {
+      if (chunk.signature !== undefined) r.signature = chunk.signature;
+      if (chunk.redacted !== undefined) r.redacted = chunk.redacted;
     }
-    default:
-      // tool_call_end / stop / error / media_* / tool_result — no accumulation here.
-      return;
   }
 }
 

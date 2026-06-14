@@ -634,8 +634,9 @@ emits a correct `cost:updated`, and completes with `node:completed`; a forced
 provider error drives the fallback chain before the node is considered failed; a `secret`-typed
 input cannot reach agent/human text through a node output (taint re-applied at `run.outputs`).
 When the resolved agent/node carries `output_schema`, it lowers to `LlmRequest.responseFormat` **and**
-the model output is validated **node-side** (a miss ⇒ `validation`) — the seam's `responseFormat` is a
-request hint only.
+the model output is validated **node-side** — the seam's `responseFormat` is a request hint only.
+*(Phase-1 scope: **parse-as-JSON** — a non-JSON output ⇒ `validation`; deep JSON-Schema conformance is a
+recorded follow-up needing a validator dependency behind an ADR.)*
 
 > **Implementation notes (the boundary 1.O lands — canonical home [agent-runner.md](../../reference/shared-core/agent-runner.md)).**
 > 1.O depends on the platform-free `FallbackChain` + a **host-injected `resolveProvider`**

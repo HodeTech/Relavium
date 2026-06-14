@@ -120,8 +120,9 @@ inside the core.
 ([ADR-0030](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md))
 is a **request-side hint only** — no adapter validates the response against it, and DeepSeek degrades
 to bare `json_object` with no schema. So the `AgentRunner` (1.O) lowers `output_schema` to
-`responseFormat` **and** validates the returned content node-side; a non-conformant output maps to
-`code: 'validation'` (`retryable: false` — a re-ask is a node-retry/authoring concern, not a
-node-level loop). See [agent-runner.md](../reference/shared-core/agent-runner.md). *(Phase-1 scope is
-parse-as-JSON; deep JSON-Schema conformance is a recorded follow-up — it needs a validator dependency
-behind an ADR.)*
+`responseFormat` **and** validates the returned content node-side. **Phase-1 scope is parse-as-JSON
+only**: an output that does **not parse as valid JSON** maps to `code: 'validation'` (`retryable:
+false` — a re-ask is a node-retry/authoring concern, not a node-level loop); a schema-violating but
+valid-JSON output is **not** yet rejected. **Deep JSON-Schema conformance is a deferred follow-up** (it
+needs a JSON-Schema validator dependency behind an ADR — Zod cannot consume an arbitrary JSON-Schema).
+See [agent-runner.md](../reference/shared-core/agent-runner.md).
