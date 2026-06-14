@@ -14,7 +14,7 @@ other doc names a sandbox rule it links here and never restates it.
 > **Two different `{{ … }}`-vs-bare mechanisms — do not conflate them.** `{{ … }}` **string
 > interpolation** (templating, owned by the [interpolation engine](../contracts/workflow-yaml-spec.md))
 > is a *separate* mechanism. The values described here — `condition.expression`,
-> `transform.transformations[].expression`, and a custom `merge_fn` — are **bare JavaScript
+> `transform.transform`, and a custom `merge_fn` — are **bare JavaScript
 > expressions** (not `{{ … }}`-wrapped), evaluated in this sandbox. A bare expression is **never
 > string-interpolated**, and a `{{ … }}` template is **never** evaluated as JS.
 
@@ -23,7 +23,7 @@ other doc names a sandbox rule it links here and never restates it.
 | Node | Field | Expression role | Result |
 |------|-------|-----------------|--------|
 | `condition` | `expression` (evaluated **once**) | branch selector | a value matched by strict `===` against each branch's `when` (`boolean` \| `string` \| `number`); the `default` branch is taken when none matches |
-| `transform` | `transformations[].expression` (one per `target_key`) | pure state reshape, no LLM | the value bound to that `target_key` in the node's output object |
+| `transform` | `transform` (a **single** expression) | pure state reshape, no LLM | the (JSON-serializable) result becomes the node's whole output |
 | `merge` (custom) | `merge_fn` | combine N parallel branch outputs | the merged object (only when `merge_strategy: custom`) |
 
 In v1.0 the only `expression_type` is **`js`**. `jmespath` / `jsonlogic` are **reserved** (each would
@@ -147,7 +147,7 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 | Node | Required result | Violation |
 |------|-----------------|-----------|
 | `condition` | a `boolean` \| `string` \| `number`, compared to each `when` by strict `===` (no coercion) | a result outside that set → fatal `sandbox_error` (`result_type`). *(No-`when`-match-and-no-`default` is the **1.P condition handler's** concern when it applies the result — not the sandbox.)* |
-| `transform` | a JSON-serializable value per `target_key` | a function, symbol, top-level `undefined`, top-level **`BigInt`**, a top-level **boxed primitive** (`new String`/`new Number`/`new Boolean`), or circular result → fatal `sandbox_error` (`non_serializable`) |
+| `transform` | a single JSON-serializable result (the node's whole output) | a function, symbol, top-level `undefined`, top-level **`BigInt`**, a top-level **boxed primitive** (`new String`/`new Number`/`new Boolean`), or circular result → fatal `sandbox_error` (`non_serializable`) |
 | `merge_fn` | a JSON-serializable object | as `transform` |
 
 > **Lossy JSON coercion (author guidance).** A `transform`/`merge_fn` result is taken as
