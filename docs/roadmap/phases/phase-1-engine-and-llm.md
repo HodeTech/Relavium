@@ -18,9 +18,9 @@
 > ✅ Done (PR #16, 2026-06-13)** — the plan layer and the deterministic `condition`/`transform`/`merge_fn`
 > evaluator. **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (built-in `ToolRegistry`) are ✅ Done
 > (PR #17, 2026-06-13)**, completing **1.m3** (parse → DAG → run loop emits the canonical event stream).
-> With 1.K, 1.N, and 1.T all landed, the engine lane converges at the **1.O `AgentRunner` join** — now
-> fully unblocked — toward **M2**. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature
-> — non-persisting.)*
+> With 1.K, 1.N, and 1.T all landed, the **1.O `AgentRunner` join is ✅ Done (PR #18, 2026-06-14)** — the
+> lane now continues at the remaining 1.m4 handlers (1.P/1.Q/1.R/1.S/1.AC) toward **M2**, and Lane C
+> (1.V–1.AA) opens. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -588,7 +588,7 @@ skipped and a fan-in over it still joins; and **every run terminates in EXACTLY 
 (reconciliation emits `run:failed`, never a stuck `run:started`) — so a zombie / never-terminating run is
 structurally impossible.
 
-### 1.O — `AgentRunner` (per-node LLM execution) — *critical path*
+### 1.O — `AgentRunner` (per-node LLM execution) — *critical path* · ✅ **Done (PR #18, 2026-06-14)**
 
 Executes a single agent node end-to-end against `@relavium/llm`.
 
@@ -1085,7 +1085,7 @@ flowchart LR
 | 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
 | 1.T | B | 1.E | 1.O, 1.U | ⬤ — **Done (PR #17)** |
 | 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P — **Done (PR #16)** |
-| 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ |
+| 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ — **Done (PR #18)** |
 | 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
 | 1.S | B | 1.O, 1.R | 1.U | ✅ |
 | 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ⬤ |
