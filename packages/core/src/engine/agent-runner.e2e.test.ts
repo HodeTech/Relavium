@@ -256,4 +256,55 @@ workflow:
     const completed = events.find((e) => e.type === 'node:completed');
     expect(completed?.type === 'node:completed' && completed.output).toBe('answer');
   });
+
+  it('runs two agent nodes concurrently against the shared executor, gap-free, with no cross-node bleed', async () => {
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-concurrent
+  max_parallel: 2
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - id: n1
+      type: agent
+      agent_ref: a
+      prompt_template: 'go1'
+    - id: n2
+      type: agent
+      agent_ref: a
+      prompt_template: 'go2'
+  edges: []
+`,
+    );
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: createAgentNodeExecutor({
+        // One executor instance serves both concurrent nodes; each builds its own chain + CostTracker.
+        resolveProvider: () =>
+          provider([
+            { type: 'text_delta', text: 'done' },
+            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+          ]),
+        registry: noToolRegistry,
+        tools: [],
+        keyFor: () => 'k',
+        sleep: () => Promise.resolve(),
+        now: () => 1,
+      }),
+    });
+
+    const events = await drain(engine.start({ workflow: wf }));
+    expect(events.map((e) => e.type).at(-1)).toBe('run:completed');
+    assertGapFreeSeq(events); // the bus serializes delivery across the two concurrent nodes
+    expect(events.filter((e) => e.type === 'node:completed')).toHaveLength(2);
+    // Each node's tokens carry its own nodeId — no cross-node emit/cost bleed on the shared executor.
+    const tokenNodes = new Set(
+      events.filter((e) => e.type === 'agent:token').map((e) => (e.type === 'agent:token' ? e.nodeId : '')),
+    );
+    expect(tokenNodes).toEqual(new Set(['n1', 'n2']));
+  });
 });
