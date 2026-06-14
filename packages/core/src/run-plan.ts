@@ -68,6 +68,13 @@ export interface FanInPlanConfig {
    * sandbox cannot reconstruct it from the vertex alone — see run-plan.md §fan-in branch order.
    */
   readonly branchNodeIds: readonly string[];
+  /**
+   * The authored `merge_fn` JS expression, lifted onto the config — present only for
+   * `merge_strategy: 'custom'`. The `fan_in` handler (1.P) evaluates it in the expression sandbox with
+   * `ExpressionScope.branches` in {@link branchNodeIds} order. (The builder always also carries it on
+   * `node.merge_fn`; lifted here so the handler reads one config shape, mirroring `joinStrategy`.)
+   */
+  readonly mergeFn?: string;
 }
 
 /** An LLM agent vertex (node-types.md `agent_config`). */

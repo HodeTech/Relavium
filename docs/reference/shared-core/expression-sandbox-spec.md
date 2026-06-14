@@ -14,7 +14,7 @@ other doc names a sandbox rule it links here and never restates it.
 > **Two different `{{ … }}`-vs-bare mechanisms — do not conflate them.** `{{ … }}` **string
 > interpolation** (templating, owned by the [interpolation engine](../contracts/workflow-yaml-spec.md))
 > is a *separate* mechanism. The values described here — `condition.expression`,
-> `transform.transformations[].expression`, and a custom `merge_fn` — are **bare JavaScript
+> `transform.transform`, and a custom `merge_fn` — are **bare JavaScript
 > expressions** (not `{{ … }}`-wrapped), evaluated in this sandbox. A bare expression is **never
 > string-interpolated**, and a `{{ … }}` template is **never** evaluated as JS.
 
@@ -23,8 +23,8 @@ other doc names a sandbox rule it links here and never restates it.
 | Node | Field | Expression role | Result |
 |------|-------|-----------------|--------|
 | `condition` | `expression` (evaluated **once**) | branch selector | a value matched by strict `===` against each branch's `when` (`boolean` \| `string` \| `number`); the `default` branch is taken when none matches |
-| `transform` | `transformations[].expression` (one per `target_key`) | pure state reshape, no LLM | the value bound to that `target_key` in the node's output object |
-| `merge` (custom) | `merge_fn` | combine N parallel branch outputs | the merged object (only when `merge_strategy: custom`) |
+| `transform` | `transform` (a **single** expression) | pure state reshape, no LLM | the (JSON-serializable) result becomes the node's whole output |
+| `merge` (custom) | `merge_fn` | combine N parallel branch outputs | the merged result — any JSON-serializable value (only when `merge_strategy: custom`) |
 
 In v1.0 the only `expression_type` is **`js`**. `jmespath` / `jsonlogic` are **reserved** (each would
 add an undeclared runtime dependency) and are **rejected at parse time** (1.L) with a field-named,
@@ -40,14 +40,17 @@ Each expression is evaluated against a single **frozen, JSON-only** scope. The b
 | `inputs` | object | this node's resolved inputs (its declared `{{ … }}` references, already resolved) |
 | `ctx` | object | the workflow context/variables (the eager-once frozen snapshot, per [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)) |
 | `run.outputs` | object keyed by **node id** | completed upstream node outputs, e.g. `run.outputs["classify"].sentiment` — **never** a bare `output` |
-| `branches` | array | **`merge_fn` only** — the branch outputs to combine, in **static `parallel_of` declaration order** (never arrival/completion order). `run.outputs` is also available, so a branch may be referenced by node id. |
+| `branches` | array | **`merge_fn` only** — the branch outputs to combine, in the stable **`FanInPlanConfig.branchNodeIds` order** (the paired `parallel`'s `parallel_of` order, else the merge's incoming branches in authored order; never arrival/completion order — see [run-plan.md §fan-in branch order](run-plan.md)). `run.outputs` is also available, so a branch may be referenced by node id. |
 
 Rules:
 
 - **Secrets are never injected.** The [ADR-0029(c)](../../decisions/0029-tool-policy-hardening.md)
-  parse-time taint gate (1.L2) is the primary guarantee; as defense-in-depth the engine caller (1.O)
-  filters any secret-tainted value out of the scope before evaluation. A secret value can therefore
-  never be read through `JSON.stringify(ctx)` or any other path.
+  parse-time taint gate (1.L2) is the primary guarantee for the `secrets.*` namespace; as
+  defense-in-depth the engine caller masks `secret`-typed **inputs** before evaluation — the 1.P
+  `condition`/`transform`/`merge_fn` handlers replace each `secret`-typed `inputs.<name>` with its
+  `{ secret: true, ref }` marker (`buildExpressionScope`), and the agent caller (1.O) filters likewise —
+  so a raw secret value can never be read through `inputs.<name>`, `JSON.stringify(inputs)`, or any
+  other path.
 - **The scope is data-only and deeply immutable.** It is crossed into the VM as plain JSON (see
   [Marshaling & isolation](#marshaling--isolation)); each binding is installed as a non-writable,
   non-configurable property over a deep-frozen value. An expression cannot mutate the scope, and a
@@ -147,7 +150,7 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 | Node | Required result | Violation |
 |------|-----------------|-----------|
 | `condition` | a `boolean` \| `string` \| `number`, compared to each `when` by strict `===` (no coercion) | a result outside that set → fatal `sandbox_error` (`result_type`). *(No-`when`-match-and-no-`default` is the **1.P condition handler's** concern when it applies the result — not the sandbox.)* |
-| `transform` | a JSON-serializable value per `target_key` | a function, symbol, top-level `undefined`, top-level **`BigInt`**, a top-level **boxed primitive** (`new String`/`new Number`/`new Boolean`), or circular result → fatal `sandbox_error` (`non_serializable`) |
+| `transform` | a single JSON-serializable result (the node's whole output) | a function, symbol, top-level `undefined`, top-level **`BigInt`**, a top-level **boxed primitive** (`new String`/`new Number`/`new Boolean`), or circular result → fatal `sandbox_error` (`non_serializable`) |
 | `merge_fn` | a JSON-serializable object | as `transform` |
 
 > **Lossy JSON coercion (author guidance).** A `transform`/`merge_fn` result is taken as

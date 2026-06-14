@@ -130,6 +130,27 @@ export type { AgentRunnerDeps } from './engine/agent-runner.js';
 export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
 export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
 
+// Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
+// fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one
+// executor the engine holds. `createStandardNodeExecutor` is the convenience wirer; the per-type
+// factories support custom composition. condition/transform/fan_in(custom) take the 1.AB sandbox.
+export {
+  createDispatchingNodeExecutor,
+  createStandardNodeExecutor,
+} from './engine/node-handlers/dispatcher.js';
+export type {
+  NodeExecutorMap,
+  StandardNodeExecutorDeps,
+} from './engine/node-handlers/dispatcher.js';
+export { createConditionNodeExecutor } from './engine/node-handlers/condition.js';
+export type { ConditionNodeExecutorDeps } from './engine/node-handlers/condition.js';
+export { createTransformNodeExecutor } from './engine/node-handlers/transform.js';
+export type { TransformNodeExecutorDeps } from './engine/node-handlers/transform.js';
+export { createFanInNodeExecutor } from './engine/node-handlers/fan-in.js';
+export type { FanInNodeExecutorDeps } from './engine/node-handlers/fan-in.js';
+export { createFanOutNodeExecutor } from './engine/node-handlers/fan-out.js';
+export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node-handlers/io.js';
+
 // Built-in ToolRegistry + dispatch (1.T) — the engine-side registry the AgentRunner (1.O) and
 // AgentSession (1.V) invoke; side effects go through the injected ToolHost seam (ADR-0037;
 // tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.

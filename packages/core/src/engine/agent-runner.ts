@@ -83,6 +83,8 @@ export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
   return { execute: (ctx) => executeNode(ctx, deps) };
 }
 
+// The agent arm's local `failed` factory — the parallel of the canonical one in
+// node-handlers/scope.ts; keep the two in lockstep if the NodeFailure shape ever changes.
 function failed(code: ErrorCode, message: string, retryable: boolean): NodeOutcome {
   return { kind: 'failed', error: { code, message, retryable } };
 }

@@ -232,11 +232,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **DeepSeek surviving-reasoning replay** — the same per-provider contract applies; confirm whether the
   OpenAI-compatible adapter normalizes/replays `reasoning_content` on a same-provider continuation, or currently
   drops it. *(medium · packages/llm/src/adapters/openai.ts; ADR-0030 follow-up)*
-- [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates a node's `output_schema` node-side
-  but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a schema-violating-but-valid
-  JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently passes as `completed`). Deep
-  conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
-  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts; error-handling.md)*
+- [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
+  node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
+  schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
+  passes as `completed`). **1.P shares this gap for the `transform` node's optional `output_schema`** — the
+  sandbox guarantees the result is JSON-serializable but does **not** check it against the declared schema.
+  Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
+  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
+  packages/core/src/engine/node-handlers/transform.ts; error-handling.md)*
 - [ ] **Per-attempt model attribution for `agent:token`** — `cost:updated` is always per-attempt-accurate, but
   `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
   stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
@@ -281,6 +284,42 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
 - [ ] **Checkpoint/resume of a mid-tool-loop turn** — whether a run paused/resumed between tool dispatches
   reconstructs the message history (assistant turn + partial tool results) consistently. *(medium · 1.R)*
+
+## Node-type handlers (1.P) follow-ups
+
+> **2026-06-14 1.P implementation + pre-merge review.** The six non-agent handlers (condition / transform /
+> fan_out / fan_in / input / output) landed behind the 1.N seam. A comprehensive multi-dimensional review
+> confirmed 18 findings; all blocker/high/medium/low/nit items were folded **in the 1.P PR** — including a
+> BLOCKER secret-leak (the `input` handler emitted raw `secret`-typed inputs into events; fixed by threading
+> `secretInputNames` onto `NodeExecContext` and masking in the input handler + the expression scope). The
+> items below are the deliberately-deferred forward work (maintainer-approved), recorded so they aren't lost.
+
+- [ ] **True `wait_first` early-cancellation of losing branches** — `merge_strategy: first` is implemented
+  executor-only: the engine still waits for all branches to settle, then the `fan_in` handler takes the first
+  by `branchNodeIds` order. Genuine early-cancel (abort the still-running sibling branches the moment the
+  first settles) needs an **engine-owned per-branch cancellation primitive** — the current single run-wide
+  `AbortSignal` cannot cancel one branch without cancelling the run, and a handler cannot cancel sibling
+  vertices. The engine authors already flagged this as a "1.P refinement" (engine.ts:26-28). Promote to a
+  scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
+- [ ] **Workflow-context (`ctx.*`) threading into expression/agent scope** — the `condition`/`transform`/
+  `merge_fn` sandbox scope (and the AgentRunner's prompt `RunScope`) currently bind `ctx: {}` — the authored
+  `context:` namespace is not yet resolved and threaded to handlers (a `{{ctx.key}}` template still resolves,
+  but a bare `ctx.key` JS-expression read sees `{}`). A cross-cutting change for **both** 1.O and 1.P when the
+  engine resolves the workflow `context:` map. *(medium · packages/core/src/engine/node-handlers/scope.ts, packages/core/src/engine/agent-runner.ts)*
+- [ ] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
+  resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
+  `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**
+  the author opted into (not an event-payload leak, so it does not violate the events rule the 1.P fix
+  enforces), but whether a `secret`-typed input should be silently interpolated into a prompt — vs masked /
+  rejected at parse — is a policy call. Evaluate alongside the secret-handling story; if masked, reuse
+  `maskSecretInputs`. *(low · packages/core/src/engine/agent-runner.ts; security-review.md)*
+- [ ] **Reject a plain (handle-less) edge whose `from` is a `condition` node (1.M validation)** — a `condition`
+  routes only via `branches[].target_node`/`default` (materialized edges); a separately-authored plain edge
+  `from: <condition>` (no `:handle`) makes its target a dependent that the handler's `selected` never names, so
+  the run loop skip-propagates it — a silently-dead downstream rather than a parse error. Add a structural
+  validation in `dag.ts` (`validateStructuralEdge`) rejecting a handle-less edge out of a condition (reuse
+  `invalid_handle`, or a `condition_requires_handle` kind). Pre-existing 1.M edge-validation gap, not a 1.P
+  handler defect. *(low · packages/core/src/dag.ts; workflow-yaml-spec.md §edges)*
 
 ## Schema / validation hardening
 

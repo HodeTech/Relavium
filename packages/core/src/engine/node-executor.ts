@@ -102,6 +102,14 @@ export interface NodeExecContext {
   /** The run-wide inputs (the `input` namespace); a `secret`-typed input is carried per the taint rules. */
   readonly inputs: Readonly<Record<string, unknown>>;
   /**
+   * The names of `secret`-typed inputs (`inputs.<name>` declared `type: secret`). A handler that emits
+   * inputs into a node output (the `input` node) or into the expression sandbox (`condition`/`transform`/
+   * `merge_fn`) MUST mask/omit these so a raw secret never reaches an event payload or an expression — the
+   * engine masks `inputs` only for `run:started`, so the handler is the second gate (CLAUDE.md rule 6;
+   * sse-event-schema.md; the sandbox's "secrets are never injected — the caller filters" contract).
+   */
+  readonly secretInputNames: ReadonlySet<string>;
+  /**
    * The workflow-wide tool policy (`allowedCommands` / `allowedCommandGlobs` / `allowedDomains` —
    * [ADR-0029](../../../../docs/decisions/0029-tool-policy-hardening.md)) a tool-dispatching node
    * (the `AgentRunner` 1.O, the `tool` handler 1.P) threads into the `ToolHost` dispatch. The engine

@@ -104,7 +104,9 @@ function maskInputs(
   inputs: Readonly<Record<string, unknown>>,
   secretNames: ReadonlySet<string>,
 ): Record<string, unknown> {
-  const masked: Record<string, unknown> = {};
+  // Null-prototype: an input name MAY be `__proto__` (the `[A-Za-z0-9_-]+` grammar permits `_`), so a
+  // plain object would let `masked['__proto__'] = …` pollute Object.prototype.
+  const masked: Record<string, unknown> = { __proto__: null };
   for (const [key, value] of Object.entries(inputs)) {
     masked[key] = secretNames.has(key)
       ? ({ secret: true, ref: `inputs.${key}` } satisfies MaskedSecret)
@@ -126,6 +128,8 @@ class RunExecution {
   readonly #workflow: WorkflowDefinition;
   readonly #inputs: Readonly<Record<string, unknown>>;
   readonly #maskedInputs: Record<string, unknown>;
+  /** The names of `secret`-typed inputs — threaded to handlers so they keep raw secrets out of outputs. */
+  readonly #secretInputNames: ReadonlySet<string>;
   readonly #executionMode: ExecutionMode;
   readonly #host: ExecutionHost;
   readonly #executor: NodeExecutor;
@@ -178,6 +182,7 @@ class RunExecution {
         .filter((input) => input.type === 'secret')
         .map((input) => input.name),
     );
+    this.#secretInputNames = secretNames;
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
 
     for (const id of params.plan.vertices.keys()) {
@@ -397,6 +402,7 @@ class RunExecution {
         vertex,
         runOutputs: this.#completedOutputs(),
         inputs: this.#inputs,
+        secretInputNames: this.#secretInputNames,
         toolPolicy: this.#workflow.workflow.tools ?? {},
         emit: (event) => {
           this.#nodeEmit(event);
@@ -665,7 +671,9 @@ class RunExecution {
   }
 
   #collectOutputs(mode: 'output' | 'completed'): Record<string, unknown> {
-    const outputs: Record<string, unknown> = {};
+    // Null-prototype: keys are vertex ids (kebab grammar excludes `__proto__`, so not reachable), but
+    // a null-proto accumulator keeps the engine's output projections consistent with the 1.P handlers.
+    const outputs: Record<string, unknown> = { __proto__: null };
     for (const [id, state] of this.#states) {
       if (state.status !== 'completed') {
         continue;
