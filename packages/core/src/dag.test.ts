@@ -571,6 +571,21 @@ describe('buildRunPlan — endpoint and handle validation', () => {
     expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
   });
 
+  it('rejects a plain edge from a condition even to its OWN branch target (rejection is unconditional)', () => {
+    const err = expectGraphError(
+      doc(`  id: plaincondedgetotarget
+  nodes:
+    - { id: gate, type: condition, expression: 'x', branches: [{ when: true, target_node: out }] }
+    - { id: out, type: output }
+  edges:
+    - { from: gate, to: out }`),
+    );
+    // Unlike `parallel_of` (a redundant fan-out edge that AGREES is allowed), a plain edge from a
+    // condition is ALWAYS rejected — even to the branch's own target — because routing from a condition
+    // must use the `nodeId:when` handle form (the dependency is materialized from `branches` regardless).
+    expect(err.issues.some((i) => i.kind === 'invalid_handle')).toBe(true);
+  });
+
   it('accepts a numeric condition handle (when value stringified)', () => {
     const p = plan(
       doc(`  id: numhandle

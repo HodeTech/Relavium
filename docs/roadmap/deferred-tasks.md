@@ -257,8 +257,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `analyzeSecretTaint` gate covers the authored template graph. Record as a scoped ADR-0029 amendment when 1.P/1.AB
   lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)* **✅ Closed at the source
   by 1.P (PR #20):** `buildExpressionScope` (scope.ts) masks `secret`-typed inputs out of the sandbox scope, so a
-  `transform`/`condition`/`merge_fn` reads the `{ secret, ref }` marker — never the raw secret — and therefore
-  cannot derive a secret value to launder into `run.outputs`. The vector is cut at the read, so no runtime taint
+  `transform` / `condition` / fan_in `merge_fn` reads the `{ secret, ref }` marker — never the raw secret — and
+  therefore cannot derive a secret value to launder into `run.outputs`. The vector is cut at the read, so no runtime taint
   on the output is needed. (The only remaining secret-into-egress path is the agent prompt — tracked separately
   below as a 1.O policy item, and it is provider egress, not an event-payload leak.)
 
