@@ -339,10 +339,13 @@ const PARSE_FAILED = Symbol('parse-failed');
 function tryParseJson(text: string): unknown {
   let cleaned = text.trim();
   if (cleaned.startsWith('```')) {
-    cleaned = cleaned
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
+    // Drop the opening fence (``` optionally + a language tag, through the first newline) and the
+    // closing fence — plain string ops, no regex (avoids any super-linear-backtracking surface).
+    const newline = cleaned.indexOf('\n');
+    cleaned = (newline === -1 ? cleaned.slice(3) : cleaned.slice(newline + 1)).trim();
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.slice(0, -3).trim();
+    }
   }
   try {
     return JSON.parse(cleaned) as unknown;

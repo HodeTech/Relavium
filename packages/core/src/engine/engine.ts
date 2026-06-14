@@ -680,22 +680,15 @@ class RunExecution {
 
   #nodeEmit(event: NodeStreamEvent): void {
     const runId = this.runId;
-    // The four non-cost cases look identical, but each must NARROW `event` to a single union member so
-    // the `{ ...event, runId }` spread keeps that member's required fields — spreading the union value
-    // directly collapses to its common fields (a type error), and bridging that with a cast would
-    // violate the no-unsafe-`as` rule. So the apparent duplication is the type-safe choice. The engine
-    // owns the run-wide `cumulativeCostMicrocents` (a per-node executor cannot know it), so cost is
-    // recomputed here authoritatively; the rest pass through with only the correlation key added.
+    // The non-cost cases all pass through with only the correlation key added — `{ ...event, runId }`
+    // distributes the object spread over the case-narrowed union, so a shared fallthrough body keeps
+    // each member's required fields (no cast). `cost:updated` is the one exception: the engine owns the
+    // run-wide `cumulativeCostMicrocents` (a per-node executor cannot know it), so it is recomputed here
+    // authoritatively rather than passed through.
     switch (event.type) {
       case 'agent:token':
-        this.#bus.emit({ ...event, runId });
-        return;
       case 'agent:tool_call':
-        this.#bus.emit({ ...event, runId });
-        return;
       case 'agent:tool_result':
-        this.#bus.emit({ ...event, runId });
-        return;
       case 'agent:file_patch_proposed':
         this.#bus.emit({ ...event, runId });
         return;
