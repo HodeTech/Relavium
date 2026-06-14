@@ -202,8 +202,15 @@ function buildPlanEntries(
   if (primary === undefined) {
     return { ok: false, code: 'internal', message: `no provider wired for '${agent.provider}'` };
   }
+  // The primary entry's retry budget + backoff: a node override wins over the agent default (ADR-0038).
+  const retry = node.retry ?? agent.retry;
   const entries: FallbackPlanEntry[] = [
-    { provider: primary, model: node.model ?? agent.model, maxAttempts: agent.retry?.max ?? 1 },
+    {
+      provider: primary,
+      model: node.model ?? agent.model,
+      maxAttempts: retry?.max ?? 1,
+      ...(retry?.backoff === undefined ? {} : { backoff: retry.backoff }),
+    },
   ];
   for (const entry of agent.fallback_chain ?? []) {
     const provider = deps.resolveProvider(entry.provider);

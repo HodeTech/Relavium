@@ -170,6 +170,36 @@ describe('runAgentTurn — tool loop', () => {
     expect(events.some((e) => e.type === 'agent:tool_result' && e.success)).toBe(true);
   });
 
+  it('emits agent:tool_call from the registry-SANITIZED payload, never the raw model args', async () => {
+    const registry = stubRegistry((call) => {
+      const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
+      return {
+        output: 'OK',
+        toolResult: markUntrusted(result),
+        truncated: false,
+        events: {
+          // The registry's sanitized projection — config-only / secret-tainted keys already stripped.
+          call: { toolId: call.name, toolInput: { safe: true } },
+          result: { toolId: call.name, success: true, outputSummary: 'OK' },
+        },
+      };
+    });
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'echo' },
+        { type: 'tool_call_delta', id: 'c1', argsJsonDelta: '{"raw":"do-not-leak"}' },
+        { type: 'tool_call_end', id: 'c1' },
+        STOP('tool_use'),
+      ],
+      [{ type: 'text_delta', text: 'ok' }, STOP()],
+    ]);
+    const params = baseParams(provider, { registry });
+    await runAgentTurn(params);
+    const toolCall = eventsOf(params).find((e) => e.type === 'agent:tool_call');
+    // The event carries the SANITIZED payload, not the raw model args `{ raw: 'do-not-leak' }`.
+    expect(toolCall?.type === 'agent:tool_call' && toolCall.toolInput).toEqual({ safe: true });
+  });
+
   it('feeds a correctable tool error back as an isError result, then recovers', async () => {
     let dispatched = 0;
     const registry = stubRegistry((call) => {

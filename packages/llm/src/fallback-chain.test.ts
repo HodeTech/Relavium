@@ -1306,4 +1306,36 @@ describe('cross-call reasoning strip latch (ADR-0039)', () => {
     expect(only.calls).toHaveLength(2);
     expect(hasReasoning(only.calls[1] as LlmRequest)).toBe(true);
   });
+
+  it('strips reasoning across STREAM calls after a non-cooldown failover (the 1.O path)', async () => {
+    // 1.O drives stream(), not generate() — the multi-turn hole must be closed on this path too.
+    const primary = makeProvider({
+      id: 'anthropic',
+      stream: (_r, _k, call) =>
+        call === 1
+          ? streamThrowing(providerError('anthropic', 'timeout'))
+          : streamFrom([{ type: 'text_delta', text: 'p2' }, STOP_CHUNK]),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () =>
+        streamFrom([
+          { type: 'reasoning_start', id: 'r' },
+          { type: 'reasoning_delta', id: 'r', text: 't' },
+          { type: 'reasoning_end', id: 'r', signature: 'sig' },
+          { type: 'text_delta', text: 'q' },
+          STOP_CHUNK,
+        ]),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt')],
+      options,
+    );
+
+    await collect(chain.stream(userReq)); // call 1: primary times out (no cooldown) → fallback (signed)
+    await collect(chain.stream(continuation(reasoningResult().content))); // call 2: re-issue at primary
+    expect(primary.calls).toHaveLength(2);
+    expect(hasReasoning(primary.calls[1] as LlmRequest)).toBe(false);
+  });
 });

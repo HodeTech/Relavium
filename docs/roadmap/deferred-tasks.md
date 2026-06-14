@@ -228,6 +228,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **DeepSeek surviving-reasoning replay** — the same per-provider contract applies; confirm whether the
   OpenAI-compatible adapter normalizes/replays `reasoning_content` on a same-provider continuation, or currently
   drops it. *(medium · packages/llm/src/adapters/openai.ts; ADR-0030 follow-up)*
+- [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates a node's `output_schema` node-side
+  but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a schema-violating-but-valid
+  JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently passes as `completed`). Deep
+  conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
+  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts; error-handling.md)*
+- [ ] **Per-attempt model attribution for `agent:token`** — `cost:updated` is always per-attempt-accurate, but
+  `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
+  stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
+  fix needs a `FallbackChain` `onAttemptStart`/attributed-stream hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
+- [ ] **Per-attempt pre-egress budget gate (1.AC)** — 1.O leaves a coarse always-pass hook at the tool-loop
+  turn boundary; the precise per-egress budget check (a `FallbackChain` makes several attempts per turn) is a
+  chain pre-attempt hook 1.AC adds. *(medium · ADR-0028; ADR-0038; 1.AC)*
+- [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
+  dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot, but a parallel-tool
+  provider should order by the accumulator's `toolOrder` before 1.V reuses the core. *(low · packages/core/src/engine/agent-turn.ts; 1.V)*
 - [ ] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
   secret into `run.outputs` (it emits LLM text only), so this is **not** 1.O's to own; it belongs to the
   `transform` / sandbox node (1.P / 1.AB) that can return a secret-derived value. 1.O's only obligation is to

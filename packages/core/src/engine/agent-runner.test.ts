@@ -217,6 +217,38 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
   });
 
+  it('uses node.retry over the agent default for the primary attempt budget', async () => {
+    let streamCalls = 0;
+    const failing: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: () => {
+        streamCalls += 1;
+        return streamOf([
+          {
+            type: 'error',
+            error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
+          },
+        ]);
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(failing));
+    // AGENT has no retry (default max 1); the node override raises the primary budget to 2.
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ retry: { max: 2, backoff: 'linear' } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('failed');
+    expect(streamCalls).toBe(2); // node.retry.max, not the agent default of 1
+  });
+
   it('resolves {{inputs.x}} into a user message, leaving system as the authored prompt', async () => {
     let capturedSystem: string | undefined;
     let capturedUser: string | undefined;

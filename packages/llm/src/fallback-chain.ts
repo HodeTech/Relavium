@@ -212,7 +212,10 @@ export class FallbackChain {
   readonly #cooldownUntil = new Map<ProviderId, number>();
   // The cross-CALL reasoning strip latch (ADR-0039). Unlike the per-call `ChainRun.#lastProvider`,
   // this survives across generate/stream calls so a multi-turn tool loop on ONE chain instance strips
-  // a prior provider's signed reasoning before it can reach a different provider's next call.
+  // a prior provider's signed reasoning before it can reach a different provider's next call. A chain
+  // instance is **single-flight by contract** — one node execution's *sequential* tool loop; concurrent
+  // generate/stream on the same instance would race this latch, so concurrent agent vertices each get
+  // their own chain (the AgentRunner builds one per node execution — ADR-0038).
   #lastProviderAcrossCalls: ProviderId | undefined;
   /** Providers whose one-shot auth refresh has already been spent on this instance. */
   readonly #authRefreshed = new Set<ProviderId>();
@@ -552,7 +555,20 @@ export class FallbackChain {
   }
 
   async #resolveKey(provider: ProviderId): Promise<string> {
-    return this.#options.keyFor(provider);
+    try {
+      return await this.#options.keyFor(provider);
+    } catch {
+      // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message
+      // as a downstream error (rule 6). Replace it with a fixed, secret-free `auth` failure; the
+      // original is dropped — not carried as `cause`, which a sink could serialize.
+      throw new LlmProviderError(
+        makeLlmError({
+          provider,
+          kind: 'auth',
+          message: `credential resolution failed for provider ${provider}`,
+        }),
+      );
+    }
   }
 
   /**

@@ -18,10 +18,11 @@
  * `FallbackChain` strips it on a cross-provider advance.
  *
  * NOTE (model attribution): `cost:updated` always carries the **accurate per-attempt** model (it is
- * emitted from the attempt record). `agent:token` / `agent:tool_call` carry `activeModel`, seeded to
- * the primary and updated from each attempt record — correct for the common (no-failover) and
- * same-model-retry cases; a *cross-model pre-content failover* mid-turn attributes the streamed
- * tokens to the prior model until the succeeding record updates it (a recorded edge — the accurate
+ * emitted from the attempt record), and `agent:tool_call` is emitted *after* the stream settles (the
+ * succeeding attempt record has already updated `activeModel`), so it is accurate too. Only
+ * **`agent:token`** carries `activeModel` mid-stream — correct for the common (no-failover) and
+ * same-model-retry cases, but a *cross-model pre-content failover* attributes the streamed tokens to
+ * the prior model until the succeeding record updates it (a recorded edge — the accurate per-attempt
  * source is always `cost:updated`).
  */
 
@@ -345,18 +346,21 @@ async function dispatchToolCalls(
   let correctable = false;
   for (const call of toolCalls) {
     throwIfAborted(params.signal);
-    params.emit({
-      type: 'agent:tool_call',
-      nodeId: params.nodeId,
-      model: getModel(),
-      toolId: call.name,
-      toolInput: call.args,
-      attemptNumber,
-    });
     try {
       const outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
         signal: params.signal,
+      });
+      // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
+      // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
+      // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
+      params.emit({
+        type: 'agent:tool_call',
+        nodeId: params.nodeId,
+        model: getModel(),
+        toolId: outcome.events.call.toolId,
+        toolInput: outcome.events.call.toolInput,
+        attemptNumber,
       });
       const part = unwrapUntrusted(outcome.toolResult);
       results.push({ role: 'tool', content: [part] });
@@ -369,6 +373,17 @@ async function dispatchToolCalls(
         attemptNumber,
       });
     } catch (err) {
+      // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before
+      // dispatch). Announce the attempted call with a REDACTED (empty) input — never the raw model
+      // args — then classify.
+      params.emit({
+        type: 'agent:tool_call',
+        nodeId: params.nodeId,
+        model: getModel(),
+        toolId: call.name,
+        toolInput: {},
+        attemptNumber,
+      });
       if (err instanceof ToolDispatchError && isModelCorrectable(err)) {
         correctable = true;
         results.push({
@@ -418,8 +433,10 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
   let totalOutput = 0;
 
   const onAttempt = (record: AttemptRecord): void => {
-    activeModel = record.model;
+    // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
+    // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    activeModel = record.model;
     nonSkippedAttempts += 1;
     if (record.usage === undefined) return;
     totalInput += record.usage.inputTokens;
