@@ -58,8 +58,13 @@ async function runHumanGate(
         ? undefined
         : await resolveTemplate(node.assignee, scope, caps, ctx.signal);
   } catch (err) {
-    // An interpolation failure is an authoring/data fault, not a transient one — fatal `validation`,
-    // matching the agent handler's prompt-resolution failure mapping (agent-runner.ts).
+    // A run cancelled mid-resolution surfaces as the throw from resolveTemplate's abort check — classify
+    // it as a deliberate `cancelled` (a distinct fatal reason node retry never re-runs), not a data fault.
+    if (ctx.signal.aborted) {
+      return cancelled();
+    }
+    // Otherwise an interpolation failure is an authoring/data fault — fatal `validation`, matching the
+    // agent handler's prompt-resolution failure mapping (agent-runner.ts).
     return failed(
       'validation',
       err instanceof Error ? err.message : 'gate template interpolation failed',

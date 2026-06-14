@@ -205,6 +205,9 @@ export const NodeCompletedEventSchema = z.object({
   // The immediate downstream ids a `condition` kept live (its branch selection). Present ONLY for a
   // condition's branch outcome — it is the authoritative record checkpoint/resume (1.R) reconstructs
   // `selectedTargets` from, so a selected branch that was mid-flight at a crash re-runs (not skipped).
+  // NOT `.min(1)`: an EMPTY `selected` is a valid outcome — a condition that routes to no branch, which
+  // the engine skip-propagates across all downstream (engine.ts `#hasLiveEdge`); only the standard
+  // condition handler never emits it (it fails without a default), but the engine contract allows it.
   selected: z.array(nonEmptyString).optional(),
 });
 
@@ -352,6 +355,19 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       code: z.ZodIssueCode.custom,
       message: 'exactly one of runId / sessionId must be present',
       path: [hasRunId ? 'sessionId' : 'runId'],
+    });
+  }
+  // A gate's on-timeout policy only has meaning when a timeout is configured — refused at the union level
+  // because a discriminatedUnion member can't carry its own cross-field refinement (see note above).
+  if (
+    event.type === 'human_gate:paused' &&
+    event.timeoutAction !== undefined &&
+    event.timeoutMs === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'timeoutAction is only valid when timeoutMs is also present',
+      path: ['timeoutAction'],
     });
   }
 });

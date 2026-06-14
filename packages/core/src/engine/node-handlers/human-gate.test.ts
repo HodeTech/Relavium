@@ -12,6 +12,19 @@ const LIVE: AbortSignalLike = {
 };
 const ABORTED: AbortSignalLike = { ...LIVE, aborted: true };
 
+/** Reads NOT-aborted once (passing the handler's entry guard), then aborted — so the abort surfaces from
+ *  inside resolveTemplate and is caught, pinning the cancel-during-resolution window. */
+function abortAfterFirstRead(): AbortSignalLike {
+  let reads = 0;
+  return {
+    get aborted() {
+      return reads++ > 0;
+    },
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+}
+
 type GateNode = HumanGatePlanConfig['node'];
 
 function gateVertex(node: Partial<GateNode> & Pick<GateNode, 'gate_type'>): PlanVertex {
@@ -106,6 +119,19 @@ describe('createHumanGateNodeExecutor', () => {
     if (out.kind === 'failed') {
       expect(out.error.code).toBe('cancelled');
       expect(out.error.retryable).toBe(false);
+    }
+  });
+
+  it('returns cancelled (not validation) when the signal aborts DURING template resolution', async () => {
+    const out = await handler.execute(
+      ctxFor(gateVertex({ gate_type: 'approval', message_template: '{{inputs.x}}' }), {
+        inputs: { x: 'v' },
+        signal: abortAfterFirstRead(), // passes the entry guard, then aborts inside resolveTemplate
+      }),
+    );
+    expect(out.kind).toBe('failed');
+    if (out.kind === 'failed') {
+      expect(out.error.code).toBe('cancelled'); // an abort is a deliberate cancel, not a data fault
     }
   });
 

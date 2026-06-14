@@ -252,7 +252,11 @@ export function createManualTimerController(): ManualTimerController {
       };
     },
     fireTimers: () => {
-      for (const timer of [...timers]) {
+      // Snapshot the armed set BEFORE firing: a callback may arm a new timer (which must NOT fire in this
+      // same sweep) or disarm a sibling — iterating the live Set would do both. The snapshot is required,
+      // not a convenience.
+      const due = Array.from(timers);
+      for (const timer of due) {
         if (timer.armed) {
           timer.armed = false;
           timers.delete(timer);

@@ -45,6 +45,9 @@ export interface CheckpointState {
   readonly runStatus: RunStatus;
   /** The surrogate `workflows.id` UUID from `run:started` — resume refuses a different workflow (identity guard). */
   readonly workflowId: string;
+  /** `run:started.timestamp` as epoch ms — the resumed run keeps measuring `durationMs` from the ORIGINAL
+   *  start, so a terminal event reports total wall-clock across the pre- and post-resume segments. */
+  readonly startedAtMs: number;
   /** Per-vertex settled/paused state; a vertex absent here is `pending` (never started, or running at crash). */
   readonly nodeStates: ReadonlyMap<string, CheckpointNodeState>;
   /** Convenience projection of the `completed` vertices (the engine derives `pending` from the plan). */
@@ -72,110 +75,149 @@ export interface Checkpointer {
   load: (runId: string) => Promise<CheckpointState | undefined>;
 }
 
+/** The mutable fold accumulator, threaded through the per-category appliers below. */
+interface ReconAccumulator {
+  started: boolean;
+  workflowId: string;
+  startedAtMs: number;
+  runStatus: RunStatus;
+  lastSequenceNumber: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cumulativeCostMicrocents: number;
+  readonly nodeStates: Map<string, CheckpointNodeState>;
+  readonly pendingGates: Map<string, string>; // gateId → nodeId
+  readonly resolvedGateIds: Set<string>;
+}
+
+const RUN_STATUS_BY_EVENT: Partial<Record<RunEvent['type'], RunStatus>> = {
+  'run:paused': 'paused',
+  'run:completed': 'completed',
+  'run:failed': 'failed',
+  'run:cancelled': 'cancelled',
+};
+
+/** Run-level lifecycle: capture start identity/clock and fold the run status. */
+function applyRunEvent(acc: ReconAccumulator, event: RunEvent): void {
+  if (event.type === 'run:started') {
+    acc.started = true;
+    acc.workflowId = event.workflowId;
+    acc.startedAtMs = Date.parse(event.timestamp);
+    acc.runStatus = 'running';
+    return;
+  }
+  const status = RUN_STATUS_BY_EVENT[event.type];
+  if (status !== undefined) {
+    acc.runStatus = status;
+  }
+}
+
+/** Node-level settlements: completed (+ branch selection, token tally), failed, skipped. */
+function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
+  switch (event.type) {
+    case 'node:completed':
+      acc.nodeStates.set(event.nodeId, {
+        status: 'completed',
+        output: event.output,
+        ...(event.selected === undefined ? {} : { selectedTargets: event.selected }),
+      });
+      acc.totalInputTokens += event.tokensUsed.input;
+      acc.totalOutputTokens += event.tokensUsed.output;
+      break;
+    case 'node:failed':
+      acc.nodeStates.set(event.nodeId, {
+        status: 'failed',
+        error: {
+          code: event.error.code,
+          message: event.error.message,
+          retryable: event.error.retryable,
+        },
+      });
+      break;
+    case 'node:skipped':
+      acc.nodeStates.set(event.nodeId, { status: 'skipped' });
+      break;
+    default:
+      break; // node:started has no terminal yet → omitted so the rehydrating engine re-runs it
+  }
+}
+
+/** Human-gate lifecycle: park a pending gate, or resolve it (decision becomes the gate vertex output). */
+function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
+  if (event.type === 'human_gate:paused') {
+    acc.nodeStates.set(event.nodeId, { status: 'paused' });
+    acc.pendingGates.set(event.gateId, event.nodeId);
+    return;
+  }
+  if (event.type !== 'human_gate:resumed') {
+    return;
+  }
+  // The decision IS the gate vertex's output (engine resume: output = payload ?? { decision }).
+  acc.nodeStates.set(event.nodeId, {
+    status: 'completed',
+    output: event.payload === undefined ? { decision: event.decision } : event.payload,
+  });
+  // Collect this gate's pending ids first, then mutate — never delete while iterating the Map.
+  const resolvedForNode = [...acc.pendingGates]
+    .filter(([, nodeId]) => nodeId === event.nodeId)
+    .map(([gateId]) => gateId);
+  for (const gateId of resolvedForNode) {
+    acc.pendingGates.delete(gateId);
+    acc.resolvedGateIds.add(gateId);
+  }
+}
+
 /**
  * Pure reconstruction: fold the ordered event stream into a {@link CheckpointState}. Total + deterministic
  * (same events → same state — the basis of idempotent resume). The caller passes events in persisted
- * (sequence) order; this does not re-sort (the store/bus already guarantee order).
+ * (sequence) order; this does not re-sort (the store/bus already guarantee order). The per-category
+ * appliers ({@link applyRunEvent} / {@link applyNodeEvent} / {@link applyGateEvent}) keep this fold flat.
  */
 export function reconstructCheckpointState(
   events: readonly RunEvent[],
 ): CheckpointState | undefined {
-  let started = false;
-  let workflowId = '';
-  let runStatus: RunStatus = 'running';
-  let lastSequenceNumber = -1;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let cumulativeCostMicrocents = 0;
-  const nodeStates = new Map<string, CheckpointNodeState>();
-  const pendingGates = new Map<string, string>(); // gateId → nodeId
-  const resolvedGateIds = new Set<string>();
+  const acc: ReconAccumulator = {
+    started: false,
+    workflowId: '',
+    startedAtMs: 0,
+    runStatus: 'running',
+    lastSequenceNumber: -1,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    cumulativeCostMicrocents: 0,
+    nodeStates: new Map(),
+    pendingGates: new Map(),
+    resolvedGateIds: new Set(),
+  };
 
   for (const event of events) {
-    lastSequenceNumber = Math.max(lastSequenceNumber, event.sequenceNumber);
+    acc.lastSequenceNumber = Math.max(acc.lastSequenceNumber, event.sequenceNumber);
     if (event.type === 'cost:updated') {
-      cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
+      acc.cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
     }
-    switch (event.type) {
-      case 'run:started':
-        started = true;
-        workflowId = event.workflowId;
-        runStatus = 'running';
-        break;
-      case 'run:paused':
-        runStatus = 'paused';
-        break;
-      case 'run:completed':
-        runStatus = 'completed';
-        break;
-      case 'run:failed':
-        runStatus = 'failed';
-        break;
-      case 'run:cancelled':
-        runStatus = 'cancelled';
-        break;
-      case 'node:completed':
-        nodeStates.set(event.nodeId, {
-          status: 'completed',
-          output: event.output,
-          ...(event.selected === undefined ? {} : { selectedTargets: event.selected }),
-        });
-        totalInputTokens += event.tokensUsed.input;
-        totalOutputTokens += event.tokensUsed.output;
-        break;
-      case 'node:failed':
-        nodeStates.set(event.nodeId, {
-          status: 'failed',
-          error: {
-            code: event.error.code,
-            message: event.error.message,
-            retryable: event.error.retryable,
-          },
-        });
-        break;
-      case 'node:skipped':
-        nodeStates.set(event.nodeId, { status: 'skipped' });
-        break;
-      case 'human_gate:paused':
-        nodeStates.set(event.nodeId, { status: 'paused' });
-        pendingGates.set(event.gateId, event.nodeId);
-        break;
-      case 'human_gate:resumed':
-        // The decision IS the gate vertex's output (engine resume: output = payload ?? { decision }).
-        nodeStates.set(event.nodeId, {
-          status: 'completed',
-          output: event.payload === undefined ? { decision: event.decision } : event.payload,
-        });
-        for (const [gateId, nodeId] of pendingGates) {
-          if (nodeId === event.nodeId) {
-            pendingGates.delete(gateId);
-            resolvedGateIds.add(gateId);
-          }
-        }
-        break;
-      default:
-        // node:started (no terminal yet → omit, re-run), agent:*/cost:*/budget:* — not state-bearing here.
-        break;
-    }
+    applyRunEvent(acc, event);
+    applyNodeEvent(acc, event);
+    applyGateEvent(acc, event);
   }
 
-  if (!started) {
+  if (!acc.started) {
     return undefined;
   }
-  const completedNodeIds = [...nodeStates]
+  const completedNodeIds = [...acc.nodeStates]
     .filter(([, s]) => s.status === 'completed')
     .map(([id]) => id);
   return {
     schemaVersion: CHECKPOINT_SCHEMA_VERSION,
-    runStatus,
-    workflowId,
-    nodeStates,
+    runStatus: acc.runStatus,
+    workflowId: acc.workflowId,
+    startedAtMs: acc.startedAtMs,
+    nodeStates: acc.nodeStates,
     completedNodeIds,
-    pendingGates: [...pendingGates].map(([gateId, nodeId]) => ({ gateId, nodeId })),
-    resolvedGateIds: [...resolvedGateIds],
-    lastSequenceNumber,
-    totalInputTokens,
-    totalOutputTokens,
-    cumulativeCostMicrocents,
+    pendingGates: [...acc.pendingGates].map(([gateId, nodeId]) => ({ gateId, nodeId })),
+    resolvedGateIds: [...acc.resolvedGateIds],
+    lastSequenceNumber: acc.lastSequenceNumber,
+    totalInputTokens: acc.totalInputTokens,
+    totalOutputTokens: acc.totalOutputTokens,
+    cumulativeCostMicrocents: acc.cumulativeCostMicrocents,
   };
 }

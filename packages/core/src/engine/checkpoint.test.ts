@@ -43,6 +43,7 @@ describe('reconstructCheckpointState', () => {
     ]);
     expect(state?.runStatus).toBe('completed');
     expect(state?.workflowId).toBe('00000000-0000-4000-8000-000000000001'); // captured from run:started
+    expect(state?.startedAtMs).toBe(Date.parse(TS)); // original start epoch, so resumed durationMs is total
     expect(state?.nodeStates.get('a')).toEqual({ status: 'completed', output: { v: 1 } });
     expect(state?.completedNodeIds).toEqual(['a']);
     expect(state?.lastSequenceNumber).toBe(2);

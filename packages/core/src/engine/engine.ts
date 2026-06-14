@@ -100,12 +100,22 @@ export interface StartInput {
   readonly planOptions?: BuildRunPlanOptions;
 }
 
-/** Inputs to {@link WorkflowEngine.resumeFromCheckpoint} — resume a run from a PRIOR process (1.R). */
+/**
+ * Inputs to {@link WorkflowEngine.resumeFromCheckpoint} — resume a run from a PRIOR process (1.R).
+ *
+ * **Invariant (caller's responsibility):** `workflow`, `inputs`, `executionMode`, and `planOptions` must
+ * be the SAME values the run started with. The checkpoint persists the workflow identity (verified — a
+ * mismatch throws `workflow_mismatch`) but does not yet persist `inputs` / `executionMode`, so passing
+ * different ones would silently diverge the rehydrated execution from its `run:started` state. A future
+ * revision will reconstruct these from the checkpoint and ignore the caller-supplied values.
+ */
 export interface ResumeFromCheckpointInput {
   readonly runId: string;
-  /** The workflow to resume against — validated by the engine against the run's persisted snapshot. */
+  /** The workflow to resume against — the engine refuses one whose identity differs (workflow_mismatch). */
   readonly workflow: WorkflowDefinition;
+  /** MUST match the run's original inputs (not yet checkpoint-derived — see the interface note). */
   readonly inputs?: Readonly<Record<string, unknown>>;
+  /** MUST match the run's original mode (not yet checkpoint-derived — see the interface note). */
   readonly executionMode?: ExecutionMode;
   readonly planOptions?: BuildRunPlanOptions;
   /** The gate to resolve + the decision to apply (the run was suspended at this gate). */
@@ -297,12 +307,10 @@ class RunExecution {
     this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
     // Post-resume events continue gap-free from the last persisted sequence number.
     bus.seedSequence(runId, cp.lastSequenceNumber + 1);
-  }
-
-  /** Prepare a checkpoint-seeded run to resume — set the lifecycle clock. State was seeded in the
-   *  constructor; NO `run:started` is re-emitted (it is already in the persisted log). */
-  prepareResume(): void {
-    this.#startEpochMs = Date.parse(this.#host.clock.now());
+    // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
+    // wall-clock (pre- + post-resume), not just the post-resume segment. NO `run:started` is re-emitted —
+    // it is already in the persisted log.
+    this.#startEpochMs = cp.startedAtMs;
   }
 
   /**
@@ -727,9 +735,11 @@ class RunExecution {
     }
     this.#settled = true;
     this.#abort.abort(); // make sure any straggler executor sees cancellation
-    for (const gateId of [...this.#gateTimers.keys()]) {
-      this.#disarmTimer(gateId); // the run is closing — no gate timer may fire afterwards (1.Q)
+    // The run is closing — no gate timer may fire afterwards (1.Q). Disarm each, then clear in one shot.
+    for (const disarm of this.#gateTimers.values()) {
+      disarm();
     }
+    this.#gateTimers.clear();
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -820,6 +830,13 @@ class RunExecution {
 
   /** Why a vertex was skipped: a completed `condition` dependency routed away from it, else an upstream
    *  dependency was itself skipped/failed (so this vertex is unreachable). */
+  /**
+   * Precedence (deliberate): a vertex is `branch_not_taken` if **any** dependency is a *completed*
+   * `condition` (one that ran and routed away from it) — that is the most specific, actionable cause.
+   * Only when no such dependency exists is the skip attributed to `upstream_unreachable` (a dead in-edge
+   * from a skipped/failed upstream). So a node downstream of both a taken-away condition and an
+   * unreachable upstream reports `branch_not_taken`.
+   */
   #skipReason(vertex: PlanVertex): NodeSkippedReason {
     for (const dep of vertex.dependencies) {
       const depVertex = this.#plan.vertices.get(dep);
@@ -1098,15 +1115,21 @@ export class WorkflowEngine {
       },
       checkpoint,
     });
-    execution.prepareResume();
     this.#runs.set(input.runId, execution);
-    if (checkpoint.resolvedGateIds.includes(input.gateId)) {
-      // The gate was already resolved in the prior process (double-delivery); do not re-apply the
-      // decision — just drive any unfinished downstream work (or re-pause on a remaining gate).
-      execution.kick();
-    } else {
-      // Apply the decision + drive the loop (events buffer on the handle for the returned consumer).
-      await execution.resume(input.gateId, parsed.data);
+    try {
+      if (checkpoint.resolvedGateIds.includes(input.gateId)) {
+        // The gate was already resolved in the prior process (double-delivery); do not re-apply the
+        // decision — just drive any unfinished downstream work (or re-pause on a remaining gate).
+        execution.kick();
+      } else {
+        // Apply the decision + drive the loop (events buffer on the handle for the returned consumer).
+        await execution.resume(input.gateId, parsed.data);
+      }
+    } catch (error) {
+      // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused throw must not
+      // strand the half-initialized execution in #runs (a retry would then wrongly hit run_already_active).
+      this.#runs.delete(input.runId);
+      throw error;
     }
     return execution.handle;
   }
