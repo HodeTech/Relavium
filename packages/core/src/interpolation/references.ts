@@ -214,43 +214,57 @@ function isQuoteChar(ch: string | undefined): boolean {
  * Split `s` on top-level occurrences of `delim`, ignoring delimiters inside quotes or `[]`/`()`.
  * Keeps `default("a|b")` and `run.outputs["x|y"]` intact when splitting on `|`.
  */
+interface SplitState {
+  buf: string;
+  quote: string | undefined;
+  depth: number;
+  escaped: boolean;
+}
+
 function splitTopLevel(s: string, delim: string): string[] {
   const out: string[] = [];
-  let buf = '';
-  let quote: string | undefined;
-  let depth = 0;
-  let escaped = false;
+  const st: SplitState = { buf: '', quote: undefined, depth: 0, escaped: false };
   for (const ch of s) {
-    if (escaped) {
-      buf += ch;
-      escaped = false;
-      continue;
-    }
-    if (quote !== undefined) {
-      buf += ch;
-      if (ch === '\\') {
-        escaped = true;
-      } else if (ch === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (isQuoteChar(ch)) {
-      quote = ch;
-      buf += ch;
-    } else if (ch === '[' || ch === '(') {
-      depth += 1;
-      buf += ch;
-    } else if (ch === ']' || ch === ')') {
-      depth = Math.max(0, depth - 1);
-      buf += ch;
-    } else if (ch === delim && depth === 0) {
-      out.push(buf);
-      buf = '';
-    } else {
-      buf += ch;
-    }
+    splitStep(st, ch, delim, out);
   }
-  out.push(buf);
+  out.push(st.buf);
   return out;
+}
+
+/** One character of the top-level split: handle an escape / inside-a-quote, else dispatch by char. */
+function splitStep(st: SplitState, ch: string, delim: string, out: string[]): void {
+  if (st.escaped) {
+    st.buf += ch;
+    st.escaped = false;
+    return;
+  }
+  if (st.quote !== undefined) {
+    st.buf += ch;
+    if (ch === '\\') {
+      st.escaped = true;
+    } else if (ch === st.quote) {
+      st.quote = undefined;
+    }
+    return;
+  }
+  splitStepOutsideQuote(st, ch, delim, out);
+}
+
+/** A character outside any quote: open/close a quote or bracket, split on a top-level delimiter, or buffer. */
+function splitStepOutsideQuote(st: SplitState, ch: string, delim: string, out: string[]): void {
+  if (isQuoteChar(ch)) {
+    st.quote = ch;
+    st.buf += ch;
+  } else if (ch === '[' || ch === '(') {
+    st.depth += 1;
+    st.buf += ch;
+  } else if (ch === ']' || ch === ')') {
+    st.depth = Math.max(0, st.depth - 1);
+    st.buf += ch;
+  } else if (ch === delim && st.depth === 0) {
+    out.push(st.buf);
+    st.buf = '';
+  } else {
+    st.buf += ch;
+  }
 }

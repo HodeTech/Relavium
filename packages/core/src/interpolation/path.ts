@@ -104,46 +104,66 @@ function readBracket(
     i += 1;
   }
   const opener = path[i];
-  // A quoted key: scan to the matching closing quote so a `]` *inside* the key (e.g. `["weird]key"]`)
-  // does not prematurely end the bracket — `indexOf(']')` cannot do that. (Backslash escapes inside a
-  // quoted key are not honored here; the lexer's `findClose` preserves them, so such an exotic key
-  // fails safely with `invalid_path` rather than resolving — acceptable for v1.0.)
-  if (opener === '"' || opener === "'") {
+  return opener === '"' || opener === "'"
+    ? readQuotedKey(path, i, opener, steps, location)
+    : readNumericIndex(path, from, steps, location);
+}
+
+/**
+ * A quoted key: scan to the matching closing quote so a `]` *inside* the key (e.g. `["weird]key"]`)
+ * does not prematurely end the bracket — `indexOf(']')` cannot do that. (Backslash escapes inside a
+ * quoted key are not honored here; the lexer's `findClose` preserves them, so such an exotic key fails
+ * safely with `invalid_path` rather than resolving — acceptable for v1.0.)
+ */
+function readQuotedKey(
+  path: string,
+  start: number,
+  opener: string,
+  steps: PathStep[],
+  location: string | undefined,
+): number {
+  let i = start + 1;
+  let key = '';
+  while (i < path.length && path[i] !== opener) {
+    key += path[i];
     i += 1;
-    let key = '';
-    while (i < path.length && path[i] !== opener) {
-      key += path[i];
-      i += 1;
-    }
-    if (path[i] !== opener) {
-      throw invalidPath(path, location); // unterminated quote
-    }
-    i += 1; // past the closing quote
-    while (i < path.length && WHITESPACE.test(path[i] as string)) {
-      i += 1;
-    }
-    if (path[i] !== ']') {
-      throw invalidPath(path, location);
-    }
-    steps.push({ key });
-    return i + 1;
   }
-  // A numeric index: the first `]` after the `[` closes it (a number has no quotes/brackets inside).
+  if (path[i] !== opener) {
+    throw invalidPath(path, location); // unterminated quote
+  }
+  i += 1; // past the closing quote
+  while (i < path.length && WHITESPACE.test(path[i] as string)) {
+    i += 1;
+  }
+  if (path[i] !== ']') {
+    throw invalidPath(path, location);
+  }
+  steps.push({ key });
+  return i + 1;
+}
+
+/** A numeric index: the first `]` after the `[` closes it (a number has no quotes/brackets inside). */
+function readNumericIndex(
+  path: string,
+  from: number,
+  steps: PathStep[],
+  location: string | undefined,
+): number {
   const close = path.indexOf(']', from + 1);
   if (close === -1) {
     throw invalidPath(path, location);
   }
   const inner = path.slice(from + 1, close).trim();
-  if (INTEGER.test(inner)) {
-    const index = Number(inner);
-    if (!Number.isSafeInteger(index) || index < 0) {
-      // A huge (non-safe-integer) or negative index is malformed, not a benign out-of-bounds miss.
-      throw invalidPath(path, location);
-    }
-    steps.push({ index });
-    return close + 1;
+  if (!INTEGER.test(inner)) {
+    throw invalidPath(path, location);
   }
-  throw invalidPath(path, location);
+  const index = Number(inner);
+  if (!Number.isSafeInteger(index) || index < 0) {
+    // A huge (non-safe-integer) or negative index is malformed, not a benign out-of-bounds miss.
+    throw invalidPath(path, location);
+  }
+  steps.push({ index });
+  return close + 1;
 }
 
 function invalidPath(path: string, location: string | undefined): InterpolationError {

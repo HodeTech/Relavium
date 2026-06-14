@@ -3,7 +3,8 @@ import type { RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow } from '../parser.js';
-import type { ToolRegistry } from '../tools/types.js';
+import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
+import { markUntrusted } from '../tools/untrusted.js';
 import { createAgentNodeExecutor } from './agent-runner.js';
 import { WorkflowEngine } from './engine.js';
 import { createInMemoryHost } from './execution-host.js';
@@ -38,11 +39,42 @@ function provider(chunks: StreamChunk[], id: ProviderId = 'anthropic'): LlmProvi
   };
 }
 
-/** A registry that is never dispatched (the e2e agent uses no tools). */
+/** A provider that replays a different chunk list per call (call N → scripts[N]). */
+function scriptedProvider(scripts: StreamChunk[][], id: ProviderId = 'anthropic'): LlmProvider {
+  let call = 0;
+  return {
+    id,
+    supports: CAPS,
+    generate: () => {
+      throw new Error('unused');
+    },
+    stream: () => streamOf(scripts[call++] ?? []),
+  };
+}
+
+/** A registry that is never dispatched (the content-only e2e agents use no tools). */
 const noToolRegistry: ToolRegistry = {
   has: () => false,
   list: () => [],
   dispatch: () => Promise.reject(new Error('no tool dispatch expected')),
+};
+
+/** A registry that returns a sanitized echo outcome (for the tool round-trip e2e). */
+const echoRegistry: ToolRegistry = {
+  has: () => true,
+  list: () => ['echo'],
+  dispatch: (call) => {
+    const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
+    return Promise.resolve({
+      output: 'TOOL-OK',
+      toolResult: markUntrusted(result),
+      truncated: false,
+      events: {
+        call: { toolId: call.name, toolInput: {} },
+        result: { toolId: call.name, success: true, outputSummary: 'TOOL-OK' },
+      },
+    });
+  },
 };
 
 const WORKFLOW = parseWorkflow(
@@ -167,5 +199,114 @@ workflow:
     expect(events.map((e) => e.type).at(-1)).toBe('run:completed');
     const completed = events.find((e) => e.type === 'node:completed');
     expect(completed?.type === 'node:completed' && completed.output).toBe('fallback wins');
+  });
+
+  it('streams a tool round-trip through the engine + bus, gap-free, to run:completed', async () => {
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-tool
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [echo]
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: createAgentNodeExecutor({
+        resolveProvider: () =>
+          scriptedProvider([
+            // turn 1: a tool call
+            [
+              { type: 'tool_call_start', id: 'c1', name: 'echo' },
+              { type: 'tool_call_end', id: 'c1' },
+              { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+            ],
+            // turn 2: the answer
+            [
+              { type: 'text_delta', text: 'answer' },
+              { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+            ],
+          ]),
+        registry: echoRegistry,
+        tools: [],
+        keyFor: () => 'key',
+        sleep: () => Promise.resolve(),
+        now: () => 1,
+      }),
+    });
+
+    const events = await drain(engine.start({ workflow: wf }));
+    const types = events.map((e) => e.type);
+    // tool events flow through the #nodeEmit shared-fallthrough and the bus, in order, gap-free.
+    expect(types).toContain('agent:tool_call');
+    expect(types).toContain('agent:tool_result');
+    expect(types.indexOf('agent:tool_call')).toBeLessThan(types.indexOf('agent:tool_result'));
+    expect(types.at(-1)).toBe('run:completed');
+    assertGapFreeSeq(events);
+    const completed = events.find((e) => e.type === 'node:completed');
+    expect(completed?.type === 'node:completed' && completed.output).toBe('answer');
+  });
+
+  it('runs two agent nodes concurrently against the shared executor, gap-free, with no cross-node bleed', async () => {
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-concurrent
+  max_parallel: 2
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - id: n1
+      type: agent
+      agent_ref: a
+      prompt_template: 'go1'
+    - id: n2
+      type: agent
+      agent_ref: a
+      prompt_template: 'go2'
+  edges: []
+`,
+    );
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: createAgentNodeExecutor({
+        // One executor instance serves both concurrent nodes; each builds its own chain + CostTracker.
+        resolveProvider: () =>
+          provider([
+            { type: 'text_delta', text: 'done' },
+            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+          ]),
+        registry: noToolRegistry,
+        tools: [],
+        keyFor: () => 'k',
+        sleep: () => Promise.resolve(),
+        now: () => 1,
+      }),
+    });
+
+    const events = await drain(engine.start({ workflow: wf }));
+    expect(events.map((e) => e.type).at(-1)).toBe('run:completed');
+    assertGapFreeSeq(events); // the bus serializes delivery across the two concurrent nodes
+    expect(events.filter((e) => e.type === 'node:completed')).toHaveLength(2);
+    // Each node's tokens carry its own nodeId — no cross-node emit/cost bleed on the shared executor.
+    const tokenNodes = new Set(
+      events
+        .filter((e) => e.type === 'agent:token')
+        .map((e) => (e.type === 'agent:token' ? e.nodeId : '')),
+    );
+    expect(tokenNodes).toEqual(new Set(['n1', 'n2']));
   });
 });

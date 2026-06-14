@@ -1,5 +1,11 @@
 import type { Agent } from '@relavium/shared';
-import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
+import type {
+  CapabilityFlags,
+  LlmProvider,
+  LlmRequest,
+  ProviderId,
+  StreamChunk,
+} from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
@@ -104,9 +110,12 @@ function agentVertex(): PlanVertex {
 
 const DEFAULT_INPUTS: Record<string, unknown> = { text: 'hi' };
 
+const NO_OUTPUTS: ReadonlyMap<string, unknown> = new Map();
+
 function ctxFor(
   vertex: PlanVertex,
   inputs: Record<string, unknown> = DEFAULT_INPUTS,
+  runOutputs: ReadonlyMap<string, unknown> = NO_OUTPUTS,
 ): {
   ctx: NodeExecContext;
   events: NodeStreamEvent[];
@@ -116,7 +125,7 @@ function ctxFor(
     events,
     ctx: {
       vertex,
-      runOutputs: new Map(),
+      runOutputs,
       inputs,
       toolPolicy: {},
       emit: (e) => events.push(e),
@@ -128,6 +137,23 @@ function ctxFor(
       attemptNumber: 1,
     },
   };
+}
+
+/** A provider that records the request it received (for asserting assembly/precedence). */
+function reqCapturingProvider(): { provider: LlmProvider; req: () => LlmRequest | undefined } {
+  let captured: LlmRequest | undefined;
+  const p: LlmProvider = {
+    id: 'anthropic',
+    supports: CAPS,
+    generate: () => {
+      throw new Error('unused');
+    },
+    stream: (r) => {
+      captured = r;
+      return streamOf([{ type: 'text_delta', text: 'ok' }, STOP]);
+    },
+  };
+  return { provider: p, req: () => captured };
 }
 
 describe('createAgentNodeExecutor — dispatch', () => {
@@ -289,5 +315,44 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     await exec.execute(ctx);
     expect(capturedSystem).toBe('You summarize.');
     expect(capturedUser).toBe('Summarize: the body');
+  });
+
+  it('applies node-over-agent precedence for model / temperature / max_tokens (ADR-0038)', async () => {
+    const { provider, req } = reqCapturingProvider();
+    const agent: Agent = {
+      ...AGENT,
+      model: 'claude-sonnet-4-6',
+      temperature: 0.1,
+      max_tokens: 100,
+    };
+    const exec = createAgentNodeExecutor(deps(provider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ model: 'claude-opus-4-8', temperature: 0.9, max_tokens: 500 }),
+        resolvedAgent: agent,
+      }),
+    );
+    await exec.execute(ctx);
+    expect(req()?.model).toBe('claude-opus-4-8'); // node model wins (planEntries[0])
+    expect(req()?.temperature).toBe(0.9); // node temperature wins
+    expect(req()?.maxTokens).toBe(500); // node max_tokens wins
+  });
+
+  it('never resolves an untrusted run.outputs reference into the system role (ADR-0038)', async () => {
+    const { provider, req } = reqCapturingProvider();
+    const exec = createAgentNodeExecutor(deps(provider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ system_prompt_append: 'Ctx: {{run.outputs["up"]}}' }),
+        resolvedAgent: AGENT,
+      }),
+      { text: 'hi' },
+      new Map([['up', 'SENTINEL-UNTRUSTED-VALUE']]),
+    );
+    await exec.execute(ctx);
+    // System is authored-only — an untrusted run.outputs value must NEVER appear resolved in `system`.
+    expect(req()?.system).not.toContain('SENTINEL-UNTRUSTED-VALUE');
   });
 });

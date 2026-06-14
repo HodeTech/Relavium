@@ -485,8 +485,16 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
       );
     }
     await params.preEgress?.({ model: activeModel });
+    // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
+    // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
+    // with the post-stream re-check below.
+    throwIfAborted(params.signal);
 
     const turn = await streamOneTurn(chain, messages, params, () => activeModel);
+    // Cancel-wins independent of adapter cooperation: if the signal fired mid-stream but a
+    // non-signal-honoring adapter still settled cleanly, fail `cancelled` rather than return a
+    // stray completed result (mirrors the registry's post-await re-check).
+    throwIfAborted(params.signal);
 
     if (turn.stopReason !== 'tool_use') {
       return {

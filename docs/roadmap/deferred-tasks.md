@@ -170,7 +170,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   surfaces add i18n: a CI test that **fails** on a missing/extra translation key (parity), **zero conditional
   logic in translation data** (data ≠ code), and a dead/unused-string lint. Recorded now; lands with the
   Phase-2/3/4 surface i18n work (no consumer yet). *(a `docs/standards/` entry or skill; Phases 2–4)*
-- [ ] **Tool-output size/token gate + spill-to-disk (1.T).** Today only the *event* `outputSummary` is
+- [x] **Tool-output size/token gate + spill-to-disk (1.T).** Today only the *event* `outputSummary` is
   truncated; the tool result handed back to the model has no bound, so one oversized `read_file` /
   `http_request` / MCP result can blow the context window (a cost/DoS surface ADR-0028's pre-egress
   governor cannot see, since the damage lands in the *next* request). Add to the `ToolRegistry`
@@ -178,7 +178,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   for over-threshold output (e.g. >2000 lines / >50KB) spill the full output to a workspace-scoped
   file and hand the model a bounded preview + the path (readable via the normal FS-scope-tiered
   tools). Behavior belongs in [built-in-tools.md](../reference/shared-core/built-in-tools.md) when
-  implemented. *(1.T; built-in-tools.md)*
+  implemented. *(1.T; built-in-tools.md)* **✅ Landed in 1.T:** `boundForModel` (bounding.ts) applies a
+  byte+line ceiling, emits a head/tail preview + explicit truncation marker, and spills the full text to
+  the host's run-scoped `outputStore` (handle in the marker); applied in `registry.dispatch` (returns
+  `truncated`) under the one cancellation-precedence ladder. Documented in
+  [tool-registry.md §result-bounding-and-spill-to-file](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file).
 - [ ] **Pre-egress token-estimate accuracy — watch item (1.AC).** The ADR-0028 governor blocks on
   `worstCaseNextEstimate(maxTokens)` from `[defaults].max_tokens_estimate`. Record the open
   question: does the estimate need provider-accurate token counting (from the seam's model meta /
@@ -249,6 +253,34 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   refuse a tainted `{{ run.outputs[…] }}` reference *if* such a marker reaches it; the static parse-time
   `analyzeSecretTaint` gate covers the authored template graph. Record as a scoped ADR-0029 amendment when 1.P/1.AB
   lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)*
+
+> **2026-06-14 (PR #18 final review follow-ups).** Confirmed by the multi-dimensional pre-merge review;
+> non-blocking, recorded so they aren't dropped.
+
+- [ ] **Parse-time `run.outputs`/`read_file` gate on system-bound fields** — 1.O assembles `system` from
+  authored text only (secure), but `system_prompt_append` is collected as a `{{ … }}` reference site
+  (`collect.ts`) so the contract *implies* dispatch resolution. A future PR that admits **trusted**
+  `{{ inputs }}`/`{{ ctx }}` in system fields must add a parse-time gate **rejecting** untrusted
+  `run.outputs`/`read_file` references there (analogous to the secret-taint gate — do **not** drop the field
+  from `nodeReferenceSites`, which would remove the existing secret-leak protection). A pinning test already
+  asserts an untrusted `run.outputs` value never reaches the system string. *(medium · packages/core/src/interpolation/analyze.ts, collect.ts; SEC-1)*
+- [x] **Concurrent-agent dispatch coverage** — N agent nodes run in parallel under `max_parallel`, each
+  calling `runAgentTurn` against the **shared** `ToolRegistry`. Verified reentrant (per-call locals; each node
+  builds its own `FallbackChain` + `CostTracker`), but there is **no** concurrency test. Add one: two agent
+  vertices dispatching the same tool in parallel, asserting gap-free per-node event sequences and no
+  cross-node cost/emit bleed. *(low · packages/core/src/engine/agent-runner.ts; engine `max_parallel`)*
+  **✅ Added (hardening pass):** `agent-runner.e2e.test.ts` "runs two agent nodes concurrently against the
+  shared executor" — `max_parallel: 2`, two agent vertices on one executor instance, asserting a gap-free
+  global sequence and that each node's `agent:token` events carry their own `nodeId` (no cross-node bleed).
+- [ ] **Combined tool-loop DoS bound (turns × corrections)** — `maxToolTurns` (16) and `maxToolCorrections`
+  (3) are independent budgets; their *product* bounds worst-case egress and the interleaving (a turn mixing
+  correctable + genuine tool rounds) is untested. Document the combined bound and add an interleaving test.
+  *(low · packages/core/src/engine/agent-turn.ts)*
+- [ ] **Multimodal tool-result through the adjacent-message + redaction paths** — all 1.O coverage exercises
+  text/JSON tool args + content; confirm image/media tool-result blocks survive the Anthropic adjacent-role
+  merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
+- [ ] **Checkpoint/resume of a mid-tool-loop turn** — whether a run paused/resumed between tool dispatches
+  reconstructs the message history (assistant turn + partial tool results) consistently. *(medium · 1.R)*
 
 ## Schema / validation hardening
 
@@ -416,14 +448,18 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > pass. The 1.O-diff findings (the `tryParseJson` fence regex → string ops, and the `#nodeEmit`
 > duplicate cases → fallthrough) were fixed in PR #18; they are **not** listed here.
 
-- [ ] **`readBracket` cognitive complexity (1.L2)** — Sonar 17 > 15; extract the numeric-index vs
-  quoted-key branches into helpers. *(critical · packages/core/src/interpolation/path.ts:96)*
-- [ ] **`splitTopLevel` cognitive complexity (1.L)** — Sonar 16 > 15; extract the quote/bracket
+- [x] **`readBracket` cognitive complexity (1.L2)** — Sonar 17 > 15; extract the numeric-index vs
+  quoted-key branches into helpers. *(critical · packages/core/src/interpolation/path.ts:96)* **✅ Fixed:**
+  extracted `readQuotedKey` + `readNumericIndex`; `readBracket` is now a 3-line dispatcher.
+- [x] **`splitTopLevel` cognitive complexity (1.L)** — Sonar 16 > 15; extract the quote/bracket
   depth-tracking into a small state helper. *(critical · packages/core/src/interpolation/references.ts:217)*
-- [ ] **`String.raw` for regex-escape literals (1.L test)** — use `String.raw` instead of escaping `\`
+  **✅ Fixed:** extracted a `SplitState` + `splitStep`/`splitStepOutsideQuote` pair; the loop body is one call.
+- [x] **`String.raw` for regex-escape literals (1.L test)** — use `String.raw` instead of escaping `\`
   in the interpolation reference fixtures. *(minor · packages/core/src/interpolation/references.test.ts:181-190)*
-- [ ] **Negated condition in the glob matcher (1.T)** — Sonar "unexpected negated condition"; flip the
+  **✅ Fixed:** both escaped-quote fixtures now use `String.raw` (template + expected value); tests still green.
+- [x] **Negated condition in the glob matcher (1.T)** — Sonar "unexpected negated condition"; flip the
   branch for readability if it does not obscure the backtracking logic. *(minor · packages/core/src/tools/registry.ts:387)*
+  **✅ Fixed:** `star !== -1` → the positive valid-index check `star >= 0`.
 - [ ] **Duplicated SQL literal in the initial migration (0.x)** — Sonar flags a 4× literal in the
   generated drizzle migration. Migrations are **append-only / generated** (never hand-edited), so this is
   informational — only act if the literal recurs in the *schema source* a future migration regenerates.

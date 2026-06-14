@@ -43,7 +43,8 @@ secret-taint gate** (1.L2, PR #15), and the **DAG builder + `RunPlan`** (1.M) to
 **QuickJS-wasm expression sandbox** (1.AB) (PR #16, 2026-06-13) — all with zero platform imports.
 The **run loop** (1.N — `WorkflowEngine` + `RunEventBus`) landed (PR #17, 2026-06-13), **completing
 milestone 1.m3** (parse → DAG → run loop emits the canonical event stream); the **built-in
-`ToolRegistry`** (1.T, a 1.m4 component) landed alongside it as the other 1.O prerequisite. Next on the
-critical path: the **`AgentRunner` join** (1.O), then checkpoint/resume and retry, plus the
-**AgentSession** runtime + export-to-workflow sub-spine. See
+`ToolRegistry`** (1.T, a 1.m4 component) landed alongside it; and the **`AgentRunner`** (1.O —
+per-node LLM execution behind the seam) landed (PR #18, 2026-06-14). Next on the critical path: the
+**node-type handlers** (1.P), the human gate, checkpoint/resume and retry, plus the **AgentSession**
+runtime + export-to-workflow sub-spine. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

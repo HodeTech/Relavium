@@ -384,7 +384,7 @@ function globMatch(glob: string, value: string): boolean {
     } else if (gc === '*') {
       star = ++g; // `*` matches zero chars first; remember where to extend it
       mark = v;
-    } else if (star !== -1) {
+    } else if (star >= 0) {
       g = star; // mismatch — let the last `*` swallow one more char of value
       v = ++mark;
     } else {
