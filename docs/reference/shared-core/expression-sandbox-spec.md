@@ -24,7 +24,7 @@ other doc names a sandbox rule it links here and never restates it.
 |------|-------|-----------------|--------|
 | `condition` | `expression` (evaluated **once**) | branch selector | a value matched by strict `===` against each branch's `when` (`boolean` \| `string` \| `number`); the `default` branch is taken when none matches |
 | `transform` | `transform` (a **single** expression) | pure state reshape, no LLM | the (JSON-serializable) result becomes the node's whole output |
-| `merge` (custom) | `merge_fn` | combine N parallel branch outputs | the merged object (only when `merge_strategy: custom`) |
+| `merge` (custom) | `merge_fn` | combine N parallel branch outputs | the merged result — any JSON-serializable value (only when `merge_strategy: custom`) |
 
 In v1.0 the only `expression_type` is **`js`**. `jmespath` / `jsonlogic` are **reserved** (each would
 add an undeclared runtime dependency) and are **rejected at parse time** (1.L) with a field-named,

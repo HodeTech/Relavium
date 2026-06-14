@@ -31,6 +31,29 @@ function abortAfterFirstRead(): AbortSignalLike {
   };
 }
 
+/** Assert a completed outcome and return its (unknown) output — narrows the NodeOutcome union by its
+ *  `kind` discriminant, with NO `as` cast. */
+function outputOf(out: NodeOutcome): unknown {
+  if (out.kind !== 'completed') {
+    throw new Error(`expected a completed outcome, got '${out.kind}'`);
+  }
+  return out.output;
+}
+
+/** Type predicate (no `as`): a non-null object usable as a string record. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** A completed outcome whose output is an object, returned as a record — combines the two guards above. */
+function recordOutput(out: NodeOutcome): Record<string, unknown> {
+  const value = outputOf(out);
+  if (!isRecord(value)) {
+    throw new Error('expected an object output');
+  }
+  return value;
+}
+
 function makeVertex(
   config: PlanConfig,
   graph: { id?: string; dependencies?: readonly string[]; dependents?: readonly string[] } = {},
@@ -338,7 +361,8 @@ describe('fan_in handler (1.P)', () => {
     ]); // arrival c-before-a; branchNodeIds order is [a, c]
     const out = await exec.execute(makeCtx(v, { runOutputs }));
     // Distinct keys survive; the colliding `k` is won by 'c' (later in branchNodeIds order), regardless
-    // of arrival order. Full-shape assertion (a plain object with Object.prototype).
+    // of arrival order. `toEqual` compares own keys/values and is lenient about the prototype, so it
+    // matches the null-prototype merge result against this plain literal.
     expect(out).toEqual({
       kind: 'completed',
       output: { k: 2, only_a: true, only_c: true },
@@ -348,12 +372,13 @@ describe('fan_in handler (1.P)', () => {
   it('object_merge uses a null-prototype accumulator so a `__proto__` branch key cannot hijack the result', async () => {
     const exec = createFanInNodeExecutor({ sandbox });
     const v = makeVertex(fanInConfig('object_merge', ['a']));
-    const malicious = JSON.parse('{"__proto__":{"injected":true}}') as Record<string, unknown>;
+    const malicious: unknown = JSON.parse('{"__proto__":{"injected":true}}');
+    if (!isRecord(malicious)) throw new Error('expected a parsed object');
     const runOutputs = new Map<string, unknown>([['a', malicious]]);
     const out = await exec.execute(makeCtx(v, { runOutputs }));
-    const output = (out as { output: object }).output;
+    const output = recordOutput(out);
     expect(Object.getPrototypeOf(output)).toBeNull(); // not the attacker object
-    expect((output as Record<string, unknown>)['injected']).toBeUndefined();
+    expect(output['injected']).toBeUndefined();
   });
 
   it('object_merge fails `validation` when a branch output is not a JSON object', async () => {
@@ -427,8 +452,16 @@ describe('fan_in handler (1.P)', () => {
     const merged = await exec.execute(
       makeCtx(makeVertex(fanInConfig('object_merge', ['a', 'b'])), { runOutputs: empty }),
     );
-    expect(merged).toMatchObject({ kind: 'completed' });
-    expect(Object.keys((merged as { output: object }).output)).toEqual([]);
+    const mergedOut = recordOutput(merged);
+    expect(Object.keys(mergedOut)).toEqual([]);
+    expect(Object.getPrototypeOf(mergedOut)).toBeNull(); // empty merge is still a null-proto object
+    // `custom` evaluates the merge_fn against an empty `branches` array (a distinct path).
+    const custom = await exec.execute(
+      makeCtx(makeVertex(fanInConfig('custom', ['a', 'b'], 'branches.length')), {
+        runOutputs: empty,
+      }),
+    );
+    expect(custom).toEqual({ kind: 'completed', output: 0 });
   });
 
   it('returns `cancelled` when the signal is already aborted', async () => {
@@ -436,6 +469,29 @@ describe('fan_in handler (1.P)', () => {
     const v = makeVertex(fanInConfig('concat', ['a']));
     const out = await exec.execute(makeCtx(v, { signal: ABORTED }));
     expect(out).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+  });
+
+  it('returns `cancelled` when a custom merge_fn aborts AFTER evaluation (post-eval re-check, Trap 5)', async () => {
+    const exec = createFanInNodeExecutor({ sandbox });
+    const v = makeVertex(fanInConfig('custom', ['a'], 'branches[0]'));
+    const runOutputs = new Map<string, unknown>([['a', 42]]);
+    const out = await exec.execute(makeCtx(v, { runOutputs, signal: abortAfterFirstRead() }));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+  });
+
+  it('fails `validation` when merge_strategy is `custom` but no merge_fn is supplied (defensive guard)', async () => {
+    const exec = createFanInNodeExecutor({ sandbox });
+    // Construct a custom fan_in config with NO merge_fn (the parser's cross-field rule would normally
+    // reject this, but the handler must still fail loud rather than evaluate `undefined`).
+    const v = makeVertex({
+      kind: 'fan_in',
+      node: { id: 'm', type: 'merge', merge_strategy: 'custom' },
+      joinStrategy: 'wait_all',
+      mergeStrategy: 'custom',
+      branchNodeIds: ['a'],
+    });
+    const out = await exec.execute(makeCtx(v, { runOutputs: new Map([['a', 1]]) }));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'validation', retryable: false } });
   });
 });
 
@@ -457,7 +513,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
     const inputs = { a: 1, b: 'x' };
     const out = await exec.execute(makeCtx(v, { inputs }));
     expect(out).toEqual({ kind: 'completed', output: { a: 1, b: 'x' } });
-    expect((out as { output: object }).output).not.toBe(inputs); // a copy, not the engine's record
+    expect(outputOf(out)).not.toBe(inputs); // a copy, not the engine's record
   });
 
   it('output captures its single feeder verbatim', async () => {
@@ -483,8 +539,10 @@ describe('fan_out / input / output handlers (1.P)', () => {
     ]);
     const out = await exec.execute(makeCtx(v, { runOutputs }));
     expect(out).toEqual({ kind: 'completed', output: { a: 1, b: 2 } });
+    const record = recordOutput(out);
     // Deterministic key order: feeders declared ['b','a'] are captured sorted — drop io.ts's .sort() and this fails.
-    expect(Object.keys((out as { output: Record<string, unknown> }).output)).toEqual(['a', 'b']);
+    expect(Object.keys(record)).toEqual(['a', 'b']);
+    expect(Object.getPrototypeOf(record)).toBeNull(); // the multi-feeder record is a null-proto object
   });
 
   it('output is null when it has no settled feeder', async () => {
@@ -582,18 +640,30 @@ describe('secret-input masking (1.P security — BLOCKER fix)', () => {
     expect(out).toEqual({ kind: 'branch', selected: ['safe'] });
   });
 
+  it('a custom merge_fn sees the masked marker, not the raw secret (the merge arm masks too)', async () => {
+    const exec = createFanInNodeExecutor({ sandbox });
+    const v = makeVertex(fanInConfig('custom', ['a'], 'inputs.api_key'));
+    const out = await exec.execute(
+      makeCtx(v, {
+        runOutputs: new Map([['a', 1]]),
+        inputs: { api_key: 'sk-RAW' },
+        secretInputNames,
+      }),
+    );
+    expect(out).toEqual({ kind: 'completed', output: { secret: true, ref: 'inputs.api_key' } });
+    expect(JSON.stringify(out)).not.toContain('sk-RAW');
+  });
+
   it('an input literally named `__proto__` cannot pollute Object.prototype (null-prototype accumulator)', async () => {
     const exec = createInputNodeExecutor();
     const v = makeVertex({ kind: 'input', node: { id: 'in', type: 'input' } });
     // The input-name grammar `[A-Za-z0-9_-]+` permits `__proto__`; JSON.parse gives it as an OWN key.
-    const inputs = JSON.parse('{"__proto__": {"polluted": true}, "ok": 1}') as Record<
-      string,
-      unknown
-    >;
-    const out = await exec.execute(makeCtx(v, { inputs }));
-    const output = (out as { output: object }).output;
+    const parsed: unknown = JSON.parse('{"__proto__": {"polluted": true}, "ok": 1}');
+    if (!isRecord(parsed)) throw new Error('expected a parsed object');
+    const out = await exec.execute(makeCtx(v, { inputs: parsed }));
+    const output = recordOutput(out);
     expect(Object.getPrototypeOf(output)).toBeNull(); // the `{ __proto__: null }` accumulator held
-    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined(); // Object.prototype untouched
+    expect('polluted' in {}).toBe(false); // Object.prototype untouched
   });
 });
 
@@ -633,7 +703,10 @@ describe('dispatching executor (1.P)', () => {
     });
   });
 
-  it('one shared sandbox serves concurrent expression nodes with no cross-node bleed (Trap 3)', async () => {
+  it('routes five distinct inputs through one shared executor, each to its own result (Trap 3)', async () => {
+    // `sandbox.evaluate` is synchronous, so `Promise.all` here resolves in insertion order rather than
+    // truly overlapping — this pins per-call scope isolation (no result mix-up); the fresh-VM guarantee
+    // is pinned by the next test.
     const exec = createStandardNodeExecutor({ sandbox });
     const outcomes = await Promise.all(
       [1, 2, 3, 4, 5].map((n) => {

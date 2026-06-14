@@ -671,7 +671,9 @@ class RunExecution {
   }
 
   #collectOutputs(mode: 'output' | 'completed'): Record<string, unknown> {
-    const outputs: Record<string, unknown> = {};
+    // Null-prototype: keys are vertex ids (kebab grammar excludes `__proto__`, so not reachable), but
+    // a null-proto accumulator keeps the engine's output projections consistent with the 1.P handlers.
+    const outputs: Record<string, unknown> = { __proto__: null };
     for (const [id, state] of this.#states) {
       if (state.status !== 'completed') {
         continue;

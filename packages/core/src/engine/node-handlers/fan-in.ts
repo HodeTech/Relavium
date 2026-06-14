@@ -91,6 +91,8 @@ function runFanIn(ctx: NodeExecContext, deps: FanInNodeExecutorDeps): NodeOutcom
       // The first surviving branch by declaration order (executor-only wait_first).
       return { kind: 'completed', output: branches.length > 0 ? branches[0] : null };
     case 'custom': {
+      // `config.mergeFn` is the lifted copy (dag.ts) and `config.node.merge_fn` the authored source;
+      // they are always equal when present, so the `??` is a harmless belt-and-suspenders read.
       const mergeFn = config.mergeFn ?? config.node.merge_fn;
       if (mergeFn === undefined) {
         // The workflow-level refinement guarantees `merge_fn` for `custom`; defensive belt-and-suspenders.
