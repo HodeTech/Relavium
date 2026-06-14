@@ -21,10 +21,13 @@
 > With 1.K, 1.N, and 1.T all landed, the **1.O `AgentRunner` join is ✅ Done (PR #18, 2026-06-14)**, and
 > the **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)** — the six non-agent `NodeExecutor` arms
 > behind a dispatching executor, executor-only (no `engine.ts` change), with a pre-merge BLOCKER secret-leak
-> fixed by a `secretInputNames` masking gate on `NodeExecContext`. The lane now continues at the remaining
-> 1.m4 workstreams (**1.Q** human gate, **1.R** checkpoint/resume, **1.S** node retry, **1.AC** budget
-> governor) toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence, 1.X/1.Z, must exclude the
-> reasoning signature — non-persisting.)*
+> fixed by a `secretInputNames` masking gate on `NodeExecContext`. **Checkpoint/resume (1.R) and the human
+> gate (1.Q) are ✅ Done (PR #22, 2026-06-15)** — the derived `Checkpointer` + cross-process
+> `resumeFromCheckpoint` (idempotent re-delivery, `workflow_mismatch` identity guard) and the
+> `human_in_the_loop` gate (suspend/resume + the one-shot `setTimer` timeout port: `approve` auto-resolves,
+> `reject` fails with `run_timeout`). The lane now continues at the remaining 1.m4 workstreams (**1.S** node
+> retry, **1.AC** budget governor) toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence,
+> 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -682,7 +685,7 @@ executor-only (true loser-cancel deferred). A pre-merge review surfaced and fixe
 a fan-out/fan-in runs N branches concurrently and merges per strategy; a transform
 reshapes state deterministically; input/output bind correctly.
 
-### 1.Q — Human-gate suspend/resume
+### 1.Q — Human-gate suspend/resume — ✅ **Done (PR #22, 2026-06-15)**
 
 The gate that suspends a run for an external decision and resumes idempotently.
 
@@ -706,7 +709,7 @@ The gate that suspends a run for an external decision and resumes idempotently.
 completes; re-applying the same decision is a no-op; a timeout resolves per the
 configured `on_timeout` policy.
 
-### 1.R — `Checkpointer` + resume — *critical path*
+### 1.R — `Checkpointer` + resume — *critical path* · ✅ **Done (PR #22, 2026-06-15)**
 
 Persist state at every node boundary and reconstruct a run from it.
 

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-14
+> Last updated: 2026-06-15
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -204,12 +204,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   is therefore neither resolved nor taint-scanned, and is not a leak vector (`resolveTemplate` is
   single-pass, so `{{inputs.cfg | json}}` emits the literal `{{secrets.x}}`, not a resolved secret). Pinned
   by `analyze.test.ts` ("treats a STRUCTURED input default as opaque data"). *(packages/core/src/interpolation/analyze.ts)*
-- [ ] **Frozen `ctx` checkpoint transport must use `structuredClone` (→ 1.R).** `resolveContext` returns
-  an `Object.freeze`d **null-prototype** map so a `__proto__`/`constructor` context key is a safe own
-  property. That guard is in-memory only: persisting/transporting it via `JSON.stringify` → `JSON.parse`
-  (esp. with a reviver, or merged into `{}`) can re-materialize `__proto__` as a real setter. The 1.R
-  checkpoint/resume layer MUST transport the frozen scope with `structuredClone`, never a JSON round-trip;
-  pin it with a test when the checkpointer lands. *(packages/core/src/interpolation/resolve.ts; 1.R)*
+- [ ] **Frozen `ctx` checkpoint transport must use `structuredClone` (→ ctx-threading, not 1.R).**
+  `resolveContext` returns an `Object.freeze`d **null-prototype** map so a `__proto__`/`constructor`
+  context key is a safe own property. That guard is in-memory only: persisting/transporting it via
+  `JSON.stringify` → `JSON.parse` (esp. with a reviver, or merged into `{}`) can re-materialize
+  `__proto__` as a real setter. **NB (2026-06-15): 1.R landed (PR #22) and does NOT carry the resolved
+  `ctx` in `CheckpointState`** — the checkpoint is folded from `run_events` (node outputs), and the
+  workflow `context:` is re-resolved at run start, so there is nothing to `structuredClone` yet. This
+  obligation re-points to whoever lands **ctx-threading + ctx-in-checkpoint** (the engine gap below);
+  pin it with a test then. *(packages/core/src/interpolation/resolve.ts)*
 
 ## AgentRunner (1.O) / reasoning-replay follow-ups
 
@@ -288,7 +291,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   text/JSON tool args + content; confirm image/media tool-result blocks survive the Anthropic adjacent-role
   merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
 - [ ] **Checkpoint/resume of a mid-tool-loop turn** — whether a run paused/resumed between tool dispatches
-  reconstructs the message history (assistant turn + partial tool results) consistently. *(medium · 1.R)*
+  reconstructs the message history (assistant turn + partial tool results) consistently. **NB (2026-06-15):
+  1.R (PR #22) resumes only at GATE boundaries; a crash mid-tool-loop is non-resumable → reconciled to
+  `run:failed` (a started-but-unfinished node re-runs from `pending`). Faithful mid-loop resume needs
+  persisted agent message history (`CheckpointState` carries none today) → Phase-2.** *(medium · 1.R/Phase-2)*
 
 ## Node-type handlers (1.P) follow-ups
 
@@ -314,8 +320,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   is **async** (a context value may `read_file`), so it needs a new **run-start async resolution step** in the
   engine (with resolver capabilities + a context-resolution-failure path) plus the `NodeExecContext` seam field.
   Best done as its own focused task or folded into **1.Q/1.R** (which already touch the run lifecycle); it is the
-  highest-value open engine gap (a bare `ctx.key` silently reads `undefined` today — a mis-route risk). *(medium ·
-  packages/core/src/engine/engine.ts, node-handlers/scope.ts, agent-runner.ts; resolveContext is 1.L2)*
+  highest-value open engine gap (a bare `ctx.key` silently reads `undefined` today — a mis-route risk).
+  **NB (2026-06-15): the 1.Q/1.R fold window passed (PR #22 landed without it — it was orthogonal to the
+  gate/checkpoint work); this is now its OWN focused task and remains the highest-value open engine gap.**
+  *(medium · packages/core/src/engine/engine.ts, node-handlers/scope.ts, agent-runner.ts; resolveContext is 1.L2)*
 - [ ] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
   resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**
@@ -333,6 +341,30 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hardening pass):** `validateStructuralEdge` rejects a handle-less edge from a `condition` with an
   `invalid_handle` issue (no existing fixture/spec used one — the spec routes via `branches` + `nodeId:when`
   handles); pinned by `dag.test.ts` and documented in workflow-yaml-spec.md §edges.
+
+## Checkpoint/resume + human gate (1.R / 1.Q) follow-ups
+
+> **2026-06-15 1.R/1.Q implementation + two pre-merge review passes (PR #22).** The derived `Checkpointer`
+> + cross-process `resumeFromCheckpoint` and the `human_in_the_loop` gate (suspend/resume + one-shot
+> `setTimer` timeout port) landed; both review rounds' findings were folded in the PR. The items below are
+> the deliberately-deferred forward work — each is a **Phase-2** concern that needs real persistence and/or
+> a store-level guarantee the in-memory reference cannot provide, recorded so it isn't lost.
+
+- [ ] **Re-arm a still-pending gate's timeout on cross-process rehydration** — `resumeFromCheckpoint` applies
+  the target gate's decision immediately, but a *remaining* pending gate (multi-gate run, crash-while-paused)
+  is rehydrated without re-arming its timer, so its deadline is lost until the next restart. The data needed
+  (`timeoutAction` + `expiresAt`) is now persisted on `human_gate:paused` (PR #22), so no backfill — Phase-2
+  crash-reconciliation re-arms from the log against a real clock. *(low · packages/core/src/engine/engine.ts `#seedFromCheckpoint`; Phase-2)*
+- [ ] **Content-level workflow-identity guard on resume** — `resumeFromCheckpoint` compares the surrogate
+  `workflowId` (catches resuming a *different* workflow → `workflow_mismatch`), but not a *same-slug,
+  edited-content* workflow. The stronger guard rides on the frozen `runs.workflow_definition_snapshot` column
+  ([database-schema.md](../reference/desktop/database-schema.md)) — a Phase-2 persistence concern wired with
+  the real `RunStore`, not the event-derived in-memory state. *(low · packages/core/src/engine/engine.ts; Phase-2)*
+- [ ] **Cross-process concurrent gate-resolve (TOCTOU)** — idempotent re-delivery holds within a process
+  (`#resolvedGates`) and across processes once the prior process's `human_gate:resumed` is persisted (the
+  checkpoint reconstructs `resolvedGateIds`). The residual window — two processes loading the *same* still-pending
+  gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
+  `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. *(low · checkpoint.ts/engine.ts; Phase-2 store)*
 
 ## Schema / validation hardening
 
