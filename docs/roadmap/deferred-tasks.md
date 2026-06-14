@@ -408,6 +408,33 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (e.g. a minimum-release-age setting) when the toolchain moves to a pnpm major that has one.
   *(policy now, tooling later · pnpm-workspace.yaml, architectural-principles.md)*
 
+## Sonar code-quality backlog
+
+> **2026-06-14 (PR #18 review).** Verified Sonar findings in **already-merged** code (1.L/1.L2/1.T/0.x),
+> outside the 1.O diff — kept out of the 1.O feature PR (a behaviour-preserving refactor of merged,
+> tested code is its own change, not feature scope). Pick these up in a dedicated `chore: sonar cleanup`
+> pass. The 1.O-diff findings (the `tryParseJson` fence regex → string ops, and the `#nodeEmit`
+> duplicate cases → fallthrough) were fixed in PR #18; they are **not** listed here.
+
+- [ ] **`readBracket` cognitive complexity (1.L2)** — Sonar 17 > 15; extract the numeric-index vs
+  quoted-key branches into helpers. *(critical · packages/core/src/interpolation/path.ts:96)*
+- [ ] **`splitTopLevel` cognitive complexity (1.L)** — Sonar 16 > 15; extract the quote/bracket
+  depth-tracking into a small state helper. *(critical · packages/core/src/interpolation/references.ts:217)*
+- [ ] **`String.raw` for regex-escape literals (1.L test)** — use `String.raw` instead of escaping `\`
+  in the interpolation reference fixtures. *(minor · packages/core/src/interpolation/references.test.ts:181-190)*
+- [ ] **Negated condition in the glob matcher (1.T)** — Sonar "unexpected negated condition"; flip the
+  branch for readability if it does not obscure the backtracking logic. *(minor · packages/core/src/tools/registry.ts:387)*
+- [ ] **Duplicated SQL literal in the initial migration (0.x)** — Sonar flags a 4× literal in the
+  generated drizzle migration. Migrations are **append-only / generated** (never hand-edited), so this is
+  informational — only act if the literal recurs in the *schema source* a future migration regenerates.
+  *(critical-by-Sonar / likely won't-fix · packages/db/drizzle/0000_organic_the_santerians.sql:118)*
+
+> **Intentional — not a defect (do not "fix"; recorded so Sonar's generic suggestion isn't re-litigated):**
+> `bounding.ts` uses `charCodeAt` deliberately for **WTF-8 lone-surrogate** byte counting (and the
+> matching test asserts surrogate pairs per UTF-16 unit) — `codePointAt` would merge pairs and break the
+> pinned tests. `type ToolId = string` is a deliberate **semantic domain alias** for readability, not a
+> redundant alias.
+
 ## Docs
 
 - [x] **Node-runtime row in tech-stack.md** — `runbooks/local-dev-setup.md` defers the Node
