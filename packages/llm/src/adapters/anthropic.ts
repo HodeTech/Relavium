@@ -262,6 +262,36 @@ function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
   return { role: message.role === 'assistant' ? 'assistant' : 'user', content };
 }
 
+/** Normalize a message's content to a block array (Anthropic allows a bare string for a text turn). */
+function blocksOf(content: string | Anthropic.ContentBlockParam[]): Anthropic.ContentBlockParam[] {
+  return typeof content === 'string' ? [{ type: 'text', text: content }] : content;
+}
+
+/**
+ * Fold consecutive same-role messages into one. Anthropic requires alternating user/assistant roles
+ * and **all** of a turn's `tool_result` blocks in a SINGLE user message — but the canonical model
+ * carries one `role:'tool'` message per result (and `tool` lowers to `user`), so a parallel-tool turn
+ * produces adjacent user messages the API would 400. Merging the mapped blocks fixes it at the seam
+ * (the right home — OpenAI keys per `tool_call_id` and needs no merge).
+ */
+function mergeAdjacentSameRole(
+  messages: readonly Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  const out: Anthropic.MessageParam[] = [];
+  for (const message of messages) {
+    const last = out.at(-1);
+    if (last !== undefined && last.role === message.role) {
+      out[out.length - 1] = {
+        role: last.role,
+        content: [...blocksOf(last.content), ...blocksOf(message.content)],
+      };
+    } else {
+      out.push(message);
+    }
+  }
+  return out;
+}
+
 function toAnthropicToolChoice(choice: ToolChoice): Anthropic.ToolChoice {
   if (choice === 'auto') {
     return { type: 'auto' };
@@ -299,7 +329,7 @@ function buildCommonBody(
   const body: Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> = {
     model: req.model,
     max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
-    messages: req.messages.map(toAnthropicMessage),
+    messages: mergeAdjacentSameRole(req.messages.map(toAnthropicMessage)),
   };
   if (req.system !== undefined) {
     body.system = req.system;

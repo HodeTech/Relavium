@@ -502,11 +502,23 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     // replay, ADR-0039), dispatch each call, append the tool results, and continue the loop.
     messages.push({ role: 'assistant', content: turn.content });
     const toolCalls = turn.content.filter((p): p is ToolCallPart => p.type === 'tool_call');
+    if (toolCalls.length === 0) {
+      // A `tool_use` stop with no tool-call parts is a provider protocol anomaly — re-looping would
+      // burn up to `maxToolTurns` paid egress calls with no progress, so fail loudly instead.
+      throw new AgentTurnError(
+        'provider_unavailable',
+        'the model signalled a tool_use stop but produced no tool call',
+        false,
+      );
+    }
+    // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so
+    // `nonSkippedAttempts >= 1`; pass it directly (a 0 here is an internal invariant violation the
+    // positiveInt event schema would reject loudly, not a value to coerce).
     const dispatched = await dispatchToolCalls(
       toolCalls,
       params,
       () => activeModel,
-      nonSkippedAttempts === 0 ? 1 : nonSkippedAttempts,
+      nonSkippedAttempts,
     );
     if (dispatched.correctable) {
       corrections += 1;

@@ -884,3 +884,25 @@ describe('toAnthropicMessage — signed-reasoning replay (ADR-0039)', () => {
     expect(body).toContain('"text":"hi"'); // the non-reasoning content still rides the wire
   });
 });
+
+describe('toAnthropicMessage — adjacent same-role merge (parallel tool results)', () => {
+  it('folds two consecutive tool-result messages into one user message (no non-alternating 400)', async () => {
+    const body = await captureBody([
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_call', id: 'c1', name: 'a', args: {} },
+          { type: 'tool_call', id: 'c2', name: 'b', args: {} },
+        ],
+      },
+      { role: 'tool', content: [{ type: 'tool_result', toolCallId: 'c1', result: 'r1' }] },
+      { role: 'tool', content: [{ type: 'tool_result', toolCallId: 'c2', result: 'r2' }] },
+    ]);
+    // The two adjacent tool (→user) messages merge into ONE user message: roles are [user, assistant,
+    // user], i.e. exactly two user messages — not the three a 1:1 mapping would 400 on.
+    expect((body.match(/"role":"user"/g) ?? []).length).toBe(2);
+    expect(body).toContain('c1'); // both tool_result blocks survive in the single trailing user message
+    expect(body).toContain('c2');
+  });
+});

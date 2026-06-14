@@ -1,4 +1,4 @@
-import type { CapabilityFlags, LlmProvider, StreamChunk } from '@relavium/llm';
+import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
 import type { RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -27,9 +27,9 @@ async function* streamOf(chunks: readonly StreamChunk[]): AsyncGenerator<StreamC
   for (const c of chunks) yield c;
 }
 
-function provider(chunks: StreamChunk[]): LlmProvider {
+function provider(chunks: StreamChunk[], id: ProviderId = 'anthropic'): LlmProvider {
   return {
-    id: 'anthropic',
+    id,
     supports: CAPS,
     generate: () => {
       throw new Error('unused');
@@ -122,10 +122,13 @@ describe('AgentRunner end-to-end through the WorkflowEngine', () => {
         error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
       },
     ]);
-    const fallback = provider([
-      { type: 'text_delta', text: 'fallback wins' },
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 2 } },
-    ]);
+    const fallback = provider(
+      [
+        { type: 'text_delta', text: 'fallback wins' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 2 } },
+      ],
+      'openai',
+    );
     // The agent's fallback_chain adds a second provider id; resolveProvider maps both to stubs.
     const wf = parseWorkflow(
       `schema_version: '1.0'

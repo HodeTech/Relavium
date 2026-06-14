@@ -86,7 +86,7 @@ function baseParams(
     fsScope: 'sandboxed',
     gateApproved: false,
   };
-  return {
+  const params: AgentTurnParams = {
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     planEntries: [{ provider, model: 'claude-opus-4-8', maxAttempts: 1 }],
     chainCapabilities: CAPABILITIES,
@@ -96,15 +96,18 @@ function baseParams(
     registry: stubRegistry(),
     dispatchContext,
     limits: DEFAULT_AGENT_TURN_LIMITS,
-    // expose the captured events for assertions
-    ...({ _events: events } as object),
     ...overrides,
   };
+  capturedEvents.set(params, events);
+  return params;
 }
 
-/** Pull the captured events array back out of the params (test-only side channel). */
+/** Typed side-channel: the events the default `emit` captured for a given params object. */
+const capturedEvents = new WeakMap<AgentTurnParams, NodeStreamEvent[]>();
+
+/** Pull the captured events array back out of the params (no unsafe cast). */
 function eventsOf(params: AgentTurnParams): NodeStreamEvent[] {
-  return (params as unknown as { _events: NodeStreamEvent[] })._events;
+  return capturedEvents.get(params) ?? [];
 }
 
 function stubRegistry(handler?: (call: ToolCallPart) => ToolDispatchOutcome): ToolRegistry {
@@ -251,6 +254,15 @@ describe('runAgentTurn — tool loop', () => {
     await expect(runAgentTurn(params)).rejects.toMatchObject({
       code: 'tool_denied',
       retryable: false,
+    });
+  });
+
+  it('fails provider_unavailable on a tool_use stop that carries no tool call', async () => {
+    const provider = scriptedProvider('anthropic', [
+      [{ type: 'text_delta', text: 'hmm' }, STOP('tool_use')],
+    ]);
+    await expect(runAgentTurn(baseParams(provider))).rejects.toMatchObject({
+      code: 'provider_unavailable',
     });
   });
 

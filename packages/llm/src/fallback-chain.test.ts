@@ -175,6 +175,15 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return out;
 }
 
+/** The recorded request at `index`, with a checked access (no `as LlmRequest` cast). */
+function reqAt(calls: readonly LlmRequest[], index: number): LlmRequest {
+  const req = calls[index];
+  if (req === undefined) {
+    throw new Error(`expected a recorded request at index ${index}`);
+  }
+  return req;
+}
+
 // --- construction ----------------------------------------------------------------------------
 
 describe('FallbackChain construction', () => {
@@ -1288,7 +1297,7 @@ describe('cross-call reasoning strip latch (ADR-0039)', () => {
     await chain.generate(continuation(first.content));
     // The primary's SECOND request must carry NO reasoning (latch = the fallback, a provider boundary).
     expect(primary.calls).toHaveLength(2);
-    expect(hasReasoning(primary.calls[1] as LlmRequest)).toBe(false);
+    expect(hasReasoning(reqAt(primary.calls, 1))).toBe(false);
   });
 
   it('preserves reasoning across calls on the SAME provider (same-provider replay)', async () => {
@@ -1304,7 +1313,7 @@ describe('cross-call reasoning strip latch (ADR-0039)', () => {
     await chain.generate(continuation(first.content));
     // Same provider both calls → no boundary → the signed reasoning is replayed, not stripped.
     expect(only.calls).toHaveLength(2);
-    expect(hasReasoning(only.calls[1] as LlmRequest)).toBe(true);
+    expect(hasReasoning(reqAt(only.calls, 1))).toBe(true);
   });
 
   it('strips reasoning across STREAM calls after a non-cooldown failover (the 1.O path)', async () => {
@@ -1336,6 +1345,52 @@ describe('cross-call reasoning strip latch (ADR-0039)', () => {
     await collect(chain.stream(userReq)); // call 1: primary times out (no cooldown) → fallback (signed)
     await collect(chain.stream(continuation(reasoningResult().content))); // call 2: re-issue at primary
     expect(primary.calls).toHaveLength(2);
-    expect(hasReasoning(primary.calls[1] as LlmRequest)).toBe(false);
+    expect(hasReasoning(reqAt(primary.calls, 1))).toBe(false);
+  });
+});
+
+describe('cost + credential robustness', () => {
+  it('does not fail a successful attempt when the model id is unpriced (cost degrades to absent)', async () => {
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({ costTracker: new CostTracker() });
+    const chain = new FallbackChain([entry(provider, 'totally-unpriced-snapshot-2099')], options);
+
+    const out = await chain.generate(userReq); // must NOT throw UnknownModelError after the tokens landed
+    expect(out.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(trace[0]?.outcome).toBe('succeeded');
+    expect(trace[0]?.cost).toBeUndefined(); // unpriced → no cost recorded, never a thrown failure
+  });
+
+  it('redacts a throwing keyFor to a fixed secret-free auth error, dropping the cause (generate)', async () => {
+    const secret = ['sk', 'live', 'do-not-leak-123'].join('-');
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('unused') });
+    const { options } = makeOptions({
+      keyFor: () => {
+        throw new Error(`keychain unlock failed: ${secret}`);
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    const err = await rejectedError(chain.generate(userReq));
+    expect(err.kind).toBe('auth');
+    expect(err.message).toBe('credential resolution failed for provider anthropic');
+    expect(err.message).not.toContain(secret);
+    expect(err.cause).toBeUndefined(); // the original (secret-bearing) error is dropped, not carried
+  });
+
+  it('redacts a throwing keyFor on the stream path too (surfaced as an auth error chunk)', async () => {
+    const secret = ['sk', 'live', 'do-not-leak-456'].join('-');
+    const provider = makeProvider({ id: 'anthropic', stream: () => streamFrom([STOP_CHUNK]) });
+    const { options } = makeOptions({
+      keyFor: () => {
+        throw new Error(`boom ${secret}`);
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    const chunks = await collect(chain.stream(userReq));
+    const error = chunks.find((c) => c.type === 'error');
+    expect(error?.type === 'error' && error.error.kind).toBe('auth');
+    expect(error?.type === 'error' && error.error.message).not.toContain(secret);
   });
 });

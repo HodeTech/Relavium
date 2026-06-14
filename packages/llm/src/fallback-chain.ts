@@ -581,7 +581,16 @@ export class FallbackChain {
       this.#emit({ ...record, outcome: 'succeeded' });
       return;
     }
-    const cost = this.#options.costTracker?.record(model, usage);
+    // Best-effort: `priceModel` throws `UnknownModelError` for a model id outside the pricing table
+    // (a new snapshot, an OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has
+    // ALREADY succeeded and its tokens were delivered — an unpriced model must degrade to no cost,
+    // never fail the call. Cost accuracy for unlisted models is a pricing-table concern, not a runtime error.
+    let cost: CostUpdate | undefined;
+    try {
+      cost = this.#options.costTracker?.record(model, usage);
+    } catch {
+      cost = undefined;
+    }
     this.#emit({
       ...record,
       outcome: 'succeeded',
