@@ -502,7 +502,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 - [x] **`readBracket` cognitive complexity (1.L2)** — Sonar 17 > 15; extract the numeric-index vs
   quoted-key branches into helpers. *(critical · packages/core/src/interpolation/path.ts:96)* **✅ Fixed:**
-  extracted `readQuotedKey` + `readNumericIndex`; `readBracket` is now a 3-line dispatcher.
+  extracted `readQuotedKey` + `readNumericIndex`; `readBracket` is now a thin dispatcher that delegates
+  to them (cognitive complexity well under the threshold).
 - [x] **`splitTopLevel` cognitive complexity (1.L)** — Sonar 16 > 15; extract the quote/bracket
   depth-tracking into a small state helper. *(critical · packages/core/src/interpolation/references.ts:217)*
   **✅ Fixed:** extracted a `SplitState` + `splitStep`/`splitStepOutsideQuote` pair; the loop body is one call.
