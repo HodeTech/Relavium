@@ -175,6 +175,15 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return out;
 }
 
+/** The recorded request at `index`, with a checked access (no `as LlmRequest` cast). */
+function reqAt(calls: readonly LlmRequest[], index: number): LlmRequest {
+  const req = calls[index];
+  if (req === undefined) {
+    throw new Error(`expected a recorded request at index ${index}`);
+  }
+  return req;
+}
+
 // --- construction ----------------------------------------------------------------------------
 
 describe('FallbackChain construction', () => {
@@ -1238,5 +1247,150 @@ describe('withFallback façade', () => {
     const out = await withFallback([entry(provider, 'claude-opus-4-8')], userReq, options);
 
     expect(out.content).toEqual([{ type: 'text', text: 'facade' }]);
+  });
+});
+
+describe('cross-call reasoning strip latch (ADR-0039)', () => {
+  const reasoningResult = (): LlmResult => ({
+    content: [
+      { type: 'reasoning', text: 'thinking', signature: 'sig-1' },
+      { type: 'text', text: 'a1' },
+    ],
+    stopReason: 'stop',
+    usage: USAGE,
+    raw: undefined,
+  });
+
+  const hasReasoning = (req: LlmRequest): boolean =>
+    req.messages.some((m) => m.content.some((c) => c.type === 'reasoning'));
+
+  /** The continuation request a tool loop builds: prior messages + the assistant turn (with reasoning). */
+  const continuation = (content: LlmResult['content']): LlmRequest => ({
+    ...userReq,
+    messages: [...userReq.messages, { role: 'assistant', content: [...content] }],
+  });
+
+  it('strips a prior provider’s reasoning on the NEXT call after a non-cooldown failover (multi-turn hole)', async () => {
+    // Call 1: primary times out (retryable, NO cooldown) → fails over to the fallback, which returns a
+    // SIGNED reasoning turn. Call 2 re-issues at the primary; the cross-call latch must strip the
+    // fallback's reasoning before the primary ever sees it.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: (_req, _key, call) =>
+        call === 1 ? rejects('anthropic', 'timeout')() : resolves('p2')(),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      generate: () => Promise.resolve(reasoningResult()),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt')],
+      options,
+    );
+
+    const first = await chain.generate(userReq);
+    expect(
+      hasReasoning({ ...userReq, messages: [{ role: 'assistant', content: first.content }] }),
+    ).toBe(true);
+
+    await chain.generate(continuation(first.content));
+    // The primary's SECOND request must carry NO reasoning (latch = the fallback, a provider boundary).
+    expect(primary.calls).toHaveLength(2);
+    expect(hasReasoning(reqAt(primary.calls, 1))).toBe(false);
+  });
+
+  it('preserves reasoning across calls on the SAME provider (same-provider replay)', async () => {
+    const only = makeProvider({
+      id: 'anthropic',
+      generate: (_req, _key, call) =>
+        call === 1 ? Promise.resolve(reasoningResult()) : resolves('a2')(),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(only, 'claude-opus-4-8')], options);
+
+    const first = await chain.generate(userReq);
+    await chain.generate(continuation(first.content));
+    // Same provider both calls → no boundary → the signed reasoning is replayed, not stripped.
+    expect(only.calls).toHaveLength(2);
+    expect(hasReasoning(reqAt(only.calls, 1))).toBe(true);
+  });
+
+  it('strips reasoning across STREAM calls after a non-cooldown failover (the 1.O path)', async () => {
+    // 1.O drives stream(), not generate() — the multi-turn hole must be closed on this path too.
+    const primary = makeProvider({
+      id: 'anthropic',
+      stream: (_r, _k, call) =>
+        call === 1
+          ? streamThrowing(providerError('anthropic', 'timeout'))
+          : streamFrom([{ type: 'text_delta', text: 'p2' }, STOP_CHUNK]),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () =>
+        streamFrom([
+          { type: 'reasoning_start', id: 'r' },
+          { type: 'reasoning_delta', id: 'r', text: 't' },
+          { type: 'reasoning_end', id: 'r', signature: 'sig' },
+          { type: 'text_delta', text: 'q' },
+          STOP_CHUNK,
+        ]),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt')],
+      options,
+    );
+
+    await collect(chain.stream(userReq)); // call 1: primary times out (no cooldown) → fallback (signed)
+    await collect(chain.stream(continuation(reasoningResult().content))); // call 2: re-issue at primary
+    expect(primary.calls).toHaveLength(2);
+    expect(hasReasoning(reqAt(primary.calls, 1))).toBe(false);
+  });
+});
+
+describe('cost + credential robustness', () => {
+  it('does not fail a successful attempt when the model id is unpriced (cost degrades to absent)', async () => {
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({ costTracker: new CostTracker() });
+    const chain = new FallbackChain([entry(provider, 'totally-unpriced-snapshot-2099')], options);
+
+    const out = await chain.generate(userReq); // must NOT throw UnknownModelError after the tokens landed
+    expect(out.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(trace[0]?.outcome).toBe('succeeded');
+    expect(trace[0]?.cost).toBeUndefined(); // unpriced → no cost recorded, never a thrown failure
+  });
+
+  it('redacts a throwing keyFor to a fixed secret-free auth error, dropping the cause (generate)', async () => {
+    const secret = ['sk', 'live', 'do-not-leak-123'].join('-');
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('unused') });
+    const { options } = makeOptions({
+      keyFor: () => {
+        throw new Error(`keychain unlock failed: ${secret}`);
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    const err = await rejectedError(chain.generate(userReq));
+    expect(err.kind).toBe('auth');
+    expect(err.message).toBe('credential resolution failed for provider anthropic');
+    expect(err.message).not.toContain(secret);
+    expect(err.cause).toBeUndefined(); // the original (secret-bearing) error is dropped, not carried
+  });
+
+  it('redacts a throwing keyFor on the stream path too (surfaced as an auth error chunk)', async () => {
+    const secret = ['sk', 'live', 'do-not-leak-456'].join('-');
+    const provider = makeProvider({ id: 'anthropic', stream: () => streamFrom([STOP_CHUNK]) });
+    const { options } = makeOptions({
+      keyFor: () => {
+        throw new Error(`boom ${secret}`);
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    const chunks = await collect(chain.stream(userReq));
+    const error = chunks.find((c) => c.type === 'error');
+    expect(error?.type === 'error' && error.error.kind).toBe('auth');
+    expect(error?.type === 'error' && error.error.message).not.toContain(secret);
   });
 });

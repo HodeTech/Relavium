@@ -137,8 +137,12 @@ form of the chat-to-workflow continuum, and it is honest about its fidelity: it 
 
 - The session's assistant turns become a **linear chain of `agent` nodes**, in order,
   carrying the agent binding, the resolved prompts, and the tools that were used.
-- The **full transcript is preserved as YAML comments/metadata** so the file is
-  self-documenting — with secrets already excluded by the no-interpolation rule above.
+- The **full transcript is preserved in the workflow's durable `metadata` field** (a schema
+  field that survives parse → serialize — **not** fragile YAML comments, which [ADR-0026](../decisions/0026-session-export-to-workflow.md)
+  rejects) so the file is self-documenting. The no-interpolation rule above keeps **resolved
+  secret-tainted `{{ … }}` references** out of the transcript — but it does **not** sanitize a secret a
+  user types **directly** into a message, which is preserved verbatim in `metadata` (the export is
+  user-reviewed before commit, which is where such a value is caught).
 - Parallel / conditional / loop structure is **not** auto-inferred; the author adds it on
   the canvas. Export is user-initiated and presented for review before commit — never
   silent, never an auto-commit.

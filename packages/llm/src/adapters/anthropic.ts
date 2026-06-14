@@ -206,9 +206,9 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
-// Reasoning parts are filtered out before this point (ephemeral, not replayed to the wire — ADR-0030)
+// Reasoning is lowered separately in `toAnthropicMessage` (a signed part → a `thinking` block, ADR-0039)
 // and media was rejected pre-flight by `assertNoMediaRequested` (shape-only until 1.AE — ADR-0031),
-// so the wire-able content is the closed text / tool_call / tool_result set.
+// so the wire-able content this handles is the closed text / tool_call / tool_result set.
 function toAnthropicBlock(
   part: Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }>,
 ): Anthropic.ContentBlockParam {
@@ -238,17 +238,58 @@ function toAnthropicBlock(
 }
 
 function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
-  // Anthropic has only user/assistant roles; tool results ride in a user-role message. Reasoning
-  // parts are ephemeral (ADR-0030) and dropped here — they are never replayed to the provider.
-  return {
-    role: message.role === 'assistant' ? 'assistant' : 'user',
-    content: message.content
-      .filter(
-        (part): part is Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }> =>
-          part.type !== 'reasoning' && part.type !== 'media',
-      )
-      .map(toAnthropicBlock),
-  };
+  // Anthropic has only user/assistant roles; tool results ride in a user-role message. A SIGNED
+  // reasoning part is lowered back to a `thinking` block so a same-provider continuation replays it
+  // (ADR-0039); the `FallbackChain` has already stripped reasoning on a cross-provider advance, so any
+  // reasoning part that reaches here is replay-safe for THIS provider. A redacted / signatureless
+  // reasoning part cannot be replayed (its opaque continuation token is absent) and is dropped — a
+  // recorded follow-up (redacted_thinking + Gemini part-level signatures need a canonical carrier).
+  // Media is dropped (shape-only until 1.AE).
+  const content: Anthropic.ContentBlockParam[] = [];
+  for (const part of message.content) {
+    if (part.type === 'media') {
+      continue;
+    }
+    if (part.type === 'reasoning') {
+      if (part.redacted === true || part.signature === undefined) {
+        continue;
+      }
+      content.push({ type: 'thinking', thinking: part.text, signature: part.signature });
+      continue;
+    }
+    content.push(toAnthropicBlock(part));
+  }
+  return { role: message.role === 'assistant' ? 'assistant' : 'user', content };
+}
+
+/** Normalize a message's content to a block array (Anthropic allows a bare string for a text turn). */
+function blocksOf(content: string | Anthropic.ContentBlockParam[]): Anthropic.ContentBlockParam[] {
+  return typeof content === 'string' ? [{ type: 'text', text: content }] : content;
+}
+
+/**
+ * Fold consecutive same-role messages into one. Anthropic requires alternating user/assistant roles
+ * and **all** of a turn's `tool_result` blocks in a SINGLE user message — but the canonical model
+ * carries one `role:'tool'` message per result (and `tool` lowers to `user`), so a parallel-tool turn
+ * produces adjacent user messages the API would 400. Merging the mapped blocks fixes it at the seam
+ * (the right home — OpenAI keys per `tool_call_id` and needs no merge).
+ */
+function mergeAdjacentSameRole(
+  messages: readonly Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  const out: Anthropic.MessageParam[] = [];
+  for (const message of messages) {
+    const last = out.at(-1);
+    if (last !== undefined && last.role === message.role) {
+      out[out.length - 1] = {
+        role: last.role,
+        content: [...blocksOf(last.content), ...blocksOf(message.content)],
+      };
+    } else {
+      out.push(message);
+    }
+  }
+  return out;
 }
 
 function toAnthropicToolChoice(choice: ToolChoice): Anthropic.ToolChoice {
@@ -288,7 +329,7 @@ function buildCommonBody(
   const body: Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> = {
     model: req.model,
     max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
-    messages: req.messages.map(toAnthropicMessage),
+    messages: mergeAdjacentSameRole(req.messages.map(toAnthropicMessage)),
   };
   if (req.system !== undefined) {
     body.system = req.system;

@@ -163,7 +163,7 @@ host is touched once, in the middle.
 7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
-> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are first returned to the agent loop (1.O) as a correctable `isError` `tool_result` so the model can fix its call; they escalate to a node `ErrorCode` only if the loop gives up. A `ToolPolicyError` is structurally fatal and never loop-retried.
+> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
 
 ```ts
 interface ToolDispatchContext {

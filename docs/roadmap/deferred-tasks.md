@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-12
+> Last updated: 2026-06-14
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -207,6 +207,49 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   checkpoint/resume layer MUST transport the frozen scope with `structuredClone`, never a JSON round-trip;
   pin it with a test when the checkpointer lands. *(packages/core/src/interpolation/resolve.ts; 1.R)*
 
+## AgentRunner (1.O) / reasoning-replay follow-ups
+
+> **2026-06-14 1.O pre-implementation review.** [ADR-0039](../decisions/0039-same-provider-reasoning-replay.md)
+> scopes the same-provider signed-reasoning replay to **Anthropic signed (non-redacted) thinking** — the case
+> 1.O's headline acceptance needs. Two harder per-provider cases are explicitly deferred (recorded here, not
+> shipped half-built) because each needs a canonical opaque-continuation carrier (a seam-shape addition tracked
+> against [ADR-0030](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)).
+
+- [ ] **Anthropic `redacted_thinking` replay** — the inbound fold drops the opaque `data`
+  (`{ type: 'reasoning', text: '', redacted: true }`), so a redacted block can never be lowered back. Faithful
+  replay needs the canonical reasoning `ContentPart` to carry an opaque continuation payload; until then a
+  `redacted` part is carried as-is and not replayed, and redacted-thinking continuations are out of 1.O scope.
+  *(high · packages/llm/src/adapters/anthropic.ts:126-127, packages/shared/src/content.ts:447-450; ADR-0030 follow-up)*
+- [ ] **Gemini part-level `thoughtSignature` replay** — Gemini carries the continuity signature on **any** `Part`
+  including a `functionCall`; the adapter drops it (`mapContent` reads only name/args) and the canonical
+  `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
+  themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
+  adapter capture/replay. *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
+- [ ] **DeepSeek surviving-reasoning replay** — the same per-provider contract applies; confirm whether the
+  OpenAI-compatible adapter normalizes/replays `reasoning_content` on a same-provider continuation, or currently
+  drops it. *(medium · packages/llm/src/adapters/openai.ts; ADR-0030 follow-up)*
+- [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates a node's `output_schema` node-side
+  but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a schema-violating-but-valid
+  JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently passes as `completed`). Deep
+  conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
+  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts; error-handling.md)*
+- [ ] **Per-attempt model attribution for `agent:token`** — `cost:updated` is always per-attempt-accurate, but
+  `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
+  stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
+  fix needs a `FallbackChain` `onAttemptStart`/attributed-stream hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
+- [ ] **Per-attempt pre-egress budget gate (1.AC)** — 1.O leaves a coarse always-pass hook at the tool-loop
+  turn boundary; the precise per-egress budget check (a `FallbackChain` makes several attempts per turn) is a
+  chain pre-attempt hook 1.AC adds. *(medium · ADR-0028; ADR-0038; 1.AC)*
+- [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
+  dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot, but a parallel-tool
+  provider should order by the accumulator's `toolOrder` before 1.V reuses the core. *(low · packages/core/src/engine/agent-turn.ts; 1.V)*
+- [ ] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
+  secret into `run.outputs` (it emits LLM text only), so this is **not** 1.O's to own; it belongs to the
+  `transform` / sandbox node (1.P / 1.AB) that can return a secret-derived value. 1.O's only obligation is to
+  refuse a tainted `{{ run.outputs[…] }}` reference *if* such a marker reaches it; the static parse-time
+  `analyzeSecretTaint` gate covers the authored template graph. Record as a scoped ADR-0029 amendment when 1.P/1.AB
+  lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)*
+
 ## Schema / validation hardening
 
 - [ ] **`z.unknown()` payload presence** — `agent:tool_call.toolInput`, `node:completed.output`,
@@ -364,6 +407,33 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   has no native knob for this; enforce as review policy now and revisit native enforcement
   (e.g. a minimum-release-age setting) when the toolchain moves to a pnpm major that has one.
   *(policy now, tooling later · pnpm-workspace.yaml, architectural-principles.md)*
+
+## Sonar code-quality backlog
+
+> **2026-06-14 (PR #18 review).** Verified Sonar findings in **already-merged** code (1.L/1.L2/1.T/0.x),
+> outside the 1.O diff — kept out of the 1.O feature PR (a behaviour-preserving refactor of merged,
+> tested code is its own change, not feature scope). Pick these up in a dedicated `chore: sonar cleanup`
+> pass. The 1.O-diff findings (the `tryParseJson` fence regex → string ops, and the `#nodeEmit`
+> duplicate cases → fallthrough) were fixed in PR #18; they are **not** listed here.
+
+- [ ] **`readBracket` cognitive complexity (1.L2)** — Sonar 17 > 15; extract the numeric-index vs
+  quoted-key branches into helpers. *(critical · packages/core/src/interpolation/path.ts:96)*
+- [ ] **`splitTopLevel` cognitive complexity (1.L)** — Sonar 16 > 15; extract the quote/bracket
+  depth-tracking into a small state helper. *(critical · packages/core/src/interpolation/references.ts:217)*
+- [ ] **`String.raw` for regex-escape literals (1.L test)** — use `String.raw` instead of escaping `\`
+  in the interpolation reference fixtures. *(minor · packages/core/src/interpolation/references.test.ts:181-190)*
+- [ ] **Negated condition in the glob matcher (1.T)** — Sonar "unexpected negated condition"; flip the
+  branch for readability if it does not obscure the backtracking logic. *(minor · packages/core/src/tools/registry.ts:387)*
+- [ ] **Duplicated SQL literal in the initial migration (0.x)** — Sonar flags a 4× literal in the
+  generated drizzle migration. Migrations are **append-only / generated** (never hand-edited), so this is
+  informational — only act if the literal recurs in the *schema source* a future migration regenerates.
+  *(critical-by-Sonar / likely won't-fix · packages/db/drizzle/0000_organic_the_santerians.sql:118)*
+
+> **Intentional — not a defect (do not "fix"; recorded so Sonar's generic suggestion isn't re-litigated):**
+> `bounding.ts` uses `charCodeAt` deliberately for **WTF-8 lone-surrogate** byte counting (and the
+> matching test asserts surrogate pairs per UTF-16 unit) — `codePointAt` would merge pairs and break the
+> pinned tests. `type ToolId = string` is a deliberate **semantic domain alias** for readability, not a
+> redundant alias.
 
 ## Docs
 

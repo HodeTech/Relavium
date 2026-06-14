@@ -81,6 +81,8 @@ flowchart TD
 | 0035 | [YAML parser for the engine — the `yaml` package, confined to `@relavium/core`](0035-yaml-parser-dependency.md) | Accepted | 2026-06-11 |
 | 0036 | [Run-loop substrate — in-house `RunEventBus`, the `ExecutionHost` seam, and the exactly-one-terminal-event invariant](0036-run-loop-substrate-event-bus-and-execution-host.md) | Accepted | 2026-06-13 |
 | 0037 | [Engine-side tool-execution boundary — the `ToolHost` capability seam, policy/mechanism split, bounded results](0037-engine-tool-execution-boundary.md) | Accepted | 2026-06-13 |
+| 0038 | [AgentRunner LLM-call boundary — host-injected provider resolution, the per-node-execution `FallbackChain`, and the credential discipline](0038-agentrunner-llm-call-boundary.md) | Accepted | 2026-06-14 |
+| 0039 | [Same-provider signed-reasoning replay — a behavioral amendment to ADR-0030](0039-same-provider-reasoning-replay.md) | Accepted | 2026-06-14 |
 
 ## Creating a new ADR
 

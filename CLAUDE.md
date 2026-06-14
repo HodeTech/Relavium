@@ -38,7 +38,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07); the `FallbackChain` runner (1.K) has since landed, completing 1.m2 with the cost tracker (PR #13, 2026-06-11).**
+**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07); the `FallbackChain` runner (1.K) landed, completing 1.m2 with the cost tracker (PR #13, 2026-06-11); the run loop (1.N — `WorkflowEngine` + `RunEventBus`) landed (PR #17, 2026-06-13) **completing 1.m3** (parse → DAG → run loop emits the canonical event stream), with the built-in `ToolRegistry` (1.T, a 1.m4 component) landing alongside it as the other `AgentRunner` (1.O) join prerequisite.**
 Phase 0 (M0, 2026-06-04) landed the monorepo, strict toolchain + CI, `@relavium/shared` (the
 full Zod contract set), the no-vendor-type seam fence, and `@relavium/db`. Phase 1 has since
 landed `@relavium/llm` — the `LLMProvider` seam + all three adapters (Anthropic, OpenAI/DeepSeek,
@@ -49,9 +49,10 @@ reserved generator methods, shape-only, landed before the seam's exhaustive cons
 `FallbackChain` runner (1.K, PR #13) is now landed and fully covered. The
 [`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md) lane has since landed the
 **`WorkflowYAMLParser` (1.L, PR #14)**, the **`{{ … }}` interpolation engine + parse-time secret-taint
-gate (1.L2, PR #15)**, and the **DAG builder + `RunPlan` (1.M)** plus the **QuickJS-wasm expression
-sandbox (1.AB)** (PR #16, 2026-06-13); active work continues with the **run loop — `WorkflowEngine` +
-`RunEventBus` (1.N)**; see
+gate (1.L2, PR #15)**, the **DAG builder + `RunPlan` (1.M)** plus the **QuickJS-wasm expression
+sandbox (1.AB)** (PR #16, 2026-06-13), and the **run loop — `WorkflowEngine` + `RunEventBus` (1.N)**
+together with the **built-in `ToolRegistry` (1.T)** (PR #17, 2026-06-13). Active work now converges at
+the **`AgentRunner` join (1.O)** — unblocked now that 1.K, 1.N, and 1.T have all landed; see
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 
 ## Non-negotiable rules for AI agents

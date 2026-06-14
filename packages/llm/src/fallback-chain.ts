@@ -210,6 +210,13 @@ export class FallbackChain {
   readonly #cooldownMs: number;
   /** Per-provider cooldown expiry (ms), persisted across calls on this instance (rate-limit nuance). */
   readonly #cooldownUntil = new Map<ProviderId, number>();
+  // The cross-CALL reasoning strip latch (ADR-0039). Unlike the per-call `ChainRun.#lastProvider`,
+  // this survives across generate/stream calls so a multi-turn tool loop on ONE chain instance strips
+  // a prior provider's signed reasoning before it can reach a different provider's next call. A chain
+  // instance is **single-flight by contract** — one node execution's *sequential* tool loop; concurrent
+  // generate/stream on the same instance would race this latch, so concurrent agent vertices each get
+  // their own chain (the AgentRunner builds one per node execution — ADR-0038).
+  #lastProviderAcrossCalls: ProviderId | undefined;
   /** Providers whose one-shot auth refresh has already been spent on this instance. */
   readonly #authRefreshed = new Set<ProviderId>();
   /** A provider id to attribute an all-skipped synthetic error to (the last plan entry's). */
@@ -246,21 +253,25 @@ export class FallbackChain {
    * that attempt's model so cost stays accurate across a failover.
    */
   async generate(req: LlmRequest): Promise<LlmResult> {
-    const run = new ChainRun(req);
-    for (const entry of this.#plan) {
-      this.#throwIfAborted(req, entry.provider.id);
-      const skip = this.#skipReason(entry, run.previewRequest(entry));
-      if (skip !== undefined) {
-        this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
-        continue;
+    const run = new ChainRun(req, this.#lastProviderAcrossCalls);
+    try {
+      for (const entry of this.#plan) {
+        this.#throwIfAborted(req, entry.provider.id);
+        const skip = this.#skipReason(entry, run.previewRequest(entry));
+        if (skip !== undefined) {
+          this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
+          continue;
+        }
+        const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
+        const result = await this.#runEntryGenerate(entry, entryReq, req, run);
+        if (result !== undefined) {
+          return result;
+        }
       }
-      const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-      const result = await this.#runEntryGenerate(entry, entryReq, req, run);
-      if (result !== undefined) {
-        return result;
-      }
+      throw new LlmProviderError(run.lastError ?? this.#exhaustedError());
+    } finally {
+      this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
     }
-    throw new LlmProviderError(run.lastError ?? this.#exhaustedError());
   }
 
   /**
@@ -305,24 +316,28 @@ export class FallbackChain {
    * seam's `stream`, a terminal failure is surfaced as an `error` chunk, not a throw.
    */
   async *stream(req: LlmRequest): AsyncIterable<StreamChunk> {
-    const run = new ChainRun(req);
-    for (const entry of this.#plan) {
-      if (this.#aborted(req)) {
-        yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
-        return;
+    const run = new ChainRun(req, this.#lastProviderAcrossCalls);
+    try {
+      for (const entry of this.#plan) {
+        if (this.#aborted(req)) {
+          yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
+          return;
+        }
+        const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
+        if (skip !== undefined) {
+          this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
+          continue;
+        }
+        const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
+        const action = yield* this.#runEntryStream(entry, entryReq, req, run);
+        if (action === 'done') {
+          return;
+        }
       }
-      const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
-      if (skip !== undefined) {
-        this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
-        continue;
-      }
-      const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-      const action = yield* this.#runEntryStream(entry, entryReq, req, run);
-      if (action === 'done') {
-        return;
-      }
+      yield { type: 'error', error: run.lastError ?? this.#exhaustedError() };
+    } finally {
+      this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
     }
-    yield { type: 'error', error: run.lastError ?? this.#exhaustedError() };
   }
 
   /**
@@ -540,7 +555,20 @@ export class FallbackChain {
   }
 
   async #resolveKey(provider: ProviderId): Promise<string> {
-    return this.#options.keyFor(provider);
+    try {
+      return await this.#options.keyFor(provider);
+    } catch {
+      // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message
+      // as a downstream error (rule 6). Replace it with a fixed, secret-free `auth` failure; the
+      // original is dropped — not carried as `cause`, which a sink could serialize.
+      throw new LlmProviderError(
+        makeLlmError({
+          provider,
+          kind: 'auth',
+          message: `credential resolution failed for provider ${provider}`,
+        }),
+      );
+    }
   }
 
   /**
@@ -553,7 +581,16 @@ export class FallbackChain {
       this.#emit({ ...record, outcome: 'succeeded' });
       return;
     }
-    const cost = this.#options.costTracker?.record(model, usage);
+    // Best-effort: `priceModel` throws `UnknownModelError` for a model id outside the pricing table
+    // (a new snapshot, an OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has
+    // ALREADY succeeded and its tokens were delivered — an unpriced model must degrade to no cost,
+    // never fail the call. Cost accuracy for unlisted models is a pricing-table concern, not a runtime error.
+    let cost: CostUpdate | undefined;
+    try {
+      cost = this.#options.costTracker?.record(model, usage);
+    } catch {
+      cost = undefined;
+    }
     this.#emit({
       ...record,
       outcome: 'succeeded',
@@ -582,8 +619,21 @@ class ChainRun {
   #attemptNumber = 0;
   lastError: LlmError | undefined;
 
-  constructor(req: LlmRequest) {
+  /**
+   * Seed `#lastProvider` from the chain instance's cross-call latch ([ADR-0039](../../../docs/decisions/0039-same-provider-reasoning-replay.md)):
+   * a tool loop is a sequence of separate `generate`/`stream` calls, so the strip latch must survive
+   * across them. With the seed, the first attempted entry strips this call's incoming reasoning when
+   * the previous call settled on a *different* provider — closing the multi-turn cross-provider replay
+   * hole a fresh-per-call latch left open.
+   */
+  constructor(req: LlmRequest, seedLastProvider?: ProviderId) {
     this.#req = req;
+    this.#lastProvider = seedLastProvider;
+  }
+
+  /** The provider of the last attempted (non-skipped) entry — the chain folds it back as the next seed. */
+  get lastProvider(): ProviderId | undefined {
+    return this.#lastProvider;
   }
 
   /**

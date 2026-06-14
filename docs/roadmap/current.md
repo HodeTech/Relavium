@@ -128,8 +128,17 @@ transitive secret-taint gate** ([ADR-0029(c)](../decisions/0029-tool-policy-hard
 zero platform imports. **1.M (DAG builder + `RunPlan`) and 1.AB (the QuickJS-wasm expression sandbox)
 are ✅ Done (PR #16, 2026-06-13)** — the plan layer (a deterministic topological `RunPlan`) and the
 deterministic, resource-capped `condition`/`transform`/`merge_fn` evaluator ([ADR-0027](../decisions/0027-expression-sandbox.md)),
-both pure-engine (zero platform imports). The engine lane continues: **1.N → 1.R**, converging at the
-**1.O join** (whose `FallbackChain` dependency, 1.K, is now satisfied) toward **M2**.
+both pure-engine (zero platform imports). The engine lane has since landed **1.N (`WorkflowEngine` +
+`RunEventBus` — the run loop) and 1.T (the built-in `ToolRegistry`) ✅ Done (PR #17, merged
+2026-06-13)** — the serialized, completion-driven scheduler emitting the canonical, gap-free `RunEvent`
+stream with the exactly-one-terminal-event invariant (through the in-house platform-free `RunEventBus`
+behind the injected `ExecutionHost`/`NodeExecutor` seams), and the SSRF/allowlist/taint-aware tool
+registry behind the `ToolHost` seam ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)/[ADR-0037](../decisions/0037-engine-tool-execution-boundary.md)).
+**1.N completes milestone 1.m3** (parse → DAG → run loop emits the canonical event stream) — its last
+component (1.L.0/1.L/1.L2/1.M/1.N). **1.T is a 1.m4 component** that landed alongside it and is a
+separate `AgentRunner` (1.O) join prerequisite — it does **not** close 1.m3. With **1.O's three
+prerequisites — 1.K (`FallbackChain`), 1.N (run loop), 1.T (tools)** — all satisfied, the engine lane
+now converges at the **1.O join**, the next workstream, toward **M2**.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -153,8 +162,10 @@ both pure-engine (zero platform imports). The engine lane continues: **1.N → 1
 > pnpm install-script allowlist. No Phase-1 work changed; **1.K has since landed (PR #13)**, and
 > **1.L has since landed (PR #14, 2026-06-12)** and **1.L2 (the `{{ … }}` interpolation engine + the
 > parse-time secret-taint gate) is ✅ Done (PR #15, merged 2026-06-12)**; **1.M (DAG builder +
-> `RunPlan`) and 1.AB (the expression sandbox) have since landed (PR #16, merged 2026-06-13)** —
-> **1.N (`WorkflowEngine` + `RunEventBus`) is the next workstream**.
+> `RunPlan`) and 1.AB (the expression sandbox) have since landed (PR #16, merged 2026-06-13)**; and
+> **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (the built-in `ToolRegistry`) are ✅ Done (PR #17,
+> merged 2026-06-13)** — **1.N closes 1.m3** (its last component); **1.T** (a 1.m4 component) is the
+> other 1.O join prerequisite. **The `AgentRunner` join (1.O) is the next workstream**.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

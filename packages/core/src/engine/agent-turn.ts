@@ -1,0 +1,535 @@
+/**
+ * The **agent turn core** (1.O) — a correlation-key-agnostic driver for one agent's LLM turn(s):
+ * assemble → call the seam → fold the stream into `agent:*` events → run the tool-call loop →
+ * return the settled content. It is deliberately **independent of the run vs session correlation
+ * key** ([ADR-0024](../../../../docs/decisions/0024-agent-first-entry-point-agentsession.md)/0025/0026):
+ * it takes `messages` + `tools` + the per-execution fallback plan + `emit` + `signal` + `nodeId` +
+ * the tool registry + `limits`, and emits **envelope-less** {@link NodeStreamEvent} bodies — so the
+ * `AgentRunner` ({@link ./agent-runner.ts}) wraps it for the workflow run path and `AgentSession`
+ * (1.V) reuses it unchanged for the chat path. Run-only concerns (`run.outputs` taint placement, the
+ * run-correlated `agent:file_patch_proposed`, `output_schema` validation against `run.outputs`) live
+ * in that adapter, never here.
+ *
+ * It owns the cost path ([ADR-0038](../../../../docs/decisions/0038-agentrunner-llm-call-boundary.md)):
+ * it builds one {@link CostTracker} per turn and wires its own `onAttempt` to emit a `cost:updated`
+ * per non-skipped attempt — the host never supplies a (shared) tracker. The reasoning `ContentPart`
+ * of each assistant turn is carried back into the next request on a same-provider tool-loop
+ * continuation ([ADR-0039](../../../../docs/decisions/0039-same-provider-reasoning-replay.md)); the
+ * `FallbackChain` strips it on a cross-provider advance.
+ *
+ * NOTE (model attribution): `cost:updated` always carries the **accurate per-attempt** model (it is
+ * emitted from the attempt record), and `agent:tool_call` is emitted *after* the stream settles (the
+ * succeeding attempt record has already updated `activeModel`), so it is accurate too. Only
+ * **`agent:token`** carries `activeModel` mid-stream — correct for the common (no-failover) and
+ * same-model-retry cases, but a *cross-model pre-content failover* attributes the streamed tokens to
+ * the prior model until the succeeding record updates it (a recorded edge — the accurate per-attempt
+ * source is always `cost:updated`).
+ */
+
+import type { AbortSignalLike, ContentPart, ErrorCode, StopReason } from '@relavium/shared';
+import {
+  CostTracker,
+  FallbackChain,
+  type AttemptRecord,
+  type FallbackChainOptions,
+  type FallbackPlanEntry,
+  type LlmError,
+  type LlmMessage,
+  type LlmRequest,
+  type ResponseFormat,
+  type StreamChunk,
+  type ToolDef as LlmToolDef,
+} from '@relavium/llm';
+
+import { ToolDispatchError } from '../tools/errors.js';
+import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
+import { unwrapUntrusted } from '../tools/untrusted.js';
+import type { NodeStreamEvent } from './node-executor.js';
+
+/** Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob. */
+export interface AgentTurnLimits {
+  /** Max tool-loop continuations before the run-default DoS guard fails the turn (`turn_limit`). */
+  readonly maxToolTurns: number;
+  /** Max model-correctable tool-error rounds (`unknown_tool` / `invalid_args`) before escalating. */
+  readonly maxToolCorrections: number;
+}
+
+/** The run-default loop bounds (1.O). 1.V overrides these via the same `limits` param — no restructuring. */
+export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
+  maxToolTurns: 16,
+  maxToolCorrections: 3,
+};
+
+/**
+ * The pre-egress budget hook ([ADR-0028](../../../../docs/decisions/0028-workflow-resource-governance.md)) —
+ * called immediately before every seam call. In 1.O the default is a no-op that always permits; 1.AC
+ * replaces it with the estimator and may throw an {@link AgentTurnError} (`budget_exceeded`) to halt.
+ */
+export type PreEgressHook = (info: { readonly model: string }) => void | Promise<void>;
+
+/** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
+export type ChainCapabilities = Pick<
+  FallbackChainOptions,
+  'keyFor' | 'sleep' | 'now' | 'onAuthError'
+>;
+
+/** Everything one agent turn needs — no run/session correlation key, no `NodeExecContext`. */
+export interface AgentTurnParams {
+  /** Authored system text ONLY (agent `system_prompt` + node `system_prompt_append`) — never untrusted data. */
+  readonly system?: string;
+  /** The initial conversation. The core appends assistant + tool messages across the loop on a copy. */
+  readonly messages: readonly LlmMessage[];
+  /** LLM-visible tool defs for the request (already normalized + narrowed to the node's grant). */
+  readonly tools?: readonly LlmToolDef[];
+  /** The ordered fallback plan (primary + fallbacks), providers already resolved to instances. */
+  readonly planEntries: readonly FallbackPlanEntry[];
+  /** The host-supplied chain capabilities; the core adds its own `costTracker` + `onAttempt`. */
+  readonly chainCapabilities: ChainCapabilities;
+  /** Lowered from the node's `output_schema` (request-side hint; validation is node-side, in the adapter). */
+  readonly responseFormat?: ResponseFormat;
+  /** Per-turn generation knobs (node-over-agent precedence is resolved by the caller). */
+  readonly temperature?: number;
+  readonly maxTokens?: number;
+  /** The id stamped on emitted events (a workflow vertex id on the run path; a synthetic id on a session). */
+  readonly nodeId: string;
+  /** Emit an envelope-less streaming event; the engine/bus attaches the correlation key + sequence. */
+  readonly emit: (event: NodeStreamEvent) => void;
+  /** Cooperative cancellation — threaded into every seam call (via the request) and tool dispatch. */
+  readonly signal: AbortSignalLike;
+  /** The shared tool registry (1.T) and the dispatch context for this node (the core adds `signal`). */
+  readonly registry: ToolRegistry;
+  readonly dispatchContext: Omit<ToolDispatchContext, 'signal'>;
+  /** Loop bounds (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
+  readonly limits: AgentTurnLimits;
+  /** Pre-egress budget hook (default no-op; 1.AC fills it). */
+  readonly preEgress?: PreEgressHook;
+}
+
+/** What one settled agent turn produced. */
+export interface AgentTurnResult {
+  /** The final assistant content parts (text + any reasoning), in order. */
+  readonly content: readonly ContentPart[];
+  /** The concatenated assistant text — the node's primary output when there is no `output_schema`. */
+  readonly text: string;
+  /** Aggregate token usage summed across the turn's successful attempts. */
+  readonly usage: { readonly input: number; readonly output: number };
+  /** The committed model id (the last attempt that produced content). */
+  readonly model: string;
+  /** The final stop reason. */
+  readonly stopReason: StopReason;
+}
+
+/**
+ * A classified turn failure. Carries a closed {@link ErrorCode} + a user-safe, secret-free message;
+ * the run-path adapter maps it to a `NodeOutcome.failed`. The internal correlation id rides the
+ * event, never this message.
+ */
+export class AgentTurnError extends Error {
+  override readonly name = 'AgentTurnError';
+  constructor(
+    readonly code: ErrorCode,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** Map a classified `LlmError` (chain-exhausted) to the node `ErrorCode` taxonomy (never `error.message`). */
+function codeForLlmError(error: LlmError): ErrorCode {
+  switch (error.kind) {
+    case 'auth':
+      return 'provider_auth';
+    case 'rate_limit':
+      return 'provider_rate_limit';
+    case 'overloaded':
+    case 'timeout':
+    case 'transport':
+      return 'provider_unavailable';
+    case 'cancelled':
+      return 'cancelled';
+    case 'content_filter':
+    case 'bad_request':
+      return 'validation';
+    case 'unknown':
+      return 'internal';
+  }
+}
+
+/** A tool throw the model can correct by seeing an `isError` tool result and trying again. */
+function isModelCorrectable(err: ToolDispatchError): boolean {
+  return err.code === 'unknown_tool' || err.code === 'invalid_args';
+}
+
+/** Map a non-correctable tool throw to the node `ErrorCode` (cancel wins; a denial is fatal). */
+function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable: boolean } {
+  switch (err.code) {
+    case 'cancelled':
+      return { code: 'cancelled', retryable: false };
+    case 'tool_denied':
+      return { code: 'tool_denied', retryable: false };
+    case 'capability_unavailable':
+      return { code: 'internal', retryable: false };
+    case 'execution_failed':
+      return { code: 'tool_failed', retryable: true };
+    default:
+      // unknown_tool / invalid_args reach here only after the correction budget is spent.
+      return { code: 'tool_failed', retryable: false };
+  }
+}
+
+/** Accumulator for one assistant turn's streamed parts (text + tool calls + reasoning), by delta id. */
+interface TurnAccumulator {
+  text: string;
+  readonly toolArgs: Map<string, { name: string; json: string }>;
+  readonly toolOrder: string[];
+  readonly reasoning: Map<string, { text: string; signature?: string; redacted?: boolean }>;
+  readonly reasoningOrder: string[];
+}
+
+function newAccumulator(): TurnAccumulator {
+  return { text: '', toolArgs: new Map(), toolOrder: [], reasoning: new Map(), reasoningOrder: [] };
+}
+
+/** Parse accumulated tool-call argument JSON; a malformed/empty delta yields `{}` (the dispatcher validates). */
+function parseToolArgs(json: string): unknown {
+  if (json.length === 0) return {};
+  try {
+    return JSON.parse(json) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+/** Fold the accumulator into ordered assistant content parts (reasoning, then text, then tool calls). */
+function accumulatorToContent(acc: TurnAccumulator): ContentPart[] {
+  const parts: ContentPart[] = [];
+  for (const id of acc.reasoningOrder) {
+    const r = acc.reasoning.get(id);
+    if (r === undefined) continue;
+    parts.push({
+      type: 'reasoning',
+      text: r.text,
+      ...(r.signature === undefined ? {} : { signature: r.signature }),
+      ...(r.redacted === undefined ? {} : { redacted: r.redacted }),
+    });
+  }
+  if (acc.text.length > 0) parts.push({ type: 'text', text: acc.text });
+  for (const id of acc.toolOrder) {
+    const call = acc.toolArgs.get(id);
+    if (call === undefined) continue;
+    parts.push({ type: 'tool_call', id, name: call.name, args: parseToolArgs(call.json) });
+  }
+  return parts;
+}
+
+/** The concatenated text of the assistant content parts. */
+function textOf(content: readonly ContentPart[]): string {
+  return content
+    .filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('');
+}
+
+function throwIfAborted(signal: AbortSignalLike): void {
+  if (signal.aborted) throw new AgentTurnError('cancelled', 'the run was cancelled', false);
+}
+
+/** Build the per-iteration `LlmRequest` from the current message list + the turn's static fields. */
+function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams): LlmRequest {
+  return {
+    model: params.planEntries[0]?.model ?? '',
+    ...(params.system === undefined ? {} : { system: params.system }),
+    messages: [...messages],
+    ...(params.tools === undefined ? {} : { tools: [...params.tools] }),
+    ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
+    ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
+    ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+    signal: params.signal,
+  };
+}
+
+/**
+ * Consume one streamed attempt: emit `agent:token` per text delta, accumulate text / tool-call /
+ * reasoning parts, and resolve with the assistant content + stop reason. A terminal `error` chunk
+ * (the chain exhausted) becomes a classified {@link AgentTurnError}.
+ */
+async function streamOneTurn(
+  chain: FallbackChain,
+  messages: readonly LlmMessage[],
+  params: AgentTurnParams,
+  getModel: () => string,
+): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
+  const acc = newAccumulator();
+  let stopReason: StopReason = 'stop';
+  for await (const chunk of chain.stream(buildRequest(messages, params))) {
+    foldChunk(chunk, acc, params, getModel);
+    if (chunk.type === 'error') {
+      throw new AgentTurnError(
+        codeForLlmError(chunk.error),
+        chunk.error.message,
+        chunk.error.retryable,
+      );
+    }
+    if (chunk.type === 'stop') stopReason = chunk.stopReason;
+  }
+  return { content: accumulatorToContent(acc), stopReason };
+}
+
+/** Fold a single stream chunk into the accumulator, emitting `agent:token` for visible text deltas. */
+function foldChunk(
+  chunk: StreamChunk,
+  acc: TurnAccumulator,
+  params: AgentTurnParams,
+  getModel: () => string,
+): void {
+  if (chunk.type === 'text_delta') {
+    acc.text += chunk.text;
+    params.emit({
+      type: 'agent:token',
+      nodeId: params.nodeId,
+      token: chunk.text,
+      model: getModel(),
+    });
+    return;
+  }
+  foldToolCallChunk(chunk, acc);
+  foldReasoningChunk(chunk, acc);
+  // tool_call_end / stop / error / media_* / tool_result are no-ops in both sub-folders.
+}
+
+/** Accumulate a `tool_call_*` delta into the in-progress tool call (by id), preserving emission order. */
+function foldToolCallChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
+  if (chunk.type === 'tool_call_start') {
+    if (!acc.toolArgs.has(chunk.id)) {
+      acc.toolArgs.set(chunk.id, { name: chunk.name, json: '' });
+      acc.toolOrder.push(chunk.id);
+    }
+    return;
+  }
+  if (chunk.type === 'tool_call_delta') {
+    const call = acc.toolArgs.get(chunk.id);
+    if (call !== undefined) call.json += chunk.argsJsonDelta;
+  }
+}
+
+/** Accumulate a `reasoning_*` delta; `reasoning_end` carries the optional signature / redacted flag. */
+function foldReasoningChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
+  if (chunk.type === 'reasoning_start') {
+    if (!acc.reasoning.has(chunk.id)) {
+      acc.reasoning.set(chunk.id, { text: '' });
+      acc.reasoningOrder.push(chunk.id);
+    }
+    return;
+  }
+  if (chunk.type === 'reasoning_delta') {
+    const r = acc.reasoning.get(chunk.id);
+    if (r !== undefined) r.text += chunk.text;
+    return;
+  }
+  if (chunk.type === 'reasoning_end') {
+    const r = acc.reasoning.get(chunk.id);
+    if (r !== undefined) {
+      if (chunk.signature !== undefined) r.signature = chunk.signature;
+      if (chunk.redacted !== undefined) r.redacted = chunk.redacted;
+    }
+  }
+}
+
+/**
+ * Dispatch each tool call of a tool-use turn through the registry, emitting `agent:tool_call` /
+ * `agent:tool_result` and returning the `role:'tool'` result messages. A model-correctable throw
+ * (`unknown_tool` / `invalid_args`) is converted to an `isError` tool result fed back for the model
+ * to self-correct (the caller bounds how many such rounds); any other throw is a classified
+ * {@link AgentTurnError} (cancel wins; a denial is fatal).
+ */
+async function dispatchToolCalls(
+  toolCalls: readonly ToolCallPart[],
+  params: AgentTurnParams,
+  getModel: () => string,
+  attemptNumber: number,
+): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
+  const results: LlmMessage[] = [];
+  let correctable = false;
+  for (const call of toolCalls) {
+    throwIfAborted(params.signal);
+    try {
+      const outcome = await params.registry.dispatch(call, {
+        ...params.dispatchContext,
+        signal: params.signal,
+      });
+      // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
+      // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
+      // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
+      params.emit({
+        type: 'agent:tool_call',
+        nodeId: params.nodeId,
+        model: getModel(),
+        toolId: outcome.events.call.toolId,
+        toolInput: outcome.events.call.toolInput,
+        attemptNumber,
+      });
+      const part = unwrapUntrusted(outcome.toolResult);
+      results.push({ role: 'tool', content: [part] });
+      params.emit({
+        type: 'agent:tool_result',
+        nodeId: params.nodeId,
+        toolId: outcome.events.result.toolId,
+        success: outcome.events.result.success,
+        outputSummary: outcome.events.result.outputSummary,
+        attemptNumber,
+      });
+    } catch (err) {
+      // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before
+      // dispatch). Announce the attempted call with a REDACTED (empty) input — never the raw model
+      // args — then classify.
+      params.emit({
+        type: 'agent:tool_call',
+        nodeId: params.nodeId,
+        model: getModel(),
+        toolId: call.name,
+        toolInput: {},
+        attemptNumber,
+      });
+      if (err instanceof ToolDispatchError && isModelCorrectable(err)) {
+        correctable = true;
+        results.push({
+          role: 'tool',
+          content: [
+            { type: 'tool_result', toolCallId: call.id, result: err.message, isError: true },
+          ],
+        });
+        params.emit({
+          type: 'agent:tool_result',
+          nodeId: params.nodeId,
+          toolId: call.name,
+          success: false,
+          outputSummary: err.message,
+          attemptNumber,
+        });
+        continue;
+      }
+      const { code, retryable } =
+        err instanceof ToolDispatchError
+          ? codeForToolError(err)
+          : { code: 'internal' as const, retryable: false };
+      const message = err instanceof Error ? err.message : 'tool dispatch failed';
+      throw new AgentTurnError(code, message, retryable);
+    }
+  }
+  return { messages: results, correctable };
+}
+
+/**
+ * Drive one agent turn end to end. Resolves with the settled {@link AgentTurnResult}, or throws an
+ * {@link AgentTurnError} classified to the closed `ErrorCode` taxonomy (the caller maps it to a node
+ * failure). Never throws a raw error for a classified condition.
+ */
+export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+  const primaryModel = params.planEntries[0]?.model;
+  if (primaryModel === undefined) {
+    throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
+  }
+
+  // The cost path is the core's, not the host's: one tracker per turn, one cost:updated per
+  // non-skipped attempt (attemptNumber counts non-skipped records, not the positional index).
+  const costTracker = new CostTracker();
+  let activeModel = primaryModel;
+  let nonSkippedAttempts = 0;
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  const onAttempt = (record: AttemptRecord): void => {
+    // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
+    // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
+    if (record.outcome === 'skipped') return;
+    activeModel = record.model;
+    nonSkippedAttempts += 1;
+    if (record.usage === undefined) return;
+    totalInput += record.usage.inputTokens;
+    totalOutput += record.usage.outputTokens;
+    // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
+    // figure on `record.cost`; read it rather than re-recording (which would double the total).
+    params.emit({
+      type: 'cost:updated',
+      nodeId: params.nodeId,
+      model: record.model,
+      inputTokens: record.usage.inputTokens,
+      outputTokens: record.usage.outputTokens,
+      costMicrocents: record.cost?.costMicrocents ?? 0,
+      // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
+      cumulativeCostMicrocents: 0,
+      attemptNumber: nonSkippedAttempts,
+    });
+  };
+
+  const chain = new FallbackChain([...params.planEntries], {
+    ...params.chainCapabilities,
+    costTracker,
+    onAttempt,
+  });
+
+  const messages: LlmMessage[] = params.messages.map((m) => ({
+    role: m.role,
+    content: [...m.content],
+  }));
+  let corrections = 0;
+
+  for (let toolTurn = 0; ; toolTurn += 1) {
+    throwIfAborted(params.signal);
+    if (toolTurn > params.limits.maxToolTurns) {
+      throw new AgentTurnError(
+        'turn_limit',
+        `agent exceeded the ${params.limits.maxToolTurns}-turn tool-call limit`,
+        false,
+      );
+    }
+    await params.preEgress?.({ model: activeModel });
+
+    const turn = await streamOneTurn(chain, messages, params, () => activeModel);
+
+    if (turn.stopReason !== 'tool_use') {
+      return {
+        content: turn.content,
+        text: textOf(turn.content),
+        usage: { input: totalInput, output: totalOutput },
+        model: activeModel,
+        stopReason: turn.stopReason,
+      };
+    }
+
+    // A tool-use turn: append the assistant turn (incl. reasoning — carried for the same-provider
+    // replay, ADR-0039), dispatch each call, append the tool results, and continue the loop.
+    messages.push({ role: 'assistant', content: turn.content });
+    const toolCalls = turn.content.filter((p): p is ToolCallPart => p.type === 'tool_call');
+    if (toolCalls.length === 0) {
+      // A `tool_use` stop with no tool-call parts is a provider protocol anomaly — re-looping would
+      // burn up to `maxToolTurns` paid egress calls with no progress, so fail loudly instead.
+      throw new AgentTurnError(
+        'provider_unavailable',
+        'the model signalled a tool_use stop but produced no tool call',
+        false,
+      );
+    }
+    // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so
+    // `nonSkippedAttempts >= 1`; pass it directly (a 0 here is an internal invariant violation the
+    // positiveInt event schema would reject loudly, not a value to coerce).
+    const dispatched = await dispatchToolCalls(
+      toolCalls,
+      params,
+      () => activeModel,
+      nonSkippedAttempts,
+    );
+    if (dispatched.correctable) {
+      corrections += 1;
+      if (corrections > params.limits.maxToolCorrections) {
+        throw new AgentTurnError(
+          'tool_failed',
+          `agent exceeded the ${params.limits.maxToolCorrections}-round tool-correction budget`,
+          false,
+        );
+      }
+    }
+    messages.push(...dispatched.messages);
+  }
+}

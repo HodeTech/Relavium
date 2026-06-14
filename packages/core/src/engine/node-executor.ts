@@ -22,6 +22,7 @@ import type {
   ErrorCode,
   HumanGatePausedEvent,
   TokensUsed,
+  ToolPolicy,
 } from '@relavium/shared';
 
 import type { RunEventDraft } from './event-bus.js';
@@ -100,6 +101,13 @@ export interface NodeExecContext {
   readonly runOutputs: ReadonlyMap<string, unknown>;
   /** The run-wide inputs (the `input` namespace); a `secret`-typed input is carried per the taint rules. */
   readonly inputs: Readonly<Record<string, unknown>>;
+  /**
+   * The workflow-wide tool policy (`allowedCommands` / `allowedCommandGlobs` / `allowedDomains` —
+   * [ADR-0029](../../../../docs/decisions/0029-tool-policy-hardening.md)) a tool-dispatching node
+   * (the `AgentRunner` 1.O, the `tool` handler 1.P) threads into the `ToolHost` dispatch. The engine
+   * sources it from `workflow.tools` (empty ⇒ deny-all for allowlist-gated tools, the secure default).
+   */
+  readonly toolPolicy: ToolPolicy;
   /** Emit a streaming event mid-execution; the engine stamps the envelope and routes it to the bus. */
   emit: (event: NodeStreamEvent) => void;
   /** Aborts when the run is cancelled, fails elsewhere, or times out — thread it into provider/tool calls. */
