@@ -250,6 +250,31 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `analyzeSecretTaint` gate covers the authored template graph. Record as a scoped ADR-0029 amendment when 1.P/1.AB
   lands. *(medium · packages/core/src/interpolation/analyze.ts; ADR-0029(c), 1.P/1.AB)*
 
+> **2026-06-14 (PR #18 final review follow-ups).** Confirmed by the multi-dimensional pre-merge review;
+> non-blocking, recorded so they aren't dropped.
+
+- [ ] **Parse-time `run.outputs`/`read_file` gate on system-bound fields** — 1.O assembles `system` from
+  authored text only (secure), but `system_prompt_append` is collected as a `{{ … }}` reference site
+  (`collect.ts`) so the contract *implies* dispatch resolution. A future PR that admits **trusted**
+  `{{ inputs }}`/`{{ ctx }}` in system fields must add a parse-time gate **rejecting** untrusted
+  `run.outputs`/`read_file` references there (analogous to the secret-taint gate — do **not** drop the field
+  from `nodeReferenceSites`, which would remove the existing secret-leak protection). A pinning test already
+  asserts an untrusted `run.outputs` value never reaches the system string. *(medium · packages/core/src/interpolation/analyze.ts, collect.ts; SEC-1)*
+- [ ] **Concurrent-agent dispatch coverage** — N agent nodes run in parallel under `max_parallel`, each
+  calling `runAgentTurn` against the **shared** `ToolRegistry`. Verified reentrant (per-call locals; each node
+  builds its own `FallbackChain` + `CostTracker`), but there is **no** concurrency test. Add one: two agent
+  vertices dispatching the same tool in parallel, asserting gap-free per-node event sequences and no
+  cross-node cost/emit bleed. *(low · packages/core/src/engine/agent-runner.ts; engine `max_parallel`)*
+- [ ] **Combined tool-loop DoS bound (turns × corrections)** — `maxToolTurns` (16) and `maxToolCorrections`
+  (3) are independent budgets; their *product* bounds worst-case egress and the interleaving (a turn mixing
+  correctable + genuine tool rounds) is untested. Document the combined bound and add an interleaving test.
+  *(low · packages/core/src/engine/agent-turn.ts)*
+- [ ] **Multimodal tool-result through the adjacent-message + redaction paths** — all 1.O coverage exercises
+  text/JSON tool args + content; confirm image/media tool-result blocks survive the Anthropic adjacent-role
+  merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
+- [ ] **Checkpoint/resume of a mid-tool-loop turn** — whether a run paused/resumed between tool dispatches
+  reconstructs the message history (assistant turn + partial tool results) consistently. *(medium · 1.R)*
+
 ## Schema / validation hardening
 
 - [ ] **`z.unknown()` payload presence** — `agent:tool_call.toolInput`, `node:completed.output`,

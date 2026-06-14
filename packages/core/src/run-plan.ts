@@ -137,8 +137,11 @@ export interface PlanVertex {
   readonly dependents: readonly string[];
   /**
    * The un-evaluated `{{ … }}` template sites on this vertex's own authored fields (an agent's
-   * `prompt_template`/`system_prompt_append`, a gate's `assignee`/`message_template`), resolved at
-   * dispatch by 1.N/1.O — never evaluated here. Empty for nodes with no template fields.
+   * `prompt_template`, a gate's `assignee`/`message_template`), resolved at dispatch by 1.N/1.O —
+   * never evaluated here. Empty for nodes with no template fields. NOTE: `system_prompt_append` is
+   * also collected (for the parse-time **secret-taint** scan), but 1.O assembles the system role from
+   * **authored text only** and does **not** interpolate it at dispatch — an untrusted `{{ run.outputs }}`
+   * reference never resolves into `system` (ADR-0038; agent-runner.md).
    */
   readonly inputSites: readonly ReferenceSite[];
   /** The per-type config block. */

@@ -1,7 +1,13 @@
 import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
-import { ToolPolicyError, UnknownToolError } from '../tools/errors.js';
+import {
+  ToolCancelledError,
+  ToolExecutionError,
+  ToolPolicyError,
+  ToolUnavailableError,
+  UnknownToolError,
+} from '../tools/errors.js';
 import type {
   ToolCallPart,
   ToolDispatchContext,
@@ -255,6 +261,125 @@ describe('runAgentTurn — tool loop', () => {
       code: 'tool_denied',
       retryable: false,
     });
+  });
+
+  const toolUseTurn = (id: string): StreamChunk[] => [
+    { type: 'tool_call_start', id, name: 'echo' },
+    { type: 'tool_call_end', id },
+    STOP('tool_use'),
+  ];
+
+  it('maps ToolCancelledError to cancelled (cancel wins over a tool failure)', async () => {
+    const registry = stubRegistry(() => {
+      throw new ToolCancelledError('echo');
+    });
+    const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
+      code: 'cancelled',
+      retryable: false,
+    });
+  });
+
+  it('maps ToolUnavailableError (absent host capability) to internal', async () => {
+    const registry = stubRegistry(() => {
+      throw new ToolUnavailableError('echo', 'egress');
+    });
+    const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
+      code: 'internal',
+    });
+  });
+
+  it('maps ToolExecutionError to tool_failed (retryable — the 1.S node-retry signal)', async () => {
+    const registry = stubRegistry(() => {
+      throw new ToolExecutionError('echo', 'disk full');
+    });
+    const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
+      code: 'tool_failed',
+      retryable: true,
+    });
+  });
+
+  it('redacts the raw model args on the error-path agent:tool_call (toolInput {})', async () => {
+    const registry = stubRegistry(() => {
+      throw new ToolPolicyError('echo', 'not_granted', 'denied');
+    });
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'echo' },
+        { type: 'tool_call_delta', id: 'c1', argsJsonDelta: '{"raw":"do-not-leak"}' },
+        { type: 'tool_call_end', id: 'c1' },
+        STOP('tool_use'),
+      ],
+    ]);
+    const params = baseParams(provider, { registry });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'tool_denied' });
+    const toolCall = eventsOf(params).find((e) => e.type === 'agent:tool_call');
+    // The error path never had a sanitized outcome — the raw `{ raw: ... }` must NOT reach the event.
+    expect(toolCall?.type === 'agent:tool_call' && toolCall.toolInput).toEqual({});
+  });
+
+  it('stamps attemptNumber 1 on the first tool turn’s events', async () => {
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('c1'),
+      [{ type: 'text_delta', text: 'ok' }, STOP()],
+    ]);
+    const params = baseParams(provider);
+    await runAgentTurn(params);
+    const call = eventsOf(params).find((e) => e.type === 'agent:tool_call');
+    const result = eventsOf(params).find((e) => e.type === 'agent:tool_result');
+    expect(call?.type === 'agent:tool_call' && call.attemptNumber).toBe(1);
+    expect(result?.type === 'agent:tool_result' && result.attemptNumber).toBe(1);
+  });
+
+  it('cancels mid-tool-loop: an abort after the first dispatch stops the second (cancel wins)', async () => {
+    const aborted = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    let dispatched = 0;
+    const registry = stubRegistry((call) => {
+      dispatched += 1;
+      aborted.aborted = true; // flip the signal after the first dispatch settles
+      const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
+      return {
+        output: 'OK',
+        toolResult: markUntrusted(result),
+        truncated: false,
+        events: {
+          call: { toolId: call.name, toolInput: {} },
+          result: { toolId: call.name, success: true, outputSummary: 'OK' },
+        },
+      };
+    });
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'echo' },
+        { type: 'tool_call_end', id: 'c1' },
+        { type: 'tool_call_start', id: 'c2', name: 'echo' },
+        { type: 'tool_call_end', id: 'c2' },
+        STOP('tool_use'),
+      ],
+    ]);
+    await expect(
+      runAgentTurn(baseParams(provider, { registry, signal: aborted })),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(dispatched).toBe(1); // the second tool was never dispatched
+  });
+
+  it('fails tool_failed once the self-correction budget is exhausted', async () => {
+    const registry = stubRegistry(() => {
+      throw new UnknownToolError('echo', ['echo']); // every call is model-correctable
+    });
+    const scripts: StreamChunk[][] = Array.from({ length: 10 }, (_, i) => toolUseTurn(`c${i}`));
+    const provider = scriptedProvider('anthropic', scripts);
+    await expect(
+      runAgentTurn(
+        baseParams(provider, { registry, limits: { maxToolTurns: 16, maxToolCorrections: 1 } }),
+      ),
+    ).rejects.toMatchObject({ code: 'tool_failed' });
   });
 
   it('fails provider_unavailable on a tool_use stop that carries no tool call', async () => {
