@@ -19,7 +19,8 @@ export type EngineStateErrorCode =
   | 'run_already_terminal' // the run already settled (completed / failed / cancelled) — no resume/cancel
   | 'run_not_paused' // `resume` was called while the run has no pending gate to resolve
   | 'unknown_gate' // the `gateId` does not match any gate currently pending on the run
-  | 'invalid_decision'; // the supplied `GateDecision` failed schema validation at the boundary
+  | 'invalid_decision' // the supplied `GateDecision` failed schema validation at the boundary
+  | 'workflow_mismatch'; // `resumeFromCheckpoint` was handed a workflow that is not the one the run started on
 
 /**
  * A `WorkflowEngine` API call could not be honoured. Thrown synchronously from `start` / `resume` /

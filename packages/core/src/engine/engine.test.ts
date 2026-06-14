@@ -536,6 +536,149 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
   });
 });
 
+// --- resumeFromCheckpoint: cross-process gate resume (1.R) -------------------------------------
+
+describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', () => {
+  const GATED = `  id: gated
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+  const gateHandlers = {
+    g: (): NodeOutcome => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }),
+  };
+
+  /** Run a fresh gated run on `store` until it parks at the gate; return its runId, gateId, last seq. */
+  async function runToGate(
+    store: RunStore,
+  ): Promise<{ runId: string; gateId: string; lastSeq: number }> {
+    const engine = engineWith(gateHandlers, createInMemoryHost({ store }));
+    const handle = engine.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let lastSeq = -1;
+    for await (const event of handle.events) {
+      lastSeq = Math.max(lastSeq, event.sequenceNumber);
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break; // the "process" dies here, parked at the gate — never resumed on this engine
+      }
+    }
+    return { runId: handle.runId, gateId, lastSeq };
+  }
+
+  it('rehydrates a gate-parked run in a fresh engine over the same store and drives it to completion', async () => {
+    const store = new InMemoryRunStore();
+    const { runId, gateId, lastSeq } = await runToGate(store);
+    expect(gateId).not.toBe('');
+
+    // A brand-new engine (no in-memory state) resumes purely from the persisted event stream.
+    const engineB = engineWith({}, createInMemoryHost({ store }));
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'tester' },
+    });
+    const eventsB = await drain(handleB);
+
+    expect(handleB.runId).toBe(runId);
+    expect(typesIn(eventsB)).toContain('human_gate:resumed');
+    expect(eventsB.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
+    expect(terminalsIn(eventsB)[0]?.type).toBe('run:completed');
+    // The resumed stream continues gap-free from the last persisted sequence number (no reset, no gap).
+    eventsB.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + 1 + index));
+  });
+
+  it('is a no-op (closed handle, nothing re-persisted) re-delivering to an already-terminal run', async () => {
+    const store = new InMemoryRunStore();
+    const { runId, gateId } = await runToGate(store);
+    const decision = { decision: 'approved' as const, decidedBy: 't' };
+
+    const engineB = engineWith({}, createInMemoryHost({ store }));
+    await drain(await engineB.resumeFromCheckpoint({ runId, workflow: workflow(GATED), gateId, decision }));
+    const persistedAfterB = store.eventsFor(runId).length;
+
+    // A second process re-delivers the same decision to the now-completed run — must not advance it.
+    const engineC = engineWith({}, createInMemoryHost({ store }));
+    const handleC = await engineC.resumeFromCheckpoint({ runId, workflow: workflow(GATED), gateId, decision });
+    const eventsC = await drain(handleC);
+    expect(eventsC).toEqual([]); // closed handle: the iteration completes immediately
+    expect(store.eventsFor(runId).length).toBe(persistedAfterB); // nothing re-emitted / re-persisted
+  });
+
+  it('throws workflow_mismatch when handed a different workflow than the run started on', async () => {
+    const store = new InMemoryRunStore();
+    const { runId, gateId } = await runToGate(store);
+    const OTHER = `  id: other
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }`;
+    const engineB = engineWith({}, createInMemoryHost({ store }));
+    await expect(
+      engineB.resumeFromCheckpoint({
+        runId,
+        workflow: workflow(OTHER),
+        gateId,
+        decision: { decision: 'approved', decidedBy: 't' },
+      }),
+    ).rejects.toMatchObject({ code: 'workflow_mismatch' });
+  });
+
+  it('throws unknown_run when no checkpoint exists for the runId', async () => {
+    const engine = engineWith({}, createInMemoryHost());
+    await expect(
+      engine.resumeFromCheckpoint({
+        runId: 'ghost',
+        workflow: workflow(GATED),
+        gateId: 'g',
+        decision: { decision: 'approved', decidedBy: 't' },
+      }),
+    ).rejects.toMatchObject({ code: 'unknown_run' });
+  });
+
+  it('throws unknown_run (use resume) when the run is already tracked in this engine', async () => {
+    const engine = engineWith(gateHandlers);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    let caught: unknown;
+    for await (const event of handle.events) {
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0] ?? '';
+        try {
+          await engine.resumeFromCheckpoint({
+            runId: handle.runId,
+            workflow: workflow(GATED),
+            gateId,
+            decision: { decision: 'approved', decidedBy: 't' },
+          });
+        } catch (error) {
+          caught = error;
+        }
+        await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 't' });
+      }
+    }
+    expect(caught).toBeInstanceOf(EngineStateError);
+    expect(caught instanceof EngineStateError ? caught.code : '').toBe('unknown_run');
+  });
+
+  it('throws invalid_decision for a malformed decision before touching the store', async () => {
+    const engine = engineWith({}, createInMemoryHost());
+    await expect(
+      engine.resumeFromCheckpoint({
+        runId: 'x',
+        workflow: workflow(GATED),
+        gateId: 'g',
+        // @ts-expect-error — an intentionally invalid decision value; safeParse must reject it
+        decision: { decision: 'maybe', decidedBy: 't' },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_decision' });
+  });
+});
+
 // --- concurrency cap --------------------------------------------------------------------------
 
 describe('WorkflowEngine — max_parallel concurrency cap', () => {

@@ -101,6 +101,18 @@ export class RunEventBus {
     return event;
   }
 
+  /**
+   * Seed the next `sequenceNumber` for a correlation key — used ONLY when rehydrating a run from a
+   * checkpoint (1.R), so events emitted after resume continue gap-free from the last persisted seq.
+   * Idempotent before any `next(key)`; never lower an already-advanced counter (a no-op guard).
+   */
+  seedSequence(key: string, next: number): void {
+    const current = this.#sequence.get(key) ?? 0;
+    if (next > current) {
+      this.#sequence.set(key, next);
+    }
+  }
+
   /** Fan a fully-stamped event out to every subscriber, isolating a throwing subscriber. */
   deliver(event: RunEvent): void {
     for (const listener of this.#listeners) {

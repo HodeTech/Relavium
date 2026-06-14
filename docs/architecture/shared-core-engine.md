@@ -169,9 +169,41 @@ In Phase 1 there is **no separate checkpoint table**: the checkpoint is **recons
 (`status` / `attempt_number` / `output_json` / `error_json`) and the ordered, replayable `run_events`
 log, with the orchestrator's message history in `messages` (schema in
 [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
-`CheckpointState = { runStatus, nodeStates, completedNodeIds, pendingNodeIds, orchestratorMessages? }`
-is **derived**, never a stored blob. The same derivation is what the Phase-2 cloud layer uses for
-durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
+`CheckpointState` is **derived**, never a stored blob: a pure fold over the ordered event stream
+(`reconstructCheckpointState(events)`) captures run status, the surrogate `workflowId`, per-node
+settled/paused states (with a `condition`'s selected branch from `node:completed.selected` and dimmed
+branches from `node:skipped`), pending and already-resolved gate ids, the last `sequenceNumber`, and the
+running token/cost tallies. The exact field set is the `CheckpointState` interface in
+[`packages/core/src/engine/checkpoint.ts`](../../packages/core/src/engine/checkpoint.ts) — the one
+authoritative shape; this section does not restate it. The same derivation is what the Phase-2 cloud
+layer uses for durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
+
+**Reconstruction is total and deterministic** (same events → same state — the basis of idempotent
+resume). A node that emitted `node:started` but no terminal event (it was running when the process
+died) is simply **absent** from `nodeStates`, so the rehydrating engine seeds it `pending` and re-runs
+it — bounded by the `runId + nodeId + retryCount` idempotency key, never by silently skipping it. What is
+**not** in the checkpoint: the eager-once resolved `context` (`ctx.*`) is **re-resolved at run start**,
+not reconstructed — and if a later change makes it part of a transported checkpoint it MUST cross that
+boundary via `structuredClone`, never `JSON.stringify`→`parse` (which would re-materialise a `__proto__`
+key as a real setter; the standing note lives at
+[`interpolation/resolve.ts`](../../packages/core/src/interpolation/resolve.ts)).
+
+A run suspended at a gate resumes in **two ways**: in the same process, `engine.resume(runId, gateId,
+decision)`; across a restart, `engine.resumeFromCheckpoint({ runId, workflow, gateId, decision })`
+rehydrates a fresh `RunExecution` from the reconstructed state (seeding node states, pending gates,
+tallies, and the `sequenceNumber` so post-resume events continue gap-free — no `run:started` is
+re-emitted) and returns a `RunHandle` for the rest of the run. An **identity guard** refuses a resume
+whose workflow is not the one the run started on: the Phase-1 in-memory reference compares the surrogate
+`workflowId` reconstructed from `run:started` (a different workflow → a typed `workflow_mismatch`). The
+stronger guard that also catches a *same-slug, edited-content* workflow rides on the frozen
+`runs.workflow_definition_snapshot` column ([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md))
+— a Phase-2 persistence concern wired with the real `RunStore`, not the event-derived in-memory state. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
+already-terminal run is a no-op (a closed handle, nothing re-emitted or re-persisted); re-delivering an
+already-resolved gate on a still-running run drives the remaining work without re-applying the decision.
+This holds within a process, and across processes once the prior process's `human_gate:resumed` is
+persisted; the residual concurrent window (two processes loading the *same* still-pending gate before
+either persists) is closed by a Phase-2 store-level uniqueness constraint on `human_gate:resumed` per
+gate, not by the in-memory reference.
 
 ## Retry and fallback
 

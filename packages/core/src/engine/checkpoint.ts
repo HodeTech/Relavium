@@ -43,14 +43,24 @@ export interface CheckpointPendingGate {
 export interface CheckpointState {
   readonly schemaVersion: number;
   readonly runStatus: RunStatus;
+  /** The surrogate `workflows.id` UUID from `run:started` — resume refuses a different workflow (identity guard). */
+  readonly workflowId: string;
   /** Per-vertex settled/paused state; a vertex absent here is `pending` (never started, or running at crash). */
   readonly nodeStates: ReadonlyMap<string, CheckpointNodeState>;
   /** Convenience projection of the `completed` vertices (the engine derives `pending` from the plan). */
   readonly completedNodeIds: readonly string[];
   /** Gates still pending a decision — the run is resumable via `engine.resume(runId, gateId, decision)`. */
   readonly pendingGates: readonly CheckpointPendingGate[];
+  /** Gate ids ALREADY resolved (a `human_gate:resumed` was persisted) — so re-delivering a decision after a
+   *  reconnect is an idempotent no-op rather than advancing the run twice (execution-model.md §gate). */
+  readonly resolvedGateIds: readonly string[];
   /** The highest persisted `sequenceNumber` — the resumed run seeds its counter to this + 1 (gap-free). */
   readonly lastSequenceNumber: number;
+  /** Running token totals (summed from `node:completed`), restored so a resumed run's `run:completed` totals stay correct. */
+  readonly totalInputTokens: number;
+  readonly totalOutputTokens: number;
+  /** The last `cost:updated.cumulativeCostMicrocents` (a running total), restored so post-resume cost stays cumulative. */
+  readonly cumulativeCostMicrocents: number;
 }
 
 /**
@@ -71,16 +81,25 @@ export function reconstructCheckpointState(
   events: readonly RunEvent[],
 ): CheckpointState | undefined {
   let started = false;
+  let workflowId = '';
   let runStatus: RunStatus = 'running';
   let lastSequenceNumber = -1;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let cumulativeCostMicrocents = 0;
   const nodeStates = new Map<string, CheckpointNodeState>();
   const pendingGates = new Map<string, string>(); // gateId → nodeId
+  const resolvedGateIds = new Set<string>();
 
   for (const event of events) {
     lastSequenceNumber = Math.max(lastSequenceNumber, event.sequenceNumber);
+    if (event.type === 'cost:updated') {
+      cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
+    }
     switch (event.type) {
       case 'run:started':
         started = true;
+        workflowId = event.workflowId;
         runStatus = 'running';
         break;
       case 'run:paused':
@@ -101,6 +120,8 @@ export function reconstructCheckpointState(
           output: event.output,
           ...(event.selected === undefined ? {} : { selectedTargets: event.selected }),
         });
+        totalInputTokens += event.tokensUsed.input;
+        totalOutputTokens += event.tokensUsed.output;
         break;
       case 'node:failed':
         nodeStates.set(event.nodeId, {
@@ -128,6 +149,7 @@ export function reconstructCheckpointState(
         for (const [gateId, nodeId] of pendingGates) {
           if (nodeId === event.nodeId) {
             pendingGates.delete(gateId);
+            resolvedGateIds.add(gateId);
           }
         }
         break;
@@ -146,9 +168,14 @@ export function reconstructCheckpointState(
   return {
     schemaVersion: CHECKPOINT_SCHEMA_VERSION,
     runStatus,
+    workflowId,
     nodeStates,
     completedNodeIds,
     pendingGates: [...pendingGates].map(([gateId, nodeId]) => ({ gateId, nodeId })),
+    resolvedGateIds: [...resolvedGateIds],
     lastSequenceNumber,
+    totalInputTokens,
+    totalOutputTokens,
+    cumulativeCostMicrocents,
   };
 }
