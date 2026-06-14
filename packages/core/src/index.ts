@@ -90,11 +90,7 @@ export type {
 // exactly-one-terminal-event guarantee (ADR-0036; sse-event-schema.md). Platform-free: host concerns
 // (clock / ids / persistence / abort) are injected via ExecutionHost.
 export { WorkflowEngine } from './engine/engine.js';
-export type {
-  StartInput,
-  ResumeFromCheckpointInput,
-  WorkflowEngineDeps,
-} from './engine/engine.js';
+export type { StartInput, ResumeFromCheckpointInput, WorkflowEngineDeps } from './engine/engine.js';
 export { RunEventBus } from './engine/event-bus.js';
 export type { RunEventBusOptions, RunEventListener, RunEventDraft } from './engine/event-bus.js';
 export type { RunHandle } from './engine/run-handle.js';

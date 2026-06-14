@@ -114,7 +114,9 @@ describe('createHumanGateNodeExecutor', () => {
   });
 
   it('returns cancelled when the signal is already aborted', async () => {
-    const out = await handler.execute(ctxFor(gateVertex({ gate_type: 'approval' }), { signal: ABORTED }));
+    const out = await handler.execute(
+      ctxFor(gateVertex({ gate_type: 'approval' }), { signal: ABORTED }),
+    );
     expect(out.kind).toBe('failed');
     if (out.kind === 'failed') {
       expect(out.error.code).toBe('cancelled');

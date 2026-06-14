@@ -165,10 +165,12 @@ This is what enables:
   `runId + nodeId + retryCount`, so a retry never double-applies side effects.
 
 In Phase 1 there is **no separate checkpoint table**: the checkpoint is **reconstructed** by a
-`Checkpointer` (`load(runId) → CheckpointState`) from the per-node `step_executions` rows
-(`status` / `attempt_number` / `output_json` / `error_json`) and the ordered, replayable `run_events`
-log, with the orchestrator's message history in `messages` (schema in
-[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
+`Checkpointer` (`load(runId) → CheckpointState`) by folding the ordered, replayable `run_events` log
+alone — each node's output/error rides its `node:completed` / `node:failed` event, so the stream is a
+sufficient source. The persistence layer *also* denormalizes per-node state into `step_executions` and an
+orchestrator's history into `messages` (schema in
+[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)) for the run-trace UI
+and fast querying — the same per-node truth, not an extra input the fold requires.
 `CheckpointState` is **derived**, never a stored blob: a pure fold over the ordered event stream
 (`reconstructCheckpointState(events)`) captures run status, the surrogate `workflowId`, per-node
 settled/paused states (with a `condition`'s selected branch from `node:completed.selected` and dimmed

@@ -120,6 +120,7 @@ describe('reconstructCheckpointState', () => {
       },
     ]);
     expect(state?.pendingGates).toEqual([]);
+    expect(state?.resolvedGateIds).toContain('g1'); // moved to resolved → idempotent re-delivery is a no-op
     expect(state?.nodeStates.get('gate')).toEqual({
       status: 'completed',
       output: { decision: 'approved' },

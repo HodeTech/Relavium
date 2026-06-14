@@ -272,12 +272,7 @@ class RunExecution {
   }
 
   /** Seed `#states` / `#pendingGates` / tallies / the bus sequence from a checkpoint (rehydration, 1.R). */
-  #seedFromCheckpoint(
-    plan: RunPlan,
-    cp: CheckpointState,
-    bus: RunEventBus,
-    runId: string,
-  ): void {
+  #seedFromCheckpoint(plan: RunPlan, cp: CheckpointState, bus: RunEventBus, runId: string): void {
     for (const id of plan.vertices.keys()) {
       const node = cp.nodeStates.get(id);
       if (node === undefined) {
@@ -289,7 +284,9 @@ class RunExecution {
       this.#states.set(id, {
         status: node.status,
         ...(node.output === undefined ? {} : { output: node.output }),
-        ...(node.selectedTargets === undefined ? {} : { selectedTargets: new Set(node.selectedTargets) }),
+        ...(node.selectedTargets === undefined
+          ? {}
+          : { selectedTargets: new Set(node.selectedTargets) }),
       });
     }
     for (const gate of cp.pendingGates) {
@@ -629,7 +626,8 @@ class RunExecution {
     // emitted event, so the persisted `human_gate:paused` always carries the exact policy the engine acts
     // on (even when a handler set timeoutMs but left timeoutAction implicit). A Phase-2 crash-resume reads
     // it back to re-arm. `undefined` only when no timeout is configured.
-    const effectiveAction = gate.timeoutMs === undefined ? undefined : (gate.timeoutAction ?? 'reject');
+    const effectiveAction =
+      gate.timeoutMs === undefined ? undefined : (gate.timeoutAction ?? 'reject');
     const expiresAt =
       gate.expiresAt ??
       (gate.timeoutMs === undefined

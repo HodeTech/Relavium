@@ -543,7 +543,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('emits timeoutMs + expiresAt on human_gate:paused and auto-approves on timeout (decidedBy timeout)', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
@@ -570,7 +573,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('fails the run with run_timeout when a gate times out under timeout_action: reject', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
@@ -591,7 +597,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('disarms the gate timer when a human decision arrives first (no timeout fires, single resolution)', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
@@ -661,7 +670,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('disarms an armed gate timer when the run terminates for an unrelated reason (cancel)', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
@@ -679,7 +691,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('a reject-timeout marks the gate resolved, so a late re-delivery of its decision is a no-op (not a throw)', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     let gateId = '';
     let lateResume: unknown = 'not-attempted';
@@ -701,7 +716,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('emits node:skipped(out) before run:failed when a reject-timeout dims the downstream', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
@@ -719,7 +737,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('expiresAt equals the pause timestamp plus timeoutMs (a real ISO deadline, not just any string)', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 5000, timeoutAction: 'approve' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 5000, timeoutAction: 'approve' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     let paused: Extract<RunEvent, { type: 'human_gate:paused' }> | undefined;
     for await (const event of handle.events) {
@@ -743,7 +764,10 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
 
   it('a timer that fires after the run already terminated is an inert no-op (no second terminal)', async () => {
     const host = createInMemoryHost();
-    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }) }, host);
+    const engine = engineWith(
+      { g: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }) },
+      host,
+    );
     const handle = engine.start({ workflow: workflow(GATED) });
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
@@ -866,12 +890,19 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     const decision = { decision: 'approved' as const, decidedBy: 't' };
 
     const engineB = engineWith({}, createInMemoryHost({ store }));
-    await drain(await engineB.resumeFromCheckpoint({ runId, workflow: workflow(GATED), gateId, decision }));
+    await drain(
+      await engineB.resumeFromCheckpoint({ runId, workflow: workflow(GATED), gateId, decision }),
+    );
     const persistedAfterB = store.eventsFor(runId).length;
 
     // A second process re-delivers the same decision to the now-completed run — must not advance it.
     const engineC = engineWith({}, createInMemoryHost({ store }));
-    const handleC = await engineC.resumeFromCheckpoint({ runId, workflow: workflow(GATED), gateId, decision });
+    const handleC = await engineC.resumeFromCheckpoint({
+      runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision,
+    });
     const eventsC = await drain(handleC);
     expect(eventsC).toEqual([]); // closed handle: the iteration completes immediately
     expect(store.eventsFor(runId).length).toBe(persistedAfterB); // nothing re-emitted / re-persisted
@@ -998,7 +1029,12 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     const store = new InMemoryRunStore();
     // Process A: pause at a gate that carries a timeout.
     const engineA = engineWith(
-      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' } }) },
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' },
+        }),
+      },
       createInMemoryHost({ store }),
     );
     const handleA = engineA.start({ workflow: workflow(GATED) });
