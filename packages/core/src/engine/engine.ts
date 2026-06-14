@@ -34,6 +34,7 @@ import {
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
+  type NodeSkippedReason,
   type RunEvent,
   type TokensUsed,
 } from '@relavium/shared';
@@ -314,7 +315,11 @@ class RunExecution {
     if (this.#settled) {
       return;
     }
-    this.#propagateSkips();
+    // Emit a durable `node:skipped` for each vertex the loop just dimmed — BEFORE any terminal settle —
+    // so the event log is a complete, replayable record (1.R reconstructs a skipped vertex from this).
+    for (const { id, reason } of this.#propagateSkips()) {
+      await this.#emitDurable({ type: 'node:skipped', runId: this.runId, nodeId: id, reason });
+    }
     const running = this.#countRunning();
 
     if (this.#cancelling) {
@@ -620,7 +625,9 @@ class RunExecution {
     return false;
   }
 
-  #propagateSkips(): void {
+  /** Skip-propagate to a fixpoint; return the vertices newly skipped this call (the caller emits them). */
+  #propagateSkips(): Array<{ readonly id: string; readonly reason: NodeSkippedReason }> {
+    const skipped: Array<{ id: string; reason: NodeSkippedReason }> = [];
     let changed = true;
     while (changed) {
       changed = false;
@@ -633,9 +640,23 @@ class RunExecution {
           continue;
         }
         state.status = 'skipped'; // all deps settled and every in-edge is dead → unreachable
+        skipped.push({ id, reason: this.#skipReason(vertex) });
         changed = true;
       }
     }
+    return skipped;
+  }
+
+  /** Why a vertex was skipped: a completed `condition` dependency routed away from it, else an upstream
+   *  dependency was itself skipped/failed (so this vertex is unreachable). */
+  #skipReason(vertex: PlanVertex): NodeSkippedReason {
+    for (const dep of vertex.dependencies) {
+      const depVertex = this.#plan.vertices.get(dep);
+      if (depVertex?.type === 'condition' && this.#states.get(dep)?.status === 'completed') {
+        return 'branch_not_taken';
+      }
+    }
+    return 'upstream_unreachable';
   }
 
   /** How many vertices are currently executing — derived from status, the single source of truth. */

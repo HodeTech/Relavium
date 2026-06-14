@@ -30,6 +30,7 @@ export const RUN_EVENT_TYPES = [
   'cost:updated',
   'node:completed',
   'node:failed',
+  'node:skipped',
   'human_gate:paused',
   'human_gate:resumed',
   'run:completed',

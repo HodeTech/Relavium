@@ -211,6 +211,23 @@ export const NodeFailedEventSchema = z.object({
   error: z.object(eventErrorFields),
 });
 
+/** Why a node was skipped — `branch_not_taken` (a `condition` routed away) or `upstream_unreachable`. */
+export const NodeSkippedReasonSchema = z.enum(['branch_not_taken', 'upstream_unreachable']);
+export type NodeSkippedReason = z.infer<typeof NodeSkippedReasonSchema>;
+
+/**
+ * A vertex the run loop skip-propagated (a `condition` routed away from it, or every in-edge is dead
+ * because an upstream was skipped/failed). Emitted so the event log is a **complete, replayable** record
+ * — checkpoint/resume (1.R) reconstructs a skipped vertex from this event, and a surface can render the
+ * dimmed path instead of seeing the node silently vanish.
+ */
+export const NodeSkippedEventSchema = z.object({
+  type: z.literal('node:skipped'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  reason: NodeSkippedReasonSchema,
+});
+
 export const HumanGatePausedEventSchema = z.object({
   type: z.literal('human_gate:paused'),
   ...runBase,
@@ -299,6 +316,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   CostUpdatedEventSchema,
   NodeCompletedEventSchema,
   NodeFailedEventSchema,
+  NodeSkippedEventSchema,
   HumanGatePausedEventSchema,
   HumanGateResumedEventSchema,
   RunCompletedEventSchema,

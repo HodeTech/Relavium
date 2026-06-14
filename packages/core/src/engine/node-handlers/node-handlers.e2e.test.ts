@@ -94,6 +94,10 @@ describe('node-type handlers end-to-end through the WorkflowEngine (1.P)', () =>
     const completedIds = events.filter((e) => e.type === 'node:completed').map((e) => e.nodeId);
     expect(completedIds).toContain('hi');
     expect(completedIds).not.toContain('lo');
+    // The dimmed branch emits a durable node:skipped (a complete, replayable log for 1.R + observability).
+    const skipped = events.find((e) => e.type === 'node:skipped');
+    expect(skipped?.type === 'node:skipped' && skipped.nodeId).toBe('lo');
+    expect(skipped?.type === 'node:skipped' && skipped.reason).toBe('branch_not_taken');
 
     // The terminal output captured `hi`'s value (its single feeder).
     const completed = events.find((e) => e.type === 'run:completed');

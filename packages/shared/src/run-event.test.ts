@@ -74,6 +74,12 @@ const valid: Record<string, Record<string, unknown>> = {
     nodeId: 'n',
     error: { code: 'tool_failed', message: 'boom', retryable: false },
   },
+  'node:skipped': {
+    type: 'node:skipped',
+    ...env,
+    nodeId: 'n',
+    reason: 'branch_not_taken',
+  },
   'human_gate:paused': {
     type: 'human_gate:paused',
     ...env,
@@ -191,6 +197,7 @@ const reject: Record<string, Record<string, unknown>> = {
     durationMs: 100,
   },
   'node:failed (missing error)': { type: 'node:failed', ...env, nodeId: 'n' },
+  'node:skipped (bad reason)': { type: 'node:skipped', ...env, nodeId: 'n', reason: 'because' },
   'human_gate:paused (bad gateType)': {
     type: 'human_gate:paused',
     ...env,
@@ -242,7 +249,7 @@ describe('RunEvent union — every variant', () => {
     expect(RunEventSchema.safeParse(reject[name]).success).toBe(false);
   });
 
-  it('covers exactly the 18 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 19 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -255,6 +262,7 @@ describe('RunEvent union — every variant', () => {
       'cost:updated',
       'node:completed',
       'node:failed',
+      'node:skipped',
       'human_gate:paused',
       'human_gate:resumed',
       'run:completed',
