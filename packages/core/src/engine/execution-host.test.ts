@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RunEvent } from '@relavium/shared';
 
-import { createAbortController, createInMemoryHost, InMemoryRunStore } from './execution-host.js';
+import {
+  createAbortController,
+  createInMemoryHost,
+  createManualTimerController,
+  InMemoryRunStore,
+} from './execution-host.js';
 
 describe('createAbortController — platform-free abort', () => {
   it('reports aborted, fires listeners once, and is idempotent', () => {
@@ -171,5 +176,56 @@ describe('createInMemoryHost', () => {
     expect(t1).not.toBe(t2); // advances per read
     expect(Date.parse(t2)).toBeGreaterThan(Date.parse(t1));
     expect(host.ids.newId()).not.toBe(host.ids.newId());
+  });
+});
+
+describe('createManualTimerController — deterministic one-shot timer', () => {
+  it('fires an armed timer exactly once on fireTimers, then drops it', () => {
+    const timers = createManualTimerController();
+    const fired = vi.fn();
+    timers.setTimer(1000, fired);
+    expect(timers.armedCount()).toBe(1);
+    timers.fireTimers();
+    expect(fired).toHaveBeenCalledTimes(1);
+    expect(timers.armedCount()).toBe(0); // dropped after firing
+  });
+
+  it('does not fire a disarmed timer', () => {
+    const timers = createManualTimerController();
+    const fired = vi.fn();
+    const disarm = timers.setTimer(1000, fired);
+    disarm();
+    expect(timers.armedCount()).toBe(0);
+    timers.fireTimers();
+    expect(fired).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent across consecutive fireTimers calls (no double-fire)', () => {
+    const timers = createManualTimerController();
+    const fired = vi.fn();
+    timers.setTimer(1000, fired);
+    timers.fireTimers();
+    timers.fireTimers(); // a second sweep has nothing armed
+    expect(fired).toHaveBeenCalledTimes(1);
+  });
+
+  it('a callback that disarms a sibling timer mid-sweep is honored (snapshot is re-checked)', () => {
+    const timers = createManualTimerController();
+    const second = vi.fn();
+    let disarmSecond = (): void => undefined;
+    timers.setTimer(1000, () => {
+      disarmSecond(); // the first timer disarms the second before the sweep reaches it
+    });
+    disarmSecond = timers.setTimer(1000, second);
+    timers.fireTimers();
+    expect(second).not.toHaveBeenCalled(); // the armed re-check inside the sweep skipped it
+  });
+
+  it('disarm is safe to call after the timer already fired (idempotent)', () => {
+    const timers = createManualTimerController();
+    const disarm = timers.setTimer(1000, () => undefined);
+    timers.fireTimers();
+    expect(() => disarm()).not.toThrow();
+    expect(timers.armedCount()).toBe(0);
   });
 });

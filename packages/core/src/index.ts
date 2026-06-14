@@ -90,15 +90,26 @@ export type {
 // exactly-one-terminal-event guarantee (ADR-0036; sse-event-schema.md). Platform-free: host concerns
 // (clock / ids / persistence / abort) are injected via ExecutionHost.
 export { WorkflowEngine } from './engine/engine.js';
-export type { StartInput, WorkflowEngineDeps } from './engine/engine.js';
+export type { StartInput, ResumeFromCheckpointInput, WorkflowEngineDeps } from './engine/engine.js';
 export { RunEventBus } from './engine/event-bus.js';
 export type { RunEventBusOptions, RunEventListener, RunEventDraft } from './engine/event-bus.js';
 export type { RunHandle } from './engine/run-handle.js';
 export {
   InMemoryRunStore,
   createInMemoryHost,
+  createInMemoryCheckpointer,
   createAbortController,
+  createManualTimerController,
 } from './engine/execution-host.js';
+// Checkpointer + resume (1.R) — reconstruct a run's state from its persisted event stream (no checkpoint
+// table; ADR-0003). The in-memory reference ships here; the SQLite/cloud one is Phase-2/CLI.
+export { reconstructCheckpointState, CHECKPOINT_SCHEMA_VERSION } from './engine/checkpoint.js';
+export type {
+  Checkpointer,
+  CheckpointState,
+  CheckpointNodeState,
+  CheckpointPendingGate,
+} from './engine/checkpoint.js';
 export type {
   ExecutionHost,
   RunStore,
@@ -106,6 +117,8 @@ export type {
   IdSource,
   AbortControllerLike,
   InterruptedRun,
+  SetTimer,
+  ManualTimerController,
 } from './engine/execution-host.js';
 export type {
   NodeExecutor,
@@ -149,6 +162,8 @@ export type { TransformNodeExecutorDeps } from './engine/node-handlers/transform
 export { createFanInNodeExecutor } from './engine/node-handlers/fan-in.js';
 export type { FanInNodeExecutorDeps } from './engine/node-handlers/fan-in.js';
 export { createFanOutNodeExecutor } from './engine/node-handlers/fan-out.js';
+export { createHumanGateNodeExecutor } from './engine/node-handlers/human-gate.js';
+export type { HumanGateNodeExecutorDeps } from './engine/node-handlers/human-gate.js';
 export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node-handlers/io.js';
 
 // Built-in ToolRegistry + dispatch (1.T) — the engine-side registry the AgentRunner (1.O) and

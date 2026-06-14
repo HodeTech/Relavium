@@ -34,7 +34,9 @@ import {
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
+  type NodeSkippedReason,
   type RunEvent,
+  type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
 
@@ -43,6 +45,7 @@ import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
+import type { CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
@@ -52,7 +55,7 @@ import type {
   NodeOutcome,
   NodeStreamEvent,
 } from './node-executor.js';
-import { createRunHandle, type RunHandle } from './run-handle.js';
+import { createClosedRunHandle, createRunHandle, type RunHandle } from './run-handle.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
 type VertexStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused';
@@ -78,6 +81,13 @@ const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>(
   'run:cancelled',
 ]);
 
+/** The terminal `RunStatus` values — a checkpoint in one of these is a finished run (1.R resume no-op). */
+const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
   /** The parsed, validated workflow (the host read the file and called `parseWorkflow`). */
@@ -88,6 +98,29 @@ export interface StartInput {
   readonly executionMode?: ExecutionMode;
   /** Forwarded to {@link buildRunPlan} (e.g. the resolved-agent registry). */
   readonly planOptions?: BuildRunPlanOptions;
+}
+
+/**
+ * Inputs to {@link WorkflowEngine.resumeFromCheckpoint} — resume a run from a PRIOR process (1.R).
+ *
+ * **Invariant (caller's responsibility):** `workflow`, `inputs`, `executionMode`, and `planOptions` must
+ * be the SAME values the run started with. The checkpoint persists the workflow identity (verified — a
+ * mismatch throws `workflow_mismatch`) but does not yet persist `inputs` / `executionMode`, so passing
+ * different ones would silently diverge the rehydrated execution from its `run:started` state. A future
+ * revision will reconstruct these from the checkpoint and ignore the caller-supplied values.
+ */
+export interface ResumeFromCheckpointInput {
+  readonly runId: string;
+  /** The workflow to resume against — the engine refuses one whose identity differs (workflow_mismatch). */
+  readonly workflow: WorkflowDefinition;
+  /** MUST match the run's original inputs (not yet checkpoint-derived — see the interface note). */
+  readonly inputs?: Readonly<Record<string, unknown>>;
+  /** MUST match the run's original mode (not yet checkpoint-derived — see the interface note). */
+  readonly executionMode?: ExecutionMode;
+  readonly planOptions?: BuildRunPlanOptions;
+  /** The gate to resolve + the decision to apply (the run was suspended at this gate). */
+  readonly gateId: string;
+  readonly decision: GateDecision;
 }
 
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
@@ -139,6 +172,10 @@ class RunExecution {
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
   readonly #pendingGates = new Map<string, { readonly vertexId: string }>();
+  /** Gate ids whose decision was already applied — a re-delivery is an idempotent no-op (1.R). */
+  readonly #resolvedGates = new Set<string>();
+  /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
+  readonly #gateTimers = new Map<string, () => void>();
 
   #workflowId = '';
   #settled = false;
@@ -165,6 +202,8 @@ class RunExecution {
     bus: RunEventBus;
     capacity: number;
     onSettled: (runId: string) => void;
+    /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
+    checkpoint?: CheckpointState;
   }) {
     this.runId = params.runId;
     this.#plan = params.plan;
@@ -185,8 +224,12 @@ class RunExecution {
     this.#secretInputNames = secretNames;
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
 
-    for (const id of params.plan.vertices.keys()) {
-      this.#states.set(id, { status: 'pending' });
+    if (params.checkpoint === undefined) {
+      for (const id of params.plan.vertices.keys()) {
+        this.#states.set(id, { status: 'pending' });
+      }
+    } else {
+      this.#seedFromCheckpoint(params.plan, params.checkpoint, params.bus, params.runId);
     }
     this.handle = createRunHandle(
       params.bus,
@@ -228,6 +271,56 @@ class RunExecution {
     }
   }
 
+  /** Seed `#states` / `#pendingGates` / tallies / the bus sequence from a checkpoint (rehydration, 1.R). */
+  #seedFromCheckpoint(plan: RunPlan, cp: CheckpointState, bus: RunEventBus, runId: string): void {
+    for (const id of plan.vertices.keys()) {
+      const node = cp.nodeStates.get(id);
+      if (node === undefined) {
+        // Never started, OR running at the crash → re-run from `pending` (the idempotency key bounds a
+        // half-applied side effect; a settled node is never re-run).
+        this.#states.set(id, { status: 'pending' });
+        continue;
+      }
+      this.#states.set(id, {
+        status: node.status,
+        ...(node.output === undefined ? {} : { output: node.output }),
+        ...(node.selectedTargets === undefined
+          ? {}
+          : { selectedTargets: new Set(node.selectedTargets) }),
+      });
+    }
+    for (const gate of cp.pendingGates) {
+      // No gate-timeout timer is re-armed on rehydration: the gate this resume targets has its decision
+      // applied immediately. Re-arming a *remaining* gate's deadline is deferred to the Phase-2
+      // crash-reconciliation that re-arms from persisted policy + a real clock (shared-core-engine.md) —
+      // the data it needs (timeoutAction + expiresAt) is now carried on `human_gate:paused`, so no backfill.
+      this.#pendingGates.set(gate.gateId, { vertexId: gate.nodeId });
+    }
+    for (const gateId of cp.resolvedGateIds) {
+      this.#resolvedGates.add(gateId);
+    }
+    this.#totalInputTokens = cp.totalInputTokens;
+    this.#totalOutputTokens = cp.totalOutputTokens;
+    this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
+    // Post-resume events continue gap-free from the last persisted sequence number.
+    bus.seedSequence(runId, cp.lastSequenceNumber + 1);
+    // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
+    // wall-clock (pre- + post-resume), not just the post-resume segment. NO `run:started` is re-emitted —
+    // it is already in the persisted log.
+    this.#startEpochMs = cp.startedAtMs;
+  }
+
+  /**
+   * Drive a rehydrated run forward WITHOUT applying a gate decision — used by `resumeFromCheckpoint`
+   * when the target gate was already resolved in the prior process (a cross-process double-delivery):
+   * the decision must not be re-applied (no second `human_gate:resumed`), but the run still continues
+   * any unfinished downstream work, or re-pauses on a remaining gate. The terminal-checkpoint case never
+   * reaches here (it returns a closed handle); so this only ever finds work to do or another gate.
+   */
+  kick(): void {
+    this.#schedule();
+  }
+
   requestCancel(): void {
     if (this.#settled) {
       throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
@@ -243,6 +336,12 @@ class RunExecution {
   }
 
   async resume(gateId: string, decision: GateDecision): Promise<void> {
+    if (this.#resolvedGates.has(gateId)) {
+      // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
+      // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
+      // completed is a no-op, not a `run_already_terminal` error.
+      return;
+    }
     if (this.#settled) {
       throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
         runId: this.runId,
@@ -262,8 +361,18 @@ class RunExecution {
         gateId,
       });
     }
+    this.#resolvedGates.add(gateId);
     this.#pendingGates.delete(gateId);
+    this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
+    // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
+    // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
+    // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
+    const state = this.#states.get(gate.vertexId);
+    if (state !== undefined) {
+      state.status = 'completed';
+      state.output = decision.payload ?? { decision: decision.decision };
+    }
     await this.#emitDurable({
       type: 'human_gate:resumed',
       runId: this.runId,
@@ -272,11 +381,6 @@ class RunExecution {
       decidedBy: decision.decidedBy,
       ...(decision.payload === undefined ? {} : { payload: decision.payload }),
     });
-    const state = this.#states.get(gate.vertexId);
-    if (state !== undefined) {
-      state.status = 'completed';
-      state.output = decision.payload ?? { decision: decision.decision };
-    }
     this.#schedule();
   }
 
@@ -314,7 +418,11 @@ class RunExecution {
     if (this.#settled) {
       return;
     }
-    this.#propagateSkips();
+    // Emit a durable `node:skipped` for each vertex the loop just dimmed — BEFORE any terminal settle —
+    // so the event log is a complete, replayable record (1.R reconstructs a skipped vertex from this).
+    for (const { id, reason } of this.#propagateSkips()) {
+      await this.#emitDurable({ type: 'node:skipped', runId: this.runId, nodeId: id, reason });
+    }
     const running = this.#countRunning();
 
     if (this.#cancelling) {
@@ -477,6 +585,8 @@ class RunExecution {
       output: outcome.output,
       tokensUsed: tokens,
       durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
+      // A condition's branch selection — persisted so resume can restore `selectedTargets` (1.R).
+      ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
     });
   }
 
@@ -501,7 +611,7 @@ class RunExecution {
     });
   }
 
-  /** A `paused` outcome: park the gate and emit `human_gate:paused`. */
+  /** A `paused` outcome: park the gate, arm its timeout timer (1.Q), and emit `human_gate:paused`. */
   async #settlePaused(vertex: PlanVertex, gate: GateRequest): Promise<void> {
     const gateId = gate.gateId ?? this.#host.ids.newId();
     const state = this.#states.get(vertex.id);
@@ -509,6 +619,26 @@ class RunExecution {
       state.status = 'paused';
     }
     this.#pendingGates.set(gateId, { vertexId: vertex.id });
+    // Compute the wall-clock deadline from the host clock (the handler has none) and arm a one-shot timer
+    // (1.Q). On fire, an `approve` action auto-resolves the gate; a `reject` (the safe default) fails the
+    // run with run_timeout. The timer is disarmed on resume / terminal settle so it never fires twice.
+    // The EFFECTIVE on-timeout policy (default the safe `reject`) — used for BOTH the armed timer and the
+    // emitted event, so the persisted `human_gate:paused` always carries the exact policy the engine acts
+    // on (even when a handler set timeoutMs but left timeoutAction implicit). A Phase-2 crash-resume reads
+    // it back to re-arm. `undefined` only when no timeout is configured.
+    const effectiveAction =
+      gate.timeoutMs === undefined ? undefined : (gate.timeoutAction ?? 'reject');
+    const expiresAt =
+      gate.expiresAt ??
+      (gate.timeoutMs === undefined
+        ? undefined
+        : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
+    if (gate.timeoutMs !== undefined && effectiveAction !== undefined) {
+      const disarm = this.#host.setTimer(gate.timeoutMs, () => {
+        void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
+      });
+      this.#gateTimers.set(gateId, disarm);
+    }
     await this.#emitDurable({
       type: 'human_gate:paused',
       runId: this.runId,
@@ -518,8 +648,57 @@ class RunExecution {
       message: gate.message,
       ...(gate.assignee === undefined ? {} : { assignee: gate.assignee }),
       ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
-      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+      ...(effectiveAction === undefined ? {} : { timeoutAction: effectiveAction }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
     });
+  }
+
+  /** Disarm and forget a gate's timeout timer (idempotent — safe if absent or already fired). */
+  #disarmTimer(gateId: string): void {
+    const disarm = this.#gateTimers.get(gateId);
+    if (disarm !== undefined) {
+      this.#gateTimers.delete(gateId);
+      disarm();
+    }
+  }
+
+  /**
+   * A gate's timeout elapsed with no decision (1.Q). Idempotent: a no-op once the gate resolved (a human
+   * beat the timer — resume disarmed it, but a fired-and-queued callback still guards here) or the run
+   * settled. `approve` auto-resolves the gate as approved (`decidedBy: 'timeout'`); `reject` fails the run.
+   */
+  async #onGateTimeout(
+    gateId: string,
+    vertexId: string,
+    action: 'approve' | 'reject',
+  ): Promise<void> {
+    this.#disarmTimer(gateId);
+    if (this.#settled || !this.#pendingGates.has(gateId)) {
+      return; // already resolved or terminal
+    }
+    if (action === 'approve') {
+      await this.resume(gateId, { decision: 'approved', decidedBy: 'timeout' });
+      return;
+    }
+    await this.#failGateOnTimeout(gateId, vertexId);
+  }
+
+  /** Timeout with `timeout_action: reject` — fail the run with `run_timeout` (execution-model.md). */
+  async #failGateOnTimeout(gateId: string, vertexId: string): Promise<void> {
+    this.#pendingGates.delete(gateId);
+    // Mark the gate resolved (symmetry with resume / the approve path) so a late re-delivery of this
+    // gate's decision is an idempotent no-op rather than a `run_already_terminal` throw.
+    this.#resolvedGates.add(gateId);
+    const vertex = this.#plan.vertices.get(vertexId);
+    if (vertex === undefined) {
+      return; // unreachable: a pending gate always maps to a plan vertex
+    }
+    await this.#settleFailed(vertex, {
+      code: 'run_timeout',
+      message: 'the human gate timed out without a decision',
+      retryable: false,
+    });
+    this.#schedule();
   }
 
   /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
@@ -554,6 +733,11 @@ class RunExecution {
     }
     this.#settled = true;
     this.#abort.abort(); // make sure any straggler executor sees cancellation
+    // The run is closing — no gate timer may fire afterwards (1.Q). Disarm each, then clear in one shot.
+    for (const disarm of this.#gateTimers.values()) {
+      disarm();
+    }
+    this.#gateTimers.clear();
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -620,7 +804,9 @@ class RunExecution {
     return false;
   }
 
-  #propagateSkips(): void {
+  /** Skip-propagate to a fixpoint; return the vertices newly skipped this call (the caller emits them). */
+  #propagateSkips(): Array<{ readonly id: string; readonly reason: NodeSkippedReason }> {
+    const skipped: Array<{ id: string; reason: NodeSkippedReason }> = [];
     let changed = true;
     while (changed) {
       changed = false;
@@ -633,9 +819,30 @@ class RunExecution {
           continue;
         }
         state.status = 'skipped'; // all deps settled and every in-edge is dead → unreachable
+        skipped.push({ id, reason: this.#skipReason(vertex) });
         changed = true;
       }
     }
+    return skipped;
+  }
+
+  /** Why a vertex was skipped: a completed `condition` dependency routed away from it, else an upstream
+   *  dependency was itself skipped/failed (so this vertex is unreachable). */
+  /**
+   * Precedence (deliberate): a vertex is `branch_not_taken` if **any** dependency is a *completed*
+   * `condition` (one that ran and routed away from it) — that is the most specific, actionable cause.
+   * Only when no such dependency exists is the skip attributed to `upstream_unreachable` (a dead in-edge
+   * from a skipped/failed upstream). So a node downstream of both a taken-away condition and an
+   * unreachable upstream reports `branch_not_taken`.
+   */
+  #skipReason(vertex: PlanVertex): NodeSkippedReason {
+    for (const dep of vertex.dependencies) {
+      const depVertex = this.#plan.vertices.get(dep);
+      if (depVertex?.type === 'condition' && this.#states.get(dep)?.status === 'completed') {
+        return 'branch_not_taken';
+      }
+    }
+    return 'upstream_unreachable';
   }
 
   /** How many vertices are currently executing — derived from status, the single source of truth. */
@@ -827,6 +1034,102 @@ export class WorkflowEngine {
       throw new EngineStateError('unknown_run', 'no run matches the supplied runId', { runId });
     }
     await execution.resume(gateId, parsed.data);
+  }
+
+  /**
+   * Resume a run suspended at a gate in a PRIOR process (1.R): reconstruct its {@link CheckpointState}
+   * from the persisted event stream, rehydrate a {@link RunExecution} (seed node states / pending gates /
+   * tallies / the sequence counter — no `run:started` is re-emitted), apply the gate decision, and return
+   * the {@link RunHandle} so the caller observes the rest of the run.
+   *
+   * Idempotent re-delivery is a no-op (never advances the run twice; never re-emits a terminal event):
+   * - if the checkpoint is already **terminal** (the run finished in the prior process), a closed handle
+   *   is returned and nothing is re-emitted or re-persisted;
+   * - if the target gate was already **resolved** but the run has not finished (a remaining gate, or
+   *   downstream work the prior process did not reach), the decision is NOT re-applied — the run is just
+   *   driven forward.
+   *
+   * Throws `unknown_run` when no checkpoint exists, or `run_already_active` when the run is already in
+   * memory (use {@link resume}). Within a single process the same guarantee holds via {@link resume}; the cross-process
+   * guarantee is bounded by the store's durable single-writer of `human_gate:resumed` per gate — a true
+   * concurrent double-resolve (two processes loading the same pending gate before either persists) is
+   * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
+   */
+  async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
+    const parsed = GateDecisionSchema.safeParse(input.decision);
+    if (!parsed.success) {
+      throw new EngineStateError('invalid_decision', 'the gate decision failed validation', {
+        runId: input.runId,
+        gateId: input.gateId,
+      });
+    }
+    if (this.#runs.has(input.runId)) {
+      throw new EngineStateError(
+        'run_already_active',
+        'the run is already in memory — use resume() rather than resumeFromCheckpoint()',
+        { runId: input.runId },
+      );
+    }
+    const checkpoint = await this.#host.checkpointer.load(input.runId);
+    if (checkpoint === undefined) {
+      throw new EngineStateError('unknown_run', 'no checkpoint exists for the supplied runId', {
+        runId: input.runId,
+      });
+    }
+    // Only CHECKPOINT_SCHEMA_VERSION (v1) exists today, so no migration/guard runs here yet. When the
+    // derivation shape changes, this is the single point a future engine must refuse or migrate an older
+    // `checkpoint.schemaVersion` before consuming the state (the field exists precisely for that, 1.R).
+    // Identity guard: the workflow handed in must be the one the run started on. Comparing the surrogate
+    // `workflows.id` UUID catches resuming the wrong workflow entirely (a different slug). A subtler
+    // same-slug-edited-content drift needs a content hash on `run:started` — deferred (a canonical event
+    // contract change; checkpoint.ts), so resuming an edited-but-same-slug workflow is the caller's risk.
+    const expectedWorkflowId = await this.#host.store.resolveWorkflowId(input.workflow.workflow.id);
+    if (expectedWorkflowId !== checkpoint.workflowId) {
+      throw new EngineStateError(
+        'workflow_mismatch',
+        'the supplied workflow is not the one this run started on',
+        { runId: input.runId },
+      );
+    }
+    if (TERMINAL_RUN_STATUSES.has(checkpoint.runStatus)) {
+      // The run already settled in the prior process — re-delivery is a safe no-op (the terminal event
+      // is in the persisted log). Returning a closed handle avoids re-emitting/re-persisting a terminal.
+      return createClosedRunHandle(input.runId);
+    }
+    const plan = buildRunPlan(input.workflow, input.planOptions);
+    const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
+    const execution = new RunExecution({
+      runId: input.runId,
+      plan,
+      workflow: input.workflow,
+      inputs: input.inputs ?? {},
+      executionMode: input.executionMode ?? 'local',
+      host: this.#host,
+      executor: this.#executor,
+      bus,
+      capacity: this.#capacity,
+      onSettled: () => {
+        /* retained like a started run (see start) */
+      },
+      checkpoint,
+    });
+    this.#runs.set(input.runId, execution);
+    try {
+      if (checkpoint.resolvedGateIds.includes(input.gateId)) {
+        // The gate was already resolved in the prior process (double-delivery); do not re-apply the
+        // decision — just drive any unfinished downstream work (or re-pause on a remaining gate).
+        execution.kick();
+      } else {
+        // Apply the decision + drive the loop (events buffer on the handle for the returned consumer).
+        await execution.resume(input.gateId, parsed.data);
+      }
+    } catch (error) {
+      // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused throw must not
+      // strand the half-initialized execution in #runs (a retry would then wrongly hit run_already_active).
+      this.#runs.delete(input.runId);
+      throw error;
+    }
+    return execution.handle;
   }
 
   /** Request cooperative cancellation. Throws {@link EngineStateError} for an unknown/terminal run. */

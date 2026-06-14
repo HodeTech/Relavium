@@ -688,13 +688,22 @@ describe('dispatching executor (1.P)', () => {
     expect(out).toMatchObject({ kind: 'failed', error: { code: 'internal', retryable: false } });
   });
 
-  it('createStandardNodeExecutor wires the six non-agent handlers; an agent vertex stays unhandled without agent deps', async () => {
+  it('createStandardNodeExecutor wires the non-agent handlers incl. the 1.Q gate; an agent vertex stays unhandled without agent deps', async () => {
     const exec = createStandardNodeExecutor({ sandbox });
     const transformV = makeVertex({
       kind: 'transform',
       node: { id: 't', type: 'transform', transform: '7' },
     });
     expect(await exec.execute(makeCtx(transformV))).toEqual({ kind: 'completed', output: 7 });
+    // The human_in_the_loop gate (1.Q) is now wired -> a gate vertex suspends, never fails loud.
+    const gateV = makeVertex({
+      kind: 'human_in_the_loop',
+      node: { id: 'g', type: 'human_gate', gate_type: 'approval', message_template: 'ok?' },
+    });
+    expect(await exec.execute(makeCtx(gateV))).toMatchObject({
+      kind: 'paused',
+      gate: { gateType: 'approval', message: 'ok?' },
+    });
     // No agent deps supplied -> the agent arm is absent -> loud internal failure, never a silent skip.
     const agentV = makeVertex({ kind: 'agent', node: { id: 'a', type: 'agent', agent_ref: 'x' } });
     expect(await exec.execute(makeCtx(agentV))).toMatchObject({

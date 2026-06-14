@@ -179,3 +179,22 @@ export function createRunHandle(
     whenConsumersReady: () => primary.whenDrained(),
   };
 }
+
+/**
+ * A handle whose stream is already closed — for {@link RunHandle} consumers of a run that **already
+ * terminated in a prior process** (1.R `resumeFromCheckpoint` re-delivering a gate decision to a run
+ * whose checkpoint is already `completed`/`failed`/`cancelled`). It is a safe idempotent no-op: no event
+ * is re-emitted or re-persisted; the `events` iteration completes immediately (the actual terminal
+ * outcome is in the persisted `run_events`). `cancel`/`subscribe` are inert (the run is done).
+ */
+export function createClosedRunHandle(runId: string): RunHandle {
+  const primary = new RunEventStream(DEFAULT_CAPACITY);
+  primary.close();
+  return {
+    runId,
+    events: primary,
+    subscribe: () => () => undefined,
+    cancel: () => undefined,
+    whenConsumersReady: () => Promise.resolve(),
+  };
+}

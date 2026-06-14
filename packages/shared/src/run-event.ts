@@ -8,7 +8,7 @@ import {
   FS_SCOPE_TIERS,
   STOP_REASONS,
 } from './constants.js';
-import { GateTypeSchema } from './node.js';
+import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 
 /**
  * The run-event stream contract (sse-event-schema.md). A workflow run produces one ordered
@@ -202,6 +202,13 @@ export const NodeCompletedEventSchema = z.object({
   tokensUsed: TokensUsedSchema,
   durationMs: nonNegativeInt,
   attemptNumber: positiveInt.optional(), // 1-based retry attempt (matches cost:updated)
+  // The immediate downstream ids a `condition` kept live (its branch selection). Present ONLY for a
+  // condition's branch outcome — it is the authoritative record checkpoint/resume (1.R) reconstructs
+  // `selectedTargets` from, so a selected branch that was mid-flight at a crash re-runs (not skipped).
+  // NOT `.min(1)`: an EMPTY `selected` is a valid outcome — a condition that routes to no branch, which
+  // the engine skip-propagates across all downstream (engine.ts `#hasLiveEdge`); only the standard
+  // condition handler never emits it (it fails without a default), but the engine contract allows it.
+  selected: z.array(nonEmptyString).optional(),
 });
 
 export const NodeFailedEventSchema = z.object({
@@ -209,6 +216,23 @@ export const NodeFailedEventSchema = z.object({
   ...runBase,
   nodeId: nonEmptyString,
   error: z.object(eventErrorFields),
+});
+
+/** Why a node was skipped — `branch_not_taken` (a `condition` routed away) or `upstream_unreachable`. */
+export const NodeSkippedReasonSchema = z.enum(['branch_not_taken', 'upstream_unreachable']);
+export type NodeSkippedReason = z.infer<typeof NodeSkippedReasonSchema>;
+
+/**
+ * A vertex the run loop skip-propagated (a `condition` routed away from it, or every in-edge is dead
+ * because an upstream was skipped/failed). Emitted so the event log is a **complete, replayable** record
+ * — checkpoint/resume (1.R) reconstructs a skipped vertex from this event, and a surface can render the
+ * dimmed path instead of seeing the node silently vanish.
+ */
+export const NodeSkippedEventSchema = z.object({
+  type: z.literal('node:skipped'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  reason: NodeSkippedReasonSchema,
 });
 
 export const HumanGatePausedEventSchema = z.object({
@@ -220,6 +244,10 @@ export const HumanGatePausedEventSchema = z.object({
   message: z.string(),
   assignee: z.string().optional(),
   timeoutMs: nonNegativeInt.optional(),
+  // The on-timeout policy (present only with timeoutMs). Carried on the event so a surface can show how a
+  // gate auto-resolves AND so a Phase-2 crash-resume can re-arm the timer from the persisted log (the
+  // engine derives no separate gate record — execution-model.md). Absent ⇒ no timeout configured.
+  timeoutAction: TimeoutActionSchema.optional(),
   expiresAt: z.string().datetime({ offset: true }).optional(),
 });
 export type HumanGatePausedEvent = z.infer<typeof HumanGatePausedEventSchema>;
@@ -299,6 +327,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   CostUpdatedEventSchema,
   NodeCompletedEventSchema,
   NodeFailedEventSchema,
+  NodeSkippedEventSchema,
   HumanGatePausedEventSchema,
   HumanGateResumedEventSchema,
   RunCompletedEventSchema,
@@ -326,6 +355,19 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       code: z.ZodIssueCode.custom,
       message: 'exactly one of runId / sessionId must be present',
       path: [hasRunId ? 'sessionId' : 'runId'],
+    });
+  }
+  // A gate's on-timeout policy only has meaning when a timeout is configured — refused at the union level
+  // because a discriminatedUnion member can't carry its own cross-field refinement (see note above).
+  if (
+    event.type === 'human_gate:paused' &&
+    event.timeoutAction !== undefined &&
+    event.timeoutMs === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'timeoutAction is only valid when timeoutMs is also present',
+      path: ['timeoutAction'],
     });
   }
 });
@@ -392,6 +434,7 @@ export type AgentToolResultEvent = z.infer<typeof AgentToolResultEventSchema>;
 export type AgentFilePatchProposedEvent = z.infer<typeof AgentFilePatchProposedEventSchema>;
 export type NodeCompletedEvent = z.infer<typeof NodeCompletedEventSchema>;
 export type NodeFailedEvent = z.infer<typeof NodeFailedEventSchema>;
+export type NodeSkippedEvent = z.infer<typeof NodeSkippedEventSchema>;
 export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
 export type RunFailedEvent = z.infer<typeof RunFailedEventSchema>;
 export type RunCancelledEvent = z.infer<typeof RunCancelledEventSchema>;
