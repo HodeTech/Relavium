@@ -98,6 +98,12 @@ function runFanIn(ctx: NodeExecContext, deps: FanInNodeExecutorDeps): NodeOutcom
       }
       return runCustomMerge(ctx, deps.sandbox, mergeFn, branches);
     }
+    default: {
+      // Exhaustiveness guard — a future fifth merge_strategy fails loud at BOTH compile time (the
+      // `never` assignment) and runtime, never silently producing an undefined merge.
+      const exhaustive: never = config.mergeStrategy;
+      return failed('internal', `unknown merge_strategy '${String(exhaustive)}'`, false);
+    }
   }
 }
 

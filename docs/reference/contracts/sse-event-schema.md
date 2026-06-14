@@ -77,7 +77,7 @@ export type RunEvent =
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
 | `run:paused` | The run is suspended with **≥1 gate pending** — the multi-gate aggregate that backs the pending-gate queue (parallel branches may each reach a gate). | `pendingGateCount`, `gateIds[]` |
-| `run:completed` | The run finished. | `outputs`, `totalTokensUsed`, `totalCostMicrocents` (integer micro-cents closing total for the whole run), `durationMs` |
+| `run:completed` | The run finished. | `outputs` (a record **keyed by each terminal `output` vertex's node id**, the value being that vertex's captured output — see [run-plan.md §output capture](../shared-core/run-plan.md)), `totalTokensUsed`, `totalCostMicrocents` (integer micro-cents closing total for the whole run), `durationMs` |
 | `run:failed` | The run failed. | `error: {code, message, retryable, nodeId?, correlationId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `nodeId` is the root-cause node; `correlationId` joins to the internal log — ADR-0036), `partialOutputs` |
 | `run:cancelled` | The run was cancelled. | (base only) |
 

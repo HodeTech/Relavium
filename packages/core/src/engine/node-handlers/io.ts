@@ -12,7 +12,7 @@
  */
 
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from '../node-executor.js';
-import { cancelled, failed } from './scope.js';
+import { cancelled, failed, maskSecretInputs } from './scope.js';
 
 function runInput(ctx: NodeExecContext): NodeOutcome {
   const { config } = ctx.vertex;
@@ -22,9 +22,10 @@ function runInput(ctx: NodeExecContext): NodeOutcome {
   if (ctx.signal.aborted) {
     return cancelled();
   }
-  // A shallow snapshot — the emitted output is value-equal to `inputs` without aliasing the engine's
-  // shared inputs record into run.outputs.
-  return { kind: 'completed', output: { ...ctx.inputs } };
+  // Emit a snapshot of the resolved inputs with `secret`-typed values MASKED to their { secret, ref }
+  // marker — this node output rides `node:completed.output` / `run:completed.outputs`, and a raw secret
+  // must never reach an event payload (the engine masks `inputs` only for `run:started`).
+  return { kind: 'completed', output: maskSecretInputs(ctx.inputs, ctx.secretInputNames) };
 }
 
 function runOutput(ctx: NodeExecContext): NodeOutcome {

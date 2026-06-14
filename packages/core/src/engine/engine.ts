@@ -126,6 +126,8 @@ class RunExecution {
   readonly #workflow: WorkflowDefinition;
   readonly #inputs: Readonly<Record<string, unknown>>;
   readonly #maskedInputs: Record<string, unknown>;
+  /** The names of `secret`-typed inputs — threaded to handlers so they keep raw secrets out of outputs. */
+  readonly #secretInputNames: ReadonlySet<string>;
   readonly #executionMode: ExecutionMode;
   readonly #host: ExecutionHost;
   readonly #executor: NodeExecutor;
@@ -178,6 +180,7 @@ class RunExecution {
         .filter((input) => input.type === 'secret')
         .map((input) => input.name),
     );
+    this.#secretInputNames = secretNames;
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
 
     for (const id of params.plan.vertices.keys()) {
@@ -397,6 +400,7 @@ class RunExecution {
         vertex,
         runOutputs: this.#completedOutputs(),
         inputs: this.#inputs,
+        secretInputNames: this.#secretInputNames,
         toolPolicy: this.#workflow.workflow.tools ?? {},
         emit: (event) => {
           this.#nodeEmit(event);

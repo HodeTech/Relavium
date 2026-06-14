@@ -55,6 +55,10 @@ The run loop owns *when* the join fires (it dispatches the `fan_in` only once ev
 
 **`wait_first` is executor-only in v1.0.** `merge_strategy: first` derives `join_strategy: wait_first`, but the engine still waits for all branches to settle before dispatching the fan-in; the handler then takes the **first by `branchNodeIds` declaration order** among the survivors. True early-cancellation of the losing branches (cancel them the moment the first settles) needs engine-owned cross-vertex cancellation and is a deferred refinement — see [deferred-tasks.md](../../roadmap/deferred-tasks.md).
 
+### How an `output` vertex captures (1.P output handler)
+
+An `output` vertex is terminal: the run loop gathers `run:completed.outputs` (and `run:failed.partialOutputs`) as a record **keyed by each `output` vertex's node id**, the value being what the handler returns ([sse-event-schema.md](../contracts/sse-event-schema.md)). The handler **captures its feeders** — the settled upstream nodes it depends on: a **single** feeder (the canonical one-input-handle shape) is captured **verbatim**; **multiple** feeders are captured as an object keyed by feeder node id in **sorted** order (deterministic for resume); **no** settled feeder yields `null`. `output_format` is a render hint for the surface, never applied to the captured value.
+
 > **Retry is not lifted onto the plan.** Unlike an agent's `fallbackChain` (lifted onto `AgentPlanConfig` for the run loop's convenience), a node's `retry_config` is **not** copied onto the vertex. The run loop (1.N) makes no retry decision: a node failure is terminal only for that **attempt**, which — *without 1.S* — fails the run. Node-level retry above the provider fallback chain is layered by **1.S**, which reads `retry_config` from the authored node (`config.node`) and re-attempts before a node is considered finally failed.
 
 ## The dependency graph

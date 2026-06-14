@@ -9,7 +9,7 @@
  * the one canonical sandbox scope, and mapping a thrown `SandboxError` to its outcome.
  */
 
-import type { ErrorCode } from '@relavium/shared';
+import type { ErrorCode, MaskedSecret } from '@relavium/shared';
 
 import { SandboxError } from '../../errors.js';
 import type { ExpressionScope } from '../../expression/sandbox.js';
@@ -45,18 +45,39 @@ export function outputsRecord(runOutputs: ReadonlyMap<string, unknown>): Record<
 }
 
 /**
- * The one canonical scope a 1.P expression sees. `branches` is supplied only for a `merge_fn`. Secrets
- * are never injected (ADR-0027) — they cannot reach a handler: `ctx` carries no secret namespace, and
- * `ctx.inputs` is the raw run inputs (a `{{ secrets.* }}` reference is rejected at parse, not here).
- * `ctx` (the workflow-context namespace) is `{}` for now — threaded once the engine resolves it,
- * mirroring the AgentRunner's `RunScope` (agent-runner.ts).
+ * Replace every `secret`-typed input with its {@link MaskedSecret} marker (`{ secret: true, ref }`),
+ * leaving non-secret inputs untouched. The single masking point shared by the `input` node's output and
+ * the expression sandbox's `inputs` namespace, so a raw secret value never leaves a handler — neither
+ * into an event payload nor into a `condition`/`transform`/`merge_fn` expression (CLAUDE.md rule 6; the
+ * sandbox's "secrets are never injected — the caller filters" contract).
+ */
+export function maskSecretInputs(
+  inputs: Readonly<Record<string, unknown>>,
+  secretInputNames: ReadonlySet<string>,
+): Record<string, unknown> {
+  const masked: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(inputs)) {
+    masked[key] = secretInputNames.has(key)
+      ? ({ secret: true, ref: `inputs.${key}` } satisfies MaskedSecret)
+      : value;
+  }
+  return masked;
+}
+
+/**
+ * The one canonical scope a 1.P expression sees. `branches` is supplied only for a `merge_fn`. The
+ * `inputs` namespace is **secret-masked** ({@link maskSecretInputs}) so a `secret`-typed input is the
+ * marker object, never the raw value — an expression that reads it cannot launder a secret into an
+ * output (ADR-0027; the sandbox's "secrets are never injected" contract). `ctx` (the workflow-context
+ * namespace) is `{}` for now — threaded once the engine resolves it, mirroring the AgentRunner's
+ * `RunScope` (agent-runner.ts).
  */
 export function buildExpressionScope(
   ctx: NodeExecContext,
   branches?: readonly unknown[],
 ): ExpressionScope {
   return {
-    inputs: ctx.inputs,
+    inputs: maskSecretInputs(ctx.inputs, ctx.secretInputNames),
     ctx: {},
     outputs: outputsRecord(ctx.runOutputs),
     ...(branches === undefined ? {} : { branches }),

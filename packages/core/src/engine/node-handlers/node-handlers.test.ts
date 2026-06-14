@@ -18,6 +18,19 @@ const LIVE: AbortSignalLike = {
 };
 const ABORTED: AbortSignalLike = { ...LIVE, aborted: true };
 
+/** A signal that reads NOT-aborted on first access (passing the pre-eval guard), then aborted — so the
+ *  post-evaluate re-check fires, pinning the cancel-after-evaluate window (Trap 5). */
+function abortAfterFirstRead(): AbortSignalLike {
+  let reads = 0;
+  return {
+    get aborted() {
+      return reads++ > 0;
+    },
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+}
+
 function makeVertex(
   config: PlanConfig,
   graph: { id?: string; dependencies?: readonly string[]; dependents?: readonly string[] } = {},
@@ -37,6 +50,7 @@ function makeCtx(
   opts: {
     runOutputs?: ReadonlyMap<string, unknown>;
     inputs?: Record<string, unknown>;
+    secretInputNames?: ReadonlySet<string>;
     signal?: AbortSignalLike;
   } = {},
 ): NodeExecContext {
@@ -44,6 +58,7 @@ function makeCtx(
     vertex,
     runOutputs: opts.runOutputs ?? new Map(),
     inputs: opts.inputs ?? {},
+    secretInputNames: opts.secretInputNames ?? new Set(),
     toolPolicy: {},
     emit: () => undefined,
     signal: opts.signal ?? LIVE,
@@ -164,6 +179,15 @@ describe('condition handler (1.P)', () => {
     });
   });
 
+  it('returns `cancelled` when the signal aborts AFTER evaluation (post-eval re-check, Trap 5)', async () => {
+    const exec = createConditionNodeExecutor({ sandbox });
+    const v = makeVertex(conditionConfig('true', [{ when: true, target_node: 'a' }]), {
+      dependents,
+    });
+    const out = await exec.execute(makeCtx(v, { signal: abortAfterFirstRead() }));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+  });
+
   it('compares an unsettled `run.outputs` reference against undefined (pinned current behavior, Trap 6)', async () => {
     const exec = createConditionNodeExecutor({ sandbox });
     const v = makeVertex(
@@ -248,6 +272,16 @@ describe('transform handler (1.P)', () => {
     const out = await exec.execute(makeCtx(v, { signal: ABORTED }));
     expect(out).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
   });
+
+  it('returns `cancelled` when the signal aborts AFTER evaluation (post-eval re-check, Trap 5)', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: { id: 't', type: 'transform', transform: '1' },
+    });
+    const out = await exec.execute(makeCtx(v, { signal: abortAfterFirstRead() }));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+  });
 });
 
 function fanInConfig(
@@ -299,13 +333,16 @@ describe('fan_in handler (1.P)', () => {
     const exec = createFanInNodeExecutor({ sandbox });
     const v = makeVertex(fanInConfig('object_merge', ['a', 'c']));
     const runOutputs = new Map<string, unknown>([
-      ['c', { k: 2 }],
-      ['a', { k: 1 }],
-    ]); // arrival c-before-a
+      ['c', { k: 2, only_c: true }],
+      ['a', { k: 1, only_a: true }],
+    ]); // arrival c-before-a; branchNodeIds order is [a, c]
     const out = await exec.execute(makeCtx(v, { runOutputs }));
-    // 'c' is later in branchNodeIds order, so c.k wins.
-    expect(out).toMatchObject({ kind: 'completed' });
-    expect((out as { output: { k: number } }).output.k).toBe(2);
+    // Distinct keys survive; the colliding `k` is won by 'c' (later in branchNodeIds order), regardless
+    // of arrival order. Full-shape assertion (a plain object with Object.prototype).
+    expect(out).toEqual({
+      kind: 'completed',
+      output: { k: 2, only_a: true, only_c: true },
+    });
   });
 
   it('object_merge uses a null-prototype accumulator so a `__proto__` branch key cannot hijack the result', async () => {
@@ -352,6 +389,46 @@ describe('fan_in handler (1.P)', () => {
     ]);
     const out = await exec.execute(makeCtx(v, { runOutputs }));
     expect(out).toEqual({ kind: 'completed', output: { first: 10, second: 20 } });
+  });
+
+  it('a custom merge_fn that throws at runtime maps to a fatal sandbox_error', async () => {
+    const exec = createFanInNodeExecutor({ sandbox });
+    const v = makeVertex(fanInConfig('custom', ['a'], 'branches[0].nope.deep'));
+    const runOutputs = new Map<string, unknown>([['a', 1]]); // 1.nope is undefined -> .deep throws
+    const out = await exec.execute(makeCtx(v, { runOutputs }));
+    expect(out).toMatchObject({
+      kind: 'failed',
+      error: { code: 'sandbox_error', retryable: false },
+    });
+  });
+
+  it('a custom merge_fn returning a non-serializable value maps to sandbox_error', async () => {
+    const exec = createFanInNodeExecutor({ sandbox });
+    const v = makeVertex(fanInConfig('custom', ['a'], '(() => 1)'));
+    const runOutputs = new Map<string, unknown>([['a', 1]]);
+    const out = await exec.execute(makeCtx(v, { runOutputs }));
+    expect(out).toMatchObject({
+      kind: 'failed',
+      error: { code: 'sandbox_error', retryable: false },
+    });
+  });
+
+  it('handles an empty branch set (every branch skipped) per strategy', async () => {
+    const exec = createFanInNodeExecutor({ sandbox });
+    const empty = new Map<string, unknown>(); // all branchNodeIds absent
+    const concat = await exec.execute(
+      makeCtx(makeVertex(fanInConfig('concat', ['a', 'b'])), { runOutputs: empty }),
+    );
+    expect(concat).toEqual({ kind: 'completed', output: [] });
+    const first = await exec.execute(
+      makeCtx(makeVertex(fanInConfig('first', ['a', 'b'])), { runOutputs: empty }),
+    );
+    expect(first).toEqual({ kind: 'completed', output: null });
+    const merged = await exec.execute(
+      makeCtx(makeVertex(fanInConfig('object_merge', ['a', 'b'])), { runOutputs: empty }),
+    );
+    expect(merged).toMatchObject({ kind: 'completed' });
+    expect(Object.keys((merged as { output: object }).output)).toEqual([]);
   });
 
   it('returns `cancelled` when the signal is already aborted', async () => {
@@ -406,6 +483,8 @@ describe('fan_out / input / output handlers (1.P)', () => {
     ]);
     const out = await exec.execute(makeCtx(v, { runOutputs }));
     expect(out).toEqual({ kind: 'completed', output: { a: 1, b: 2 } });
+    // Deterministic key order: feeders declared ['b','a'] are captured sorted — drop io.ts's .sort() and this fails.
+    expect(Object.keys((out as { output: Record<string, unknown> }).output)).toEqual(['a', 'b']);
   });
 
   it('output is null when it has no settled feeder', async () => {
@@ -416,6 +495,49 @@ describe('fan_out / input / output handlers (1.P)', () => {
     );
     const out = await exec.execute(makeCtx(v)); // 'gone' absent
     expect(out).toEqual({ kind: 'completed', output: null });
+  });
+});
+
+describe('secret-input masking (1.P security — BLOCKER fix)', () => {
+  const secretInputNames = new Set(['api_key']);
+
+  it('the input handler masks a secret-typed input in its emitted output (never the raw value)', async () => {
+    const exec = createInputNodeExecutor();
+    const v = makeVertex({ kind: 'input', node: { id: 'in', type: 'input' } });
+    const out = await exec.execute(
+      makeCtx(v, { inputs: { api_key: 'sk-RAW', name: 'ok' }, secretInputNames }),
+    );
+    expect(out).toEqual({
+      kind: 'completed',
+      output: { api_key: { secret: true, ref: 'inputs.api_key' }, name: 'ok' },
+    });
+    // The raw secret must never ride node:completed.output / run:completed.outputs.
+    expect(JSON.stringify(out)).not.toContain('sk-RAW');
+  });
+
+  it('a transform sees the masked marker, not the raw secret — it cannot launder it into run.outputs', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: { id: 't', type: 'transform', transform: 'inputs.api_key' },
+    });
+    const out = await exec.execute(makeCtx(v, { inputs: { api_key: 'sk-RAW' }, secretInputNames }));
+    expect(out).toEqual({ kind: 'completed', output: { secret: true, ref: 'inputs.api_key' } });
+    expect(JSON.stringify(out)).not.toContain('sk-RAW');
+  });
+
+  it('a condition cannot branch on the raw secret value (it sees only the masked marker)', async () => {
+    const exec = createConditionNodeExecutor({ sandbox });
+    // `=== "sk-RAW"` would be true on the raw value; on the masked marker object it is false.
+    const v = makeVertex(
+      conditionConfig('inputs.api_key === "sk-RAW"', [
+        { when: true, target_node: 'leaked' },
+        { when: false, target_node: 'safe' },
+      ]),
+      { dependents: ['leaked', 'safe'] },
+    );
+    const out = await exec.execute(makeCtx(v, { inputs: { api_key: 'sk-RAW' }, secretInputNames }));
+    expect(out).toEqual({ kind: 'branch', selected: ['safe'] });
   });
 });
 
@@ -467,5 +589,61 @@ describe('dispatching executor (1.P)', () => {
       }),
     );
     expect(outcomes).toEqual([10, 20, 30, 40, 50].map((output) => ({ kind: 'completed', output })));
+  });
+
+  it('a fresh VM per evaluation — VM-global state never persists across two evals on one sandbox (Trap 3)', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    // A reused runtime/context would let the second eval observe 2; a fresh context per call yields 1, 1.
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: '(globalThis.__leak = (globalThis.__leak || 0) + 1, globalThis.__leak)',
+      },
+    });
+    expect(await exec.execute(makeCtx(v))).toEqual({ kind: 'completed', output: 1 });
+    expect(await exec.execute(makeCtx(v))).toEqual({ kind: 'completed', output: 1 });
+  });
+
+  it('createStandardNodeExecutor routes every engine node type to its handler', async () => {
+    const exec = createStandardNodeExecutor({ sandbox });
+    const fanOut = await exec.execute(
+      makeCtx(
+        makeVertex({
+          kind: 'fan_out',
+          node: { id: 'p', type: 'parallel', parallel_of: ['x'] },
+          branchNodeIds: ['x'],
+        }),
+      ),
+    );
+    expect(fanOut).toEqual({ kind: 'completed', output: null });
+    const input = await exec.execute(
+      makeCtx(makeVertex({ kind: 'input', node: { id: 'i', type: 'input' } }), {
+        inputs: { a: 1 },
+      }),
+    );
+    expect(input).toEqual({ kind: 'completed', output: { a: 1 } });
+    const output = await exec.execute(
+      makeCtx(
+        makeVertex({ kind: 'output', node: { id: 'o', type: 'output' } }, { dependencies: ['u'] }),
+        {
+          runOutputs: new Map([['u', 'cap']]),
+        },
+      ),
+    );
+    expect(output).toEqual({ kind: 'completed', output: 'cap' });
+    const cond = await exec.execute(
+      makeCtx(
+        makeVertex(conditionConfig('true', [{ when: true, target_node: 'd' }]), {
+          dependents: ['d'],
+        }),
+      ),
+    );
+    expect(cond).toEqual({ kind: 'branch', selected: ['d'] });
+    const fanIn = await exec.execute(
+      makeCtx(makeVertex(fanInConfig('concat', ['a'])), { runOutputs: new Map([['a', 1]]) }),
+    );
+    expect(fanIn).toEqual({ kind: 'completed', output: [1] });
   });
 });
