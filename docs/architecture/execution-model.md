@@ -119,15 +119,21 @@ that can reach the run:
 - VS Code: a sidebar / status-bar prompt and a WebviewPanel card.
 - CLI: a terminal prompt (`relavium gate`).
 
-When a decision arrives the engine reloads state, emits `human_gate:resumed`, and
-the run continues. Because the gate state is checkpointed, resolving it is
-idempotent across a reconnect — re-delivering the same decision does not advance
-the run twice. **Parallel branches may each reach a gate, so multiple gates can be pending at
-once** — each resolves independently with its own timeout (a `run:paused` aggregate reflects that
-≥1 gate is pending). A gate may carry a timeout with an `on_timeout` policy (`reject` /
-`approve`; `escalate` is **reserved** in v1.0 — authored in YAML as `timeout_action`; see
-[workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md#human_gate-node)); this
-prevents a forgotten gate from blocking a run forever.
+When a decision arrives — `approved`, `rejected`, or `input_provided` — the engine emits
+`human_gate:resumed` and the run **continues**: the gate node completes with the decision as its
+output, so the author routes on it with a downstream `condition` (a `rejected` decision does not
+itself fail the run). Because the gate state is checkpointed, resolving it is idempotent across a
+reconnect — re-delivering the same decision does not advance the run twice. **Parallel branches may
+each reach a gate, so multiple gates can be pending at once** — each resolves independently with its
+own timeout (a `run:paused` aggregate reflects that ≥1 gate is pending). A gate may carry a timeout
+with an `on_timeout` policy (`reject` / `approve`; `escalate` is **reserved** in v1.0 — authored in
+YAML as `timeout_action`; see
+[workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md#human_gate-node)), armed as a
+one-shot timer from the injected clock when the gate parks. The two timeout outcomes differ from a
+human decision: `approve` **auto-resolves** the gate as approved (`decidedBy: 'timeout'`, the run
+continues); `reject` **fails** the run with `run_timeout` (the `AwaitingGate → Failed` edge above) —
+this is what stops a forgotten gate from blocking a run forever. A decision that arrives first
+disarms the timer.
 The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the
 [IPC contract](../reference/contracts/ipc-contract.md).

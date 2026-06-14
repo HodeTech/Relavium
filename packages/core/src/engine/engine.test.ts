@@ -534,6 +534,99 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
       expect(caught.code).toBe('unknown_gate');
     }
   });
+
+  // --- gate timeouts (1.Q): one-shot timer → auto-resolve / run-fail -------------------------
+  const gate = (over: Record<string, unknown>): NodeOutcome => ({
+    kind: 'paused',
+    gate: { gateType: 'approval', message: 'approve?', ...over },
+  });
+
+  it('emits timeoutMs + expiresAt on human_gate:paused and auto-approves on timeout (decidedBy timeout)', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        host.fireTimers(); // the deadline elapsed with no human decision
+      }
+    }
+    const paused = events.find((e) => e.type === 'human_gate:paused');
+    if (paused?.type !== 'human_gate:paused') {
+      throw new Error('expected human_gate:paused');
+    }
+    expect(paused.timeoutMs).toBe(1000);
+    expect(typeof paused.expiresAt).toBe('string');
+    const resumed = events.find((e) => e.type === 'human_gate:resumed');
+    if (resumed?.type !== 'human_gate:resumed') {
+      throw new Error('expected human_gate:resumed');
+    }
+    expect(resumed.decision).toBe('approved');
+    expect(resumed.decidedBy).toBe('timeout');
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    assertGapFreeSeq(events);
+  });
+
+  it('fails the run with run_timeout when a gate times out under timeout_action: reject', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        host.fireTimers();
+      }
+    }
+    expect(events.some((e) => e.type === 'node:failed' && e.nodeId === 'g')).toBe(true);
+    const terminal = terminalsIn(events)[0];
+    expect(terminal?.type).toBe('run:failed');
+    if (terminal?.type === 'run:failed') {
+      expect(terminal.error.code).toBe('run_timeout');
+    }
+    expect(events.some((e) => e.type === 'human_gate:resumed')).toBe(false); // reject-timeout never "resumes"
+    assertGapFreeSeq(events);
+  });
+
+  it('disarms the gate timer when a human decision arrives first (no timeout fires, single resolution)', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'human' });
+        }
+        expect(host.armedCount()).toBe(0); // resume disarmed the timer
+        host.fireTimers(); // a no-op now — the timer is gone
+      }
+    }
+    const resumes = events.filter((e) => e.type === 'human_gate:resumed');
+    expect(resumes).toHaveLength(1);
+    if (resumes[0]?.type === 'human_gate:resumed') {
+      expect(resumes[0].decidedBy).toBe('human');
+    }
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('arms no timer for a gate without timeout_ms', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({}) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    for await (const event of handle.events) {
+      if (event.type === 'run:paused') {
+        expect(host.armedCount()).toBe(0);
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'h' });
+        }
+      }
+    }
+  });
 });
 
 // --- resumeFromCheckpoint: cross-process gate resume (1.R) -------------------------------------

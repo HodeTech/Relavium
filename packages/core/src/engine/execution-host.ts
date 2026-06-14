@@ -113,10 +113,18 @@ export interface RunStore {
 }
 
 /**
- * The injected execution-mode seam: clock + id source + persistence + abort, nothing platform-specific.
- * The Phase-1 slice ships `clock.now()`; the one-shot **timer** port (for gate / run `timeout_ms`
- * deadlines — ADR-0036 Decision 5) is added when the human gate (1.Q) and budget governor (1.AC) wire
- * timeouts, since 1.N arms no timers.
+ * Arm a one-shot timer: invoke `onFire` **once** after `ms`, unless the returned disarm is called first.
+ * Injected so core never names the ambient `setTimeout`/`clearTimeout` (absent from the strict
+ * `lib: ["ES2023"]` purity build; CLAUDE.md rule 5). A real surface injects a `setTimeout`-backed timer;
+ * {@link createManualTimerController} provides a deterministic manual timer the engine tests fire by hand.
+ * Used by the human gate (1.Q) and budget governor (1.AC) for `timeout_ms` deadlines (ADR-0036 Decision 5)
+ * — never a sleep/poll loop, so the completion-driven scheduler stays event-driven.
+ */
+export type SetTimer = (ms: number, onFire: () => void) => () => void;
+
+/**
+ * The injected execution-mode seam: clock + id source + persistence + checkpointer + abort + timer,
+ * nothing platform-specific. The loop never branches on the execution mode — it calls the host.
  */
 export interface ExecutionHost {
   readonly clock: Clock;
@@ -130,6 +138,8 @@ export interface ExecutionHost {
   readonly checkpointer: Checkpointer;
   /** Create a fresh abort controller for a run — injected so core never names the ambient global. */
   readonly newAbortController: () => AbortControllerLike;
+  /** Arm a one-shot timer (gate / run `timeout_ms`); see {@link SetTimer}. */
+  readonly setTimer: SetTimer;
 }
 
 // --- In-memory reference implementation (engine tests + the local reference) -------------------
@@ -213,24 +223,71 @@ export class InMemoryRunStore implements RunStore {
 }
 
 /**
+ * A deterministic, manual {@link SetTimer}: arming registers a timer but never fires it on a wall clock;
+ * a test fires every still-armed timer by calling {@link ManualTimerController.fireTimers}. This keeps
+ * gate/run-timeout tests reproducible and platform-free (no ambient `setTimeout`). Firing snapshots the
+ * armed set first, so a callback that arms or disarms timers cannot perturb the in-progress sweep.
+ */
+export interface ManualTimerController {
+  readonly setTimer: SetTimer;
+  /** Fire every currently-armed timer once (in arm order), then drop it. A disarmed timer never fires. */
+  readonly fireTimers: () => void;
+  /** The count of still-armed timers — for a test asserting a gate's timer was disarmed on resume. */
+  readonly armedCount: () => number;
+}
+
+export function createManualTimerController(): ManualTimerController {
+  interface ManualTimer {
+    armed: boolean;
+    readonly onFire: () => void;
+  }
+  const timers = new Set<ManualTimer>();
+  return {
+    setTimer: (_ms, onFire) => {
+      const timer: ManualTimer = { armed: true, onFire };
+      timers.add(timer);
+      return () => {
+        timer.armed = false;
+        timers.delete(timer);
+      };
+    },
+    fireTimers: () => {
+      for (const timer of [...timers]) {
+        if (timer.armed) {
+          timer.armed = false;
+          timers.delete(timer);
+          timer.onFire();
+        }
+      }
+    },
+    armedCount: () => timers.size,
+  };
+}
+
+/**
  * A deterministic in-memory {@link ExecutionHost} for the engine tests and the local reference: a clock
- * that advances 1ms per read from a fixed base (valid ISO-8601, reproducible), a counter id source, and
- * an {@link InMemoryRunStore}. A real surface injects wall-clock/UUID sources instead.
+ * that advances 1ms per read from a fixed base (valid ISO-8601, reproducible), a counter id source, an
+ * {@link InMemoryRunStore}, and a manual timer fired by hand (exposed as {@link fireTimers}/
+ * {@link armedCount}). A real surface injects wall-clock/UUID/`setTimeout` sources instead.
  */
 export function createInMemoryHost(options?: {
   store?: RunStore;
   checkpointer?: Checkpointer;
   baseEpochMs?: number;
-}): ExecutionHost & { store: RunStore } {
+}): ExecutionHost & { store: RunStore } & Pick<ManualTimerController, 'fireTimers' | 'armedCount'> {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
   const store = options?.store ?? new InMemoryRunStore();
+  const timers = createManualTimerController();
   return {
     clock: { now: () => new Date(tick++).toISOString() },
     ids: { newId: () => `id-${++idCounter}` },
     store,
     checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
     newAbortController: createAbortController,
+    setTimer: timers.setTimer,
+    fireTimers: timers.fireTimers,
+    armedCount: timers.armedCount,
   };
 }
 

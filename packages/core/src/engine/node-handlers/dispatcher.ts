@@ -15,6 +15,7 @@ import type { NodeExecutor } from '../node-executor.js';
 import { createConditionNodeExecutor } from './condition.js';
 import { createFanInNodeExecutor } from './fan-in.js';
 import { createFanOutNodeExecutor } from './fan-out.js';
+import { createHumanGateNodeExecutor, type HumanGateNodeExecutorDeps } from './human-gate.js';
 import { createInputNodeExecutor, createOutputNodeExecutor } from './io.js';
 import { failed } from './scope.js';
 import { createTransformNodeExecutor } from './transform.js';
@@ -42,11 +43,13 @@ export interface StandardNodeExecutorDeps {
   readonly sandbox: ExpressionSandbox;
   /** Agent-node wiring (provider resolution + tools). Omit to leave `agent` vertices unhandled. */
   readonly agent?: AgentRunnerDeps;
+  /** Human-gate wiring (1.Q) — resolver capabilities for the gate's text templates. Defaults to none. */
+  readonly humanGate?: HumanGateNodeExecutorDeps;
 }
 
 /**
- * Wire the standard executor: the six 1.P handlers plus, when `agent` deps are supplied, the 1.O agent
- * arm. `human_in_the_loop` (1.Q) and the reserved `loop`/`subworkflow`/`tool` types are intentionally
+ * Wire the standard executor: the six 1.P handlers, the 1.Q `human_in_the_loop` gate, plus — when `agent`
+ * deps are supplied — the 1.O agent arm. The reserved `loop`/`subworkflow`/`tool` types are intentionally
  * absent — they fail loud until their workstream lands.
  */
 export function createStandardNodeExecutor(deps: StandardNodeExecutorDeps): NodeExecutor {
@@ -56,6 +59,7 @@ export function createStandardNodeExecutor(deps: StandardNodeExecutorDeps): Node
     transform: createTransformNodeExecutor({ sandbox: deps.sandbox }),
     fan_in: createFanInNodeExecutor({ sandbox: deps.sandbox }),
     fan_out: createFanOutNodeExecutor(),
+    human_in_the_loop: createHumanGateNodeExecutor(deps.humanGate ?? {}),
     input: createInputNodeExecutor(),
     output: createOutputNodeExecutor(),
   });

@@ -103,6 +103,7 @@ export {
   createInMemoryHost,
   createInMemoryCheckpointer,
   createAbortController,
+  createManualTimerController,
 } from './engine/execution-host.js';
 // Checkpointer + resume (1.R) — reconstruct a run's state from its persisted event stream (no checkpoint
 // table; ADR-0003). The in-memory reference ships here; the SQLite/cloud one is Phase-2/CLI.
@@ -120,6 +121,8 @@ export type {
   IdSource,
   AbortControllerLike,
   InterruptedRun,
+  SetTimer,
+  ManualTimerController,
 } from './engine/execution-host.js';
 export type {
   NodeExecutor,
@@ -163,6 +166,8 @@ export type { TransformNodeExecutorDeps } from './engine/node-handlers/transform
 export { createFanInNodeExecutor } from './engine/node-handlers/fan-in.js';
 export type { FanInNodeExecutorDeps } from './engine/node-handlers/fan-in.js';
 export { createFanOutNodeExecutor } from './engine/node-handlers/fan-out.js';
+export { createHumanGateNodeExecutor } from './engine/node-handlers/human-gate.js';
+export type { HumanGateNodeExecutorDeps } from './engine/node-handlers/human-gate.js';
 export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node-handlers/io.js';
 
 // Built-in ToolRegistry + dispatch (1.T) — the engine-side registry the AgentRunner (1.O) and

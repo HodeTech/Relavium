@@ -164,6 +164,8 @@ class RunExecution {
   readonly #pendingGates = new Map<string, { readonly vertexId: string }>();
   /** Gate ids whose decision was already applied — a re-delivery is an idempotent no-op (1.R). */
   readonly #resolvedGates = new Set<string>();
+  /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
+  readonly #gateTimers = new Map<string, () => void>();
 
   #workflowId = '';
   #settled = false;
@@ -281,6 +283,10 @@ class RunExecution {
       });
     }
     for (const gate of cp.pendingGates) {
+      // No gate-timeout timer is re-armed on rehydration: the gate this resume targets has its decision
+      // applied immediately, and re-arming a *remaining* gate's deadline needs the persisted
+      // `timeout_action` (absent from `human_gate:paused`) — a contract addition deferred to the Phase-2
+      // crash-reconciliation that re-arms timers from persisted policy (shared-core-engine.md).
       this.#pendingGates.set(gate.gateId, { vertexId: gate.nodeId });
     }
     for (const gateId of cp.resolvedGateIds) {
@@ -352,6 +358,7 @@ class RunExecution {
     }
     this.#resolvedGates.add(gateId);
     this.#pendingGates.delete(gateId);
+    this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
     await this.#emitDurable({
       type: 'human_gate:resumed',
@@ -596,7 +603,7 @@ class RunExecution {
     });
   }
 
-  /** A `paused` outcome: park the gate and emit `human_gate:paused`. */
+  /** A `paused` outcome: park the gate, arm its timeout timer (1.Q), and emit `human_gate:paused`. */
   async #settlePaused(vertex: PlanVertex, gate: GateRequest): Promise<void> {
     const gateId = gate.gateId ?? this.#host.ids.newId();
     const state = this.#states.get(vertex.id);
@@ -604,6 +611,21 @@ class RunExecution {
       state.status = 'paused';
     }
     this.#pendingGates.set(gateId, { vertexId: vertex.id });
+    // Compute the wall-clock deadline from the host clock (the handler has none) and arm a one-shot timer
+    // (1.Q). On fire, an `approve` action auto-resolves the gate; a `reject` (the safe default) fails the
+    // run with run_timeout. The timer is disarmed on resume / terminal settle so it never fires twice.
+    const expiresAt =
+      gate.expiresAt ??
+      (gate.timeoutMs === undefined
+        ? undefined
+        : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
+    if (gate.timeoutMs !== undefined) {
+      const action = gate.timeoutAction ?? 'reject';
+      const disarm = this.#host.setTimer(gate.timeoutMs, () => {
+        void this.#onGateTimeout(gateId, vertex.id, action);
+      });
+      this.#gateTimers.set(gateId, disarm);
+    }
     await this.#emitDurable({
       type: 'human_gate:paused',
       runId: this.runId,
@@ -613,8 +635,53 @@ class RunExecution {
       message: gate.message,
       ...(gate.assignee === undefined ? {} : { assignee: gate.assignee }),
       ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
-      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
     });
+  }
+
+  /** Disarm and forget a gate's timeout timer (idempotent — safe if absent or already fired). */
+  #disarmTimer(gateId: string): void {
+    const disarm = this.#gateTimers.get(gateId);
+    if (disarm !== undefined) {
+      this.#gateTimers.delete(gateId);
+      disarm();
+    }
+  }
+
+  /**
+   * A gate's timeout elapsed with no decision (1.Q). Idempotent: a no-op once the gate resolved (a human
+   * beat the timer — resume disarmed it, but a fired-and-queued callback still guards here) or the run
+   * settled. `approve` auto-resolves the gate as approved (`decidedBy: 'timeout'`); `reject` fails the run.
+   */
+  async #onGateTimeout(
+    gateId: string,
+    vertexId: string,
+    action: 'approve' | 'reject',
+  ): Promise<void> {
+    this.#disarmTimer(gateId);
+    if (this.#settled || !this.#pendingGates.has(gateId)) {
+      return; // already resolved or terminal
+    }
+    if (action === 'approve') {
+      await this.resume(gateId, { decision: 'approved', decidedBy: 'timeout' });
+      return;
+    }
+    await this.#failGateOnTimeout(gateId, vertexId);
+  }
+
+  /** Timeout with `timeout_action: reject` — fail the run with `run_timeout` (execution-model.md). */
+  async #failGateOnTimeout(gateId: string, vertexId: string): Promise<void> {
+    this.#pendingGates.delete(gateId);
+    const vertex = this.#plan.vertices.get(vertexId);
+    if (vertex === undefined) {
+      return; // unreachable: a pending gate always maps to a plan vertex
+    }
+    await this.#settleFailed(vertex, {
+      code: 'run_timeout',
+      message: 'the human gate timed out without a decision',
+      retryable: false,
+    });
+    this.#schedule();
   }
 
   /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
@@ -649,6 +716,9 @@ class RunExecution {
     }
     this.#settled = true;
     this.#abort.abort(); // make sure any straggler executor sees cancellation
+    for (const gateId of [...this.#gateTimers.keys()]) {
+      this.#disarmTimer(gateId); // the run is closing — no gate timer may fire afterwards (1.Q)
+    }
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
