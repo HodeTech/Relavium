@@ -581,6 +581,20 @@ describe('secret-input masking (1.P security — BLOCKER fix)', () => {
     const out = await exec.execute(makeCtx(v, { inputs: { api_key: 'sk-RAW' }, secretInputNames }));
     expect(out).toEqual({ kind: 'branch', selected: ['safe'] });
   });
+
+  it('an input literally named `__proto__` cannot pollute Object.prototype (null-prototype accumulator)', async () => {
+    const exec = createInputNodeExecutor();
+    const v = makeVertex({ kind: 'input', node: { id: 'in', type: 'input' } });
+    // The input-name grammar `[A-Za-z0-9_-]+` permits `__proto__`; JSON.parse gives it as an OWN key.
+    const inputs = JSON.parse('{"__proto__": {"polluted": true}, "ok": 1}') as Record<
+      string,
+      unknown
+    >;
+    const out = await exec.execute(makeCtx(v, { inputs }));
+    const output = (out as { output: object }).output;
+    expect(Object.getPrototypeOf(output)).toBeNull(); // the `{ __proto__: null }` accumulator held
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined(); // Object.prototype untouched
+  });
 });
 
 describe('dispatching executor (1.P)', () => {

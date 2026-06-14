@@ -36,7 +36,7 @@ function branchOutputs(ctx: NodeExecContext, branchNodeIds: readonly string[]): 
 function mergeObjects(branches: readonly unknown[]): NodeOutcome {
   // A null-prototype accumulator: a branch carrying an own `__proto__`/`constructor` key lands as a
   // plain own property (no setter to trip), so a merge can never pollute Object.prototype.
-  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const merged: Record<string, unknown> = { __proto__: null };
   for (const branch of branches) {
     if (branch === null || typeof branch !== 'object' || Array.isArray(branch)) {
       return failed(

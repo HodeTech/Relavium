@@ -39,7 +39,7 @@ export function cancelled(): NodeOutcome {
 export function outputsRecord(runOutputs: ReadonlyMap<string, unknown>): Record<string, unknown> {
   // A null-prototype record (defense-in-depth: a node id cannot be `__proto__` under the kebab grammar,
   // but a plain object would let one pollute Object.prototype) — consistent with the fan-in accumulator.
-  const record: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const record: Record<string, unknown> = { __proto__: null };
   // Sort by UTF-16 code unit via an explicit comparator (NOT `localeCompare` — locale-dependent ordering
   // would break the cross-environment resume determinism this sort exists for).
   for (const id of [...runOutputs.keys()].sort(byCodeUnit)) {
@@ -68,7 +68,7 @@ export function maskSecretInputs(
 ): Record<string, unknown> {
   // A null-prototype record: an input name MAY be `__proto__` (the input-name grammar is `[A-Za-z0-9_-]+`,
   // which permits `_`), so a plain object would let `masked['__proto__'] = …` pollute Object.prototype.
-  const masked: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const masked: Record<string, unknown> = { __proto__: null };
   for (const [key, value] of Object.entries(inputs)) {
     masked[key] = secretInputNames.has(key)
       ? ({ secret: true, ref: `inputs.${key}` } satisfies MaskedSecret)

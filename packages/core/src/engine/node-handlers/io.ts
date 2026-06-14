@@ -57,7 +57,7 @@ function runOutput(ctx: NodeExecContext): NodeOutcome {
   }
   // A null-prototype record (a node id cannot be `__proto__` under the kebab grammar — defense-in-depth),
   // keyed by settled feeder id in deterministic code-unit order.
-  const captured: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const captured: Record<string, unknown> = { __proto__: null };
   for (const id of feeders) {
     captured[id] = ctx.runOutputs.get(id);
   }
