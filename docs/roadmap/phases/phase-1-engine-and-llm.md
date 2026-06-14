@@ -18,9 +18,13 @@
 > ✅ Done (PR #16, 2026-06-13)** — the plan layer and the deterministic `condition`/`transform`/`merge_fn`
 > evaluator. **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (built-in `ToolRegistry`) are ✅ Done
 > (PR #17, 2026-06-13)**, completing **1.m3** (parse → DAG → run loop emits the canonical event stream).
-> With 1.K, 1.N, and 1.T all landed, the **1.O `AgentRunner` join is ✅ Done (PR #18, 2026-06-14)** — the
-> lane now continues at the remaining 1.m4 handlers (1.P/1.Q/1.R/1.S/1.AC) toward **M2**, and Lane C
-> (1.V–1.AA) opens. *(Session persistence, 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
+> With 1.K, 1.N, and 1.T all landed, the **1.O `AgentRunner` join is ✅ Done (PR #18, 2026-06-14)**, and
+> the **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)** — the six non-agent `NodeExecutor` arms
+> behind a dispatching executor, executor-only (no `engine.ts` change), with a pre-merge BLOCKER secret-leak
+> fixed by a `secretInputNames` masking gate on `NodeExecContext`. The lane now continues at the remaining
+> 1.m4 workstreams (**1.Q** human gate, **1.R** checkpoint/resume, **1.S** node retry, **1.AC** budget
+> governor) toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence, 1.X/1.Z, must exclude the
+> reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -654,9 +658,15 @@ recorded follow-up needing a validator dependency behind an ADR.)*
 > transform/sandbox-node follow-up ([deferred-tasks.md](../deferred-tasks.md)); 1.O's structural
 > guarantee is `system` = authored text only, the resolved prompt in a `user` position.
 
-### 1.P — Node-type handlers (condition / fan-out / fan-in / transform / input / output)
+### 1.P — Node-type handlers (condition / fan-out / fan-in / transform / input / output) — ✅ **Done (PR #20, 2026-06-14)**
 
-The dispatch table for the non-agent node types the DAG can contain.
+The dispatch table for the non-agent node types the DAG can contain. **Landed** as a
+`createDispatchingNodeExecutor` composing the six handlers (and the 1.O agent arm) into the one
+injected `NodeExecutor` — executor-only, no `engine.ts` change for the merge/branch work (the run loop
+already owns readiness, skip-propagation, fan-in join scheduling, events, cancellation). `wait_first` is
+executor-only (true loser-cancel deferred). A pre-merge review surfaced and fixed a **BLOCKER secret-leak**
+(the `input` handler emitted raw `secret`-typed inputs into events) by threading `secretInputNames` onto
+`NodeExecContext` and masking in the input handler + the expression scope.
 
 **Tasks:**
 - Implement handlers for `condition` (evaluate the expression, activate exactly one

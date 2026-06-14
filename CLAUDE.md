@@ -38,7 +38,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07); the `FallbackChain` runner (1.K) landed, completing 1.m2 with the cost tracker (PR #13, 2026-06-11); the run loop (1.N — `WorkflowEngine` + `RunEventBus`) landed (PR #17, 2026-06-13) **completing 1.m3** (parse → DAG → run loop emits the canonical event stream), with the built-in `ToolRegistry` (1.T, a 1.m4 component) landing alongside it as the other `AgentRunner` (1.O) join prerequisite; and the **`AgentRunner` (1.O) — per-node LLM execution behind the seam — landed (PR #18, 2026-06-14)**. The node-type handlers (1.P) are next, toward M2.**
+**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07); the `FallbackChain` runner (1.K) landed, completing 1.m2 with the cost tracker (PR #13, 2026-06-11); the run loop (1.N — `WorkflowEngine` + `RunEventBus`) landed (PR #17, 2026-06-13) **completing 1.m3** (parse → DAG → run loop emits the canonical event stream), with the built-in `ToolRegistry` (1.T, a 1.m4 component) landing alongside it as the other `AgentRunner` (1.O) join prerequisite; the **`AgentRunner` (1.O) — per-node LLM execution behind the seam — landed (PR #18, 2026-06-14)**; and the **node-type handlers (1.P) — the six non-agent `NodeExecutor` arms (condition / transform / fan_out / fan_in / input / output) behind a dispatching executor — landed (PR #20, 2026-06-14)**. The human gate (1.Q) is next, toward M2.**
 Phase 0 (M0, 2026-06-04) landed the monorepo, strict toolchain + CI, `@relavium/shared` (the
 full Zod contract set), the no-vendor-type seam fence, and `@relavium/db`. Phase 1 has since
 landed `@relavium/llm` — the `LLMProvider` seam + all three adapters (Anthropic, OpenAI/DeepSeek,
@@ -51,10 +51,12 @@ reserved generator methods, shape-only, landed before the seam's exhaustive cons
 **`WorkflowYAMLParser` (1.L, PR #14)**, the **`{{ … }}` interpolation engine + parse-time secret-taint
 gate (1.L2, PR #15)**, the **DAG builder + `RunPlan` (1.M)** plus the **QuickJS-wasm expression
 sandbox (1.AB)** (PR #16, 2026-06-13), and the **run loop — `WorkflowEngine` + `RunEventBus` (1.N)**
-together with the **built-in `ToolRegistry` (1.T)** (PR #17, 2026-06-13), and the **`AgentRunner` (1.O)**
+together with the **built-in `ToolRegistry` (1.T)** (PR #17, 2026-06-13), the **`AgentRunner` (1.O)**
 join (PR #18, 2026-06-14 — host-injected provider resolution behind the seam, the correlation-agnostic
-turn core, the tool-call loop, and the same-provider reasoning replay). Active work is now the remaining
-1.m4 lane — the node-type handlers (1.P), the human gate (1.Q), checkpoint/resume (1.R), node retry
+turn core, the tool-call loop, and the same-provider reasoning replay), and the **node-type handlers
+(1.P)** (PR #20, 2026-06-14 — the six non-agent `NodeExecutor` arms behind a dispatching executor,
+executor-only with a `secretInputNames` masking gate on `NodeExecContext`). Active work is now the
+remaining 1.m4 lane — the human gate (1.Q), checkpoint/resume (1.R), node retry
 (1.S), and the pre-egress budget governor (1.AC) — toward **M2**; see
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 
