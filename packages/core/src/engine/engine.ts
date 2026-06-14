@@ -284,9 +284,9 @@ class RunExecution {
     }
     for (const gate of cp.pendingGates) {
       // No gate-timeout timer is re-armed on rehydration: the gate this resume targets has its decision
-      // applied immediately, and re-arming a *remaining* gate's deadline needs the persisted
-      // `timeout_action` (absent from `human_gate:paused`) — a contract addition deferred to the Phase-2
-      // crash-reconciliation that re-arms timers from persisted policy (shared-core-engine.md).
+      // applied immediately. Re-arming a *remaining* gate's deadline is deferred to the Phase-2
+      // crash-reconciliation that re-arms from persisted policy + a real clock (shared-core-engine.md) —
+      // the data it needs (timeoutAction + expiresAt) is now carried on `human_gate:paused`, so no backfill.
       this.#pendingGates.set(gate.gateId, { vertexId: gate.nodeId });
     }
     for (const gateId of cp.resolvedGateIds) {
@@ -360,6 +360,14 @@ class RunExecution {
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
+    // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
+    // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
+    // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
+    const state = this.#states.get(gate.vertexId);
+    if (state !== undefined) {
+      state.status = 'completed';
+      state.output = decision.payload ?? { decision: decision.decision };
+    }
     await this.#emitDurable({
       type: 'human_gate:resumed',
       runId: this.runId,
@@ -368,11 +376,6 @@ class RunExecution {
       decidedBy: decision.decidedBy,
       ...(decision.payload === undefined ? {} : { payload: decision.payload }),
     });
-    const state = this.#states.get(gate.vertexId);
-    if (state !== undefined) {
-      state.status = 'completed';
-      state.output = decision.payload ?? { decision: decision.decision };
-    }
     this.#schedule();
   }
 
@@ -635,6 +638,7 @@ class RunExecution {
       message: gate.message,
       ...(gate.assignee === undefined ? {} : { assignee: gate.assignee }),
       ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
+      ...(gate.timeoutAction === undefined ? {} : { timeoutAction: gate.timeoutAction }),
       ...(expiresAt === undefined ? {} : { expiresAt }),
     });
   }
@@ -672,6 +676,9 @@ class RunExecution {
   /** Timeout with `timeout_action: reject` — fail the run with `run_timeout` (execution-model.md). */
   async #failGateOnTimeout(gateId: string, vertexId: string): Promise<void> {
     this.#pendingGates.delete(gateId);
+    // Mark the gate resolved (symmetry with resume / the approve path) so a late re-delivery of this
+    // gate's decision is an idempotent no-op rather than a `run_already_terminal` throw.
+    this.#resolvedGates.add(gateId);
     const vertex = this.#plan.vertices.get(vertexId);
     if (vertex === undefined) {
       return; // unreachable: a pending gate always maps to a plan vertex
@@ -1023,8 +1030,8 @@ export class WorkflowEngine {
    *   downstream work the prior process did not reach), the decision is NOT re-applied — the run is just
    *   driven forward.
    *
-   * Throws `unknown_run` when no checkpoint exists, or when the run is already in memory (use
-   * {@link resume}). Within a single process the same guarantee holds via {@link resume}; the cross-process
+   * Throws `unknown_run` when no checkpoint exists, or `run_already_active` when the run is already in
+   * memory (use {@link resume}). Within a single process the same guarantee holds via {@link resume}; the cross-process
    * guarantee is bounded by the store's durable single-writer of `human_gate:resumed` per gate — a true
    * concurrent double-resolve (two processes loading the same pending gate before either persists) is
    * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
@@ -1039,7 +1046,7 @@ export class WorkflowEngine {
     }
     if (this.#runs.has(input.runId)) {
       throw new EngineStateError(
-        'unknown_run',
+        'run_already_active',
         'the run is already in memory — use resume() rather than resumeFromCheckpoint()',
         { runId: input.runId },
       );

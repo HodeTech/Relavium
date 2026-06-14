@@ -8,7 +8,7 @@ import {
   FS_SCOPE_TIERS,
   STOP_REASONS,
 } from './constants.js';
-import { GateTypeSchema } from './node.js';
+import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 
 /**
  * The run-event stream contract (sse-event-schema.md). A workflow run produces one ordered
@@ -241,6 +241,10 @@ export const HumanGatePausedEventSchema = z.object({
   message: z.string(),
   assignee: z.string().optional(),
   timeoutMs: nonNegativeInt.optional(),
+  // The on-timeout policy (present only with timeoutMs). Carried on the event so a surface can show how a
+  // gate auto-resolves AND so a Phase-2 crash-resume can re-arm the timer from the persisted log (the
+  // engine derives no separate gate record — execution-model.md). Absent ⇒ no timeout configured.
+  timeoutAction: TimeoutActionSchema.optional(),
   expiresAt: z.string().datetime({ offset: true }).optional(),
 });
 export type HumanGatePausedEvent = z.infer<typeof HumanGatePausedEventSchema>;

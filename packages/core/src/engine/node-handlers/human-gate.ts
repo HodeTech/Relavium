@@ -7,10 +7,14 @@
  * `resume`). The handler is intentionally thin and clock-free: deadlines (`expiresAt`) are the engine's
  * job (only it holds the host clock).
  *
- * **Secrets:** `message_template` / `assignee` are leak-checked at PARSE time — a `secret`-typed
- * reference in either is rejected by the secret-taint analyzer (`node-text` category; analyze.ts), so a
- * raw resolution here can never surface a secret into the `human_gate:paused` event payload. This mirrors
- * the agent's `prompt_template` (agent-runner.ts), which resolves against raw inputs for the same reason.
+ * **Secrets — two layers.** A `secret`-typed `inputs.*` / `ctx.*` reference in `message_template` /
+ * `assignee` is rejected at PARSE time by the secret-taint analyzer (`node-text` category; analyze.ts).
+ * A `{{ run.outputs[…] }}` reference is *not* parse-gated (its content is runtime data), but is protected
+ * at RUNTIME: the `input` node masks every `secret`-typed input before it enters `run.outputs` (io.ts
+ * `maskSecretInputs`) and an agent prompt can't interpolate a secret (the same parse gate), so a raw
+ * secret never reaches `ctx.runOutputs` for this handler to surface. Together that lets the gate text
+ * resolve against raw inputs without a secret reaching the `human_gate:paused` payload — mirroring the
+ * agent's `prompt_template` (agent-runner.ts).
  */
 
 import { resolveTemplate } from '../../interpolation/resolve.js';

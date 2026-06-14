@@ -148,6 +148,51 @@ describe('reconstructCheckpointState', () => {
     expect(state?.nodeStates.get('gate')).toEqual({ status: 'completed', output: { x: 7 } });
   });
 
+  it('restores running token + cost tallies so a resumed run keeps cumulative totals', () => {
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'node:completed',
+        ...base(1),
+        nodeId: 'a',
+        output: 'A',
+        tokensUsed: { input: 10, output: 5 },
+        durationMs: 1,
+      },
+      {
+        type: 'cost:updated',
+        ...base(2),
+        nodeId: 'a',
+        model: 'm',
+        inputTokens: 10,
+        outputTokens: 5,
+        costMicrocents: 700,
+        cumulativeCostMicrocents: 700,
+      },
+      {
+        type: 'node:completed',
+        ...base(3),
+        nodeId: 'b',
+        output: 'B',
+        tokensUsed: { input: 20, output: 8 },
+        durationMs: 1,
+      },
+      {
+        type: 'cost:updated',
+        ...base(4),
+        nodeId: 'b',
+        model: 'm',
+        inputTokens: 20,
+        outputTokens: 8,
+        costMicrocents: 900,
+        cumulativeCostMicrocents: 1600,
+      },
+    ]);
+    expect(state?.totalInputTokens).toBe(30);
+    expect(state?.totalOutputTokens).toBe(13);
+    expect(state?.cumulativeCostMicrocents).toBe(1600); // the last running total, not a re-sum
+  });
+
   it('records a failed node with its typed failure', () => {
     const state = reconstructCheckpointState([
       started,

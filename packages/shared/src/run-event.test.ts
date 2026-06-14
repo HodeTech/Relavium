@@ -87,6 +87,9 @@ const valid: Record<string, Record<string, unknown>> = {
     gateId: 'g1',
     gateType: 'approval',
     message: 'approve?',
+    timeoutMs: 1000,
+    timeoutAction: 'reject',
+    expiresAt: '2026-06-14T00:00:00.000Z',
   },
   'human_gate:resumed': {
     type: 'human_gate:resumed',
@@ -279,7 +282,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 18
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 19
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {

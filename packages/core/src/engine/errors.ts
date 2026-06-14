@@ -15,7 +15,8 @@
 
 /** Stable discriminant for an engine-API-boundary fault — narrow on this, never on `message`. */
 export type EngineStateErrorCode =
-  | 'unknown_run' // `resume` / `cancel` named a `runId` this engine instance is not tracking
+  | 'unknown_run' // `resume`/`cancel` named a `runId` this engine is not tracking, or `resumeFromCheckpoint` found no checkpoint for it
+  | 'run_already_active' // `resumeFromCheckpoint` named a run THIS engine already holds in memory — use `resume` instead
   | 'run_already_terminal' // the run already settled (completed / failed / cancelled) — no resume/cancel
   | 'run_not_paused' // `resume` was called while the run has no pending gate to resolve
   | 'unknown_gate' // the `gateId` does not match any gate currently pending on the run

@@ -627,6 +627,132 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
       }
     }
   });
+
+  it('a reject-timeout marks the gate resolved, so a late re-delivery of its decision is a no-op (not a throw)', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let lateResume: unknown = 'not-attempted';
+    for await (const event of handle.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        host.fireTimers(); // reject-timeout → run fails with run_timeout
+      }
+      if (event.type === 'run:failed') {
+        // A duplicate decision arriving after the timeout already failed the run is a silent no-op.
+        lateResume = await engine
+          .resume(handle.runId, gateId, { decision: 'rejected', decidedBy: 'late' })
+          .then(() => 'no-op')
+          .catch((e: unknown) => e);
+      }
+    }
+    expect(lateResume).toBe('no-op'); // #resolvedGates was set on the reject-timeout path
+  });
+
+  it('emits node:skipped(out) before run:failed when a reject-timeout dims the downstream', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'reject' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        host.fireTimers();
+      }
+    }
+    const skipIdx = events.findIndex((e) => e.type === 'node:skipped' && e.nodeId === 'out');
+    const failIdx = events.findIndex((e) => e.type === 'run:failed');
+    expect(skipIdx).toBeGreaterThanOrEqual(0); // the downstream `out` is dimmed (upstream unreachable)
+    expect(skipIdx).toBeLessThan(failIdx); // …and recorded before the terminal, keeping the log complete
+    assertGapFreeSeq(events);
+  });
+
+  it('expiresAt equals the pause timestamp plus timeoutMs (a real ISO deadline, not just any string)', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 5000, timeoutAction: 'approve' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    let paused: Extract<RunEvent, { type: 'human_gate:paused' }> | undefined;
+    for await (const event of handle.events) {
+      if (event.type === 'human_gate:paused') {
+        paused = event;
+      }
+      if (event.type === 'run:paused') {
+        host.fireTimers();
+      }
+    }
+    if (paused === undefined || paused.expiresAt === undefined) {
+      throw new Error('expected human_gate:paused with expiresAt');
+    }
+    // expiresAt is a real ISO deadline ≈ the pause time + timeoutMs. The in-memory clock advances 1ms
+    // per read, so expiresAt (one clock read) and the event timestamp (a later read) differ by the small
+    // read skew, not exactly 0 — assert the gap is timeoutMs within that few-ms tolerance.
+    const deltaMs = Date.parse(paused.expiresAt) - Date.parse(paused.timestamp);
+    expect(deltaMs).toBeGreaterThan(4990);
+    expect(deltaMs).toBeLessThanOrEqual(5000);
+  });
+
+  it('a timer that fires after the run already terminated is an inert no-op (no second terminal)', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith({ g: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }) }, host);
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        // Resolve by hand so the run completes; the armed timer is disarmed on resume + on settle.
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'h' });
+        }
+      }
+    }
+    host.fireTimers(); // post-terminal: nothing armed; must not emit a second terminal
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  // Regression for the multi-gate stall race: two timeout-approve gates resolved back-to-back by one
+  // fireTimers() sweep. The second gate's resume schedules a #step while the first's durable persist is
+  // still in flight; only because each resume marks its vertex completed SYNCHRONOUSLY (before its await)
+  // does that step see both gates settled rather than mis-reading the run as stalled (a spurious
+  // run:failed{internal}).
+  const MULTIGATE = `  id: multigate
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [g1, g2] }
+    - { id: g1, type: human_gate, gate_type: approval }
+    - { id: g2, type: human_gate, gate_type: approval }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: g1, to: join }
+    - { from: g2, to: join }
+    - { from: join, to: out }`;
+
+  it('resolves two concurrent gates settled in one timer sweep without a spurious stall', async () => {
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        g1: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }),
+        g2: () => gate({ timeoutMs: 1000, timeoutAction: 'approve' }),
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(MULTIGATE) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused' && event.pendingGateCount === 2) {
+        host.fireTimers(); // fire BOTH gate timers in one synchronous sweep
+      }
+    }
+    const resumes = events.filter((e) => e.type === 'human_gate:resumed');
+    expect(resumes).toHaveLength(2); // both gates resolved, each exactly once
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed'); // NOT a spurious run:failed{internal}
+    assertGapFreeSeq(events);
+  });
 });
 
 // --- resumeFromCheckpoint: cross-process gate resume (1.R) -------------------------------------
@@ -734,7 +860,7 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     ).rejects.toMatchObject({ code: 'unknown_run' });
   });
 
-  it('throws unknown_run (use resume) when the run is already tracked in this engine', async () => {
+  it('throws run_already_active (use resume) when the run is already tracked in this engine', async () => {
     const engine = engineWith(gateHandlers);
     const handle = engine.start({ workflow: workflow(GATED) });
     let caught: unknown;
@@ -755,7 +881,7 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
       }
     }
     expect(caught).toBeInstanceOf(EngineStateError);
-    expect(caught instanceof EngineStateError ? caught.code : '').toBe('unknown_run');
+    expect(caught instanceof EngineStateError ? caught.code : '').toBe('run_already_active');
   });
 
   it('throws invalid_decision for a malformed decision before touching the store', async () => {
@@ -769,6 +895,73 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
         decision: { decision: 'maybe', decidedBy: 't' },
       }),
     ).rejects.toMatchObject({ code: 'invalid_decision' });
+  });
+
+  it('drives a run whose gate was already resolved in the prior process to completion WITHOUT re-applying the decision (kick path)', async () => {
+    const store = new InMemoryRunStore();
+    // Process A: pause at the gate.
+    const { runId, gateId } = await runToGate(store);
+    // Process B: apply the decision, then "crash" mid-downstream — `out` hangs, so the run persists
+    // human_gate:resumed + node:started(out) but never run:completed.
+    const engineB = engineWith(
+      { out: () => new Promise<NodeOutcome>(() => {}) },
+      createInMemoryHost({ store }),
+    );
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'human' },
+    });
+    for await (const event of handleB.events) {
+      if (event.type === 'node:started' && event.nodeId === 'out') {
+        break; // the process dies here, with `out` mid-flight
+      }
+    }
+    expect(store.eventsFor(runId).some((e) => e.type === 'human_gate:resumed')).toBe(true);
+    expect(store.eventsFor(runId).some((e) => e.type === 'run:completed')).toBe(false);
+
+    // Process C: the gate is already resolved (resolvedGateIds), the run is non-terminal → kick(), which
+    // re-runs the unfinished `out` and completes WITHOUT a second human_gate:resumed.
+    const engineC = engineWith({}, createInMemoryHost({ store }));
+    const handleC = await engineC.resumeFromCheckpoint({
+      runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'human' },
+    });
+    const eventsC = await drain(handleC);
+    expect(eventsC.some((e) => e.type === 'human_gate:resumed')).toBe(false); // never re-applied
+    expect(eventsC.some((e) => e.type === 'node:completed' && e.nodeId === 'out')).toBe(true);
+    expect(terminalsIn(eventsC)[0]?.type).toBe('run:completed');
+  });
+
+  it('arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)', async () => {
+    const store = new InMemoryRunStore();
+    // Process A: pause at a gate that carries a timeout.
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    // Process B rehydrates: no timer is armed (armedCount stays 0) — the resumed gate is decided at once.
+    const hostB = createInMemoryHost({ store });
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+    expect(hostB.armedCount()).toBe(0);
   });
 });
 
