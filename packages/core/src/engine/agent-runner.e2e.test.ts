@@ -309,4 +309,72 @@ workflow:
     );
     expect(tokenNodes).toEqual(new Set(['n1', 'n2']));
   });
+
+  it('retries an agent node via the engine budget resolved from agent.retry (1.S #retryConfig agent fallback, ADR-0040 A.8)', async () => {
+    // Call 1 errors retryably (chain exhausts → a retryable NodeFailure); call 2 succeeds. The node has NO
+    // node.retry, so #retryConfig falls back to the AGENT's retry — proving the agent arm + A.8 precedence.
+    const scripted = scriptedProvider([
+      [
+        {
+          type: 'error',
+          error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
+        },
+      ],
+      [
+        { type: 'text_delta', text: 'recovered' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+    ]);
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-agent-retry
+  inputs:
+    - name: text
+      type: string
+  agents:
+    - id: flaky-sum
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: You summarize.
+      retry: { max: 2, backoff: linear, backoff_ms: 10 }
+  nodes:
+    - id: sum
+      type: agent
+      agent_ref: flaky-sum
+      prompt_template: 'Summarize: {{inputs.text}}'
+  edges: []
+`,
+    );
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: createAgentNodeExecutor({
+        resolveProvider: () => scripted,
+        registry: noToolRegistry,
+        tools: [],
+        keyFor: () => 'k',
+        sleep: () => Promise.resolve(),
+        now: () => 1,
+      }),
+    });
+    const events: RunEvent[] = [];
+    for await (const event of engine.start({ workflow: wf, inputs: { text: 'x' } }).events) {
+      events.push(event);
+      if (event.type === 'node:retrying') {
+        while (host.armedCount() === 0) await Promise.resolve(); // wait for the backoff timer to arm, then fire
+        host.fireTimers();
+      }
+    }
+    const retrying = events.filter((e) => e.type === 'node:retrying');
+    expect(retrying).toHaveLength(1); // one re-dispatch (agent.retry max 2)
+    expect(retrying[0]?.type === 'node:retrying' ? retrying[0].error.retryable : false).toBe(true);
+    expect(events.map((e) => e.type).at(-1)).toBe('run:completed');
+    expect(
+      events.some(
+        (e) => e.type === 'node:completed' && e.nodeId === 'sum' && e.attemptNumber === 2,
+      ),
+    ).toBe(true);
+    assertGapFreeSeq(events);
+  });
 });

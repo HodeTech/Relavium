@@ -95,6 +95,11 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
  *  constant — distinct from the within-chain FallbackChain base). */
 const DEFAULT_NODE_RETRY_BACKOFF_MS = 1000;
 
+/** Hard ceiling (ms, 24h) on a computed node-retry backoff — so a large (schema-valid) `retry.max` with
+ *  exponential growth can never overflow `delayMs` past the run-event integer range (a stamp-time throw) or
+ *  arm an absurd timer. A node-retry that needs a >24h wait should be a scheduled job, not a backoff. */
+const MAX_NODE_RETRY_BACKOFF_MS = 86_400_000;
+
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
   /** The parsed, validated workflow (the host read the file and called `parseWorkflow`). */
@@ -625,6 +630,12 @@ class RunExecution {
       if (this.#settled) {
         return; // the run settled (e.g. a sibling failure/cancel) while we waited — drop this re-dispatch
       }
+      if (this.#cancelling || this.#abort.signal.aborted) {
+        // A cancel / sibling-abort landed on the same tick the timer fully elapsed (so sleptFully was true
+        // but the run is now ending) — settle this node's last failure rather than waste a re-dispatch.
+        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
+        return;
+      }
       if (!sleptFully) {
         // The run's AbortSignal fired during the backoff — a cancel OR a sibling node's failure (which
         // aborts to stop other branches). Do not re-dispatch; settle this node's last failure. #settleFailed
@@ -701,10 +712,13 @@ class RunExecution {
   }
 
   /** The backoff delay before the retry after `attempt` (1-based retry index = `attempt`): `linear` ⇒
-   *  `base * attempt`; `exponential` ⇒ `base * 2^(attempt-1)`. No jitter (deterministic replay). */
+   *  `base * attempt`; `exponential` ⇒ `base * 2^(attempt-1)`. No jitter (deterministic replay). Capped at
+   *  {@link MAX_NODE_RETRY_BACKOFF_MS} so a large (schema-valid) `max` can never overflow `delayMs` past the
+   *  event schema's integer range (which would throw at stamp time) or arm an absurd one-shot timer. */
   #backoffMs(retry: Retry | undefined, attempt: number): number {
     const base = retry?.backoff_ms ?? DEFAULT_NODE_RETRY_BACKOFF_MS;
-    return retry?.backoff === 'exponential' ? base * 2 ** (attempt - 1) : base * attempt;
+    const raw = retry?.backoff === 'exponential' ? base * 2 ** (attempt - 1) : base * attempt;
+    return Math.min(raw, MAX_NODE_RETRY_BACKOFF_MS);
   }
 
   /** Sleep `ms` via the injected one-shot timer; resolves `true` if it elapsed, `false` if the run's

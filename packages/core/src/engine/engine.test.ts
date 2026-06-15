@@ -1435,6 +1435,29 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
     expect(delays).toEqual([1000, 2000, 4000]);
   });
 
+  it('caps the backoff at the 24h ceiling so a large base/budget cannot overflow delayMs', async () => {
+    // base 50,000,000 ms exponential: retry 1 = 50M (≤ 24h), retry 2 = 100M (> 86.4M) → capped to 86.4M.
+    // Without the cap a large max would overflow to Infinity and throw at event-stamp time (a zombie run).
+    const CAP_WF = `  id: cap-wf
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: transform, transform: '1', retry: { max: 3, backoff: exponential, backoff_ms: 50000000 } }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: out }`;
+    const host = createInMemoryHost();
+    const engine = engineWith({ work: flaky(99) }, host);
+    const delays: number[] = [];
+    for await (const event of engine.start({ workflow: workflow(CAP_WF) }).events) {
+      if (event.type === 'node:retrying') {
+        delays.push(event.delayMs);
+        await fireBackoff(host);
+      }
+    }
+    expect(delays).toEqual([50_000_000, 86_400_000]); // the second attempt's delay is clamped to the 24h ceiling
+  });
+
   it('a sibling node failure during the retry backoff abandons the re-dispatch (run:failed, sibling root cause)', async () => {
     // Two parallel branches: `flap` retries with a long-ish budget; `boom` fails fatally. boom's failure
     // aborts the run while flap is mid-backoff → flap does not re-dispatch; the run fails with boom's cause.
