@@ -1298,6 +1298,52 @@ describe('WorkflowEngine — workflow context (ctx.*) resolution', () => {
       expect(terminal.error.code).toBe('validation');
     }
   });
+
+  it('rejects a bad gateId fast (unknown_gate) BEFORE context resolution — does not settle the run', async () => {
+    const store = new InMemoryRunStore();
+    const RF_GATED = `  id: ctx-rf-gate2
+  inputs:
+    - { name: p, type: string }
+  context:
+    - { key: doc, value: '{{inputs.p | read_file}}' }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const engineA = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new StubExecutor({
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      }),
+      resolverCapabilities: { readFile: (p) => `FILE:${p}` },
+    });
+    const handleA = engineA.start({ workflow: workflow(RF_GATED), inputs: { p: 'a.txt' } });
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        break;
+      }
+    }
+    const runId = handleA.runId;
+    const before = store.eventsFor(runId).length;
+    // Process B has NO readFile cap (context WOULD fail), and the gateId is wrong. The bad gateId must be
+    // rejected first (unknown_gate) — the run is NOT terminally settled run:failed by a context resolution
+    // that should never have run. A retry with the correct gateId stays possible.
+    const engineB = engineWith({}, createInMemoryHost({ store }));
+    await expect(
+      engineB.resumeFromCheckpoint({
+        runId,
+        workflow: workflow(RF_GATED),
+        inputs: { p: 'a.txt' },
+        gateId: 'not-a-real-gate',
+        decision: { decision: 'approved', decidedBy: 'h' },
+      }),
+    ).rejects.toMatchObject({ code: 'unknown_gate' });
+    // No new events persisted: the run was neither resumed nor failed (context resolution never ran).
+    expect(store.eventsFor(runId).length).toBe(before);
+  });
 });
 
 // --- concurrency cap --------------------------------------------------------------------------

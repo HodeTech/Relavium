@@ -362,14 +362,16 @@ class RunExecution {
   }
 
   /**
-   * Drive a rehydrated run (resume entry, 1.R). Re-resolves the workflow `context:` first — `ctx.*` is not
-   * carried in the checkpoint, so the post-resume nodes need it freshly derived (a resolution failure closes
-   * the run loudly rather than running against an empty context). Then:
-   * - `gateAlreadyResolved` (the prior process already applied this gate's decision — a cross-process
-   *   double-delivery): do NOT re-apply (no second `human_gate:resumed`); just drive the unfinished
-   *   downstream work, or re-pause on a remaining gate.
-   * - otherwise: apply the gate decision via {@link resume} and drive the loop.
-   * The terminal-checkpoint case never reaches here (it returns a closed handle).
+   * Drive a rehydrated run (resume entry, 1.R). Order matters:
+   * 1. Validate the gate FIRST (non-kick path) — an invalid resume request (`unknown_gate` /
+   *    `run_not_paused`) throws BEFORE the side-effectful context resolution, so the caller drops the run
+   *    from `#runs` rather than the run being terminally settled `run:failed` because context resolution
+   *    happened to fail on a request that should simply have been rejected.
+   * 2. Re-resolve the workflow `context:` — `ctx.*` is not carried in the checkpoint, so post-resume nodes
+   *    need it freshly derived; a resolution failure closes the run loudly (vs running against an empty ctx).
+   * 3. Drive: `gateAlreadyResolved` (the prior process already applied this gate's decision — a cross-process
+   *    double-delivery) → kick the loop WITHOUT re-applying (no second `human_gate:resumed`); otherwise
+   *    apply the decision via {@link resume}. The terminal-checkpoint case never reaches here (closed handle).
    */
   async beginResume(
     gateId: string,
@@ -377,6 +379,9 @@ class RunExecution {
     gateAlreadyResolved: boolean,
   ): Promise<void> {
     // #startEpochMs was seeded from the checkpoint in #seedFromCheckpoint (preserves total durationMs).
+    if (!gateAlreadyResolved) {
+      this.#assertGatePending(gateId); // fail fast on a bad gateId, before any context side effect
+    }
     if (!(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
@@ -402,19 +407,8 @@ class RunExecution {
     this.#schedule();
   }
 
-  async resume(gateId: string, decision: GateDecision): Promise<void> {
-    if (this.#resolvedGates.has(gateId)) {
-      // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
-      // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
-      // completed is a no-op, not a `run_already_terminal` error.
-      return;
-    }
-    if (this.#settled) {
-      throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
-        runId: this.runId,
-        gateId,
-      });
-    }
+  /** The pending gate for `gateId`, or throw the typed misuse (`run_not_paused` / `unknown_gate`). */
+  #assertGatePending(gateId: string): { readonly vertexId: string } {
     if (this.#pendingGates.size === 0) {
       throw new EngineStateError('run_not_paused', 'the run has no pending gate to resume', {
         runId: this.runId,
@@ -428,6 +422,23 @@ class RunExecution {
         gateId,
       });
     }
+    return gate;
+  }
+
+  async resume(gateId: string, decision: GateDecision): Promise<void> {
+    if (this.#resolvedGates.has(gateId)) {
+      // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
+      // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
+      // completed is a no-op, not a `run_already_terminal` error.
+      return;
+    }
+    if (this.#settled) {
+      throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
+        runId: this.runId,
+        gateId,
+      });
+    }
+    const gate = this.#assertGatePending(gateId);
     this.#resolvedGates.add(gateId);
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
