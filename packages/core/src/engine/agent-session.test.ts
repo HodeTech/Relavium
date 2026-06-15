@@ -1,4 +1,10 @@
-import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
+import type {
+  CapabilityFlags,
+  LlmMessage,
+  LlmProvider,
+  ProviderId,
+  StreamChunk,
+} from '@relavium/llm';
 import {
   AgentSchema,
   SessionContextSchema,
@@ -16,6 +22,8 @@ import {
   type SessionDeps,
   type SessionStreamEvent,
 } from './agent-session.js';
+// Intra-package helper (NOT the identically-named public index.ts export) — keeps engine purity; the
+// session never names the ambient `AbortController`. A path drift to the public surface would be a smell.
 import { createAbortController } from './execution-host.js';
 
 const CAPS: CapabilityFlags = {
@@ -172,15 +180,77 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     ]);
   });
 
-  it('accumulates a session-wide cumulative cost across turns (overwrites the turn-core placeholder)', async () => {
-    const { deps, events } = harness([textTurn('a'), textTurn('b')]);
-    const s = session(deps);
+  it('keeps the cross-turn transcript content-only (protocol-valid: no orphaned tool_use, no reasoning)', async () => {
+    // Capture the messages each provider call receives. After a tool-using turn 1, turn 2's OUTBOUND
+    // messages must carry NO tool_call / tool_result part (the tool round-trip stays inside the turn core,
+    // so there is no orphaned tool_use → no provider 400) and NO reasoning part (its signature must not
+    // span turns — ADR-0030/0039). The prior assistant turn survives as a text-only message.
+    const seen: LlmMessage[][] = [];
+    const scripts = [toolUseTurn('c1'), textTurn('answer one'), textTurn('answer two')];
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        seen.push(req.messages.map((m) => ({ role: m.role, content: [...m.content] })));
+        return streamOf(scripts[seen.length - 1] ?? []);
+      },
+    };
+    const events: SessionStreamEvent[] = [];
+    const deps: SessionDeps = {
+      resolveProvider: () => provider,
+      registry: echoRegistry,
+      tools: [],
+      keyFor: () => 'key',
+      sleep: () => Promise.resolve(),
+      newAbortController: createAbortController,
+      emit: (e) => {
+        events.push(e);
+      },
+    };
+    const s = new AgentSession({
+      sessionId: 'sx',
+      agentRef: TOOL_AGENT.id,
+      agent: TOOL_AGENT,
+      context: CONTEXT,
+      deps,
+    });
+    s.start();
+    await s.sendMessage('hi'); // turn 1: tool round-trip (2 provider calls)
+    await s.sendMessage('again'); // turn 2: 1 provider call
+
+    const turn2 = seen.at(-1) ?? [];
+    const carriesNonTextPart = turn2.some((m) =>
+      m.content.some(
+        (p) => p.type === 'tool_call' || p.type === 'tool_result' || p.type === 'reasoning',
+      ),
+    );
+    expect(carriesNonTextPart).toBe(false);
+    // The prior assistant turn is present, text-only; and the new user turn is there.
+    expect(
+      turn2.some((m) => m.role === 'assistant' && m.content.every((p) => p.type === 'text')),
+    ).toBe(true);
+    expect(turn2.filter((m) => m.role === 'user')).toHaveLength(2);
+  });
+
+  it('accumulates cumulative cost across turns AND across multiple cost events within one turn', async () => {
+    // Turn 1 is a tool round-trip → TWO cost:updated events (the tool_use attempt + the answer attempt);
+    // turn 2 is one. Pins that per-attempt increments sum correctly (no double-count even with multiple
+    // events per turn) — the same model the WorkflowEngine uses (engine.ts `#cumulativeCostMicrocents +=`).
+    const { deps, events } = harness(
+      [toolUseTurn('c1'), textTurn('first'), textTurn('second')],
+      {},
+      echoRegistry,
+    );
+    const s = session(deps, TOOL_AGENT);
     s.start();
     await s.sendMessage('one');
     await s.sendMessage('two');
 
     const costs = events.filter((e) => e.type === 'cost:updated');
-    expect(costs.length).toBeGreaterThanOrEqual(2);
+    expect(costs.length).toBeGreaterThanOrEqual(3); // ≥2 in the tool turn + ≥1 in the plain turn
     // Each cumulative equals the running sum of per-event costMicrocents (never the 0 placeholder).
     let running = 0;
     for (const e of costs) {
@@ -207,9 +277,10 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(completed?.type === 'session:turn_completed' ? completed.stopReason : undefined).toBe(
       'error',
     );
-    // No egress for the blocked turn: no streamed token / tool / cost.
-    expect(typesOf(events)).not.toContain('agent:token');
-    expect(typesOf(events)).not.toContain('cost:updated');
+    // The blocked turn still brackets turn_started → turn_completed, and emits NOTHING else (no egress —
+    // no streamed token / tool / cost). Pinning the EXACT sequence stops a refactor from moving the
+    // turn_started emission after the cap check, which would silently break the observable contract.
+    expect(typesOf(events)).toEqual(['session:turn_started', 'session:turn_completed']);
   });
 
   it('maps a within-turn turn_limit (maxToolTurns exceeded) to session:turn_completed{turn_limit}', async () => {
@@ -249,6 +320,31 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'validation',
     );
+  });
+
+  it('completes a turn with an internal error when no provider is wired (resolveProvider → undefined)', async () => {
+    const events: SessionStreamEvent[] = [];
+    const deps: SessionDeps = {
+      resolveProvider: () => undefined, // a host-wiring gap — no adapter for the agent's provider
+      registry: noToolRegistry,
+      tools: [],
+      keyFor: () => 'key',
+      sleep: () => Promise.resolve(),
+      newAbortController: createAbortController,
+      emit: (e) => {
+        events.push(e);
+      },
+    };
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('go');
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'internal',
+    );
+    // The failed turn engaged no provider and left the transcript clean (the user message rolled back).
+    expect(typesOf(events)).not.toContain('agent:token');
   });
 
   it('cancel() between turns emits session:cancelled and blocks further messages', async () => {

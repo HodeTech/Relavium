@@ -245,7 +245,17 @@ export class AgentSession {
       // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet.
       if (this.#statusIs('cancelled')) return;
       this.#turnCount += 1;
-      this.#messages.push({ role: 'assistant', content: [...result.content] });
+      // Append the assistant reply to the cross-turn transcript as TEXT-ONLY. The turn core keeps the
+      // within-turn tool_use/tool_result pairs internal (they never leave runAgentTurn — it returns only the
+      // final, non-tool_use content), so the transcript carries no orphaned tool_use and stays protocol-valid
+      // across turns. Reasoning parts are dropped here on purpose: a reasoning `signature` is a within-turn,
+      // same-provider replay token (ADR-0030/0039) and must NOT span turns — a turn that failed over would
+      // otherwise carry a fallback-provider signature into the next turn's primary request. Faithful
+      // cross-turn tool/reasoning history is the 1.X/1.Z deferral (it needs the turn core to expose the
+      // intermediate messages, which the concurrent 1.AC work currently owns in agent-turn.ts).
+      if (result.text.length > 0) {
+        this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
+      }
       this.#emitTurnCompleted(result.stopReason, {
         input: result.usage.input,
         output: result.usage.output,
@@ -253,19 +263,21 @@ export class AgentSession {
       });
     } catch (err) {
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
+      // The turn did not complete — roll the user message back so the transcript holds only COMPLETED
+      // exchanges (never a dangling user turn or two consecutive user messages). This also keeps a future
+      // non-AgentTurnError the session does not yet handle — e.g. a 1.AC pre-egress `BudgetPauseError` thrown
+      // before any egress — from orphaning the pushed user message. Nothing is pushed after the user message
+      // on a throw (the assistant append is past the `await`), so the last element is always that message.
+      this.#messages.pop();
       if (err instanceof AgentTurnError) {
         this.#turnCount += 1; // the turn engaged a provider — it counts toward the cap
         this.#emitTurnCompleted(
           'error',
           { input: 0, output: 0 },
-          {
-            code: err.code,
-            message: err.message,
-            retryable: err.retryable,
-          },
+          { code: err.code, message: err.message, retryable: err.retryable },
         );
       } else {
-        throw err; // unexpected — let it surface; the session is left in a running state for the caller
+        throw err; // unexpected — re-raise (transcript already rolled back); the caller decides
       }
     } finally {
       this.#abort = undefined;
@@ -328,7 +340,14 @@ export class AgentSession {
     });
   }
 
-  /** Forward an in-turn streaming body, stamping the session-wide running total onto `cost:updated`. */
+  /**
+   * Forward an in-turn streaming body, stamping the session-wide running total onto `cost:updated`.
+   * `cost:updated.costMicrocents` is the **per-attempt increment** the turn core emits (one event per
+   * non-skipped attempt, agent-turn.ts), with a `0` cumulative placeholder; summing the increments is the
+   * correct running total and mirrors how the `WorkflowEngine` owns it for a run (engine.ts `#nodeEmit`:
+   * `#cumulativeCostMicrocents += event.costMicrocents`). It is robust to multiple cost events per turn
+   * (e.g. a fallback or a tool round-trip), so it does not depend on exactly one event per turn.
+   */
   #onTurnEmit(event: NodeStreamEvent): void {
     if (event.type === 'cost:updated') {
       this.#cumulativeCostMicrocents += event.costMicrocents;
@@ -394,13 +413,21 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
-    out.push(
-      ToolDefSchema.parse({
-        name: def.id,
-        ...(def.description.length > 0 ? { description: def.description } : {}),
-        parameters: def.llmVisibleParams,
-      }),
-    );
+    const parsed = ToolDefSchema.safeParse({
+      name: def.id,
+      ...(def.description.length > 0 ? { description: def.description } : {}),
+      parameters: def.llmVisibleParams,
+    });
+    if (!parsed.success) {
+      // A registered tool carries an invalid LLM-visible schema — a host-wiring bug, not a model failure.
+      // Classify it (rather than let a raw ZodError escape the turn) so it surfaces as a session error turn.
+      throw new AgentTurnError(
+        'internal',
+        `granted tool '${def.id}' has an invalid LLM schema`,
+        false,
+      );
+    }
+    out.push(parsed.data);
   }
   return out;
 }
