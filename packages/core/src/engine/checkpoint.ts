@@ -159,6 +159,13 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
       isBudgetGate:
         acc.pendingGates.get(event.gateId)?.isBudgetGate === true || event.type === 'budget:paused',
     });
+    // `cost:updated` is streamed (not persisted), so the running cost is otherwise unrecoverable on resume;
+    // but `budget:paused.spentMicrocents` IS the durable cumulative-at-pause. Restore it so a resumed budgeted
+    // run keeps its spend and the re-seeded governor blocks correctly (H2). (A budgeted run that paused at a
+    // *plain human* gate still loses its cost on resume — cost-event persistence is the deferred general fix.)
+    if (event.type === 'budget:paused') {
+      acc.cumulativeCostMicrocents = event.spentMicrocents;
+    }
     return;
   }
   if (event.type !== 'human_gate:resumed') {

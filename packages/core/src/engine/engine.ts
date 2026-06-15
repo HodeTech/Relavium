@@ -568,11 +568,15 @@ class RunExecution {
       return;
     }
 
-    // An APPROVED budget gate must CONTINUE the deferred LLM call (H3): the agent vertex paused pre-egress
-    // and produced no output, so completing it with the decision payload would short-circuit the call. Instead
+    // An APPROVED budget gate must CONTINUE the deferred call (H3): the agent vertex paused pre-egress and
+    // produced no output, so completing it with the decision payload would short-circuit the call. Instead
     // arm a one-shot pre-egress bypass for the vertex and re-dispatch it (reset to `pending` → `#claimReady`
-    // re-claims it). The first dispatch did no egress, so re-running is idempotent; `#runAttempt` consumes the
-    // bypass so only THIS re-run skips the cap (a later over-budget call on the same node pauses again).
+    // re-claims it). The first dispatch did no egress, so re-running is idempotent. Per the maintainer
+    // decision (continue the call, one-shot per RE-RUN — never per-LLM-call, which would re-pause and, since
+    // re-dispatch re-runs the turn from scratch, loop forever): `#runAttempt` consumes the one-shot so this
+    // ONE re-dispatched step runs to completion uncapped, then the cap re-arms for the next step. (A budget
+    // pause raised MID-tool-loop still re-runs the earlier in-turn calls on resume — the same limitation as
+    // "checkpoint/resume of a mid-tool-loop turn", deferred; the common first-call pause is exact.)
     if (gate.isBudgetGate && decision.decision === 'approved') {
       this.#budgetApprovedVertices.add(gate.vertexId);
       const state = this.#states.get(gate.vertexId);
@@ -819,9 +823,11 @@ class RunExecution {
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
   async #runAttempt(vertex: PlanVertex, attemptNumber: number): Promise<NodeOutcome> {
     try {
-      // A just-approved budget gate skips the pre-egress check for THIS re-dispatch only (H3): `delete`
-      // returns true iff the vertex was approved and removes it (one-shot), so the deferred call issues
-      // while a later over-budget call on the same node pauses again.
+      // A just-approved budget gate skips the pre-egress check for THIS one re-dispatch (H3): `delete`
+      // returns true iff the vertex was approved and removes it (one-shot per re-run), so the approved agent
+      // step runs to completion uncapped; the next, separate step re-arms the cap. Per-re-run (not
+      // per-LLM-call) by design — a per-call bypass would re-pause and, since re-dispatch re-runs the turn,
+      // loop forever (see the resume() approve branch).
       const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
       const preEgress = budgetApproved ? undefined : this.#makePreEgressHook();
       const ctx: NodeExecContext = {
@@ -1141,6 +1147,8 @@ class RunExecution {
       disarm();
     }
     this.#gateTimers.clear();
+    this.#budgetApprovedVertices.clear(); // drop any unconsumed budget-approval (a sibling failure/cancel
+    // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
     this.#disarmRunTimeout();
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;

@@ -55,8 +55,9 @@ export class BudgetPauseError extends Error {
     return {
       gateType: 'approval',
       message:
-        `The next LLM call would push the run past its budget cap of ${this.limitMicrocents} micro-cents ` +
-        `(already spent ${this.spentMicrocents}). Approve to continue anyway; reject to fail the run with budget_exceeded.`,
+        `This agent step's next LLM call would push the run past its budget cap of ${this.limitMicrocents} ` +
+        `micro-cents (already spent ${this.spentMicrocents}). Approve to let the step run to completion past ` +
+        `the cap; reject to fail the run with budget_exceeded.`,
       spentMicrocents: this.spentMicrocents,
       limitMicrocents: this.limitMicrocents,
       isBudgetGate: true,
