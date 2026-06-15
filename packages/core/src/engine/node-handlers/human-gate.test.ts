@@ -51,6 +51,7 @@ function ctxFor(
     vertex,
     runOutputs: opts.runOutputs ?? new Map(),
     inputs: opts.inputs ?? {},
+    ctx: {},
     secretInputNames: new Set(),
     toolPolicy: {},
     emit: () => undefined,

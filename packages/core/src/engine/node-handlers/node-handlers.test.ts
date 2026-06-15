@@ -73,6 +73,7 @@ function makeCtx(
   opts: {
     runOutputs?: ReadonlyMap<string, unknown>;
     inputs?: Record<string, unknown>;
+    ctx?: Record<string, string>;
     secretInputNames?: ReadonlySet<string>;
     signal?: AbortSignalLike;
   } = {},
@@ -81,6 +82,7 @@ function makeCtx(
     vertex,
     runOutputs: opts.runOutputs ?? new Map(),
     inputs: opts.inputs ?? {},
+    ctx: opts.ctx ?? {},
     secretInputNames: opts.secretInputNames ?? new Set(),
     toolPolicy: {},
     emit: () => undefined,
@@ -244,6 +246,16 @@ describe('transform handler (1.P)', () => {
     });
     const out = await exec.execute(makeCtx(v, { inputs: { n: 5 } }));
     expect(out).toEqual({ kind: 'completed', output: { doubled: 10 } });
+  });
+
+  it('threads the resolved ctx.* namespace into the expression scope (a bare ctx.key resolves)', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: { id: 't', type: 'transform', transform: 'ctx.greeting' },
+    });
+    const out = await exec.execute(makeCtx(v, { ctx: { greeting: 'hi world' } }));
+    expect(out).toEqual({ kind: 'completed', output: 'hi world' });
   });
 
   it('reads run.outputs keys in canonical (sorted) order for resume determinism (Trap 7)', async () => {

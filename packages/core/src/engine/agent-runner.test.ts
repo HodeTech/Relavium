@@ -127,6 +127,7 @@ function ctxFor(
       vertex,
       runOutputs,
       inputs,
+      ctx: {},
       secretInputNames: new Set(),
       toolPolicy: {},
       emit: (e) => events.push(e),

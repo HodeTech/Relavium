@@ -313,11 +313,12 @@ async function resolvePrompt(
   deps: AgentRunnerDeps,
 ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
   // The resolved prompt may draw on untrusted run.outputs / read_file — it lands in a USER message
-  // (assembleMessages), never `system`. `ctx` (the workflow-context namespace) is threaded once the
-  // engine resolves it; for now an agent prompt resolves against inputs + run.outputs.
+  // (assembleMessages), never `system`. `ctx` is the resolved workflow-context namespace
+  // (`NodeExecContext.ctx`), folded once at run start by the engine; a prompt resolves against
+  // inputs + ctx + run.outputs.
   const scope: RunScope = {
     inputs: ctx.inputs,
-    ctx: {},
+    ctx: ctx.ctx,
     outputs: Object.fromEntries(ctx.runOutputs),
   };
   try {

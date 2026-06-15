@@ -208,11 +208,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `resolveContext` returns an `Object.freeze`d **null-prototype** map so a `__proto__`/`constructor`
   context key is a safe own property. That guard is in-memory only: persisting/transporting it via
   `JSON.stringify` → `JSON.parse` (esp. with a reviver, or merged into `{}`) can re-materialize
-  `__proto__` as a real setter. **NB (2026-06-15): 1.R landed (PR #22) and does NOT carry the resolved
-  `ctx` in `CheckpointState`** — the checkpoint is folded from `run_events` (node outputs), and the
-  workflow `context:` is re-resolved at run start, so there is nothing to `structuredClone` yet. This
-  obligation re-points to whoever lands **ctx-threading + ctx-in-checkpoint** (the engine gap below);
-  pin it with a test then. *(packages/core/src/interpolation/resolve.ts)*
+  `__proto__` as a real setter. **NB (2026-06-15): ctx-threading landed (the ctx-threading PR) and RE-RESOLVES `ctx` at
+  run start AND on resume — it is never carried in `CheckpointState`, so there is nothing to transport.**
+  This obligation therefore stays dormant; it only becomes live if a future revision decides to CHECKPOINT
+  `ctx` (instead of re-resolving it), at which point that transport MUST use `structuredClone` (never a
+  JSON round-trip) and pin it with a test. *(packages/core/src/interpolation/resolve.ts)*
 
 ## AgentRunner (1.O) / reasoning-replay follow-ups
 
@@ -312,18 +312,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `AbortSignal` cannot cancel one branch without cancelling the run, and a handler cannot cancel sibling
   vertices. The engine authors already flagged this as a "1.P refinement" (engine.ts:26-28). Promote to a
   scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
-- [ ] **Workflow-context (`ctx.*`) threading into expression/agent scope** — the `condition`/`transform`/
-  `merge_fn` sandbox scope (and the AgentRunner's prompt `RunScope`) currently bind `ctx: {}` — the authored
-  `context:` namespace is not yet resolved and threaded to handlers (a `{{ctx.key}}` template still resolves,
-  but a bare `ctx.key` JS-expression read sees `{}`). A cross-cutting change for **both** 1.O and 1.P when the
-  engine resolves the workflow `context:` map. **NB (2026-06-14 triage):** this is not a drive-by — `resolveContext`
-  is **async** (a context value may `read_file`), so it needs a new **run-start async resolution step** in the
-  engine (with resolver capabilities + a context-resolution-failure path) plus the `NodeExecContext` seam field.
-  Best done as its own focused task or folded into **1.Q/1.R** (which already touch the run lifecycle); it is the
-  highest-value open engine gap (a bare `ctx.key` silently reads `undefined` today — a mis-route risk).
-  **NB (2026-06-15): the 1.Q/1.R fold window passed (PR #22 landed without it — it was orthogonal to the
-  gate/checkpoint work); this is now its OWN focused task and remains the highest-value open engine gap.**
-  *(medium · packages/core/src/engine/engine.ts, node-handlers/scope.ts, agent-runner.ts; resolveContext is 1.L2)*
+- [x] **Workflow-context (`ctx.*`) threading into expression/agent scope** — the `condition`/`transform`/
+  `merge_fn` sandbox scope (and the AgentRunner's prompt `RunScope`) bound `ctx: {}` — the authored
+  `context:` namespace was not resolved/threaded (a `{{ctx.key}}` template resolved, but a bare `ctx.key`
+  JS-expression read saw `{}`). **✅ Fixed (the ctx-threading PR, 2026-06-15):** the engine resolves the workflow
+  `context:` once at run start (a new `#resolveContextOrFail` step using injected
+  `WorkflowEngineDeps.resolverCapabilities`, with a `validation` failure path that closes the run), threads
+  the frozen `ctx.*` via the new `NodeExecContext.ctx` seam field, and both consumers (`buildExpressionScope`,
+  the AgentRunner's `resolvePrompt`) read it; `ctx` is **re-resolved on resume** (not checkpointed). Pinned by
+  engine e2e + a transform unit test. *(packages/core/src/engine/engine.ts, node-handlers/scope.ts, agent-runner.ts)*
 - [ ] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
   resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**

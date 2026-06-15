@@ -110,6 +110,14 @@ export interface NodeExecContext {
   /** The run-wide inputs (the `input` namespace); a `secret`-typed input is carried per the taint rules. */
   readonly inputs: Readonly<Record<string, unknown>>;
   /**
+   * The resolved workflow `context:` namespace (the `ctx.*` reads) — the engine resolves it **once** at run
+   * start (the spec's eager-once context; `resolveContext`) and threads the frozen result here, so a bare
+   * `ctx.key` JS read in a `condition`/`transform`/`merge_fn` expression (and an agent prompt) sees the real
+   * value, not `undefined`. `{}` when the workflow declares no `context:`. Values are strings (resolved
+   * templates); a `secret`-derived context value is gated at parse by the taint analyzer, never here.
+   */
+  readonly ctx: Readonly<Record<string, string>>;
+  /**
    * The names of `secret`-typed inputs (`inputs.<name>` declared `type: secret`). A handler that emits
    * inputs into a node output (the `input` node) or into the expression sandbox (`condition`/`transform`/
    * `merge_fn`) MUST mask/omit these so a raw secret never reaches an event payload or an expression — the
