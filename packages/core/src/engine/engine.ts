@@ -200,7 +200,10 @@ class RunExecution {
 
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
-  readonly #pendingGates = new Map<string, { readonly vertexId: string; readonly isBudgetGate: boolean }>();
+  readonly #pendingGates = new Map<
+    string,
+    { readonly vertexId: string; readonly isBudgetGate: boolean }
+  >();
   /** Gate ids whose decision was already applied — a re-delivery is an idempotent no-op (1.R). */
   readonly #resolvedGates = new Set<string>();
   /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
@@ -491,7 +494,10 @@ class RunExecution {
   }
 
   /** The pending gate for `gateId`, or throw the typed misuse (`run_not_paused` / `unknown_gate`). */
-  #assertGatePending(gateId: string): { readonly vertexId: string; readonly isBudgetGate: boolean } {
+  #assertGatePending(gateId: string): {
+    readonly vertexId: string;
+    readonly isBudgetGate: boolean;
+  } {
     if (this.#pendingGates.size === 0) {
       throw new EngineStateError('run_not_paused', 'the run has no pending gate to resume', {
         runId: this.runId,

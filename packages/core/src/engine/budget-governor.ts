@@ -54,7 +54,8 @@ export class BudgetPauseError extends Error {
   toGateRequest(): GateRequest {
     return {
       gateType: 'approval',
-      message: `The next LLM call would push the run past its budget cap of ${this.limitMicrocents} micro-cents ` +
+      message:
+        `The next LLM call would push the run past its budget cap of ${this.limitMicrocents} micro-cents ` +
         `(already spent ${this.spentMicrocents}). Approve to continue anyway; reject to fail the run with budget_exceeded.`,
       spentMicrocents: this.spentMicrocents,
       limitMicrocents: this.limitMicrocents,
@@ -66,7 +67,12 @@ export class BudgetPauseError extends Error {
 /** What the governor decided at a pre-egress check. */
 export type BudgetCheckResult =
   | { readonly kind: 'allow' }
-  | { readonly kind: 'warn'; readonly spentMicrocents: number; readonly limitMicrocents: number; readonly thresholdPct: number }
+  | {
+      readonly kind: 'warn';
+      readonly spentMicrocents: number;
+      readonly limitMicrocents: number;
+      readonly thresholdPct: number;
+    }
   | { readonly kind: 'fail'; readonly error: BudgetExceededError }
   | { readonly kind: 'pause'; readonly error: BudgetPauseError };
 
@@ -78,14 +84,18 @@ export type BudgetCheckResult =
 export class BudgetGovernor {
   readonly #budget: Budget;
   readonly #defaultMaxTokensEstimate: number;
-  readonly #emit: (event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>) => Promise<void>;
+  readonly #emit: (
+    event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
+  ) => Promise<void>;
   #cumulativeCostMicrocents = 0;
   #warningEmitted = false;
 
   constructor(params: {
     readonly budget: Budget;
     readonly defaultMaxTokensEstimate?: number;
-    readonly emit: (event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>) => Promise<void>;
+    readonly emit: (
+      event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
+    ) => Promise<void>;
   }) {
     this.#budget = params.budget;
     this.#defaultMaxTokensEstimate = params.defaultMaxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
