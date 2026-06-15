@@ -1,4 +1,4 @@
-import { estimateMaxNextCost } from '@relavium/llm';
+import { estimateMaxNextCost, UnknownModelError } from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
 import type { RunEventDraft } from './event-bus.js';
@@ -112,7 +112,19 @@ export class BudgetGovernor {
    * callers apply the action by throwing the supplied error or, for `warn`, emitting the event.
    */
   evaluatePreEgress(model: string, maxTokens: number | undefined): BudgetCheckResult {
-    const estimate = estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate);
+    let estimate: number;
+    try {
+      estimate = estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate);
+    } catch (err) {
+      // An unpriced model (e.g. a custom base-URL / self-hosted id with no pricing row) throws
+      // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it —
+      // degrade to `allow`, mirroring the FallbackChain's "unpriced ⇒ no-cost" policy (H4). A self-hosted
+      // model has ~no metered cost, so the cap simply does not constrain it. Any other error is a real bug.
+      if (err instanceof UnknownModelError) {
+        return { kind: 'allow' };
+      }
+      throw err;
+    }
     const projected = this.#cumulativeCostMicrocents + estimate;
     if (projected <= this.#budget.max_cost_microcents) {
       return { kind: 'allow' };

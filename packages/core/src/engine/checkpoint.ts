@@ -152,7 +152,12 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
     acc.nodeStates.set(event.nodeId, { status: 'paused' });
     acc.pendingGates.set(event.gateId, {
       nodeId: event.nodeId,
-      isBudgetGate: event.type === 'budget:paused',
+      // A budget gate emits BOTH `budget:paused` then a companion `human_gate:paused` with the SAME gateId
+      // (engine `#settlePaused`). OR the flag so the later human_gate:paused never downgrades a budget gate
+      // to a plain human gate on reconstruction — else a resumed `rejected` budget gate would not fail the
+      // run with `budget_exceeded` (the resume reject branch is gated on `isBudgetGate`).
+      isBudgetGate:
+        acc.pendingGates.get(event.gateId)?.isBudgetGate === true || event.type === 'budget:paused',
     });
     return;
   }

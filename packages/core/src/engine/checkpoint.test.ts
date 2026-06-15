@@ -100,6 +100,35 @@ describe('reconstructCheckpointState', () => {
     expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'gate', isBudgetGate: false }]);
   });
 
+  it('keeps isBudgetGate=true across the companion budget:paused → human_gate:paused pair (same gateId) — H1', () => {
+    // The engine emits budget:paused THEN human_gate:paused with the SAME gateId for a budget gate. The fold
+    // must not let the later human_gate:paused downgrade it to a plain human gate — else a resumed REJECTED
+    // budget gate would skip the run:failed{budget_exceeded} branch (gated on isBudgetGate) and continue.
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'budget:paused',
+        ...base(1),
+        nodeId: 'n',
+        gateId: 'g1',
+        spentMicrocents: 900,
+        limitMicrocents: 1000,
+      },
+      {
+        type: 'human_gate:paused',
+        ...base(2),
+        nodeId: 'n',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'over budget',
+      },
+      { type: 'run:paused', ...base(3), pendingGateCount: 1, gateIds: ['g1'] },
+    ]);
+    expect(state?.runStatus).toBe('paused');
+    expect(state?.nodeStates.get('n')).toEqual({ status: 'paused' });
+    expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'n', isBudgetGate: true }]);
+  });
+
   it('a resumed gate clears the pending gate + records the decision as the node output', () => {
     const state = reconstructCheckpointState([
       started,

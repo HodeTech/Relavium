@@ -24,6 +24,7 @@ import {
 } from './agent-session.js';
 // Intra-package helper (NOT the identically-named public index.ts export) — keeps engine purity; the
 // session never names the ambient `AbortController`. A path drift to the public surface would be a smell.
+import { BudgetPauseError } from './budget-governor.js';
 import { createAbortController } from './execution-host.js';
 
 const CAPS: CapabilityFlags = {
@@ -258,6 +259,53 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
       running += e.costMicrocents;
       expect(e.cumulativeCostMicrocents).toBe(running);
     }
+  });
+
+  it('feeds the running cumulative cost to a wired governor via updateCost — M3', async () => {
+    // A host wiring preEgress to a BudgetGovernor must also keep the governor's cumulative current, else a
+    // tool-looping chat never fails safe (only single-call estimates would trip). The session calls
+    // SessionDeps.updateCost once per cost:updated with the running total.
+    const seen: number[] = [];
+    const { deps, events } = harness([textTurn('a'), textTurn('b')], {
+      updateCost: (n) => {
+        seen.push(n);
+      },
+    });
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('one');
+    await s.sendMessage('two');
+
+    const costs = events.filter((e) => e.type === 'cost:updated');
+    expect(seen).toHaveLength(costs.length); // one updateCost per cost:updated
+    const last = costs.at(-1);
+    expect(seen.at(-1)).toBe(last?.type === 'cost:updated' ? last.cumulativeCostMicrocents : -1);
+    for (let i = 1; i < seen.length; i += 1) {
+      expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1] ?? 0); // monotonic non-decreasing
+    }
+  });
+
+  it('settles a turn LOUDLY as budget_exceeded when a pre-egress BudgetPauseError is thrown — M1', async () => {
+    // A session has no pause/resume gate machinery in 1.V; a pre-egress pause_for_approval must not escape
+    // sendMessage as a raw throw (which would leave the turn with no terminal session:turn_completed).
+    const { deps, events } = harness([textTurn('unreached')], {
+      preEgress: () => {
+        throw new BudgetPauseError(900, 1000, 90);
+      },
+    });
+    const s = session(deps);
+    s.start();
+    await expect(s.sendMessage('go')).resolves.toBeUndefined(); // no raw throw escapes
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'budget_exceeded',
+    );
+    expect(completed?.type === 'session:turn_completed' ? completed.stopReason : undefined).toBe(
+      'error',
+    );
+    // No egress happened (the pause was pre-egress).
+    expect(typesOf(events)).not.toContain('agent:token');
   });
 
   it('emits session:turn_completed{turn_limit} — loudly, no egress — when driven past the hard cap', async () => {

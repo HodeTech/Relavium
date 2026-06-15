@@ -912,6 +912,79 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     eventsB.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + 1 + index));
   });
 
+  it('re-seeds the budget governor from the checkpoint cost so pre-egress blocks after resume — H2', async () => {
+    // A budgeted run spends ~the cap, then parks at a human gate, then crashes. A fresh engine resumes from
+    // the persisted log: the downstream node's pre-egress must see the RESTORED cumulative (the governor is
+    // re-seeded in #seedFromCheckpoint) and block. Without the re-seed the governor starts at 0 and would
+    // under-block (allow) until the first post-resume cost event.
+    const BUDGET_GATED = `  id: budget-resume
+  budget:
+    max_cost_microcents: 1000000
+    on_exceed: fail
+  nodes:
+    - { id: spend, type: transform, transform: '1' }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: work, type: transform, transform: '1' }
+  edges:
+    - { from: spend, to: g }
+    - { from: g, to: work }`;
+    const preEgress: string[] = [];
+    const handlers: Record<string, Handler> = {
+      // `spend` reports ~the whole cap so the engine's cumulative (and the persisted checkpoint) is high.
+      spend: (ctx): NodeOutcome => {
+        ctx.emit({
+          type: 'cost:updated',
+          nodeId: 'spend',
+          model: 'claude-sonnet-4-6',
+          inputTokens: 0,
+          outputTokens: 0,
+          costMicrocents: 900_000,
+          cumulativeCostMicrocents: 0, // placeholder — the engine overwrites with its running total
+        });
+        return { kind: 'completed', output: 1 };
+      },
+      g: (): NodeOutcome => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      // `work` consults the pre-egress hook and records whether the governor blocked the next call.
+      work: async (ctx): Promise<NodeOutcome> => {
+        try {
+          await ctx.preEgress?.({ model: 'claude-sonnet-4-6', maxTokens: 10_000 });
+          preEgress.push('allowed');
+          return { kind: 'completed', output: 'ran' };
+        } catch {
+          preEgress.push('blocked');
+          return {
+            kind: 'failed',
+            error: { code: 'budget_exceeded', message: 'cap', retryable: false },
+          };
+        }
+      },
+    };
+
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(handlers, createInMemoryHost({ store }));
+    const handleA = engineA.start({ workflow: workflow(BUDGET_GATED) });
+    let gateId = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break; // the "process" dies here, parked at the gate, after `spend` reported 900k of the 1M cap
+      }
+    }
+    expect(gateId).not.toBe('');
+
+    const engineB = engineWith(handlers, createInMemoryHost({ store }));
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(BUDGET_GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'tester' },
+    });
+    await drain(handleB);
+
+    // The re-seeded governor (900k spent + the ~10k-token estimate) exceeds the 1M cap → pre-egress blocks.
+    expect(preEgress).toEqual(['blocked']);
+  });
+
   it('is a no-op (closed handle, nothing re-persisted) re-delivering to an already-terminal run', async () => {
     const store = new InMemoryRunStore();
     const { runId, gateId } = await runToGate(store);

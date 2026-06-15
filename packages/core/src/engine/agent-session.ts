@@ -51,6 +51,7 @@ import {
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
+import { BudgetPauseError } from './budget-governor.js';
 import type { AbortControllerLike } from './execution-host.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
@@ -113,6 +114,14 @@ export interface SessionDeps {
   readonly maxTurns?: number;
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;
+  /**
+   * Feed the running session cost to a budget governor so a host that wires {@link preEgress} to
+   * `BudgetGovernor.checkPreEgress` also keeps the governor's cumulative total current (ADR-0028, 1.AC).
+   * Called after each `cost:updated` with the session-wide cumulative; without it the governor would stay
+   * pinned at 0 and only single-call estimates would trip the cap (so a tool-looping chat would not fail
+   * safe). No-op by default; the host wires it to `governor.updateCost`.
+   */
+  readonly updateCost?: (cumulativeCostMicrocents: number) => void;
 }
 
 /** Construction params: a caller-minted `sessionId`, the bound agent + its `agentRef`, the context, deps. */
@@ -276,6 +285,17 @@ export class AgentSession {
           { input: 0, output: 0 },
           { code: err.code, message: err.message, retryable: err.retryable },
         );
+      } else if (err instanceof BudgetPauseError) {
+        // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred
+        // 1.V×1.AC item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded`
+        // rather than escaping `sendMessage` as a raw throw — which would leave the turn with no terminal
+        // `session:turn_completed`, breaking the session event contract (M1).
+        this.#turnCount += 1;
+        this.#emitTurnCompleted(
+          'error',
+          { input: 0, output: 0 },
+          { code: 'budget_exceeded', message: err.message, retryable: false },
+        );
       } else {
         throw err; // unexpected — re-raise (transcript already rolled back); the caller decides
       }
@@ -351,6 +371,10 @@ export class AgentSession {
   #onTurnEmit(event: NodeStreamEvent): void {
     if (event.type === 'cost:updated') {
       this.#cumulativeCostMicrocents += event.costMicrocents;
+      // Keep a host-wired budget governor's running total current so its pre-egress check sees the real
+      // session spend (ADR-0028) — without this the governor would stay at 0 and a tool-looping chat would
+      // not fail safe.
+      this.#deps.updateCost?.(this.#cumulativeCostMicrocents);
       this.#deps.emit({ ...event, cumulativeCostMicrocents: this.#cumulativeCostMicrocents });
       return;
     }

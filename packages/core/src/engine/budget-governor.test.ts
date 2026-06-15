@@ -80,4 +80,15 @@ describe('BudgetGovernor', () => {
     await governor.checkPreEgress('claude-sonnet-4-6', 1000);
     expect(warnings[0]?.thresholdPct).toBe(100);
   });
+
+  it('degrades to allow (does not crash the run) for an unlisted/unpriced model — H4', async () => {
+    // An unpriced custom/self-hosted model id has no pricing row → estimateMaxNextCost throws
+    // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it; it
+    // degrades to `allow` (mirrors the FallbackChain's unpriced⇒no-cost policy). Even with on_exceed: fail
+    // and the run already over a notional cap, an unpriced model resolves rather than throwing.
+    const { governor, warnings } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+    governor.updateCost(900_000);
+    await expect(governor.checkPreEgress('my-self-hosted-model', 10_000)).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(0);
+  });
 });

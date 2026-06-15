@@ -455,7 +455,7 @@ workflow:
     expect(events.some((e) => e.type === 'node:failed')).toBe(true);
   });
 
-  it('pauses and resumes when on_exceed is pause_for_approval', async () => {
+  it('pauses, and on approve CONTINUES the deferred LLM call (H3 — not a {decision} short-circuit)', async () => {
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
       executor: agentExecutor(() => cheapProvider()),
@@ -476,8 +476,15 @@ workflow:
     }
     expect(events.at(-1)?.type).toBe('run:completed');
     expect(events.some((e) => e.type === 'budget:paused')).toBe(true);
-    // run:paused is emitted, but a synchronous resume may settle the run before the event surfaces,
-    // so we only assert the budget gate fired and the run ultimately completed.
+    // H3: approving a budget pause must CONTINUE the call — the agent node re-dispatches (a one-shot
+    // pre-egress bypass) and completes with the MODEL's output, never a `{decision:'approved'}`
+    // short-circuit. So 'n' starts twice (initial + post-approval re-dispatch) and its node:completed
+    // carries the streamed 'ok'. Before the fix the node was marked completed with the gate decision and
+    // the LLM call never issued.
+    const nStarted = events.filter((e) => e.type === 'node:started' && e.nodeId === 'n');
+    expect(nStarted.length).toBe(2);
+    const nDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'n');
+    expect(nDone?.type === 'node:completed' ? nDone.output : undefined).toBe('ok');
   });
 
   it('fails the run when a paused budget gate is rejected', async () => {

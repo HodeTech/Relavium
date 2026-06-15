@@ -212,6 +212,9 @@ class RunExecution {
   #runTimeoutDisarm: (() => void) | undefined;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
   #budgetGovernor: BudgetGovernor | undefined;
+  /** Vertices whose budget gate was APPROVED — their next re-dispatch skips the pre-egress check ONCE so the
+   *  deferred LLM call actually issues (H3). Consumed (one-shot) in `#runAttempt`. */
+  readonly #budgetApprovedVertices = new Set<string>();
 
   #workflowId = '';
   #settled = false;
@@ -438,6 +441,10 @@ class RunExecution {
     this.#totalInputTokens = cp.totalInputTokens;
     this.#totalOutputTokens = cp.totalOutputTokens;
     this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
+    // Re-seed the budget governor with the restored cumulative cost (H2): it starts at 0 and only advances
+    // on `cost:updated`, which a resume does NOT replay — so without this a resumed budgeted run would
+    // under-block by up to ~a full cap on its first post-resume pre-egress check (ADR-0028).
+    this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
     // Post-resume events continue gap-free from the last persisted sequence number.
     bus.seedSequence(runId, cp.lastSequenceNumber + 1);
     // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
@@ -555,6 +562,28 @@ class RunExecution {
         runId: this.runId,
         nodeId: gate.vertexId,
         decision: 'rejected',
+        decidedBy: decision.decidedBy,
+      });
+      this.#schedule();
+      return;
+    }
+
+    // An APPROVED budget gate must CONTINUE the deferred LLM call (H3): the agent vertex paused pre-egress
+    // and produced no output, so completing it with the decision payload would short-circuit the call. Instead
+    // arm a one-shot pre-egress bypass for the vertex and re-dispatch it (reset to `pending` → `#claimReady`
+    // re-claims it). The first dispatch did no egress, so re-running is idempotent; `#runAttempt` consumes the
+    // bypass so only THIS re-run skips the cap (a later over-budget call on the same node pauses again).
+    if (gate.isBudgetGate && decision.decision === 'approved') {
+      this.#budgetApprovedVertices.add(gate.vertexId);
+      const state = this.#states.get(gate.vertexId);
+      if (state !== undefined) {
+        state.status = 'pending';
+      }
+      await this.#emitDurable({
+        type: 'human_gate:resumed',
+        runId: this.runId,
+        nodeId: gate.vertexId,
+        decision: 'approved',
         decidedBy: decision.decidedBy,
       });
       this.#schedule();
@@ -790,7 +819,11 @@ class RunExecution {
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
   async #runAttempt(vertex: PlanVertex, attemptNumber: number): Promise<NodeOutcome> {
     try {
-      const preEgress = this.#makePreEgressHook();
+      // A just-approved budget gate skips the pre-egress check for THIS re-dispatch only (H3): `delete`
+      // returns true iff the vertex was approved and removes it (one-shot), so the deferred call issues
+      // while a later over-budget call on the same node pauses again.
+      const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
+      const preEgress = budgetApproved ? undefined : this.#makePreEgressHook();
       const ctx: NodeExecContext = {
         vertex,
         runOutputs: this.#completedOutputs(),
