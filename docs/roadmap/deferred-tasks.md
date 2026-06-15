@@ -386,6 +386,40 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
   `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. *(low · checkpoint.ts/engine.ts; Phase-2 store)*
 
+## AgentSession (1.V) follow-ups
+
+> **2026-06-15 1.V implementation (ADR-0024) + two pre-merge review passes.** The in-memory `AgentSession`
+> entry point landed — multi-turn `start`/`sendMessage`/`cancel` over the **shared turn core** (`runAgentTurn`),
+> the hard turn cap → `turn_limit`, session-wide cost, emission via an injected `SessionEventSink`. The
+> deferrals below were decided while building it; each has a clear later home, recorded so it isn't lost.
+> (The bus wiring + `SessionHandle` is the scheduled **1.W** workstream, persistence + the durable
+> `SessionMessage` schema is **1.X**, resume **1.Y**, export **1.Z** — those are workstreams, tracked in
+> [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.)
+
+- [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** 1.V appends only the final
+  assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
+  (so the transcript carries no orphaned `tool_use` and stays protocol-valid), and reasoning is dropped (a
+  `signature` is a within-turn same-provider replay token — ADR-0030/0039 — that must not span turns). Carrying
+  the full per-turn tool/reasoning history needs the turn core to **expose its intermediate messages**
+  (`runAgentTurn` copies its input and returns only final content) — revisit when 1.X persistence / 1.Z export
+  needs faithful turns, once `agent-turn.ts` is settled. *(medium · packages/core/src/engine/agent-session.ts + agent-turn.ts; 1.X/1.Z)*
+- [ ] **Session budget pause/resume (1.V × 1.AC).** `AgentSession` threads the ADR-0028 `preEgress` hook as a
+  pass-through but does **not** handle a `BudgetPauseError`: a non-`AgentTurnError` throw rolls the user message
+  back and re-raises (a session has no pause/resume gate machinery in 1.V). The run path maps a budget pause to
+  a `paused` node outcome via the human-gate seam; a budgeted session needs the analogous suspend/resume
+  lifecycle. Wire it when sessions gain a budget (surface phases). *(medium · packages/core/src/engine/agent-session.ts; ADR-0028)*
+- [ ] **Per-session tool narrowing (ADR-0029 narrow-only).** 1.V grants the bound agent's `tools` verbatim; a
+  session cannot yet **narrow** them per-session (it may only ever narrow, never widen). Add a session-level
+  narrow when a surface needs to restrict a session's tools below the agent's grant.
+  *(low · packages/core/src/engine/agent-session.ts; ADR-0029)*
+- [ ] **`[chat].max_turns` surface wiring.** The hard turn cap is an **engine-API** knob in 1.V
+  (`SessionDeps.maxTurns`, finite default 50); mapping the `[chat]` config default onto it is a surface task
+  (the CLI/desktop read `[chat]` and pass `maxTurns`). It is deliberately **not** a Phase-1 `[chat]` field.
+  *(low · config-spec.md + surfaces; Phase 2+)*
+- [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
+  structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
+  validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
+
 ## Schema / validation hardening
 
 - [ ] **`z.unknown()` payload presence** — `agent:tool_call.toolInput`, `node:completed.output`,
