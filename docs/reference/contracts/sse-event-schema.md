@@ -159,6 +159,27 @@ export interface HumanGatePausedEvent extends BaseEvent {
   timeoutAction?: 'approve' | 'reject';  // on-timeout policy (present only with timeoutMs); lets a surface show how the gate auto-resolves and a Phase-2 crash-resume re-arm the timer from the log
   expiresAt?: string;
 }
+
+export interface BudgetWarningEvent extends BaseEvent {
+  type: 'budget:warning';
+  spentMicrocents: number;
+  limitMicrocents: number;
+  thresholdPct: number;     // 0–100, rounded from spent/limit at the pre-egress check point
+}
+
+export interface BudgetPausedEvent extends BaseEvent {
+  type: 'budget:paused';
+  nodeId: string;           // the agent node whose next LLM call would exceed the cap
+  spentMicrocents: number;
+  limitMicrocents: number;
+  gateId: string;           // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
+}
+
+export interface RunTimeoutEvent extends BaseEvent {
+  type: 'run:timeout';
+  elapsedMs: number;
+  timeoutMs: number;
+}
 ```
 
 ### Security: event payloads never carry secrets
@@ -236,8 +257,8 @@ Within a turn, the conversational work reuses the **same** `agent:token` / `agen
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
-| `budget:warning` | Spend crossed the warning threshold. | `spentMicrocents`, `limitMicrocents`, `thresholdPct` |
-| `budget:paused` | Spend would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via the `resume_budget` IPC command. | `spentMicrocents`, `limitMicrocents` |
+| `budget:warning` | Pre-egress worst-case cost estimate would exceed the configured cap, and `on_exceed: warn` is set. Emitted once per run before the capped egress; execution continues. `thresholdPct` is `clamp(round(spent / limit * 100), 0, 100)` observed at the pre-egress check point. | `spentMicrocents`, `limitMicrocents`, `thresholdPct` |
+| `budget:paused` | Pre-egress estimate would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via `engine.resume(runId, gateId, decision)`. `decision: approved` continues; `rejected` closes the run with `run:failed{code: budget_exceeded}`. | `nodeId`, `spentMicrocents`, `limitMicrocents`, `gateId` |
 | `run:timeout` | The run hit its `timeout_ms`. | `elapsedMs`, `timeoutMs` |
 
 These three (and `run:paused` / `human_gate:paused`) are **non-terminal** — they signal a governance/suspension state, not the run's end. A run that cannot continue past a timeout or budget cap still closes with **exactly one** `run:failed` carrying `code: run_timeout` / `budget_exceeded`. The exactly-one-terminal-event invariant (`run:completed | run:failed | run:cancelled`) and its precedence are owned by [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md).

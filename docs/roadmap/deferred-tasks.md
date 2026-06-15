@@ -188,6 +188,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   question: does the estimate need provider-accurate token counting (from the seam's model meta /
   usage feedback) to avoid systematic over/under-blocking, or is the declared estimate enough?
   No change now — re-evaluate with real 1.AC telemetry. *(1.AC; ADR-0028)*
+- [ ] **Configurable sub-100% budget warning threshold (ADR-0028 amendment).** `budget:warning`
+  today is emitted only when a pre-egress estimate would already exceed the cap, on the `on_exceed: warn`
+  path (`thresholdPct` reports the observed spent/limit fraction at that point). A user-facing
+  early-warning threshold (e.g. `warn_at_pct: 80`) requires amending ADR-0028 to add both a
+  config default and a per-workflow `budget.warn_at_pct` field, plus a decision on whether it
+  throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
+  there is concrete surface demand or telemetry showing operators need an earlier signal.
+  *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
 ## Interpolation engine (1.L2) follow-ups
 
