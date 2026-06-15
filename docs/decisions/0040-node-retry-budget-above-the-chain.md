@@ -161,6 +161,18 @@ adjustment needs an authoring surface and a re-resolution story that are out of 
 
 ### Part B — retry-from-node (user-triggered)
 
+> **Amended (2026-06-15): Part B is deferred to Phase-2 — NOT implemented with Part A.** Implementing it
+> surfaced an irreducible conflict for the Phase-1 in-memory engine: the design below wants the **same
+> `runId`** (so the host dedups completed-upstream side effects via `runId+nodeId+retryCount`) **and** a
+> single terminal event. But a settled run already holds its one `run:completed`/`run:failed`
+> ([ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) exactly-one-terminal); re-running on
+> the same `runId` would append a **second** terminal and the 1.R Checkpointer fold would see two. A *new*
+> `runId` fixes the terminal/`retryCount` cleanliness but breaks upstream-side-effect dedup (different keys).
+> Reconciling "same runId + single terminal + no upstream re-apply" needs the **real persistent store + a
+> run-attempt model** (a re-run row referencing the original) — Phase-2, which already owns the surface
+> trigger. Part A (the in-run budget) is the landed 1.S deliverable; retry-from-node is tracked in
+> [deferred-tasks.md](../roadmap/deferred-tasks.md). The original design intent is preserved below.
+
 **We will add a `WorkflowEngine` API to re-run a settled/failed run from a chosen node**, reusing the
 `runId + nodeId + retryCount` key so completed-upstream side effects are not re-applied. To avoid a key
 **collision** with Part A's automatic attempts (a fresh run-from-node must not reuse `retryCount: 0`, which an
