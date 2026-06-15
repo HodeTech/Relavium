@@ -204,14 +204,16 @@ function buildPlanEntries(
   if (primary === undefined) {
     return { ok: false, code: 'internal', message: `no provider wired for '${agent.provider}'` };
   }
-  // The primary entry's retry budget + backoff: a node override wins over the agent default (ADR-0038).
-  const retry = node.retry ?? agent.retry;
+  // The primary entry does NOT consume `node.retry` any more: ADR-0040 (amending ADR-0038) makes
+  // `node.retry` the engine's ABOVE-chain node-retry budget (applied around the whole chain), not the
+  // primary provider's within-chain same-model retry. The primary defaults to a single attempt + the
+  // chain's own default backoff; a within-chain primary retry, if ever wanted, is a future primary
+  // `max_attempts` field (ADR-0040 A.2), not `retry`.
   const entries: FallbackPlanEntry[] = [
     {
       provider: primary,
       model: node.model ?? agent.model,
-      maxAttempts: retry?.max ?? 1,
-      ...(retry?.backoff === undefined ? {} : { backoff: retry.backoff }),
+      maxAttempts: 1,
     },
   ];
   for (const entry of agent.fallback_chain ?? []) {

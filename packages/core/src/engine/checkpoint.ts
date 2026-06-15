@@ -138,7 +138,9 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
       acc.nodeStates.set(event.nodeId, { status: 'skipped' });
       break;
     default:
-      break; // node:started has no terminal yet → omitted so the rehydrating engine re-runs it
+      // node:started (running at crash → omit, re-run) and node:retrying (a non-terminal retry attempt,
+      // 1.S/ADR-0040 — the terminal is a later node:failed/node:completed) are non-state-bearing here.
+      break;
   }
 }
 

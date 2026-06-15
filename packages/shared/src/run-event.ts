@@ -141,6 +141,9 @@ export const NodeStartedEventSchema = z.object({
   // The engine node type (node-types.md is the canonical taxonomy), not the authored YAML type —
   // `parallel`/`merge` have already expanded to `fan_out`/`fan_in` by the time the engine runs.
   nodeType: z.enum(ENGINE_NODE_TYPES),
+  // 1-based dispatch attempt (1.S, ADR-0040). Absent ⇒ attempt 1; present + >1 ⇒ a node-retry re-dispatch,
+  // so a surface distinguishes "attempt N starting" from a replay. The node may emit several of these.
+  attemptNumber: positiveInt.optional(),
 });
 
 export const AgentTokenEventSchema = z.object({
@@ -216,6 +219,28 @@ export const NodeFailedEventSchema = z.object({
   ...runBase,
   nodeId: nonEmptyString,
   error: z.object(eventErrorFields),
+  // 1-based attempt this terminal failure belongs to (1.S, ADR-0040) — the last attempt when a node-retry
+  // budget is exhausted. `node:failed` stays the single TERMINAL failure per node; per-attempt failures
+  // surface as `node:retrying` (below).
+  attemptNumber: positiveInt.optional(),
+});
+
+/**
+ * A retryable node attempt failed and the engine will re-dispatch the whole node (1.S,
+ * [ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md)) — **non-terminal**: it does NOT end the
+ * node (the terminal is `node:failed`, emitted only when the budget is exhausted). Carries the failed attempt's
+ * error (the `NodeFailure` shape, **no** `correlationId` — that anchors the terminal failure) and the `delayMs`
+ * backoff before the next attempt. Checkpoint/resume folds it as non-state-bearing (like `node:started`).
+ */
+export const NodeRetryingEventSchema = z.object({
+  type: z.literal('node:retrying'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  /** The attempt that just failed (1-based). The next attempt is `attemptNumber + 1`. */
+  attemptNumber: positiveInt,
+  error: z.object({ code: ErrorCodeSchema, message: z.string(), retryable: z.boolean() }),
+  /** The backoff delay (ms) before the next attempt is dispatched. */
+  delayMs: nonNegativeInt,
 });
 
 /** Why a node was skipped — `branch_not_taken` (a `condition` routed away) or `upstream_unreachable`. */
@@ -328,6 +353,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   NodeCompletedEventSchema,
   NodeFailedEventSchema,
   NodeSkippedEventSchema,
+  NodeRetryingEventSchema,
   HumanGatePausedEventSchema,
   HumanGateResumedEventSchema,
   RunCompletedEventSchema,
@@ -435,6 +461,7 @@ export type AgentFilePatchProposedEvent = z.infer<typeof AgentFilePatchProposedE
 export type NodeCompletedEvent = z.infer<typeof NodeCompletedEventSchema>;
 export type NodeFailedEvent = z.infer<typeof NodeFailedEventSchema>;
 export type NodeSkippedEvent = z.infer<typeof NodeSkippedEventSchema>;
+export type NodeRetryingEvent = z.infer<typeof NodeRetryingEventSchema>;
 export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
 export type RunFailedEvent = z.infer<typeof RunFailedEventSchema>;
 export type RunCancelledEvent = z.infer<typeof RunCancelledEventSchema>;

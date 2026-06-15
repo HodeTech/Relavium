@@ -35,6 +35,7 @@ import {
   type GateDecision,
   type MaskedSecret,
   type NodeSkippedReason,
+  type Retry,
   type RunEvent,
   type RunStatus,
   type TokensUsed,
@@ -89,6 +90,10 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
   'failed',
   'cancelled',
 ]);
+
+/** The above-chain node-retry backoff base (ms) when `retry.backoff_ms` is unset (ADR-0040 A.3, the runner
+ *  constant — distinct from the within-chain FallbackChain base). */
+const DEFAULT_NODE_RETRY_BACKOFF_MS = 1000;
 
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
@@ -535,7 +540,7 @@ class RunExecution {
         nodeId: vertex.id,
         nodeType: vertex.type,
       });
-      void this.#execute(vertex);
+      void this.#dispatch(vertex, 1);
     }
   }
 
@@ -580,9 +585,65 @@ class RunExecution {
     return claimed;
   }
 
-  async #execute(vertex: PlanVertex): Promise<void> {
-    const startedAtMs = this.#elapsedMs();
-    let outcome: Awaited<ReturnType<NodeExecutor['execute']>>;
+  /**
+   * Dispatch a vertex with its above-chain node-retry budget (1.S, ADR-0040). The vertex stays `running`
+   * across the whole loop — including the backoff sleep — so it never frees its slot or lets the run go
+   * idle mid-retry. Attempt 1's `node:started` was emitted by `#step`; this loop emits `node:started` for
+   * each re-dispatch. A retryable failure within budget (and admitted by `retry_on`) emits a non-terminal
+   * `node:retrying`, sleeps the backoff (abort-aware — cancel wins), and re-runs; any other outcome (or an
+   * exhausted budget, or a fatal/`retry_on`-excluded failure) settles via `#onOutcome`.
+   */
+  async #dispatch(vertex: PlanVertex, firstAttempt: number): Promise<void> {
+    const retry = this.#retryConfig(vertex);
+    let attempt = firstAttempt;
+    for (;;) {
+      const startedAtMs = this.#elapsedMs();
+      const outcome = await this.#runAttempt(vertex, attempt);
+      const willRetry =
+        outcome.kind === 'failed' &&
+        !this.#settled &&
+        !this.#cancelling &&
+        this.#shouldRetry(retry, outcome.error, attempt);
+      if (!willRetry || outcome.kind !== 'failed') {
+        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
+        return;
+      }
+      const delayMs = this.#backoffMs(retry, attempt);
+      await this.#emitDurable({
+        type: 'node:retrying',
+        runId: this.runId,
+        nodeId: vertex.id,
+        attemptNumber: attempt,
+        error: {
+          code: outcome.error.code,
+          message: outcome.error.message,
+          retryable: outcome.error.retryable,
+        },
+        delayMs,
+      });
+      const sleptFully = await this.#abortableSleep(delayMs);
+      if (this.#settled) {
+        return; // the run settled (e.g. a sibling failure/cancel) while we waited — drop this re-dispatch
+      }
+      if (!sleptFully) {
+        // Cancel raced the backoff — do not re-dispatch; settle the last failure (cancel-wins is honoured
+        // by #settleFailed, which won't set #failure while cancelling, so the run closes as run:cancelled).
+        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
+        return;
+      }
+      attempt += 1;
+      await this.#emitDurable({
+        type: 'node:started',
+        runId: this.runId,
+        nodeId: vertex.id,
+        nodeType: vertex.type,
+        attemptNumber: attempt,
+      });
+    }
+  }
+
+  /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
+  async #runAttempt(vertex: PlanVertex, attemptNumber: number): Promise<NodeOutcome> {
     try {
       const ctx: NodeExecContext = {
         vertex,
@@ -595,13 +656,13 @@ class RunExecution {
           this.#nodeEmit(event);
         },
         signal: this.#abort.signal,
-        attemptNumber: 1,
+        attemptNumber,
       };
-      outcome = await this.#executor.execute(ctx);
+      return await this.#executor.execute(ctx);
     } catch {
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).
-      outcome = {
+      return {
         kind: 'failed',
         error: {
           code: 'internal',
@@ -610,10 +671,69 @@ class RunExecution {
         },
       };
     }
-    await this.#onOutcome(vertex, outcome, startedAtMs);
   }
 
-  async #onOutcome(vertex: PlanVertex, outcome: NodeOutcome, startedAtMs: number): Promise<void> {
+  /** The above-chain retry budget for a vertex (ADR-0040): `node.retry`, defaulting an agent's `agent.retry`;
+   *  `condition`/`transform`/`fan_in` carry their own; other types have none. */
+  #retryConfig(vertex: PlanVertex): Retry | undefined {
+    const config = vertex.config;
+    switch (config.kind) {
+      case 'agent':
+        return config.node.retry ?? config.resolvedAgent?.retry;
+      case 'condition':
+      case 'transform':
+      case 'fan_in':
+        return config.node.retry;
+      default:
+        return undefined;
+    }
+  }
+
+  /** Whether to re-dispatch after a failed attempt: a budget exists, the failure is retryable, attempts
+   *  remain (`attempt < max`, where `max` is total attempts incl. the first), and `retry_on` admits the code. */
+  #shouldRetry(retry: Retry | undefined, error: NodeFailure, attempt: number): boolean {
+    if (retry === undefined || !error.retryable || attempt >= retry.max) {
+      return false;
+    }
+    return retry.retry_on === undefined || retry.retry_on.some((code) => code === error.code);
+  }
+
+  /** The backoff delay before the retry after `attempt` (1-based retry index = `attempt`): `linear` ⇒
+   *  `base * attempt`; `exponential` ⇒ `base * 2^(attempt-1)`. No jitter (deterministic replay). */
+  #backoffMs(retry: Retry | undefined, attempt: number): number {
+    const base = retry?.backoff_ms ?? DEFAULT_NODE_RETRY_BACKOFF_MS;
+    return retry?.backoff === 'exponential' ? base * 2 ** (attempt - 1) : base * attempt;
+  }
+
+  /** Sleep `ms` via the injected one-shot timer; resolves `true` if it elapsed, `false` if the run's
+   *  `AbortSignal` fired first (cancel disarms the pending retry — ADR-0040 A.5). */
+  #abortableSleep(ms: number): Promise<boolean> {
+    if (this.#abort.signal.aborted) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      const cleanup = (): void => {
+        this.#abort.signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        disarm();
+        cleanup();
+        resolve(false);
+      };
+      const disarm = this.#host.setTimer(ms, () => {
+        cleanup();
+        resolve(true);
+      });
+      this.#abort.signal.addEventListener('abort', onAbort);
+    });
+  }
+
+  async #onOutcome(
+    vertex: PlanVertex,
+    outcome: NodeOutcome,
+    startedAtMs: number,
+    attemptNumber = 1,
+  ): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
     }
@@ -624,7 +744,7 @@ class RunExecution {
           await this.#settleCompleted(vertex, outcome, startedAtMs);
           break;
         case 'failed':
-          await this.#settleFailed(vertex, outcome.error);
+          await this.#settleFailed(vertex, outcome.error, attemptNumber);
           break;
         case 'paused':
           await this.#settlePaused(vertex, outcome.gate);
@@ -669,8 +789,9 @@ class RunExecution {
     });
   }
 
-  /** A `failed` outcome: record the root cause (cancel wins), then emit `node:failed`. */
-  async #settleFailed(vertex: PlanVertex, error: NodeFailure): Promise<void> {
+  /** A `failed` outcome (terminal — the node-retry budget is exhausted or the failure is fatal): record the
+   *  root cause (cancel wins), then emit the single terminal `node:failed`. */
+  async #settleFailed(vertex: PlanVertex, error: NodeFailure, attemptNumber = 1): Promise<void> {
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'failed';
@@ -687,6 +808,7 @@ class RunExecution {
       // Stamp a secret-free correlation id at this single translation point (ADR-0036) so a surface
       // can quote it and it joins to the structured internal log.
       error: { ...error, correlationId: this.#host.ids.newId() },
+      ...(attemptNumber > 1 ? { attemptNumber } : {}),
     });
   }
 

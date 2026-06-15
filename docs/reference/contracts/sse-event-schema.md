@@ -51,6 +51,7 @@ export type RunEvent =
   | NodeCompletedEvent
   | NodeFailedEvent
   | NodeSkippedEvent
+  | NodeRetryingEvent
   | HumanGatePausedEvent
   | HumanGateResumedEvent
   | RunCompletedEvent
@@ -67,14 +68,15 @@ export type RunEvent =
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
 | `run:started` | A run began. | `workflowId` (the `workflows.id` **UUID** FK, not the authored slug — [ADR-0022](../../decisions/0022-run-references-workflow-by-uuid.md)), `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
-| `node:started` | A node began executing. | `nodeId`, `nodeType` |
+| `node:started` | A node began executing. | `nodeId`, `nodeType`, `attemptNumber?` (1-based; absent ⇒ attempt 1, present + >1 ⇒ a node-retry re-dispatch — 1.S) |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:tool_call` | An agent invoked a tool. | `nodeId`, `model` (the invoking model — so a tool call is attributable across a failover), `toolId`, `toolInput` (sanitized — no secrets), `attemptNumber?` (1-based, matches `cost:updated`) |
 | `agent:tool_result` | A tool returned. | `nodeId`, `toolId`, `success`, `outputSummary` (truncated for UI), `attemptNumber?` |
 | `agent:file_patch_proposed` | An agent proposed a file change (**gated — no write until the user accepts**; e.g. the VS Code inline-diff review). | `nodeId`, `patches: [{ uri, unifiedDiff }]` (≥1 — an empty proposal is meaningless), `attemptNumber?` |
 | `cost:updated` | A node's token cost was tallied (drives the cost waterfall). | `nodeId`, `model`, `inputTokens`, `outputTokens`, `costMicrocents`, `cumulativeCostMicrocents` (integer micro-cents — canonical unit in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#6-usage)), `attemptNumber?` (1-based retry attempt this cost belongs to, so per-attempt cost is reconstructable) |
 | `node:completed` | A node finished successfully. | `nodeId`, `output`, `tokensUsed: {input, output, model?}` (`model` only for LLM nodes), `durationMs`, `selected?` (a `condition`'s chosen target ids — the authoritative branch record checkpoint/resume restores from, 1.R; **may be an empty array** when the condition routes to no branch, dimming all downstream), `attemptNumber?` |
-| `node:failed` | A node failed. | `nodeId`, `error: {code, message, retryable, correlationId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `correlationId` is a secret-free id joined to the internal log — ADR-0036) |
+| `node:failed` | A node failed (TERMINAL — exactly one per node; emitted only after the node-retry budget is exhausted or on a fatal failure). | `nodeId`, `error: {code, message, retryable, correlationId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `correlationId` is a secret-free id joined to the internal log — ADR-0036), `attemptNumber?` (the last attempt, when a retry budget was spent — 1.S) |
+| `node:retrying` | A retryable node attempt failed and the engine will re-dispatch the whole node (1.S, [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)) — **non-terminal** (the node continues; `node:failed` is the terminal). | `nodeId`, `attemptNumber` (the attempt that just failed, 1-based), `error: {code, message, retryable}` (the `NodeFailure` shape — **no** `correlationId`; that anchors the terminal failure), `delayMs` (backoff before the next attempt) |
 | `node:skipped` | A node was skip-propagated (never ran). | `nodeId`, `reason: 'branch_not_taken' \| 'upstream_unreachable'` (`branch_not_taken` = a `condition` routed away from it; `upstream_unreachable` = every in-edge is dead because an upstream was skipped/failed). Emitted so the event log is a **complete, replayable** record — checkpoint/resume reconstructs a skipped vertex from it ([run-plan.md](../shared-core/run-plan.md)) and a surface can render the dimmed path instead of the node silently vanishing. |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `timeoutAction?: 'approve' \| 'reject'` (on-timeout policy, present only with `timeoutMs`), `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
@@ -127,6 +129,14 @@ export interface NodeSkippedEvent extends BaseEvent {
   type: 'node:skipped';
   nodeId: string;
   reason: 'branch_not_taken' | 'upstream_unreachable';
+}
+
+export interface NodeRetryingEvent extends BaseEvent {
+  type: 'node:retrying';        // 1.S — a retryable attempt failed; the engine will re-dispatch the whole node. NON-TERMINAL.
+  nodeId: string;
+  attemptNumber: number;        // the attempt that just failed (1-based); the next attempt is attemptNumber + 1
+  error: { code: ErrorCode; message: string; retryable: boolean }; // the NodeFailure shape — no correlationId (that anchors the terminal node:failed)
+  delayMs: number;              // backoff before the next attempt
 }
 
 export interface HumanGatePausedEvent extends BaseEvent {
