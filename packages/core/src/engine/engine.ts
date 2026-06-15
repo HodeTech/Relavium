@@ -601,8 +601,10 @@ class RunExecution {
   async #dispatch(vertex: PlanVertex, firstAttempt: number): Promise<void> {
     const retry = this.#retryConfig(vertex);
     let attempt = firstAttempt;
+    // The node holds its slot from the FIRST attempt's node:started; the terminal durationMs measures the
+    // whole node (all attempts + backoffs), not just the final attempt — consistent with that first start.
+    const startedAtMs = this.#elapsedMs();
     for (;;) {
-      const startedAtMs = this.#elapsedMs();
       const outcome = await this.#runAttempt(vertex, attempt);
       const willRetry =
         outcome.kind === 'failed' &&
@@ -708,7 +710,13 @@ class RunExecution {
     if (retry === undefined || !error.retryable || attempt >= retry.max) {
       return false;
     }
-    return retry.retry_on === undefined || retry.retry_on.some((code) => code === error.code);
+    if (retry.retry_on === undefined) {
+      return true;
+    }
+    // Widen to `readonly string[]` (a safe widening, no cast) so `.includes` accepts the wider ErrorCode —
+    // `retry_on` is the narrower RetryableErrorCode[], which `.includes(error.code)` would otherwise reject.
+    const allowed: readonly string[] = retry.retry_on;
+    return allowed.includes(error.code);
   }
 
   /** The backoff delay before the retry after `attempt` (1-based retry index = `attempt`): `linear` ⇒

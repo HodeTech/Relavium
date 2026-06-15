@@ -54,6 +54,34 @@ async function drain(handle: RunHandle): Promise<RunEvent[]> {
   return events;
 }
 
+/** The node-retry backoff `setTimer` is armed in #dispatch's continuation, just AFTER node:retrying is
+ *  delivered — so yield microtasks until it is armed, then fire it (deterministic; no real wall-clock wait). */
+async function fireBackoff(host: {
+  armedCount: () => number;
+  fireTimers: () => void;
+}): Promise<void> {
+  let waited = 0;
+  while (host.armedCount() === 0) {
+    waited += 1;
+    if (waited > 1000) {
+      throw new Error('backoff timer was never armed after node:retrying'); // fail fast, never hang
+    }
+    await Promise.resolve();
+  }
+  host.fireTimers();
+}
+
+/** A node handler that fails retryably the first `failures` calls, then completes (1.S retry tests). */
+function flaky(failures: number): Handler {
+  let calls = 0;
+  return (): NodeOutcome => {
+    calls += 1;
+    return calls <= failures
+      ? { kind: 'failed', error: { code: 'tool_failed', message: 'transient', retryable: true } }
+      : { kind: 'completed', output: `ok@${calls}` };
+  };
+}
+
 const TERMINALS: ReadonlySet<RunEvent['type']> = new Set([
   'run:completed',
   'run:failed',
@@ -1358,32 +1386,6 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
   edges:
     - { from: start, to: work }
     - { from: work, to: out }`;
-
-  /** The backoff `setTimer` is armed in #dispatch's continuation, just AFTER node:retrying is delivered —
-   *  so yield microtasks until it is armed, then fire it (deterministic; no real wall-clock wait). */
-  async function fireBackoff(host: {
-    armedCount: () => number;
-    fireTimers: () => void;
-  }): Promise<void> {
-    for (let i = 0; host.armedCount() === 0; i += 1) {
-      if (i > 1000) {
-        throw new Error('backoff timer was never armed after node:retrying'); // fail fast, never hang
-      }
-      await Promise.resolve();
-    }
-    host.fireTimers();
-  }
-
-  /** Fail retryably the first `failures` calls, then complete. */
-  function flaky(failures: number): Handler {
-    let calls = 0;
-    return (): NodeOutcome => {
-      calls += 1;
-      return calls <= failures
-        ? { kind: 'failed', error: { code: 'tool_failed', message: 'transient', retryable: true } }
-        : { kind: 'completed', output: `ok@${calls}` };
-    };
-  }
 
   it('retries a transient failure within budget and recovers (node:retrying → re-dispatch → node:completed)', async () => {
     const host = createInMemoryHost();
