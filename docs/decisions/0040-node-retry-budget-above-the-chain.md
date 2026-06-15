@@ -81,6 +81,15 @@ mapping, owned by `@relavium/core`.
   `delayMs = backoff_ms * 2^(attempt - 1)`. **No jitter** — the run loop is deterministic-replay (backoff is
   wall-clock only and never affects event order or outputs; jitter would add non-determinism for no benefit
   here).
+- **Bounds + the concurrency-slot trade-off.** The computed `delayMs` is **capped at 24 h**
+  (`MAX_NODE_RETRY_BACKOFF_MS`) so a large schema-valid `max` × `exponential` can never overflow the event
+  schema's integer range or arm an absurd one-shot timer; a retry that genuinely needs a >24 h wait should be a
+  scheduled job, not a node budget. `max` itself is **intentionally unbounded** (`positiveInt`, consistent with
+  `max_attempts` / `window_size` / `max_parallel` — author-controlled, git-committed, code-reviewed config): the
+  backoff cap, not a `max` ceiling, is the guardrail against an absurd budget. A node holds its `max_parallel`
+  slot for the **whole** backoff sleep (it stays `running` so the run never idles mid-retry — freeing it would
+  re-introduce the idle race), so under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling
+  branches: keep `backoff_ms` modest under a tight cap.
 - **Which authored schemas gain `retry`** (a `@relavium/shared` change): it joins `agent` (which already has it)
   on the node types that can produce a *retryable* failure — **`condition`, `transform`, `merge`** (their
   `merge_fn`/expression runs in the sandbox, whose wall-clock-timeout is retryable). **Excluded:**
@@ -122,12 +131,15 @@ that is retryable-and-within-budget-and-`retry_on`-admitted, the engine instead
   re-dispatch after `run:cancelled`),
 - re-dispatches the node as a fresh attempt (incremented `attemptNumber`).
 
-`#settleFailed` (terminal `node:failed` + `#failure` + `#abort`) runs **only** when the budget is exhausted or
-the failure is fatal / excluded by `retry_on`. `node:failed` therefore **stays terminal — exactly one per node**
-(no breaking change to its meaning). `node:started` and `node:failed` **gain an optional `attemptNumber`** (a
-second, additive `@relavium/shared` change) so a surface distinguishes "attempt 2 starting" from a replay and
-attributes the terminal failure to an attempt — consistent with `node:completed`/`cost:updated`, which already
-carry it.
+`#settleFailed` (terminal `node:failed` + `#failure` + `#abort`) runs when the budget is exhausted, the failure
+is fatal / excluded by `retry_on`, **or** a cancel/sibling-abort lands while a retry is pending (the engine
+settles the last attempt's failure rather than waste a re-dispatch — the run still closes on the cancel /
+sibling root cause, by `#settleFailed`'s precedence). `node:failed` therefore **stays terminal — exactly one per
+node** (no breaking change to its meaning). `node:started` and `node:failed` **gain an optional `attemptNumber`**
+(a second, additive `@relavium/shared` change) so a surface distinguishes "attempt 2 starting" from a replay and
+attributes the terminal failure to an attempt. This is the **node-retry** dispatch counter, shared with
+`node:completed`/`node:retrying`; it is **distinct from** the within-chain `cost:updated` / `agent:*` counter
+(which resets per re-dispatch) — the two do **not** join (sse-event-schema.md §"Two attemptNumber families").
 
 **A.6 — Checkpointer (1.R) needs no fold change.** Because `node:retrying` is **non-state-bearing** (folded
 like `node:started` — ignored) and `node:failed` is emitted **only** on final exhaustion, a
@@ -144,9 +156,13 @@ persisted `node:retrying` events' `attemptNumber`; the in-memory reference does 
 
 **A.7 — Idempotency + cost.** Each re-dispatch uses the `runId + nodeId + retryCount` key
 ([expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md); a 1.R/retry-from-node
-concept — **not** ADR-0036); `attemptNumber` increments and rides `node:started` / `cost:updated` / `node:failed`
-so cost is recorded for **every** attempt across both layers. The per-node-execution `FallbackChain` is rebuilt
-fresh on each whole-node re-dispatch (ADR-0038) — its per-provider cooldown state does **not** persist across
+concept — **not** ADR-0036). The node-retry `attemptNumber` rides `node:started`/`node:completed`/`node:failed`/
+`node:retrying`; `cost:updated` (and `agent:*`) carries its **own** within-chain attempt counter, which resets
+to 1 on each re-dispatch — the two are **distinct** and do not join (sse-event-schema.md §"Two attemptNumber
+families"). Cost is still tallied for **every** attempt across both layers and folded run-wide via
+`cumulativeCostMicrocents`; to bucket cost *by node-retry attempt*, a surface partitions the ordered stream at
+the `node:started`/`node:retrying` boundaries rather than joining on `attemptNumber`. The per-node-execution
+`FallbackChain` is rebuilt fresh on each whole-node re-dispatch (ADR-0038) — its per-provider cooldown state does **not** persist across
 node retries **by design**: the above-chain `backoff_ms` delay *is* the inter-attempt cooldown, so a rate-limit
 that exhausted the chain waits `backoff(attempt)` before the next whole-node attempt rather than re-hitting the
 limit immediately.
@@ -189,7 +205,9 @@ is the in-memory engine semantics + this key discipline; the surface trigger (a 
 - Non-agent nodes recover from a transient failure; `node:failed` stays terminal (exactly one per node), so
   the 1.R Checkpointer fold is untouched; `node:retrying` gives per-attempt observability.
 - `retry_on` is author-safe by construction (parse-rejected to the retryable subset; cannot resurrect a fatal).
-- Cost stays accurate per attempt across both layers; a required node never silently vanishes.
+- Cost is tallied for every attempt across both layers and folded run-wide; per-node-retry-attempt bucketing is
+  by stream order, not an `attemptNumber` join (sse-event-schema.md §"Two attemptNumber families"). A required
+  node never silently vanishes.
 
 ### Negative / land-time obligations
 

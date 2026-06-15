@@ -1589,6 +1589,68 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
     expect(events.some((e) => e.type === 'node:retrying')).toBe(false);
     expect(terminalsIn(events)[0]?.type).toBe('run:failed');
   });
+
+  it('does not emit a spurious node:retrying when a sibling failure has already doomed the run', async () => {
+    // A sibling's fatal failure sets #failure + aborts the signal (WITHOUT #cancelling) BEFORE this budgeted
+    // node's own retryable failure is judged. `flap` resolves a few microtasks later than the synchronous
+    // `boom`, so by the time flap's outcome is evaluated the run is already doomed — it must settle node:failed
+    // directly, never promise a non-terminal node:retrying it cannot honour (the willRetry guard, ADR-0040 A.5).
+    const PAR_SPURIOUS = `  id: par-spurious
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [flap, boom] }
+    - { id: flap, type: transform, transform: '1', retry: { max: 5, backoff: linear, backoff_ms: 50 } }
+    - { id: boom, type: transform, transform: '1' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: flap, to: join }
+    - { from: boom, to: join }
+    - { from: join, to: out }`;
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        flap: async (): Promise<NodeOutcome> => {
+          // Yield enough microtasks that the synchronous fatal sibling settles #failure + aborts FIRST.
+          for (let i = 0; i < 50; i += 1) await Promise.resolve();
+          return {
+            kind: 'failed',
+            error: { code: 'tool_failed', message: 'transient', retryable: true },
+          };
+        },
+        boom: (): NodeOutcome => ({
+          kind: 'failed',
+          error: { code: 'validation', message: 'fatal', retryable: false },
+        }),
+      },
+      host,
+    );
+    const events = await drain(engine.start({ workflow: workflow(PAR_SPURIOUS) }));
+    expect(events.some((e) => e.type === 'node:retrying')).toBe(false); // no contradicted non-terminal event
+    const terminal = terminalsIn(events)[0];
+    expect(terminal?.type).toBe('run:failed');
+    if (terminal?.type === 'run:failed') {
+      expect(terminal.error.code).toBe('validation'); // boom stays the root cause
+    }
+    expect(host.armedCount()).toBe(0); // no backoff timer was ever armed (the retry was never promised)
+    assertGapFreeSeq(events);
+  });
+
+  it('omits attemptNumber on attempt 1 (absent ⇒ attempt 1 — the replay-distinguishing contract)', async () => {
+    // The first node:started / node:completed must NOT carry attemptNumber: a surface reads "absent ⇒ attempt
+    // 1", so a stamp of `1` everywhere would silently look like a re-dispatch and break replay-distinguishing.
+    const events = await drain(
+      engineWith({ work: flaky(0) }).start({ workflow: workflow(RETRY_WF) }),
+    );
+    const firstStart = events.find((e) => e.type === 'node:started' && e.nodeId === 'work');
+    const workDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    expect(firstStart).toBeDefined();
+    expect(workDone).toBeDefined();
+    expect(firstStart?.type === 'node:started' ? firstStart.attemptNumber : 0).toBeUndefined();
+    expect(workDone?.type === 'node:completed' ? workDone.attemptNumber : 0).toBeUndefined();
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
 });
 
 // --- concurrency cap --------------------------------------------------------------------------

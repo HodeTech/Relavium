@@ -30,6 +30,7 @@
 
 import {
   GateDecisionSchema,
+  RETRYABLE_ERROR_CODES,
   RunEventSchema,
   type ExecutionMode,
   type GateDecision,
@@ -597,6 +598,10 @@ class RunExecution {
    * each re-dispatch. A retryable failure within budget (and admitted by `retry_on`) emits a non-terminal
    * `node:retrying`, sleeps the backoff (abort-aware — cancel wins), and re-runs; any other outcome (or an
    * exhausted budget, or a fatal/`retry_on`-excluded failure) settles via `#onOutcome`.
+   *
+   * Trade-off: a node waiting out its backoff keeps occupying a `max_parallel` slot (it stays `running`), so
+   * under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling branches (ADR-0040 A.3 — keep
+   * `backoff_ms` modest under a tight cap). Freeing the slot mid-backoff would re-introduce the idle race.
    */
   async #dispatch(vertex: PlanVertex, firstAttempt: number): Promise<void> {
     const retry = this.#retryConfig(vertex);
@@ -610,6 +615,11 @@ class RunExecution {
         outcome.kind === 'failed' &&
         !this.#settled &&
         !this.#cancelling &&
+        // …and the run is not already failing/aborting. A sibling node's failure sets `#failure` and aborts
+        // the signal WITHOUT setting `#cancelling`; without these two guards a doomed node would emit a
+        // non-terminal `node:retrying` it never honours (the backoff then short-circuits to `node:failed`).
+        this.#failure === undefined &&
+        !this.#abort.signal.aborted &&
         this.#shouldRetry(retry, outcome.error, attempt);
       if (!willRetry || outcome.kind !== 'failed') {
         await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
@@ -710,12 +720,11 @@ class RunExecution {
     if (retry === undefined || !error.retryable || attempt >= retry.max) {
       return false;
     }
-    if (retry.retry_on === undefined) {
-      return true;
-    }
-    // Widen to `readonly string[]` (a safe widening, no cast) so `.includes` accepts the wider ErrorCode —
-    // `retry_on` is the narrower RetryableErrorCode[], which `.includes(error.code)` would otherwise reject.
-    const allowed: readonly string[] = retry.retry_on;
+    // `retry_on` narrows which codes consume the budget; absent ⇒ the canonical retryable set. Gating the
+    // absent case on RETRYABLE_ERROR_CODES too is defence-in-depth: the engine never re-dispatches a
+    // non-transient code even if a future executor mis-sets `retryable: true` on, say, an `internal` failure.
+    // Widen to `readonly string[]` (a safe widening, no cast) so `.includes` accepts the wider ErrorCode.
+    const allowed: readonly string[] = retry.retry_on ?? RETRYABLE_ERROR_CODES;
     return allowed.includes(error.code);
   }
 
