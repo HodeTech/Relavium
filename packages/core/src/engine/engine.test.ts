@@ -1115,12 +1115,63 @@ describe('WorkflowEngine — workflow context (ctx.*) resolution', () => {
         inputs: { p: 'x' },
       }),
     );
+    expect(events[0]?.type).toBe('run:started'); // run:started still precedes the failure (ordering)
     expect(events.some((e) => e.type === 'node:started')).toBe(false); // failed before scheduling
     const terminal = terminalsIn(events)[0];
     expect(terminal?.type).toBe('run:failed');
     if (terminal?.type === 'run:failed') {
       expect(terminal.error.code).toBe('validation');
     }
+  });
+
+  it('threads ctx: {} when the workflow declares no context: block', async () => {
+    const events = await drain(
+      engineWith({ work: echoCtx }).start({
+        workflow: workflow(`  id: no-ctx
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: transform, transform: '1' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: out }`),
+      }),
+    );
+    const workDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    expect(workDone?.type === 'node:completed' ? workDone.output : undefined).toEqual({});
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('settles run:cancelled (not run:failed) when a cancel races context resolution', async () => {
+    // A const holder lets the readFile closure reach the not-yet-assigned handle without `let`.
+    const ref: { handle?: RunHandle } = {};
+    // The readFile cap cancels the run mid-resolution, then throws — so context resolution rejects while
+    // #cancelling is already set. #resolveContextOrFail must classify this as a cancel, not a validation fail.
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: new StubExecutor({}),
+      resolverCapabilities: {
+        readFile: () => {
+          ref.handle?.cancel();
+          throw new Error('reading was cancelled');
+        },
+      },
+    });
+    ref.handle = engine.start({
+      workflow: workflow(`  id: ctx-cancel
+  inputs:
+    - { name: p, type: string }
+  context:
+    - { key: c, value: '{{inputs.p | read_file}}' }
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }`),
+      inputs: { p: 'x' },
+    });
+    const events = await drain(ref.handle);
+    expect(terminalsIn(events)[0]?.type).toBe('run:cancelled'); // NOT run:failed{validation}
   });
 
   it('resolves a read_file context value through the injected resolver capability', async () => {
@@ -1197,6 +1248,55 @@ describe('WorkflowEngine — workflow context (ctx.*) resolution', () => {
       greeting: 'hi world',
     });
     expect(terminalsIn(eventsB)[0]?.type).toBe('run:completed');
+  });
+
+  it('closes a resumed run with run:failed{validation} when context RE-resolution fails', async () => {
+    const store = new InMemoryRunStore();
+    const CTX_RF_GATED = `  id: ctx-rf-gated
+  inputs:
+    - { name: p, type: string }
+  context:
+    - { key: doc, value: '{{inputs.p | read_file}}' }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    // Process A HAS a readFile cap, so context resolves and the run pauses at the gate.
+    const engineA = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new StubExecutor({
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      }),
+      resolverCapabilities: { readFile: (p) => `FILE:${p}` },
+    });
+    const handleA = engineA.start({ workflow: workflow(CTX_RF_GATED), inputs: { p: 'a.txt' } });
+    let gateId = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    // Process B has NO readFile cap → the re-resolution at resume fails → run:failed{validation}.
+    const engineB = engineWith({}, createInMemoryHost({ store }));
+    const eventsB = await drain(
+      await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(CTX_RF_GATED),
+        inputs: { p: 'a.txt' },
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'h' },
+      }),
+    );
+    expect(eventsB.some((e) => e.type === 'human_gate:resumed')).toBe(false); // never applied the decision
+    const terminal = terminalsIn(eventsB)[0];
+    expect(terminal?.type).toBe('run:failed');
+    if (terminal?.type === 'run:failed') {
+      expect(terminal.error.code).toBe('validation');
+    }
   });
 });
 

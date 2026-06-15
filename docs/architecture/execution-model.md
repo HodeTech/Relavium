@@ -71,7 +71,8 @@ Right after `run:started`, before any node runs, the engine resolves the workflo
 `context:` map **once** into the immutable `ctx.*` namespace (the spec's eager-once
 context — `resolveContext`) and threads the frozen result to every node
 (`NodeExecContext.ctx`), so a bare `ctx.key` read in a `condition` / `transform` /
-`merge_fn` expression and in an agent prompt sees the real value. A context value may
+`merge_fn` expression, in an agent prompt, and in a human-gate `message_template` /
+`assignee` sees the real value. A context value may
 itself interpolate `{{ inputs.* }}` (and `read_file`, via an injected resolver
 capability); a resolution failure closes the run with `run:failed` (`validation`)
 rather than running nodes against a partial context. On a cross-process resume `ctx`
