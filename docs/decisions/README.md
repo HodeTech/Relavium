@@ -83,6 +83,7 @@ flowchart TD
 | 0037 | [Engine-side tool-execution boundary — the `ToolHost` capability seam, policy/mechanism split, bounded results](0037-engine-tool-execution-boundary.md) | Accepted | 2026-06-13 |
 | 0038 | [AgentRunner LLM-call boundary — host-injected provider resolution, the per-node-execution `FallbackChain`, and the credential discipline](0038-agentrunner-llm-call-boundary.md) | Accepted | 2026-06-14 |
 | 0039 | [Same-provider signed-reasoning replay — a behavioral amendment to ADR-0030](0039-same-provider-reasoning-replay.md) | Accepted | 2026-06-14 |
+| 0040 | [Node-level retry budget above the provider fallback chain (1.S) — amends ADR-0038](0040-node-retry-budget-above-the-chain.md) | Accepted | 2026-06-15 |
 
 ## Creating a new ADR
 
