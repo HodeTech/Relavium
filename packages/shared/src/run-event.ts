@@ -347,8 +347,10 @@ export const BudgetWarningEventSchema = z.object({
 export const BudgetPausedEventSchema = z.object({
   type: z.literal('budget:paused'),
   ...runBase,
+  nodeId: nonEmptyString, // the agent node whose next LLM call would exceed the cap
   spentMicrocents: nonNegativeInt,
   limitMicrocents: nonNegativeInt,
+  gateId: nonEmptyString, // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
 });
 
 /** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */

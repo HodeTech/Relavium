@@ -133,8 +133,10 @@ const valid: Record<string, Record<string, unknown>> = {
   'budget:paused': {
     type: 'budget:paused',
     ...env,
+    nodeId: 'n',
     spentMicrocents: 1000,
     limitMicrocents: 1000,
+    gateId: 'budget-gate-1',
   },
 };
 
@@ -256,6 +258,7 @@ const reject: Record<string, Record<string, unknown>> = {
   'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
   'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },
   'budget:paused (negative spentMicrocents)': { ...valid['budget:paused'], spentMicrocents: -1 },
+  'budget:paused (missing gateId)': { ...valid['budget:paused'], gateId: undefined },
 };
 
 describe('RunEvent union — every variant', () => {
