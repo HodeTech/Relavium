@@ -362,7 +362,16 @@ workflow:
     for await (const event of engine.start({ workflow: wf, inputs: { text: 'x' } }).events) {
       events.push(event);
       if (event.type === 'node:retrying') {
-        while (host.armedCount() === 0) await Promise.resolve(); // wait for the backoff timer to arm, then fire
+        // Wait for the backoff timer to arm (it is armed in #dispatch's continuation, just after this event),
+        // then fire it. A bounded guard fails fast instead of hanging if a regression never arms the timer.
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) {
+            throw new Error('backoff timer was never armed after node:retrying');
+          }
+          await Promise.resolve();
+        }
         host.fireTimers();
       }
     }
