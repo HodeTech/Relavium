@@ -209,6 +209,13 @@ const reject: Record<string, Record<string, unknown>> = {
   },
   'node:failed (missing error)': { type: 'node:failed', ...env, nodeId: 'n' },
   'node:skipped (bad reason)': { type: 'node:skipped', ...env, nodeId: 'n', reason: 'because' },
+  'node:retrying (missing delayMs)': {
+    type: 'node:retrying',
+    ...env,
+    nodeId: 'n',
+    attemptNumber: 1,
+    error: { code: 'tool_failed', message: 'x', retryable: true },
+  },
   'human_gate:paused (bad gateType)': {
     type: 'human_gate:paused',
     ...env,

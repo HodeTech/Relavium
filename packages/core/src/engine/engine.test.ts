@@ -1365,7 +1365,10 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
     armedCount: () => number;
     fireTimers: () => void;
   }): Promise<void> {
-    while (host.armedCount() === 0) {
+    for (let i = 0; host.armedCount() === 0; i += 1) {
+      if (i > 1000) {
+        throw new Error('backoff timer was never armed after node:retrying'); // fail fast, never hang
+      }
       await Promise.resolve();
     }
     host.fireTimers();
@@ -1403,9 +1406,77 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
     expect(
       events.some((e) => e.type === 'node:started' && e.nodeId === 'work' && e.attemptNumber === 2),
     ).toBe(true);
-    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'work')).toBe(true);
+    const workDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    expect(workDone?.type === 'node:completed' ? workDone.attemptNumber : undefined).toBe(2); // recovered on attempt 2
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
     assertGapFreeSeq(events);
+  });
+
+  it('applies exponential backoff and the default base when backoff_ms is omitted', async () => {
+    const EXP_WF = `  id: exp-wf
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: transform, transform: '1', retry: { max: 4, backoff: exponential } }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: out }`;
+    const host = createInMemoryHost();
+    const engine = engineWith({ work: flaky(99) }, host); // always fails → exhausts max 4 (3 retries)
+    const handle = engine.start({ workflow: workflow(EXP_WF) });
+    const delays: number[] = [];
+    for await (const event of handle.events) {
+      if (event.type === 'node:retrying') {
+        delays.push(event.delayMs);
+        await fireBackoff(host);
+      }
+    }
+    // exponential, default base 1000 ms (backoff_ms omitted): base * 2^(retry-1) for retries 1,2,3.
+    expect(delays).toEqual([1000, 2000, 4000]);
+  });
+
+  it('a sibling node failure during the retry backoff abandons the re-dispatch (run:failed, sibling root cause)', async () => {
+    // Two parallel branches: `flap` retries with a long-ish budget; `boom` fails fatally. boom's failure
+    // aborts the run while flap is mid-backoff → flap does not re-dispatch; the run fails with boom's cause.
+    const PAR_RETRY = `  id: par-retry
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [flap, boom] }
+    - { id: flap, type: transform, transform: '1', retry: { max: 5, backoff: linear, backoff_ms: 50 } }
+    - { id: boom, type: transform, transform: '1' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: flap, to: join }
+    - { from: boom, to: join }
+    - { from: join, to: out }`;
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        flap: (): NodeOutcome => ({
+          kind: 'failed',
+          error: { code: 'tool_failed', message: 'transient', retryable: true },
+        }),
+        boom: (): NodeOutcome => ({
+          kind: 'failed',
+          error: { code: 'validation', message: 'fatal', retryable: false },
+        }),
+      },
+      host,
+    );
+    const events: RunEvent[] = [];
+    for await (const event of engine.start({ workflow: workflow(PAR_RETRY) }).events) {
+      events.push(event);
+      // Do NOT fire the backoff timer: boom's fatal failure aborts the run, which abandons flap's pending
+      // retry without firing it (the abort short-circuits the sleep).
+    }
+    const terminal = terminalsIn(events)[0];
+    expect(terminal?.type).toBe('run:failed');
+    if (terminal?.type === 'run:failed') {
+      expect(terminal.error.code).toBe('validation'); // boom (the fatal sibling) is the root cause
+    }
+    expect(host.armedCount()).toBe(0); // flap's backoff timer was disarmed by the abort
   });
 
   it('fails the node terminally once the budget is exhausted (node:failed carries the last attemptNumber)', async () => {
@@ -1469,12 +1540,15 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'node:retrying') {
-        engine.cancel(handle.runId); // cancel mid-backoff — disarms the pending retry timer
-        host.fireTimers(); // already disarmed → a no-op
+        // node:retrying is delivered before #abortableSleep arms its timer; cancelling now sets the abort
+        // first, so the sleep short-circuits on `signal.aborted` and no backoff timer is ever armed.
+        engine.cancel(handle.runId);
+        host.fireTimers(); // nothing armed → a no-op (and never will be — the retry was abandoned)
       }
     }
     expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(1); // only the first attempt's retry
     expect(terminalsIn(events)[0]?.type).toBe('run:cancelled');
+    expect(host.armedCount()).toBe(0); // no backoff timer was left armed
   });
 
   it('no node:retrying when the node has no retry budget (a plain transient failure is terminal)', async () => {

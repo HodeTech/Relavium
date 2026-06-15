@@ -626,8 +626,10 @@ class RunExecution {
         return; // the run settled (e.g. a sibling failure/cancel) while we waited — drop this re-dispatch
       }
       if (!sleptFully) {
-        // Cancel raced the backoff — do not re-dispatch; settle the last failure (cancel-wins is honoured
-        // by #settleFailed, which won't set #failure while cancelling, so the run closes as run:cancelled).
+        // The run's AbortSignal fired during the backoff — a cancel OR a sibling node's failure (which
+        // aborts to stop other branches). Do not re-dispatch; settle this node's last failure. #settleFailed
+        // honours precedence: it won't overwrite an already-set #failure (a sibling's root cause) nor set one
+        // while cancelling — so the run closes as the sibling's run:failed, or run:cancelled, accordingly.
         await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
         return;
       }
@@ -741,7 +743,7 @@ class RunExecution {
       switch (outcome.kind) {
         case 'completed':
         case 'branch':
-          await this.#settleCompleted(vertex, outcome, startedAtMs);
+          await this.#settleCompleted(vertex, outcome, startedAtMs, attemptNumber);
           break;
         case 'failed':
           await this.#settleFailed(vertex, outcome.error, attemptNumber);
@@ -763,6 +765,7 @@ class RunExecution {
     vertex: PlanVertex,
     outcome: Extract<NodeOutcome, { kind: 'completed' | 'branch' }>,
     startedAtMs: number,
+    attemptNumber = 1,
   ): Promise<void> {
     // Update status SYNCHRONOUSLY before emitting, so `#countRunning` is consistent the instant this
     // vertex settles — a concurrent step never sees it as still running.
@@ -786,6 +789,8 @@ class RunExecution {
       durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
       // A condition's branch selection — persisted so resume can restore `selectedTargets` (1.R).
       ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
+      // Which attempt produced the output, when a node-retry recovered (1.S) — absent ⇒ attempt 1.
+      ...(attemptNumber > 1 ? { attemptNumber } : {}),
     });
   }
 

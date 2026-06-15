@@ -195,6 +195,33 @@ describe('reconstructCheckpointState', () => {
     expect(state?.cumulativeCostMicrocents).toBe(1600); // the last running total, not a re-sum
   });
 
+  it('folds node:retrying as non-state-bearing — a retry-then-recover ends `completed` (1.S)', () => {
+    const state = reconstructCheckpointState([
+      started,
+      { type: 'node:started', ...base(1), nodeId: 'a', nodeType: 'transform' },
+      {
+        type: 'node:retrying',
+        ...base(2),
+        nodeId: 'a',
+        attemptNumber: 1,
+        error: { code: 'tool_failed', message: 'transient', retryable: true },
+        delayMs: 10,
+      },
+      { type: 'node:started', ...base(3), nodeId: 'a', nodeType: 'transform', attemptNumber: 2 },
+      {
+        type: 'node:completed',
+        ...base(4),
+        nodeId: 'a',
+        output: 'A',
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 1,
+        attemptNumber: 2,
+      },
+    ]);
+    // node:retrying is ignored by the fold; the terminal node:completed wins → completed (not failed/limbo).
+    expect(state?.nodeStates.get('a')).toEqual({ status: 'completed', output: 'A' });
+  });
+
   it('records a failed node with its typed failure', () => {
     const state = reconstructCheckpointState([
       started,

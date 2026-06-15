@@ -98,7 +98,7 @@ node budget may retry — exactly these four enum values: **`provider_rate_limit
 `retryable: false` and excluded by the A.5 gate). There is no fifth code: when the `FallbackChain` exhausts on
 real retryable failures the surfaced `ErrorCode` is already `provider_rate_limit` / `provider_unavailable`, and
 a chain that exhausts with no real error surfaces `internal` (fatal — never retried). `RetrySchema`
-carries a Zod `superRefine` rejecting any `retry_on` member outside that subset at parse time (the
+types `retry_on` as `z.array(z.enum(RETRYABLE_ERROR_CODES))` — the subset enum rejects any member outside it at parse time (the
 [ADR-0023](0023-strict-authored-yaml-validation.md) strict-reject ethos — a `retry_on: [tool_denied]` is an
 authoring error surfaced loudly, never a silent no-op). `retry_on` only **narrows** the already-retryable set;
 it can **never** resurrect a fatal failure. Retryability itself stays single-sourced in `NodeFailure.retryable`
@@ -194,7 +194,8 @@ is the in-memory engine semantics + this key discipline; the surface trigger (a 
 ### Negative / land-time obligations
 
 - **`@relavium/shared` contract changes (all additive):** (1) `RetrySchema` gains `backoff_ms?` + `retry_on?`
-  with the `superRefine`; (2) a new `RETRYABLE_ERROR_CODES` constant in `constants.ts`; (3) a new
+  with `retry_on` typed as the `z.enum(RETRYABLE_ERROR_CODES)` subset (reject-at-parse, also rejecting an
+  empty array via `.min(1)`); (2) a new `RETRYABLE_ERROR_CODES` constant in `constants.ts`; (3) a new
   **`node:retrying`** run event — `NodeRetryingEventSchema` in `run-event.ts`, added to `RUN_EVENT_TYPES`
   (`constants.ts`) **and** the `RunEventUnionSchema` discriminated union, with its per-variant type export and a
   CONTRACT_NAMES count bump in `run-event.test.ts`; (4) optional `attemptNumber` on `node:started` +
