@@ -34,9 +34,11 @@ memory:                     # optional conversational memory policy
   type: none | window | summary
   window_size: number       # when type = window
 
-retry:                      # transient-error retry on the primary model
-  max: number
+retry:                      # node-retry budget ABOVE the fallback chain (ADR-0040): re-run the whole node on a retryable failure
+  max: number               # total attempts, including the first
   backoff: linear | exponential
+  backoff_ms: number        # optional base delay (ms) the backoff scales; engine-defaulted when omitted
+  retry_on: [error-code]    # optional; one or more of: provider_rate_limit, provider_unavailable, tool_failed, sandbox_error (a non-retryable code is rejected at parse)
 
 fallback_chain:             # ordered alternates tried after the primary is exhausted
   - model: string
@@ -59,15 +61,15 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `tools` | no | Tool ids — see [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md). |
 | `mcp_servers` | no | See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md). |
 | `memory` | no | `none` (default), `window` (last N turns), or `summary` (rolling summary). |
-| `retry` | no | Retry on the *same* model for retryable errors. |
-| `fallback_chain` | no | Switch to a *different* model/provider after retries are exhausted. |
+| `retry` | no | Node-retry budget **above** the fallback chain — re-runs the whole node on a retryable failure, up to `max` total attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). |
+| `fallback_chain` | no | Switch to a *different* model/provider **within an attempt** (the within-chain failover); the node `retry` budget then re-runs the whole chain above it. |
 
 ## Retry vs. fallback
 
 These are two distinct resilience layers:
 
-- **`retry`** handles transient failures (timeouts, rate limits) by re-attempting the **same** model with the configured `backoff`.
-- **`fallback_chain`** handles a model being unavailable or repeatedly failing by moving to the **next** provider/model in the list. Each entry has its own `max_attempts`. The chain is tried in order; the first entry that succeeds produces the node output. This is the mechanism behind the multi-model fallback killer feature.
+- **`retry`** is the engine's **above-chain node-retry budget** ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)): on a retryable failure (timeouts, rate limits, a transient tool/sandbox error) it re-dispatches the **whole node** up to `max` total attempts with the configured `backoff` (base `backoff_ms`), optionally restricted to specific codes via `retry_on` (one or more of `provider_rate_limit`, `provider_unavailable`, `tool_failed`, `sandbox_error` — a non-retryable code is rejected at parse, never a silent no-op). It applies to non-agent nodes too (`condition`/`transform`/`merge`). *(Historically `retry` meant within-chain same-model retry; ADR-0040 amended that.)*
+- **`fallback_chain`** handles a model being unavailable or repeatedly failing by moving to the **next** provider/model in the list **within a single attempt**. Each entry has its own `max_attempts`. The chain is tried in order; the first entry that succeeds produces the node output. This is the mechanism behind the multi-model fallback killer feature.
 
 ```yaml
 retry:
@@ -82,7 +84,7 @@ fallback_chain:
     max_attempts: 1
 ```
 
-The resolution order at run time is: primary `model` (with `retry`) → first `fallback_chain` entry (with its `max_attempts`) → next entry → … . The `model`/`provider` pair and the `fallback_chain` are resolved against Relavium's provider-agnostic `LLMProvider` seam: each entry selects a provider adapter and a canonical model id, and the fallback is executed by the `withFallback` runner that sits *outside* the adapters (the adapters stay dumb). Provider-key resolution and cross-provider tool-schema normalization are likewise handled by `@relavium/llm`. The immovable contract for all of this — the request/result/stream types, the normalization rules, and where `fallback_chain` `max_attempts` is enforced — is [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md); the rationale and supported-model matrix are in [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md).
+The resolution order **within one attempt** is: primary `model` → first `fallback_chain` entry (with its `max_attempts`) → next entry → … ; the node `retry` budget ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)) then re-runs this whole sequence, above the chain, on a retryable failure. The `model`/`provider` pair and the `fallback_chain` are resolved against Relavium's provider-agnostic `LLMProvider` seam: each entry selects a provider adapter and a canonical model id, and the fallback is executed by the `withFallback` runner that sits *outside* the adapters (the adapters stay dumb). Provider-key resolution and cross-provider tool-schema normalization are likewise handled by `@relavium/llm`. The immovable contract for all of this — the request/result/stream types, the normalization rules, and where `fallback_chain` `max_attempts` is enforced — is [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md); the rationale and supported-model matrix are in [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md).
 
 ## Example
 

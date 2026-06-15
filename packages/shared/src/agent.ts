@@ -9,7 +9,7 @@ import {
   positiveInt,
   temperatureSchema,
 } from './common.js';
-import { LLM_PROVIDERS } from './constants.js';
+import { LLM_PROVIDERS, RETRYABLE_ERROR_CODES } from './constants.js';
 
 /**
  * Agent schema (agent-yaml-spec.md). An agent is a named, reusable LLM
@@ -30,11 +30,27 @@ export const ProviderSchema = z.enum(LLM_PROVIDERS);
 export const BackoffStrategySchema = z.enum(['linear', 'exponential']);
 export type BackoffStrategy = z.infer<typeof BackoffStrategySchema>;
 
-/** Transient-error retry on the *same* model. */
+/**
+ * A node's transient-failure **retry budget**, applied by the engine ABOVE the provider fallback chain
+ * ([ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md)): on a retryable failure the *whole node*
+ * is re-dispatched up to `max` **total attempts** (the initial attempt counts), with `backoff` over a
+ * `backoff_ms` base. **Not** the within-chain same-model retry it once configured (ADR-0038, amended). On an
+ * `agent` node this also defaults the agent's value (`node.retry ?? agent.retry`).
+ */
 export const RetrySchema = z
   .object({
+    /** Total attempts, including the first (`max: 3` ⇒ the initial attempt + up to 2 re-dispatches). */
     max: positiveInt,
+    /** How the inter-attempt delay grows: `linear` (`base * n`) or `exponential` (`base * 2^(n-1)`). */
     backoff: BackoffStrategySchema,
+    /** The backoff base delay in ms the strategy scales; the engine defaults it when omitted (ADR-0040 A.3). */
+    backoff_ms: positiveInt.optional(),
+    /**
+     * Restrict which retryable failures consume the budget — restricted to the retryable subset
+     * ({@link RETRYABLE_ERROR_CODES}), so a non-retryable code (e.g. `tool_denied`) is rejected at parse
+     * (ADR-0040 A.4), never a silent no-op. Omitted ⇒ any `retryable` failure is retried.
+     */
+    retry_on: z.array(z.enum(RETRYABLE_ERROR_CODES)).min(1).optional(),
   })
   .strict();
 export type Retry = z.infer<typeof RetrySchema>;

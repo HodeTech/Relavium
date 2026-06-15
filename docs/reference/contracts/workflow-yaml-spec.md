@@ -174,13 +174,16 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 | `input` | Workflow entry point; emits the resolved inputs. | — |
 | `agent` | Invoke an agent (LLM call with tools). | `agent_ref`, `prompt_template`, `tools`, `model`, `temperature`, `max_tokens`, `timeout_ms`, `retry` |
 | `human_gate` | Pause for human approval / input / review. | `gate_type`, `assignee`, `message_template`, `timeout_ms`, `timeout_action` |
-| `condition` | Branch on a JS expression over run outputs. | `expression`, `branches[]` (`when`, `target_node`), `default` |
-| `transform` | Reshape state without an LLM (JS expression). | `transform` |
+| `condition` | Branch on a JS expression over run outputs. | `expression`, `branches[]` (`when`, `target_node`), `default`, `retry` |
+| `transform` | Reshape state without an LLM (JS expression). | `transform`, `retry` |
 | `parallel` | Fan out to several nodes concurrently. | `parallel_of[]` |
-| `merge` | Fan in / combine parallel results. | `merge_strategy`, `merge_fn` |
+| `merge` | Fan in / combine parallel results. | `merge_strategy`, `merge_fn`, `retry` |
 | `output` | Terminal node capturing the final result. | `output_format` |
 
 > **Canvas vs. engine node taxonomy.** The desktop canvas renders a richer set of node *components* (e.g. `FanOutNode`, `AggregatorNode`, `LoopNode`, `ToolNode`), and the engine's internal node-type enum additionally recognizes `tool`, `loop`, and `subworkflow`. The v1.0 YAML above is the user-authored surface; the full catalog and how the two map is in [../shared-core/node-types.md](../shared-core/node-types.md).
+
+> **`retry` on non-agent nodes.** `condition`, `transform`, and `merge` accept the same optional `retry`
+> budget as `agent` — the engine's above-chain node-retry ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)): on a retryable failure the whole node is re-dispatched up to `max` total attempts with `backoff`/`backoff_ms`, optionally filtered by `retry_on`. The field shape is owned by [agent-yaml-spec.md](agent-yaml-spec.md#retry-vs-fallback). `input`, `output`, `parallel`, and `human_gate` carry no `retry` (they cannot produce a transient failure; a gate timeout is fatal).
 
 ### `agent` node
 

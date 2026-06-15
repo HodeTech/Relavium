@@ -31,6 +31,7 @@ export const RUN_EVENT_TYPES = [
   'node:completed',
   'node:failed',
   'node:skipped',
+  'node:retrying',
   'human_gate:paused',
   'human_gate:resumed',
   'run:completed',
@@ -85,6 +86,24 @@ export const ERROR_CODES = [
   'internal',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
+
+/**
+ * The `ErrorCode`s a node-retry budget (1.S, [ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md))
+ * may re-attempt — the **transient** failures of [error-handling.md](../standards/error-handling.md): a
+ * provider rate-limit / unavailability that exhausted the fallback chain, a transient tool-execution failure,
+ * and a sandbox **wall-clock-timeout** (`sandbox_error`; the deterministic sandbox failures are
+ * `retryable: false` and excluded at the engine gate, not here). The single source of which authored
+ * `retry_on` codes are valid — a `retry_on` member outside this set is rejected at parse (ADR-0040 A.4).
+ * Retryability of a *runtime* failure is still decided by `NodeFailure.retryable`; this set only bounds the
+ * authored `retry_on` filter.
+ */
+export const RETRYABLE_ERROR_CODES = [
+  'provider_rate_limit',
+  'provider_unavailable',
+  'tool_failed',
+  'sandbox_error',
+] as const satisfies readonly ErrorCode[];
+export type RetryableErrorCode = (typeof RETRYABLE_ERROR_CODES)[number];
 
 /**
  * The five-value LLM **stop reason** vocabulary, used today by `session:turn_completed`.

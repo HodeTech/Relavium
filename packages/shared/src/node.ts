@@ -104,6 +104,7 @@ export const ConditionNodeSchema = z
       .array(ConditionBranchSchema)
       .min(1, 'a condition node must declare at least one branch'),
     default: kebabIdSchema.optional(),
+    retry: RetrySchema.optional(), // above-chain node-retry budget (ADR-0040) — the expression runs in the sandbox
   })
   .strict();
 
@@ -114,6 +115,7 @@ export const TransformNodeSchema = z
     transform: nonEmptyString,
     expression_type: ExpressionTypeSchema.optional(),
     output_schema: OutputSchemaSchema.optional(),
+    retry: RetrySchema.optional(), // above-chain node-retry budget (ADR-0040) — the expression runs in the sandbox
   })
   .strict();
 
@@ -134,6 +136,7 @@ export const MergeNodeSchema = z
     // Required only when merge_strategy = custom; enforced at the workflow level
     // (a discriminated-union option cannot carry a cross-field refinement).
     merge_fn: z.string().optional(),
+    retry: RetrySchema.optional(), // above-chain node-retry budget (ADR-0040) — a custom merge_fn runs in the sandbox
   })
   .strict();
 

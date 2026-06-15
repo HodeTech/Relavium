@@ -42,6 +42,43 @@ describe('NodeSchema', () => {
     expect(NodeSchema.safeParse({ id: 'My_Node', type: 'input' }).success).toBe(false);
   });
 
+  it('accepts an above-chain retry budget on condition / transform / merge (ADR-0040)', () => {
+    const retry = { max: 3, backoff: 'exponential', backoff_ms: 500, retry_on: ['tool_failed'] };
+    const samples: unknown[] = [
+      {
+        id: 'c',
+        type: 'condition',
+        expression: 'x',
+        branches: [{ when: true, target_node: 'a' }],
+        retry,
+      },
+      { id: 't', type: 'transform', transform: '1', retry },
+      { id: 'm', type: 'merge', merge_strategy: 'concat', retry },
+    ];
+    for (const sample of samples) {
+      expect(NodeSchema.safeParse(sample).success).toBe(true);
+    }
+  });
+
+  it('rejects a retry_on listing a non-retryable error code (ADR-0040 A.4)', () => {
+    // `tool_denied` is fatal — retrying it just re-denies; the subset enum rejects it at parse.
+    const bad = {
+      id: 't',
+      type: 'transform',
+      transform: '1',
+      retry: { max: 2, backoff: 'linear', retry_on: ['tool_denied'] },
+    };
+    expect(NodeSchema.safeParse(bad).success).toBe(false);
+    // …and an empty retry_on (a budget that retries on nothing) is rejected too.
+    const empty = {
+      id: 't',
+      type: 'transform',
+      transform: '1',
+      retry: { max: 2, backoff: 'linear', retry_on: [] },
+    };
+    expect(NodeSchema.safeParse(empty).success).toBe(false);
+  });
+
   it('rejects an agent node missing agent_ref', () => {
     expect(NodeSchema.safeParse({ id: 'a', type: 'agent' }).success).toBe(false);
   });

@@ -339,6 +339,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `invalid_handle` issue (no existing fixture/spec used one — the spec routes via `branches` + `nodeId:when`
   handles); pinned by `dag.test.ts` and documented in workflow-yaml-spec.md §edges.
 
+## Node retry (1.S) follow-ups
+
+> **2026-06-15 1.S implementation (ADR-0040).** The above-chain node-retry budget (Part A — the run loop
+> re-dispatches a whole node on a retryable failure, with backoff, bounded by `retry.max`, applied to
+> agent/condition/transform/merge nodes) landed. Part B is deferred:
+
+- [ ] **retry-from-node — re-run a settled run from a chosen node (ADR-0040 Part B) → Phase-2.** Deferred
+  because the in-memory engine cannot satisfy the design intent simultaneously: re-running on the **same
+  `runId`** (so the host dedups completed-upstream side effects via `runId+nodeId+retryCount`) would append
+  a **second terminal event** to a settled run, breaking the exactly-one-terminal invariant (ADR-0036) and
+  the 1.R Checkpointer fold; a **new `runId`** keeps a single terminal but loses upstream side-effect dedup.
+  Reconciling both needs the real persistent store + a **run-attempt model** (a re-run row referencing the
+  original) — Phase-2, which already owns the surface trigger. The in-run budget (Part A) is the landed 1.S
+  deliverable. *(medium · packages/core/src/engine/engine.ts; ADR-0040 Part B; Phase-2)*
+
 ## Checkpoint/resume + human gate (1.R / 1.Q) follow-ups
 
 > **2026-06-15 1.R/1.Q implementation + two pre-merge review passes (PR #22).** The derived `Checkpointer`

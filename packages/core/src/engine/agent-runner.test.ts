@@ -264,7 +264,7 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
   });
 
-  it('uses node.retry over the agent default for the primary attempt budget', async () => {
+  it('does NOT use node.retry for within-chain primary retry (it is the engine above-chain budget, ADR-0040)', async () => {
     let streamCalls = 0;
     const failing: LlmProvider = {
       id: 'anthropic',
@@ -283,7 +283,9 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
       },
     };
     const exec = createAgentNodeExecutor(deps(failing));
-    // AGENT has no retry (default max 1); the node override raises the primary budget to 2.
+    // node.retry is the engine's ABOVE-chain budget now (ADR-0040) — the AgentRunner no longer feeds it
+    // into the primary chain entry, so the primary still gets a single within-chain attempt. The
+    // retryable failure surfaces to the engine, which owns the re-dispatch.
     const { ctx } = ctxFor(
       vertexFor({
         kind: 'agent',
@@ -293,7 +295,10 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     );
     const outcome = await exec.execute(ctx);
     expect(outcome.kind).toBe('failed');
-    expect(streamCalls).toBe(2); // node.retry.max, not the agent default of 1
+    if (outcome.kind === 'failed') {
+      expect(outcome.error.retryable).toBe(true); // surfaced as retryable for the engine's node-retry budget
+    }
+    expect(streamCalls).toBe(1); // a single primary attempt — node.retry does NOT drive within-chain retry
   });
 
   it('resolves {{inputs.x}} into a user message, leaving system as the authored prompt', async () => {

@@ -141,6 +141,9 @@ export const NodeStartedEventSchema = z.object({
   // The engine node type (node-types.md is the canonical taxonomy), not the authored YAML type —
   // `parallel`/`merge` have already expanded to `fan_out`/`fan_in` by the time the engine runs.
   nodeType: z.enum(ENGINE_NODE_TYPES),
+  // 1-based dispatch attempt (1.S, ADR-0040). Absent ⇒ attempt 1; present + >1 ⇒ a node-retry re-dispatch,
+  // so a surface distinguishes "attempt N starting" from a replay. The node may emit several of these.
+  attemptNumber: positiveInt.optional(),
 });
 
 export const AgentTokenEventSchema = z.object({
@@ -158,7 +161,7 @@ export const AgentToolCallEventSchema = z.object({
   model: nonEmptyString, // the invoking model — attributable across a failover
   toolId: nonEmptyString,
   toolInput: z.unknown(), // sanitized — no secrets
-  attemptNumber: positiveInt.optional(), // 1-based retry attempt (matches cost:updated)
+  attemptNumber: positiveInt.optional(), // 1-based within-chain (FallbackChain) attempt — matches cost:updated
 });
 
 export const AgentToolResultEventSchema = z.object({
@@ -168,7 +171,7 @@ export const AgentToolResultEventSchema = z.object({
   toolId: nonEmptyString,
   success: z.boolean(),
   outputSummary: z.string(),
-  attemptNumber: positiveInt.optional(),
+  attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated
 });
 
 export const AgentFilePatchProposedEventSchema = z.object({
@@ -178,7 +181,7 @@ export const AgentFilePatchProposedEventSchema = z.object({
   // Gated — no write until the user accepts (e.g. the VS Code inline-diff review).
   // At least one patch — an empty proposal is meaningless (mirrors run:paused.gateIds).
   patches: z.array(z.object({ uri: nonEmptyString, unifiedDiff: z.string() })).min(1),
-  attemptNumber: positiveInt.optional(),
+  attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated
 });
 
 export const CostUpdatedEventSchema = z.object({
@@ -190,7 +193,11 @@ export const CostUpdatedEventSchema = z.object({
   outputTokens: nonNegativeInt,
   costMicrocents: nonNegativeInt, // integer micro-cents (canonical unit); from Relavium's pricing table, never the provider
   cumulativeCostMicrocents: nonNegativeInt, // integer micro-cents running total for the whole run
-  attemptNumber: positiveInt.optional(), // 1-based retry attempt this cost belongs to
+  // 1-based WITHIN-CHAIN (FallbackChain) attempt this cost belongs to; resets to 1 on each node-retry
+  // re-dispatch. DISTINCT from node:*.attemptNumber (the node-retry dispatch index) — the two do NOT join.
+  // To attribute cost to a node-retry attempt, partition the sequenceNumber-ordered stream at the
+  // node:started / node:retrying boundaries; do not key by (nodeId, attemptNumber) across the two families.
+  attemptNumber: positiveInt.optional(),
 });
 export type CostUpdatedEvent = z.infer<typeof CostUpdatedEventSchema>;
 
@@ -201,7 +208,10 @@ export const NodeCompletedEventSchema = z.object({
   output: z.unknown(),
   tokensUsed: TokensUsedSchema,
   durationMs: nonNegativeInt,
-  attemptNumber: positiveInt.optional(), // 1-based retry attempt (matches cost:updated)
+  // 1-based NODE-RETRY dispatch attempt (1.S, ADR-0040) — the same counter as node:started/node:failed.
+  // Absent ⇒ attempt 1. DISTINCT from cost:updated/agent:* attemptNumber (the within-chain FallbackChain
+  // index, which resets per node re-dispatch); the two counters do NOT join — see cost:updated above.
+  attemptNumber: positiveInt.optional(),
   // The immediate downstream ids a `condition` kept live (its branch selection). Present ONLY for a
   // condition's branch outcome — it is the authoritative record checkpoint/resume (1.R) reconstructs
   // `selectedTargets` from, so a selected branch that was mid-flight at a crash re-runs (not skipped).
@@ -216,6 +226,31 @@ export const NodeFailedEventSchema = z.object({
   ...runBase,
   nodeId: nonEmptyString,
   error: z.object(eventErrorFields),
+  // 1-based attempt this terminal failure belongs to (1.S, ADR-0040) — the last attempt when a node-retry
+  // budget is exhausted. `node:failed` stays the single TERMINAL failure per node; per-attempt failures
+  // surface as `node:retrying` (below).
+  attemptNumber: positiveInt.optional(),
+});
+
+/**
+ * A retryable node attempt failed and the engine will re-dispatch the whole node (1.S,
+ * [ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md)) — **non-terminal**: it does NOT end the
+ * node (the terminal is `node:failed`, emitted only when the budget is exhausted). Carries the failed attempt's
+ * error (the `NodeFailure` shape, **no** `correlationId` — that anchors the terminal failure) and the `delayMs`
+ * backoff before the next attempt. Checkpoint/resume folds it as non-state-bearing (like `node:started`).
+ */
+export const NodeRetryingEventSchema = z.object({
+  type: z.literal('node:retrying'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  /** The attempt that just failed (1-based). The next attempt is `attemptNumber + 1`. */
+  attemptNumber: positiveInt,
+  // Derived from the canonical `eventErrorFields` (single source of truth) minus `correlationId` — which
+  // anchors only the TERMINAL failure (`node:failed`), never a per-attempt retry. Deriving keeps this in
+  // lockstep if a field is later added to the shared failure shape, instead of silently drifting.
+  error: z.object(eventErrorFields).omit({ correlationId: true }),
+  /** The backoff delay (ms) before the next attempt is dispatched. */
+  delayMs: nonNegativeInt,
 });
 
 /** Why a node was skipped — `branch_not_taken` (a `condition` routed away) or `upstream_unreachable`. */
@@ -328,6 +363,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   NodeCompletedEventSchema,
   NodeFailedEventSchema,
   NodeSkippedEventSchema,
+  NodeRetryingEventSchema,
   HumanGatePausedEventSchema,
   HumanGateResumedEventSchema,
   RunCompletedEventSchema,
@@ -435,6 +471,7 @@ export type AgentFilePatchProposedEvent = z.infer<typeof AgentFilePatchProposedE
 export type NodeCompletedEvent = z.infer<typeof NodeCompletedEventSchema>;
 export type NodeFailedEvent = z.infer<typeof NodeFailedEventSchema>;
 export type NodeSkippedEvent = z.infer<typeof NodeSkippedEventSchema>;
+export type NodeRetryingEvent = z.infer<typeof NodeRetryingEventSchema>;
 export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
 export type RunFailedEvent = z.infer<typeof RunFailedEventSchema>;
 export type RunCancelledEvent = z.infer<typeof RunCancelledEventSchema>;

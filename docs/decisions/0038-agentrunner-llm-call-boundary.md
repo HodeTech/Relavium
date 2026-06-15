@@ -2,7 +2,14 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-14
-- **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0018](0018-desktop-execution-and-rust-egress.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0025](0025-agent-surface-refines-desktop-scope.md), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0028](0028-workflow-resource-governance.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0039](0039-same-provider-reasoning-replay.md), [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md), [run-plan.md](../reference/shared-core/run-plan.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md), [error-handling.md](../standards/error-handling.md), [security-review.md](../standards/security-review.md), [shared-core-engine.md](../architecture/shared-core-engine.md)
+
+> **Amended by [ADR-0040](0040-node-retry-budget-above-the-chain.md) (2026-06-15):** the detail that fed the
+> node/agent `retry` (`max` **and** `backoff`) into the **primary `FallbackPlanEntry`** is reversed — `retry`
+> is now the engine's *above-chain* node-retry budget, and the primary entry defaults to `maxAttempts: 1` with
+> the chain's own default backoff. Everything else in this ADR stands. (Within-chain same-model retry of the
+> primary, if wanted, is an optional primary chain-entry `max_attempts`.)
+
+- **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0018](0018-desktop-execution-and-rust-egress.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0025](0025-agent-surface-refines-desktop-scope.md), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0028](0028-workflow-resource-governance.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0039](0039-same-provider-reasoning-replay.md), [ADR-0040](0040-node-retry-budget-above-the-chain.md), [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md), [run-plan.md](../reference/shared-core/run-plan.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md), [error-handling.md](../standards/error-handling.md), [security-review.md](../standards/security-review.md), [shared-core-engine.md](../architecture/shared-core-engine.md)
 
 ## Context
 
