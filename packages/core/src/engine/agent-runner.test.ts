@@ -116,6 +116,7 @@ function ctxFor(
   vertex: PlanVertex,
   inputs: Record<string, unknown> = DEFAULT_INPUTS,
   runOutputs: ReadonlyMap<string, unknown> = NO_OUTPUTS,
+  ctxValues: Record<string, string> = {},
 ): {
   ctx: NodeExecContext;
   events: NodeStreamEvent[];
@@ -127,6 +128,7 @@ function ctxFor(
       vertex,
       runOutputs,
       inputs,
+      ctx: ctxValues,
       secretInputNames: new Set(),
       toolPolicy: {},
       emit: (e) => events.push(e),
@@ -316,6 +318,32 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     await exec.execute(ctx);
     expect(capturedSystem).toBe('You summarize.');
     expect(capturedUser).toBe('Summarize: the body');
+  });
+
+  it('interpolates {{ctx.*}} alongside {{inputs.*}} in the prompt (the threaded workflow context)', async () => {
+    let capturedUser: string | undefined;
+    const p: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        const userMsg = req.messages.find((m) => m.role === 'user');
+        const part = userMsg?.content[0];
+        capturedUser = part?.type === 'text' ? part.text : undefined;
+        return streamOf([{ type: 'text_delta', text: 'ok' }, STOP]);
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(p));
+    const vertex = vertexFor({
+      kind: 'agent',
+      node: agentNode({ prompt_template: 'Summarize {{ctx.topic}}: {{inputs.text}}' }),
+      resolvedAgent: AGENT,
+    });
+    const { ctx } = ctxFor(vertex, { text: 'the body' }, NO_OUTPUTS, { topic: 'weather' });
+    await exec.execute(ctx);
+    expect(capturedUser).toBe('Summarize weather: the body');
   });
 
   it('applies node-over-agent precedence for model / temperature / max_tokens (ADR-0038)', async () => {

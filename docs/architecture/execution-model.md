@@ -67,7 +67,18 @@ are catalogued in
 
 ### 2. Walk the DAG
 
-The engine dispatches every node whose dependencies are satisfied. Independent
+Right after `run:started`, before any node runs, the engine resolves the workflow
+`context:` map **once** into the immutable `ctx.*` namespace (the spec's eager-once
+context — `resolveContext`) and threads the frozen result to every node
+(`NodeExecContext.ctx`), so a bare `ctx.key` read in a `condition` / `transform` /
+`merge_fn` expression, in an agent prompt, and in a human-gate `message_template` /
+`assignee` sees the real value. A context value may
+itself interpolate `{{ inputs.* }}` (and `read_file`, via an injected resolver
+capability); a resolution failure closes the run with `run:failed` (`validation`)
+rather than running nodes against a partial context. On a cross-process resume `ctx`
+is **re-resolved** (it is deliberately not carried in the checkpoint).
+
+The engine then dispatches every node whose dependencies are satisfied. Independent
 branches run concurrently:
 
 - **Sequential spine** — nodes run in dependency order, each receiving upstream

@@ -41,6 +41,8 @@ import {
 } from '@relavium/shared';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
+import { resolveContext } from '../interpolation/resolve.js';
+import type { ResolverCapabilities } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -131,6 +133,12 @@ export interface WorkflowEngineDeps {
   readonly validateEvents?: boolean;
   /** Per-consumer event-buffer high-water mark before the producer is asked to await a drain. */
   readonly eventBufferCapacity?: number;
+  /**
+   * Resolver capabilities (e.g. `readFile`) the engine uses to resolve the workflow `context:` map once at
+   * run start (the `ctx.*` namespace; see {@link NodeExecContext.ctx}). A surface that allows `read_file`
+   * in a `context:` value injects it here — the same purity seam the node handlers use; omit ⇒ no `read_file`.
+   */
+  readonly resolverCapabilities?: ResolverCapabilities;
 }
 
 function maskInputs(
@@ -168,6 +176,9 @@ class RunExecution {
   readonly #executor: NodeExecutor;
   readonly #bus: RunEventBus;
   readonly #onSettled: (runId: string) => void;
+  readonly #resolverCapabilities: ResolverCapabilities;
+  /** The resolved workflow `context:` (`ctx.*`), folded once at run start (or re-resolved on resume). */
+  #resolvedContext: Readonly<Record<string, string>> = {};
 
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
@@ -202,6 +213,7 @@ class RunExecution {
     bus: RunEventBus;
     capacity: number;
     onSettled: (runId: string) => void;
+    resolverCapabilities: ResolverCapabilities;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -212,6 +224,7 @@ class RunExecution {
     this.#executionMode = params.executionMode;
     this.#host = params.host;
     this.#executor = params.executor;
+    this.#resolverCapabilities = params.resolverCapabilities;
     this.#bus = params.bus;
     this.#onSettled = params.onSettled;
     this.#abort = params.host.newAbortController();
@@ -263,11 +276,49 @@ class RunExecution {
         inputs: this.#maskedInputs,
         executionMode: this.#executionMode,
       });
-      this.#schedule();
     } catch {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
       await this.#settle('run:failed');
+      return;
+    }
+    // Resolve the workflow `context:` once (eager-once `ctx.*`) before any node runs. A failure closes the
+    // run loudly (run:failed) rather than running nodes against an empty/partial context (a mis-route risk).
+    if (!(await this.#resolveContextOrFail())) {
+      await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
+      return;
+    }
+    this.#schedule();
+  }
+
+  /**
+   * Resolve the workflow `context:` map into the frozen `ctx.*` namespace (the spec's eager-once context),
+   * threaded to every node via {@link NodeExecContext.ctx}. Returns `false` on failure: a cancel mid-resolve
+   * leaves `#failure` unset (the caller settles `run:cancelled`); any other resolution error sets a typed
+   * `validation` `#failure` (the caller settles `run:failed`). Used by both a fresh start and a resume —
+   * `ctx` is re-resolved on resume because it is deliberately NOT carried in the checkpoint.
+   */
+  async #resolveContextOrFail(): Promise<boolean> {
+    try {
+      this.#resolvedContext = await resolveContext(
+        this.#workflow,
+        this.#inputs,
+        this.#resolverCapabilities,
+        this.#abort.signal,
+      );
+      return true;
+    } catch (error) {
+      if (this.#cancelling || this.#abort.signal.aborted) {
+        return false; // a cancel raced context resolution — settle as cancelled, not a validation failure
+      }
+      this.#failure = {
+        error: {
+          code: 'validation',
+          message: error instanceof Error ? error.message : 'workflow context resolution failed',
+          retryable: false,
+        },
+      };
+      return false;
     }
   }
 
@@ -311,14 +362,35 @@ class RunExecution {
   }
 
   /**
-   * Drive a rehydrated run forward WITHOUT applying a gate decision — used by `resumeFromCheckpoint`
-   * when the target gate was already resolved in the prior process (a cross-process double-delivery):
-   * the decision must not be re-applied (no second `human_gate:resumed`), but the run still continues
-   * any unfinished downstream work, or re-pauses on a remaining gate. The terminal-checkpoint case never
-   * reaches here (it returns a closed handle); so this only ever finds work to do or another gate.
+   * Drive a rehydrated run (resume entry, 1.R). Order matters:
+   * 1. Validate the gate FIRST (non-kick path) — an invalid resume request (`unknown_gate` /
+   *    `run_not_paused`) throws BEFORE the side-effectful context resolution, so the caller drops the run
+   *    from `#runs` rather than the run being terminally settled `run:failed` because context resolution
+   *    happened to fail on a request that should simply have been rejected.
+   * 2. Re-resolve the workflow `context:` — `ctx.*` is not carried in the checkpoint, so post-resume nodes
+   *    need it freshly derived; a resolution failure closes the run loudly (vs running against an empty ctx).
+   * 3. Drive: `gateAlreadyResolved` (the prior process already applied this gate's decision — a cross-process
+   *    double-delivery) → kick the loop WITHOUT re-applying (no second `human_gate:resumed`); otherwise
+   *    apply the decision via {@link resume}. The terminal-checkpoint case never reaches here (closed handle).
    */
-  kick(): void {
-    this.#schedule();
+  async beginResume(
+    gateId: string,
+    decision: GateDecision,
+    gateAlreadyResolved: boolean,
+  ): Promise<void> {
+    // #startEpochMs was seeded from the checkpoint in #seedFromCheckpoint (preserves total durationMs).
+    if (!gateAlreadyResolved) {
+      this.#assertGatePending(gateId); // fail fast on a bad gateId, before any context side effect
+    }
+    if (!(await this.#resolveContextOrFail())) {
+      await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
+      return;
+    }
+    if (gateAlreadyResolved) {
+      this.#schedule();
+    } else {
+      await this.resume(gateId, decision);
+    }
   }
 
   requestCancel(): void {
@@ -335,19 +407,8 @@ class RunExecution {
     this.#schedule();
   }
 
-  async resume(gateId: string, decision: GateDecision): Promise<void> {
-    if (this.#resolvedGates.has(gateId)) {
-      // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
-      // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
-      // completed is a no-op, not a `run_already_terminal` error.
-      return;
-    }
-    if (this.#settled) {
-      throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
-        runId: this.runId,
-        gateId,
-      });
-    }
+  /** The pending gate for `gateId`, or throw the typed misuse (`run_not_paused` / `unknown_gate`). */
+  #assertGatePending(gateId: string): { readonly vertexId: string } {
     if (this.#pendingGates.size === 0) {
       throw new EngineStateError('run_not_paused', 'the run has no pending gate to resume', {
         runId: this.runId,
@@ -361,6 +422,23 @@ class RunExecution {
         gateId,
       });
     }
+    return gate;
+  }
+
+  async resume(gateId: string, decision: GateDecision): Promise<void> {
+    if (this.#resolvedGates.has(gateId)) {
+      // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
+      // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
+      // completed is a no-op, not a `run_already_terminal` error.
+      return;
+    }
+    if (this.#settled) {
+      throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
+        runId: this.runId,
+        gateId,
+      });
+    }
+    const gate = this.#assertGatePending(gateId);
     this.#resolvedGates.add(gateId);
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
@@ -510,6 +588,7 @@ class RunExecution {
         vertex,
         runOutputs: this.#completedOutputs(),
         inputs: this.#inputs,
+        ctx: this.#resolvedContext,
         secretInputNames: this.#secretInputNames,
         toolPolicy: this.#workflow.workflow.tools ?? {},
         emit: (event) => {
@@ -981,6 +1060,7 @@ export class WorkflowEngine {
   readonly #executor: NodeExecutor;
   readonly #validateEvents: boolean;
   readonly #capacity: number;
+  readonly #resolverCapabilities: ResolverCapabilities;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -988,6 +1068,7 @@ export class WorkflowEngine {
     this.#executor = deps.executor;
     this.#validateEvents = deps.validateEvents ?? true;
     this.#capacity = deps.eventBufferCapacity ?? 256;
+    this.#resolverCapabilities = deps.resolverCapabilities ?? {};
   }
 
   /**
@@ -1014,6 +1095,7 @@ export class WorkflowEngine {
         /* settled runs are retained so resume/cancel can report run_already_terminal; a long-lived
            host may prune them on a TTL — out of 1.N scope. */
       },
+      resolverCapabilities: this.#resolverCapabilities,
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -1111,18 +1193,19 @@ export class WorkflowEngine {
       onSettled: () => {
         /* retained like a started run (see start) */
       },
+      resolverCapabilities: this.#resolverCapabilities,
       checkpoint,
     });
     this.#runs.set(input.runId, execution);
     try {
-      if (checkpoint.resolvedGateIds.includes(input.gateId)) {
-        // The gate was already resolved in the prior process (double-delivery); do not re-apply the
-        // decision — just drive any unfinished downstream work (or re-pause on a remaining gate).
-        execution.kick();
-      } else {
-        // Apply the decision + drive the loop (events buffer on the handle for the returned consumer).
-        await execution.resume(input.gateId, parsed.data);
-      }
+      // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was
+      // already resolved in the prior process (no re-apply), else apply the decision. The events buffer on
+      // the returned handle for the consumer.
+      await execution.beginResume(
+        input.gateId,
+        parsed.data,
+        checkpoint.resolvedGateIds.includes(input.gateId),
+      );
     } catch (error) {
       // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused throw must not
       // strand the half-initialized execution in #runs (a retry would then wrongly hit run_already_active).

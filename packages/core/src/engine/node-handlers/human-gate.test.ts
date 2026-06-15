@@ -43,6 +43,7 @@ function ctxFor(
   vertex: PlanVertex,
   opts: {
     inputs?: Record<string, unknown>;
+    ctx?: Record<string, string>;
     runOutputs?: ReadonlyMap<string, unknown>;
     signal?: AbortSignalLike;
   } = {},
@@ -51,6 +52,7 @@ function ctxFor(
     vertex,
     runOutputs: opts.runOutputs ?? new Map(),
     inputs: opts.inputs ?? {},
+    ctx: opts.ctx ?? {},
     secretInputNames: new Set(),
     toolPolicy: {},
     emit: () => undefined,
@@ -88,6 +90,19 @@ describe('createHumanGateNodeExecutor', () => {
     expect(gate.assignee).toBe('cem@example.com');
     expect(gate.timeoutMs).toBeUndefined();
     expect(gate.timeoutAction).toBeUndefined();
+  });
+
+  it('resolves {{ctx.key}} in message_template and assignee from the threaded ctx.* namespace', async () => {
+    const vertex = gateVertex({
+      gate_type: 'approval',
+      assignee: '{{ctx.reviewer}}',
+      message_template: 'Approve for {{ctx.project}}?',
+    });
+    const gate = gateOf(
+      await handler.execute(ctxFor(vertex, { ctx: { reviewer: 'cem', project: 'relavium' } })),
+    );
+    expect(gate.message).toBe('Approve for relavium?');
+    expect(gate.assignee).toBe('cem');
   });
 
   it('defaults timeout_action to the safe reject when timeout_ms is set without an action', async () => {

@@ -88,9 +88,9 @@ export function maskSecretInputs(
  * The one canonical scope a 1.P expression sees. `branches` is supplied only for a `merge_fn`. The
  * `inputs` namespace is **secret-masked** ({@link maskSecretInputs}) so a `secret`-typed input is the
  * marker object, never the raw value — an expression that reads it cannot launder a secret into an
- * output (ADR-0027; the sandbox's "secrets are never injected" contract). `ctx` (the workflow-context
- * namespace) is `{}` for now — threaded once the engine resolves it, mirroring the AgentRunner's
- * `RunScope` (agent-runner.ts).
+ * output (ADR-0027; the sandbox's "secrets are never injected" contract). `ctx` is the **resolved**
+ * workflow-context namespace (`NodeExecContext.ctx`), folded once at run start by the engine and threaded
+ * here, so a bare `ctx.key` read resolves — mirroring the AgentRunner's `RunScope` (agent-runner.ts).
  */
 export function buildExpressionScope(
   ctx: NodeExecContext,
@@ -98,7 +98,7 @@ export function buildExpressionScope(
 ): ExpressionScope {
   return {
     inputs: maskSecretInputs(ctx.inputs, ctx.secretInputNames),
-    ctx: {},
+    ctx: ctx.ctx,
     outputs: outputsRecord(ctx.runOutputs),
     ...(branches === undefined ? {} : { branches }),
   };

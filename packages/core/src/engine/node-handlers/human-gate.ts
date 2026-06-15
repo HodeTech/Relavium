@@ -39,10 +39,12 @@ async function runHumanGate(
     return cancelled();
   }
   const { node } = config;
-  // Resolve the human-facing text against inputs + run.outputs (secrets are parse-gated; see file header).
+  // Resolve the human-facing text against inputs + the resolved ctx.* + run.outputs (secrets are
+  // parse-gated; see file header). `ctx` is the engine-resolved workflow context (NodeExecContext.ctx),
+  // so a gate's `{{ctx.key}}` in message_template / assignee resolves (workflow-yaml-spec.md §context).
   const scope: RunScope = {
     inputs: ctx.inputs,
-    ctx: {},
+    ctx: ctx.ctx,
     outputs: Object.fromEntries(ctx.runOutputs),
   };
   const caps = deps.resolverCapabilities ?? {};

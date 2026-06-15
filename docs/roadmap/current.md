@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-14
+> Last updated: 2026-06-15
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -147,8 +147,12 @@ alongside the 1.O agent arm — executor-only, no `engine.ts` change (the run lo
 skip-propagation, fan-in join scheduling, events, cancellation), `wait_first` executor-only (true
 loser-cancel deferred), and a pre-merge BLOCKER secret-leak (the `input` handler emitting raw
 `secret`-typed inputs into events) fixed via a `secretInputNames` masking gate on `NodeExecContext`.
-The lane now continues at the remaining **1.m4** workstreams toward **M2** — the **human gate (1.Q)**,
-**checkpoint/resume (1.R)**, **node retry (1.S)**, and the **pre-egress budget governor (1.AC)** — and the
+**Checkpoint/resume (1.R) and the human gate (1.Q) then landed together — ✅ Done (PR #22, 2026-06-15)**:
+the derived `Checkpointer` (state folded from the `run_events` log; no checkpoint table — ADR-0003) +
+cross-process `resumeFromCheckpoint` (idempotent re-delivery, `workflow_mismatch` identity guard), and the
+`human_in_the_loop` gate (suspend → notify → resume, plus the one-shot `setTimer` timeout port — `approve`
+auto-resolves, `reject` fails with `run_timeout`). The lane now continues at the remaining **1.m4**
+workstreams toward **M2** — **node retry (1.S)** and the **pre-egress budget governor (1.AC)** — and the
 agent-first sub-spine (**1.V–1.AA**, Lane C) opens now that 1.O exists.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
@@ -177,8 +181,8 @@ agent-first sub-spine (**1.V–1.AA**, Lane C) opens now that 1.O exists.
 > **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (the built-in `ToolRegistry`) are ✅ Done (PR #17,
 > merged 2026-06-13)** — **1.N closes 1.m3** (its last component); **1.T** (a 1.m4 component) is the
 > other 1.O join prerequisite; **the `AgentRunner` join (1.O) is ✅ Done (PR #18, 2026-06-14)**; and the
-> **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**. The **human gate (1.Q)** is the next
-> workstream.
+> **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**; and **checkpoint/resume (1.R) + the
+> human gate (1.Q) are ✅ Done (PR #22, 2026-06-15)**. **Node retry (1.S)** is the next workstream.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
