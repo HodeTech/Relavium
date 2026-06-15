@@ -19,7 +19,7 @@
  * settled upstream results — not evaluated inputs.
  */
 
-import type { Agent, FallbackChainEntry, EngineNodeType, WorkflowNode } from '@relavium/shared';
+import type { Agent, Budget, FallbackChainEntry, EngineNodeType, WorkflowNode } from '@relavium/shared';
 
 import type { ReferenceSite } from './interpolation/collect.js';
 
@@ -168,4 +168,8 @@ export interface RunPlan {
   readonly vertices: ReadonlyMap<string, PlanVertex>;
   /** The run-wide concurrency cap (`workflow.max_parallel`), when declared. */
   readonly maxParallel?: number;
+  /** The run-wide pre-egress budget cap (`workflow.budget`), when declared. */
+  readonly budget?: Budget;
+  /** The run-wide wall-clock timeout (`workflow.timeout_ms`), when declared. */
+  readonly timeoutMs?: number;
 }

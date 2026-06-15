@@ -78,6 +78,17 @@ export interface GateRequest {
   readonly timeoutAction?: 'approve' | 'reject';
   /** The wall-clock deadline; the engine computes it from `timeoutMs` against its clock when omitted. */
   readonly expiresAt?: string;
+  /**
+   * Budget-gate only (ADR-0028, 1.AC): the figures carried on the paired `budget:paused` event so a
+   * surface can show spent/limit before it decides whether to continue.
+   */
+  readonly spentMicrocents?: number;
+  readonly limitMicrocents?: number;
+  /**
+   * Set by the budget governor so the engine can treat a `rejected` decision as a run-level
+   * `budget_exceeded` failure rather than completing the gate vertex.
+   */
+  readonly isBudgetGate?: boolean;
 }
 
 /**
@@ -138,6 +149,12 @@ export interface NodeExecContext {
   readonly signal: AbortSignalLike;
   /** 1-based attempt number for this dispatch (always 1 in 1.N; node-level retry is 1.S). */
   readonly attemptNumber: number;
+  /**
+   * Pre-egress budget hook (ADR-0028, 1.AC). Supplied by the run loop when a workflow `budget` is
+   * configured; the agent runner forwards it into the turn core / fallback chain so every provider
+   * attempt is gated before egress.
+   */
+  readonly preEgress?: import('./agent-turn.js').PreEgressHook;
 }
 
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */

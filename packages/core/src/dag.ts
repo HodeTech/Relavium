@@ -146,6 +146,8 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     order,
     vertices,
     ...(spec.max_parallel === undefined ? {} : { maxParallel: spec.max_parallel }),
+    ...(spec.budget === undefined ? {} : { budget: spec.budget }),
+    ...(spec.timeout_ms === undefined ? {} : { timeoutMs: spec.timeout_ms }),
   };
 }
 

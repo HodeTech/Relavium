@@ -49,6 +49,7 @@ import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
+import { BudgetGovernor, DEFAULT_MAX_TOKENS_ESTIMATE } from './budget-governor.js';
 import type { CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
@@ -150,6 +151,11 @@ export interface WorkflowEngineDeps {
    * in a `context:` value injects it here — the same purity seam the node handlers use; omit ⇒ no `read_file`.
    */
   readonly resolverCapabilities?: ResolverCapabilities;
+  /**
+   * Per-call output-token default the pre-egress budget governor uses when a node/session omits
+   * `maxTokens` (ADR-0028). Not the model's absolute max, which would over-block.
+   */
+  readonly maxTokensEstimate?: number;
 }
 
 function maskInputs(
@@ -188,16 +194,21 @@ class RunExecution {
   readonly #bus: RunEventBus;
   readonly #onSettled: (runId: string) => void;
   readonly #resolverCapabilities: ResolverCapabilities;
+  readonly #maxTokensEstimate: number;
   /** The resolved workflow `context:` (`ctx.*`), folded once at run start (or re-resolved on resume). */
   #resolvedContext: Readonly<Record<string, string>> = {};
 
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
-  readonly #pendingGates = new Map<string, { readonly vertexId: string }>();
+  readonly #pendingGates = new Map<string, { readonly vertexId: string; readonly isBudgetGate: boolean }>();
   /** Gate ids whose decision was already applied — a re-delivery is an idempotent no-op (1.R). */
   readonly #resolvedGates = new Set<string>();
   /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
   readonly #gateTimers = new Map<string, () => void>();
+  /** The run-level wall-clock timeout timer, when a `timeout_ms` is configured (ADR-0028). */
+  #runTimeoutDisarm: (() => void) | undefined;
+  /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
+  #budgetGovernor: BudgetGovernor | undefined;
 
   #workflowId = '';
   #settled = false;
@@ -225,6 +236,7 @@ class RunExecution {
     capacity: number;
     onSettled: (runId: string) => void;
     resolverCapabilities: ResolverCapabilities;
+    maxTokensEstimate?: number;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -247,6 +259,14 @@ class RunExecution {
     );
     this.#secretInputNames = secretNames;
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
+    this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
+    if (params.plan.budget !== undefined) {
+      this.#budgetGovernor = new BudgetGovernor({
+        budget: params.plan.budget,
+        defaultMaxTokensEstimate: this.#maxTokensEstimate,
+        emit: (draft) => this.#emitDurable({ ...draft, runId: this.runId }),
+      });
+    }
 
     if (params.checkpoint === undefined) {
       for (const id of params.plan.vertices.keys()) {
@@ -278,6 +298,7 @@ class RunExecution {
 
   async begin(): Promise<void> {
     this.#startEpochMs = Date.parse(this.#host.clock.now());
+    this.#armRunTimeout();
     try {
       this.#workflowId = await this.#host.store.resolveWorkflowId(this.#workflow.workflow.id);
       await this.#emitDurable({
@@ -300,6 +321,53 @@ class RunExecution {
       return;
     }
     this.#schedule();
+  }
+
+  /**
+   * Arm the run-level `timeout_ms` timer (ADR-0028). Idempotent: disarms any prior timer first. The
+   * timer fires once and fails the run with `run_timeout` if it elapses before the run settles.
+   */
+  #armRunTimeout(): void {
+    this.#disarmRunTimeout();
+    const timeoutMs = this.#plan.timeoutMs;
+    if (timeoutMs === undefined) {
+      return;
+    }
+    this.#runTimeoutDisarm = this.#host.setTimer(timeoutMs, () => {
+      void this.#onRunTimeout(timeoutMs);
+    });
+  }
+
+  #disarmRunTimeout(): void {
+    if (this.#runTimeoutDisarm !== undefined) {
+      this.#runTimeoutDisarm();
+      this.#runTimeoutDisarm = undefined;
+    }
+  }
+
+  async #onRunTimeout(timeoutMs: number): Promise<void> {
+    if (this.#settled) {
+      return;
+    }
+    this.#disarmRunTimeout();
+    const elapsedMs = this.#elapsedMs();
+    await this.#emitDurable({
+      type: 'run:timeout',
+      runId: this.runId,
+      elapsedMs,
+      timeoutMs,
+    });
+    if (!this.#settled) {
+      this.#failure = {
+        error: {
+          code: 'run_timeout',
+          message: `the run exceeded its ${timeoutMs} ms timeout`,
+          retryable: false,
+        },
+      };
+      this.#abort.abort();
+      this.#schedule();
+    }
   }
 
   /**
@@ -356,7 +424,10 @@ class RunExecution {
       // applied immediately. Re-arming a *remaining* gate's deadline is deferred to the Phase-2
       // crash-reconciliation that re-arms from persisted policy + a real clock (shared-core-engine.md) —
       // the data it needs (timeoutAction + expiresAt) is now carried on `human_gate:paused`, so no backfill.
-      this.#pendingGates.set(gate.gateId, { vertexId: gate.nodeId });
+      this.#pendingGates.set(gate.gateId, {
+        vertexId: gate.nodeId,
+        isBudgetGate: gate.isBudgetGate,
+      });
     }
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
@@ -390,6 +461,7 @@ class RunExecution {
     gateAlreadyResolved: boolean,
   ): Promise<void> {
     // #startEpochMs was seeded from the checkpoint in #seedFromCheckpoint (preserves total durationMs).
+    this.#armRunTimeout();
     if (!gateAlreadyResolved) {
       this.#assertGatePending(gateId); // fail fast on a bad gateId, before any context side effect
     }
@@ -419,7 +491,7 @@ class RunExecution {
   }
 
   /** The pending gate for `gateId`, or throw the typed misuse (`run_not_paused` / `unknown_gate`). */
-  #assertGatePending(gateId: string): { readonly vertexId: string } {
+  #assertGatePending(gateId: string): { readonly vertexId: string; readonly isBudgetGate: boolean } {
     if (this.#pendingGates.size === 0) {
       throw new EngineStateError('run_not_paused', 'the run has no pending gate to resume', {
         runId: this.runId,
@@ -454,6 +526,35 @@ class RunExecution {
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
+
+    // A rejected budget gate is a run-level budget failure, not a completed gate vertex.
+    if (gate.isBudgetGate && decision.decision === 'rejected') {
+      const state = this.#states.get(gate.vertexId);
+      if (state !== undefined) {
+        state.status = 'failed';
+      }
+      if (this.#failure === undefined && !this.#cancelling) {
+        this.#failure = {
+          nodeId: gate.vertexId,
+          error: {
+            code: 'budget_exceeded',
+            message: 'the budget gate was rejected',
+            retryable: false,
+          },
+        };
+        this.#abort.abort();
+      }
+      await this.#emitDurable({
+        type: 'human_gate:resumed',
+        runId: this.runId,
+        nodeId: gate.vertexId,
+        decision: 'rejected',
+        decidedBy: decision.decidedBy,
+      });
+      this.#schedule();
+      return;
+    }
+
     // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
     // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
     // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
@@ -667,9 +768,23 @@ class RunExecution {
     }
   }
 
+  /**
+   * Build the pre-egress hook for this run, when a budget is configured. The hook is stateful:
+   * it sees the run's current cumulative cost and may emit a one-time `budget:warning` or throw
+   * `BudgetExceededError` / `BudgetPauseError` for `fail` / `pause_for_approval`.
+   */
+  #makePreEgressHook(): import('./agent-turn.js').PreEgressHook | undefined {
+    if (this.#budgetGovernor === undefined) {
+      return undefined;
+    }
+    const governor = this.#budgetGovernor;
+    return (info) => governor.checkPreEgress(info.model, info.maxTokens);
+  }
+
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
   async #runAttempt(vertex: PlanVertex, attemptNumber: number): Promise<NodeOutcome> {
     try {
+      const preEgress = this.#makePreEgressHook();
       const ctx: NodeExecContext = {
         vertex,
         runOutputs: this.#completedOutputs(),
@@ -682,6 +797,7 @@ class RunExecution {
         },
         signal: this.#abort.signal,
         attemptNumber,
+        ...(preEgress === undefined ? {} : { preEgress }),
       };
       return await this.#executor.execute(ctx);
     } catch {
@@ -851,11 +967,12 @@ class RunExecution {
   /** A `paused` outcome: park the gate, arm its timeout timer (1.Q), and emit `human_gate:paused`. */
   async #settlePaused(vertex: PlanVertex, gate: GateRequest): Promise<void> {
     const gateId = gate.gateId ?? this.#host.ids.newId();
+    const isBudgetGate = gate.isBudgetGate === true;
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'paused';
     }
-    this.#pendingGates.set(gateId, { vertexId: vertex.id });
+    this.#pendingGates.set(gateId, { vertexId: vertex.id, isBudgetGate });
     // Compute the wall-clock deadline from the host clock (the handler has none) and arm a one-shot timer
     // (1.Q). On fire, an `approve` action auto-resolves the gate; a `reject` (the safe default) fails the
     // run with run_timeout. The timer is disarmed on resume / terminal settle so it never fires twice.
@@ -875,6 +992,16 @@ class RunExecution {
         void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
       });
       this.#gateTimers.set(gateId, disarm);
+    }
+    if (gate.spentMicrocents !== undefined && gate.limitMicrocents !== undefined) {
+      await this.#emitDurable({
+        type: 'budget:paused',
+        runId: this.runId,
+        nodeId: vertex.id,
+        gateId,
+        spentMicrocents: gate.spentMicrocents,
+        limitMicrocents: gate.limitMicrocents,
+      });
     }
     await this.#emitDurable({
       type: 'human_gate:paused',
@@ -975,6 +1102,7 @@ class RunExecution {
       disarm();
     }
     this.#gateTimers.clear();
+    this.#disarmRunTimeout();
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -1146,6 +1274,7 @@ class RunExecution {
         return;
       case 'cost:updated':
         this.#cumulativeCostMicrocents += event.costMicrocents;
+        this.#budgetGovernor?.updateCost(this.#cumulativeCostMicrocents);
         this.#bus.emit({
           ...event,
           runId,
@@ -1219,6 +1348,7 @@ export class WorkflowEngine {
   readonly #validateEvents: boolean;
   readonly #capacity: number;
   readonly #resolverCapabilities: ResolverCapabilities;
+  readonly #maxTokensEstimate: number;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -1227,6 +1357,7 @@ export class WorkflowEngine {
     this.#validateEvents = deps.validateEvents ?? true;
     this.#capacity = deps.eventBufferCapacity ?? 256;
     this.#resolverCapabilities = deps.resolverCapabilities ?? {};
+    this.#maxTokensEstimate = deps.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
   }
 
   /**
@@ -1254,6 +1385,7 @@ export class WorkflowEngine {
            host may prune them on a TTL — out of 1.N scope. */
       },
       resolverCapabilities: this.#resolverCapabilities,
+      maxTokensEstimate: this.#maxTokensEstimate,
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -1352,6 +1484,7 @@ export class WorkflowEngine {
         /* retained like a started run (see start) */
       },
       resolverCapabilities: this.#resolverCapabilities,
+      maxTokensEstimate: this.#maxTokensEstimate,
       checkpoint,
     });
     this.#runs.set(input.runId, execution);

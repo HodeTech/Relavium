@@ -37,6 +37,8 @@ export interface CheckpointNodeState {
 export interface CheckpointPendingGate {
   readonly gateId: string;
   readonly nodeId: string;
+  /** True for a budget gate, so a rejected decision can still fail the run on resume. */
+  readonly isBudgetGate: boolean;
 }
 
 /** The derived state a rehydrating run is rebuilt from — never a persisted blob (reconstructed from rows). */
@@ -86,7 +88,7 @@ interface ReconAccumulator {
   totalOutputTokens: number;
   cumulativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
-  readonly pendingGates: Map<string, string>; // gateId → nodeId
+  readonly pendingGates: Map<string, { nodeId: string; isBudgetGate: boolean }>;
   readonly resolvedGateIds: Set<string>;
 }
 
@@ -144,11 +146,14 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
   }
 }
 
-/** Human-gate lifecycle: park a pending gate, or resolve it (decision becomes the gate vertex output). */
+/** Human-gate / budget-gate lifecycle: park a pending gate, or resolve it (decision becomes the gate vertex output). */
 function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
-  if (event.type === 'human_gate:paused') {
+  if (event.type === 'human_gate:paused' || event.type === 'budget:paused') {
     acc.nodeStates.set(event.nodeId, { status: 'paused' });
-    acc.pendingGates.set(event.gateId, event.nodeId);
+    acc.pendingGates.set(event.gateId, {
+      nodeId: event.nodeId,
+      isBudgetGate: event.type === 'budget:paused',
+    });
     return;
   }
   if (event.type !== 'human_gate:resumed') {
@@ -161,7 +166,7 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
   });
   // Collect this gate's pending ids first, then mutate — never delete while iterating the Map.
   const resolvedForNode = [...acc.pendingGates]
-    .filter(([, nodeId]) => nodeId === event.nodeId)
+    .filter(([, entry]) => entry.nodeId === event.nodeId)
     .map(([gateId]) => gateId);
   for (const gateId of resolvedForNode) {
     acc.pendingGates.delete(gateId);
@@ -215,7 +220,11 @@ export function reconstructCheckpointState(
     startedAtMs: acc.startedAtMs,
     nodeStates: acc.nodeStates,
     completedNodeIds,
-    pendingGates: [...acc.pendingGates].map(([gateId, nodeId]) => ({ gateId, nodeId })),
+    pendingGates: [...acc.pendingGates].map(([gateId, entry]) => ({
+      gateId,
+      nodeId: entry.nodeId,
+      isBudgetGate: entry.isBudgetGate,
+    })),
     resolvedGateIds: [...acc.resolvedGateIds],
     lastSequenceNumber: acc.lastSequenceNumber,
     totalInputTokens: acc.totalInputTokens,

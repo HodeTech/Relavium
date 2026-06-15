@@ -53,14 +53,32 @@ export interface StandardNodeExecutorDeps {
  * absent — they fail loud until their workstream lands.
  */
 export function createStandardNodeExecutor(deps: StandardNodeExecutorDeps): NodeExecutor {
-  return createDispatchingNodeExecutor({
-    ...(deps.agent === undefined ? {} : { agent: createAgentNodeExecutor(deps.agent) }),
-    condition: createConditionNodeExecutor({ sandbox: deps.sandbox }),
-    transform: createTransformNodeExecutor({ sandbox: deps.sandbox }),
-    fan_in: createFanInNodeExecutor({ sandbox: deps.sandbox }),
-    fan_out: createFanOutNodeExecutor(),
-    human_in_the_loop: createHumanGateNodeExecutor(deps.humanGate ?? {}),
-    input: createInputNodeExecutor(),
-    output: createOutputNodeExecutor(),
-  });
+  return {
+    execute(ctx) {
+      const handlers: NodeExecutorMap = {
+        ...(deps.agent === undefined
+          ? {}
+          : {
+              agent: createAgentNodeExecutor({
+                ...deps.agent,
+                ...(ctx.preEgress === undefined ? {} : { preEgress: ctx.preEgress }),
+              }),
+            }),
+        condition: createConditionNodeExecutor({ sandbox: deps.sandbox }),
+        transform: createTransformNodeExecutor({ sandbox: deps.sandbox }),
+        fan_in: createFanInNodeExecutor({ sandbox: deps.sandbox }),
+        fan_out: createFanOutNodeExecutor(),
+        human_in_the_loop: createHumanGateNodeExecutor(deps.humanGate ?? {}),
+        input: createInputNodeExecutor(),
+        output: createOutputNodeExecutor(),
+      };
+      const handler = handlers[ctx.vertex.type];
+      if (handler === undefined) {
+        return Promise.resolve(
+          failed('internal', `no executor is registered for node type '${ctx.vertex.type}'`, false),
+        );
+      }
+      return handler.execute(ctx);
+    },
+  };
 }

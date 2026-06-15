@@ -44,6 +44,7 @@ import {
 import { ToolDispatchError } from '../tools/errors.js';
 import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import { unwrapUntrusted } from '../tools/untrusted.js';
+import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /** Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob. */
@@ -65,7 +66,10 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
  * called immediately before every seam call. In 1.O the default is a no-op that always permits; 1.AC
  * replaces it with the estimator and may throw an {@link AgentTurnError} (`budget_exceeded`) to halt.
  */
-export type PreEgressHook = (info: { readonly model: string }) => void | Promise<void>;
+export type PreEgressHook = (info: {
+  readonly model: string;
+  readonly maxTokens?: number;
+}) => void | Promise<void>;
 
 /** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
 export type ChainCapabilities = Pick<
@@ -265,6 +269,17 @@ async function streamOneTurn(
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
+      // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it
+      // rather than remapping the wrapped LlmError to a generic internal code.
+      if (chunk.error.cause instanceof AgentTurnError) {
+        throw chunk.error.cause;
+      }
+      if (chunk.error.cause instanceof BudgetExceededError) {
+        throw new AgentTurnError('budget_exceeded', chunk.error.cause.message, false);
+      }
+      if (chunk.error.cause instanceof BudgetPauseError) {
+        throw chunk.error.cause;
+      }
       throw new AgentTurnError(
         codeForLlmError(chunk.error),
         chunk.error.message,
@@ -467,6 +482,9 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     ...params.chainCapabilities,
     costTracker,
     onAttempt,
+    // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn,
+    // so a failover to a more expensive model is also gated (1.AC).
+    ...(params.preEgress === undefined ? {} : { preAttempt: params.preEgress }),
   });
 
   const messages: LlmMessage[] = params.messages.map((m) => ({
@@ -484,7 +502,22 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
         false,
       );
     }
-    await params.preEgress?.({ model: activeModel });
+    try {
+      await params.preEgress?.({
+        model: activeModel,
+        ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+      });
+    } catch (err) {
+      // A budget governor failure at the turn boundary is surfaced with the same typed outcome as
+      // a per-attempt failure inside the fallback chain.
+      if (err instanceof BudgetExceededError) {
+        throw new AgentTurnError('budget_exceeded', err.message, false);
+      }
+      if (err instanceof BudgetPauseError) {
+        throw err;
+      }
+      throw err;
+    }
     // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
     // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
     // with the post-stream re-check below.

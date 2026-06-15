@@ -40,6 +40,7 @@ import {
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
+import { BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
@@ -169,6 +170,9 @@ async function executeAgent(
     });
   } catch (err) {
     if (err instanceof AgentTurnError) return failed(err.code, err.message, err.retryable);
+    if (err instanceof BudgetPauseError) {
+      return { kind: 'paused', gate: err.toGateRequest() };
+    }
     throw err; // unexpected — the engine's catch-all maps it to a single `internal` failure
   }
 

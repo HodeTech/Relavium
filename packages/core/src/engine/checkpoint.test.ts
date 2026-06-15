@@ -97,7 +97,7 @@ describe('reconstructCheckpointState', () => {
     ]);
     expect(state?.runStatus).toBe('paused');
     expect(state?.nodeStates.get('gate')).toEqual({ status: 'paused' });
-    expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'gate' }]);
+    expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'gate', isBudgetGate: false }]);
   });
 
   it('a resumed gate clears the pending gate + records the decision as the node output', () => {

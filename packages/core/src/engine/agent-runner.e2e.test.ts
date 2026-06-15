@@ -1,13 +1,14 @@
 import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
 import type { RunEvent } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { parseWorkflow } from '../parser.js';
-import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
+import { createExpressionSandbox, type ExpressionSandbox } from '../expression/sandbox.js';
+import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
-import { createAgentNodeExecutor } from './agent-runner.js';
 import { WorkflowEngine } from './engine.js';
 import { createInMemoryHost } from './execution-host.js';
+import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
 
 const CAPS: CapabilityFlags = {
@@ -77,6 +78,17 @@ const echoRegistry: ToolRegistry = {
   },
 };
 
+/** The matching LLM-visible tool def for the echo registry. */
+const echoToolDef: CoreToolDef = {
+  id: 'echo',
+  source: 'builtin',
+  description: 'echo',
+  parseArgs: (raw) => raw,
+  llmVisibleParams: { type: 'object' },
+  policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+  dispatch: () => Promise.reject(new Error('echoToolDef dispatch is not used directly')),
+};
+
 const WORKFLOW = parseWorkflow(
   `schema_version: '1.0'
 workflow:
@@ -109,22 +121,22 @@ function assertGapFreeSeq(events: readonly RunEvent[]): void {
   seqs.forEach((seq, index) => expect(seq).toBe(index));
 }
 
+let sandbox: ExpressionSandbox;
+
+beforeAll(async () => {
+  sandbox = await createExpressionSandbox();
+});
+
 describe('AgentRunner end-to-end through the WorkflowEngine', () => {
   it('runs an agent node, streaming tokens + cost, to run:completed', async () => {
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
-        resolveProvider: () =>
-          provider([
-            { type: 'text_delta', text: 'a summary' },
-            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 4 } },
-          ]),
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'key',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+      executor: agentExecutor(() =>
+        provider([
+          { type: 'text_delta', text: 'a summary' },
+          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 4 } },
+        ]),
+      ),
     });
 
     const events = await drain(
@@ -185,14 +197,7 @@ workflow:
     );
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
-        resolveProvider: (id) => (id === 'anthropic' ? primary : fallback),
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'key',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+      executor: agentExecutor((id) => (id === 'anthropic' ? primary : fallback)),
     });
 
     const events = await drain(engine.start({ workflow: wf }));
@@ -222,8 +227,8 @@ workflow:
     );
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
-        resolveProvider: () =>
+      executor: agentExecutor(
+        () =>
           scriptedProvider([
             // turn 1: a tool call
             [
@@ -237,12 +242,9 @@ workflow:
               { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
             ],
           ]),
-        registry: echoRegistry,
-        tools: [],
-        keyFor: () => 'key',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+        echoRegistry,
+        [echoToolDef],
+      ),
     });
 
     const events = await drain(engine.start({ workflow: wf }));
@@ -282,19 +284,13 @@ workflow:
     );
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
+      executor: agentExecutor(() =>
         // One executor instance serves both concurrent nodes; each builds its own chain + CostTracker.
-        resolveProvider: () =>
-          provider([
-            { type: 'text_delta', text: 'done' },
-            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
-          ]),
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'k',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+        provider([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        ]),
+      ),
     });
 
     const events = await drain(engine.start({ workflow: wf }));
@@ -349,14 +345,7 @@ workflow:
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
       host,
-      executor: createAgentNodeExecutor({
-        resolveProvider: () => scripted,
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'k',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+      executor: agentExecutor(() => scripted),
     });
     const events: RunEvent[] = [];
     for await (const event of engine.start({ workflow: wf, inputs: { text: 'x' } }).events) {
@@ -385,5 +374,172 @@ workflow:
       ),
     ).toBe(true);
     assertGapFreeSeq(events);
+  });
+});
+
+function agentExecutor(
+  resolveProvider: (id: ProviderId) => LlmProvider | undefined,
+  registry: ToolRegistry = noToolRegistry,
+  tools: CoreToolDef[] = [],
+) {
+  return createStandardNodeExecutor({
+    sandbox,
+    agent: {
+      resolveProvider,
+      registry,
+      tools,
+      keyFor: () => 'k',
+      sleep: () => Promise.resolve(),
+      now: () => 1,
+    },
+  });
+}
+
+describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
+  function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
+    return parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-budget
+  budget:
+    max_cost_microcents: 1
+    on_exceed: ${onExceed}
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+  }
+
+  function cheapProvider(): LlmProvider {
+    return provider([
+      { type: 'text_delta', text: 'ok' },
+      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+  }
+
+  it('warns and continues when on_exceed is warn', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const events = await drain(
+      engine.start({ workflow: budgetWorkflow('warn'), inputs: { text: 'x' } }),
+    );
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const warning = events.find((e) => e.type === 'budget:warning');
+    expect(warning).toBeDefined();
+    // The warning fires before any spend, so the observed spent/limit fraction is 0%.
+    expect(warning?.type === 'budget:warning' && warning.thresholdPct).toBe(0);
+  });
+
+  it('fails the run when on_exceed is fail', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const events = await drain(
+      engine.start({ workflow: budgetWorkflow('fail'), inputs: { text: 'x' } }),
+    );
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    expect(events.some((e) => e.type === 'node:failed')).toBe(true);
+  });
+
+  it('pauses and resumes when on_exceed is pause_for_approval', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const handle = engine.start({
+      workflow: budgetWorkflow('pause_for_approval'),
+      inputs: { text: 'x' },
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'budget:paused') {
+        await engine.resume(handle.runId, event.gateId, {
+          decision: 'approved',
+          decidedBy: 'user-1',
+        });
+      }
+    }
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(events.some((e) => e.type === 'budget:paused')).toBe(true);
+    // run:paused is emitted, but a synchronous resume may settle the run before the event surfaces,
+    // so we only assert the budget gate fired and the run ultimately completed.
+  });
+
+  it('fails the run when a paused budget gate is rejected', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const handle = engine.start({
+      workflow: budgetWorkflow('pause_for_approval'),
+      inputs: { text: 'x' },
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'budget:paused') {
+        await engine.resume(handle.runId, event.gateId, {
+          decision: 'rejected',
+          decidedBy: 'user-1',
+        });
+      }
+    }
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+  });
+
+  it('fails the run when timeout_ms elapses', async () => {
+    const base = createInMemoryHost();
+    const host = {
+      ...base,
+      // Fire any timeout immediately, deterministically.
+      setTimer: (_ms: number, onFire: () => void) => {
+        onFire();
+        return () => {};
+      },
+    };
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-timeout
+  timeout_ms: 1
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const events = await drain(engine.start({ workflow: wf, inputs: { text: 'x' } }));
+    expect(events.some((e) => e.type === 'run:timeout')).toBe(true);
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('run_timeout');
   });
 });
