@@ -25,8 +25,10 @@
 > gate (1.Q) are ✅ Done (PR #22, 2026-06-15)** — the derived `Checkpointer` + cross-process
 > `resumeFromCheckpoint` (idempotent re-delivery, `workflow_mismatch` identity guard) and the
 > `human_in_the_loop` gate (suspend/resume + the one-shot `setTimer` timeout port: `approve` auto-resolves,
-> `reject` fails with `run_timeout`). The lane now continues at the remaining 1.m4 workstreams (**1.S** node
-> retry, **1.AC** budget governor) toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence,
+> `reject` fails with `run_timeout`). **Node retry (1.S) is ✅ Done (PR #24, 2026-06-15)** — the above-chain
+> whole-node retry budget ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md), Part A; the
+> user-triggered retry-from-node Part B is deferred to Phase-2). The lane now continues at the last 1.m4
+> workstream — **1.AC** budget governor — toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence,
 > 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
@@ -748,23 +750,30 @@ idempotent; gap detection triggers a resync rather than trusting a partial view;
 resume against a non-matching workflow snapshot is refused with a typed error; and a
 forced checkpoint-write failure is visible as a typed error/event, not a silent skip.
 
-### 1.S — Retry + fallback wiring (node budget above the chain) — *critical path*
+### 1.S — Retry + fallback wiring (node budget above the chain) · ✅ **Done (PR #24, 2026-06-15)** — *critical path*
 
 Layer node-level retry above the provider fallback chain so reliability composes
-correctly.
+correctly. Landed as [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)
+Part A (the in-run budget); ADR-0040 amends ADR-0038 (the primary chain entry no longer
+consumes `node.retry`).
 
 **Tasks:**
-- Implement node-level retry from `retry_config` (`max_attempts`, `backoff_ms`,
-  `backoff_strategy`, `retry_on[]`), with backoff and optional input adjustment, never
-  silently skipping a required node.
-- Wire the ordering: the engine considers a node failed only after the **whole
+- ✅ Implement node-level retry from `retry_config` (`max_attempts` ← `retry.max`,
+  `backoff_ms`, `backoff_strategy`, `retry_on[]`), with backoff, never silently skipping
+  a required node. *(Optional input adjustment deferred — ADR-0040 A.9.)*
+- ✅ Wire the ordering: the engine considers a node failed only after the **whole
   fallback chain** (1.K) is exhausted within an attempt, then applies the node retry
   budget above that.
-- Implement retry-from-node (re-run from any node) using the 1.R idempotency key.
+- ⏳ Implement retry-from-node (re-run from any node) using the 1.R idempotency key —
+  **deferred to Phase-2** (ADR-0040 Part B; same-runId re-run conflicts with the
+  exactly-one-terminal invariant — see [deferred-tasks.md](../deferred-tasks.md)).
 
-**Acceptance:** a node whose provider chain is exhausted retries per its budget and
-then fails with `node:failed`; a transient failure recovers within budget; cost is
-recorded for every attempt across both layers.
+**Acceptance:** ✅ Met (PR #24). A node whose provider chain is exhausted retries per its
+budget and then fails with `node:failed`; a transient failure recovers within budget; cost
+is recorded for every attempt across both layers. The engine re-dispatches the whole node
+on a retryable, `retry_on`-admitted failure up to `retry.max` total attempts with
+abort-aware backoff (cancel/sibling-abort wins), emitting the non-terminal `node:retrying`;
+`node:failed` stays the single terminal per node, so the 1.R Checkpointer fold is untouched.
 
 ### 1.T — Built-in `ToolRegistry` + dispatch · ✅ **Done (PR #17, 2026-06-13)**
 
@@ -1095,13 +1104,13 @@ flowchart LR
 | 1.L2 | B | 1.L | 1.M | ✅ — **Done (PR #15)** |
 | 1.M | B | 1.L2 | 1.N | ✅ — **Done (PR #16)** |
 | 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ — **Done (PR #17)** |
-| 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
+| 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ — **Done (PR #22)** |
 | 1.T | B | 1.E | 1.O, 1.U | ⬤ — **Done (PR #17)** |
 | 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P — **Done (PR #16)** |
 | 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ — **Done (PR #18)** |
-| 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
-| 1.S | B | 1.O, 1.R | 1.U | ✅ |
-| 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ⬤ |
+| 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ — **Done (PR #20)** |
+| 1.S | B | 1.O, 1.R | 1.U | ✅ — **Done (PR #24)** |
+| 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ✅ — **Done (PR #22)** |
 | 1.AC | B | 1.O, 1.Q | 1.U | ✅ folds into 1.O |
 | 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ |
 | 1.V | C | 1.O | 1.W, 1.X, 1.Z | ◇ |
