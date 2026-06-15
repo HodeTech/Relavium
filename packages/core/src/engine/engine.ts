@@ -211,7 +211,7 @@ class RunExecution {
   /** The run-level wall-clock timeout timer, when a `timeout_ms` is configured (ADR-0028). */
   #runTimeoutDisarm: (() => void) | undefined;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
-  #budgetGovernor: BudgetGovernor | undefined;
+  readonly #budgetGovernor: BudgetGovernor | undefined;
   /** Vertices whose budget gate was APPROVED — their next re-dispatch skips the pre-egress check ONCE so the
    *  deferred LLM call actually issues (H3). Consumed (one-shot) in `#runAttempt`. */
   readonly #budgetApprovedVertices = new Set<string>();

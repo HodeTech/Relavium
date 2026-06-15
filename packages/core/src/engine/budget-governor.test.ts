@@ -81,6 +81,17 @@ describe('BudgetGovernor', () => {
     expect(warnings[0]?.thresholdPct).toBe(100);
   });
 
+  it('treats max_cost_microcents: 0 as unbounded — always allows, never divides by zero', async () => {
+    // 0 = unbounded ([chat] semantics). The governor must never block and never reach the thresholdPct
+    // division (cumulative / 0 → NaN). Even far "over" a 0 cap, every check resolves with no warning.
+    const { governor, warnings } = makeGovernor({
+      budget: { max_cost_microcents: 0, on_exceed: 'fail' },
+    });
+    governor.updateCost(5_000_000);
+    await expect(governor.checkPreEgress('claude-sonnet-4-6', 10_000)).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(0);
+  });
+
   it('degrades to allow (does not crash the run) for an unlisted/unpriced model — H4', async () => {
     // An unpriced custom/self-hosted model id has no pricing row → estimateMaxNextCost throws
     // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it; it

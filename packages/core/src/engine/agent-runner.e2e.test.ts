@@ -395,10 +395,9 @@ function agentExecutor(
   });
 }
 
-describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
-  function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
-    return parseWorkflow(
-      `schema_version: '1.0'
+function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
+  return parseWorkflow(
+    `schema_version: '1.0'
 workflow:
   id: e2e-budget
   budget:
@@ -416,16 +415,17 @@ workflow:
       prompt_template: 'go'
   edges: []
 `,
-    );
-  }
+  );
+}
 
-  function cheapProvider(): LlmProvider {
-    return provider([
-      { type: 'text_delta', text: 'ok' },
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
-    ]);
-  }
+function cheapProvider(): LlmProvider {
+  return provider([
+    { type: 'text_delta', text: 'ok' },
+    { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+  ]);
+}
 
+describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
   it('warns and continues when on_exceed is warn', async () => {
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),

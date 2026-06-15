@@ -98,7 +98,7 @@ const TOOL_AGENT: Agent = AgentSchema.parse({
 });
 
 const CONTEXT: SessionContext = SessionContextSchema.parse({
-  workingDir: '/tmp/session',
+  workingDir: '/workspace/session', // a fixture path (never touched on disk); avoid a publicly-writable /tmp
   fsScopeTier: 'sandboxed',
 });
 

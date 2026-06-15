@@ -436,6 +436,69 @@ async function dispatchToolCalls(
 }
 
 /**
+ * Await the pre-egress budget hook before a provider call, mapping a budget-cap failure to the closed turn
+ * error taxonomy: a {@link BudgetExceededError} (`on_exceed: fail`) → `AgentTurnError('budget_exceeded')`;
+ * a {@link BudgetPauseError} (`pause_for_approval`) and any other error propagate as-is (the run path maps
+ * the pause to a `paused` node outcome). Extracted from the turn loop to keep its complexity in budget.
+ */
+async function awaitPreEgress(params: AgentTurnParams, activeModel: string): Promise<void> {
+  try {
+    await params.preEgress?.({
+      model: activeModel,
+      ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+    });
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      throw new AgentTurnError('budget_exceeded', err.message, false);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Append a tool-use assistant turn, dispatch its tool calls, append the results to `messages`, and return
+ * the updated correction count. Throws a classified {@link AgentTurnError} on a protocol anomaly (a
+ * `tool_use` stop with no tool call) or once the model-correction budget is exhausted. Extracted from the
+ * turn loop to keep {@link runAgentTurn} within its cognitive-complexity budget.
+ */
+async function dispatchToolUseTurn(
+  turnContent: ContentPart[],
+  messages: LlmMessage[],
+  params: AgentTurnParams,
+  activeModel: () => string,
+  nonSkippedAttempts: number,
+  corrections: number,
+): Promise<number> {
+  // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
+  messages.push({ role: 'assistant', content: turnContent });
+  const toolCalls = turnContent.filter((p): p is ToolCallPart => p.type === 'tool_call');
+  if (toolCalls.length === 0) {
+    // A `tool_use` stop with no tool-call parts is a provider protocol anomaly — re-looping would burn up
+    // to `maxToolTurns` paid egress calls with no progress, so fail loudly instead.
+    throw new AgentTurnError(
+      'provider_unavailable',
+      'the model signalled a tool_use stop but produced no tool call',
+      false,
+    );
+  }
+  // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so `nonSkippedAttempts >= 1`.
+  const dispatched = await dispatchToolCalls(toolCalls, params, activeModel, nonSkippedAttempts);
+  let next = corrections;
+  if (dispatched.correctable) {
+    next += 1;
+    if (next > params.limits.maxToolCorrections) {
+      throw new AgentTurnError(
+        'tool_failed',
+        `agent exceeded the ${params.limits.maxToolCorrections}-round tool-correction budget`,
+        false,
+      );
+    }
+  }
+  messages.push(...dispatched.messages);
+  return next;
+}
+
+/**
  * Drive one agent turn end to end. Resolves with the settled {@link AgentTurnResult}, or throws an
  * {@link AgentTurnError} classified to the closed `ErrorCode` taxonomy (the caller maps it to a node
  * failure). Never throws a raw error for a classified condition.
@@ -502,22 +565,7 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
         false,
       );
     }
-    try {
-      await params.preEgress?.({
-        model: activeModel,
-        ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
-      });
-    } catch (err) {
-      // A budget governor failure at the turn boundary is surfaced with the same typed outcome as
-      // a per-attempt failure inside the fallback chain.
-      if (err instanceof BudgetExceededError) {
-        throw new AgentTurnError('budget_exceeded', err.message, false);
-      }
-      if (err instanceof BudgetPauseError) {
-        throw err;
-      }
-      throw err;
-    }
+    await awaitPreEgress(params, activeModel);
     // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
     // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
     // with the post-stream re-check below.
@@ -539,38 +587,16 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
       };
     }
 
-    // A tool-use turn: append the assistant turn (incl. reasoning — carried for the same-provider
-    // replay, ADR-0039), dispatch each call, append the tool results, and continue the loop.
-    messages.push({ role: 'assistant', content: turn.content });
-    const toolCalls = turn.content.filter((p): p is ToolCallPart => p.type === 'tool_call');
-    if (toolCalls.length === 0) {
-      // A `tool_use` stop with no tool-call parts is a provider protocol anomaly — re-looping would
-      // burn up to `maxToolTurns` paid egress calls with no progress, so fail loudly instead.
-      throw new AgentTurnError(
-        'provider_unavailable',
-        'the model signalled a tool_use stop but produced no tool call',
-        false,
-      );
-    }
-    // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so
-    // `nonSkippedAttempts >= 1`; pass it directly (a 0 here is an internal invariant violation the
-    // positiveInt event schema would reject loudly, not a value to coerce).
-    const dispatched = await dispatchToolCalls(
-      toolCalls,
+    // A tool-use turn: append the assistant turn + dispatch its calls (extracted to keep this loop within
+    // the cognitive-complexity budget). Returns the updated correction count; throws on a protocol anomaly
+    // or an exhausted correction budget.
+    corrections = await dispatchToolUseTurn(
+      turn.content,
+      messages,
       params,
       () => activeModel,
       nonSkippedAttempts,
+      corrections,
     );
-    if (dispatched.correctable) {
-      corrections += 1;
-      if (corrections > params.limits.maxToolCorrections) {
-        throw new AgentTurnError(
-          'tool_failed',
-          `agent exceeded the ${params.limits.maxToolCorrections}-round tool-correction budget`,
-          false,
-        );
-      }
-    }
-    messages.push(...dispatched.messages);
   }
 }

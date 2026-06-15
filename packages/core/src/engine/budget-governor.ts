@@ -113,6 +113,12 @@ export class BudgetGovernor {
    * callers apply the action by throwing the supplied error or, for `warn`, emitting the event.
    */
   evaluatePreEgress(model: string, maxTokens: number | undefined): BudgetCheckResult {
+    // A cap of 0 means UNBOUNDED (`[chat].max_cost_microcents`: "0 = unbounded"): never block, and never
+    // reach the `thresholdPct` division below (which would be `/0` → NaN). A workflow `BudgetSchema` forbids
+    // 0 (`positiveInt`), but the governor is reused for the `[chat]`/session path where 0 is valid.
+    if (this.#budget.max_cost_microcents <= 0) {
+      return { kind: 'allow' };
+    }
     let estimate: number;
     try {
       estimate = estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate);

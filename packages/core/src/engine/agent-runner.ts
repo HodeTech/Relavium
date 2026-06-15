@@ -90,6 +90,17 @@ function failed(code: ErrorCode, message: string, retryable: boolean): NodeOutco
   return { kind: 'failed', error: { code, message, retryable } };
 }
 
+/**
+ * Map a thrown turn error to a node outcome: a classified {@link AgentTurnError} → `failed`; a 1.AC
+ * pre-egress {@link BudgetPauseError} → `paused` (reusing the human-gate seam). Anything else re-throws —
+ * the engine's catch-all maps it to a single `internal` failure.
+ */
+function turnOutcomeForError(err: unknown): NodeOutcome {
+  if (err instanceof AgentTurnError) return failed(err.code, err.message, err.retryable);
+  if (err instanceof BudgetPauseError) return { kind: 'paused', gate: err.toGateRequest() };
+  throw err;
+}
+
 async function executeNode(ctx: NodeExecContext, deps: AgentRunnerDeps): Promise<NodeOutcome> {
   if (ctx.vertex.type !== 'agent') {
     // Loud, typed stub — the 1.P node-type handlers fill these; never a silent default.
@@ -150,6 +161,10 @@ async function executeAgent(
     gateApproved: false, // an agent loop provides no human gate — git_commit stays denied
   };
 
+  // The per-dispatch `ctx.preEgress` (the engine's budget governor, 1.AC) takes precedence; `deps.preEgress`
+  // is the fallback for a host that wires a runner directly. Reading ctx here lets the dispatcher build the
+  // runner ONCE (no per-call rebuild) and keeps the engine's H3 one-shot bypass (ctx.preEgress=undefined) working.
+  const preEgress = ctx.preEgress ?? deps.preEgress;
   let result: AgentTurnResult;
   try {
     result = await runAgentTurn({
@@ -166,14 +181,10 @@ async function executeAgent(
       registry: deps.registry,
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
-      ...(deps.preEgress === undefined ? {} : { preEgress: deps.preEgress }),
+      ...(preEgress === undefined ? {} : { preEgress }),
     });
   } catch (err) {
-    if (err instanceof AgentTurnError) return failed(err.code, err.message, err.retryable);
-    if (err instanceof BudgetPauseError) {
-      return { kind: 'paused', gate: err.toGateRequest() };
-    }
-    throw err; // unexpected — the engine's catch-all maps it to a single `internal` failure
+    return turnOutcomeForError(err);
   }
 
   const tokensUsed = {
