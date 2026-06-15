@@ -56,7 +56,8 @@ describe('BudgetGovernor', () => {
     governor.updateCost(900_000);
     const err = await governor.checkPreEgress('claude-sonnet-4-6', 10_000).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BudgetPauseError);
-    const gate = (err as BudgetPauseError).toGateRequest();
+    if (!(err instanceof BudgetPauseError)) throw new Error('expected a BudgetPauseError'); // narrow (no `as`)
+    const gate = err.toGateRequest();
     expect(gate.gateType).toBe('approval');
     expect(gate.message).toContain('budget cap');
     expect(gate.spentMicrocents).toBe(900_000);

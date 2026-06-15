@@ -251,8 +251,13 @@ export class AgentSession {
     this.#abort = abort;
     try {
       const result = await this.#runTurn(abort.signal);
-      // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet.
-      if (this.#statusIs('cancelled')) return;
+      // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet, but
+      // roll the user message back so a cancelled turn leaves no dangling user turn in the transcript
+      // (the "only completed exchanges" invariant — matters for 1.X persistence / 1.Z export).
+      if (this.#statusIs('cancelled')) {
+        this.#messages.pop();
+        return;
+      }
       this.#turnCount += 1;
       // Append the assistant reply to the cross-turn transcript as TEXT-ONLY. The turn core keeps the
       // within-turn tool_use/tool_result pairs internal (they never leave runAgentTurn — it returns only the
@@ -271,13 +276,14 @@ export class AgentSession {
         model: result.model,
       });
     } catch (err) {
-      if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
       // The turn did not complete — roll the user message back so the transcript holds only COMPLETED
-      // exchanges (never a dangling user turn or two consecutive user messages). This also keeps a future
-      // non-AgentTurnError the session does not yet handle — e.g. a 1.AC pre-egress `BudgetPauseError` thrown
-      // before any egress — from orphaning the pushed user message. Nothing is pushed after the user message
-      // on a throw (the assistant append is past the `await`), so the last element is always that message.
+      // exchanges (no dangling user turn or two consecutive user messages) on EVERY non-completing exit,
+      // including a cancel-during-turn. Nothing is pushed after the user message on a throw (the assistant
+      // append is past the `await`), so the last element is always that message. This also keeps a future
+      // non-AgentTurnError the session does not yet handle — e.g. a 1.AC pre-egress `BudgetPauseError` — from
+      // orphaning it.
       this.#messages.pop();
+      if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
       if (err instanceof AgentTurnError) {
         this.#turnCount += 1; // the turn engaged a provider — it counts toward the cap
         this.#emitTurnCompleted(

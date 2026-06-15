@@ -199,7 +199,6 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
         return streamOf(scripts[seen.length - 1] ?? []);
       },
     };
-    const events: SessionStreamEvent[] = [];
     const deps: SessionDeps = {
       resolveProvider: () => provider,
       registry: echoRegistry,
@@ -207,9 +206,7 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
       keyFor: () => 'key',
       sleep: () => Promise.resolve(),
       newAbortController: createAbortController,
-      emit: (e) => {
-        events.push(e);
-      },
+      emit: () => {}, // this test inspects the provider's received messages (`seen`), not the event stream
     };
     const s = new AgentSession({
       sessionId: 'sx',
