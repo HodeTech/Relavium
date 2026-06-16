@@ -125,6 +125,16 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
       });
       acc.totalInputTokens += event.tokensUsed.input;
       acc.totalOutputTokens += event.tokensUsed.output;
+      // Restore the run-wide cumulative cost from the durable node boundary (cost:updated is streamed, not
+      // persisted, so it is otherwise lost on a plain-human-gate / crash resume). `Math.max` keeps it
+      // monotonic and order-independent — it reconciles with the `budget:paused.spentMicrocents` restore
+      // (applyGateEvent) regardless of which durable cost source has the higher sequence number.
+      if (event.cumulativeCostMicrocents !== undefined) {
+        acc.cumulativeCostMicrocents = Math.max(
+          acc.cumulativeCostMicrocents,
+          event.cumulativeCostMicrocents,
+        );
+      }
       break;
     case 'node:failed':
       acc.nodeStates.set(event.nodeId, {

@@ -183,15 +183,19 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   the host's run-scoped `outputStore` (handle in the marker); applied in `registry.dispatch` (returns
   `truncated`) under the one cancellation-precedence ladder. Documented in
   [tool-registry.md §result-bounding-and-spill-to-file](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file).
-- [ ] **Cumulative cost is not restored on cross-process resume (cost-event persistence) — 1.AC/1.R.** `cost:updated`
-  is **streamed** (`#nodeEmit` → bus), not persisted via `#emitDurable`, so `reconstructCheckpointState`'s
-  `cost:updated` fold (checkpoint.ts) never sees it: a resumed run's `cumulativeCostMicrocents` (and the
-  governor) restart near 0, under-reporting `run:completed.totalCostMicrocents` and under-blocking the budget
-  after resume. Partially mitigated (2026-06-15): the fold now restores the cumulative from the **durable**
-  `budget:paused.spentMicrocents`, so a run paused at a **budget** gate resumes with the right spend; a budgeted
-  run paused at a **plain human** gate (or crashed mid-run) still loses its cost. The general fix is making cost
-  durable — persist `cost:updated`, or carry `cumulativeCostMicrocents` on the durable `node:completed` (like
-  `tokensUsed`) — a contract/durability-model change. *(medium · packages/core/src/engine/engine.ts `#nodeEmit` + checkpoint.ts; 1.AC/1.R)*
+- [x] **Cumulative cost is not restored on cross-process resume (cost-event persistence) — 1.AC/1.R.** **Done
+  (maintainer-approved, the node:completed-carry variant).** `cost:updated` is streamed (`#nodeEmit` → bus),
+  not persisted, so the `reconstructCheckpointState` fold never saw it — a resumed run's
+  `cumulativeCostMicrocents` (and the governor) restarted near 0. **Fix:** the durable `node:completed` now
+  carries an optional `cumulativeCostMicrocents` (run-event.ts) — a snapshot of the run-wide running total at
+  the node boundary, populated by the engine (`#completeNode`) and folded on resume with a monotonic `Math.max`
+  that reconciles with the existing `budget:paused.spentMicrocents` restore (checkpoint.ts). So a run paused at
+  **any** gate (plain human OR budget) now resumes with the right spend; a gate-less crashed-mid-run is
+  reconciled to `run:failed` (not resumed), so its cost-loss is moot. Chosen over persisting `cost:updated`
+  (which would add hot-path durable writes + a delivery-ordering change): zero new events, one additive
+  forward-compatible field, folds at boundaries the store already persists — no ADR needed. Pinned by a
+  checkpoint.test.ts unit test (plain-human-gate restore) + the 1.U flagship harness (post-resume
+  `run:completed.totalCostMicrocents` reflects the pre-gate cost). *(packages/core/src/engine/engine.ts `#completeNode` + checkpoint.ts; packages/shared/src/run-event.ts; 1.AC/1.R)*
 - [ ] **Pre-egress token-estimate accuracy — watch item (1.AC).** The ADR-0028 governor blocks on
   `worstCaseNextEstimate(maxTokens)` from `[defaults].max_tokens_estimate`. Record the open
   question: does the estimate need provider-accurate token counting (from the seam's model meta /

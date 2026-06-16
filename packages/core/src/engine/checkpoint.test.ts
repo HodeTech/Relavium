@@ -227,6 +227,35 @@ describe('reconstructCheckpointState', () => {
     expect(state?.cumulativeCostMicrocents).toBe(1600); // the last running total, not a re-sum
   });
 
+  it('restores the cumulative cost from a durable node:completed at a PLAIN human-gate checkpoint (cost-event persistence)', () => {
+    // The previously-lost path: a budgeted/costed run paused at a plain HUMAN gate (not a budget gate) had
+    // no durable cost source (cost:updated is streamed, not persisted) and resumed near 0. The running total
+    // now rides node:completed.cumulativeCostMicrocents — a REAL durable log (no cost:updated rows) restores it.
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'node:completed',
+        ...base(1),
+        nodeId: 'agent',
+        output: 'answer',
+        tokensUsed: { input: 30, output: 13 },
+        durationMs: 1,
+        cumulativeCostMicrocents: 1600, // the durable snapshot — NO cost:updated in this (real-shaped) log
+      },
+      {
+        type: 'human_gate:paused',
+        ...base(2),
+        nodeId: 'gate',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'ok?',
+      },
+      { type: 'run:paused', ...base(3), pendingGateCount: 1, gateIds: ['g1'] },
+    ]);
+    expect(state?.runStatus).toBe('paused');
+    expect(state?.cumulativeCostMicrocents).toBe(1600); // survives the plain-human-gate resume (was ~0 before)
+  });
+
   it('folds node:retrying as non-state-bearing — a retry-then-recover ends `completed` (1.S)', () => {
     const state = reconstructCheckpointState([
       started,

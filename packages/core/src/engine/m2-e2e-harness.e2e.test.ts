@@ -16,8 +16,9 @@
  *    SQLite-shaped store); then a **fresh engine** resumes via `resumeFromCheckpoint` and runs `output` to
  *    `run:completed`, reproducing the same final output with `sequenceNumber` continuing gap-free. The
  *    `human_in_the_loop` gate is the durable suspend point because the Phase-1 engine resumes ONLY from a
- *    gate/budget pause — a gate-less interrupted run is reconciled to `run:failed` (ADR-0036). All LLM cost
- *    is incurred pre-gate, so the plain-human-gate cost-restore deferral (deferred-tasks.md) is off this path.
+ *    gate/budget pause — a gate-less interrupted run is reconciled to `run:failed` (ADR-0036). All LLM cost is
+ *    incurred pre-gate and is RESTORED across the resume (run:completed.totalCostMicrocents) — the durable
+ *    node:completed.cumulativeCostMicrocents carries it, closing the cost-event-persistence gap.
  *  • **determinism** — the same scenario produces an identical event signature + final output on a re-run
  *    (the no-wall-clock / no-RNG ban the risk table binds to this harness).
  *
@@ -375,6 +376,16 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events2.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
     expect(events2.at(-1)?.type).toBe('run:completed'); // resume reproduces a completed run
     expect(nodeOutput(events2, 'out')).toEqual({ decision: 'approved' }); // deterministic final output
+
+    // Cost-event persistence: the pre-gate agent cost is RESTORED across the cross-process resume — the
+    // durable node:completed.cumulativeCostMicrocents carries it (cost:updated is streamed, not persisted),
+    // so run:completed.totalCostMicrocents reflects it rather than restarting near 0.
+    const preGateCost = costs1.at(-1)?.cumulativeCostMicrocents ?? 0;
+    expect(preGateCost).toBeGreaterThan(0);
+    const resumedTerminal = events2.find((e) => e.type === 'run:completed');
+    expect(
+      resumedTerminal?.type === 'run:completed' ? resumedTerminal.totalCostMicrocents : -1,
+    ).toBe(preGateCost);
 
     // The whole run — across the process boundary — is one gap-free, canonical sequence.
     const whole = [...events1, ...events2];
