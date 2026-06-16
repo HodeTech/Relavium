@@ -212,8 +212,9 @@ class RunExecution {
   #runTimeoutDisarm: (() => void) | undefined;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
   readonly #budgetGovernor: BudgetGovernor | undefined;
-  /** Vertices whose budget gate was APPROVED — their next re-dispatch skips the pre-egress check ONCE so the
-   *  deferred LLM call actually issues (H3). Consumed (one-shot) in `#runAttempt`. */
+  /** Vertices whose budget gate was APPROVED — their next re-dispatch (and all its node-retry attempts) skips
+   *  the pre-egress check so the deferred LLM call actually issues (H3). Consumed once per dispatch in
+   *  `#dispatch` and cleared on `#settle`. */
   readonly #budgetApprovedVertices = new Set<string>();
 
   #workflowId = '';
@@ -749,8 +750,12 @@ class RunExecution {
     // The node holds its slot from the FIRST attempt's node:started; the terminal durationMs measures the
     // whole node (all attempts + backoffs), not just the final attempt — consistent with that first start.
     const startedAtMs = this.#elapsedMs();
+    // Consume the budget-approval ONCE per node dispatch (H3): an approved over-budget re-dispatch AND all
+    // its above-chain node-retry attempts (ADR-0040) share the one-shot bypass, so a transient failure on the
+    // approved call does not re-pause the (still-over-budget) node on its very next retry.
+    const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
     for (;;) {
-      const outcome = await this.#runAttempt(vertex, attempt);
+      const outcome = await this.#runAttempt(vertex, attempt, budgetApproved);
       const willRetry =
         outcome.kind === 'failed' &&
         !this.#settled &&
@@ -821,14 +826,17 @@ class RunExecution {
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
-  async #runAttempt(vertex: PlanVertex, attemptNumber: number): Promise<NodeOutcome> {
+  async #runAttempt(
+    vertex: PlanVertex,
+    attemptNumber: number,
+    budgetApproved: boolean,
+  ): Promise<NodeOutcome> {
     try {
-      // A just-approved budget gate skips the pre-egress check for THIS one re-dispatch (H3): `delete`
-      // returns true iff the vertex was approved and removes it (one-shot per re-run), so the approved agent
-      // step runs to completion uncapped; the next, separate step re-arms the cap. Per-re-run (not
-      // per-LLM-call) by design — a per-call bypass would re-pause and, since re-dispatch re-runs the turn,
-      // loop forever (see the resume() approve branch).
-      const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
+      // A just-approved budget gate skips the pre-egress check for the WHOLE approved re-dispatch — every
+      // above-chain node-retry attempt of it (H3 × ADR-0040). `budgetApproved` is consumed ONCE per dispatch
+      // in `#dispatch`, so the approved agent step (and its retries) run to completion uncapped; the next,
+      // separate step re-arms the cap. Per-re-dispatch (not per-LLM-call) by design — a per-call bypass would
+      // re-pause and, since re-dispatch re-runs the turn, loop forever (see the resume() approve branch).
       const preEgress = budgetApproved ? undefined : this.#makePreEgressHook();
       const ctx: NodeExecContext = {
         vertex,

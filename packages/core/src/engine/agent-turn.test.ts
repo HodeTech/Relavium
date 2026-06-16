@@ -16,6 +16,7 @@ import type {
   ToolResultPart,
 } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
+import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
@@ -487,6 +488,46 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     });
     await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'cancelled' });
     expect(streamed).toBe(false); // the re-check fired before the provider was engaged
+  });
+
+  it('maps a pre-egress BudgetExceededError to AgentTurnError(budget_exceeded) — no provider egress', async () => {
+    let streamed = false;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('generate not used in these tests');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        streamed = true;
+        return streamOf([{ type: 'text_delta', text: 'must not run' }, STOP()]);
+      },
+    };
+    const params = baseParams(provider, {
+      // on_exceed: fail surfaces as a BudgetExceededError out of the pre-egress hook.
+      preEgress: () => Promise.reject(new BudgetExceededError(900_000, 1_000_000, 1_050_000)),
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'budget_exceeded' });
+    await expect(runAgentTurn(params)).rejects.toBeInstanceOf(AgentTurnError);
+    expect(streamed).toBe(false); // the cap was enforced before the provider was engaged
+  });
+
+  it('propagates a pre-egress BudgetPauseError verbatim so the run path can park it as a gate', async () => {
+    // pause_for_approval is NOT remapped into the AgentTurnError taxonomy — it propagates as-is so the
+    // AgentRunner can fold it into a `paused` node outcome (reusing the human-gate seam).
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('generate not used in these tests');
+      },
+      stream: (): AsyncIterable<StreamChunk> =>
+        streamOf([{ type: 'text_delta', text: 'x' }, STOP()]),
+    };
+    const params = baseParams(provider, {
+      preEgress: () => Promise.reject(new BudgetPauseError(900_000, 1_000_000, 95)),
+    });
+    await expect(runAgentTurn(params)).rejects.toBeInstanceOf(BudgetPauseError);
   });
 
   it('carries the signed reasoning part into the next request on a tool continuation (ADR-0039)', async () => {

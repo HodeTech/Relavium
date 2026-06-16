@@ -257,7 +257,11 @@ const reject: Record<string, Record<string, unknown>> = {
   'run:paused (pendingGateCount 0)': { ...valid['run:paused'], pendingGateCount: 0 },
   'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
   'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },
+  'budget:warning (negative thresholdPct)': { ...valid['budget:warning'], thresholdPct: -1 },
+  'budget:warning (fractional thresholdPct)': { ...valid['budget:warning'], thresholdPct: 90.5 },
   'budget:paused (negative spentMicrocents)': { ...valid['budget:paused'], spentMicrocents: -1 },
+  'budget:paused (missing nodeId)': { ...valid['budget:paused'], nodeId: undefined },
+  'budget:paused (empty nodeId)': { ...valid['budget:paused'], nodeId: '' },
   'budget:paused (missing gateId)': { ...valid['budget:paused'], gateId: undefined },
 };
 

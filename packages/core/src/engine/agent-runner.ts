@@ -290,13 +290,21 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
-    out.push(
-      ToolDefSchema.parse({
-        name: def.id,
-        ...(def.description.length > 0 ? { description: def.description } : {}),
-        parameters: def.llmVisibleParams,
-      }),
-    );
+    const parsed = ToolDefSchema.safeParse({
+      name: def.id,
+      ...(def.description.length > 0 ? { description: def.description } : {}),
+      parameters: def.llmVisibleParams,
+    });
+    if (!parsed.success) {
+      // A registered tool carries an invalid LLM-visible schema — a host-wiring bug, not a model failure.
+      // Classify it (rather than let a raw ZodError escape) — parity with AgentSession.buildLlmTools.
+      throw new AgentTurnError(
+        'internal',
+        `granted tool '${def.id}' has an invalid LLM schema`,
+        false,
+      );
+    }
+    out.push(parsed.data);
   }
   return out;
 }

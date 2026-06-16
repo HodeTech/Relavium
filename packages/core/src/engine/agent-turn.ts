@@ -565,6 +565,13 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
         false,
       );
     }
+    // Two distinct budget gates, by design — NOT a duplicate of the chain's per-attempt check:
+    //  • This loop-top `awaitPreEgress` runs ONCE per tool turn against the PRIMARY model. It is the
+    //    zero-egress-on-cancel guarantee — a cancel landing inside its async check is caught by the
+    //    re-check below, before any provider is engaged.
+    //  • `FallbackChain.preAttempt` then runs again per chain attempt against the ACTUAL (possibly
+    //    failed-over) model, so a failover to a pricier model is still enforced. `streamOneTurn` maps a
+    //    chain-path Budget*Error back into this taxonomy via `chunk.error.cause`.
     await awaitPreEgress(params, activeModel);
     // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
     // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric

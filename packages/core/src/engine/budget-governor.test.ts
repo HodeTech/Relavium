@@ -51,6 +51,19 @@ describe('BudgetGovernor', () => {
     );
   });
 
+  it('the BudgetExceededError carries the spent / limit / projected cost figures', async () => {
+    const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+    governor.updateCost(900_000);
+    const err = await governor.checkPreEgress('claude-sonnet-4-6', 10_000).catch((e: unknown) => e);
+    if (!(err instanceof BudgetExceededError)) throw new Error('expected a BudgetExceededError'); // narrow (no `as`)
+    expect(err.spentMicrocents).toBe(900_000);
+    expect(err.limitMicrocents).toBe(1_000_000);
+    // sonnet output is $15/MTok = 1_500 micro-cents/token → 10_000 tok projects 15_000_000 on top of the
+    // 900_000 already spent (the estimate is output-only).
+    expect(err.projectedMicrocents).toBe(900_000 + 15_000_000);
+    expect(err.projectedMicrocents).toBeGreaterThan(err.limitMicrocents);
+  });
+
   it('pauses when on_exceed is pause_for_approval', async () => {
     const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'pause_for_approval' } });
     governor.updateCost(900_000);

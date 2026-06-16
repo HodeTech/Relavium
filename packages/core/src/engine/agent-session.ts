@@ -229,6 +229,11 @@ export class AgentSession {
 
     this.#status = 'running';
     this.#deps.emit({ type: 'session:turn_started' });
+    // A cancel can fire SYNCHRONOUSLY inside the turn_started emit (a host whose sink calls cancel()). If it
+    // did, session:cancelled is the terminal — bail before the cap block and before any egress, else we would
+    // overwrite the 'cancelled' status back to 'idle' and emit a second terminal, or silently egress an
+    // already-cancelled turn.
+    if (this.#statusIs('cancelled')) return;
 
     // Hard turn cap — checked AFTER turn_started (the turn was attempted) but BEFORE any egress: the
     // blocked turn completes loudly with turn_limit and never calls a provider.
@@ -295,15 +300,26 @@ export class AgentSession {
         // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred
         // 1.V×1.AC item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded`
         // rather than escaping `sendMessage` as a raw throw — which would leave the turn with no terminal
-        // `session:turn_completed`, breaking the session event contract (M1).
-        this.#turnCount += 1;
+        // `session:turn_completed`, breaking the session event contract (M1). It engaged NO provider (the
+        // pause is pre-egress), so — like the hard-cap block — it does NOT increment the turn counter.
         this.#emitTurnCompleted(
           'error',
           { input: 0, output: 0 },
           { code: 'budget_exceeded', message: err.message, retryable: false },
         );
       } else {
-        throw err; // unexpected — re-raise (transcript already rolled back); the caller decides
+        // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced
+        // (every session:turn_started gets a terminal), then re-raise so the caller still sees the bug.
+        this.#emitTurnCompleted(
+          'error',
+          { input: 0, output: 0 },
+          {
+            code: 'internal',
+            message: 'the session turn failed with an unexpected error',
+            retryable: false,
+          },
+        );
+        throw err;
       }
     } finally {
       this.#abort = undefined;
@@ -400,7 +416,13 @@ export class AgentSession {
     });
   }
 
-  /** Build the ordered fallback plan once: primary (maxAttempts 1, ADR-0040) + each authored fallback. */
+  /**
+   * Build the ordered fallback plan once: primary (maxAttempts 1, ADR-0040) + each authored fallback.
+   * Memoized — including a FAILED resolution. A failure here means a provider the agent names was never
+   * wired by the host (a construction-time wiring gap, fixed configuration for the session's lifetime), so
+   * retrying per turn cannot change the outcome; caching it makes every `sendMessage` fail fast and
+   * identically rather than re-walking the chain each turn.
+   */
   #resolvePlan(): PlanResult {
     if (this.#plan !== undefined) return this.#plan;
     const agent = this.#agent;

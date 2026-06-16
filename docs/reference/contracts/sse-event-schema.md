@@ -35,7 +35,7 @@ interface BaseEvent {
 
 > **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` events carry `runId` on a run and `sessionId` on a session; consumers route on whichever is present.
 
-`sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless.
+`sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless. The **envelope** fields (`sessionId` / `runId`, `sequenceNumber`, `timestamp`) are stamped by the bus, not the producer: `WorkflowEngine` emits through the `RunEventBus`, and `AgentSession` (1.V) emits *envelope-free payload drafts* through an injected `SessionEventSink` — wiring that sink onto the bus, where the per-session `sequenceNumber` (and its same gap/resync rule) is assigned, is **1.W**. So a session's monotonic numbering is the bus's responsibility, not the session core's.
 
 ## The `RunEvent` union
 
@@ -247,7 +247,7 @@ export type SessionEvent =
   | SessionExportedEvent;     // 'session:exported'  — { workflowPath } (chat-to-workflow export)
 ```
 
-A turn that fails (provider error, rate limit, cancellation) still emits `session:turn_completed` with an `error?: { code, message, retryable, correlationId? }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy and secret-free correlation id as run events (ADR-0036) — so a surface can render the failure rather than a silent stall.
+A turn that **fails** (a provider error, a rate limit, an exhausted budget cap) still emits `session:turn_completed` with an `error?: { code, message, retryable, correlationId? }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy and secret-free correlation id as run events (ADR-0036) — so a surface can render the failure rather than a silent stall. A **cancellation** is distinct: it emits `session:cancelled` (not `turn_completed`) and the in-flight user message is rolled back from the transcript, so a cancelled turn leaves no partial assistant turn behind (see [agent-session-spec.md](agent-session-spec.md)).
 
 Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)). So the **complete typed event stream for a session** is the five `session:*` lifecycle events (the `SessionEvent` union above) **plus** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` carrying `sessionId` — this full set is exactly what `relavium chat --json` emits.
 

@@ -392,6 +392,64 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(typesOf(events)).not.toContain('agent:token');
   });
 
+  it('is reusable after a failed turn — the next sendMessage drives a clean, successful turn', async () => {
+    // A turn that fails (exhausted chain) must leave the session idle (not wedged) with the failed turn's
+    // user message rolled back, so the next message starts fresh and succeeds.
+    const errorChunk: StreamChunk = {
+      type: 'error',
+      error: { kind: 'bad_request', retryable: false, provider: 'anthropic', message: 'nope' },
+    };
+    const { deps, events } = harness([[errorChunk], textTurn('recovered')]);
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('first — fails');
+    const firstCompleted = events.find((e) => e.type === 'session:turn_completed');
+    expect(
+      firstCompleted?.type === 'session:turn_completed' ? firstCompleted.stopReason : undefined,
+    ).toBe('error');
+
+    events.length = 0; // isolate the recovery turn
+    await s.sendMessage('second — succeeds'); // no SessionStateError: the session is reusable after a failure
+    const secondCompleted = events.find((e) => e.type === 'session:turn_completed');
+    expect(
+      secondCompleted?.type === 'session:turn_completed' ? secondCompleted.error : 'present',
+    ).toBeUndefined();
+    expect(
+      secondCompleted?.type === 'session:turn_completed' ? secondCompleted.stopReason : undefined,
+    ).toBe('stop');
+    expect(
+      events
+        .filter((e) => e.type === 'agent:token')
+        .map((e) => (e.type === 'agent:token' ? e.token : '')),
+    ).toEqual(['recovered']);
+  });
+
+  it('settles LOUDLY then re-raises a truly unexpected error, with a key-free message', async () => {
+    // The defensive else-branch: an error that is neither an AgentTurnError nor a BudgetPauseError must
+    // still leave a terminal session:turn_completed{internal} (the stream stays balanced) AND re-raise so
+    // the caller still sees the bug. Inject a raw throw via the updateCost seam (called mid-turn on
+    // cost:updated). The settled message is generic — it must NOT echo the raw error text.
+    const boom = new Error('sk-secret-must-not-surface');
+    const { deps, events } = harness([textTurn('answer')], {
+      updateCost: () => {
+        throw boom;
+      },
+    });
+    const s = session(deps);
+    s.start();
+    await expect(s.sendMessage('go')).rejects.toBe(boom); // re-raised verbatim, not swallowed
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'internal',
+    );
+    expect(completed?.type === 'session:turn_completed' ? completed.stopReason : undefined).toBe(
+      'error',
+    );
+    const msg = completed?.type === 'session:turn_completed' ? completed.error?.message : '';
+    expect(msg).toBe('the session turn failed with an unexpected error');
+    expect(msg).not.toContain('secret'); // the raw error text never reaches the settled payload
+  });
+
   it('cancel() between turns emits session:cancelled and blocks further messages', async () => {
     const { deps, events } = harness([textTurn('answer')]);
     const s = session(deps);

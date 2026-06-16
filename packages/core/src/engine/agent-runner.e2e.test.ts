@@ -511,6 +511,77 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
   });
 
+  it('an approved over-budget node does NOT re-pause on an above-chain retry (H3 × ADR-0040)', async () => {
+    // Regression for the bypass-through-retry fix: the budget approval is consumed ONCE per dispatch and
+    // threaded through every node-retry attempt. With max_cost_microcents: 1 EVERY pre-egress check would
+    // trip, so a re-armed check on the retry would pause again. The approved node's first (post-approval)
+    // attempt fails retryably; the retry must run uncapped and complete — NOT trip a SECOND budget:paused.
+    // Before the fix the bypass was consumed on attempt 1 only, so the retry re-paused.
+    const scripted = scriptedProvider([
+      [
+        {
+          type: 'error',
+          error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
+        },
+      ],
+      [
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+    ]);
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-budget-retry
+  budget:
+    max_cost_microcents: 1
+    on_exceed: pause_for_approval
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      retry: { max: 2, backoff: linear, backoff_ms: 10 }
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({ host, executor: agentExecutor(() => scripted) });
+    const handle = engine.start({ workflow: wf, inputs: { text: 'x' } });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'budget:paused') {
+        await engine.resume(handle.runId, event.gateId, {
+          decision: 'approved',
+          decidedBy: 'user-1',
+        });
+      }
+      if (event.type === 'node:retrying') {
+        // Arm-then-fire the backoff timer (armed in #dispatch's continuation, just after this event).
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) throw new Error('backoff timer was never armed after node:retrying');
+          await Promise.resolve();
+        }
+        host.fireTimers();
+      }
+    }
+    // Exactly ONE budget:paused (the initial over-budget check) — the retry did NOT re-pause.
+    expect(events.filter((e) => e.type === 'budget:paused')).toHaveLength(1);
+    // The retryable failure surfaced as exactly one node:retrying, then the node completed on attempt 2.
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'n');
+    expect(done?.type === 'node:completed' ? done.output : undefined).toBe('ok');
+  });
+
   it('fails the run when timeout_ms elapses', async () => {
     const base = createInMemoryHost();
     const host = {

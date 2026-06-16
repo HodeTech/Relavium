@@ -87,7 +87,7 @@ interface SessionContext {
   selection?: { file: string; startLine: number; endLine: number };
   gitRef?: string;           // current branch / commit, for provenance
   fsScopeTier: 'sandboxed' | 'project' | 'full';  // same tiers as workflows; default sandboxed
-  variables?: Record<string, string>;             // session-scoped {{ctx.*}} values
+  variables?: Record<string, string>;             // session-scoped {{ctx.*}} values — plaintext, NO secrets (§ Tools, secrets)
 }
 ```
 
@@ -148,6 +148,10 @@ mandatory guardrails (`run_command` allowlist; `git_commit` behind approval). Pe
 
 - a session inherits the agent's tools and may only **narrow** them, never escalate;
 - a `secret`-typed value is **never interpolated** into a prompt or tool text;
+- `context.variables` (the `{{ctx.*}}` map) is **plaintext supplied by the surface** that is echoed
+  **verbatim** in the `session:started` event payload and persisted in the session row — it **MUST NOT**
+  carry an API key or any secret. Route every secret through the keychain-backed `secret`-typed resolution
+  above, never through `{{ctx.*}}`;
 - `http_request` / MCP egress is subject to the same SSRF policy as a workflow.
 
 The user's own **conversational content** typed into a session is the user's data: it is persisted in
