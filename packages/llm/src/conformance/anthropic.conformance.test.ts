@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { anthropicAdapter, createAnthropicAdapter } from '../adapters/anthropic.js';
 import { ANTHROPIC_FIXTURES } from './fixtures/anthropic.js';
-import { replayFetch } from './replay.js';
+import { replayFor } from './replay.js';
 import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 
-// Wire the Anthropic adapter to replay a recorded response — note: no vendor SDK is imported here;
+// Wire the Anthropic adapter to replay recorded response(s) — note: no vendor SDK is imported here;
 // the adapter takes a `fetch` override, so the SDK stays inside src/adapters/* (the seam fence).
+// `replayFor` serves one body (one-shot scenarios) or a sequence (the multi-turn tool loop).
 const makeReplayAdapter: MakeReplayAdapter = (recorded) =>
-  createAnthropicAdapter({ fetch: replayFetch(recorded), maxRetries: 0 });
+  createAnthropicAdapter({ fetch: replayFor(recorded), maxRetries: 0 });
 
 defineConformanceSuite('anthropic', makeReplayAdapter, ANTHROPIC_FIXTURES);
 

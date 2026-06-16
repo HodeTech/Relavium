@@ -249,9 +249,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
   themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
   adapter capture/replay. *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
-- [ ] **DeepSeek surviving-reasoning replay** — the same per-provider contract applies; confirm whether the
-  OpenAI-compatible adapter normalizes/replays `reasoning_content` on a same-provider continuation, or currently
-  drops it. *(medium · packages/llm/src/adapters/openai.ts; ADR-0030 follow-up)*
+- [x] **DeepSeek surviving-reasoning replay** — **Confirmed correct + locked (engine-hardening pass).** The
+  OpenAI-compatible adapter CAPTURES `reasoning_content` inbound (`mapContent` → a `reasoning` part) but
+  intentionally **drops it on egress** (`toOpenAiMessages` lowers only text + tool_call parts; openai.ts:256-260,
+  "reasoning is ephemeral and never replayed, ADR-0030"). For DeepSeek this is the CORRECT direction:
+  `reasoning_content` is output-only — the API 400s if it is echoed back in an input message, and
+  deepseek-reasoner does not need prior reasoning to continue. So no seam-shape carrier is needed (unlike the
+  Anthropic-redacted / Gemini-thoughtSignature items above). Pinned by an openai.test.ts lock-test (a prior-turn
+  reasoning part never reaches the request body). *(packages/llm/src/adapters/openai.ts; ADR-0030/0039)*
 - [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
   node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
   schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
@@ -302,10 +307,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   **✅ Added (hardening pass):** `agent-runner.e2e.test.ts` "runs two agent nodes concurrently against the
   shared executor" — `max_parallel: 2`, two agent vertices on one executor instance, asserting a gap-free
   global sequence and that each node's `agent:token` events carry their own `nodeId` (no cross-node bleed).
-- [ ] **Combined tool-loop DoS bound (turns × corrections)** — `maxToolTurns` (16) and `maxToolCorrections`
-  (3) are independent budgets; their *product* bounds worst-case egress and the interleaving (a turn mixing
-  correctable + genuine tool rounds) is untested. Document the combined bound and add an interleaving test.
-  *(low · packages/core/src/engine/agent-turn.ts)*
+- [x] **Combined tool-loop DoS bound (turns × corrections)** — **Done (engine-hardening pass).** The
+  "product" framing was imprecise: the bounds are NOT multiplicative. `maxToolTurns` is the worst-case
+  **egress ceiling** (≤ `maxToolTurns + 1` provider calls); `maxToolCorrections` is a **monotonic sub-budget**
+  that can only end the turn EARLY with `tool_failed` (a genuine round never resets it). Documented on
+  `AgentTurnLimits` (agent-turn.ts) and pinned by an interleaving test (correctable / genuine / correctable /
+  correctable → `tool_failed` at turn 4, far under `maxToolTurns`), asserting corrections accumulate across the
+  interleaved genuine round and egress stays bounded. *(low · packages/core/src/engine/agent-turn.ts)*
 - [ ] **Multimodal tool-result through the adjacent-message + redaction paths** — all 1.O coverage exercises
   text/JSON tool args + content; confirm image/media tool-result blocks survive the Anthropic adjacent-role
   merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
@@ -506,14 +514,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   accurate from the repo root. Make the glob cwd-tolerant (or document root-only) and add the
   testing.md **≥90% line+branch** threshold for the engine packages (`packages/core`,
   `packages/llm`) — per-area, since surfaces are smoke-only. *(minor · vitest.config.ts)*
-- [ ] **Coverage floor fires only on a repo-root run + is not a CI gate** — two residues of the
-  item above (PR #10 review, verified empirically): (1) the per-glob threshold key
-  (`packages/llm/src/**/*.ts`) is root-relative while a package-scoped `--coverage` run keys the
-  coverage map cwd-relative (`src/…`), so the floor silently does not fire there — and no single
-  glob can fix it without wrongly binding shared/db package runs to the engine floor (documented
-  at the thresholds block). (2) `pnpm coverage` is not yet a required CI step. Resolve both at
-  once when wiring coverage into CI: a root-run `pnpm coverage` CI step makes the root-relative
-  glob authoritative and the package-scoped gap moot. *(minor · vitest.config.ts, ci.yml)*
+- [x] **Coverage floor fires only on a repo-root run + is not a CI gate** — **Done (engine-hardening
+  pass, advisory).** Added a repo-ROOT `pnpm coverage` CI job (ci.yml) — a root run is exactly what makes the
+  root-relative per-glob thresholds (`packages/core|llm/src/**`) authoritative, so the package-scoped cwd gap
+  (residue 1) is moot. The job is **advisory** (a separate, non-required job like `peer-dep-gate`) so it
+  surfaces a regression without blocking merge while the core-package **branch** margin is thin (90.29% vs the
+  90% floor); promote it to a required check once that margin is confirmed stable under CI's Node 22. The
+  cwd-sensitivity itself stays documented at the thresholds block (a single glob cannot fix it without wrongly
+  binding shared/db runs). *(minor · ci.yml; vitest.config.ts)*
 - [x] **Column-level schema fidelity** — `client.test.ts` proves only that table *names* exist.
   Add a `PRAGMA table_info(<table>)` assertion per table (name/type/notnull/dflt/pk) against an
   expected fixture, or snapshot `0000_*.sql` byte-for-byte. *(minor · packages/db/src/client.test.ts)*
@@ -536,14 +544,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   rejects, pinning the record boundary. *(nit · run.test.ts, run-event.test.ts)*
 - [x] **Round-trip fixture verbatim** — the workflow no-drift fixture paraphrases multi-line
   prompts; transcribe them verbatim from the spec or soften the "verbatim" claim. *(nit · workflow.test.ts)*
-- [ ] **Conformance: tool-loop + cache-hit recorded scenarios (1.F follow-up)** — the shared
-  conformance suite covers text / single tool-call / usage / stop / error, but not a **multi-turn
-  tool loop** (call → result → continuation on the same provider, the path every agent node
-  exercises) or a **prompt-cache-hit** response (cached-token usage fields folding into the one
-  canonical `Usage`). Add both as recorded scenarios, and grow a small provider-quirk fixture bank
-  (reasoning-field variants, tool-call adjacency rules) as quirks are met in the adapters — the
-  suite is where quirk knowledge belongs, not adapter comments. *(packages/llm conformance; next
-  adapters-touching PR wave)*
+- [x] **Conformance: tool-loop + cache-hit recorded scenarios (1.F follow-up)** — **Done
+  (engine-hardening pass).** Both landed as recorded scenarios across all four provider suites: (1) a
+  **multi-turn tool loop** — a new `replayFetchSequence` (+ a `replayFor` single-vs-sequence router; the
+  Gemini transport indexes per call) drives two generate() calls against one adapter, so turn 2 exercises the
+  adapter lowering a `tool_result` message back onto the provider's wire (the call → result → continuation
+  path every agent node runs); and (2) a **prompt-cache-hit** assertion — `ConformanceExpectations.textGenerate`
+  gained an optional `cacheReadTokens`, asserted in the textGenerate test (DeepSeek's fixture already records
+  `prompt_cache_hit_tokens: 4` → net input 8, cacheRead 4 folds into the one canonical `Usage`). The
+  provider-quirk fixture bank can still grow opportunistically as new quirks are met. *(packages/llm conformance)*
 
 ## Tooling / CI
 

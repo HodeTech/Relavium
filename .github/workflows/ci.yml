@@ -5,7 +5,9 @@
 #
 # Branch protection (set in the GitHub repo settings, not here): the `ci` job below is the
 # REQUIRED status check to merge into `main`. The `peer-dep-gate` job is advisory until the
-# surface packages land their peers in Phase 1.
+# surface packages land their peers in Phase 1. The `coverage` job is advisory too — it enforces
+# the testing.md >=90% line+branch engine floor (exit criterion #5) but stays non-required until the
+# thin core-branch margin is confirmed stable under CI's Node 22; promote it to a required check then.
 #
 # Caching: the always-on layer is the GitHub Actions `.turbo` cache (restored/saved below),
 # which makes a no-change re-run a Turborepo cache hit — the M0 "demonstrably hitting"
@@ -128,6 +130,29 @@ jobs:
           cache: pnpm
       - name: Install with strict peers
         run: pnpm install --frozen-lockfile --config.strict-peer-dependencies=true
+
+  # Engine coverage floor (testing.md >=90% line+branch, exit criterion #5). Advisory for now — a
+  # SEPARATE job (not part of the required `ci` job) so it surfaces a regression without blocking merge
+  # while the core-package branch margin is thin. `pnpm coverage` is a repo-ROOT run, which is what makes
+  # the root-relative per-glob thresholds (packages/core, packages/llm) authoritative (vitest.config.ts).
+  # Promote to a required check once the margin is confirmed stable under CI's Node 22.
+  coverage:
+    name: engine coverage floor (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Engine coverage floor (>=90% line+branch)
+        run: pnpm coverage
 
 # --- Reserved Phase-1 lanes (TODO: enable with the first provider adapter) ------------
 # The per-provider conformance suite and the nightly live-API lane land WITH the adapters
