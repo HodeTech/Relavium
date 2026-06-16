@@ -31,9 +31,13 @@
 > the `AgentSession` agent-first entry point (1.V) then landed together — ✅ Done (PR #26, 2026-06-16).** 1.AC
 > was the last **1.m4** workstream, so **1.m4 is complete** (the full engine stack — node handlers, gate,
 > checkpoint/resume, retry, tools, sandbox, budget governor); 1.V opens **Lane C** (the agent-first sub-spine,
-> 1.m5). The critical path now reaches **1.U — the end-to-end Node harness (the M2 milestone)**, now unblocked,
-> with Lane C continuing at session events (1.W) ‖ persistence (1.X). *(Session persistence, 1.X/1.Z, must
-> exclude the reasoning signature — non-persisting.)*
+> 1.m5). The end-to-end Node harness (**1.U**) then landed — **🎯 M2 reached (PR #27, 2026-06-16): the engine
+> runs end-to-end** (live streaming + per-node-boundary checkpointing + cross-process resume + node retry +
+> provider failover, per-attempt cost, gap-free `sequenceNumber`), **completing the Phase-1 critical path**. The
+> remaining Phase-1 work is **additive and off the critical path**: Lane C (the 1.m5 agent-first sub-spine —
+> 1.W session events ‖ 1.X persistence ‖ 1.Y/1.Z/1.AA) and the 1.m6 multimodal sub-spine (1.AE–1.AH). **Phase 2
+> (CLI, milestone M3) is unblocked.** *(Session persistence, 1.X/1.Z, must exclude the reasoning signature —
+> non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -824,7 +828,7 @@ SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `h
 derived URL cannot bypass the egress guard. *(A `web_search`-style query is untrusted-data schema-validated
 per ADR-0029(c) but transits a query, not an `allowedDomains` FQDN allowlist.)*
 
-### 1.U — End-to-end Node harness (**M2**, critical-path milestone) — *critical path*
+### 1.U — End-to-end Node harness (**M2**, critical-path milestone) — *critical path* · ✅ **Done (PR #27, 2026-06-16) — 🎯 M2 reached**
 
 The proof that the engine works before any surface exists.
 
@@ -838,9 +842,9 @@ The proof that the engine works before any surface exists.
   `sequenceNumber` event stream matching the canonical schema.
 - Keep the harness in the repo as the seed of the Phase-2 CLI regression harness.
 
-**Acceptance:** the harness runs green in CI; forcing a provider error triggers retry
-then fallback with the run still completing; resume from a mid-run checkpoint
-reproduces the same final output — **M2 achieved**.
+**Acceptance:** ✅ Met (PR #27, 2026-06-16). The harness runs green in CI; forcing a provider error triggers
+retry then fallback with the run still completing; resume from a mid-run checkpoint reproduces the same final
+output — **🎯 M2 achieved**.
 
 > **Harness shape (decided 2026-06-16, implementing 1.U).** The harness is a **scenario suite** with a
 > reusable driver (not a single test) — the seed the Phase-2 CLI regression harness (2.K) grows from, and
@@ -984,7 +988,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m2 ✅ | Policy layers complete: fallback runner + cost tracker (**1.B PR #7, 1.K PR #13**) | 1.B, 1.K |
 | 1.m3 ✅ | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream (**all components landed — 1.N closed it, PR #17, 2026-06-13**) | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
-| **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
+| **M2 ✅** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** (**reached — 1.U landed, PR #27, 2026-06-16**) | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
 | 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅**, 1.AE, 1.AF, 1.AG, 1.AH |
 
@@ -1138,7 +1142,7 @@ flowchart LR
 | 1.S | B | 1.O, 1.R | 1.U | ✅ — **Done (PR #24)** |
 | 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ✅ — **Done (PR #22)** |
 | 1.AC | B | 1.O, 1.Q | 1.U | ✅ folds into 1.O — **Done (PR #26)** |
-| 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ — **next (all deps landed)** |
+| 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ — **Done (PR #27) — M2 reached** |
 | 1.V | C | 1.O | 1.W, 1.X, 1.Z | ◇ — **Done (PR #26)** |
 | 1.W | C | 1.V, 1.N, 1.L.0 | 1.AA | ◇ |
 | 1.X | C | 1.V, `@relavium/db` (new migration) | 1.Y, 1.AA | ◇ |

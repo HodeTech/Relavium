@@ -29,8 +29,10 @@ the monorepo + `@relavium/shared` + CI + `@relavium/db`. The
 run-loop + node stack — parser, interpolation, DAG/`RunPlan`, the run loop + `RunEventBus`, the tool
 registry, the `AgentRunner`, the six node-type handlers, the human gate, checkpoint/resume, node retry,
 the expression sandbox, and the pre-egress budget governor — plus the agent-first `AgentSession` (1.V),
-**completing milestone 1.m4** (PRs #13–#26). Next on the critical path is the **1.U** end-to-end Node
-harness (milestone **M2**); see [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
+**completing milestone 1.m4** (PRs #13–#26); then the **1.U** end-to-end Node harness landed (**PR #27,
+2026-06-16**), **reaching milestone M2** (the engine runs end-to-end) — the Phase-1 engine critical path is
+complete, and Phase 2 (the CLI) is unblocked. The remaining Phase-1 work is the additive agent-first +
+multimodal sub-spines; see [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules
 
