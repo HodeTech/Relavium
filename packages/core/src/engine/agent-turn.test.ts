@@ -159,6 +159,13 @@ describe('runAgentTurn — streaming + cost', () => {
 });
 
 describe('runAgentTurn — tool loop', () => {
+  // A tool-use turn (a tool_call to `echo`, then a tool_use stop) — shared by the tool-loop scenarios.
+  const toolUseTurn = (id: string): StreamChunk[] => [
+    { type: 'tool_call_start', id, name: 'echo' },
+    { type: 'tool_call_end', id },
+    STOP('tool_use'),
+  ];
+
   it('performs a tool round-trip then completes', async () => {
     const provider = scriptedProvider('anthropic', [
       // turn 1: a tool call
@@ -270,18 +277,13 @@ describe('runAgentTurn — tool loop', () => {
       }
       throw new UnknownToolError('echo', ['echo']); // calls 1, 3, 4 are model-correctable
     });
-    const turn = (id: string): StreamChunk[] => [
-      { type: 'tool_call_start', id, name: 'echo' },
-      { type: 'tool_call_end', id },
-      STOP('tool_use'),
-    ];
     // A 5th turn is scripted but must never be reached (the budget trips on the 4th).
     const provider = scriptedProvider('anthropic', [
-      turn('c1'),
-      turn('c2'),
-      turn('c3'),
-      turn('c4'),
-      turn('c5'),
+      toolUseTurn('c1'),
+      toolUseTurn('c2'),
+      toolUseTurn('c3'),
+      toolUseTurn('c4'),
+      toolUseTurn('c5'),
     ]);
     const params = baseParams(provider, {
       registry,
@@ -315,12 +317,6 @@ describe('runAgentTurn — tool loop', () => {
       retryable: false,
     });
   });
-
-  const toolUseTurn = (id: string): StreamChunk[] => [
-    { type: 'tool_call_start', id, name: 'echo' },
-    { type: 'tool_call_end', id },
-    STOP('tool_use'),
-  ];
 
   it('maps ToolCancelledError to cancelled (cancel wins over a tool failure)', async () => {
     const registry = stubRegistry(() => {

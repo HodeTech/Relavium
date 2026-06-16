@@ -74,7 +74,9 @@ export function replayFetchSequence(recordings: readonly RecordedResponse[]): Fe
     call += 1;
     if (recorded === undefined) {
       return Promise.reject(
-        new Error(`replayFetchSequence: no recorded response for call #${String(call)}`),
+        new Error(
+          `replayFetchSequence: no recorded response for call #${String(call)} (only ${String(recordings.length)} recorded)`,
+        ),
       );
     }
     return Promise.resolve(

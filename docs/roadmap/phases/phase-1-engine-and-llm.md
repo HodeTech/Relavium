@@ -819,8 +819,8 @@ The engine-side registry that dispatches built-in tools the `AgentRunner` invoke
 correctly, and emits sanitized tool events; an unlisted `run_command` is refused;
 `git_commit` is blocked without a gate approval; and an **upstream agent/LLM output wired via
 `input_mapping` into a tool / `http_request` arg is treated as UNTRUSTED data** — schema-validated against
-the tool's declared arg and, **for an outbound-URL tool**, routed through the **same** exact-FQDN allow-list
-+ SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `http_request` / MCP), so a
+the tool's declared arg and, **for an outbound-URL tool**, routed through the **same** exact-FQDN allow-list +
+SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `http_request` / MCP), so a
 derived URL cannot bypass the egress guard. *(A `web_search`-style query is untrusted-data schema-validated
 per ADR-0029(c) but transits a query, not an `allowedDomains` FQDN allowlist.)*
 
@@ -890,8 +890,8 @@ Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-
 ### Multimodal I/O sub-spine (1.AD–1.AH) — seam amendment now, behavior additive
 
 First-class multimodal I/O (image / audio / video, **input AND output**, incl. a workflow that by rule
-**generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
-+ [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
+**generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) +
+[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
 [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md). The **shape**
 (1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it landed **before the exhaustive
 consumers** (1.K `FallbackChain`, 1.O `AgentRunner`) so adding the `ContentPart`/`StreamChunk` media

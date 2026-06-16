@@ -80,7 +80,18 @@ function scriptedProvider(scripts: StreamChunk[][], id: ProviderId = 'anthropic'
     generate: () => {
       throw new Error('generate not used in the harness');
     },
-    stream: () => streamOf(scripts[call++] ?? []),
+    stream: () => {
+      // Fail fast on an UNSCRIPTED call — an unintended extra LLM invocation is a harness bug, not a
+      // silent empty turn (which would mask, e.g., a retry/failover that re-dispatched more than expected).
+      const chunks = scripts[call];
+      call += 1;
+      if (chunks === undefined) {
+        throw new Error(
+          `scriptedProvider: unexpected stream call #${call} (only ${scripts.length} scripted)`,
+        );
+      }
+      return streamOf(chunks);
+    },
   };
 }
 

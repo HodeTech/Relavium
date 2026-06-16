@@ -579,9 +579,13 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
       },
       'k',
     );
-    const messages = sent['messages'] as Array<{ role: string; content?: unknown }>;
-    const assistant = messages.find((m) => m.role === 'assistant');
-    expect(assistant?.content).toBe('the answer'); // the visible text survives the replay…
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null;
+    const messages: readonly unknown[] = Array.isArray(sent['messages']) ? sent['messages'] : [];
+    const assistant = messages.find(
+      (m): m is Record<string, unknown> => isRecord(m) && m['role'] === 'assistant',
+    );
+    expect(assistant?.['content']).toBe('the answer'); // the visible text survives the replay…
     expect(JSON.stringify(sent)).not.toContain('internal chain of thought'); // …the reasoning never does
     expect(JSON.stringify(sent)).not.toContain('reasoning_content');
   });

@@ -151,6 +151,12 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      # `pnpm coverage` is a repo-ROOT vitest run (not a turbo task), so it does NOT get the `test`
+      # task's `^build` — yet the `@relavium/*` package `exports` resolve only to `dist`. Build first so a
+      # fresh checkout can resolve the cross-package entries (a per-package test gets dist via turbo `^build`;
+      # each package still covers its OWN src via relative imports, so the floor stays src-accurate).
+      - name: Build workspaces (so coverage resolves the @relavium/* package entries)
+        run: pnpm turbo run build
       - name: Engine coverage floor (>=90% line+branch)
         run: pnpm coverage
 
