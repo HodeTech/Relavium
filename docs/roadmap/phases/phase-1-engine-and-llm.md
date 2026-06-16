@@ -842,6 +842,26 @@ The proof that the engine works before any surface exists.
 then fallback with the run still completing; resume from a mid-run checkpoint
 reproduces the same final output — **M2 achieved**.
 
+> **Harness shape (decided 2026-06-16, implementing 1.U).** The harness is a **scenario suite** with a
+> reusable driver (not a single test) — the seed the Phase-2 CLI regression harness (2.K) grows from, and
+> the suite 1.AB's `condition`/`transform` scenario and the determinism ban plug into. Its **happy-path**
+> member is the literal 3-node `input → agent → output` (a clean run: live token streaming + a tool call +
+> per-attempt cost + a gap-free `sequenceNumber` stream that validates against the canonical
+> [`RunEventSchema`](../../reference/contracts/sse-event-schema.md)). Its **flagship** member inserts a
+> `human_in_the_loop` gate — `input → agent → human_gate → output` — as the **durable mid-run checkpoint**,
+> because the Phase-1 engine resumes **only** from a durable suspend point (a human/budget gate): a gate-less
+> interrupted run is reconciled to `run:failed`, never resumed
+> ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md); the derived
+> `Checkpointer`, ADR-0003). The flagship drives, **in one run** across a process boundary: the agent's
+> forced provider error → **node retry** ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)
+> Part A) → **failover** to the second chain entry (1.K), streaming + a tool call + per-attempt cost; then the
+> gate pause (the persisted checkpoint); then a **fresh engine** resumes via `resumeFromCheckpoint`, runs
+> `output` to `run:completed`, and reproduces the same final output with `sequenceNumber` continuing gap-free.
+> All LLM cost is incurred **pre-gate**, so the plain-human-gate cost-restore deferral
+> ([deferred-tasks.md](../deferred-tasks.md)) is off this path. **No new engine code or ADR** — the harness
+> composes 1.K/1.N/1.O/1.P/1.Q/1.R/1.S/1.T behind the `@relavium/llm` seam and uses only already-exported
+> `@relavium/core` symbols.
+
 ### Agent-first sub-spine (1.V–1.AA) — additive, parallel to the M2 critical path
 
 These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). They run **parallel** to 1.L–1.U and do **not** feed the 1.U workflow harness — each is proven by its own harness (1.AA). The `WorkflowEngine` is unchanged; `AgentSession` is an additional entry point on the same substrate.
@@ -1212,7 +1232,8 @@ All must be true to start Phase 2 (CLI):
 1. A `relavium`-equivalent invocation from the Node harness (1.U) runs a 3-node
    sequential workflow end-to-end: live token streaming, in-process emission of the
    canonical run events with monotonic `sequenceNumber`, SQLite-shaped checkpointing,
-   and resume from a checkpoint.
+   and resume from a checkpoint (the resume rides the suite's gated **flagship** scenario —
+   the engine resumes only from a durable gate checkpoint; see §1.U *Harness shape*).
 2. Forcing a provider error triggers node retry and then a fallback to the next
    provider in the chain, with the run completing and **per-attempt** cost recorded
    correctly.
