@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-15
+> Last updated: 2026-06-16
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -264,12 +264,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
   stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
   fix needs a `FallbackChain` `onAttemptStart`/attributed-stream hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
-- [ ] **Per-attempt pre-egress budget gate (1.AC)** — 1.O leaves a coarse always-pass hook at the tool-loop
-  turn boundary; the precise per-egress budget check (a `FallbackChain` makes several attempts per turn) is a
-  chain pre-attempt hook 1.AC adds. *(medium · ADR-0028; ADR-0038; 1.AC)*
+- [x] **Per-attempt pre-egress budget gate (1.AC)** — closed by 1.AC (PR #26). The precise per-egress budget
+  check now rides the `FallbackChain` **pre-attempt** hook, so every attempt — including a failover to a pricier
+  model — is capped; the loop-top `awaitPreEgress` in `runAgentTurn` adds the zero-egress-on-cancel guard +
+  primary-model early check (the intentional double gate). *(closed · ADR-0028; ADR-0038; 1.AC, PR #26)*
 - [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
-  dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot, but a parallel-tool
-  provider should order by the accumulator's `toolOrder` before 1.V reuses the core. *(low · packages/core/src/engine/agent-turn.ts; 1.V)*
+  dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot — and 1.V now reuses
+  the core on that single-tool path. A parallel-tool provider should order by the accumulator's `toolOrder`;
+  re-home to whatever future parallel-tool work first enables it. *(low · packages/core/src/engine/agent-turn.ts; future parallel-tool)*
 - [x] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
   secret into `run.outputs` (it emits LLM text only), so this is **not** 1.O's to own; it belongs to the
   `transform` / sandbox node (1.P / 1.AB) that can return a secret-derived value. 1.O's only obligation is to
@@ -397,13 +399,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## AgentSession (1.V) follow-ups
 
-> **2026-06-15 1.V implementation (ADR-0024) + two pre-merge review passes.** The in-memory `AgentSession`
-> entry point landed — multi-turn `start`/`sendMessage`/`cancel` over the **shared turn core** (`runAgentTurn`),
-> the hard turn cap → `turn_limit`, session-wide cost, emission via an injected `SessionEventSink`. The
-> deferrals below were decided while building it; each has a clear later home, recorded so it isn't lost.
-> (The bus wiring + `SessionHandle` is the scheduled **1.W** workstream, persistence + the durable
-> `SessionMessage` schema is **1.X**, resume **1.Y**, export **1.Z** — those are workstreams, tracked in
-> [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.)
+> **2026-06-16 — 1.V `AgentSession` (ADR-0024) + 1.AC budget governor (ADR-0028) merged in PR #26** (after two
+> pre-merge review passes + a Sonnet multi-dimensional review). The in-memory `AgentSession` entry point landed —
+> multi-turn `start`/`sendMessage`/`cancel` over the **shared turn core** (`runAgentTurn`), the hard turn cap →
+> `turn_limit`, session-wide cost, emission via an injected `SessionEventSink`. The deferrals below were decided
+> while building it; each has a clear later home, recorded so it isn't lost. The still-open follow-ons are **1.W**
+> (wire the `SessionEventSink` onto the `RunEventBus` + per-session `sequenceNumber`/`SessionHandle`), **1.X**
+> (session persistence + the durable `SessionMessage` schema), resume **1.Y**, export **1.Z**, and the deferred
+> cost-event persistence (below) — those are workstreams, tracked in
+> [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.
 
 - [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** 1.V appends only the final
   assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal

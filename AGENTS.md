@@ -24,11 +24,13 @@ gateway; engine stays local, Phase 2) — split across build phase 5 (managed in
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
 **Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07);**
 `@relavium/llm` (the seam + all three adapters) is landed and green. Phase 0 (M0) landed
-the monorepo + `@relavium/shared` + CI + `@relavium/db`. Since then, the ADR-0031 multimodal
-seam-shape amendment (1.AD, PR #11) and the `FallbackChain` runner (1.K, PR #13, 2026-06-11)
-have landed. Active work continues on the
-[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md) (1.L next); see
-[docs/roadmap/current.md](docs/roadmap/current.md).
+the monorepo + `@relavium/shared` + CI + `@relavium/db`. The
+[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md) has since landed the full
+run-loop + node stack — parser, interpolation, DAG/`RunPlan`, the run loop + `RunEventBus`, the tool
+registry, the `AgentRunner`, the six node-type handlers, the human gate, checkpoint/resume, node retry,
+the expression sandbox, and the pre-egress budget governor — plus the agent-first `AgentSession` (1.V),
+**completing milestone 1.m4** (PRs #13–#26). Next on the critical path is the **1.U** end-to-end Node
+harness (milestone **M2**); see [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules
 
