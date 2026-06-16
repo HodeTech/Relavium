@@ -301,8 +301,12 @@ export function defineConformanceSuite(
           return; // narrow
         }
         expect(call.name).toBe(loop.expected.toolName);
-        // Turn 2: append the assistant tool_call + the tool RESULT, then continue — this exercises the
-        // adapter lowering a tool_result message back onto the provider's wire (the agent-node path).
+        // Turn 2: append the assistant tool_call + the tool RESULT, then continue. SCOPE: this asserts the
+        // end-to-end call→result→continuation FLOW — the adapter accepts a tool_result message and produces a
+        // continuation without throwing or dropping the turn. The provider-SPECIFIC tool_result WIRE shape
+        // (Anthropic tool_result block, OpenAI {role:'tool'}, Gemini functionResponse) is asserted by the
+        // per-adapter unit tests (anthropic/openai/gemini .test.ts); the replay serves turn2 by call index,
+        // so this shared suite does not (and should not) re-assert each provider's request wire here.
         const r2 = await adapter.generate(
           {
             ...TOOL_REQUEST,

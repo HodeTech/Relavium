@@ -2,7 +2,7 @@
  * 1.U — the End-to-end Node harness (the **M2** critical-path milestone). The proof that the engine works
  * end-to-end before any surface exists: it composes 1.K (FallbackChain) / 1.N (run loop + RunEventBus) /
  * 1.O (AgentRunner) / 1.P (node handlers) / 1.Q (human gate) / 1.R (checkpoint/resume) / 1.S (node retry) /
- * 1.T (ToolRegistry) behind the `@relavium/llm` seam, using only already-exported `@relavium/core` symbols
+ * 1.T (ToolRegistry) / 1.AB (ExpressionSandbox) behind the `@relavium/llm` seam, using only already-exported `@relavium/core` symbols
  * and the in-memory `ExecutionHost` reference — zero platform imports, no live network/keys, deterministic.
  *
  * This is a **scenario suite** (the seed the Phase-2 CLI regression harness, 2.K, grows from — see
@@ -281,12 +281,10 @@ const tokensOf = (events: readonly RunEvent[]): string[] =>
 const costsOf = (events: readonly RunEvent[]): Extract<RunEvent, { type: 'cost:updated' }>[] =>
   events.filter((e): e is Extract<RunEvent, { type: 'cost:updated' }> => e.type === 'cost:updated');
 const nodeOutput = (events: readonly RunEvent[], nodeId: string): unknown =>
-  events.find((e) => e.type === 'node:completed' && e.nodeId === nodeId)?.type === 'node:completed'
-    ? events.find(
-        (e): e is Extract<RunEvent, { type: 'node:completed' }> =>
-          e.type === 'node:completed' && e.nodeId === nodeId,
-      )?.output
-    : undefined;
+  events.find(
+    (e): e is Extract<RunEvent, { type: 'node:completed' }> =>
+      e.type === 'node:completed' && e.nodeId === nodeId,
+  )?.output;
 
 let sandbox: ExpressionSandbox;
 
@@ -309,9 +307,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events.some((e) => e.type === 'agent:tool_result' && e.success)).toBe(true);
     expect(nodeOutput(events, 'out')).toBe('a summary'); // the agent's answer flows through to output
 
-    // Per-attempt cost: every billed attempt emits its own cost:updated, the cumulative rolls up.
+    // Per-attempt cost: the tool-use turn AND the answer turn each emit one cost:updated, the cumulative
+    // rolls up. Pinned to the EXACT count — a `>= 1` would pass even if the tool-turn cost went missing.
     const costs = costsOf(events);
-    expect(costs.length).toBeGreaterThanOrEqual(1);
+    expect(costs.length).toBe(2); // tool-use turn + answer turn → one cost:updated each
     let running = 0;
     for (const c of costs) {
       expect(c.model).toBe('claude-opus-4-8');
@@ -353,7 +352,12 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // Node retry then failover, all pre-gate; the run parked at the gate (no terminal yet).
     expect(events1.filter((e) => e.type === 'node:retrying')).toHaveLength(1);
     const retrying = events1.find((e) => e.type === 'node:retrying');
-    expect(retrying?.type === 'node:retrying' ? retrying.error.retryable : false).toBe(true);
+    // Assert the CLASSIFIED code, not `.retryable` — node:retrying is only ever emitted for a retryable
+    // failure, so asserting retryable===true is tautological; the overloaded chain-exhaustion maps to
+    // `provider_unavailable` (agent-turn.ts), which a misclassification would fail.
+    expect(retrying?.type === 'node:retrying' ? retrying.error.code : undefined).toBe(
+      'provider_unavailable',
+    );
     expect(tokensOf(events1)).toEqual(['a summary']); // the fallback streamed the answer
     expect(events1.some((e) => e.type === 'human_gate:paused')).toBe(true);
     expect(events1.some((e) => e.type === 'run:paused')).toBe(true);
@@ -362,8 +366,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(nodeOutput(events1, 'work')).toBe('a summary');
 
     // Per-attempt cost recorded, attributed to the FALLBACK model — failover cost is accounted (§1.U).
+    // Exactly ONE cost:updated: only the successful fallback attempt bills (the pre-content error attempts
+    // carry no usage). `=== 1` catches a double-charge or a billed failed attempt that `>= 1` would miss.
     const costs1 = costsOf(events1);
-    expect(costs1.length).toBeGreaterThanOrEqual(1);
+    expect(costs1.length).toBe(1);
     for (const c of costs1) {
       expect(c.model).toBe('claude-sonnet-4-6');
       expect(c.costMicrocents).toBeGreaterThan(0);
@@ -384,6 +390,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(handle2.runId).toBe(handle1.runId);
     expect(events2[0]?.type).toBe('human_gate:resumed'); // NOT a re-emitted run:started
     expect(tokensOf(events2)).toEqual([]); // the agent was NOT re-run — its output was restored
+    // The checkpointed `work` (agent) node must NOT be re-dispatched on resume (its output is restored) —
+    // assert directly, not just via the absence of streamed tokens.
+    expect(events2.some((e) => e.type === 'node:started' && e.nodeId === 'work')).toBe(false);
+    expect(events2.some((e) => e.type === 'node:completed' && e.nodeId === 'work')).toBe(false);
     expect(events2.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
     expect(events2.at(-1)?.type).toBe('run:completed'); // resume reproduces a completed run
     expect(nodeOutput(events2, 'out')).toEqual({ decision: 'approved' }); // deterministic final output

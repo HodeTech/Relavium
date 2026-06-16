@@ -859,7 +859,7 @@ reproduces the same final output — **M2 achieved**.
 > `output` to `run:completed`, and reproduces the same final output with `sequenceNumber` continuing gap-free.
 > All LLM cost is incurred **pre-gate**, so the plain-human-gate cost-restore deferral
 > ([deferred-tasks.md](../deferred-tasks.md)) is off this path. **No new engine code or ADR** — the harness
-> composes 1.K/1.N/1.O/1.P/1.Q/1.R/1.S/1.T behind the `@relavium/llm` seam and uses only already-exported
+> composes 1.K/1.N/1.O/1.P/1.Q/1.R/1.S/1.T/1.AB behind the `@relavium/llm` seam and uses only already-exported
 > `@relavium/core` symbols.
 
 ### Agent-first sub-spine (1.V–1.AA) — additive, parallel to the M2 critical path
@@ -1229,10 +1229,11 @@ flowchart LR
 
 All must be true to start Phase 2 (CLI):
 
-1. A `relavium`-equivalent invocation from the Node harness (1.U) runs a 3-node
-   sequential workflow end-to-end: live token streaming, in-process emission of the
-   canonical run events with monotonic `sequenceNumber`, SQLite-shaped checkpointing,
-   and resume from a checkpoint (the resume rides the suite's gated **flagship** scenario —
+1. A `relavium`-equivalent invocation from the Node harness (1.U) runs a sequential
+   workflow end-to-end (the **happy-path** member is a 3-node `input → agent → output`):
+   live token streaming, in-process emission of the canonical run events with monotonic
+   `sequenceNumber`, SQLite-shaped checkpointing, and resume from a checkpoint (the resume
+   rides the suite's gated **flagship** scenario, which adds a `human_in_the_loop` gate —
    the engine resumes only from a durable gate checkpoint; see §1.U *Harness shape*).
 2. Forcing a provider error triggers node retry and then a fallback to the next
    provider in the chain, with the run completing and **per-attempt** cost recorded

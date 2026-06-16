@@ -64,7 +64,10 @@ export interface CheckpointState {
   /** Running token totals (summed from `node:completed`), restored so a resumed run's `run:completed` totals stay correct. */
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
-  /** The last `cost:updated.cumulativeCostMicrocents` (a running total), restored so post-resume cost stays cumulative. */
+  /** The run-wide cumulative cost (integer micro-cents), restored on resume from the durable
+   *  `node:completed.cumulativeCostMicrocents` snapshot and/or `budget:paused.spentMicrocents` — the higher
+   *  wins (`Math.max`, order-independent). (`cost:updated` is also folded when present, but it is streamed,
+   *  not persisted, so it never appears in a real durable log.) Keeps post-resume cost cumulative. */
   readonly cumulativeCostMicrocents: number;
 }
 
@@ -169,10 +172,11 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
       isBudgetGate:
         acc.pendingGates.get(event.gateId)?.isBudgetGate === true || event.type === 'budget:paused',
     });
-    // `cost:updated` is streamed (not persisted), so the running cost is otherwise unrecoverable on resume;
-    // but `budget:paused.spentMicrocents` IS the durable cumulative-at-pause. Restore it so a resumed budgeted
-    // run keeps its spend and the re-seeded governor blocks correctly (H2). (A budgeted run that paused at a
-    // *plain human* gate still loses its cost on resume — cost-event persistence is the deferred general fix.)
+    // `cost:updated` is streamed (not persisted), so the cost cannot be recovered from it; but
+    // `budget:paused.spentMicrocents` IS the durable cumulative-at-pause. Restore it so a resumed budgeted run
+    // keeps its spend and the re-seeded governor blocks correctly (H2). A plain-human-gate / crash resume now
+    // recovers the same total from the durable `node:completed.cumulativeCostMicrocents` (applyNodeEvent above) —
+    // the two durable sources reconcile via that `Math.max` fold (cost-event persistence is no longer deferred).
     if (event.type === 'budget:paused') {
       acc.cumulativeCostMicrocents = event.spentMicrocents;
     }

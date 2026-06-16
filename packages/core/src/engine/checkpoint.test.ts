@@ -183,6 +183,9 @@ describe('reconstructCheckpointState', () => {
   });
 
   it('restores running token + cost tallies so a resumed run keeps cumulative totals', () => {
+    // Exercises the fold's `cost:updated` arm directly (a defensive branch of the pure function — in a real
+    // durable log cost:updated is streamed, NOT persisted; the production resume path rides node:completed,
+    // covered by the tests below). Kept to pin the token tally + the cost:updated running-total fold.
     const state = reconstructCheckpointState([
       started,
       {
@@ -254,6 +257,68 @@ describe('reconstructCheckpointState', () => {
     ]);
     expect(state?.runStatus).toBe('paused');
     expect(state?.cumulativeCostMicrocents).toBe(1600); // survives the plain-human-gate resume (was ~0 before)
+  });
+
+  it('reconciles two durable cost sources — a later budget:paused.spentMicrocents above a node:completed snapshot', () => {
+    // A node completes (running total 800), then the next node's pre-egress trips a budget gate at a higher
+    // running total (900). Both are durable cost sources; the fold must end at the higher value.
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'node:completed',
+        ...base(1),
+        nodeId: 'a',
+        output: 'A',
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 1,
+        cumulativeCostMicrocents: 800,
+      },
+      {
+        type: 'budget:paused',
+        ...base(2),
+        nodeId: 'b',
+        gateId: 'g1',
+        spentMicrocents: 900,
+        limitMicrocents: 1000,
+      },
+      {
+        type: 'human_gate:paused',
+        ...base(3),
+        nodeId: 'b',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'over budget',
+      },
+      { type: 'run:paused', ...base(4), pendingGateCount: 1, gateIds: ['g1'] },
+    ]);
+    expect(state?.cumulativeCostMicrocents).toBe(900); // the later, higher budget-pause spend wins
+  });
+
+  it('never undercounts: a lower node:completed snapshot after a higher budget:paused keeps the higher (Math.max, order-independent)', () => {
+    // The fold's monotonic guard: were a node:completed to carry a LOWER running total than a prior
+    // budget:paused (the order-independence case), `Math.max` must keep the higher value — a bare assignment
+    // would wrongly drop it. Pins that the cost restore can never go backwards.
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'budget:paused',
+        ...base(1),
+        nodeId: 'a',
+        gateId: 'g1',
+        spentMicrocents: 900,
+        limitMicrocents: 1000,
+      },
+      {
+        type: 'node:completed',
+        ...base(2),
+        nodeId: 'a',
+        output: 'A',
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 1,
+        cumulativeCostMicrocents: 800, // lower than the prior budget:paused — must NOT lower the cumulative
+      },
+    ]);
+    expect(state?.cumulativeCostMicrocents).toBe(900); // Math.max keeps the higher prior value
   });
 
   it('folds node:retrying as non-state-bearing — a retry-then-recover ends `completed` (1.S)', () => {
