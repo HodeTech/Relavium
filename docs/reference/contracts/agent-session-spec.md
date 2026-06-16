@@ -52,10 +52,28 @@ stateDiagram-v2
 | **export** | Serialize the session to a `.relavium.yaml` scaffold ([export](#export-to-workflow)). |
 
 The turn loop, tool dispatch, streaming, and fallback are the **same** code paths a workflow `agent`
-node uses; the session is a thin wrapper over the `AgentRunner` that manages conversation state and
-context. The lifecycle emits the `session:*` event namespace — defined, with the run namespace, in
-[sse-event-schema.md](sse-event-schema.md#session-event-namespace) (this spec does not enumerate event
-names).
+node uses: the session is a thin wrapper over the **correlation-agnostic turn core** — the `runAgentTurn`
+path the `AgentRunner` (1.O) also wraps for a workflow node — managing conversation state and context.
+*(1.V drives that turn core directly; it does **not** route through the run-only `NodeExecutor` the
+`AgentRunner` exposes. "Same `AgentRunner` path" means the shared turn-core execution, not the
+`NodeExecutor` surface.)* The lifecycle emits the `session:*` event namespace — defined, with the run
+namespace, in [sse-event-schema.md](sse-event-schema.md#session-event-namespace) (this spec does not
+enumerate event names). 1.V keeps the conversation **in-memory** (the in-flight `LlmMessage`/`ContentPart`
+form) and emits session events through an injected sink; wiring that sink onto the shared `RunEventBus`
+(per-session `sequenceNumber` + gap/resync) is **1.W**, and the durable [`SessionMessage`](#session-messages)
+schema + persistence is **1.X**.
+
+### Hard turn cap
+
+A session carries a **hard turn cap** — a finite DoS fail-safe on the number of turns it will run (engine
+default **50**, overridable at construction; **0/absent ⇒ the default**). It is **distinct** from two other
+limits and must not be conflated with either: `[chat].max_messages` (a history-**trim** threshold that
+silently *continues* the session — [config-spec.md](config-spec.md)) and the turn core's **within-turn**
+`maxToolTurns` tool-loop guard. A `sendMessage` past the cap ends **loudly, with no egress**:
+`session:turn_completed` carries `stopReason: 'error'` + `error.code: 'turn_limit'`
+([sse-event-schema.md](sse-event-schema.md#error-code-taxonomy)) — never a silent stop; the within-turn
+`maxToolTurns` guard surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
+knob** in 1.V (a surface maps its `[chat]` default onto it); it is **not** a new `[chat]` field in Phase 1.
 
 ## Session context
 
@@ -69,7 +87,7 @@ interface SessionContext {
   selection?: { file: string; startLine: number; endLine: number };
   gitRef?: string;           // current branch / commit, for provenance
   fsScopeTier: 'sandboxed' | 'project' | 'full';  // same tiers as workflows; default sandboxed
-  variables?: Record<string, string>;             // session-scoped {{ctx.*}} values
+  variables?: Record<string, string>;             // session-scoped {{ctx.*}} values — plaintext, NO secrets (§ Tools, secrets)
 }
 ```
 
@@ -130,6 +148,10 @@ mandatory guardrails (`run_command` allowlist; `git_commit` behind approval). Pe
 
 - a session inherits the agent's tools and may only **narrow** them, never escalate;
 - a `secret`-typed value is **never interpolated** into a prompt or tool text;
+- `context.variables` (the `{{ctx.*}}` map) is **plaintext supplied by the surface** that is echoed
+  **verbatim** in the `session:started` event payload and persisted in the session row — it **MUST NOT**
+  carry an API key or any secret. Route every secret through the keychain-backed `secret`-typed resolution
+  above, never through `{{ctx.*}}`;
 - `http_request` / MCP egress is subject to the same SSRF policy as a workflow.
 
 The user's own **conversational content** typed into a session is the user's data: it is persisted in

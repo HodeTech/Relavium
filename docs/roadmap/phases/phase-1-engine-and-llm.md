@@ -25,8 +25,10 @@
 > gate (1.Q) are ✅ Done (PR #22, 2026-06-15)** — the derived `Checkpointer` + cross-process
 > `resumeFromCheckpoint` (idempotent re-delivery, `workflow_mismatch` identity guard) and the
 > `human_in_the_loop` gate (suspend/resume + the one-shot `setTimer` timeout port: `approve` auto-resolves,
-> `reject` fails with `run_timeout`). The lane now continues at the remaining 1.m4 workstreams (**1.S** node
-> retry, **1.AC** budget governor) toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence,
+> `reject` fails with `run_timeout`). **Node retry (1.S) is ✅ Done (PR #24, 2026-06-15)** — the above-chain
+> whole-node retry budget ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md), Part A; the
+> user-triggered retry-from-node Part B is deferred to Phase-2). The lane now continues at the last 1.m4
+> workstream — **1.AC** budget governor — toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence,
 > 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
@@ -748,23 +750,30 @@ idempotent; gap detection triggers a resync rather than trusting a partial view;
 resume against a non-matching workflow snapshot is refused with a typed error; and a
 forced checkpoint-write failure is visible as a typed error/event, not a silent skip.
 
-### 1.S — Retry + fallback wiring (node budget above the chain) — *critical path*
+### 1.S — Retry + fallback wiring (node budget above the chain) · ✅ **Done (PR #24, 2026-06-15)** — *critical path*
 
 Layer node-level retry above the provider fallback chain so reliability composes
-correctly.
+correctly. Landed as [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)
+Part A (the in-run budget); ADR-0040 amends ADR-0038 (the primary chain entry no longer
+consumes `node.retry`).
 
 **Tasks:**
-- Implement node-level retry from `retry_config` (`max_attempts`, `backoff_ms`,
-  `backoff_strategy`, `retry_on[]`), with backoff and optional input adjustment, never
-  silently skipping a required node.
-- Wire the ordering: the engine considers a node failed only after the **whole
+- ✅ Implement node-level retry from `retry_config` (`max_attempts` ← `retry.max`,
+  `backoff_ms`, `backoff_strategy`, `retry_on[]`), with backoff, never silently skipping
+  a required node. *(Optional input adjustment deferred — ADR-0040 A.9.)*
+- ✅ Wire the ordering: the engine considers a node failed only after the **whole
   fallback chain** (1.K) is exhausted within an attempt, then applies the node retry
   budget above that.
-- Implement retry-from-node (re-run from any node) using the 1.R idempotency key.
+- ⏳ Implement retry-from-node (re-run from any node) using the 1.R idempotency key —
+  **deferred to Phase-2** (ADR-0040 Part B; same-runId re-run conflicts with the
+  exactly-one-terminal invariant — see [deferred-tasks.md](../deferred-tasks.md)).
 
-**Acceptance:** a node whose provider chain is exhausted retries per its budget and
-then fails with `node:failed`; a transient failure recovers within budget; cost is
-recorded for every attempt across both layers.
+**Acceptance:** ✅ Met (PR #24). A node whose provider chain is exhausted retries per its
+budget and then fails with `node:failed`; a transient failure recovers within budget; cost
+is recorded for every attempt across both layers. The engine re-dispatches the whole node
+on a retryable, `retry_on`-admitted failure up to `retry.max` total attempts with
+abort-aware backoff (cancel/sibling-abort wins), emitting the non-terminal `node:retrying`;
+`node:failed` stays the single terminal per node, so the 1.R Checkpointer fold is untouched.
 
 ### 1.T — Built-in `ToolRegistry` + dispatch · ✅ **Done (PR #17, 2026-06-13)**
 
@@ -834,8 +843,10 @@ reproduces the same final output — **M2 achieved**.
 These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). They run **parallel** to 1.L–1.U and do **not** feed the 1.U workflow harness — each is proven by its own harness (1.AA). The `WorkflowEngine` is unchanged; `AgentSession` is an additional entry point on the same substrate.
 
 - **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). This workstream also settles the session's **hard turn/round cap** knob — deliberately distinct from `[chat].max_messages`, which is a history-**trim** threshold ([config-spec.md](../../reference/contracts/config-spec.md)) that continues the session. A session that reaches the hard cap ends **loudly**: `session:turn_completed` carries `error.code: 'turn_limit'` ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#error-code-taxonomy)) — never a silent stop — and the behavior is pinned by a dedicated regression test (a refactor of the turn loop must not be able to silently drop the cap signal). Context compaction (when it lands, later phases) is **append-only by principle**: the persisted transcript is never rewritten or trimmed in place; `agent:context_compacted` is the reserved signal ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#workflow-governance-and-reserved-events)). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses; a session driven to its hard turn cap emits the `turn_limit`-coded event, regression-pinned.
+  - *1.V scope notes (decided 2026-06-15, [agent-session-spec.md](../../reference/contracts/agent-session-spec.md)):* the driver reuses the correlation-agnostic turn core (`runAgentTurn`) directly via an **injected `SessionEventSink`** (so the bus wiring is **1.W** — see below); the hard cap is an **engine-API knob** (finite default **50**), with the `[chat]` surface-default mapping deferred to the surface phases (it is **not** a Phase-1 `[chat]` field). **Deferred within 1.V, to be picked up later:** the cross-turn transcript is **text-only** — the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal (returns only the final non-`tool_use` content), so the transcript carries no orphaned `tool_use` and stays protocol-valid; the assistant reply is appended as text, **dropping reasoning** (a `signature` is a within-turn same-provider replay token, ADR-0030/0039, that must not span turns). Faithful cross-turn tool/reasoning history is **revisited when 1.X persistence / 1.Z export needs it** (it needs the turn core to expose the intermediate messages, currently owned by the concurrent 1.AC edits in `agent-turn.ts`); **per-session tool narrowing** (ADR-0029 narrow-only — 1.V grants `agent.tools` as-is, no per-session narrow); and **session `output_schema`** (chat is free-form text — structured output stays a workflow concern).
 - **1.W — `session:*` event namespace.** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
-- **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
+  - *Also owns (from the 1.V injected-sink split, recorded 2026-06-15):* the `SessionEventSink → RunEventBus` adapter; a **`SessionHandle`** (the async-iterable session stream + `cancel`, mirroring `createRunHandle`); and **reconciling the bus session-event gate** — `RunEventBus` validates against `RunEventSchema` and its `RunEventDraft` type both **exclude** the five `session:*` variants (they live only in the separate `SessionEventSchema`), so the bus needs an injected/combined Run+Session schema **and** the matching draft-type widening before it can carry the session lifecycle events 1.V emits.
+- **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). **Authors the durable `SessionMessageSchema`** in `@relavium/shared` (deferred from 1.V, which runs on the in-flight `LlmMessage` form): `{ id, sessionId, sequenceNumber, role, content: DurableContentPart[], modelId?, timestamp }` — the persisted transcript type these tables store. *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
 - **1.Y — Session checkpoint/resume.** Reuse the idempotency-key logic so a session resumes after a restart.
 - **1.Z — Export-to-workflow serializer.** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Includes a **`WorkflowDefinition` → YAML emitter** (deterministic key ordering, the `metadata` transcript block, secret exclusion) — 1.L is parse-only, so this workstream owns serialization. *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; **parse → serialize round-trips** (including `metadata`); no `secret` value is serialized; and **no reasoning `signature` is serialized** (ADR-0030 ephemerality — the signature is a transient same-provider token, never written to a committable artifact, same exclusion as `secret`).
 - **1.AA — Node-harness chat regression.** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI.
@@ -1095,13 +1106,13 @@ flowchart LR
 | 1.L2 | B | 1.L | 1.M | ✅ — **Done (PR #15)** |
 | 1.M | B | 1.L2 | 1.N | ✅ — **Done (PR #16)** |
 | 1.N | B | 1.M | 1.O, 1.R, 1.W | ✅ — **Done (PR #17)** |
-| 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ |
+| 1.R | B | 1.N | 1.S, 1.Q, 1.Y | ✅ — **Done (PR #22)** |
 | 1.T | B | 1.E | 1.O, 1.U | ⬤ — **Done (PR #17)** |
 | 1.AB | B | package scaffold (perf spike first) | 1.P | ✅ folds into 1.P — **Done (PR #16)** |
 | 1.O | B | **1.K, 1.N, 1.T** (the join), 1.AD (media shape) | 1.P, 1.S, 1.AC, 1.V | ✅ — **Done (PR #18)** |
-| 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ |
-| 1.S | B | 1.O, 1.R | 1.U | ✅ |
-| 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ⬤ |
+| 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ — **Done (PR #20)** |
+| 1.S | B | 1.O, 1.R | 1.U | ✅ — **Done (PR #24)** |
+| 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ✅ — **Done (PR #22)** |
 | 1.AC | B | 1.O, 1.Q | 1.U | ✅ folds into 1.O |
 | 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ |
 | 1.V | C | 1.O | 1.W, 1.X, 1.Z | ◇ |

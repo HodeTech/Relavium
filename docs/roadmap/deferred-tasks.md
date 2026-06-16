@@ -183,11 +183,28 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   the host's run-scoped `outputStore` (handle in the marker); applied in `registry.dispatch` (returns
   `truncated`) under the one cancellation-precedence ladder. Documented in
   [tool-registry.md §result-bounding-and-spill-to-file](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file).
+- [ ] **Cumulative cost is not restored on cross-process resume (cost-event persistence) — 1.AC/1.R.** `cost:updated`
+  is **streamed** (`#nodeEmit` → bus), not persisted via `#emitDurable`, so `reconstructCheckpointState`'s
+  `cost:updated` fold (checkpoint.ts) never sees it: a resumed run's `cumulativeCostMicrocents` (and the
+  governor) restart near 0, under-reporting `run:completed.totalCostMicrocents` and under-blocking the budget
+  after resume. Partially mitigated (2026-06-15): the fold now restores the cumulative from the **durable**
+  `budget:paused.spentMicrocents`, so a run paused at a **budget** gate resumes with the right spend; a budgeted
+  run paused at a **plain human** gate (or crashed mid-run) still loses its cost. The general fix is making cost
+  durable — persist `cost:updated`, or carry `cumulativeCostMicrocents` on the durable `node:completed` (like
+  `tokensUsed`) — a contract/durability-model change. *(medium · packages/core/src/engine/engine.ts `#nodeEmit` + checkpoint.ts; 1.AC/1.R)*
 - [ ] **Pre-egress token-estimate accuracy — watch item (1.AC).** The ADR-0028 governor blocks on
   `worstCaseNextEstimate(maxTokens)` from `[defaults].max_tokens_estimate`. Record the open
   question: does the estimate need provider-accurate token counting (from the seam's model meta /
   usage feedback) to avoid systematic over/under-blocking, or is the declared estimate enough?
   No change now — re-evaluate with real 1.AC telemetry. *(1.AC; ADR-0028)*
+- [ ] **Configurable sub-100% budget warning threshold (ADR-0028 amendment).** `budget:warning`
+  today is emitted only when a pre-egress estimate would already exceed the cap, on the `on_exceed: warn`
+  path (`thresholdPct` reports the observed spent/limit fraction at that point). A user-facing
+  early-warning threshold (e.g. `warn_at_pct: 80`) requires amending ADR-0028 to add both a
+  config default and a per-workflow `budget.warn_at_pct` field, plus a decision on whether it
+  throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
+  there is concrete surface demand or telemetry showing operators need an earlier signal.
+  *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
 ## Interpolation engine (1.L2) follow-ups
 
@@ -377,6 +394,40 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   checkpoint reconstructs `resolvedGateIds`). The residual window — two processes loading the *same* still-pending
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
   `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. *(low · checkpoint.ts/engine.ts; Phase-2 store)*
+
+## AgentSession (1.V) follow-ups
+
+> **2026-06-15 1.V implementation (ADR-0024) + two pre-merge review passes.** The in-memory `AgentSession`
+> entry point landed — multi-turn `start`/`sendMessage`/`cancel` over the **shared turn core** (`runAgentTurn`),
+> the hard turn cap → `turn_limit`, session-wide cost, emission via an injected `SessionEventSink`. The
+> deferrals below were decided while building it; each has a clear later home, recorded so it isn't lost.
+> (The bus wiring + `SessionHandle` is the scheduled **1.W** workstream, persistence + the durable
+> `SessionMessage` schema is **1.X**, resume **1.Y**, export **1.Z** — those are workstreams, tracked in
+> [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.)
+
+- [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** 1.V appends only the final
+  assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
+  (so the transcript carries no orphaned `tool_use` and stays protocol-valid), and reasoning is dropped (a
+  `signature` is a within-turn same-provider replay token — ADR-0030/0039 — that must not span turns). Carrying
+  the full per-turn tool/reasoning history needs the turn core to **expose its intermediate messages**
+  (`runAgentTurn` copies its input and returns only final content) — revisit when 1.X persistence / 1.Z export
+  needs faithful turns, once `agent-turn.ts` is settled. *(medium · packages/core/src/engine/agent-session.ts + agent-turn.ts; 1.X/1.Z)*
+- [ ] **Session budget pause/resume (1.V × 1.AC).** `AgentSession` threads the ADR-0028 `preEgress` hook as a
+  pass-through but does **not** handle a `BudgetPauseError`: a non-`AgentTurnError` throw rolls the user message
+  back and re-raises (a session has no pause/resume gate machinery in 1.V). The run path maps a budget pause to
+  a `paused` node outcome via the human-gate seam; a budgeted session needs the analogous suspend/resume
+  lifecycle. Wire it when sessions gain a budget (surface phases). *(medium · packages/core/src/engine/agent-session.ts; ADR-0028)*
+- [ ] **Per-session tool narrowing (ADR-0029 narrow-only).** 1.V grants the bound agent's `tools` verbatim; a
+  session cannot yet **narrow** them per-session (it may only ever narrow, never widen). Add a session-level
+  narrow when a surface needs to restrict a session's tools below the agent's grant.
+  *(low · packages/core/src/engine/agent-session.ts; ADR-0029)*
+- [ ] **`[chat].max_turns` surface wiring.** The hard turn cap is an **engine-API** knob in 1.V
+  (`SessionDeps.maxTurns`, finite default 50); mapping the `[chat]` config default onto it is a surface task
+  (the CLI/desktop read `[chat]` and pass `maxTurns`). It is deliberately **not** a Phase-1 `[chat]` field.
+  *(low · config-spec.md + surfaces; Phase 2+)*
+- [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
+  structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
+  validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
 
 ## Schema / validation hardening
 

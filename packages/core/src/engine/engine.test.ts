@@ -912,6 +912,12 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     eventsB.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + 1 + index));
   });
 
+  // H2 (governor re-seed) is pinned at the unit level: the checkpoint fold restores the cumulative from the
+  // durable budget:paused.spentMicrocents (checkpoint.test.ts) and #seedFromCheckpoint feeds it to the
+  // governor. A full engine resume-then-block test is not added here because cost:updated is streamed (not
+  // persisted), so a run paused at a plain human gate cannot restore its cost — that general cost-event
+  // persistence is the deferred fix tracked in deferred-tasks.md.
+
   it('is a no-op (closed handle, nothing re-persisted) re-delivering to an already-terminal run', async () => {
     const store = new InMemoryRunStore();
     const { runId, gateId } = await runToGate(store);

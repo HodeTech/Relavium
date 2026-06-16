@@ -1,13 +1,14 @@
 import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
 import type { RunEvent } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { parseWorkflow } from '../parser.js';
-import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
+import { createExpressionSandbox, type ExpressionSandbox } from '../expression/sandbox.js';
+import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
-import { createAgentNodeExecutor } from './agent-runner.js';
 import { WorkflowEngine } from './engine.js';
 import { createInMemoryHost } from './execution-host.js';
+import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
 
 const CAPS: CapabilityFlags = {
@@ -77,6 +78,17 @@ const echoRegistry: ToolRegistry = {
   },
 };
 
+/** The matching LLM-visible tool def for the echo registry. */
+const echoToolDef: CoreToolDef = {
+  id: 'echo',
+  source: 'builtin',
+  description: 'echo',
+  parseArgs: (raw) => raw,
+  llmVisibleParams: { type: 'object' },
+  policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+  dispatch: () => Promise.reject(new Error('echoToolDef dispatch is not used directly')),
+};
+
 const WORKFLOW = parseWorkflow(
   `schema_version: '1.0'
 workflow:
@@ -109,22 +121,22 @@ function assertGapFreeSeq(events: readonly RunEvent[]): void {
   seqs.forEach((seq, index) => expect(seq).toBe(index));
 }
 
+let sandbox: ExpressionSandbox;
+
+beforeAll(async () => {
+  sandbox = await createExpressionSandbox();
+});
+
 describe('AgentRunner end-to-end through the WorkflowEngine', () => {
   it('runs an agent node, streaming tokens + cost, to run:completed', async () => {
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
-        resolveProvider: () =>
-          provider([
-            { type: 'text_delta', text: 'a summary' },
-            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 4 } },
-          ]),
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'key',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+      executor: agentExecutor(() =>
+        provider([
+          { type: 'text_delta', text: 'a summary' },
+          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 4 } },
+        ]),
+      ),
     });
 
     const events = await drain(
@@ -185,14 +197,7 @@ workflow:
     );
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
-        resolveProvider: (id) => (id === 'anthropic' ? primary : fallback),
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'key',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+      executor: agentExecutor((id) => (id === 'anthropic' ? primary : fallback)),
     });
 
     const events = await drain(engine.start({ workflow: wf }));
@@ -222,8 +227,8 @@ workflow:
     );
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
-        resolveProvider: () =>
+      executor: agentExecutor(
+        () =>
           scriptedProvider([
             // turn 1: a tool call
             [
@@ -237,12 +242,9 @@ workflow:
               { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
             ],
           ]),
-        registry: echoRegistry,
-        tools: [],
-        keyFor: () => 'key',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+        echoRegistry,
+        [echoToolDef],
+      ),
     });
 
     const events = await drain(engine.start({ workflow: wf }));
@@ -282,19 +284,13 @@ workflow:
     );
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
-      executor: createAgentNodeExecutor({
+      executor: agentExecutor(() =>
         // One executor instance serves both concurrent nodes; each builds its own chain + CostTracker.
-        resolveProvider: () =>
-          provider([
-            { type: 'text_delta', text: 'done' },
-            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
-          ]),
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'k',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+        provider([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        ]),
+      ),
     });
 
     const events = await drain(engine.start({ workflow: wf }));
@@ -349,14 +345,7 @@ workflow:
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
       host,
-      executor: createAgentNodeExecutor({
-        resolveProvider: () => scripted,
-        registry: noToolRegistry,
-        tools: [],
-        keyFor: () => 'k',
-        sleep: () => Promise.resolve(),
-        now: () => 1,
-      }),
+      executor: agentExecutor(() => scripted),
     });
     const events: RunEvent[] = [];
     for await (const event of engine.start({ workflow: wf, inputs: { text: 'x' } }).events) {
@@ -385,5 +374,250 @@ workflow:
       ),
     ).toBe(true);
     assertGapFreeSeq(events);
+  });
+});
+
+function agentExecutor(
+  resolveProvider: (id: ProviderId) => LlmProvider | undefined,
+  registry: ToolRegistry = noToolRegistry,
+  tools: CoreToolDef[] = [],
+) {
+  return createStandardNodeExecutor({
+    sandbox,
+    agent: {
+      resolveProvider,
+      registry,
+      tools,
+      keyFor: () => 'k',
+      sleep: () => Promise.resolve(),
+      now: () => 1,
+    },
+  });
+}
+
+function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
+  return parseWorkflow(
+    `schema_version: '1.0'
+workflow:
+  id: e2e-budget
+  budget:
+    max_cost_microcents: 1
+    on_exceed: ${onExceed}
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+  );
+}
+
+function cheapProvider(): LlmProvider {
+  return provider([
+    { type: 'text_delta', text: 'ok' },
+    { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+  ]);
+}
+
+describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
+  it('warns and continues when on_exceed is warn', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const events = await drain(
+      engine.start({ workflow: budgetWorkflow('warn'), inputs: { text: 'x' } }),
+    );
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const warning = events.find((e) => e.type === 'budget:warning');
+    expect(warning).toBeDefined();
+    // The warning fires before any spend, so the observed spent/limit fraction is 0%.
+    expect(warning?.type === 'budget:warning' && warning.thresholdPct).toBe(0);
+  });
+
+  it('fails the run when on_exceed is fail', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const events = await drain(
+      engine.start({ workflow: budgetWorkflow('fail'), inputs: { text: 'x' } }),
+    );
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    expect(events.some((e) => e.type === 'node:failed')).toBe(true);
+  });
+
+  it('pauses, and on approve CONTINUES the deferred LLM call (H3 — not a {decision} short-circuit)', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const handle = engine.start({
+      workflow: budgetWorkflow('pause_for_approval'),
+      inputs: { text: 'x' },
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'budget:paused') {
+        await engine.resume(handle.runId, event.gateId, {
+          decision: 'approved',
+          decidedBy: 'user-1',
+        });
+      }
+    }
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(events.some((e) => e.type === 'budget:paused')).toBe(true);
+    // H3: approving a budget pause must CONTINUE the call — the agent node re-dispatches (a one-shot
+    // pre-egress bypass) and completes with the MODEL's output, never a `{decision:'approved'}`
+    // short-circuit. So 'n' starts twice (initial + post-approval re-dispatch) and its node:completed
+    // carries the streamed 'ok'. Before the fix the node was marked completed with the gate decision and
+    // the LLM call never issued.
+    const nStarted = events.filter((e) => e.type === 'node:started' && e.nodeId === 'n');
+    expect(nStarted.length).toBe(2);
+    const nDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'n');
+    expect(nDone?.type === 'node:completed' ? nDone.output : undefined).toBe('ok');
+  });
+
+  it('fails the run when a paused budget gate is rejected', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const handle = engine.start({
+      workflow: budgetWorkflow('pause_for_approval'),
+      inputs: { text: 'x' },
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'budget:paused') {
+        await engine.resume(handle.runId, event.gateId, {
+          decision: 'rejected',
+          decidedBy: 'user-1',
+        });
+      }
+    }
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+  });
+
+  it('an approved over-budget node does NOT re-pause on an above-chain retry (H3 × ADR-0040)', async () => {
+    // Regression for the bypass-through-retry fix: the budget approval is consumed ONCE per dispatch and
+    // threaded through every node-retry attempt. With max_cost_microcents: 1 EVERY pre-egress check would
+    // trip, so a re-armed check on the retry would pause again. The approved node's first (post-approval)
+    // attempt fails retryably; the retry must run uncapped and complete — NOT trip a SECOND budget:paused.
+    // Before the fix the bypass was consumed on attempt 1 only, so the retry re-paused.
+    const scripted = scriptedProvider([
+      [
+        {
+          type: 'error',
+          error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
+        },
+      ],
+      [
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+    ]);
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-budget-retry
+  budget:
+    max_cost_microcents: 1
+    on_exceed: pause_for_approval
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      retry: { max: 2, backoff: linear, backoff_ms: 10 }
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({ host, executor: agentExecutor(() => scripted) });
+    const handle = engine.start({ workflow: wf, inputs: { text: 'x' } });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'budget:paused') {
+        await engine.resume(handle.runId, event.gateId, {
+          decision: 'approved',
+          decidedBy: 'user-1',
+        });
+      }
+      if (event.type === 'node:retrying') {
+        // Arm-then-fire the backoff timer (armed in #dispatch's continuation, just after this event).
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) throw new Error('backoff timer was never armed after node:retrying');
+          await Promise.resolve();
+        }
+        host.fireTimers();
+      }
+    }
+    // Exactly ONE budget:paused (the initial over-budget check) — the retry did NOT re-pause.
+    expect(events.filter((e) => e.type === 'budget:paused')).toHaveLength(1);
+    // The retryable failure surfaced as exactly one node:retrying, then the node completed on attempt 2.
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'n');
+    expect(done?.type === 'node:completed' ? done.output : undefined).toBe('ok');
+  });
+
+  it('fails the run when timeout_ms elapses', async () => {
+    const base = createInMemoryHost();
+    const host = {
+      ...base,
+      // Fire any timeout immediately, deterministically.
+      setTimer: (_ms: number, onFire: () => void) => {
+        onFire();
+        return () => {};
+      },
+    };
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(() => cheapProvider()),
+    });
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-timeout
+  timeout_ms: 1
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const events = await drain(engine.start({ workflow: wf, inputs: { text: 'x' } }));
+    expect(events.some((e) => e.type === 'run:timeout')).toBe(true);
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('run_timeout');
   });
 });

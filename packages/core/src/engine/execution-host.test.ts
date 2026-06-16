@@ -144,6 +144,8 @@ describe('InMemoryRunStore', () => {
         runId: 'r1',
         timestamp: at,
         sequenceNumber: 1,
+        nodeId: 'n1',
+        gateId: 'bgid',
         spentMicrocents: 100,
         limitMicrocents: 50,
       },

@@ -143,6 +143,35 @@ export type { AgentRunnerDeps } from './engine/agent-runner.js';
 export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
 export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
 
+// Budget governor (1.AC) — the pre-egress cost gate a surface wires behind the `PreEgressHook` seam and
+// whose typed cap errors the run/session loops classify (ADR-0028). Exported so a surface can construct the
+// governor and narrow on `BudgetExceededError`/`BudgetPauseError` by class (never by message).
+export {
+  BudgetGovernor,
+  BudgetExceededError,
+  BudgetPauseError,
+  DEFAULT_MAX_TOKENS_ESTIMATE,
+} from './engine/budget-governor.js';
+export type { BudgetCheckResult } from './engine/budget-governor.js';
+
+// AgentSession (1.V) — the agent-first entry point: a multi-turn conversation bound to one agent,
+// driving the SAME turn core a workflow `agent` node uses ([ADR-0024], agent-session-spec.md). A surface
+// mints a sessionId and constructs it with host capabilities + an injected SessionEventSink; wiring that
+// sink onto the shared RunEventBus (per-session sequenceNumber + gap/resync + a SessionHandle) is 1.W,
+// and persistence is 1.X. The hard turn cap fails loud with `turn_limit` — never a silent stop.
+export {
+  AgentSession,
+  DEFAULT_SESSION_MAX_TURNS,
+  SessionStateError,
+} from './engine/agent-session.js';
+export type {
+  SessionDeps,
+  AgentSessionParams,
+  SessionEventSink,
+  SessionStreamEvent,
+  SessionLifecycleEvent,
+} from './engine/agent-session.js';
+
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one
 // executor the engine holds. `createStandardNodeExecutor` is the convenience wirer; the per-type

@@ -102,6 +102,17 @@ export interface AttemptRecord {
   readonly skipReason?: string;
 }
 
+/**
+ * Hook called immediately before a provider attempt is actually dispatched (after skip checks,
+ * after the attempt record is allocated, but before credential resolution / the seam call).
+ * In 1.AC this is where the pre-egress budget governor runs; a rejected hook aborts the attempt
+ * and is surfaced as a fatal chain error.
+ */
+export type PreAttemptHook = (info: {
+  readonly model: string;
+  readonly maxTokens?: number;
+}) => void | Promise<void>;
+
 /** Dependencies injected into a {@link FallbackChain} — all timing is injectable so tests are deterministic. */
 export interface FallbackChainOptions {
   /**
@@ -117,6 +128,11 @@ export interface FallbackChainOptions {
   readonly costTracker?: CostTracker;
   /** Visibility hook fired once per attempt (succeeded / failed / skipped). */
   readonly onAttempt?: (record: AttemptRecord) => void;
+  /**
+   * Pre-egress hook called before every real provider attempt (not called for skipped entries).
+   * See {@link PreAttemptHook}.
+   */
+  readonly preAttempt?: PreAttemptHook;
   /**
    * The delay primitive used for backoff between same-entry retries. **Required and host-injected**:
    * the seam is platform-free (no ambient `setTimeout`), so the host supplies the timer — a
@@ -392,6 +408,11 @@ export class FallbackChain {
   ): Promise<GenerateAttempt> {
     const record = run.next(entry);
     try {
+      const maxTokens = entryReq.maxTokens;
+      await this.#options.preAttempt?.({
+        model: entry.model,
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      });
       const key = await this.#resolveKey(entry.provider.id);
       const result = await entry.provider.generate(entryReq, key);
       this.#emitSuccess(record, entry.model, result.usage);
@@ -417,6 +438,11 @@ export class FallbackChain {
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
     try {
+      const maxTokens = entryReq.maxTokens;
+      await this.#options.preAttempt?.({
+        model: entry.model,
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      });
       const key = await this.#resolveKey(entry.provider.id);
       for await (const chunk of entry.provider.stream(entryReq, key)) {
         if (chunk.type === 'error') {

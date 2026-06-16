@@ -151,9 +151,12 @@ loser-cancel deferred), and a pre-merge BLOCKER secret-leak (the `input` handler
 the derived `Checkpointer` (state folded from the `run_events` log; no checkpoint table — ADR-0003) +
 cross-process `resumeFromCheckpoint` (idempotent re-delivery, `workflow_mismatch` identity guard), and the
 `human_in_the_loop` gate (suspend → notify → resume, plus the one-shot `setTimer` timeout port — `approve`
-auto-resolves, `reject` fails with `run_timeout`). The lane now continues at the remaining **1.m4**
-workstreams toward **M2** — **node retry (1.S)** and the **pre-egress budget governor (1.AC)** — and the
-agent-first sub-spine (**1.V–1.AA**, Lane C) opens now that 1.O exists.
+auto-resolves, `reject` fails with `run_timeout`). **Node retry (1.S) is ✅ Done (PR #24, 2026-06-15)** — the above-chain whole-node retry budget
+([ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md) Part A: re-dispatch a whole node on a
+retryable, `retry_on`-admitted failure up to `retry.max` attempts with abort-aware backoff and the non-terminal
+`node:retrying`, `node:failed` staying the single terminal; the user-triggered retry-from-node Part B is
+deferred to Phase-2). The lane now continues at the last **1.m4** workstream toward **M2** — the **pre-egress
+budget governor (1.AC)** — and the agent-first sub-spine (**1.V–1.AA**, Lane C) is open now that 1.O exists.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -181,8 +184,10 @@ agent-first sub-spine (**1.V–1.AA**, Lane C) opens now that 1.O exists.
 > **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (the built-in `ToolRegistry`) are ✅ Done (PR #17,
 > merged 2026-06-13)** — **1.N closes 1.m3** (its last component); **1.T** (a 1.m4 component) is the
 > other 1.O join prerequisite; **the `AgentRunner` join (1.O) is ✅ Done (PR #18, 2026-06-14)**; and the
-> **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**; and **checkpoint/resume (1.R) + the
-> human gate (1.Q) are ✅ Done (PR #22, 2026-06-15)**. **Node retry (1.S)** is the next workstream.
+> **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**; **checkpoint/resume (1.R) + the
+> human gate (1.Q) are ✅ Done (PR #22, 2026-06-15)**; and **node retry (1.S) is ✅ Done (PR #24, 2026-06-15)**
+> (ADR-0040 Part A; the user-triggered retry-from-node Part B is deferred to Phase-2). The **pre-egress budget
+> governor (1.AC)** is the next workstream.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

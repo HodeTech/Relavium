@@ -35,7 +35,7 @@ interface BaseEvent {
 
 > **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` events carry `runId` on a run and `sessionId` on a session; consumers route on whichever is present.
 
-`sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless.
+`sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless. The **envelope** fields (`sessionId` / `runId`, `sequenceNumber`, `timestamp`) are stamped by the bus, not the producer: `WorkflowEngine` emits through the `RunEventBus`, and `AgentSession` (1.V) emits *envelope-free payload drafts* through an injected `SessionEventSink` — wiring that sink onto the bus, where the per-session `sequenceNumber` (and its same gap/resync rule) is assigned, is **1.W**. So a session's monotonic numbering is the bus's responsibility, not the session core's.
 
 ## The `RunEvent` union
 
@@ -159,6 +159,27 @@ export interface HumanGatePausedEvent extends BaseEvent {
   timeoutAction?: 'approve' | 'reject';  // on-timeout policy (present only with timeoutMs); lets a surface show how the gate auto-resolves and a Phase-2 crash-resume re-arm the timer from the log
   expiresAt?: string;
 }
+
+export interface BudgetWarningEvent extends BaseEvent {
+  type: 'budget:warning';
+  spentMicrocents: number;
+  limitMicrocents: number;
+  thresholdPct: number;     // 0–100, rounded from spent/limit at the pre-egress check point
+}
+
+export interface BudgetPausedEvent extends BaseEvent {
+  type: 'budget:paused';
+  nodeId: string;           // the agent node whose next LLM call would exceed the cap
+  spentMicrocents: number;
+  limitMicrocents: number;
+  gateId: string;           // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
+}
+
+export interface RunTimeoutEvent extends BaseEvent {
+  type: 'run:timeout';
+  elapsedMs: number;
+  timeoutMs: number;
+}
 ```
 
 ### Security: event payloads never carry secrets
@@ -226,7 +247,7 @@ export type SessionEvent =
   | SessionExportedEvent;     // 'session:exported'  — { workflowPath } (chat-to-workflow export)
 ```
 
-A turn that fails (provider error, rate limit, cancellation) still emits `session:turn_completed` with an `error?: { code, message, retryable, correlationId? }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy and secret-free correlation id as run events (ADR-0036) — so a surface can render the failure rather than a silent stall.
+A turn that **fails** (a provider error, a rate limit, an exhausted budget cap) still emits `session:turn_completed` with an `error?: { code, message, retryable, correlationId? }` — the same closed [`ErrorCode`](#error-code-taxonomy) taxonomy and secret-free correlation id as run events (ADR-0036) — so a surface can render the failure rather than a silent stall. A **cancellation** is distinct: it emits `session:cancelled` (not `turn_completed`) and the in-flight user message is rolled back from the transcript, so a cancelled turn leaves no partial assistant turn behind (see [agent-session-spec.md](agent-session-spec.md)).
 
 Within a turn, the conversational work reuses the **same** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes the `AgentRunner` already emits — carried on the session envelope (`sessionId`). The per-turn append of user/assistant/tool messages is persisted as `session_messages` (see [database-schema.md](../desktop/database-schema.md)); the contract is owned by [agent-session-spec.md](agent-session-spec.md). On every surface session events are produced and consumed **in-process** exactly like run events — only `llm_stream` crosses IPC on the desktop ([ipc-contract.md](ipc-contract.md#run-events-are-webview-side)). So the **complete typed event stream for a session** is the five `session:*` lifecycle events (the `SessionEvent` union above) **plus** `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` carrying `sessionId` — this full set is exactly what `relavium chat --json` emits.
 
@@ -236,8 +257,8 @@ Within a turn, the conversational work reuses the **same** `agent:token` / `agen
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
-| `budget:warning` | Spend crossed the warning threshold. | `spentMicrocents`, `limitMicrocents`, `thresholdPct` |
-| `budget:paused` | Spend would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via the `resume_budget` IPC command. | `spentMicrocents`, `limitMicrocents` |
+| `budget:warning` | Pre-egress worst-case cost estimate would exceed the configured cap, and `on_exceed: warn` is set. Emitted once per run before the capped egress; execution continues. `thresholdPct` is `clamp(round(spent / limit * 100), 0, 100)` observed at the pre-egress check point. | `spentMicrocents`, `limitMicrocents`, `thresholdPct` |
+| `budget:paused` | Pre-egress estimate would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via `engine.resume(runId, gateId, decision)`. `decision: approved` continues; `rejected` closes the run with `run:failed{code: budget_exceeded}`. | `nodeId`, `spentMicrocents`, `limitMicrocents`, `gateId` |
 | `run:timeout` | The run hit its `timeout_ms`. | `elapsedMs`, `timeoutMs` |
 
 These three (and `run:paused` / `human_gate:paused`) are **non-terminal** — they signal a governance/suspension state, not the run's end. A run that cannot continue past a timeout or budget cap still closes with **exactly one** `run:failed` carrying `code: run_timeout` / `budget_exceeded`. The exactly-one-terminal-event invariant (`run:completed | run:failed | run:cancelled`) and its precedence are owned by [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md).

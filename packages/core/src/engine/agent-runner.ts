@@ -40,6 +40,7 @@ import {
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
+import { BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
@@ -87,6 +88,17 @@ export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
 // node-handlers/scope.ts; keep the two in lockstep if the NodeFailure shape ever changes.
 function failed(code: ErrorCode, message: string, retryable: boolean): NodeOutcome {
   return { kind: 'failed', error: { code, message, retryable } };
+}
+
+/**
+ * Map a thrown turn error to a node outcome: a classified {@link AgentTurnError} → `failed`; a 1.AC
+ * pre-egress {@link BudgetPauseError} → `paused` (reusing the human-gate seam). Anything else re-throws —
+ * the engine's catch-all maps it to a single `internal` failure.
+ */
+function turnOutcomeForError(err: unknown): NodeOutcome {
+  if (err instanceof AgentTurnError) return failed(err.code, err.message, err.retryable);
+  if (err instanceof BudgetPauseError) return { kind: 'paused', gate: err.toGateRequest() };
+  throw err;
 }
 
 async function executeNode(ctx: NodeExecContext, deps: AgentRunnerDeps): Promise<NodeOutcome> {
@@ -149,6 +161,10 @@ async function executeAgent(
     gateApproved: false, // an agent loop provides no human gate — git_commit stays denied
   };
 
+  // The per-dispatch `ctx.preEgress` (the engine's budget governor, 1.AC) takes precedence; `deps.preEgress`
+  // is the fallback for a host that wires a runner directly. Reading ctx here lets the dispatcher build the
+  // runner ONCE (no per-call rebuild) and keeps the engine's H3 one-shot bypass (ctx.preEgress=undefined) working.
+  const preEgress = ctx.preEgress ?? deps.preEgress;
   let result: AgentTurnResult;
   try {
     result = await runAgentTurn({
@@ -165,11 +181,10 @@ async function executeAgent(
       registry: deps.registry,
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
-      ...(deps.preEgress === undefined ? {} : { preEgress: deps.preEgress }),
+      ...(preEgress === undefined ? {} : { preEgress }),
     });
   } catch (err) {
-    if (err instanceof AgentTurnError) return failed(err.code, err.message, err.retryable);
-    throw err; // unexpected — the engine's catch-all maps it to a single `internal` failure
+    return turnOutcomeForError(err);
   }
 
   const tokensUsed = {
@@ -275,13 +290,21 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
-    out.push(
-      ToolDefSchema.parse({
-        name: def.id,
-        ...(def.description.length > 0 ? { description: def.description } : {}),
-        parameters: def.llmVisibleParams,
-      }),
-    );
+    const parsed = ToolDefSchema.safeParse({
+      name: def.id,
+      ...(def.description.length > 0 ? { description: def.description } : {}),
+      parameters: def.llmVisibleParams,
+    });
+    if (!parsed.success) {
+      // A registered tool carries an invalid LLM-visible schema — a host-wiring bug, not a model failure.
+      // Classify it (rather than let a raw ZodError escape) — parity with AgentSession.buildLlmTools.
+      throw new AgentTurnError(
+        'internal',
+        `granted tool '${def.id}' has an invalid LLM schema`,
+        false,
+      );
+    }
+    out.push(parsed.data);
   }
   return out;
 }
