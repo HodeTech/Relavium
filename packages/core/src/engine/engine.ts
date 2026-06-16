@@ -987,6 +987,10 @@ class RunExecution {
       output: outcome.output,
       tokensUsed: tokens,
       durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
+      // Snapshot the run-wide cost running total onto the durable boundary so cross-process resume can
+      // restore it (1.R) — cost:updated is streamed, not persisted. By here #cumulativeCostMicrocents
+      // already includes this node's cost (its cost:updated fired during execution, before this boundary).
+      cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
       // A condition's branch selection — persisted so resume can restore `selectedTargets` (1.R).
       ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
       // Which attempt produced the output, when a node-retry recovered (1.S) — absent ⇒ attempt 1.

@@ -7,6 +7,7 @@ import {
   type GeminiTransport,
 } from '../adapters/gemini.js';
 import { GEMINI_FIXTURES } from './fixtures/gemini.js';
+import type { RecordedResponse } from './replay.js';
 import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 
 async function* toAsyncIterable(items: readonly GeminiResponse[]): AsyncIterable<GeminiResponse> {
@@ -28,20 +29,33 @@ const isGeminiResponseArray = (value: unknown): value is GeminiResponse[] =>
 // SDK-output JSON (single response or an array of streamed responses) is parsed and served through a
 // fake GeminiTransport — no vendor SDK is imported here.
 const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
-  const failure = recorded.status >= 400;
-  const rejection = (): Promise<never> =>
-    Promise.reject(Object.assign(new Error('replayed gemini error'), { status: recorded.status }));
+  // One-shot scenarios pass a single RecordedResponse; the multi-turn tool loop passes a sequence served
+  // by call index (turn 1 → recordings[0], turn 2 → recordings[1]).
+  const recordings: readonly RecordedResponse[] = 'status' in recorded ? [recorded] : recorded;
+  let call = 0;
+  const nextRecording = (): RecordedResponse => {
+    const next = recordings[call];
+    call += 1;
+    if (next === undefined) {
+      throw new Error(`gemini replay: no recorded response for call #${String(call)}`);
+    }
+    return next;
+  };
+  const rejection = (status: number): Promise<never> =>
+    Promise.reject(Object.assign(new Error('replayed gemini error'), { status }));
   const transport: GeminiTransport = {
     generate: () => {
-      if (failure) return rejection();
-      const parsed: unknown = JSON.parse(recorded.body);
+      const current = nextRecording();
+      if (current.status >= 400) return rejection(current.status);
+      const parsed: unknown = JSON.parse(current.body);
       return isGeminiResponse(parsed)
         ? Promise.resolve(parsed)
         : Promise.reject(new Error('replay fixture is not a GeminiResponse object'));
     },
     stream: () => {
-      if (failure) return rejection();
-      const parsed: unknown = JSON.parse(recorded.body);
+      const current = nextRecording();
+      if (current.status >= 400) return rejection(current.status);
+      const parsed: unknown = JSON.parse(current.body);
       return isGeminiResponseArray(parsed)
         ? Promise.resolve(toAsyncIterable(parsed))
         : Promise.reject(new Error('replay fixture is not a GeminiResponse[] array'));

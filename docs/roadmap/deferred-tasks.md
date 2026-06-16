@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-15
+> Last updated: 2026-06-16
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -183,15 +183,19 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   the host's run-scoped `outputStore` (handle in the marker); applied in `registry.dispatch` (returns
   `truncated`) under the one cancellation-precedence ladder. Documented in
   [tool-registry.md §result-bounding-and-spill-to-file](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file).
-- [ ] **Cumulative cost is not restored on cross-process resume (cost-event persistence) — 1.AC/1.R.** `cost:updated`
-  is **streamed** (`#nodeEmit` → bus), not persisted via `#emitDurable`, so `reconstructCheckpointState`'s
-  `cost:updated` fold (checkpoint.ts) never sees it: a resumed run's `cumulativeCostMicrocents` (and the
-  governor) restart near 0, under-reporting `run:completed.totalCostMicrocents` and under-blocking the budget
-  after resume. Partially mitigated (2026-06-15): the fold now restores the cumulative from the **durable**
-  `budget:paused.spentMicrocents`, so a run paused at a **budget** gate resumes with the right spend; a budgeted
-  run paused at a **plain human** gate (or crashed mid-run) still loses its cost. The general fix is making cost
-  durable — persist `cost:updated`, or carry `cumulativeCostMicrocents` on the durable `node:completed` (like
-  `tokensUsed`) — a contract/durability-model change. *(medium · packages/core/src/engine/engine.ts `#nodeEmit` + checkpoint.ts; 1.AC/1.R)*
+- [x] **Cumulative cost is not restored on cross-process resume (cost-event persistence) — 1.AC/1.R.** **Done
+  (maintainer-approved, the node:completed-carry variant).** `cost:updated` is streamed (`#nodeEmit` → bus),
+  not persisted, so the `reconstructCheckpointState` fold never saw it — a resumed run's
+  `cumulativeCostMicrocents` (and the governor) restarted near 0. **Fix:** the durable `node:completed` now
+  carries an optional `cumulativeCostMicrocents` (run-event.ts) — a snapshot of the run-wide running total at
+  the node boundary, populated by the engine (`#completeNode`) and folded on resume with a monotonic `Math.max`
+  that reconciles with the existing `budget:paused.spentMicrocents` restore (checkpoint.ts). So a run paused at
+  **any** gate (plain human OR budget) now resumes with the right spend; a gate-less crashed-mid-run is
+  reconciled to `run:failed` (not resumed), so its cost-loss is moot. Chosen over persisting `cost:updated`
+  (which would add hot-path durable writes + a delivery-ordering change): zero new events, one additive
+  forward-compatible field, folds at boundaries the store already persists — no ADR needed. Pinned by a
+  checkpoint.test.ts unit test (plain-human-gate restore) + the 1.U flagship harness (post-resume
+  `run:completed.totalCostMicrocents` reflects the pre-gate cost). *(packages/core/src/engine/engine.ts `#completeNode` + checkpoint.ts; packages/shared/src/run-event.ts; 1.AC/1.R)*
 - [ ] **Pre-egress token-estimate accuracy — watch item (1.AC).** The ADR-0028 governor blocks on
   `worstCaseNextEstimate(maxTokens)` from `[defaults].max_tokens_estimate`. Record the open
   question: does the estimate need provider-accurate token counting (from the seam's model meta /
@@ -249,9 +253,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
   themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
   adapter capture/replay. *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
-- [ ] **DeepSeek surviving-reasoning replay** — the same per-provider contract applies; confirm whether the
-  OpenAI-compatible adapter normalizes/replays `reasoning_content` on a same-provider continuation, or currently
-  drops it. *(medium · packages/llm/src/adapters/openai.ts; ADR-0030 follow-up)*
+- [x] **DeepSeek surviving-reasoning replay** — **Confirmed correct + locked (engine-hardening pass).** The
+  OpenAI-compatible adapter CAPTURES `reasoning_content` inbound (`mapContent` → a `reasoning` part) but
+  intentionally **drops it on egress** (`toOpenAiMessages` lowers only text + tool_call parts; openai.ts:256-260,
+  "reasoning is ephemeral and never replayed, ADR-0030"). For DeepSeek this is the CORRECT direction:
+  `reasoning_content` is output-only — the API 400s if it is echoed back in an input message, and
+  deepseek-reasoner does not need prior reasoning to continue. So no seam-shape carrier is needed (unlike the
+  Anthropic-redacted / Gemini-thoughtSignature items above). Pinned by an openai.test.ts lock-test (a prior-turn
+  reasoning part never reaches the request body). *(packages/llm/src/adapters/openai.ts; ADR-0030/0039)*
 - [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
   node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
   schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
@@ -264,12 +273,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
   stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
   fix needs a `FallbackChain` `onAttemptStart`/attributed-stream hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
-- [ ] **Per-attempt pre-egress budget gate (1.AC)** — 1.O leaves a coarse always-pass hook at the tool-loop
-  turn boundary; the precise per-egress budget check (a `FallbackChain` makes several attempts per turn) is a
-  chain pre-attempt hook 1.AC adds. *(medium · ADR-0028; ADR-0038; 1.AC)*
+- [x] **Per-attempt pre-egress budget gate (1.AC)** — closed by 1.AC (PR #26). The precise per-egress budget
+  check now rides the `FallbackChain` **pre-attempt** hook, so every attempt — including a failover to a pricier
+  model — is capped; the loop-top `awaitPreEgress` in `runAgentTurn` adds the zero-egress-on-cancel guard +
+  primary-model early check (the intentional double gate). *(closed · ADR-0028; ADR-0038; 1.AC, PR #26)*
 - [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
-  dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot, but a parallel-tool
-  provider should order by the accumulator's `toolOrder` before 1.V reuses the core. *(low · packages/core/src/engine/agent-turn.ts; 1.V)*
+  dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot — and 1.V now reuses
+  the core on that single-tool path. A parallel-tool provider should order by the accumulator's `toolOrder`;
+  re-home to whatever future parallel-tool work first enables it. *(low · packages/core/src/engine/agent-turn.ts; future parallel-tool)*
 - [x] **Secret-into-`run.outputs` runtime taint (ADR-0029(c) follow-up)** — an `agent` node cannot launder a
   secret into `run.outputs` (it emits LLM text only), so this is **not** 1.O's to own; it belongs to the
   `transform` / sandbox node (1.P / 1.AB) that can return a secret-derived value. 1.O's only obligation is to
@@ -300,10 +311,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   **✅ Added (hardening pass):** `agent-runner.e2e.test.ts` "runs two agent nodes concurrently against the
   shared executor" — `max_parallel: 2`, two agent vertices on one executor instance, asserting a gap-free
   global sequence and that each node's `agent:token` events carry their own `nodeId` (no cross-node bleed).
-- [ ] **Combined tool-loop DoS bound (turns × corrections)** — `maxToolTurns` (16) and `maxToolCorrections`
-  (3) are independent budgets; their *product* bounds worst-case egress and the interleaving (a turn mixing
-  correctable + genuine tool rounds) is untested. Document the combined bound and add an interleaving test.
-  *(low · packages/core/src/engine/agent-turn.ts)*
+- [x] **Combined tool-loop DoS bound (turns × corrections)** — **Done (engine-hardening pass).** The
+  "product" framing was imprecise: the bounds are NOT multiplicative. `maxToolTurns` is the worst-case
+  **egress ceiling** (≤ `maxToolTurns + 1` provider calls); `maxToolCorrections` is a **monotonic sub-budget**
+  that can only end the turn EARLY with `tool_failed` (a genuine round never resets it). Documented on
+  `AgentTurnLimits` (agent-turn.ts) and pinned by an interleaving test (correctable / genuine / correctable /
+  correctable → `tool_failed` at turn 4, far under `maxToolTurns`), asserting corrections accumulate across the
+  interleaved genuine round and egress stays bounded. *(low · packages/core/src/engine/agent-turn.ts)*
 - [ ] **Multimodal tool-result through the adjacent-message + redaction paths** — all 1.O coverage exercises
   text/JSON tool args + content; confirm image/media tool-result blocks survive the Anthropic adjacent-role
   merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
@@ -397,13 +411,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## AgentSession (1.V) follow-ups
 
-> **2026-06-15 1.V implementation (ADR-0024) + two pre-merge review passes.** The in-memory `AgentSession`
-> entry point landed — multi-turn `start`/`sendMessage`/`cancel` over the **shared turn core** (`runAgentTurn`),
-> the hard turn cap → `turn_limit`, session-wide cost, emission via an injected `SessionEventSink`. The
-> deferrals below were decided while building it; each has a clear later home, recorded so it isn't lost.
-> (The bus wiring + `SessionHandle` is the scheduled **1.W** workstream, persistence + the durable
-> `SessionMessage` schema is **1.X**, resume **1.Y**, export **1.Z** — those are workstreams, tracked in
-> [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.)
+> **2026-06-16 — 1.V `AgentSession` (ADR-0024) + 1.AC budget governor (ADR-0028) merged in PR #26** (after two
+> pre-merge review passes + a Sonnet multi-dimensional review). The in-memory `AgentSession` entry point landed —
+> multi-turn `start`/`sendMessage`/`cancel` over the **shared turn core** (`runAgentTurn`), the hard turn cap →
+> `turn_limit`, session-wide cost, emission via an injected `SessionEventSink`. The deferrals below were decided
+> while building it; each has a clear later home, recorded so it isn't lost. The still-open follow-ons are **1.W**
+> (wire the `SessionEventSink` onto the `RunEventBus` + per-session `sequenceNumber`/`SessionHandle`), **1.X**
+> (session persistence + the durable `SessionMessage` schema), resume **1.Y**, export **1.Z**, and the deferred
+> cost-event persistence (below) — those are workstreams, tracked in
+> [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.
 
 - [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** 1.V appends only the final
   assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
@@ -502,14 +518,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   accurate from the repo root. Make the glob cwd-tolerant (or document root-only) and add the
   testing.md **≥90% line+branch** threshold for the engine packages (`packages/core`,
   `packages/llm`) — per-area, since surfaces are smoke-only. *(minor · vitest.config.ts)*
-- [ ] **Coverage floor fires only on a repo-root run + is not a CI gate** — two residues of the
-  item above (PR #10 review, verified empirically): (1) the per-glob threshold key
-  (`packages/llm/src/**/*.ts`) is root-relative while a package-scoped `--coverage` run keys the
-  coverage map cwd-relative (`src/…`), so the floor silently does not fire there — and no single
-  glob can fix it without wrongly binding shared/db package runs to the engine floor (documented
-  at the thresholds block). (2) `pnpm coverage` is not yet a required CI step. Resolve both at
-  once when wiring coverage into CI: a root-run `pnpm coverage` CI step makes the root-relative
-  glob authoritative and the package-scoped gap moot. *(minor · vitest.config.ts, ci.yml)*
+- [x] **Coverage floor fires only on a repo-root run + is not a CI gate** — **Done (engine-hardening
+  pass, advisory).** Added a repo-ROOT `pnpm coverage` CI job (ci.yml) — a root run is exactly what makes the
+  root-relative per-glob thresholds (`packages/core|llm/src/**`) authoritative, so the package-scoped cwd gap
+  (residue 1) is moot. The job is **advisory** (a separate, non-required job like `peer-dep-gate`) so it
+  surfaces a regression without blocking merge while the core-package **branch** margin is thin (90.29% vs the
+  90% floor); promote it to a required check once that margin is confirmed stable under CI's Node 22. The
+  cwd-sensitivity itself stays documented at the thresholds block (a single glob cannot fix it without wrongly
+  binding shared/db runs). *(minor · ci.yml; vitest.config.ts)*
 - [x] **Column-level schema fidelity** — `client.test.ts` proves only that table *names* exist.
   Add a `PRAGMA table_info(<table>)` assertion per table (name/type/notnull/dflt/pk) against an
   expected fixture, or snapshot `0000_*.sql` byte-for-byte. *(minor · packages/db/src/client.test.ts)*
@@ -532,14 +548,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   rejects, pinning the record boundary. *(nit · run.test.ts, run-event.test.ts)*
 - [x] **Round-trip fixture verbatim** — the workflow no-drift fixture paraphrases multi-line
   prompts; transcribe them verbatim from the spec or soften the "verbatim" claim. *(nit · workflow.test.ts)*
-- [ ] **Conformance: tool-loop + cache-hit recorded scenarios (1.F follow-up)** — the shared
-  conformance suite covers text / single tool-call / usage / stop / error, but not a **multi-turn
-  tool loop** (call → result → continuation on the same provider, the path every agent node
-  exercises) or a **prompt-cache-hit** response (cached-token usage fields folding into the one
-  canonical `Usage`). Add both as recorded scenarios, and grow a small provider-quirk fixture bank
-  (reasoning-field variants, tool-call adjacency rules) as quirks are met in the adapters — the
-  suite is where quirk knowledge belongs, not adapter comments. *(packages/llm conformance; next
-  adapters-touching PR wave)*
+- [x] **Conformance: tool-loop + cache-hit recorded scenarios (1.F follow-up)** — **Done
+  (engine-hardening pass).** Both landed as recorded scenarios across all four provider suites: (1) a
+  **multi-turn tool loop** — a new `replayFetchSequence` (+ a `replayFor` single-vs-sequence router; the
+  Gemini transport indexes per call) drives two generate() calls against one adapter, so turn 2 exercises the
+  adapter lowering a `tool_result` message back onto the provider's wire (the call → result → continuation
+  path every agent node runs); and (2) a **prompt-cache-hit** assertion — `ConformanceExpectations.textGenerate`
+  gained an optional `cacheReadTokens`, asserted in the textGenerate test (DeepSeek's fixture already records
+  `prompt_cache_hit_tokens: 4` → net input 8, cacheRead 4 folds into the one canonical `Usage`). The
+  provider-quirk fixture bank can still grow opportunistically as new quirks are met. *(packages/llm conformance)*
 
 ## Tooling / CI
 

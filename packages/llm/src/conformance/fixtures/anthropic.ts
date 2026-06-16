@@ -251,6 +251,11 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   streamError: { status: 200, contentType: 'text/event-stream', body: streamError },
   reasoningStream: { status: 200, contentType: 'text/event-stream', body: reasoningStream },
   structuredOutput: { status: 200, body: structuredOutput },
+  toolLoop: {
+    turn1: { status: 200, body: toolMessage },
+    turn2: { status: 200, body: textMessage },
+    expected: { toolName: 'get_weather', finalText: 'Hello, world!' },
+  },
   expected: {
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },

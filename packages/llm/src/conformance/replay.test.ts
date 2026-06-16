@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { looksLikeSecret, recordFetch, replayFetch } from './replay.js';
+import {
+  looksLikeSecret,
+  recordFetch,
+  replayFetch,
+  replayFetchSequence,
+  replayFor,
+} from './replay.js';
 
 describe('replayFetch', () => {
   it('serves the recorded response', async () => {
@@ -18,6 +24,58 @@ describe('replayFetch', () => {
     await expect(fetch('https://x', { method: 'POST', body: 'not json' })).rejects.toThrow(
       /not valid JSON/,
     );
+  });
+});
+
+describe('replayFetchSequence', () => {
+  it('serves recorded responses in order, one per call (the multi-turn tool loop)', async () => {
+    const fetch = replayFetchSequence([
+      { status: 200, body: '{"turn":1}' },
+      { status: 200, body: '{"turn":2}' },
+    ]);
+    expect(await (await fetch('https://x', { method: 'POST', body: '{}' })).text()).toBe(
+      '{"turn":1}',
+    );
+    expect(await (await fetch('https://x', { method: 'POST', body: '{}' })).text()).toBe(
+      '{"turn":2}',
+    );
+  });
+
+  it('rejects an over-fetch beyond the recorded sequence (a fixture bug fails loud)', async () => {
+    const fetch = replayFetchSequence([{ status: 200, body: '{}' }]);
+    await fetch('https://x', { method: 'POST', body: '{}' });
+    await expect(fetch('https://x', { method: 'POST', body: '{}' })).rejects.toThrow(
+      /no recorded response for call #2/,
+    );
+  });
+
+  it('rejects a request whose body is not valid JSON (parity with replayFetch)', async () => {
+    const fetch = replayFetchSequence([{ status: 200, body: '{}' }]);
+    await expect(fetch('https://x', { method: 'POST', body: 'nope' })).rejects.toThrow(
+      /not valid JSON/,
+    );
+  });
+});
+
+describe('replayFor', () => {
+  it('routes a single RecordedResponse to replayFetch (repeats every call)', async () => {
+    const fetch = replayFor({ status: 200, body: '{"single":true}' });
+    expect(await (await fetch('https://x', { method: 'POST', body: '{}' })).text()).toBe(
+      '{"single":true}',
+    );
+    // a single response repeats — a second call serves the same body (not an over-fetch error)
+    expect(await (await fetch('https://x', { method: 'POST', body: '{}' })).text()).toBe(
+      '{"single":true}',
+    );
+  });
+
+  it('routes an array to replayFetchSequence (one per call)', async () => {
+    const fetch = replayFor([
+      { status: 200, body: '{"n":1}' },
+      { status: 200, body: '{"n":2}' },
+    ]);
+    expect(await (await fetch('https://x', { method: 'POST', body: '{}' })).text()).toBe('{"n":1}');
+    expect(await (await fetch('https://x', { method: 'POST', body: '{}' })).text()).toBe('{"n":2}');
   });
 });
 

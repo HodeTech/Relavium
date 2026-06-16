@@ -547,6 +547,49 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
     expect(parts[1]).toEqual({ type: 'text', text: 'answer' });
   });
 
+  it('DROPS a prior-turn reasoning part on egress — reasoning_content is output-only, replay would 400 (ADR-0030/0039)', async () => {
+    // DeepSeek/Kimi `reasoning_content` is captured INBOUND (mapContent above) but is output-only: the API
+    // rejects it if echoed back in an input message, and deepseek-reasoner does not require prior reasoning
+    // to continue. So a same-provider continuation must NOT replay it. This pins the drop so a future change
+    // cannot start round-tripping reasoning into the request body (which would 400 the whole turn).
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'deepseek-reasoner',
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+          // a prior assistant turn the engine replays: the ephemeral reasoning + the visible answer
+          {
+            role: 'assistant',
+            content: [
+              { type: 'reasoning', text: 'internal chain of thought' },
+              { type: 'text', text: 'the answer' },
+            ],
+          },
+          { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+        ],
+      },
+      'k',
+    );
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null;
+    const messages: readonly unknown[] = Array.isArray(sent['messages']) ? sent['messages'] : [];
+    const assistant = messages.find(
+      (m): m is Record<string, unknown> => isRecord(m) && m['role'] === 'assistant',
+    );
+    expect(assistant?.['content']).toBe('the answer'); // the visible text survives the replay…
+    expect(JSON.stringify(sent)).not.toContain('internal chain of thought'); // …the reasoning never does
+    expect(JSON.stringify(sent)).not.toContain('reasoning_content');
+  });
+
   it('mapUsage surfaces reasoning_tokens as reasoningTokens', () => {
     expect(
       mapUsage({

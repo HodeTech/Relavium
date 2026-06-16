@@ -27,9 +27,13 @@
 > `human_in_the_loop` gate (suspend/resume + the one-shot `setTimer` timeout port: `approve` auto-resolves,
 > `reject` fails with `run_timeout`). **Node retry (1.S) is ✅ Done (PR #24, 2026-06-15)** — the above-chain
 > whole-node retry budget ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md), Part A; the
-> user-triggered retry-from-node Part B is deferred to Phase-2). The lane now continues at the last 1.m4
-> workstream — **1.AC** budget governor — toward **M2**, and Lane C (1.V–1.AA) opens. *(Session persistence,
-> 1.X/1.Z, must exclude the reasoning signature — non-persisting.)*
+> user-triggered retry-from-node Part B is deferred to Phase-2). **The pre-egress budget governor (1.AC) and
+> the `AgentSession` agent-first entry point (1.V) then landed together — ✅ Done (PR #26, 2026-06-16).** 1.AC
+> was the last **1.m4** workstream, so **1.m4 is complete** (the full engine stack — node handlers, gate,
+> checkpoint/resume, retry, tools, sandbox, budget governor); 1.V opens **Lane C** (the agent-first sub-spine,
+> 1.m5). The critical path now reaches **1.U — the end-to-end Node harness (the M2 milestone)**, now unblocked,
+> with Lane C continuing at session events (1.W) ‖ persistence (1.X). *(Session persistence, 1.X/1.Z, must
+> exclude the reasoning signature — non-persisting.)*
 >
 > **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
 > second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
@@ -815,8 +819,8 @@ The engine-side registry that dispatches built-in tools the `AgentRunner` invoke
 correctly, and emits sanitized tool events; an unlisted `run_command` is refused;
 `git_commit` is blocked without a gate approval; and an **upstream agent/LLM output wired via
 `input_mapping` into a tool / `http_request` arg is treated as UNTRUSTED data** — schema-validated against
-the tool's declared arg and, **for an outbound-URL tool**, routed through the **same** exact-FQDN allow-list
-+ SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `http_request` / MCP), so a
+the tool's declared arg and, **for an outbound-URL tool**, routed through the **same** exact-FQDN allow-list +
+SSRF range-block regardless of provenance (ADR-0029(d) enumerates `baseURL` / `http_request` / MCP), so a
 derived URL cannot bypass the egress guard. *(A `web_search`-style query is untrusted-data schema-validated
 per ADR-0029(c) but transits a query, not an `allowedDomains` FQDN allowlist.)*
 
@@ -838,12 +842,32 @@ The proof that the engine works before any surface exists.
 then fallback with the run still completing; resume from a mid-run checkpoint
 reproduces the same final output — **M2 achieved**.
 
+> **Harness shape (decided 2026-06-16, implementing 1.U).** The harness is a **scenario suite** with a
+> reusable driver (not a single test) — the seed the Phase-2 CLI regression harness (2.K) grows from, and
+> the suite 1.AB's `condition`/`transform` scenario and the determinism ban plug into. Its **happy-path**
+> member is the literal 3-node `input → agent → output` (a clean run: live token streaming + a tool call +
+> per-attempt cost + a gap-free `sequenceNumber` stream that validates against the canonical
+> [`RunEventSchema`](../../reference/contracts/sse-event-schema.md)). Its **flagship** member inserts a
+> `human_in_the_loop` gate — `input → agent → human_gate → output` — as the **durable mid-run checkpoint**,
+> because the Phase-1 engine resumes **only** from a durable suspend point (a human/budget gate): a gate-less
+> interrupted run is reconciled to `run:failed`, never resumed
+> ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md); the derived
+> `Checkpointer`, ADR-0003). The flagship drives, **in one run** across a process boundary: the agent's
+> forced provider error → **node retry** ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)
+> Part A) → **failover** to the second chain entry (1.K), streaming + a tool call + per-attempt cost; then the
+> gate pause (the persisted checkpoint); then a **fresh engine** resumes via `resumeFromCheckpoint`, runs
+> `output` to `run:completed`, and reproduces the same final output with `sequenceNumber` continuing gap-free.
+> All LLM cost is incurred **pre-gate**, so the plain-human-gate cost-restore deferral
+> ([deferred-tasks.md](../deferred-tasks.md)) is off this path. **No new engine code or ADR** — the harness
+> composes 1.K/1.N/1.O/1.P/1.Q/1.R/1.S/1.T/1.AB behind the `@relavium/llm` seam and uses only already-exported
+> `@relavium/core` symbols.
+
 ### Agent-first sub-spine (1.V–1.AA) — additive, parallel to the M2 critical path
 
 These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)). They run **parallel** to 1.L–1.U and do **not** feed the 1.U workflow harness — each is proven by its own harness (1.AA). The `WorkflowEngine` is unchanged; `AgentSession` is an additional entry point on the same substrate.
 
-- **1.V — `AgentSession` entry point.** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). This workstream also settles the session's **hard turn/round cap** knob — deliberately distinct from `[chat].max_messages`, which is a history-**trim** threshold ([config-spec.md](../../reference/contracts/config-spec.md)) that continues the session. A session that reaches the hard cap ends **loudly**: `session:turn_completed` carries `error.code: 'turn_limit'` ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#error-code-taxonomy)) — never a silent stop — and the behavior is pinned by a dedicated regression test (a refactor of the turn loop must not be able to silently drop the cap signal). Context compaction (when it lands, later phases) is **append-only by principle**: the persisted transcript is never rewritten or trimmed in place; `agent:context_compacted` is the reserved signal ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#workflow-governance-and-reserved-events)). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses; a session driven to its hard turn cap emits the `turn_limit`-coded event, regression-pinned.
-  - *1.V scope notes (decided 2026-06-15, [agent-session-spec.md](../../reference/contracts/agent-session-spec.md)):* the driver reuses the correlation-agnostic turn core (`runAgentTurn`) directly via an **injected `SessionEventSink`** (so the bus wiring is **1.W** — see below); the hard cap is an **engine-API knob** (finite default **50**), with the `[chat]` surface-default mapping deferred to the surface phases (it is **not** a Phase-1 `[chat]` field). **Deferred within 1.V, to be picked up later:** the cross-turn transcript is **text-only** — the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal (returns only the final non-`tool_use` content), so the transcript carries no orphaned `tool_use` and stays protocol-valid; the assistant reply is appended as text, **dropping reasoning** (a `signature` is a within-turn same-provider replay token, ADR-0030/0039, that must not span turns). Faithful cross-turn tool/reasoning history is **revisited when 1.X persistence / 1.Z export needs it** (it needs the turn core to expose the intermediate messages, currently owned by the concurrent 1.AC edits in `agent-turn.ts`); **per-session tool narrowing** (ADR-0029 narrow-only — 1.V grants `agent.tools` as-is, no per-session narrow); and **session `output_schema`** (chat is free-form text — structured output stays a workflow concern).
+- **1.V — `AgentSession` entry point — ✅ Done (PR #26, 2026-06-16).** Wrap `AgentRunner` in a multi-turn session (session context, one bound agent + its fallback chain). This workstream also settles the session's **hard turn/round cap** knob — deliberately distinct from `[chat].max_messages`, which is a history-**trim** threshold ([config-spec.md](../../reference/contracts/config-spec.md)) that continues the session. A session that reaches the hard cap ends **loudly**: `session:turn_completed` carries `error.code: 'turn_limit'` ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#error-code-taxonomy)) — never a silent stop — and the behavior is pinned by a dedicated regression test (a refactor of the turn loop must not be able to silently drop the cap signal). Context compaction (when it lands, later phases) is **append-only by principle**: the persisted transcript is never rewritten or trimmed in place; `agent:context_compacted` is the reserved signal ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md#workflow-governance-and-reserved-events)). *Acceptance:* a session runs a multi-turn conversation with a tool round-trip through the same `AgentRunner` path a workflow agent node uses; a session driven to its hard turn cap emits the `turn_limit`-coded event, regression-pinned.
+  - *1.V scope notes (decided 2026-06-15, [agent-session-spec.md](../../reference/contracts/agent-session-spec.md)):* the driver reuses the correlation-agnostic turn core (`runAgentTurn`) directly via an **injected `SessionEventSink`** (so the bus wiring is **1.W** — see below); the hard cap is an **engine-API knob** (finite default **50**), with the `[chat]` surface-default mapping deferred to the surface phases (it is **not** a Phase-1 `[chat]` field). **Deferred within 1.V, to be picked up later:** the cross-turn transcript is **text-only** — the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal (returns only the final non-`tool_use` content), so the transcript carries no orphaned `tool_use` and stays protocol-valid; the assistant reply is appended as text, **dropping reasoning** (a `signature` is a within-turn same-provider replay token, ADR-0030/0039, that must not span turns). Faithful cross-turn tool/reasoning history is **revisited when 1.X persistence / 1.Z export needs it** (it needs the turn core to expose the intermediate messages in `agent-turn.ts` — 1.V and 1.AC landed together in PR #26, so that core is now settled); **per-session tool narrowing** (ADR-0029 narrow-only — 1.V grants `agent.tools` as-is, no per-session narrow); and **session `output_schema`** (chat is free-form text — structured output stays a workflow concern).
 - **1.W — `session:*` event namespace.** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
   - *Also owns (from the 1.V injected-sink split, recorded 2026-06-15):* the `SessionEventSink → RunEventBus` adapter; a **`SessionHandle`** (the async-iterable session stream + `cancel`, mirroring `createRunHandle`); and **reconciling the bus session-event gate** — `RunEventBus` validates against `RunEventSchema` and its `RunEventDraft` type both **exclude** the five `session:*` variants (they live only in the separate `SessionEventSchema`), so the bus needs an injected/combined Run+Session schema **and** the matching draft-type widening before it can carry the session lifecycle events 1.V emits.
 - **1.X — Session persistence.** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). **Authors the durable `SessionMessageSchema`** in `@relavium/shared` (deferred from 1.V, which runs on the in-flight `LlmMessage` form): `{ id, sessionId, sequenceNumber, role, content: DurableContentPart[], modelId?, timestamp }` — the persisted transcript type these tables store. *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
@@ -857,17 +881,17 @@ Per [ADR-0027](../../decisions/0027-expression-sandbox.md): a deterministic, res
 
 **Acceptance:** `condition`/`transform` evaluate in the sandbox; a non-deterministic or resource-exhausting expression is rejected/terminated with a typed, secret-free error; a dedicated `condition`/`transform` scenario in the harness suite — alongside 1.AB's own unit tests — asserts sandbox behavior (the 3-node 1.U happy-path does not itself exercise it).
 
-### 1.AC — Resource governor (pre-egress budget) — folds into 1.O
+### 1.AC — Resource governor (pre-egress budget) — folds into 1.O · ✅ **Done (PR #26, 2026-06-16)**
 
-Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-egress** budget check, a run `timeout_ms`, and a parallel concurrency cap, with `pause_for_approval` reusing the human-gate seam and emitting `budget:warning` / `budget:paused` / `run:timeout`. The cost formula and `on_exceed` semantics are owned by ADR-0028; this workstream wires them into 1.O. The estimator itself is a **pure function** (model meta + declared estimate in → budget verdict out, no I/O, no ambient state) so it is unit-testable in isolation and reusable wherever a context/token budget is computed (e.g. session context assembly), and its accuracy is a recorded watch item ([deferred-tasks.md](../deferred-tasks.md)).
+Per [ADR-0028](../../decisions/0028-workflow-resource-governance.md): the **pre-egress** budget check, a run `timeout_ms`, and a parallel concurrency cap, with `pause_for_approval` reusing the human-gate seam and emitting `budget:warning` / `budget:paused` / `run:timeout`. The cost formula and `on_exceed` semantics are owned by ADR-0028; this workstream wires them into 1.O. The estimator itself is a **pure function** (model meta + declared estimate in → budget verdict out, no I/O, no ambient state) so it is unit-testable in isolation and reusable wherever a context/token budget is computed (e.g. session context assembly), and its accuracy is a recorded watch item ([deferred-tasks.md](../deferred-tasks.md)). The H3 `pause_for_approval` continues the deferred call on approve (a one-shot pre-egress bypass threaded through node retries), and the per-attempt enforcement rides the `FallbackChain` so a failover to a pricier model is still capped.
 
-**Acceptance:** a run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
+**Acceptance:** ✅ Met (PR #26). A run that would exceed its budget fails or pauses **before** the next LLM call; the concurrency cap bounds a wide fan-out.
 
 ### Multimodal I/O sub-spine (1.AD–1.AH) — seam amendment now, behavior additive
 
 First-class multimodal I/O (image / audio / video, **input AND output**, incl. a workflow that by rule
-**generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
-+ [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
+**generates** a media file) per [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) +
+[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md), designed in
 [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md). The **shape**
 (1.AD) is a second pre-freeze seam amendment in the ADR-0030 mould — it landed **before the exhaustive
 consumers** (1.K `FallbackChain`, 1.O `AgentRunner`) so adding the `ContentPart`/`StreamChunk` media
@@ -959,7 +983,7 @@ the latter being the critical-path milestone for the whole product.
 | **M1 ✅** | **LLM seam proven: 3 adapters pass the conformance suite (fixtures on PR — live-nightly lane reserved/pending keys; no vendor type across the seam)** *(achieved 2026-06-07, PR #9)* | 1.G, 1.H, 1.I, **1.J** |
 | 1.m2 ✅ | Policy layers complete: fallback runner + cost tracker (**1.B PR #7, 1.K PR #13**) | 1.B, 1.K |
 | 1.m3 ✅ | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream (**all components landed — 1.N closed it, PR #17, 2026-06-13**) | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
-| 1.m4 | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
+| 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** | **1.U** |
 | 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
 | 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅**, 1.AE, 1.AF, 1.AG, 1.AH |
@@ -1113,9 +1137,9 @@ flowchart LR
 | 1.P | B | 1.O, 1.AB | 1.Q, 1.U | ✅ — **Done (PR #20)** |
 | 1.S | B | 1.O, 1.R | 1.U | ✅ — **Done (PR #24)** |
 | 1.Q | B | 1.P, 1.R | 1.AC, 1.U | ✅ — **Done (PR #22)** |
-| 1.AC | B | 1.O, 1.Q | 1.U | ✅ folds into 1.O |
-| 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ |
-| 1.V | C | 1.O | 1.W, 1.X, 1.Z | ◇ |
+| 1.AC | B | 1.O, 1.Q | 1.U | ✅ folds into 1.O — **Done (PR #26)** |
+| 1.U | B | 1.P, 1.S, 1.Q, 1.R, 1.T, 1.AC | **M2** | ✅ — **next (all deps landed)** |
+| 1.V | C | 1.O | 1.W, 1.X, 1.Z | ◇ — **Done (PR #26)** |
 | 1.W | C | 1.V, 1.N, 1.L.0 | 1.AA | ◇ |
 | 1.X | C | 1.V, `@relavium/db` (new migration) | 1.Y, 1.AA | ◇ |
 | 1.Y | C | 1.X, 1.R | 1.AA | ◇ |
@@ -1205,10 +1229,12 @@ flowchart LR
 
 All must be true to start Phase 2 (CLI):
 
-1. A `relavium`-equivalent invocation from the Node harness (1.U) runs a 3-node
-   sequential workflow end-to-end: live token streaming, in-process emission of the
-   canonical run events with monotonic `sequenceNumber`, SQLite-shaped checkpointing,
-   and resume from a checkpoint.
+1. A `relavium`-equivalent invocation from the Node harness (1.U) runs a sequential
+   workflow end-to-end (the **happy-path** member is a 3-node `input → agent → output`):
+   live token streaming, in-process emission of the canonical run events with monotonic
+   `sequenceNumber`, SQLite-shaped checkpointing, and resume from a checkpoint (the resume
+   rides the suite's gated **flagship** scenario, which adds a `human_in_the_loop` gate —
+   the engine resumes only from a durable gate checkpoint; see §1.U *Harness shape*).
 2. Forcing a provider error triggers node retry and then a fallback to the next
    provider in the chain, with the run completing and **per-attempt** cost recorded
    correctly.

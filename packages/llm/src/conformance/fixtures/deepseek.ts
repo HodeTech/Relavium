@@ -173,9 +173,20 @@ export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
   streamError: { status: 503, body: streamError },
   reasoningStream: { status: 200, contentType: 'text/event-stream', body: reasoningStream },
   structuredOutput: { status: 200, body: structuredOutput },
+  toolLoop: {
+    turn1: { status: 200, body: toolMessage },
+    turn2: { status: 200, body: textMessage },
+    expected: { toolName: 'get_weather', finalText: 'Hello, world!' },
+  },
   expected: {
     // 4 of 12 prompt tokens cached → net input 8, cacheRead 4.
-    textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 8, outputTokens: 7 },
+    textGenerate: {
+      stopReason: 'stop',
+      text: 'Hello, world!',
+      inputTokens: 8,
+      outputTokens: 7,
+      cacheReadTokens: 4,
+    },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
     textStream: { stopReason: 'stop', inputTokens: 8, outputTokens: 7 },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },

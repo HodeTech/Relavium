@@ -55,6 +55,50 @@ export function replayFetch(recorded: RecordedResponse): FetchLike {
 }
 
 /**
+ * A `fetch` that replays a SEQUENCE of recorded responses — the Nth call serves `recordings[N]`. Drives a
+ * multi-turn scenario (a tool-call turn → a continuation carrying the tool result) offline + deterministically.
+ * Fails loud if called more times than there are recordings (a scenario that over-fetches is a fixture bug),
+ * and validates each request body is JSON (like {@link replayFetch}).
+ */
+export function replayFetchSequence(recordings: readonly RecordedResponse[]): FetchLike {
+  let call = 0;
+  return (_input, init) => {
+    if (typeof init?.body === 'string' && init.body.length > 0) {
+      try {
+        JSON.parse(init.body);
+      } catch {
+        return Promise.reject(new Error('replayFetchSequence: the request body is not valid JSON'));
+      }
+    }
+    const recorded = recordings[call];
+    call += 1;
+    if (recorded === undefined) {
+      return Promise.reject(
+        new Error(
+          `replayFetchSequence: no recorded response for call #${String(call)} (only ${String(recordings.length)} recorded)`,
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(recorded.body, {
+        status: recorded.status,
+        headers: { 'content-type': recorded.contentType ?? 'application/json' },
+      }),
+    );
+  };
+}
+
+/**
+ * Pick the right replay `fetch` for a conformance scenario: a single {@link RecordedResponse} (the one-shot
+ * scenarios) replays the same body each call; an array replays it as a sequence (multi-turn). The `'status'
+ * in` check narrows the union cleanly without an unsafe cast (a `RecordedResponse` has `status`; an array
+ * does not).
+ */
+export function replayFor(recorded: RecordedResponse | readonly RecordedResponse[]): FetchLike {
+  return 'status' in recorded ? replayFetch(recorded) : replayFetchSequence(recorded);
+}
+
+/**
  * Wrap a real `fetch` to capture each response as a `RecordedResponse` — the live-mode recorder. It
  * **refuses to record** a body that looks like it contains a secret, so a captured fixture can never
  * carry a key into version control (security-review.md).

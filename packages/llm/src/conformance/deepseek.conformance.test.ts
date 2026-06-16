@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { createOpenAiAdapter, deepseekAdapter } from '../adapters/openai.js';
 import { DEEPSEEK_FIXTURES } from './fixtures/deepseek.js';
-import { replayFetch } from './replay.js';
+import { replayFor } from './replay.js';
 import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 
 // DeepSeek is served by the SAME OpenAI-compatible adapter pointed at api.deepseek.com — same fold,
-// distinct provider id + cache field. The fetch override keeps the SDK inside src/adapters/*.
+// distinct provider id + cache field. The fetch override keeps the SDK inside src/adapters/*. `replayFor`
+// serves one body (one-shot scenarios) or a sequence (the multi-turn tool loop).
 const makeReplayAdapter: MakeReplayAdapter = (recorded) =>
-  createOpenAiAdapter({ providerId: 'deepseek', fetch: replayFetch(recorded), maxRetries: 0 });
+  createOpenAiAdapter({ providerId: 'deepseek', fetch: replayFor(recorded), maxRetries: 0 });
 
 defineConformanceSuite('deepseek', makeReplayAdapter, DEEPSEEK_FIXTURES);
 

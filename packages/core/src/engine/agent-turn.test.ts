@@ -159,6 +159,13 @@ describe('runAgentTurn — streaming + cost', () => {
 });
 
 describe('runAgentTurn — tool loop', () => {
+  // A tool-use turn (a tool_call to `echo`, then a tool_use stop) — shared by the tool-loop scenarios.
+  const toolUseTurn = (id: string): StreamChunk[] => [
+    { type: 'tool_call_start', id, name: 'echo' },
+    { type: 'tool_call_end', id },
+    STOP('tool_use'),
+  ];
+
   it('performs a tool round-trip then completes', async () => {
     const provider = scriptedProvider('anthropic', [
       // turn 1: a tool call
@@ -246,6 +253,53 @@ describe('runAgentTurn — tool loop', () => {
     expect(failResult).toBeDefined();
   });
 
+  it('combined budget: corrections accumulate across an interleaved genuine round and bound egress (tool_failed before turn_limit)', async () => {
+    // Pins the COMBINED tool-loop DoS bound: maxToolCorrections is a MONOTONIC sub-budget — a genuine
+    // (non-correctable) round between correctable ones neither resets nor counts toward it. With
+    // maxToolCorrections 2, the rounds correctable / genuine / correctable / correctable trip `tool_failed`
+    // on the 3rd correctable (at turn 4), well under maxToolTurns 16. Proves the two bounds are NOT
+    // multiplicative: the correction sub-budget ends the turn early; egress stays ≤ the turn count.
+    let dispatched = 0;
+    const registry = stubRegistry((call) => {
+      dispatched += 1;
+      if (dispatched === 2) {
+        // the one genuine round, interleaved between correctable ones
+        const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
+        return {
+          output: 'OK',
+          toolResult: markUntrusted(result),
+          truncated: false,
+          events: {
+            call: { toolId: call.name, toolInput: {} },
+            result: { toolId: call.name, success: true, outputSummary: 'OK' },
+          },
+        };
+      }
+      throw new UnknownToolError('echo', ['echo']); // calls 1, 3, 4 are model-correctable
+    });
+    // A 5th turn is scripted but must never be reached (the budget trips on the 4th).
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('c1'),
+      toolUseTurn('c2'),
+      toolUseTurn('c3'),
+      toolUseTurn('c4'),
+      toolUseTurn('c5'),
+    ]);
+    const params = baseParams(provider, {
+      registry,
+      limits: { maxToolTurns: 16, maxToolCorrections: 2 },
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'tool_failed',
+      retryable: false,
+    });
+    expect(dispatched).toBe(4); // exactly 4 tool turns — the correction budget ended it far under maxToolTurns
+    // the interleaved genuine round actually ran (one successful tool_result between the corrections)
+    expect(
+      eventsOf(params).filter((e) => e.type === 'agent:tool_result' && e.success),
+    ).toHaveLength(1);
+  });
+
   it('maps a tool denial to a fatal tool_denied failure (no feedback loop)', async () => {
     const registry = stubRegistry(() => {
       throw new ToolPolicyError('echo', 'not_granted', 'tool not granted');
@@ -263,12 +317,6 @@ describe('runAgentTurn — tool loop', () => {
       retryable: false,
     });
   });
-
-  const toolUseTurn = (id: string): StreamChunk[] => [
-    { type: 'tool_call_start', id, name: 'echo' },
-    { type: 'tool_call_end', id },
-    STOP('tool_use'),
-  ];
 
   it('maps ToolCancelledError to cancelled (cancel wins over a tool failure)', async () => {
     const registry = stubRegistry(() => {

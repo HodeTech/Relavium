@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-15
+> Last updated: 2026-06-16
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -86,7 +86,9 @@ consuming `@relavium/db` for run persistence).
 
 Global milestone **M1 — LLM seam proven** is reached (PR #9, 2026-06-07): all three
 adapters pass the shared conformance suite behind the frozen seam. The next checkpoint is
-**M2 — engine end-to-end** (see the [milestone spine](README.md#global-milestone-spine)).
+**M2 — engine end-to-end**, now gated **only** by the **1.U** end-to-end Node harness — the rest
+of the engine (milestone **1.m4**) completed with the pre-egress budget governor in PR #26 (see the
+[milestone spine](README.md#global-milestone-spine)).
 
 > **One Phase-0 follow-up lives outside the code:** a maintainer should mark the CI `ci`
 > job a **required check** in GitHub branch protection (optionally adding `TURBO_TOKEN`/
@@ -155,8 +157,16 @@ auto-resolves, `reject` fails with `run_timeout`). **Node retry (1.S) is ✅ Don
 ([ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md) Part A: re-dispatch a whole node on a
 retryable, `retry_on`-admitted failure up to `retry.max` attempts with abort-aware backoff and the non-terminal
 `node:retrying`, `node:failed` staying the single terminal; the user-triggered retry-from-node Part B is
-deferred to Phase-2). The lane now continues at the last **1.m4** workstream toward **M2** — the **pre-egress
-budget governor (1.AC)** — and the agent-first sub-spine (**1.V–1.AA**, Lane C) is open now that 1.O exists.
+deferred to Phase-2). The last **1.m4** workstream — the **pre-egress budget governor (1.AC)** ([ADR-0028](../decisions/0028-workflow-resource-governance.md):
+the `BudgetGovernor` pre-egress cost gate, `on_exceed` warn/fail/pause_for_approval, `budget:warning`/`budget:paused`/`run:timeout`,
+the H3 approve-continues bypass, the per-attempt `FallbackChain` enforcement) — and the agent-first **`AgentSession`
+(1.V)** entry point ([ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md): multi-turn
+`start`/`sendMessage`/`cancel` over the shared `runAgentTurn` core, the hard turn cap → `turn_limit`, cost +
+emission via an injected `SessionEventSink`) **then landed together — ✅ Done (PR #26, 2026-06-16)**. 1.AC closed
+**1.m4** (the full engine stack), so the critical path now reaches **1.U — the end-to-end Node harness (the M2
+milestone)**, now unblocked; in parallel, **Lane C** (the 1.m5 sub-spine) continues from 1.V at **1.W** (wire the
+`SessionEventSink` onto the `RunEventBus` + per-session `sequenceNumber`/`SessionHandle`) and **1.X** (session
+persistence), with cost-event persistence still a tracked deferral.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -186,8 +196,9 @@ budget governor (1.AC)** — and the agent-first sub-spine (**1.V–1.AA**, Lane
 > other 1.O join prerequisite; **the `AgentRunner` join (1.O) is ✅ Done (PR #18, 2026-06-14)**; and the
 > **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**; **checkpoint/resume (1.R) + the
 > human gate (1.Q) are ✅ Done (PR #22, 2026-06-15)**; and **node retry (1.S) is ✅ Done (PR #24, 2026-06-15)**
-> (ADR-0040 Part A; the user-triggered retry-from-node Part B is deferred to Phase-2). The **pre-egress budget
-> governor (1.AC)** is the next workstream.
+> (ADR-0040 Part A; the user-triggered retry-from-node Part B is deferred to Phase-2); and the **pre-egress budget
+> governor (1.AC) + the `AgentSession` (1.V) entry point are ✅ Done (PR #26, 2026-06-16)** — 1.AC closed **1.m4**.
+> The next workstream is **1.U** (the end-to-end Node harness, the M2 milestone), with Lane C continuing at 1.W/1.X.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

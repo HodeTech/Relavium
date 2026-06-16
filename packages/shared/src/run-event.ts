@@ -208,6 +208,11 @@ export const NodeCompletedEventSchema = z.object({
   output: z.unknown(),
   tokensUsed: TokensUsedSchema,
   durationMs: nonNegativeInt,
+  // The run-wide cost running total AT this node boundary (integer micro-cents) — the SAME counter
+  // cost:updated carries, snapshotted onto the durable node:completed so checkpoint/resume (1.R) restores a
+  // run's cumulative cost across a process boundary (cost:updated itself is streamed, not persisted). Optional
+  // for backward-compat with logs persisted before this field existed; the engine always populates it.
+  cumulativeCostMicrocents: nonNegativeInt.optional(),
   // 1-based NODE-RETRY dispatch attempt (1.S, ADR-0040) — the same counter as node:started/node:failed.
   // Absent ⇒ attempt 1. DISTINCT from cost:updated/agent:* attemptNumber (the within-chain FallbackChain
   // index, which resets per node re-dispatch); the two counters do NOT join — see cost:updated above.

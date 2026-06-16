@@ -158,6 +158,11 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 503, body: streamError },
   structuredOutput: { status: 200, body: structuredOutput },
+  toolLoop: {
+    turn1: { status: 200, body: toolMessage },
+    turn2: { status: 200, body: textMessage },
+    expected: { toolName: 'get_weather', finalText: 'Hello, world!' },
+  },
   expected: {
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },

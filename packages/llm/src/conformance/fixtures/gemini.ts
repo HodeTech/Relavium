@@ -94,6 +94,11 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
   streamError: { status: 503, body: overloadedError },
   reasoningStream: { status: 200, body: reasoningStream },
   structuredOutput: { status: 200, body: structuredOutput },
+  toolLoop: {
+    turn1: { status: 200, body: toolResponse },
+    turn2: { status: 200, body: textResponse },
+    expected: { toolName: 'get_weather', finalText: 'Hello, world!' },
+  },
   expected: {
     textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },

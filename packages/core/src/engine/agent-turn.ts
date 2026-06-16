@@ -47,7 +47,18 @@ import { unwrapUntrusted } from '../tools/untrusted.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
-/** Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob. */
+/**
+ * Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob.
+ *
+ * The two bounds are **not multiplicative** — `maxToolTurns` is the worst-case **egress ceiling** (the
+ * tool loop engages a provider at most `maxToolTurns + 1` times before the guard fails the turn with
+ * `turn_limit`), while `maxToolCorrections` is a **monotonic sub-budget** *within* that loop: a
+ * model-correctable tool error (`unknown_tool` / `invalid_args`) increments it and, once exceeded, ends
+ * the turn EARLY with `tool_failed`. A genuine (non-correctable) tool round never resets it, so
+ * corrections accumulate across interleaved genuine rounds. Net worst-case egress is `maxToolTurns + 1`
+ * provider calls regardless of `maxToolCorrections` — the correction budget can only *shorten* a turn,
+ * never extend its egress (so the DoS bound is the turn budget alone, not the product of the two).
+ */
 export interface AgentTurnLimits {
   /** Max tool-loop continuations before the run-default DoS guard fails the turn (`turn_limit`). */
   readonly maxToolTurns: number;

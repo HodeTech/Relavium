@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { createOpenAiAdapter, openaiAdapter } from '../adapters/openai.js';
 import { OPENAI_FIXTURES } from './fixtures/openai.js';
-import { replayFetch } from './replay.js';
+import { replayFor } from './replay.js';
 import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 
-// Wire the OpenAI adapter to replay a recorded response — no vendor SDK is imported here; the adapter
-// takes a `fetch` override, so the SDK stays inside src/adapters/* (the seam fence).
+// Wire the OpenAI adapter to replay recorded response(s) — no vendor SDK is imported here; the adapter
+// takes a `fetch` override, so the SDK stays inside src/adapters/* (the seam fence). `replayFor` serves
+// one body (one-shot scenarios) or a sequence (the multi-turn tool loop).
 const makeReplayAdapter: MakeReplayAdapter = (recorded) =>
-  createOpenAiAdapter({ providerId: 'openai', fetch: replayFetch(recorded), maxRetries: 0 });
+  createOpenAiAdapter({ providerId: 'openai', fetch: replayFor(recorded), maxRetries: 0 });
 
 defineConformanceSuite('openai', makeReplayAdapter, OPENAI_FIXTURES);
 

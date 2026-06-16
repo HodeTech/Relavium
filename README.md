@@ -45,7 +45,10 @@ The **run loop** (1.N — `WorkflowEngine` + `RunEventBus`) landed (PR #17, 2026
 milestone 1.m3** (parse → DAG → run loop emits the canonical event stream); the **built-in
 `ToolRegistry`** (1.T, a 1.m4 component) landed alongside it; the **`AgentRunner`** (1.O —
 per-node LLM execution behind the seam) landed (PR #18, 2026-06-14); and the **node-type handlers**
-(1.P — the six non-agent handlers behind a dispatching executor) landed (PR #20, 2026-06-14). Next on
-the critical path: the **human gate** (1.Q), checkpoint/resume and retry, plus the **AgentSession**
-runtime + export-to-workflow sub-spine. See
+(1.P — the six non-agent handlers behind a dispatching executor) landed (PR #20, 2026-06-14), followed by
+the **human gate** (1.Q) + **checkpoint/resume** (1.R, PR #22), **node retry** (1.S, PR #24), and the
+**pre-egress budget governor** (1.AC) together with the agent-first **`AgentSession`** entry point (1.V) —
+both landed in **PR #26 (2026-06-16)**. With the budget governor in, **milestone 1.m4 is complete** (the full
+engine stack); next on the critical path is the **end-to-end Node harness** (1.U) — milestone **M2** — with the
+agent-first sub-spine (session events 1.W, persistence 1.X) continuing in parallel. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

@@ -24,6 +24,9 @@ export interface ConformanceExpectations {
     text: string;
     inputTokens: number;
     outputTokens: number;
+    /** The cached prompt tokens that folded into the canonical `Usage` (prompt-cache hit) — providers
+     *  whose textGenerate fixture records a cache hit assert this; omit for a no-cache fixture. */
+    cacheReadTokens?: number;
   };
   readonly toolGenerate: { toolName: string; stopReason: StopReason };
   readonly textStream: { stopReason: StopReason; inputTokens: number; outputTokens: number };
@@ -55,12 +58,31 @@ export interface ConformanceFixtures {
   readonly reasoningStream?: RecordedResponse;
   /** A non-streaming reply produced under `responseFormat: json` (ADR-0030) — omit if unsupported. */
   readonly structuredOutput?: RecordedResponse;
+  /**
+   * A multi-turn tool loop (the path every agent node exercises): `turn1` is a tool-call reply; `turn2` is
+   * the continuation the provider returns AFTER the caller appends the tool result. The conformance test
+   * drives two generate() calls against one replay-sequence adapter, so `turn2` exercises the adapter
+   * lowering a `tool_result` message back onto the provider's wire format. Omit if not yet recorded.
+   */
+  readonly toolLoop?: {
+    readonly turn1: RecordedResponse;
+    readonly turn2: RecordedResponse;
+    readonly expected: { readonly toolName: string; readonly finalText: string };
+  };
   /** The canonical values the above should normalize to. */
   readonly expected: ConformanceExpectations;
 }
 
-/** Build an adapter wired to replay a single recorded response (provider-specific). */
-export type MakeReplayAdapter = (recorded: RecordedResponse) => LlmProvider;
+/**
+ * Build an adapter wired to replay recorded response(s) (provider-specific). A single {@link RecordedResponse}
+ * serves the one-shot scenarios; an array serves a multi-turn scenario (the Nth provider round-trip gets
+ * the Nth recording) — e.g. the tool-loop scenario's call → continuation. The provider factory normalizes
+ * both (a `fetch`-based adapter uses `replayFetch` / `replayFetchSequence`; the Gemini transport indexes the
+ * array per call).
+ */
+export type MakeReplayAdapter = (
+  recorded: RecordedResponse | readonly RecordedResponse[],
+) => LlmProvider;
 
 const KEY = 'conformance-test-key';
 
@@ -124,6 +146,11 @@ export function defineConformanceSuite(
       expect(result.usage.outputTokens).toBe(expected.textGenerate.outputTokens);
       expect(result.stopReason).toBe(expected.textGenerate.stopReason);
       expect(result.raw).toBeDefined();
+      // A prompt-cache hit must fold into the ONE canonical Usage (cacheReadTokens), not be lost or
+      // double-counted into inputTokens — asserted for providers whose fixture records a cache hit.
+      if (expected.textGenerate.cacheReadTokens !== undefined) {
+        expect(result.usage.cacheReadTokens).toBe(expected.textGenerate.cacheReadTokens);
+      }
     });
 
     it('generate: a tool call normalizes to a tool_call part with the expected name + id', async () => {
@@ -255,6 +282,49 @@ export function defineConformanceSuite(
         if (expected.structuredOutput !== undefined) {
           expect(text).toBe(expected.structuredOutput.text);
         }
+      },
+    );
+
+    it.skipIf(fixtures.toolLoop === undefined)(
+      'tool loop: a tool_call then a continuation carrying the tool_result yields final text (call→result→continuation)',
+      async () => {
+        const loop = fixtures.toolLoop;
+        if (loop === undefined) {
+          return; // narrow for skipIf
+        }
+        // One adapter, a replay SEQUENCE: turn 1 → the tool-call reply, turn 2 → the continuation.
+        const adapter = makeReplayAdapter([loop.turn1, loop.turn2]);
+        const r1 = await adapter.generate(TOOL_REQUEST, KEY);
+        const call = r1.content.find((part) => part.type === 'tool_call');
+        expect(call?.type).toBe('tool_call');
+        if (call?.type !== 'tool_call') {
+          return; // narrow
+        }
+        expect(call.name).toBe(loop.expected.toolName);
+        // Turn 2: append the assistant tool_call + the tool RESULT, then continue. SCOPE: this asserts the
+        // end-to-end call→result→continuation FLOW — the adapter accepts a tool_result message and produces a
+        // continuation without throwing or dropping the turn. The provider-SPECIFIC tool_result WIRE shape
+        // (Anthropic tool_result block, OpenAI {role:'tool'}, Gemini functionResponse) is asserted by the
+        // per-adapter unit tests (anthropic/openai/gemini .test.ts); the replay serves turn2 by call index,
+        // so this shared suite does not (and should not) re-assert each provider's request wire here.
+        const r2 = await adapter.generate(
+          {
+            ...TOOL_REQUEST,
+            messages: [
+              ...TOOL_REQUEST.messages,
+              { role: 'assistant', content: [call] },
+              {
+                role: 'tool',
+                content: [{ type: 'tool_result', toolCallId: call.id, result: 'sunny, 18C' }],
+              },
+            ],
+          },
+          KEY,
+        );
+        expect(LlmResultSchema.safeParse(r2).success).toBe(true);
+        const text = r2.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+        expect(text).toBe(loop.expected.finalText);
+        expect(r2.content.every((part) => part.type !== 'tool_call')).toBe(true); // a text continuation, not another call
       },
     );
   });
