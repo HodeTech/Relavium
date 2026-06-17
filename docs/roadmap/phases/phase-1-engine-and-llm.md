@@ -881,7 +881,7 @@ These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agen
   - *Landed (PR #30):* `reconstructSessionState` (reload-not-replay per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) — sessions are directly stored, not event-sourced) projects the persisted transcript to the **text-only** in-flight `LlmMessage[]` and **rolls back an incomplete trailing turn** (the `sessionId+sequenceNumber` analog of re-running the run-side incomplete node); `AgentSession.resume` is a static factory that preloads the transcript + re-seeds `turnCount`/cost (syncing a host-wired budget governor so the first resumed turn's pre-egress check sees the carried spend) and lands at `idle` **without** re-emitting `session:started`. Core-only (the host loads via the `@relavium/db` `SessionStore`). Verified by an 8-dimension adversarial review; all findings folded.
 - **1.Z — Export-to-workflow serializer.** ✅ — **Done (PR #30, 2026-06-17).** Session → `.relavium.yaml` **linear-chain scaffold + transcript** ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). Includes a **`WorkflowDefinition` → YAML emitter** (deterministic key ordering, the `metadata` transcript block, secret exclusion) — 1.L is parse-only, so this workstream owns serialization. *Acceptance:* an exported session parses as a valid workflow whose agent nodes mirror the turns; **parse → serialize round-trips** (including `metadata`); no `secret` value is serialized; and **no reasoning `signature` is serialized** (ADR-0030 ephemerality — the signature is a transient same-provider token, never written to a committable artifact, same exclusion as `secret`).
   - *Landed (PR #30):* `packages/core/src/export/` — `serializeWorkflow` (`yaml.stringify` with sorted keys → byte-stable round-trip) + `sessionToWorkflow` (one `agent` node per **completed logical turn**, `input → turn-n → output`, the bound agent inline, full transcript under `metadata.relaviumExport`). Both pure + platform-free. Interpolation openers in copied chat text are **neutralized** so a user's literal `{{ secrets.X }}` can't trip the parse-time taint gate; secret/signature exclusion is structural (`DurableContentPart`). The mapping contract is owned by [agent-session-spec.md](../../reference/contracts/agent-session-spec.md) §"Export to workflow" §"Precise mapping". Verified by an 8-dimension adversarial review; all findings folded.
-- **1.AA — Node-harness chat regression.** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI.
+- **1.AA — Node-harness chat regression.** ✅ — **Done (2026-06-17).** The session counterpart of 1.U: a multi-turn chat with a tool call and an export, run green in CI via `packages/core/src/engine/m5-chat-harness.e2e.test.ts`.
 
 ### 1.AB — Expression sandbox (QuickJS-wasm) — *critical path*, folds into 1.P · ✅ **Done (PR #16, 2026-06-13)**
 
@@ -993,7 +993,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m3 ✅ | Shared-schema reconciliation + interpolation engine, parse → DAG → run loop emits the canonical event stream (**all components landed — 1.N closed it, PR #17, 2026-06-13**) | **1.L.0**, 1.L, **1.L2**, 1.M, 1.N |
 | 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2 ✅** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** (**reached — 1.U landed, PR #27, 2026-06-16**) | **1.U** |
-| 1.m5 | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, 1.AA |
+| **1.m5 ✅** | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, **1.AA** |
 | 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅**, 1.AE, 1.AF, 1.AG, 1.AH |
 
 ## Sequencing & parallelization
@@ -1152,7 +1152,7 @@ flowchart LR
 | 1.X | C | 1.V, `@relavium/db` (new migration) | 1.Y, 1.AA | ✅ — **Done (PR #29, 2026-06-17)** |
 | 1.Y | C | 1.X, 1.R | 1.AA | ✅ — **Done (PR #30, 2026-06-17)** |
 | 1.Z | C | 1.V, 1.L | 1.AA | ✅ — **Done (PR #30, 2026-06-17)** |
-| 1.AA | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ◇ |
+| **1.AA** | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ✅ — **Done (2026-06-17)** |
 | 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
