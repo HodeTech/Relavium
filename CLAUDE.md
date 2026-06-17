@@ -62,9 +62,9 @@ re-delivery and a `workflow_mismatch` identity guard, and the `human_in_the_loop
 plus the one-shot `setTimer` timeout port — `approve` auto-resolves, `reject` fails with `run_timeout`).
 The pre-egress budget governor (1.AC) + the agent-first `AgentSession` (1.V) landed together (PR #26)
 **completing 1.m4**; then the end-to-end Node harness (1.U) landed (PR #27, 2026-06-16) **reaching M2** —
-the Phase-1 engine critical path is complete. Active work is now the additive Lane-C sub-spine (session
-events **1.W ✅ (PR #28)** + persistence **1.X ✅ (PR #29)** + checkpoint/resume **1.Y** & export **1.Z ✅ Done (PR #30, 2026-06-17)**; only the **1.AA** harness next) and
-the multimodal sub-spine; Phase 2 (CLI) is unblocked. See
+the Phase-1 engine critical path is complete. The additive Lane-C agent-first sub-spine is now **complete**
+(session events **1.W ✅ (PR #28)** + persistence **1.X ✅ (PR #29)** + checkpoint/resume **1.Y** & export **1.Z ✅ (PR #30, 2026-06-17)** + the **1.AA** chat-regression harness ✅ (2026-06-17), closing **1.m5**);
+remaining Phase-1 work is the 1.m6 multimodal sub-spine; Phase 2 (CLI) is unblocked. See
 [docs/roadmap/current.md](docs/roadmap/current.md). See [README.md](README.md) for the public overview.
 
 ## Non-negotiable rules for AI agents

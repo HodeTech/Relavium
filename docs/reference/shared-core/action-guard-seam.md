@@ -122,7 +122,7 @@ A discriminated union the registry lowers into its **existing** control flow —
 ```ts
 type ActionDecision =
   | { readonly verdict: 'allow'; readonly plan: ActionPlan }
-  | { readonly verdict: 'block'; readonly reason: string }                                  // → tool_denied (fatal)
+  | { readonly verdict: 'block'; readonly reason: ToolPolicyDenyReason }                    // → tool_denied (fatal); stable reason code from tool-registry.md §Error taxonomy
   | { readonly verdict: 'require-approval'; readonly approval: ApprovalRequest; readonly plan: ActionPlan }
   | { readonly verdict: 'transform'; readonly narrowedArgs: Untrusted<JsonValue>; readonly plan: ActionPlan };
 
@@ -140,6 +140,8 @@ interface ApprovalRequest {
   readonly timeoutPolicy?: HumanGateTimeout; // the `human_in_the_loop` gate's timeout shape ([node-types.md](node-types.md)) — reused, not redefined; absent ⇒ host default
 }
 ```
+
+`ToolPolicyDenyReason` is the stable, closed reason-code union used by `ToolPolicyError` in [tool-registry.md §Error taxonomy](tool-registry.md#error-taxonomy); reusing it for the `block` verdict keeps the governor denial in the same taxonomy as the engine's own guardrail denials.
 
 Engine interpretation of each verdict:
 
@@ -168,8 +170,18 @@ interface ActionReceipt {
   readonly opaque: OpaqueGuardState;       // the guard's compensation descriptor, audit ref, commit time, … (engine never reads it)
 }
 
-/** Engine-opaque carrier the engine journals but never interprets — the governor's internals live here. */
-type OpaqueGuardState = Readonly<Record<string, unknown>>;
+/** Engine-opaque carrier the engine journals but never interprets — the governor's internals live here.
+ *  Must be JSON-serializable because it is persisted in `run_events` for replay/resume. */
+type OpaqueGuardState = Readonly<Record<string, JsonValue>>;
+
+/** JSON-serializable values only — `OpaqueGuardState` is journaled, so non-serializable data must not enter. */
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | Readonly<Record<string, JsonValue>>;
 
 /** Why the engine is asking for a reverse — the `WorkflowEngine` run loop (ADR-0036) supplies it. */
 type CompensationReason = 'saga_unwind' | 'policy_violation' | 'operator_killswitch';

@@ -52,6 +52,6 @@ both landed in **PR #26 (2026-06-16)**. With the budget governor in, **milestone
 **end-to-end Node harness** (1.U) landed (**PR #27, 2026-06-16**) — **🎯 reaching milestone M2**: the engine runs
 end-to-end (live streaming + checkpoint + cross-process resume + retry + provider failover), completing the
 Phase-1 engine critical path. The remaining Phase-1 work is additive (the agent-first sub-spine — **session
-events 1.W ✅ (PR #28)** + **persistence 1.X ✅ (PR #29)** + **session checkpoint/resume 1.Y & export-to-workflow 1.Z ✅ (PR #30, 2026-06-17)**, leaving only the 1.AA harness — and the
+events 1.W ✅ (PR #28)** + **persistence 1.X ✅ (PR #29)** + **session checkpoint/resume 1.Y & export-to-workflow 1.Z ✅ (PR #30, 2026-06-17)** + **the 1.AA chat-regression harness ✅ (2026-06-17)**, completing **1.m5** — and the
 multimodal sub-spine); **Phase 2 (the CLI) is unblocked**. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

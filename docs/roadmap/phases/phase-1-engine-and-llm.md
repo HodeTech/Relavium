@@ -35,7 +35,8 @@
 > runs end-to-end** (live streaming + per-node-boundary checkpointing + cross-process resume + node retry +
 > provider failover, per-attempt cost, gap-free `sequenceNumber`), **completing the Phase-1 critical path**. The
 > remaining Phase-1 work is **additive and off the critical path**: Lane C (the 1.m5 agent-first sub-spine —
-> 1.W/1.X/1.Y/1.Z all ✅ Done, leaving only the 1.AA harness) and the 1.m6 multimodal sub-spine (1.AE–1.AH). **Phase 2
+> 1.W/1.X/1.Y/1.Z all ✅ Done, plus the 1.AA chat-regression harness ✅) is **complete**, leaving only the 1.m6
+> multimodal sub-spine (1.AE–1.AH). **Phase 2
 > (CLI, milestone M3) is unblocked.** *(Session persistence, 1.X/1.Z, must exclude the reasoning signature —
 > non-persisting.)*
 >
