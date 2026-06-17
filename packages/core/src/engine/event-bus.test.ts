@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunEvent } from '@relavium/shared';
+import { SessionContextSchema, type RunOrSessionEvent } from '@relavium/shared';
 
-import { RunEventBus, type RunEventDraft } from './event-bus.js';
+import { RunEventBus, type RunEventDraft, type SessionEventDraft } from './event-bus.js';
+import { RunLoopInvariantError } from './invariant-error.js';
 
 /** A deterministic ISO clock — 1ms per read from a fixed base, so timestamps are reproducible. */
 function fakeNow(): () => string {
@@ -55,7 +56,7 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
     expect(bus.next(nodeStarted('run-1', 'a')).timestamp).toBe('2026-06-13T12:00:00.000Z');
   });
 
-  it('throws when a draft carries neither runId nor sessionId (an engine invariant breach)', () => {
+  it('throws a typed RunLoopInvariantError when a draft carries NEITHER runId nor sessionId', () => {
     const bus = new RunEventBus({ now: fakeNow() });
     // A structurally-incomplete draft — the engine always sets exactly one key, so this is a guard.
     const orphan = {
@@ -63,7 +64,39 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
       nodeId: 'a',
       nodeType: 'input',
     } as unknown as RunEventDraft;
-    expect(() => bus.next(orphan)).toThrow(/neither runId nor sessionId/);
+    let caught: unknown;
+    try {
+      bus.next(orphan);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(RunLoopInvariantError);
+    expect(caught instanceof RunLoopInvariantError && caught.code).toBe('no_correlation_key');
+  });
+
+  it('throws a typed RunLoopInvariantError when a draft carries BOTH keys — XOR enforced at the bus, even when validate:false', () => {
+    // A dual-envelope arm (agent:token) can statically hold both keys; a correct producer never sets both,
+    // so this is the invariant guard. Asserted in BOTH validate modes: with the Zod XOR check off (the hot
+    // path), the bus itself must still fail loud rather than silently sequencing under runId.
+    const both: RunEventDraft = {
+      type: 'agent:token',
+      runId: 'run-1',
+      sessionId: 's1',
+      nodeId: 'n',
+      token: 'x',
+      model: 'm',
+    };
+    for (const validate of [true, false]) {
+      const bus = new RunEventBus({ now: fakeNow(), validate });
+      let caught: unknown;
+      try {
+        bus.next(both);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(RunLoopInvariantError);
+      expect(caught instanceof RunLoopInvariantError && caught.code).toBe('both_correlation_keys');
+    }
   });
 
   it('does not advance the counter when validation rejects the event', () => {
@@ -95,7 +128,7 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
 describe('RunEventBus — delivery and subscription', () => {
   it('delivers stamped events to every subscriber and stops after unsubscribe', () => {
     const bus = new RunEventBus({ now: fakeNow() });
-    const seen: RunEvent[] = [];
+    const seen: RunOrSessionEvent[] = []; // subscribe() delivers the wide bus union (BusEventListener)
     const unsubscribe = bus.subscribe((event) => seen.push(event));
     bus.emit(nodeStarted('run-1', 'a'));
     unsubscribe();
@@ -107,7 +140,7 @@ describe('RunEventBus — delivery and subscription', () => {
   it('isolates a throwing subscriber: the sink is notified and sibling subscribers still receive it', () => {
     const onListenerError = vi.fn();
     const bus = new RunEventBus({ now: fakeNow(), onListenerError });
-    const sibling: RunEvent[] = [];
+    const sibling: RunOrSessionEvent[] = []; // subscribe() delivers the wide bus union (BusEventListener)
     bus.subscribe(() => {
       throw new Error('subscriber boom');
     });
@@ -120,7 +153,7 @@ describe('RunEventBus — delivery and subscription', () => {
 
   it('with no sink: isolates a throwing subscriber and surfaces the error out-of-band, not swallowed', async () => {
     const bus = new RunEventBus({ now: fakeNow() }); // no onListenerError → the #surfaceOutOfBand path
-    const sibling: RunEvent[] = [];
+    const sibling: RunOrSessionEvent[] = []; // subscribe() delivers the wide bus union (BusEventListener)
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown): void => {
       rejections.push(reason);
@@ -142,5 +175,73 @@ describe('RunEventBus — delivery and subscription', () => {
     } finally {
       process.removeListener('unhandledRejection', onRejection);
     }
+  });
+});
+
+describe('RunEventBus — the session:* namespace on the one shared bus (1.W, ADR-0036)', () => {
+  const ctx = SessionContextSchema.parse({ workingDir: '/workspace/s', fsScopeTier: 'sandboxed' });
+  const sessionStarted = (sessionId: string): SessionEventDraft => ({
+    type: 'session:started',
+    sessionId,
+    agentRef: 'chatter',
+    model: 'claude-opus-4-8',
+    context: ctx,
+  });
+  const turnStarted = (sessionId: string): SessionEventDraft => ({
+    type: 'session:turn_started',
+    sessionId,
+  });
+  const turnCompleted = (sessionId: string): SessionEventDraft => ({
+    type: 'session:turn_completed',
+    sessionId,
+    stopReason: 'stop',
+    tokensUsed: { input: 1, output: 2 },
+  });
+  // A dual-envelope in-turn event carrying sessionId is a RunEventDraft (its arm has an optional sessionId),
+  // NOT a SessionEventDraft (SessionEvent is only the five lifecycle events) — mirrors agent-session.ts.
+  const token = (sessionId: string): RunEventDraft => ({
+    type: 'agent:token',
+    sessionId,
+    nodeId: 'n',
+    token: 'x',
+    model: 'm',
+  });
+
+  it('stamps + validates a session lifecycle event through the combined RunOrSessionEventSchema gate', () => {
+    const bus = new RunEventBus({ now: () => '2026-06-13T12:00:00.000Z' });
+    const e = bus.next(sessionStarted('s1'));
+    expect(e.type).toBe('session:started');
+    expect(e.sessionId).toBe('s1');
+    expect(e.timestamp).toBe('2026-06-13T12:00:00.000Z');
+    expect(e.sequenceNumber).toBe(0);
+  });
+
+  it('shares ONE per-session sequence across lifecycle and dual in-turn events', () => {
+    const bus = new RunEventBus({ now: fakeNow() });
+    expect(bus.next(sessionStarted('s1')).sequenceNumber).toBe(0);
+    expect(bus.next(turnStarted('s1')).sequenceNumber).toBe(1);
+    expect(bus.next(token('s1')).sequenceNumber).toBe(2); // a dual event keyed on the same sessionId
+    expect(bus.next(turnCompleted('s1')).sequenceNumber).toBe(3);
+  });
+
+  it('keeps the session counter disjoint from a run on the same bus (two namespaces, one bus)', () => {
+    const bus = new RunEventBus({ now: fakeNow() });
+    expect(bus.next(sessionStarted('s1')).sequenceNumber).toBe(0);
+    expect(bus.next(nodeStarted('run-1', 'a')).sequenceNumber).toBe(0);
+    expect(bus.next(turnStarted('s1')).sequenceNumber).toBe(1);
+    expect(bus.next(nodeStarted('run-1', 'b')).sequenceNumber).toBe(1);
+  });
+
+  it('does not advance the session counter when a session event fails validation', () => {
+    const bus = new RunEventBus({ now: fakeNow() });
+    const bad: SessionEventDraft = {
+      type: 'session:turn_completed',
+      sessionId: 's1',
+      stopReason: 'stop',
+      tokensUsed: { input: -1, output: 0 }, // nonNegativeInt rejects -1 (statically valid, runtime-invalid)
+    };
+    expect(() => bus.next(bad)).toThrow();
+    // The next valid session event still gets sequence 0 — the failed stamp did not consume a number.
+    expect(bus.next(turnStarted('s1')).sequenceNumber).toBe(0);
   });
 });

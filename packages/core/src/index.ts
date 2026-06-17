@@ -92,7 +92,14 @@ export type {
 export { WorkflowEngine } from './engine/engine.js';
 export type { StartInput, ResumeFromCheckpointInput, WorkflowEngineDeps } from './engine/engine.js';
 export { RunEventBus } from './engine/event-bus.js';
-export type { RunEventBusOptions, RunEventListener, RunEventDraft } from './engine/event-bus.js';
+export type {
+  RunEventBusOptions,
+  RunEventListener,
+  BusEventListener,
+  RunEventDraft,
+  SessionEventDraft,
+  BusEventDraft,
+} from './engine/event-bus.js';
 export type { RunHandle } from './engine/run-handle.js';
 export {
   InMemoryRunStore,
@@ -134,6 +141,11 @@ export type {
 export { EngineStateError } from './engine/errors.js';
 export type { EngineStateErrorCode } from './engine/errors.js';
 
+// Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud
+// so a producer/consumer bug is caught at source rather than silently un-gapping the sequence (ADR-0036).
+export { RunLoopInvariantError } from './engine/invariant-error.js';
+export type { RunLoopInvariantCode } from './engine/invariant-error.js';
+
 // AgentRunner (1.O) — the single dispatching NodeExecutor for `agent` vertices; a surface constructs
 // it with host capabilities (resolveProvider + the chain's keyFor/sleep) and injects it as
 // WorkflowEngineDeps.executor (ADR-0038). The correlation-agnostic turn core it wraps stays internal
@@ -171,6 +183,11 @@ export type {
   SessionStreamEvent,
   SessionLifecycleEvent,
 } from './engine/agent-session.js';
+// 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
+// sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
+// scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".
+export { createSessionHandle, createSessionEventSink } from './engine/session-handle.js';
+export type { SessionHandle, SessionStreamHandleEvent } from './engine/session-handle.js';
 
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one

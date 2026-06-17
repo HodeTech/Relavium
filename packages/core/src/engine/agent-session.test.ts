@@ -25,7 +25,13 @@ import {
 // Intra-package helper (NOT the identically-named public index.ts export) — keeps engine purity; the
 // session never names the ambient `AbortController`. A path drift to the public surface would be a smell.
 import { BudgetPauseError } from './budget-governor.js';
+import { RunEventBus } from './event-bus.js';
 import { createAbortController } from './execution-host.js';
+import {
+  createSessionEventSink,
+  createSessionHandle,
+  type SessionStreamHandleEvent,
+} from './session-handle.js';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -145,6 +151,17 @@ const session = (deps: SessionDeps, agent: Agent = AGENT): AgentSession =>
 
 const typesOf = (events: readonly SessionStreamEvent[]): readonly string[] =>
   events.map((e) => e.type);
+
+/** Drain a `SessionHandle` stream to completion — for the 1.W end-to-end wiring test below. */
+async function drainSession(
+  events: AsyncIterable<SessionStreamHandleEvent>,
+): Promise<SessionStreamHandleEvent[]> {
+  const collected: SessionStreamHandleEvent[] = [];
+  for await (const event of events) {
+    collected.push(event);
+  }
+  return collected;
+}
 
 describe('AgentSession (1.V) — multi-turn entry point over the shared turn core', () => {
   it('runs a multi-turn conversation with a tool round-trip through the same turn core', async () => {
@@ -507,5 +524,44 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
   it('exposes a finite default hard cap', () => {
     expect(DEFAULT_SESSION_MAX_TURNS).toBeGreaterThan(0);
     expect(Number.isInteger(DEFAULT_SESSION_MAX_TURNS)).toBe(true);
+  });
+});
+
+describe('AgentSession → createSessionEventSink → RunEventBus → SessionHandle (1.W end-to-end)', () => {
+  it('streams a full session through the bus with a per-session sequence; cancel is the terminal', async () => {
+    let tick = Date.parse('2026-06-13T00:00:00.000Z');
+    const b = new RunEventBus({ now: () => new Date(tick++).toISOString() });
+    // The handle subscribes BEFORE session:started is emitted (no startup race) — mirrors RunHandle (1.N).
+    const handle = createSessionHandle(b, 'sess-1', () => undefined);
+    const deps: SessionDeps = {
+      resolveProvider: () => scriptedProvider([textTurn('hello back')]),
+      registry: noToolRegistry,
+      tools: [],
+      keyFor: () => 'key',
+      sleep: () => Promise.resolve(),
+      newAbortController: createAbortController,
+      emit: createSessionEventSink(b, 'sess-1'), // the 1.W wiring under test
+    };
+    const s = new AgentSession({
+      sessionId: 'sess-1',
+      agentRef: AGENT.id,
+      agent: AGENT,
+      context: CONTEXT,
+      deps,
+    });
+    s.start();
+    await s.sendMessage('hello');
+    s.cancel(); // session:cancelled — the session stream's sole terminal
+
+    const events = await drainSession(handle.events);
+    const types = events.map((e) => e.type);
+    expect(types[0]).toBe('session:started');
+    expect(types).toContain('session:turn_started');
+    expect(types).toContain('agent:token'); // an in-turn dual event, carried with sessionId
+    expect(types).toContain('session:turn_completed');
+    expect(types.at(-1)).toBe('session:cancelled');
+    // Every event carries the sessionId, and the per-session sequence is monotonic + gap-free from 0.
+    expect(events.every((e) => e.sessionId === 'sess-1')).toBe(true);
+    expect(events.map((e) => e.sequenceNumber)).toEqual(events.map((_, i) => i));
   });
 });

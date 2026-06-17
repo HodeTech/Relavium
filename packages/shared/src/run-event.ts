@@ -466,6 +466,17 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
+/**
+ * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the
+ * `session:*` family on **one** bus (ADR-0036 "one bus, two namespaces"). A `z.union` (not a flat
+ * discriminated union) so each family keeps its own refinements — notably `RunEventSchema`'s correlation-key
+ * cross-check and its dual-envelope members (the four `agent:*`/`cost:updated` events already validate here
+ * carrying `sessionId`); a `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the
+ * single validation gate the bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
+ */
+export const RunOrSessionEventSchema = z.union([RunEventSchema, SessionEventSchema]);
+export type RunOrSessionEvent = RunEvent | SessionEvent;
+
 // Per-variant inferred types, for consumers that handle a specific event. NOTE: this block is the
 // rest of the per-variant exports — a few (CostUpdatedEvent, the HumanGate* events, SessionContext)
 // are exported inline next to their schemas above; this trailing block is NOT the exhaustive set.

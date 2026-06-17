@@ -106,7 +106,12 @@ export interface RunStore {
    * `run:started.workflowId` is always a UUID enforced in one place (ADR-0022).
    */
   resolveWorkflowId: (slug: string) => Promise<string>;
-  /** Durably append one run event (the engine awaits this for a boundary/terminal event before delivery). */
+  /**
+   * Durably append one **run** event (the engine awaits this for a boundary/terminal event before
+   * delivery). Typed on `RunEvent`: the run store persists only run events. The shared bus also carries
+   * `session:*` events (ADR-0036), but those are never routed here — session persistence is `history.db` /
+   * `session_messages`, workstream 1.X, out of the run store's scope.
+   */
   persistEvent: (event: RunEvent) => Promise<void>;
   /** Runs with a `run:started` but no terminal event — for startup crash reconciliation. */
   listInterruptedRuns: () => Promise<readonly InterruptedRun[]>;
@@ -182,7 +187,7 @@ export class InMemoryRunStore implements RunStore {
 
   persistEvent(event: RunEvent): Promise<void> {
     if (event.runId === undefined) {
-      return Promise.resolve(); // session events are out of the run store's scope (1.N)
+      return Promise.resolve(); // a dual event with no runId is out of the run store's scope (1.N)
     }
     const bucket = this.#events.get(event.runId);
     if (bucket === undefined) {

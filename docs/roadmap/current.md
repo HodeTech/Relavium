@@ -85,10 +85,12 @@ the official provider SDKs — the seam fence's first real consumer) and **`@rel
 consuming `@relavium/db` for run persistence).
 
 Global milestone **M1 — LLM seam proven** is reached (PR #9, 2026-06-07): all three
-adapters pass the shared conformance suite behind the frozen seam. The next checkpoint is
-**M2 — engine end-to-end**, now gated **only** by the **1.U** end-to-end Node harness — the rest
-of the engine (milestone **1.m4**) completed with the pre-egress budget governor in PR #26 (see the
-[milestone spine](README.md#global-milestone-spine)).
+adapters pass the shared conformance suite behind the frozen seam. **Global milestone M2 — engine
+end-to-end is now reached (PR #27, 2026-06-16):** the 1.U Node harness proves `@relavium/core` runs a
+workflow end-to-end (live streaming + per-node-boundary checkpointing + cross-process resume + node
+retry + provider failover, per-attempt cost, gap-free `sequenceNumber`) — **completing the Phase-1
+engine critical path**. The next global checkpoint is **M3** (the Phase-2 CLI + engine regression
+harness); see the [milestone spine](README.md#global-milestone-spine).
 
 > **One Phase-0 follow-up lives outside the code:** a maintainer should mark the CI `ci`
 > job a **required check** in GitHub branch protection (optionally adding `TURBO_TOKEN`/
@@ -197,8 +199,11 @@ persistence), with cost-event persistence still a tracked deferral.
 > **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)**; **checkpoint/resume (1.R) + the
 > human gate (1.Q) are ✅ Done (PR #22, 2026-06-15)**; and **node retry (1.S) is ✅ Done (PR #24, 2026-06-15)**
 > (ADR-0040 Part A; the user-triggered retry-from-node Part B is deferred to Phase-2); and the **pre-egress budget
-> governor (1.AC) + the `AgentSession` (1.V) entry point are ✅ Done (PR #26, 2026-06-16)** — 1.AC closed **1.m4**.
-> The next workstream is **1.U** (the end-to-end Node harness, the M2 milestone), with Lane C continuing at 1.W/1.X.
+> governor (1.AC) + the `AgentSession` (1.V) entry point are ✅ Done (PR #26, 2026-06-16)** — 1.AC closed **1.m4**;
+> then the **end-to-end Node harness (1.U) is ✅ Done (PR #27, 2026-06-16), reaching 🎯 M2** (the engine runs
+> end-to-end). **The Phase-1 engine critical path is complete.** The remaining Phase-1 work is **additive and
+> off the critical path**: Lane C (the 1.m5 agent-first sub-spine — 1.W session events ‖ 1.X persistence ‖
+> 1.Y/1.Z/1.AA) and the 1.m6 multimodal sub-spine (1.AE–1.AH). **Phase 2 (CLI, milestone M3) is unblocked.**
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
