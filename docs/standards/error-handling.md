@@ -20,6 +20,13 @@ and cost accounting that are product features.
   can emit them as fields and tests can assert on them.
 - Wrap-and-rethrow preserves the cause (`{ cause }`); we never swallow a root cause to
   re-throw a vaguer one.
+- The engine surfaces this with typed, `code`-discriminated classes — `EngineStateError` (the
+  `WorkflowEngine` API-boundary faults) and `RunLoopInvariantError` (the run-loop substrate's
+  internal-invariant breaches: a draft with both/neither correlation key, a concurrent stream consumer)
+  — each defined and documented at its source under `packages/core/src/engine/` and exported from
+  `@relavium/core` so callers and tests narrow on `.code`, never the message. (The cross-cutting
+  `LlmError` seam contract is the one error type detailed in full below, because the fallback chains
+  depend on its classification.)
 
 ## `LlmError` classification — the contract the fallback chains depend on
 
