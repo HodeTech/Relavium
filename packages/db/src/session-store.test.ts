@@ -274,10 +274,11 @@ describe('agent_sessions CHECK constraints (raw insert bypassing the mapper)', (
     expect(() => {
       client.db
         .insert(agentSessions)
+        // @ts-expect-error — 'paused' is not a valid SessionStatus; the DB CHECK must still reject it.
         .values({
           id: 's2',
           agentSlug: 'x',
-          status: 'paused' as never,
+          status: 'paused',
           createdAt: TS_MS,
           updatedAt: TS_MS,
         })
@@ -289,10 +290,11 @@ describe('agent_sessions CHECK constraints (raw insert bypassing the mapper)', (
     expect(() => {
       client.db
         .insert(agentSessions)
+        // @ts-expect-error — 'root' is not a valid FsScopeTier; the DB CHECK must still reject it.
         .values({
           id: 's3',
           agentSlug: 'x',
-          fsScopeTier: 'root' as never,
+          fsScopeTier: 'root',
           createdAt: TS_MS,
           updatedAt: TS_MS,
         })
