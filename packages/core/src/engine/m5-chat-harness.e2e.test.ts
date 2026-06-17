@@ -102,9 +102,12 @@ const toolUseTurn = (id: string): StreamChunk[] => [
 // --- Tool stubs: a sanitized echo registry + its LLM-visible def (mirror agent-runner.e2e.test.ts) ----
 
 const echoRegistry: ToolRegistry = {
-  has: () => true,
+  has: (id) => id === 'echo',
   list: () => ['echo'],
   dispatch: (call) => {
+    if (call.name !== 'echo') {
+      return Promise.reject(new Error(`unexpected tool call: ${call.name}`));
+    }
     const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
     return Promise.resolve({
       output: 'TOOL-OK',
