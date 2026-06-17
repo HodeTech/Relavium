@@ -94,7 +94,7 @@ function groupIntoTurns(ordered: readonly SessionMessage[]): TurnDraft[] {
   let current: TurnDraft | null = null;
   for (const message of ordered) {
     if (message.role === 'user') {
-      if (current !== null && current.hasAssistant) {
+      if (current?.hasAssistant) {
         turns.push(current);
         current = null;
       }
@@ -175,7 +175,7 @@ export function sessionToWorkflow(
       source: 'session',
       sessionId: record.id,
       agentSlug: record.agentSlug,
-      ...(record.title !== undefined ? { title: record.title } : {}),
+      ...(record.title === undefined ? {} : { title: record.title }),
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       messages: ordered,
@@ -184,8 +184,8 @@ export function sessionToWorkflow(
 
   const spec: WorkflowSpec = {
     id: workflowIdFor(record),
-    ...(record.title !== undefined ? { name: record.title } : {}),
-    ...(record.agentSnapshot !== undefined ? { agents: [record.agentSnapshot] } : {}),
+    ...(record.title === undefined ? {} : { name: record.title }),
+    ...(record.agentSnapshot === undefined ? {} : { agents: [record.agentSnapshot] }),
     nodes,
     edges,
     metadata,
