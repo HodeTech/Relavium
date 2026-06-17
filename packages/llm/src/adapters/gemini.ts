@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 
+import { mediaModalityOf } from '@relavium/shared';
 import type { ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
@@ -18,7 +19,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertNoMediaRequested, isAbortSignal } from './shared.js';
+import { REASONING_ID, assertMediaCapabilities, isAbortSignal } from './shared.js';
 
 /**
  * The Gemini adapter (1.H) over `@google/genai` — the riskiest adapter: a restricted tool schema and
@@ -34,22 +35,21 @@ import { REASONING_ID, assertNoMediaRequested, isAbortSignal } from './shared.js
 const PROVIDER = 'gemini';
 
 /**
- * Gemini's common-path capability surface (restricted tool schema; ids synthesized). The ADR-0031
- * `media` matrix is honestly all-false at 1.AD: `toGeminiParts` carries only text/tool parts, so
- * no media input is actually sendable yet. 1.AE wires `inlineData`/`fileData` input and sets the
- * real matrix (the broadest of the three providers); `vision` is the derived alias of
- * `media.input.image`, so it reads false until then too.
+ * Gemini's common-path capability surface (restricted tool schema; ids synthesized). 1.AE wires
+ * `inlineData` input (the broadest of the three providers — all four modalities) and sets the
+ * real matrix; `vision` is the derived alias of `media.input.image`. `handle`/`url` sources are
+ * deferred to 1.AF (MediaStore resolution).
  */
 const GEMINI_SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: false,
+  vision: true,
   promptCache: true,
-  reasoning: true,
+  reasoning: false,
   media: {
-    input: { image: false, audio: false, video: false, document: false },
-    outputCombinations: [],
+    input: { image: true, audio: true, video: true, document: true },
+    outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
   },
 };
 
@@ -286,6 +286,19 @@ function toGeminiContents(
   return contents;
 }
 
+function toGeminiMediaPart(
+  part: Extract<ContentPart, { type: 'media' }>,
+): Record<string, unknown> | undefined {
+  const modality = mediaModalityOf(part.mimeType);
+  if (modality === undefined) {
+    return undefined;
+  }
+  if (part.source.kind === 'base64') {
+    return { inlineData: { mimeType: part.mimeType, data: part.source.data } };
+  }
+  return undefined;
+}
+
 function toGeminiParts(
   message: LlmMessage,
   nameById: ReadonlyMap<string, string>,
@@ -299,6 +312,11 @@ function toGeminiParts(
     } else if (part.type === 'tool_result') {
       const name = nameById.get(part.toolCallId) ?? part.toolCallId;
       parts.push({ functionResponse: { name, response: toResponseObject(part.result) } });
+    } else if (part.type === 'media') {
+      const mediaPart = toGeminiMediaPart(part);
+      if (mediaPart !== undefined) {
+        parts.push(mediaPart);
+      }
     }
     // reasoning parts are ephemeral (ADR-0030) — dropped here, never replayed to the provider.
   }
@@ -528,7 +546,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     supports: GEMINI_SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
-      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       try {
         const response = await transport.generate(buildGeminiRequest(req), key);
         const ids = new GeminiToolCallIds();
@@ -553,7 +571,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
-      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(transport, buildGeminiRequest(req), key);
     },
   };

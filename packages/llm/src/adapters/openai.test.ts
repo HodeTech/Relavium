@@ -79,13 +79,12 @@ describe('OpenAI-compatible adapter', () => {
   it('exposes openai + deepseek ids with their capability surfaces', () => {
     expect(openaiAdapter.id).toBe('openai');
     expect(deepseekAdapter.id).toBe('deepseek');
-    // Honestly all-false at 1.AD (ADR-0031, shape only): the request path still flattens user
-    // content to text (the §1.4 textOf bug, fixed at 1.AE), so neither media nor its vision alias
-    // may be advertised yet.
-    expect(openaiAdapter.supports.vision).toBe(false);
+    // 1.AE: OpenAI wires image/audio/document media input and vision (the alias of media.input.image).
+    // DeepSeek remains text-only (all-false media matrix, ADR-0031).
+    expect(openaiAdapter.supports.vision).toBe(true);
     expect(openaiAdapter.supports.media).toEqual({
-      input: { image: false, audio: false, video: false, document: false },
-      outputCombinations: [],
+      input: { image: true, audio: true, video: false, document: true },
+      outputCombinations: [['text'], ['text', 'audio']],
     });
     expect(openaiAdapter.supports.reasoning).toBe(false);
     expect(deepseekAdapter.supports.reasoning).toBe(true);
@@ -93,27 +92,43 @@ describe('OpenAI-compatible adapter', () => {
     expect(deepseekAdapter.supports.media.outputCombinations).toEqual([]);
   });
 
-  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
-    const adapter = createOpenAiAdapter({
+  it('rejects an unsupported media modality with a typed capability error (1.AE, ADR-0031)', async () => {
+    // DeepSeek: all-false media matrix — every media part is rejected.
+    const dsAdapter = createOpenAiAdapter({
+      providerId: 'deepseek',
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
-    const req = {
-      model: 'gpt-5.5',
+    const imageReq = {
+      model: 'deepseek-reasoner',
       messages: [
         {
           role: 'user' as const,
           content: [
-            {
-              type: 'media' as const,
-              mimeType: 'image/png',
-              source: { kind: 'base64' as const, data: 'aGVsbG8=' },
-            },
+            { type: 'media' as const, mimeType: 'image/png', source: { kind: 'base64' as const, data: 'aGVsbG8=' } },
           ],
         },
       ],
     };
-    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
-    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+    await expect(dsAdapter.generate(imageReq, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => dsAdapter.stream(imageReq, 'k')).toThrowError(UnsupportedCapabilityError);
+
+    // OpenAI: video is unsupported → typed error (handle source: video ceiling=0 forbids inline).
+    const oaiAdapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    const videoReq = {
+      model: 'gpt-4.1',
+      messages: [
+        {
+          role: 'user' as const,
+          content: [
+            { type: 'media' as const, mimeType: 'video/mp4', source: { kind: 'handle' as const, ref: `media://sha256-${'f'.repeat(64)}` } },
+          ],
+        },
+      ],
+    };
+    await expect(oaiAdapter.generate(videoReq, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    expect(() => oaiAdapter.stream(videoReq, 'k')).toThrowError(UnsupportedCapabilityError);
   });
 
   it('maps finish reasons to the canonical enum (incl. graceful unknown → stop)', () => {

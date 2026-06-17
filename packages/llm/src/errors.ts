@@ -80,11 +80,17 @@ export class UnsupportedCapabilityError extends LlmConfigError {
   readonly code = 'unsupported_capability';
   readonly provider: ProviderId;
   readonly capability: keyof CapabilityFlags;
+  readonly detail: string | undefined;
 
-  constructor(provider: ProviderId, capability: keyof CapabilityFlags) {
-    super(`provider '${provider}' does not support the '${capability}' capability`);
+  constructor(provider: ProviderId, capability: keyof CapabilityFlags, detail?: string) {
+    const message =
+      detail === undefined
+        ? `provider '${provider}' does not support the '${capability}' capability`
+        : `provider '${provider}' does not support the '${capability}' capability: ${detail}`;
+    super(message);
     this.name = 'UnsupportedCapabilityError';
     this.provider = provider;
     this.capability = capability;
+    this.detail = detail;
   }
 }

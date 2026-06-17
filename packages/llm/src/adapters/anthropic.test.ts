@@ -70,19 +70,17 @@ describe('AnthropicAdapter', () => {
       tools: true,
       streaming: true,
       parallelToolCalls: true,
-      // Honestly all-false at 1.AD (ADR-0031, shape only): no media input is wired until 1.AE,
-      // and vision is the derived alias of media.input.image, so it reads false too.
-      vision: false,
+      vision: true,
       promptCache: true,
-      reasoning: true,
+      reasoning: false,
       media: {
-        input: { image: false, audio: false, video: false, document: false },
+        input: { image: true, audio: false, video: false, document: true },
         outputCombinations: [],
       },
     });
   });
 
-  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
+  it('rejects an unsupported media modality (audio) with a typed capability error', async () => {
     const adapter = createAnthropicAdapter({
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
@@ -94,7 +92,7 @@ describe('AnthropicAdapter', () => {
           content: [
             {
               type: 'media' as const,
-              mimeType: 'image/png',
+              mimeType: 'audio/wav',
               source: { kind: 'base64' as const, data: 'aGVsbG8=' },
             },
           ],
@@ -103,6 +101,107 @@ describe('AnthropicAdapter', () => {
     };
     await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
     expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('wires image media parts onto the Anthropic wire format (document uses handle, deferred to 1.AF)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-sonnet-4-6',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'claude-sonnet-4-6',
+        maxTokens: 16,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'describe this' },
+              {
+                type: 'media',
+                mimeType: 'image/png',
+                source: { kind: 'base64', data: 'aW1hZ2U=' },
+              },
+            ],
+          },
+        ],
+      },
+      'k',
+    );
+    const messages = sent['messages'] as Record<string, unknown>[];
+    expect(messages).toHaveLength(1);
+    const content = messages[0]?.['content'] as Record<string, unknown>[];
+    expect(content[0]).toEqual({ type: 'text', text: 'describe this' });
+    expect(content[1]).toEqual({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' },
+    });
+  });
+
+  it('skips handle and url media sources (deferred to 1.AF)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-sonnet-4-6',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'claude-sonnet-4-6',
+        maxTokens: 16,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'media',
+                mimeType: 'image/png',
+                source: { kind: 'handle', ref: 'media://sha256-' + 'a'.repeat(64) },
+              },
+              { type: 'text', text: 'what is this' },
+            ],
+          },
+        ],
+      },
+      'k',
+    );
+    const messages = sent['messages'] as Record<string, unknown>[];
+    const content = messages[0]?.['content'] as Record<string, unknown>[];
+    expect(content).toEqual([{ type: 'text', text: 'what is this' }]);
   });
 
   it('maps every Anthropic stop reason to the canonical 5-value enum', () => {

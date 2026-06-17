@@ -60,41 +60,68 @@ describe('Gemini adapter', () => {
     expect(geminiAdapter.id).toBe('gemini');
     expect(geminiAdapter.supports.tools).toBe(true);
     expect(geminiAdapter.supports.streaming).toBe(true);
-    // Honestly all-false at 1.AD (ADR-0031, shape only): toGeminiParts carries only text/tool
-    // parts until 1.AE wires inlineData/fileData input; vision is the derived media.input.image alias.
-    expect(geminiAdapter.supports.vision).toBe(false);
+    expect(geminiAdapter.supports.vision).toBe(true);
     expect(geminiAdapter.supports.media).toEqual({
-      input: { image: false, audio: false, video: false, document: false },
-      outputCombinations: [],
+      input: { image: true, audio: true, video: true, document: true },
+      outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
     });
   });
 
-  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
+  it('accepts image and audio media parts (video/document use handles, deferred to 1.AF)', async () => {
     const transport = fakeTransport({ candidates: [] });
     const adapter = createGeminiAdapter({ transport });
-    const req: LlmRequest = {
-      model: 'gemini-2.5-flash',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aGVsbG8=' } },
-          ],
-        },
-      ],
-    };
-    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
-    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
-    expect(transport.lastRequest).toBeUndefined(); // failed fast — nothing reached the transport
+    const base64Modalities: Array<{ mimeType: string; kind: 'image' | 'audio' }> = [
+      { mimeType: 'image/png', kind: 'image' },
+      { mimeType: 'audio/wav', kind: 'audio' },
+    ];
+    for (const { mimeType } of base64Modalities) {
+      const req: LlmRequest = {
+        model: 'gemini-2.5-flash',
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'media', mimeType, source: { kind: 'base64', data: 'aGVsbG8=' } }],
+          },
+        ],
+      };
+      await expect(adapter.generate(req, 'k')).resolves.toBeDefined();
+      expect(() => adapter.stream(req, 'k')).not.toThrow();
+    }
+    const handleModalities: Array<{ mimeType: string }> = [
+      { mimeType: 'video/mp4' },
+      { mimeType: 'application/pdf' },
+    ];
+    for (const { mimeType } of handleModalities) {
+      const req: LlmRequest = {
+        model: 'gemini-2.5-flash',
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'media', mimeType, source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` } }],
+          },
+        ],
+      };
+      await expect(adapter.generate(req, 'k')).resolves.toBeDefined();
+      expect(() => adapter.stream(req, 'k')).not.toThrow();
+    }
   });
 
-  it('rejects a non-text outputModalities request the same way (media output is unwired)', async () => {
+  it('rejects an unsupported output modality with a typed capability error', async () => {
     const transport = fakeTransport({ candidates: [] });
     const adapter = createGeminiAdapter({ transport });
-    const req: LlmRequest = { ...REQ, outputModalities: ['text', 'image'] };
+    const req: LlmRequest = { ...REQ, outputModalities: ['text', 'image', 'audio'] };
     await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
     expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
     expect(transport.lastRequest).toBeUndefined();
+  });
+
+  it('allows supported output modalities (text, text+image, text+audio)', async () => {
+    const transport = fakeTransport({ candidates: [] });
+    const adapter = createGeminiAdapter({ transport });
+    for (const modalities of [['text'], ['text', 'image'], ['text', 'audio']] as ('text' | 'image' | 'audio')[][]) {
+      const req: LlmRequest = { ...REQ, outputModalities: modalities };
+      await expect(adapter.generate(req, 'k')).resolves.toBeDefined();
+    }
   });
 
   it('maps finish reasons (STOP+tools → tool_use; SAFETY → content_filter; MALFORMED → error)', () => {
@@ -275,6 +302,49 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     });
     expect(request.config['httpOptions']).toBeUndefined();
     expect(request.config['cachedContent']).toBe('kept'); // only transport keys are stripped
+  });
+
+  it('maps base64 media parts to Gemini inlineData', () => {
+    const request = buildGeminiRequest({
+      model: 'gemini-2.5-flash',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe these' },
+            { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1hZ2U=' } },
+            { type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'YXVkaW8=' } },
+            { type: 'media', mimeType: 'video/mp4', source: { kind: 'base64', data: 'dmlkZW8=' } },
+            { type: 'media', mimeType: 'application/pdf', source: { kind: 'base64', data: 'cGRm' } },
+          ],
+        },
+      ],
+    });
+    expect(request.contents).toHaveLength(1);
+    const parts = request.contents[0]!.parts;
+    expect(parts[0]).toEqual({ text: 'describe these' });
+    expect(parts[1]).toEqual({ inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } });
+    expect(parts[2]).toEqual({ inlineData: { mimeType: 'audio/wav', data: 'YXVkaW8=' } });
+    expect(parts[3]).toEqual({ inlineData: { mimeType: 'video/mp4', data: 'dmlkZW8=' } });
+    expect(parts[4]).toEqual({ inlineData: { mimeType: 'application/pdf', data: 'cGRm' } });
+  });
+
+  it('skips handle and url media sources (deferred to 1.AF)', () => {
+    const request = buildGeminiRequest({
+      model: 'gemini-2.5-flash',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` } },
+            { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://example.com/img.png' } },
+            { type: 'text', text: 'what is this' },
+          ],
+        },
+      ],
+    });
+    expect(request.contents).toHaveLength(1);
+    expect(request.contents[0]!.parts).toEqual([{ text: 'what is this' }]);
   });
 });
 

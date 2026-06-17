@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 
+import { mediaModalityOf } from '@relavium/shared';
 import type { ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
@@ -19,7 +20,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { assertNoMediaRequested, isAbortSignal } from './shared.js';
+import { assertMediaCapabilities, isAbortSignal } from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -47,11 +48,11 @@ const SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: false,
+  vision: true,
   promptCache: true,
-  reasoning: true,
+  reasoning: false,
   media: {
-    input: { image: false, audio: false, video: false, document: false },
+    input: { image: true, audio: false, video: false, document: true },
     outputCombinations: [],
   },
 };
@@ -206,9 +207,6 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
-// Reasoning is lowered separately in `toAnthropicMessage` (a signed part → a `thinking` block, ADR-0039)
-// and media was rejected pre-flight by `assertNoMediaRequested` (shape-only until 1.AE — ADR-0031),
-// so the wire-able content this handles is the closed text / tool_call / tool_result set.
 function toAnthropicBlock(
   part: Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }>,
 ): Anthropic.ContentBlockParam {
@@ -237,29 +235,84 @@ function toAnthropicBlock(
   }
 }
 
-function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
-  // Anthropic has only user/assistant roles; tool results ride in a user-role message. A SIGNED
-  // reasoning part is lowered back to a `thinking` block so a same-provider continuation replays it
-  // (ADR-0039); the `FallbackChain` has already stripped reasoning on a cross-provider advance, so any
-  // reasoning part that reaches here is replay-safe for THIS provider. A redacted / signatureless
-  // reasoning part cannot be replayed (its opaque continuation token is absent) and is dropped — a
-  // recorded follow-up (redacted_thinking + Gemini part-level signatures need a canonical carrier).
-  // Media is dropped (shape-only until 1.AE).
-  const content: Anthropic.ContentBlockParam[] = [];
-  for (const part of message.content) {
+function toAnthropicContentBlocks(
+  content: readonly ContentPart[],
+): Anthropic.ContentBlockParam[] {
+  const blocks: Anthropic.ContentBlockParam[] = [];
+  for (const part of content) {
     if (part.type === 'media') {
+      const modality = mediaModalityOf(part.mimeType);
+      if (modality === 'image' && part.source.kind === 'base64') {
+        blocks.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.mimeType as Anthropic.Base64ImageSource['media_type'],
+            data: part.source.data,
+          },
+        });
+      } else if (modality === 'document' && part.source.kind === 'base64') {
+        blocks.push({
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf' as const,
+            data: part.source.data,
+          },
+        });
+      }
       continue;
     }
     if (part.type === 'reasoning') {
       if (part.redacted === true || part.signature === undefined) {
         continue;
       }
-      content.push({ type: 'thinking', thinking: part.text, signature: part.signature });
+      blocks.push({ type: 'thinking', thinking: part.text, signature: part.signature });
       continue;
     }
-    content.push(toAnthropicBlock(part));
+    blocks.push(toAnthropicBlock(part));
   }
-  return { role: message.role === 'assistant' ? 'assistant' : 'user', content };
+  return blocks;
+}
+
+function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
+  const role = message.role === 'assistant' ? 'assistant' : 'user';
+  if (role === 'assistant') {
+    const content: Anthropic.ContentBlockParam[] = [];
+    for (const part of message.content) {
+      if (part.type === 'media') {
+        continue;
+      }
+      if (part.type === 'reasoning') {
+        if (part.redacted === true || part.signature === undefined) {
+          continue;
+        }
+        content.push({ type: 'thinking', thinking: part.text, signature: part.signature });
+        continue;
+      }
+      content.push(toAnthropicBlock(part));
+    }
+    return { role: 'assistant', content };
+  }
+  const hasMedia = message.content.some((part) => part.type === 'media');
+  if (!hasMedia) {
+    const content: Anthropic.ContentBlockParam[] = [];
+    for (const part of message.content) {
+      if (part.type === 'media') {
+        continue;
+      }
+      if (part.type === 'reasoning') {
+        if (part.redacted === true || part.signature === undefined) {
+          continue;
+        }
+        content.push({ type: 'thinking', thinking: part.text, signature: part.signature });
+        continue;
+      }
+      content.push(toAnthropicBlock(part));
+    }
+    return { role: 'user', content };
+  }
+  return { role: 'user', content: toAnthropicContentBlocks(message.content) };
 }
 
 /** Normalize a message's content to a block array (Anthropic allows a bare string for a text turn). */
@@ -621,7 +674,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
-      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
@@ -643,7 +696,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
-      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(createClient(key), req);
     },
   };

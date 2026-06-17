@@ -5,7 +5,7 @@ import OpenAI, {
   APIUserAbortError,
 } from 'openai';
 
-import type { ContentPart, StopReason } from '@relavium/shared';
+import { isPrivateOrLocalHost, urlHasCredentials, type ContentPart, mediaModalityOf, type StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError } from '../errors.js';
@@ -25,7 +25,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertNoMediaRequested, isAbortSignal } from './shared.js';
+import { REASONING_ID, assertMediaCapabilities, isAbortSignal } from './shared.js';
 
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
@@ -40,22 +40,20 @@ import { REASONING_ID, assertNoMediaRequested, isAbortSignal } from './shared.js
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
 /**
- * OpenAI's common-path capability surface (reasoning models are a separate, non-common path). The
- * ADR-0031 `media` matrix is honestly all-false at 1.AD: the request path still flattens user
- * content to text (the §1.4 `textOf` bug — fixed at 1.AE), so advertising media/vision would be
- * exactly the "advertised but unsendable" lie the amendment exists to close. 1.AE unflattens the
- * content path and sets the real matrix; `vision` is the derived alias of `media.input.image`.
+ * OpenAI's common-path capability surface. 1.AE wires the real media input matrix (image, audio,
+ * document in) and sets `vision` to the derived alias of `media.input.image`. DeepSeek remains
+ * text-only (no multimodal support).
  */
 const OPENAI_SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: false,
-  promptCache: true, // automatic prompt caching; no separate write charge
+  vision: true,
+  promptCache: true,
   reasoning: false,
   media: {
-    input: { image: false, audio: false, video: false, document: false },
-    outputCombinations: [],
+    input: { image: true, audio: true, video: false, document: true },
+    outputCombinations: [['text'], ['text', 'audio']],
   },
 };
 
@@ -65,7 +63,7 @@ const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   streaming: true,
   parallelToolCalls: true,
   vision: false,
-  promptCache: true, // cache-hit input is discounted
+  promptCache: true,
   reasoning: true,
   media: {
     input: { image: false, audio: false, video: false, document: false },
@@ -227,7 +225,66 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId): LlmEr
 type ToolCallPart = Extract<ContentPart, { type: 'tool_call' }>;
 type ToolResultPart = Extract<ContentPart, { type: 'tool_result' }>;
 
-/** Concatenate the text parts of a message into one string (OpenAI content is a plain string here). */
+/**
+ * The §1.4 fix: unflatten user content from `textOf()` to `ChatCompletionContentPart[]`,
+ * preserving `image_url` and `input_audio` media parts. When no media parts are present,
+ * emit the existing simple `{ role: 'user', content: string }` (backwards-compat).
+ */
+function toOpenAiUserContent(content: readonly ContentPart[]): string | OpenAI.ChatCompletionContentPart[] {
+  let hasMedia = false;
+  for (const part of content) {
+    if (part.type === 'media') {
+      hasMedia = true;
+      break;
+    }
+  }
+  if (!hasMedia) {
+    return content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+  }
+  const parts: OpenAI.ChatCompletionContentPart[] = [];
+  for (const part of content) {
+    switch (part.type) {
+      case 'text':
+        parts.push({ type: 'text', text: part.text });
+        break;
+      case 'media': {
+        const modality = mediaModalityOf(part.mimeType);
+        if (modality === 'image' || modality === 'document') {
+          if (part.source.kind === 'base64') {
+            parts.push({
+              type: 'image_url',
+              image_url: { url: `data:${part.mimeType};base64,${part.source.data}` },
+            });
+          } else if (part.source.kind === 'url') {
+            parts.push({
+              type: 'image_url',
+              image_url: { url: part.source.url },
+            });
+          }
+          // handle: resolved at egress by MediaStore (1.AF)
+        } else if (modality === 'audio') {
+          if (part.source.kind === 'base64') {
+const format = part.mimeType.split('/')[1]?.split(';')[0] ?? 'wav';
+             const audioFormat = format === 'mp3' ? 'mp3' : 'wav'; // SDK allows 'wav' | 'mp3'
+             parts.push({
+               type: 'input_audio' as const,
+               input_audio: { data: part.source.data, format: audioFormat },
+            });
+          }
+          // url/handle audio: deferred to 1.AF
+        }
+        // video: never inline on OpenAI; skip (asset via 1.AG generative path)
+        break;
+      }
+      default:
+        // text, tool_call, tool_result, reasoning are handled per-role below
+        break;
+    }
+  }
+  return parts;
+}
+
+/** Extract the text content of a message for contexts where only text is expected (assistant, tool). */
 function textOf(content: readonly ContentPart[]): string {
   return content.map((part) => (part.type === 'text' ? part.text : '')).join('');
 }
@@ -235,8 +292,10 @@ function textOf(content: readonly ContentPart[]): string {
 /** Map one canonical message to one or more OpenAI message params (tool results split out). */
 function toOpenAiMessages(message: LlmMessage): OpenAI.ChatCompletionMessageParam[] {
   switch (message.role) {
-    case 'user':
-      return [{ role: 'user', content: textOf(message.content) }];
+    case 'user': {
+      const content = toOpenAiUserContent(message.content);
+      return [{ role: 'user', content }];
+    }
     case 'assistant': {
       const toolCalls = message.content
         .filter((part): part is ToolCallPart => part.type === 'tool_call')
@@ -371,68 +430,12 @@ function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
 }
 
 /**
- * True for a hostname that resolves to a loopback, private (RFC-1918 / ULA), link-local, or
- * cloud-metadata address — the literal forms an SSRF payload would use. `host` is the already-
- * normalized `URL.hostname` (lowercased, IPv6 brackets stripped, decimal/hex IPs canonicalized).
- */
-function isPrivateOrLocalHost(host: string): boolean {
-  if (host.includes(':')) {
-    // IPv6 literal. An embedded-IPv4 form (IPv4-mapped `::ffff:a.b.c.d` and well-known NAT64
-    // `64:ff9b::a.b.c.d`) routes to its embedded IPv4 on a dual-stack host — decode it and re-check
-    // the IPv4, so e.g. `::ffff:169.254.169.254` (which Node normalizes to `::ffff:a9fe:a9fe`)
-    // cannot slip past as a "non-loopback" IPv6.
-    const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
-    if (embeddedHex !== null) {
-      const hi = Number.parseInt(embeddedHex[1] ?? '', 16);
-      const lo = Number.parseInt(embeddedHex[2] ?? '', 16);
-      return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
-    }
-    const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
-    if (embeddedDotted !== null) {
-      return isPrivateOrLocalHost(embeddedDotted[1] ?? '');
-    }
-    return (
-      host === '::1' || // loopback
-      host === '::' || // unspecified
-      host.startsWith('fe80:') || // link-local fe80::/10
-      host.startsWith('fc') || // unique-local fc00::/7
-      host.startsWith('fd')
-    );
-  }
-  if (
-    host === 'localhost' ||
-    host.endsWith('.localhost') ||
-    host.endsWith('.internal') ||
-    host.endsWith('.local') ||
-    host.startsWith('0.') || // 0.0.0.0/8 — "this host" / unspecified
-    host.startsWith('127.') || // loopback 127/8
-    host.startsWith('10.') || // private 10/8
-    host.startsWith('192.168.') || // private 192.168/16
-    host.startsWith('169.254.') // IPv4 link-local — cloud metadata (169.254.169.254)
-  ) {
-    return true;
-  }
-  // 172.16.0.0–172.31.255.255 (private) and 100.64.0.0–100.127.255.255 (CGNAT).
-  const m172 = /^172\.(\d{1,3})\./.exec(host);
-  if (m172 !== null) {
-    const octet = Number(m172[1]);
-    if (octet >= 16 && octet <= 31) return true;
-  }
-  const m100 = /^100\.(\d{1,3})\./.exec(host);
-  if (m100 !== null) {
-    const octet = Number(m100[1]);
-    if (octet >= 64 && octet <= 127) return true;
-  }
-  return false;
-}
-
-/**
  * Throw if a caller-supplied `baseURL` is not a safe public HTTPS endpoint — a construction-time SSRF
  * guard so a hostile base URL can't redirect egress (with the real key) to an internal/metadata host.
- * The `URL` parser normalizes the evasions string-matching misses (userinfo `@`, decimal/hex IPs,
- * trailing dots, case, IPv6 brackets). This is a best-effort literal block; the *complete* SSRF guard
- * (DNS resolution to catch a public name pointing at a private IP, redirect re-validation) is the
- * shared security primitive's job (security-review.md) — a forward obligation, not duplicated here.
+ * Uses `new URL()` for normalization (decimal/hex/octal IPs, case, trailing dots) — this lives in the
+ * adapter layer where the URL global is available — then delegates the range-block to the shared
+ * `isPrivateOrLocalHost` (security-review.md, 1.AE). The host-side EgressCapability.fetch adds DNS
+ * resolution + connect-by-validated-IP + per-hop redirect re-validation.
  */
 function assertHttpsBaseUrl(url: string): void {
   let parsed: URL;
@@ -443,6 +446,9 @@ function assertHttpsBaseUrl(url: string): void {
   }
   if (parsed.protocol !== 'https:') {
     throw new InvalidBaseUrlError(url, `must use HTTPS, got '${parsed.protocol}'`);
+  }
+  if (urlHasCredentials(url)) {
+    throw new InvalidBaseUrlError(url, 'must not contain embedded credentials');
   }
   const host = parsed.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
   if (isPrivateOrLocalHost(host)) {
@@ -647,7 +653,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     supports,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(providerId, supports, req); // fail fast, never silently drop an unsupported feature
-      assertNoMediaRequested(providerId, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       try {
         const completion = await client.chat.completions.create(
@@ -672,7 +678,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
-      assertNoMediaRequested(providerId, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(createClient(key), req, providerId);
     },
   };

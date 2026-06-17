@@ -439,7 +439,7 @@ describe('seam shape amendment (ADR-0031) — multimodal I/O', () => {
           source: { kind: 'url', url: 'https://example.com/a.png' },
         }),
       ).success,
-    ).toBe(false); // feature-flag-OFF until the shared SSRF primitive lands (1.AE)
+    ).toBe(true); // SSRF primitive landed (1.AE) — url sources now accepted with policy validation
   });
 
   it('result-side content stays representable OVER the ceiling (the boundary asymmetry)', () => {

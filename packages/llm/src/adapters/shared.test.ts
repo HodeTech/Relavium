@@ -1,8 +1,10 @@
+import { ZodError } from 'zod';
+
 import { describe, expect, it } from 'vitest';
 
 import { UnsupportedCapabilityError } from '../errors.js';
-import type { LlmRequest } from '../types.js';
-import { assertNoMediaRequested, isAbortSignal } from './shared.js';
+import type { CapabilityFlags, LlmRequest } from '../types.js';
+import { assertMediaCapabilities, isAbortSignal } from './shared.js';
 
 const textOnly: LlmRequest = {
   model: 'm',
@@ -12,64 +14,188 @@ const textOnly: LlmRequest = {
   ],
 };
 
-describe('assertNoMediaRequested (the 1.AD shape-only media guard, ADR-0031)', () => {
-  it('passes text/tool-only requests untouched, including an explicit text-only outputModalities', () => {
-    expect(() => assertNoMediaRequested('anthropic', textOnly)).not.toThrow();
-    expect(() => assertNoMediaRequested('gemini', { model: 'm', messages: [] })).not.toThrow();
+const noMedia: CapabilityFlags = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: true,
+  vision: false,
+  promptCache: true,
+  reasoning: true,
+  media: { input: { image: false, audio: false, video: false, document: false }, outputCombinations: [] },
+};
+
+const openaiMedia: CapabilityFlags = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: true,
+  vision: true,
+  promptCache: true,
+  reasoning: false,
+  media: {
+    input: { image: true, audio: true, video: false, document: true },
+    outputCombinations: [['text'], ['text', 'audio']],
+  },
+};
+
+const anthropicMedia: CapabilityFlags = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: true,
+  vision: true,
+  promptCache: true,
+  reasoning: false,
+  media: {
+    input: { image: true, audio: false, video: false, document: true },
+    outputCombinations: [],
+  },
+};
+
+const geminiMedia: CapabilityFlags = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: true,
+  vision: true,
+  promptCache: true,
+  reasoning: false,
+  media: {
+    input: { image: true, audio: true, video: true, document: true },
+    outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
+  },
+};
+
+const HANDLE = `media://sha256-${'a'.repeat(64)}`;
+
+describe('assertMediaCapabilities — per-modality input/output gate (1.AE, ADR-0031)', () => {
+  it('passes text/tool-only requests untouched for all providers', () => {
+    expect(() => assertMediaCapabilities('deepseek', noMedia, textOnly)).not.toThrow();
+    expect(() => assertMediaCapabilities('openai', openaiMedia, { model: 'm', messages: [] })).not.toThrow();
     expect(() =>
-      assertNoMediaRequested('openai', { ...textOnly, outputModalities: ['text'] }),
+      assertMediaCapabilities('openai', openaiMedia, { ...textOnly, outputModalities: ['text'] }),
     ).not.toThrow();
   });
 
-  it('throws the typed capability error naming the provider on any media part', () => {
-    const withMedia: LlmRequest = {
+  it('rejects every media modality when the provider supports none (DeepSeek)', () => {
+    const withImage: LlmRequest = {
       ...textOnly,
       messages: [
         ...textOnly.messages,
-        {
-          role: 'user',
-          content: [
-            { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aGVsbG8=' } },
-          ],
-        },
+        { role: 'user' as const, content: [{ type: 'media' as const, mimeType: 'image/png', source: { kind: 'base64' as const, data: 'aGVsbG8=' } }] },
       ],
     };
     try {
-      assertNoMediaRequested('deepseek', withMedia);
-      expect.unreachable('assertNoMediaRequested must throw on a media part');
+      assertMediaCapabilities('deepseek', noMedia, withImage);
+      expect.unreachable('must throw on an image part when image is unsupported');
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedCapabilityError);
       if (err instanceof UnsupportedCapabilityError) {
         expect(err.code).toBe('unsupported_capability');
         expect(err.capability).toBe('media');
-        expect(err.provider).toBe('deepseek');
+        expect(err.detail).toContain('image');
       }
     }
   });
 
-  it('throws on a handle-source media part too — no carrier is sendable before 1.AE', () => {
+  it('allows image+audio input for OpenAI; document/video use handles (ceiling=0)', () => {
+    const withImage: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    const withAudio: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    const withPdfHandle: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'application/pdf', source: { kind: 'handle', ref: HANDLE } }] }],
+    };
+    const withVideoHandle: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'video/mp4', source: { kind: 'handle', ref: HANDLE } }] }],
+    };
+    expect(() => assertMediaCapabilities('openai', openaiMedia, withImage)).not.toThrow();
+    expect(() => assertMediaCapabilities('openai', openaiMedia, withAudio)).not.toThrow();
+    expect(() => assertMediaCapabilities('openai', openaiMedia, withPdfHandle)).not.toThrow();
+    expect(() => assertMediaCapabilities('openai', openaiMedia, withVideoHandle)).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('allows image+document for Anthropic but rejects audio and video', () => {
+    const withImage: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    const withAudio: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    const withPdfHandle: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'application/pdf', source: { kind: 'handle', ref: HANDLE } }] }],
+    };
+    expect(() => assertMediaCapabilities('anthropic', anthropicMedia, withImage)).not.toThrow();
+    expect(() => assertMediaCapabilities('anthropic', anthropicMedia, withPdfHandle)).not.toThrow();
+    expect(() => assertMediaCapabilities('anthropic', anthropicMedia, withAudio)).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('allows all four input modalities for Gemini (video/document use handles)', () => {
+    const withImage: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    const withAudio: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    const withVideoHandle: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'video/mp4', source: { kind: 'handle', ref: HANDLE } }] }],
+    };
+    const withPdfHandle: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'application/pdf', source: { kind: 'handle', ref: HANDLE } }] }],
+    };
+    expect(() => assertMediaCapabilities('gemini', geminiMedia, withImage)).not.toThrow();
+    expect(() => assertMediaCapabilities('gemini', geminiMedia, withAudio)).not.toThrow();
+    expect(() => assertMediaCapabilities('gemini', geminiMedia, withVideoHandle)).not.toThrow();
+    expect(() => assertMediaCapabilities('gemini', geminiMedia, withPdfHandle)).not.toThrow();
+  });
+
+  it('rejects an unknown MIME type at the schema level (fail-closed, ZodError)', () => {
+    const withUnknown: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'model/gltf', source: { kind: 'handle', ref: HANDLE } }] }],
+    };
+    expect(() => assertMediaCapabilities('openai', openaiMedia, withUnknown)).toThrowError(ZodError);
+  });
+
+  it('rejects inline base64 for video/document at the schema level (ceiling=0)', () => {
+    const inlinePdf: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'application/pdf', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    expect(() => assertMediaCapabilities('openai', openaiMedia, inlinePdf)).toThrowError(ZodError);
+    const inlineVideo: LlmRequest = {
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'media', mimeType: 'video/mp4', source: { kind: 'base64', data: 'aQ==' } }] }],
+    };
+    expect(() => assertMediaCapabilities('openai', openaiMedia, inlineVideo)).toThrowError(ZodError);
+  });
+
+  it('throws on a handle-source media part when the modality is unsupported', () => {
     const handlePart: LlmRequest = {
       model: 'm',
       messages: [
         {
           role: 'user',
-          content: [
-            {
-              type: 'media',
-              mimeType: 'image/png',
-              source: { kind: 'handle', ref: `media://sha256-${'c'.repeat(64)}` },
-            },
-          ],
+          content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } }],
         },
       ],
     };
-    expect(() => assertNoMediaRequested('anthropic', handlePart)).toThrowError(
-      UnsupportedCapabilityError,
-    );
+    expect(() => assertMediaCapabilities('deepseek', noMedia, handlePart)).toThrowError(UnsupportedCapabilityError);
+    expect(() => assertMediaCapabilities('openai', openaiMedia, handlePart)).not.toThrow();
   });
 
-  it('throws on tool_result media attachments — the builders would silently drop them otherwise', () => {
-    const withAttachment: LlmRequest = {
+  it('gates tool_result media attachments by modality', () => {
+    const imageAttachment: LlmRequest = {
       model: 'm',
       messages: [
         {
@@ -79,43 +205,37 @@ describe('assertNoMediaRequested (the 1.AD shape-only media guard, ADR-0031)', (
               type: 'tool_result',
               toolCallId: 'c1',
               result: { descriptor: 'image saved' },
-              media: [
-                {
-                  type: 'media',
-                  mimeType: 'image/png',
-                  source: { kind: 'handle', ref: `media://sha256-${'d'.repeat(64)}` },
-                },
-              ],
+              media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } }],
             },
           ],
         },
       ],
     };
-    expect(() => assertNoMediaRequested('openai', withAttachment)).toThrowError(
-      UnsupportedCapabilityError,
-    );
-    // An EMPTY media array is not an attachment — it must pass.
+    expect(() => assertMediaCapabilities('openai', openaiMedia, imageAttachment)).not.toThrow();
+    expect(() => assertMediaCapabilities('deepseek', noMedia, imageAttachment)).toThrowError(UnsupportedCapabilityError);
+
     const emptyAttachment: LlmRequest = {
       model: 'm',
       messages: [
-        {
-          role: 'tool',
-          content: [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', media: [] }],
-        },
+        { role: 'tool', content: [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', media: [] }] },
       ],
     };
-    expect(() => assertNoMediaRequested('openai', emptyAttachment)).not.toThrow();
+    expect(() => assertMediaCapabilities('openai', openaiMedia, emptyAttachment)).not.toThrow();
   });
 
-  it('throws on a non-text outputModalities request — media output is unwired until 1.AG', () => {
-    // Without this, outputModalities: ['image'] would reach an all-false adapter and be silently
-    // ignored (answered with text) — the same silent-degradation class as the input flatten.
+  it('gates output modalities by membership in outputCombinations', () => {
     expect(() =>
-      assertNoMediaRequested('gemini', { ...textOnly, outputModalities: ['text', 'image'] }),
+      assertMediaCapabilities('openai', openaiMedia, { ...textOnly, outputModalities: ['text', 'audio'] }),
+    ).not.toThrow();
+    expect(() =>
+      assertMediaCapabilities('openai', openaiMedia, { ...textOnly, outputModalities: ['text', 'image'] }),
     ).toThrowError(UnsupportedCapabilityError);
     expect(() =>
-      assertNoMediaRequested('openai', { ...textOnly, outputModalities: ['audio'] }),
+      assertMediaCapabilities('anthropic', anthropicMedia, { ...textOnly, outputModalities: ['text', 'image'] }),
     ).toThrowError(UnsupportedCapabilityError);
+    expect(() =>
+      assertMediaCapabilities('gemini', geminiMedia, { ...textOnly, outputModalities: ['text', 'image'] }),
+    ).not.toThrow();
   });
 });
 

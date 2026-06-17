@@ -54,12 +54,13 @@ export const MEDIA_MESSAGE_CAPS = {
 } as const;
 
 /**
- * The `url` media carrier is a **hard landing gate** (ADR-0031 §Reserved shape): it stays OFF — a
- * `url` source is rejected at the seam ingestion boundary — until the one shared SSRF
- * range-primitive lands (1.AE). The flag is deliberately typed `boolean` (not `false`) because it
- * flips on later; the gate test in content.test.ts pins the rejection while it is off.
+ * The `url` media carrier landing gate (ADR-0031 §Reserved shape): the SSRF range-primitive has
+ * landed (1.AE — `extractHttpsHost`, `isPrivateOrLocalHost`, `urlHasCredentials`), so URL sources
+ * are now accepted at the seam boundary. The policy half (literal format + credential + range-block
+ * checks) lives in `refineInFlightMediaPart`; the mechanism half (DNS resolve + connect-by-validated-IP
+ * + per-hop redirect re-validation) belongs to the host-side `EgressCapability.fetch`.
  */
-export const MEDIA_URL_SOURCE_ENABLED: boolean = false;
+export const MEDIA_URL_SOURCE_ENABLED: boolean = true;
 
 /* ------------------------------------------------------------------------------------------------
  * Media helpers (pure, platform-free)
@@ -563,6 +564,33 @@ export function refineInFlightMediaPart(
     });
     return 0;
   }
+  if (part.source.kind === 'url') {
+    const host = extractHttpsHost(part.source.url);
+    if (host === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'media url source must be a valid HTTPS URL',
+        path: [...path, 'source', 'url'],
+      });
+      return 0;
+    }
+    if (host.hasCredentials) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'media url source must not contain embedded credentials',
+        path: [...path, 'source', 'url'],
+      });
+      return 0;
+    }
+    if (isPrivateOrLocalHost(host.host)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'media url source must not resolve to a private, loopback, or link-local address',
+        path: [...path, 'source', 'url'],
+      });
+      return 0;
+    }
+  }
   if (part.source.kind !== 'base64') {
     return 0;
   }
@@ -632,6 +660,160 @@ export interface MediaStore {
 export interface DeInlineMedia {
   (parts: readonly ContentPart[], store: MediaStore): Promise<DurableContentPart[]>;
   (value: unknown, store: MediaStore): Promise<unknown>;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * SSRF range-block — the one shared primitive (1.AE, security-review.md, ADR-0031 §Guardrails)
+ *
+ * The policy half of the SSRF guard: given a hostname string (post-URL-parse, lowercased,
+ * bracket-stripped for IPv6), return whether it is a private, loopback, link-local, CGNAT,
+ * or cloud-metadata address that must never be an egress target. The mechanism half
+ * (DNS resolution + connect-by-validated-IP + per-hop redirect re-validation) lives in the
+ * host-side EgressCapability.fetch implementation — see docs/standards/security-review.md.
+ *
+ * Every egress caller (provider baseURL, http_request, MCP server URLs, and the media url
+ * carrier) reuses this one function — never a second hand-rolled parser.
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Returns `true` when `host` is a private, loopback, link-local, CGNAT, cloud-metadata,
+ * or otherwise non-routable address that must never be an egress target.
+ *
+ * Accepts an IPv4 dotted-decimal, an IPv6 literal (with or without brackets), or a
+ * hostname. IPv4-mapped IPv6 forms like `::ffff:127.0.0.1` and NAT64 `64:ff9b::127.0.0.1`
+ * are decoded and re-checked against the IPv4 rules so they cannot bypass the block.
+ *
+ * This is the **literal-hostname check** only (no DNS resolution). The host-side
+ * EgressCapability.fetch resolves the hostname and re-runs this check on every resolved IP,
+ * then pins the connection to a validated IP — closing the DNS-rebinding and
+ * post-resolution-redirect TOCTOU windows.
+ *
+ * Canonical test surface: docs/standards/testing.md §Security-critical primitive tests.
+ */
+export function isPrivateOrLocalHost(host: string): boolean {
+  const h = host.toLowerCase();
+
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) {
+    return true;
+  }
+
+  if (h.startsWith('0.')) {
+    return true;
+  }
+
+  if (h.startsWith('127.') || h === '::1' || h === '::') {
+    return true;
+  }
+
+  if (h.startsWith('10.')) {
+    return true;
+  }
+
+  const m172 = /^172\.(\d{1,3})\./.exec(h);
+  if (m172 !== null) {
+    const octet = Number(m172[1]);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+
+  if (h.startsWith('192.168.')) {
+    return true;
+  }
+
+  const m100 = /^100\.(\d{1,3})\./.exec(h);
+  if (m100 !== null) {
+    const octet = Number(m100[1]);
+    if (octet >= 64 && octet <= 127) return true;
+  }
+
+  if (h.startsWith('169.254.')) {
+    return true;
+  }
+
+  if (h.startsWith('fe80:') || h.startsWith('fe80:')) {
+    return true;
+  }
+
+  if (h.startsWith('fc') || h.startsWith('fd')) {
+    const next = h.charCodeAt(2);
+    if ((next >= 0x30 && next <= 0x39) || (next >= 0x61 && next <= 0x66)) {
+      return true;
+    }
+  }
+
+  if (h.includes(':')) {
+    const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(h);
+    if (embeddedDotted !== null) {
+      return isPrivateOrLocalHost(embeddedDotted[1] ?? '');
+    }
+    const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+    if (embeddedHex !== null) {
+      const hi = Number.parseInt(embeddedHex[1] ?? '0', 16);
+      const lo = Number.parseInt(embeddedHex[2] ?? '0', 16);
+      return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Returns `true` when a URL string contains credentials (`user:pass@`) in its
+ * authority component. Used by the SSRF policy to reject URLs that embed secrets
+ * in the URL itself (security-review.md).
+ */
+export function urlHasCredentials(url: string): boolean {
+  const match = /^https?:\/\/([^/?#]+)/i.exec(url);
+  if (match === null) return false;
+  return match[1]?.includes('@') ?? false;
+}
+
+/**
+ * Extract the lowercased host from an HTTPS URL, plus whether the URL's authority
+ * contains embedded credentials. Pure string parsing (no URL global — the engine-purity
+ * `lib` has no DOM). Returns `null` for a non-HTTPS URL or a malformed authority.
+ *
+ * This is the exact-FQDN **policy** half; the SSRF range-block is the host's job.
+ * Shared by the engine's `enforceHttpEgress` and the adapter's `baseURL` validation.
+ */
+export function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
+  const match = /^https:\/\/([^/?#]+)/i.exec(url);
+  if (match === null) {
+    return null;
+  }
+  const rawAuthority = match[1] ?? '';
+  if (hasSmugglingChar(rawAuthority)) {
+    return null;
+  }
+  let authority = rawAuthority;
+  let hasCredentials = false;
+  const at = authority.lastIndexOf('@');
+  if (at !== -1) {
+    hasCredentials = true;
+    authority = authority.slice(at + 1);
+  }
+  let host: string;
+  if (authority.startsWith('[')) {
+    const end = authority.indexOf(']');
+    host = end === -1 ? authority : authority.slice(1, end);
+  } else {
+    const colon = authority.indexOf(':');
+    host = colon === -1 ? authority : authority.slice(0, colon);
+  }
+  return { host: host.toLowerCase(), hasCredentials };
+}
+
+/**
+ * Reject authority strings containing C0 controls, DEL, or backslash — smuggling
+ * attacks that exploit URL parser differences (e.g. `\r`, `\n`, `\0`, `\\`).
+ */
+function hasSmugglingChar(authority: string): boolean {
+  for (let i = 0; i < authority.length; i++) {
+    const code = authority.codePointAt(i) ?? Number.NaN;
+    if (code <= 0x20 || code === 0x7f || code === 0x5c) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /* ------------------------------------------------------------------------------------------------
