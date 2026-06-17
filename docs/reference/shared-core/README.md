@@ -21,3 +21,4 @@ Part of [reference/](../README.md).
 | [built-in-tools.md](built-in-tools.md) | Built-in tools available to local agents (read_file, run_command, web_search, git, …). |
 | [tool-registry.md](tool-registry.md) | The engine-side `ToolRegistry` + dispatch and the host-injected `ToolHost` capability seam — policy/mechanism split, dispatch lifecycle, guardrail enforcement, result bounding, untrusted-data taint (1.T / [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md)). |
 | [mcp-integration.md](mcp-integration.md) | MCP: agents as MCP servers, and agents consuming MCP tools. |
+| [action-guard-seam.md](action-guard-seam.md) | **Draft** — the optional, host-injected `ActionGuard` seam an external action-governance control plane plugs into at the side-effecting tool boundary: decide/commit/compensate, verdict union, off-by-default ([ADR-0041](../../decisions/0041-external-action-governance-seam.md), Proposed). |

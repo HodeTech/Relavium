@@ -169,8 +169,9 @@ emission via an injected `SessionEventSink`) **then landed together — ✅ Done
 milestone)**, now unblocked; in parallel, **Lane C** (the 1.m5 sub-spine) continued from 1.V through **1.W**
 (the `SessionEventSink`→`RunEventBus` wiring + per-session `sequenceNumber`/`SessionHandle` — ✅ Done, PR #28)
 and **1.X** (session persistence — the `agent_sessions`/`session_messages` tables + `SessionMessageSchema` +
-`SessionStore`, data-layer only — ✅ Done, PR #29), leaving **1.Y/1.Z/1.AA** next on Lane C, with cost-event
-persistence still a tracked deferral.
+`SessionStore`, data-layer only — ✅ Done, PR #29); then **session checkpoint/resume (1.Y) +
+export-to-workflow (1.Z) landed together — ✅ Done (PR #30, 2026-06-17)**. The **1.AA** chat-regression
+harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistence remains a tracked deferral.
 
 > **Multimodal I/O — the shape is landed (1.AD ✅ Done, PR #11, 2026-06-10).** First-class
 > image/audio/video I/O (input **and** output, incl. generate-media-by-rule) was decided on 2026-06-08:
@@ -208,10 +209,12 @@ persistence still a tracked deferral.
 > `sequenceNumber`, `next`/`emit` overloads keeping the engine run-precise), the `SessionHandle`, and the
 > combined `RunOrSessionEventSchema` gate — and **session persistence (1.X) is ✅ Done (PR #29, 2026-06-17)** —
 > the `agent_sessions`/`session_messages` tables + migration, `SessionMessageSchema`/`AgentSessionSchema`, and
-> the `SessionStore` + domain↔row mappers (data-layer only; engine wiring is 1.Y/1.AA). The remaining Phase-1
-> work is **additive and off the critical path**: Lane C (1.Y/1.Z/1.AA) and the 1.m6 multimodal sub-spine
-> (1.AE–1.AH). **Phase 2
-> (CLI, milestone M3) is unblocked.**
+> the `SessionStore` + domain↔row mappers (data-layer only); then **session checkpoint/resume (1.Y) +
+> export-to-workflow (1.Z) are ✅ Done (PR #30, 2026-06-17)** — `reconstructSessionState`/`AgentSession.resume`
+> + the `serializeWorkflow`/`sessionToWorkflow` pair (the per-turn `AgentSession`→store wiring stays with 1.AA).
+> **1.AA is now ✅ Done (2026-06-17)**, completing **1.m5**. The remaining Phase-1 work is **additive and
+> off the critical path**: only the 1.m6 multimodal sub-spine (1.AE–1.AH) remains before Phase 1 closes.
+> **Phase 2 (CLI, milestone M3) is unblocked.**
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
