@@ -141,6 +141,11 @@ export type {
 export { EngineStateError } from './engine/errors.js';
 export type { EngineStateErrorCode } from './engine/errors.js';
 
+// Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud
+// so a producer/consumer bug is caught at source rather than silently un-gapping the sequence (ADR-0036).
+export { RunLoopInvariantError } from './engine/invariant-error.js';
+export type { RunLoopInvariantCode } from './engine/invariant-error.js';
+
 // AgentRunner (1.O) — the single dispatching NodeExecutor for `agent` vertices; a surface constructs
 // it with host capabilities (resolveProvider + the chain's keyFor/sleep) and injects it as
 // WorkflowEngineDeps.executor (ADR-0038). The correlation-agnostic turn core it wraps stays internal

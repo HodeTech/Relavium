@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SessionContextSchema, type RunOrSessionEvent } from '@relavium/shared';
 
 import { RunEventBus, type RunEventDraft, type SessionEventDraft } from './event-bus.js';
+import { RunLoopInvariantError } from './invariant-error.js';
 
 /** A deterministic ISO clock — 1ms per read from a fixed base, so timestamps are reproducible. */
 function fakeNow(): () => string {
@@ -55,7 +56,7 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
     expect(bus.next(nodeStarted('run-1', 'a')).timestamp).toBe('2026-06-13T12:00:00.000Z');
   });
 
-  it('throws when a draft carries neither runId nor sessionId (an engine invariant breach)', () => {
+  it('throws a typed RunLoopInvariantError when a draft carries NEITHER runId nor sessionId', () => {
     const bus = new RunEventBus({ now: fakeNow() });
     // A structurally-incomplete draft — the engine always sets exactly one key, so this is a guard.
     const orphan = {
@@ -63,7 +64,39 @@ describe('RunEventBus — sequence stamping (the single producer-side translatio
       nodeId: 'a',
       nodeType: 'input',
     } as unknown as RunEventDraft;
-    expect(() => bus.next(orphan)).toThrow(/neither runId nor sessionId/);
+    let caught: unknown;
+    try {
+      bus.next(orphan);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(RunLoopInvariantError);
+    expect(caught instanceof RunLoopInvariantError && caught.code).toBe('no_correlation_key');
+  });
+
+  it('throws a typed RunLoopInvariantError when a draft carries BOTH keys — XOR enforced at the bus, even when validate:false', () => {
+    // A dual-envelope arm (agent:token) can statically hold both keys; a correct producer never sets both,
+    // so this is the invariant guard. Asserted in BOTH validate modes: with the Zod XOR check off (the hot
+    // path), the bus itself must still fail loud rather than silently sequencing under runId.
+    const both: RunEventDraft = {
+      type: 'agent:token',
+      runId: 'run-1',
+      sessionId: 's1',
+      nodeId: 'n',
+      token: 'x',
+      model: 'm',
+    };
+    for (const validate of [true, false]) {
+      const bus = new RunEventBus({ now: fakeNow(), validate });
+      let caught: unknown;
+      try {
+        bus.next(both);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(RunLoopInvariantError);
+      expect(caught instanceof RunLoopInvariantError && caught.code).toBe('both_correlation_keys');
+    }
   });
 
   it('does not advance the counter when validation rejects the event', () => {

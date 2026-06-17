@@ -27,6 +27,8 @@ import {
   type SessionEvent,
 } from '@relavium/shared';
 
+import { RunLoopInvariantError } from './invariant-error.js';
+
 /** Distribute `Omit` across each member of a union so the discriminated union is preserved. */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
@@ -83,15 +85,33 @@ export interface RunEventBusOptions {
   readonly onListenerError?: (error: unknown, event: RunOrSessionEvent) => void;
 }
 
-/** The correlation key of a draft — `runId` on a run, `sessionId` on a session (exactly one). */
-function correlationKey(draft: BusEventDraft): string | undefined {
-  if ('runId' in draft && draft.runId !== undefined) {
-    return draft.runId;
+/**
+ * The correlation key of a draft — `runId` on a run, `sessionId` on a session. Enforces the bus invariant
+ * that **exactly one** is set: both or neither is an internal producer bug (the engine emits `runId`-only,
+ * the session sink `sessionId`-only), so it throws loudly here rather than silently mis-keying — and thus
+ * un-gapping — the sequence. This holds **independently of the `validate` flag** (the schema's "exactly one
+ * key" `superRefine` runs only when validation is on, so the hot-path opt-out would otherwise skip it).
+ */
+function correlationKey(draft: BusEventDraft): string {
+  const runId = 'runId' in draft && draft.runId !== undefined ? draft.runId : undefined;
+  const sessionId =
+    'sessionId' in draft && draft.sessionId !== undefined ? draft.sessionId : undefined;
+  if (runId !== undefined && sessionId !== undefined) {
+    throw new RunLoopInvariantError(
+      'both_correlation_keys',
+      'RunEventBus: event draft has both runId and sessionId (exactly one required)',
+    );
   }
-  if ('sessionId' in draft && draft.sessionId !== undefined) {
-    return draft.sessionId;
+  if (runId !== undefined) {
+    return runId;
   }
-  return undefined;
+  if (sessionId !== undefined) {
+    return sessionId;
+  }
+  throw new RunLoopInvariantError(
+    'no_correlation_key',
+    'RunEventBus: event draft has neither runId nor sessionId (exactly one required)',
+  );
 }
 
 export class RunEventBus {
@@ -120,12 +140,7 @@ export class RunEventBus {
   next(draft: SessionEventDraft): SessionEvent;
   next(draft: BusEventDraft): RunOrSessionEvent;
   next(draft: BusEventDraft): RunOrSessionEvent {
-    const key = correlationKey(draft);
-    if (key === undefined) {
-      // Internal invariant: the engine always sets exactly one correlation key. Guarded so a bug
-      // surfaces loudly here rather than as a mis-keyed (and therefore ungapped) sequence.
-      throw new Error('RunEventBus.next: event draft has neither runId nor sessionId');
-    }
+    const key = correlationKey(draft); // throws on the both/neither invariant breach (exactly one key)
     const sequenceNumber = this.#sequence.get(key) ?? 0;
     // Re-adding the two envelope fields the draft omitted reconstitutes a full event — TS infers the
     // union back, so no assertion is needed; the optional Zod parse (the combined run+session gate) is

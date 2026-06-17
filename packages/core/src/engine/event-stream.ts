@@ -9,7 +9,15 @@
  * {@link whenDrained} (which the engine awaits at node boundaries) rather than by dropping — a drop would
  * force a `sequenceNumber` resync. One active iteration at a time (a second concurrent `next()` rejects);
  * additional observers attach via the handle's `subscribe`, not a second iterator.
+ *
+ * The optional `onClose` callback fires **once**, deterministically, when the stream closes — whether on a
+ * terminal event or when the consumer abandons the loop early (`break` / `return`, which routes through
+ * {@link return} → {@link close}). The owning handle passes its bus `unsubscribe` here so an early-abandoned
+ * stream stops the bus subscription immediately (no leaked listener / wasted fan-out on a long-lived bus),
+ * instead of lingering until the next terminal event.
  */
+
+import { RunLoopInvariantError } from './invariant-error.js';
 
 /** Default per-consumer high-water mark — beyond this, the producer is asked to await a drain. */
 export const DEFAULT_STREAM_CAPACITY = 256;
@@ -17,12 +25,14 @@ export const DEFAULT_STREAM_CAPACITY = 256;
 export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   readonly #buffer: E[] = [];
   readonly #capacity: number;
+  readonly #onClose: (() => void) | undefined;
   #waitingPull: ((result: IteratorResult<E>) => void) | undefined;
   #drainWaiters: (() => void)[] = [];
   #closed = false;
 
-  constructor(capacity: number) {
+  constructor(capacity: number, onClose?: () => void) {
     this.#capacity = capacity;
+    this.#onClose = onClose;
   }
 
   /** Offer an event to the consumer (hand to a waiting `next()`, else buffer). Never drops. */
@@ -51,6 +61,7 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
       resolve({ value: undefined, done: true });
     }
     this.#wakeDrainWaiters();
+    this.#onClose?.(); // once (guarded by #closed above) — lets the owning handle unsubscribe deterministically
   }
 
   /** Resolves once the buffer is at or below capacity (or the stream is closed) — the backpressure knob. */
@@ -83,7 +94,12 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
       return Promise.resolve({ value: undefined, done: true });
     }
     if (this.#waitingPull !== undefined) {
-      return Promise.reject(new Error('BoundedEventStream: concurrent next() is not supported'));
+      return Promise.reject(
+        new RunLoopInvariantError(
+          'concurrent_consumer',
+          'BoundedEventStream: a second concurrent next() is not supported (single-consumer stream)',
+        ),
+      );
     }
     return new Promise<IteratorResult<E>>((resolve) => {
       this.#waitingPull = resolve;

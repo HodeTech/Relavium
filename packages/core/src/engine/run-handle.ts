@@ -64,15 +64,16 @@ export function createRunHandle(
   cancel: () => void,
   capacity: number = DEFAULT_STREAM_CAPACITY,
 ): RunHandle {
-  const primary = new BoundedEventStream<RunEvent>(capacity);
+  // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
+  // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
+  const primary = new BoundedEventStream<RunEvent>(capacity, () => unsubscribe());
   const unsubscribe = bus.subscribe((event) => {
     if (!isForRun(event, runId)) {
       return; // not this run's event (another run, or a session event with no runId)
     }
     primary.push(event);
     if (TERMINAL_TYPES.has(event.type)) {
-      primary.close();
-      unsubscribe();
+      primary.close(); // close() fires onClose -> unsubscribe()
     }
   });
   return {

@@ -152,6 +152,17 @@ const session = (deps: SessionDeps, agent: Agent = AGENT): AgentSession =>
 const typesOf = (events: readonly SessionStreamEvent[]): readonly string[] =>
   events.map((e) => e.type);
 
+/** Drain a `SessionHandle` stream to completion — for the 1.W end-to-end wiring test below. */
+async function drainSession(
+  events: AsyncIterable<SessionStreamHandleEvent>,
+): Promise<SessionStreamHandleEvent[]> {
+  const collected: SessionStreamHandleEvent[] = [];
+  for await (const event of events) {
+    collected.push(event);
+  }
+  return collected;
+}
+
 describe('AgentSession (1.V) — multi-turn entry point over the shared turn core', () => {
   it('runs a multi-turn conversation with a tool round-trip through the same turn core', async () => {
     // Turn 1 calls echo then answers (2 stream() calls); turn 2 is a plain answer (1 stream() call).
@@ -517,16 +528,6 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
 });
 
 describe('AgentSession → createSessionEventSink → RunEventBus → SessionHandle (1.W end-to-end)', () => {
-  async function drainSession(
-    events: AsyncIterable<SessionStreamHandleEvent>,
-  ): Promise<SessionStreamHandleEvent[]> {
-    const collected: SessionStreamHandleEvent[] = [];
-    for await (const event of events) {
-      collected.push(event);
-    }
-    return collected;
-  }
-
   it('streams a full session through the bus with a per-session sequence; cancel is the terminal', async () => {
     let tick = Date.parse('2026-06-13T00:00:00.000Z');
     const b = new RunEventBus({ now: () => new Date(tick++).toISOString() });
@@ -558,7 +559,7 @@ describe('AgentSession → createSessionEventSink → RunEventBus → SessionHan
     expect(types).toContain('session:turn_started');
     expect(types).toContain('agent:token'); // an in-turn dual event, carried with sessionId
     expect(types).toContain('session:turn_completed');
-    expect(types[types.length - 1]).toBe('session:cancelled');
+    expect(types.at(-1)).toBe('session:cancelled');
     // Every event carries the sessionId, and the per-session sequence is monotonic + gap-free from 0.
     expect(events.every((e) => e.sessionId === 'sess-1')).toBe(true);
     expect(events.map((e) => e.sequenceNumber)).toEqual(events.map((_, i) => i));

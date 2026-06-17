@@ -33,7 +33,10 @@ const turnCompleted = (sessionId = 'sess-1'): SessionEventDraft => ({
   stopReason: 'stop',
   tokensUsed: { input: 1, output: 2 },
 });
-const cancelled = (sessionId = 'sess-1'): SessionEventDraft => ({ type: 'session:cancelled', sessionId });
+const cancelled = (sessionId = 'sess-1'): SessionEventDraft => ({
+  type: 'session:cancelled',
+  sessionId,
+});
 const runNodeStarted = (runId: string): RunEventDraft => ({
   type: 'node:started',
   runId,
@@ -41,7 +44,9 @@ const runNodeStarted = (runId: string): RunEventDraft => ({
   nodeType: 'input',
 });
 
-async function drain(events: AsyncIterable<SessionStreamHandleEvent>): Promise<SessionStreamHandleEvent[]> {
+async function drain(
+  events: AsyncIterable<SessionStreamHandleEvent>,
+): Promise<SessionStreamHandleEvent[]> {
   const collected: SessionStreamHandleEvent[] = [];
   for await (const event of events) {
     collected.push(event);

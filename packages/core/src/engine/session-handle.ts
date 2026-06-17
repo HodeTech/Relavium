@@ -46,7 +46,10 @@ const TERMINAL_SESSION_TYPES: ReadonlySet<SessionStreamHandleEvent['type']> = ne
 ]);
 
 /** True iff `event` carries this session's `sessionId` — narrows the bus union to the session stream. */
-function isForSession(event: RunOrSessionEvent, sessionId: string): event is SessionStreamHandleEvent {
+function isForSession(
+  event: RunOrSessionEvent,
+  sessionId: string,
+): event is SessionStreamHandleEvent {
   return 'sessionId' in event && event.sessionId === sessionId;
 }
 
@@ -102,15 +105,18 @@ export function createSessionHandle(
   cancel: () => void,
   capacity: number = DEFAULT_STREAM_CAPACITY,
 ): SessionHandle {
-  const primary = new BoundedEventStream<SessionStreamHandleEvent>(capacity);
+  // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
+  // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
+  // Matters more for a session than a run: a session is long-lived, so an abandoned stream would otherwise
+  // keep filtering every delivery into a closed buffer until `session:cancelled`.
+  const primary = new BoundedEventStream<SessionStreamHandleEvent>(capacity, () => unsubscribe());
   const unsubscribe = bus.subscribe((event) => {
     if (!isForSession(event, sessionId)) {
       return; // not this session's event (a run event, or another session)
     }
     primary.push(event);
     if (TERMINAL_SESSION_TYPES.has(event.type)) {
-      primary.close();
-      unsubscribe();
+      primary.close(); // close() fires onClose -> unsubscribe()
     }
   });
   return {
