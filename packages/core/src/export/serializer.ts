@@ -115,12 +115,18 @@ function groupIntoTurns(ordered: readonly SessionMessage[]): TurnDraft[] {
   return turns;
 }
 
-/** A kebab-case workflow id derived deterministically from the session (its title, else a fixed default). */
+/**
+ * A kebab-case workflow id derived deterministically from the session (its title, else a fixed default).
+ * Built by splitting on non-alphanumeric runs and rejoining with single dashes — identical output to a
+ * collapse-then-trim, but with no anchored-alternation regex (the only pattern left is one bounded char
+ * class, which is linear), so it avoids the false-positive ReDoS hotspot Sonar raises on `/^-+|-+$/`.
+ */
 function workflowIdFor(record: AgentSessionRecord): string {
   const slug = (record.title ?? '')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .split(/[^a-z0-9]+/)
+    .filter((segment) => segment.length > 0)
+    .join('-');
   return slug.length > 0 ? slug : 'exported-session';
 }
 

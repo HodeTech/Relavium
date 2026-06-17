@@ -140,6 +140,13 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     const turn1 = def.workflow.nodes[1];
     expect(turn1?.type === 'agent' && turn1.tools).toEqual(['read_file']); // not ['read_file', 'read_file']
   });
+
+  it('derives a clean kebab workflow id (no leading/trailing/double dashes; fallback when empty)', () => {
+    expect(sessionToWorkflow(session({ title: '  Hello -- World!  ' }), []).workflow.id).toBe(
+      'hello-world',
+    );
+    expect(sessionToWorkflow(session({ title: '???' }), []).workflow.id).toBe('exported-session');
+  });
 });
 
 describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitter', () => {
