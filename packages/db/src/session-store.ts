@@ -103,26 +103,28 @@ export function toAgentSessionRow(record: AgentSessionRecord): NewAgentSessionRo
  * returned. Either way a corrupt row cannot yield an invalid record.
  */
 export function fromAgentSessionRow(row: AgentSessionRow): AgentSessionRecord {
+  // Optional columns spread in only when present (NULL → omitted, honoring exactOptionalPropertyTypes). The
+  // `=== null ? {} : {…}` form keeps the test non-negated (sonarjs/no-negated-condition) — type-identical.
   const candidate = {
     id: row.id,
     agentSlug: row.agentSlug,
-    ...(row.agentId !== null ? { agentId: row.agentId } : {}),
-    ...(row.agentSnapshot !== null
-      ? { agentSnapshot: JSON.parse(row.agentSnapshot) as unknown }
-      : {}),
-    ...(row.title !== null ? { title: row.title } : {}),
-    ...(row.modelId !== null ? { modelId: row.modelId } : {}),
+    ...(row.agentId === null ? {} : { agentId: row.agentId }),
+    ...(row.agentSnapshot === null
+      ? {}
+      : { agentSnapshot: JSON.parse(row.agentSnapshot) as unknown }),
+    ...(row.title === null ? {} : { title: row.title }),
+    ...(row.modelId === null ? {} : { modelId: row.modelId }),
     context: JSON.parse(row.contextJson) as unknown,
     status: row.status,
     totalInputTokens: row.totalInputTokens,
     totalOutputTokens: row.totalOutputTokens,
     totalCostMicrocents: row.totalCostMicrocents,
-    ...(row.exportedWorkflowPath !== null
-      ? { exportedWorkflowPath: row.exportedWorkflowPath }
-      : {}),
+    ...(row.exportedWorkflowPath === null
+      ? {}
+      : { exportedWorkflowPath: row.exportedWorkflowPath }),
     createdAt: epochMsToIso(row.createdAt),
     updatedAt: epochMsToIso(row.updatedAt),
-    ...(row.deletedAt !== null ? { deletedAt: epochMsToIso(row.deletedAt) } : {}),
+    ...(row.deletedAt === null ? {} : { deletedAt: epochMsToIso(row.deletedAt) }),
   };
   return AgentSessionSchema.parse(candidate);
 }
@@ -166,7 +168,7 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
     sequenceNumber: row.sequenceNumber,
     role: row.role,
     content: row.contentParts === null ? [] : (JSON.parse(row.contentParts) as unknown),
-    ...(row.modelId !== null ? { modelId: row.modelId } : {}),
+    ...(row.modelId === null ? {} : { modelId: row.modelId }),
     timestamp: epochMsToIso(row.createdAt),
   };
   return SessionMessageSchema.parse(candidate);
