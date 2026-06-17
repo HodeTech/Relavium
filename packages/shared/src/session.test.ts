@@ -146,6 +146,11 @@ describe('AgentSessionSchema', () => {
     };
     expect(AgentSessionSchema.safeParse(noContext).success).toBe(false);
     expect(AgentSessionSchema.safeParse(baseSession({ agentSlug: '' })).success).toBe(false);
+    // agentSlug is kebab-case (it IS an agent_ref) — a non-kebab slug is rejected, so it transfers
+    // verbatim into an exported workflow's kebab `agent_ref` without breaking the round-trip (1.Z).
+    expect(AgentSessionSchema.safeParse(baseSession({ agentSlug: 'Not Kebab' })).success).toBe(
+      false,
+    );
     expect(AgentSessionSchema.safeParse(baseSession({ totalInputTokens: -1 })).success).toBe(false);
     expect(AgentSessionSchema.safeParse(baseSession({ totalCostMicrocents: -1 })).success).toBe(
       false,
