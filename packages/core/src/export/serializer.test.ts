@@ -147,6 +147,22 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     );
     expect(sessionToWorkflow(session({ title: '???' }), []).workflow.id).toBe('exported-session');
   });
+
+  it('omits a trailing interrupted tool-loop turn from the node chain, keeping it in metadata (matches resume)', () => {
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'q1' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]), // a completed exchange
+      msg(2, 'user', [{ type: 'text', text: 'q2 use a tool' }]), // interrupted — no final assistant text
+      msg(3, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]),
+      msg(4, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]),
+    ]);
+    // only the completed turn becomes a node (consistent with reconstructSessionState's rollback)…
+    expect(def.workflow.nodes.map((n) => n.id)).toEqual(['input', 'turn-1', 'output']);
+    const turn1 = def.workflow.nodes[1];
+    expect(turn1?.type === 'agent' && turn1.prompt_template).toBe('q1');
+    // …but the interrupted attempt is still preserved verbatim in the transcript
+    expect(JSON.stringify(def.workflow.metadata)).toContain('q2 use a tool');
+  });
 });
 
 describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitter', () => {

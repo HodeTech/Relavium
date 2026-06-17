@@ -77,7 +77,10 @@ function neutralizeInterpolation(text: string): string {
 interface TurnDraft {
   promptSegments: string[];
   toolNames: string[];
+  /** Any assistant message (incl. a tool_call-only one) — marks the turn answered, so the next `user` is new. */
   hasAssistant: boolean;
+  /** An assistant message that produced final text — marks a COMPLETED exchange (gates node promotion). */
+  hasAssistantText: boolean;
 }
 
 /**
@@ -98,14 +101,27 @@ function groupIntoTurns(ordered: readonly SessionMessage[]): TurnDraft[] {
         turns.push(current);
         current = null;
       }
-      current ??= { promptSegments: [], toolNames: [], hasAssistant: false };
+      current ??= {
+        promptSegments: [],
+        toolNames: [],
+        hasAssistant: false,
+        hasAssistantText: false,
+      };
       const text = textOf(message.content);
       if (text.length > 0) {
         current.promptSegments.push(text);
       }
     } else if (message.role === 'assistant') {
-      current ??= { promptSegments: [], toolNames: [], hasAssistant: false };
+      current ??= {
+        promptSegments: [],
+        toolNames: [],
+        hasAssistant: false,
+        hasAssistantText: false,
+      };
       current.hasAssistant = true;
+      if (textOf(message.content).length > 0) {
+        current.hasAssistantText = true; // a final-text assistant message completes the exchange
+      }
       current.toolNames.push(...toolsUsedIn(message.content));
     }
   }
@@ -120,6 +136,11 @@ function groupIntoTurns(ordered: readonly SessionMessage[]): TurnDraft[] {
  * Built by splitting on non-alphanumeric runs and rejoining with single dashes — identical output to a
  * collapse-then-trim, but with no anchored-alternation regex (the only pattern left is one bounded char
  * class, which is linear), so it avoids the false-positive ReDoS hotspot Sonar raises on `/^-+|-+$/`.
+ *
+ * Only ASCII alphanumerics survive — `kebabIdSchema` (the id's contract) is ASCII, so a non-ASCII title is
+ * stripped to its ASCII run(s) (e.g. Turkish "İstanbul Sohbeti" → "stanbul-sohbeti") or falls back to
+ * `exported-session` when nothing ASCII remains. Unicode slugs are a separate future concern; the scaffold's
+ * id is human-reviewed and renameable on the canvas.
  */
 function workflowIdFor(record: AgentSessionRecord): string {
   const slug = (record.title ?? '')
@@ -133,7 +154,9 @@ function workflowIdFor(record: AgentSessionRecord): string {
 /**
  * Map a persisted session + its ordered transcript into a linear-chain scaffold `WorkflowDefinition`
  * (ADR-0026). Deterministic — the same `record` + `messages` always produce the same definition (no
- * wall-clock / randomness), so the emitted YAML round-trips.
+ * wall-clock / randomness), so the emitted YAML round-trips. Assumes a well-formed, user-initiated
+ * transcript (each turn opens with a `user` message, as `AgentSession` emits); a malformed assistant-first
+ * transcript still yields a valid workflow, just with a prompt-less leading agent node.
  */
 export function sessionToWorkflow(
   record: AgentSessionRecord,
@@ -147,8 +170,12 @@ export function sessionToWorkflow(
   let turnIndex = 0;
 
   for (const turn of groupIntoTurns(ordered)) {
-    if (!turn.hasAssistant) {
-      continue; // an unanswered (user-only) trailing turn is not a completed exchange
+    if (!turn.hasAssistantText) {
+      // Promote only COMPLETED exchanges (a turn that produced final assistant text). A user-only turn or an
+      // interrupted tool-loop turn (assistant tool_call + tool result, no final text) is skipped — matching
+      // reconstructSessionState's rollback (1.Y) so export and resume agree on what a turn is. The raw attempt
+      // is still preserved verbatim under metadata.relaviumExport.
+      continue;
     }
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;

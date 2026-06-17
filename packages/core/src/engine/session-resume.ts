@@ -19,6 +19,11 @@ import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@re
 /**
  * The reconstructed in-memory state {@link AgentSession.resume} preloads — its `#messages` (in-flight
  * transcript), `#turnCount` (the hard-cap counter), and `#cumulativeCostMicrocents` (the running cost).
+ *
+ * Build it via {@link reconstructSessionState}: `messages` must be the **text-only** `user`/`assistant`
+ * projection (AgentSession's cross-turn invariant). `resume` preloads these verbatim, so a hand-built state
+ * carrying `tool_call`/`tool_result`/`reasoning` parts would be replayed to the provider on the next turn —
+ * risking an orphaned `tool_use` or a non-alternating request. Do not assemble one by hand.
  */
 export interface SessionResumeState {
   readonly messages: readonly LlmMessage[];

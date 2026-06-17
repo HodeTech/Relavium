@@ -186,15 +186,23 @@ desktop "Export to Canvas" affordance and the CLI `relavium chat-export` both dr
 exporter builds a `WorkflowDefinition` deterministically (no wall-clock / randomness, so the artifact is
 reproducible and round-trips):
 
-- **Nodes** — a single `input` node (`id: input`), then **one `agent` node per `assistant` turn** in
-  `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). Each
-  `agent` node carries: `agent_ref` = the session's `agentSlug`; `prompt_template` = the **text** of the
-  immediately-preceding contiguous `user` message(s) (omitted if none); `tools` = the tool names invoked in
-  that turn (the `tool_call` parts in the assistant message's `content`), omitted when the turn used none.
-  No `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns
-  the user adds on the canvas, not replay fields.
+- **Nodes** — a single `input` node (`id: input`), then **one `agent` node per COMPLETED logical turn** in
+  `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). A
+  *logical turn* is the contiguous `user` message(s) plus the assistant/tool messages answering them (a host
+  may persist a single turn as split rows — `user → assistant(tool_call) → tool → assistant(text)`); it is one
+  node, not one per assistant message. A turn is *completed* only if it produced final assistant **text** — an
+  unanswered or interrupted-mid-tool-loop turn (no final text) is **omitted from the chain** (kept verbatim in
+  `metadata`), so export and `reconstructSessionState`'s rollback (1.Y) agree on what a turn is. Each `agent`
+  node carries: `agent_ref` = the session's `agentSlug`; `prompt_template` = the **text** of the turn's
+  `user` message(s), with interpolation openers neutralized (omitted if empty); `tools` = the deduped union of
+  tool names invoked across the turn's assistant messages (the `tool_call` parts), omitted when none. No
+  `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns the
+  user adds on the canvas, not replay fields.
 - **Edges** — a straight linear chain `input → turn-1 → … → turn-n → output` (just `{ from, to }`); when a
-  session has no assistant turn the chain is `input → output`. No parallel/conditional/loop edges (ADR-0026).
+  session has no completed turn the chain is `input → output`. No parallel/conditional/loop edges (ADR-0026).
+- **Workflow `id`** — a deterministic kebab slug of the title (ASCII alphanumerics only, matching
+  `kebabIdSchema`; non-ASCII is stripped), falling back to `exported-session`. The scaffold's id is
+  human-reviewed and renameable on the canvas.
 - **`agents`** — the session's frozen `agentSnapshot` (an inline `Agent`) is emitted as the sole `agents[]`
   entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
