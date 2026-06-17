@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { AgentSchema } from './agent.js';
-import { nonEmptyString, nonNegativeInt } from './common.js';
+import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
 import { DurableContentPartSchema } from './content.js';
 import { SessionContextSchema } from './run-event.js';
 
@@ -67,8 +67,9 @@ export type SessionMessage = z.infer<typeof SessionMessageSchema>;
  */
 export const AgentSessionSchema = z.object({
   id: nonEmptyString,
-  /** The authored `agent_ref` the session is bound to (`agent_sessions.agent_slug`). */
-  agentSlug: nonEmptyString,
+  /** The authored `agent_ref` the session is bound to (`agent_sessions.agent_slug`) — kebab-case, like every
+   *  `agent.id` / `agent_ref`, so it transfers verbatim into an exported workflow's `agent_ref` (1.Z). */
+  agentSlug: kebabIdSchema,
   /** The catalog `agents.id` this session resolved to, when the agent was a stored catalog entry. */
   agentId: nonEmptyString.optional(),
   /** Frozen agent config for reproducibility (`agent_sessions.agent_snapshot`). */

@@ -56,12 +56,15 @@ function durableToLlmMessages(messages: readonly SessionMessage[]): LlmMessage[]
 }
 
 /**
- * Drop a trailing, never-answered `user` turn — the incomplete-turn rollback. A completed exchange ends in
- * an `assistant` message; a transcript ending in `user` means the process died mid-turn, so that turn is not
- * a committed exchange and is re-prompted on resume (the idempotency analog of re-running the incomplete node).
+ * Drop trailing turns that did not complete — the incomplete-turn rollback, applied to the ALREADY-PROJECTED
+ * transcript. After projection the only roles are `user` and text-bearing `assistant`, so a completed exchange
+ * ends in `assistant`; any trailing `user` is an unanswered turn — the process died mid-turn, whether **before
+ * the assistant replied** or **mid-tool-loop** (which projects away its `tool` / text-less `assistant`
+ * tool_call rows and re-exposes the originating `user`). Re-prompting it on resume is the
+ * `sessionId+sequenceNumber` idempotency analog of re-running the run-side incomplete node.
  */
-function trimIncompleteTurn(ordered: readonly SessionMessage[]): SessionMessage[] {
-  const committed = [...ordered];
+function trimTrailingUserTurn(messages: readonly LlmMessage[]): LlmMessage[] {
+  const committed = [...messages];
   while (committed.length > 0 && committed[committed.length - 1]?.role === 'user') {
     committed.pop();
   }
@@ -70,22 +73,28 @@ function trimIncompleteTurn(ordered: readonly SessionMessage[]): SessionMessage[
 
 /**
  * Reconstruct the {@link SessionResumeState} from a loaded session record + its transcript (any order). Sorts
- * by `sequenceNumber`, rolls back an incomplete trailing turn, projects to the in-flight transcript, and
- * re-seeds the turn count (completed assistant turns) + the running cost (the record's total). Pure and
+ * by `sequenceNumber`, **projects first** (to the text-only in-flight transcript), then rolls back a trailing
+ * unanswered turn, and re-seeds the turn count + the running cost (the record's total). Pure and
  * deterministic — the host passes the result to {@link AgentSession.resume}.
  *
- * NOTE: `turnCount` is the count of **completed** assistant turns; a turn that engaged a provider but failed
- * leaves no committed exchange, so the resumed hard-cap counter is a lower bound (the cap is a safety limit,
- * not exact accounting; AgentSessionRecord carries no turn counter to make it exact).
+ * Projecting BEFORE trimming is load-bearing: an interrupted mid-tool-loop turn leaves a `tool` / text-less
+ * `assistant` tail in the durable record; the projection drops those, so the trailing-`user` rollback then
+ * sees and removes the originating unanswered `user` — otherwise it would survive as a dangling turn and the
+ * next `sendMessage` would emit two consecutive `user` messages (a non-alternating, provider-rejected request).
+ *
+ * NOTE: `turnCount` counts the **text-producing** assistant turns that survive projection — one per completed
+ * logical exchange (a within-turn tool_call-only assistant row is not double-counted). A turn that engaged a
+ * provider but produced no committed text leaves no exchange, so the resumed hard-cap counter is a lower bound
+ * (the cap is a safety limit, not exact accounting; AgentSessionRecord carries no turn counter to make it exact).
  */
 export function reconstructSessionState(
   record: AgentSessionRecord,
   messages: readonly SessionMessage[],
 ): SessionResumeState {
   const ordered = [...messages].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-  const committed = trimIncompleteTurn(ordered);
+  const committed = trimTrailingUserTurn(durableToLlmMessages(ordered));
   return {
-    messages: durableToLlmMessages(committed),
+    messages: committed,
     turnCount: committed.filter((message) => message.role === 'assistant').length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
   };

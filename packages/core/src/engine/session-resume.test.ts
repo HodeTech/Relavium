@@ -100,6 +100,48 @@ describe('reconstructSessionState (1.Y)', () => {
     ]);
     expect(state.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
   });
+
+  it('rolls back an interrupted tool-loop turn ending in a tool result — no dangling user', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q1' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]), // a completed exchange
+      msg(2, 'user', [{ type: 'text', text: 'q2 — use a tool' }]), // the interrupted turn begins
+      msg(3, 'assistant', [
+        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
+      ]),
+      msg(4, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]), // died here
+    ]);
+    // the entire interrupted turn (user + tool_call + tool) is rolled back — the projection drops the
+    // tool/text-less-assistant rows and the trailing-user rollback removes the originating q2.
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+    ]);
+    expect(state.turnCount).toBe(1);
+  });
+
+  it('rolls back a turn whose assistant produced only a tool_call (no committed text)', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q' }]),
+      msg(1, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]),
+    ]);
+    expect(state.messages).toEqual([]); // no completed exchange survives
+    expect(state.turnCount).toBe(0);
+  });
+
+  it('counts a completed tool-loop turn once (assistant tool_call → tool → assistant text)', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q' }]),
+      msg(1, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]), // within-turn
+      msg(2, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'final answer' }]), // the completing text
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] },
+    ]);
+    expect(state.turnCount).toBe(1); // one logical turn — the tool_call-only assistant row is not counted
+  });
 });
 
 // --- AgentSession.resume integration (stub provider, mirroring agent-session.test.ts) ----------------

@@ -152,4 +152,22 @@ describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitte
     expect(yaml).not.toContain('signature'); // …but the ephemeral signature never is (ADR-0030)
     expect(yaml).not.toMatch(/secret:\s*true/); // no MaskedSecret value (ADR-0029)
   });
+
+  it('neutralizes interpolation syntax a user typed, so the export still parses + round-trips', () => {
+    // A user literally typing `{{ secrets.X }}` in chat would otherwise make prompt_template fail the
+    // parse-time secret-taint gate (ADR-0029) — breaking the round-trip. The opener is neutralized.
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'how do I reference {{ secrets.OPENAI_KEY }} here?' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'you do not — it stays in the keychain' }]),
+    ]);
+    const turn1 = def.workflow.nodes[1];
+    expect(turn1?.type === 'agent' && turn1.prompt_template).toBe(
+      'how do I reference { { secrets.OPENAI_KEY }} here?',
+    );
+    const yaml1 = serializeWorkflow(def);
+    expect(() => parseWorkflow(yaml1)).not.toThrow(); // the neutralized prompt is no longer a secret reference
+    expect(serializeWorkflow(parseWorkflow(yaml1))).toBe(yaml1); // still byte-stable
+    // the FULL verbatim text is preserved untouched in the metadata transcript (not interpolation-scanned)
+    expect(JSON.stringify(def.workflow.metadata)).toContain('{{ secrets.OPENAI_KEY }}');
+  });
 });

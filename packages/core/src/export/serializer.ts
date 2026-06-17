@@ -60,6 +60,19 @@ function toolsUsedIn(content: readonly DurableContentPart[]): string[] {
     .map((part) => part.name);
 }
 
+/**
+ * Neutralize interpolation openers in user free-text destined for `prompt_template`. The exporter copies a
+ * chat message verbatim, but `prompt_template` is parsed as a **template** (workflow-yaml-spec.md), so a
+ * stray `{{ secrets.X }}` a user happened to type would be rejected by the parse-time secret-taint gate
+ * (ADR-0029) and break the round-trip — and `{{ inputs.X }}` would silently become a live reference, which
+ * literal chat text is not. Inserting a space after each `{` that opens a `{{` digraph keeps the text
+ * readable, prevents any synthetic reference, and round-trips byte-stably. The FULL verbatim text is
+ * preserved untouched under `metadata.relaviumExport` (metadata is not interpolation-scanned).
+ */
+function neutralizeInterpolation(text: string): string {
+  return text.replace(/\{(?=\{)/g, '{ ');
+}
+
 /** The text of the contiguous `user` message(s) immediately preceding an assistant turn — its prompt. */
 function precedingUserText(ordered: readonly SessionMessage[], assistantIndex: number): string {
   const segments: string[] = [];
@@ -107,7 +120,7 @@ export function sessionToWorkflow(
     }
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
-    const prompt = precedingUserText(ordered, i);
+    const prompt = neutralizeInterpolation(precedingUserText(ordered, i));
     const tools = toolsUsedIn(message.content);
     const node: AgentNode = {
       id: nodeId,
