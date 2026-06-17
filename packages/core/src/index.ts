@@ -92,7 +92,14 @@ export type {
 export { WorkflowEngine } from './engine/engine.js';
 export type { StartInput, ResumeFromCheckpointInput, WorkflowEngineDeps } from './engine/engine.js';
 export { RunEventBus } from './engine/event-bus.js';
-export type { RunEventBusOptions, RunEventListener, RunEventDraft } from './engine/event-bus.js';
+export type {
+  RunEventBusOptions,
+  RunEventListener,
+  BusEventListener,
+  RunEventDraft,
+  SessionEventDraft,
+  BusEventDraft,
+} from './engine/event-bus.js';
 export type { RunHandle } from './engine/run-handle.js';
 export {
   InMemoryRunStore,
@@ -171,6 +178,11 @@ export type {
   SessionStreamEvent,
   SessionLifecycleEvent,
 } from './engine/agent-session.js';
+// 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
+// sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
+// scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".
+export { createSessionHandle, createSessionEventSink } from './engine/session-handle.js';
+export type { SessionHandle, SessionStreamHandleEvent } from './engine/session-handle.js';
 
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one

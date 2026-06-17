@@ -5,19 +5,19 @@
  * passive observers (cost, UI). Both ride the one in-house {@link RunEventBus}
  * ([ADR-0036](../../../../docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).
  *
- * The async iterable is a **thin push→pull adapter over the bus** with a **bounded, no-drop**
- * (producer-await) policy: the buffer never drops an event (a drop would force a `sequenceNumber`
- * resync), and a slow consumer applies backpressure through {@link RunHandle.whenConsumersReady}, which
- * the engine awaits at node boundaries so a pathologically slow reader throttles the producer rather
- * than growing the buffer without bound. The primary stream subscribes at construction — *before* the
- * engine emits `run:started` — so the consumer can attach lazily without a startup race. (Late
- * additional subscribers via {@link RunHandle.subscribe} resync from persisted `run_events` — 1.R; the
- * in-process replay path is out of 1.N scope and noted here.)
+ * The async iterable is a **thin push→pull adapter** over the bus — the bounded, no-drop
+ * {@link BoundedEventStream} (shared with `SessionHandle`, 1.W). The buffer never drops an event (a drop
+ * would force a `sequenceNumber` resync); a slow consumer applies backpressure through
+ * {@link RunHandle.whenConsumersReady}, which the engine awaits at node boundaries. The primary stream
+ * subscribes at construction — *before* the engine emits `run:started` — so the consumer can attach
+ * lazily without a startup race. (Late additional subscribers via {@link RunHandle.subscribe} resync from
+ * persisted `run_events` — 1.R; the in-process replay path is out of 1.N scope and noted here.)
  */
 
-import type { RunEvent } from '@relavium/shared';
+import type { RunEvent, RunOrSessionEvent } from '@relavium/shared';
 
 import type { RunEventBus, RunEventListener } from './event-bus.js';
+import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
 
 const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set([
   'run:completed',
@@ -25,101 +25,10 @@ const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set([
   'run:cancelled',
 ]);
 
-/** Default per-consumer high-water mark — beyond this, the producer is asked to await a drain. */
-const DEFAULT_CAPACITY = 256;
-
-/**
- * A single-consumer async queue bridging the push bus to a pull `for await`. No-drop: an event pushed
- * while no consumer is waiting is buffered; backpressure is signalled through {@link whenDrained}
- * rather than by dropping. One active iteration at a time (a second concurrent `next()` rejects); use
- * {@link RunHandle.subscribe} for additional observers.
- */
-class RunEventStream implements AsyncIterableIterator<RunEvent> {
-  readonly #buffer: RunEvent[] = [];
-  readonly #capacity: number;
-  #waitingPull: ((result: IteratorResult<RunEvent>) => void) | undefined;
-  #drainWaiters: (() => void)[] = [];
-  #closed = false;
-
-  constructor(capacity: number) {
-    this.#capacity = capacity;
-  }
-
-  /** Offer an event to the consumer (hand to a waiting `next()`, else buffer). Never drops. */
-  push(event: RunEvent): void {
-    if (this.#closed) {
-      return;
-    }
-    if (this.#waitingPull !== undefined) {
-      const resolve = this.#waitingPull;
-      this.#waitingPull = undefined;
-      resolve({ value: event, done: false });
-      return;
-    }
-    this.#buffer.push(event);
-  }
-
-  /** Signal end-of-stream — drains what is buffered, then the iteration completes. */
-  close(): void {
-    if (this.#closed) {
-      return;
-    }
-    this.#closed = true;
-    if (this.#waitingPull !== undefined) {
-      const resolve = this.#waitingPull;
-      this.#waitingPull = undefined;
-      resolve({ value: undefined, done: true });
-    }
-    this.#wakeDrainWaiters();
-  }
-
-  /** Resolves once the buffer is at or below capacity (or the stream is closed) — the backpressure knob. */
-  whenDrained(): Promise<void> {
-    if (this.#closed || this.#buffer.length <= this.#capacity) {
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      this.#drainWaiters.push(resolve);
-    });
-  }
-
-  #wakeDrainWaiters(): void {
-    if (this.#closed || this.#buffer.length <= this.#capacity) {
-      const waiters = this.#drainWaiters;
-      this.#drainWaiters = [];
-      for (const wake of waiters) {
-        wake();
-      }
-    }
-  }
-
-  next(): Promise<IteratorResult<RunEvent>> {
-    const buffered = this.#buffer.shift();
-    if (buffered !== undefined) {
-      this.#wakeDrainWaiters();
-      return Promise.resolve({ value: buffered, done: false });
-    }
-    if (this.#closed) {
-      return Promise.resolve({ value: undefined, done: true });
-    }
-    if (this.#waitingPull !== undefined) {
-      return Promise.reject(new Error('RunEventStream: concurrent next() is not supported'));
-    }
-    return new Promise<IteratorResult<RunEvent>>((resolve) => {
-      this.#waitingPull = resolve;
-    });
-  }
-
-  /** Consumer abandoned the loop (`break` / `return`) — release the stream. */
-  return(): Promise<IteratorResult<RunEvent>> {
-    this.close(); // settles any parked next() deterministically (don't duplicate that logic here)
-    this.#buffer.length = 0; // discard anything still buffered on an early abandon
-    return Promise.resolve({ value: undefined, done: true });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterableIterator<RunEvent> {
-    return this;
-  }
+/** True iff `event` carries this run's `runId` — the bus is shared across runs/sessions (ADR-0036), so a
+ *  run handle filters by key. Session events (no `runId`) and other runs are excluded; narrows to `RunEvent`. */
+function isForRun(event: RunOrSessionEvent, runId: string): event is RunEvent {
+  return 'runId' in event && event.runId === runId;
 }
 
 /** The handle `WorkflowEngine.start` returns — the run's id, its event stream, and cooperative cancel. */
@@ -153,12 +62,12 @@ export function createRunHandle(
   bus: RunEventBus,
   runId: string,
   cancel: () => void,
-  capacity: number = DEFAULT_CAPACITY,
+  capacity: number = DEFAULT_STREAM_CAPACITY,
 ): RunHandle {
-  const primary = new RunEventStream(capacity);
+  const primary = new BoundedEventStream<RunEvent>(capacity);
   const unsubscribe = bus.subscribe((event) => {
-    if (event.runId !== runId) {
-      return; // not this run's event
+    if (!isForRun(event, runId)) {
+      return; // not this run's event (another run, or a session event with no runId)
     }
     primary.push(event);
     if (TERMINAL_TYPES.has(event.type)) {
@@ -171,7 +80,7 @@ export function createRunHandle(
     events: primary,
     subscribe: (listener) =>
       bus.subscribe((event) => {
-        if (event.runId === runId) {
+        if (isForRun(event, runId)) {
           listener(event);
         }
       }),
@@ -188,7 +97,7 @@ export function createRunHandle(
  * outcome is in the persisted `run_events`). `cancel`/`subscribe` are inert (the run is done).
  */
 export function createClosedRunHandle(runId: string): RunHandle {
-  const primary = new RunEventStream(DEFAULT_CAPACITY);
+  const primary = new BoundedEventStream<RunEvent>(DEFAULT_STREAM_CAPACITY);
   primary.close();
   return {
     runId,
