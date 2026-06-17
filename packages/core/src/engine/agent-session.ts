@@ -54,6 +54,7 @@ import {
 import { BudgetPauseError } from './budget-governor.js';
 import type { AbortControllerLike } from './execution-host.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import type { SessionResumeState } from './session-resume.js';
 
 /** The default hard turn cap when {@link SessionDeps.maxTurns} is omitted — a finite DoS fail-safe. */
 export const DEFAULT_SESSION_MAX_TURNS = 50;
@@ -190,6 +191,23 @@ export class AgentSession {
     const max = params.deps.maxTurns;
     this.#maxTurns = max === undefined || max <= 0 ? DEFAULT_SESSION_MAX_TURNS : max;
     this.#limits = params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
+  }
+
+  /**
+   * Resume a session in a NEW process (1.Y) from its reconstructed state
+   * ({@link reconstructSessionState}, built from the persisted transcript). Preloads the in-flight
+   * transcript, the hard-cap turn count, and the running cost, then lands directly at `idle` **without**
+   * emitting `session:started` — the session already started in the prior process; re-emitting it would
+   * double a terminal-less lifecycle event. The next {@link sendMessage} continues the conversation. This
+   * **replaces** {@link start}: the returned session is past `created`, so calling `start()` on it throws.
+   */
+  static resume(params: AgentSessionParams, state: SessionResumeState): AgentSession {
+    const session = new AgentSession(params);
+    session.#messages.push(...state.messages);
+    session.#turnCount = state.turnCount;
+    session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
+    session.#status = 'idle';
+    return session;
   }
 
   /** Open the session: emit `session:started` and move to idle. Idempotent-guarded (one start per session). */

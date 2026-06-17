@@ -183,11 +183,21 @@ export type {
   SessionStreamEvent,
   SessionLifecycleEvent,
 } from './engine/agent-session.js';
+// Session checkpoint/resume (1.Y) — reconstruct the in-flight state from a persisted transcript (1.X) so a
+// session continues after a restart; the host loads via the @relavium/db SessionStore and hands the result
+// to AgentSession.resume. Directly-stored, not event-sourced (ADR-0003); reuses the 1.R idempotency principle.
+export { reconstructSessionState } from './engine/session-resume.js';
+export type { SessionResumeState } from './engine/session-resume.js';
 // 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
 // sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
 // scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".
 export { createSessionHandle, createSessionEventSink } from './engine/session-handle.js';
 export type { SessionHandle, SessionStreamHandleEvent } from './engine/session-handle.js';
+
+// Session export-to-workflow (1.Z) — the inverse of parseWorkflow (1.L is parse-only). `serializeWorkflow`
+// emits a WorkflowDefinition as deterministic, round-trippable YAML; `sessionToWorkflow` maps a persisted
+// session + transcript into a linear-chain scaffold (ADR-0026; agent-session-spec.md §"Export to workflow").
+export { serializeWorkflow, sessionToWorkflow } from './export/serializer.js';
 
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one

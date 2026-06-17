@@ -1,0 +1,226 @@
+import type { CapabilityFlags, LlmMessage, LlmProvider, StreamChunk } from '@relavium/llm';
+import {
+  AgentSchema,
+  SessionContextSchema,
+  type AgentSessionRecord,
+  type SessionMessage,
+} from '@relavium/shared';
+import { describe, expect, it } from 'vitest';
+
+import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
+import { createAbortController } from './execution-host.js';
+import { reconstructSessionState, type SessionResumeState } from './session-resume.js';
+import type { ToolRegistry } from '../tools/types.js';
+
+const TS = '2026-06-17T08:00:00.000Z';
+const CTX = SessionContextSchema.parse({ workingDir: '/workspace/s', fsScopeTier: 'sandboxed' });
+const AGENT = AgentSchema.parse({
+  id: 'chatter',
+  model: 'claude-opus-4-8',
+  provider: 'anthropic',
+  system_prompt: 'You are concise.',
+});
+
+const record = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecord => ({
+  id: 'sess-1',
+  agentSlug: 'chatter',
+  context: CTX,
+  status: 'idle',
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
+  totalCostMicrocents: 0,
+  createdAt: TS,
+  updatedAt: TS,
+  ...overrides,
+});
+
+const msg = (
+  sequenceNumber: number,
+  role: SessionMessage['role'],
+  content: SessionMessage['content'],
+): SessionMessage => ({
+  id: `m-${sequenceNumber}`,
+  sessionId: 'sess-1',
+  sequenceNumber,
+  role,
+  content,
+  timestamp: TS,
+});
+
+describe('reconstructSessionState (1.Y)', () => {
+  it('projects user/assistant text turns and re-seeds turnCount + cost', () => {
+    const state = reconstructSessionState(record({ totalCostMicrocents: 4200 }), [
+      msg(0, 'user', [{ type: 'text', text: 'hi' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'hello' }]),
+      msg(2, 'user', [{ type: 'text', text: 'more' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'sure' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      { role: 'user', content: [{ type: 'text', text: 'more' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'sure' }] },
+    ]);
+    expect(state.turnCount).toBe(2);
+    expect(state.cumulativeCostMicrocents).toBe(4200);
+  });
+
+  it('rolls back a trailing unanswered user turn (the incomplete-turn idempotency)', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'hi' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'hello' }]),
+      msg(2, 'user', [{ type: 'text', text: 'interrupted — no reply persisted' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+    ]);
+    expect(state.turnCount).toBe(1);
+  });
+
+  it('drops system/tool-role messages and non-text parts (text-only in-flight transcript)', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'system', [{ type: 'text', text: 'system prompt' }]),
+      msg(1, 'user', [{ type: 'text', text: 'q' }]),
+      msg(2, 'assistant', [
+        { type: 'reasoning', text: 'thinking' },
+        { type: 'text', text: 'a' },
+      ]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+    ]);
+  });
+
+  it('sorts by sequenceNumber before reconstructing', () => {
+    const state = reconstructSessionState(record(), [
+      msg(1, 'assistant', [{ type: 'text', text: 'hello' }]),
+      msg(0, 'user', [{ type: 'text', text: 'hi' }]),
+    ]);
+    expect(state.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+});
+
+// --- AgentSession.resume integration (stub provider, mirroring agent-session.test.ts) ----------------
+
+const CAPS: CapabilityFlags = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: true,
+  vision: false,
+  promptCache: false,
+  reasoning: true,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+  },
+};
+
+async function* streamOf(chunks: readonly StreamChunk[]): AsyncGenerator<StreamChunk> {
+  await Promise.resolve();
+  for (const chunk of chunks) yield chunk;
+}
+
+const textTurn = (text: string): StreamChunk[] => [
+  { type: 'text_delta', text },
+  { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+];
+
+const noToolRegistry: ToolRegistry = {
+  has: () => false,
+  list: () => [],
+  dispatch: () => Promise.reject(new Error('no tool dispatch expected')),
+};
+
+/** A provider that records the `messages` of each request and replies with a fixed text turn. */
+function capturingProvider(seen: LlmMessage[][]): LlmProvider {
+  return {
+    id: 'anthropic',
+    supports: CAPS,
+    generate: () => {
+      throw new Error('unused');
+    },
+    stream: (req) => {
+      seen.push(req.messages.map((m) => ({ role: m.role, content: [...m.content] })));
+      return streamOf(textTurn('resumed reply'));
+    },
+  };
+}
+
+function depsFor(
+  provider: LlmProvider,
+  events: SessionStreamEvent[],
+  maxTurns?: number,
+): SessionDeps {
+  return {
+    resolveProvider: () => provider,
+    registry: noToolRegistry,
+    tools: [],
+    keyFor: () => 'key',
+    sleep: () => Promise.resolve(),
+    newAbortController: createAbortController,
+    emit: (event) => {
+      events.push(event);
+    },
+    ...(maxTurns === undefined ? {} : { maxTurns }),
+  };
+}
+
+const params = (deps: SessionDeps) => ({
+  sessionId: 'sess-1',
+  agentRef: AGENT.id,
+  agent: AGENT,
+  context: CTX,
+  deps,
+});
+
+describe('AgentSession.resume (1.Y)', () => {
+  it('resumes without re-emitting session:started, and the next turn sees the prior transcript', async () => {
+    const seen: LlmMessage[][] = [];
+    const events: SessionStreamEvent[] = [];
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'hi' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'hello' }]),
+    ]);
+    const session = AgentSession.resume(params(depsFor(capturingProvider(seen), events)), state);
+
+    // resume does NOT re-emit session:started (the session already started in the prior process).
+    expect(events.map((e) => e.type)).not.toContain('session:started');
+
+    await session.sendMessage('again');
+
+    // the provider's call saw the resumed transcript followed by the new user message.
+    expect(seen[0]).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      { role: 'user', content: [{ type: 'text', text: 'again' }] },
+    ]);
+    const types = events.map((e) => e.type);
+    expect(types).toContain('session:turn_started');
+    expect(types).toContain('session:turn_completed');
+  });
+
+  it('honors the hard turn cap across a restart (the resumed turnCount counts)', async () => {
+    const seen: LlmMessage[][] = [];
+    const events: SessionStreamEvent[] = [];
+    // maxTurns 1, resumed already at 1 completed turn → the next turn is over the cap.
+    const state: SessionResumeState = {
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      ],
+      turnCount: 1,
+      cumulativeCostMicrocents: 0,
+    };
+    const session = AgentSession.resume(params(depsFor(capturingProvider(seen), events, 1)), state);
+
+    await session.sendMessage('again');
+
+    expect(seen).toHaveLength(0); // blocked loud BEFORE any egress — the provider was never called
+    const completed = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completed).toHaveLength(1);
+    const only = completed[0];
+    expect(only?.type === 'session:turn_completed' && only.error?.code).toBe('turn_limit');
+  });
+});

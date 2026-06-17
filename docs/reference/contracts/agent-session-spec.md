@@ -182,6 +182,32 @@ The export **produces** the format owned by [workflow-yaml-spec.md](workflow-yam
 **mapping** (session turn → `agent` node, transcript → metadata) is the contract owned here. The
 desktop "Export to Canvas" affordance and the CLI `relavium chat-export` both drive this one contract.
 
+**Precise mapping (1.Z).** Given a loaded `AgentSessionRecord` + its ordered `SessionMessage[]`, the
+exporter builds a `WorkflowDefinition` deterministically (no wall-clock / randomness, so the artifact is
+reproducible and round-trips):
+
+- **Nodes** — a single `input` node (`id: input`), then **one `agent` node per `assistant` turn** in
+  `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). Each
+  `agent` node carries: `agent_ref` = the session's `agentSlug`; `prompt_template` = the **text** of the
+  immediately-preceding contiguous `user` message(s) (omitted if none); `tools` = the tool names invoked in
+  that turn (the `tool_call` parts in the assistant message's `content`), omitted when the turn used none.
+  No `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns
+  the user adds on the canvas, not replay fields.
+- **Edges** — a straight linear chain `input → turn-1 → … → turn-n → output` (just `{ from, to }`); when a
+  session has no assistant turn the chain is `input → output`. No parallel/conditional/loop edges (ADR-0026).
+- **`agents`** — the session's frozen `agentSnapshot` (an inline `Agent`) is emitted as the sole `agents[]`
+  entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
+  against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
+  engine's job, not the schema's).
+- **`metadata`** — the full transcript under a single reserved key: `metadata.relaviumExport = { source:
+  'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
+  schema field (`z.record`), so it survives parse → serialize round-trips.
+- **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map
+  keys alphabetically and preserves array order, so `parse → serialize` is byte-stable. No `secret` value can
+  appear (secrets never enter a message — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)) and no
+  reasoning `signature` can appear (the transcript is `DurableContentPart`, which structurally omits it —
+  [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)).
+
 ## Validation and persistence
 
 - Validated against `AgentSessionSchema` / `SessionMessageSchema` / `SessionContextSchema` (Zod, in
