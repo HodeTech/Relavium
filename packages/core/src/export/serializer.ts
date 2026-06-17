@@ -73,20 +73,46 @@ function neutralizeInterpolation(text: string): string {
   return text.replace(/\{(?=\{)/g, '{ ');
 }
 
-/** The text of the contiguous `user` message(s) immediately preceding an assistant turn — its prompt. */
-function precedingUserText(ordered: readonly SessionMessage[], assistantIndex: number): string {
-  const segments: string[] = [];
-  for (let j = assistantIndex - 1; j >= 0; j -= 1) {
-    const message = ordered[j];
-    if (message === undefined || message.role !== 'user') {
-      break;
-    }
-    const text = textOf(message.content);
-    if (text.length > 0) {
-      segments.unshift(text);
+/** A logical turn: the contiguous `user` message(s) plus the assistant/tool messages that answer them. */
+interface TurnDraft {
+  promptSegments: string[];
+  toolNames: string[];
+  hasAssistant: boolean;
+}
+
+/**
+ * Segment an ordered transcript into logical TURNS. The spec maps one `agent` node per **turn**, not per
+ * assistant message — a host may persist a single turn as split rows (`user → assistant(tool_call) → tool →
+ * assistant(text)`), and emitting a node per assistant message would split that one turn into two (the second
+ * losing its prompt + tools). A turn begins at a `user` message that follows an already-answered turn;
+ * contiguous `user` messages merge into one prompt; `tool`/`system` messages are not delimiters and add no
+ * node content (a turn's tools come from its assistant messages' `tool_call` parts). Mirrors the turn model
+ * `reconstructSessionState` (1.Y) uses.
+ */
+function groupIntoTurns(ordered: readonly SessionMessage[]): TurnDraft[] {
+  const turns: TurnDraft[] = [];
+  let current: TurnDraft | null = null;
+  for (const message of ordered) {
+    if (message.role === 'user') {
+      if (current !== null && current.hasAssistant) {
+        turns.push(current);
+        current = null;
+      }
+      current ??= { promptSegments: [], toolNames: [], hasAssistant: false };
+      const text = textOf(message.content);
+      if (text.length > 0) {
+        current.promptSegments.push(text);
+      }
+    } else if (message.role === 'assistant') {
+      current ??= { promptSegments: [], toolNames: [], hasAssistant: false };
+      current.hasAssistant = true;
+      current.toolNames.push(...toolsUsedIn(message.content));
     }
   }
-  return segments.join('\n\n');
+  if (current !== null) {
+    turns.push(current);
+  }
+  return turns;
 }
 
 /** A kebab-case workflow id derived deterministically from the session (its title, else a fixed default). */
@@ -114,14 +140,14 @@ export function sessionToWorkflow(
   let previousNodeId = 'input';
   let turnIndex = 0;
 
-  ordered.forEach((message, i) => {
-    if (message.role !== 'assistant') {
-      return;
+  for (const turn of groupIntoTurns(ordered)) {
+    if (!turn.hasAssistant) {
+      continue; // an unanswered (user-only) trailing turn is not a completed exchange
     }
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
-    const prompt = neutralizeInterpolation(precedingUserText(ordered, i));
-    const tools = toolsUsedIn(message.content);
+    const prompt = neutralizeInterpolation(turn.promptSegments.join('\n\n'));
+    const tools = [...new Set(turn.toolNames)]; // dedupe across the turn, first-seen order (determinism-safe)
     const node: AgentNode = {
       id: nodeId,
       type: 'agent',
@@ -132,7 +158,7 @@ export function sessionToWorkflow(
     nodes.push(node);
     edges.push({ from: previousNodeId, to: nodeId });
     previousNodeId = nodeId;
-  });
+  }
 
   nodes.push({ id: 'output', type: 'output' });
   edges.push({ from: previousNodeId, to: 'output' });

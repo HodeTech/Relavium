@@ -206,6 +206,10 @@ export class AgentSession {
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
+    // Sync a host-wired budget governor with the carried-over spend so the FIRST resumed turn's pre-egress
+    // check sees the real cumulative — not 0 — before any cost:updated fires (mirrors #onTurnEmit). Without
+    // this, a resumed session's first turn could bypass a near-exhausted budget cap.
+    session.#deps.updateCost?.(state.cumulativeCostMicrocents);
     session.#status = 'idle';
     return session;
   }

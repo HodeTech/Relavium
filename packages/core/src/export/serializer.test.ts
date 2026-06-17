@@ -110,6 +110,36 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(def.workflow.agents).toBeUndefined();
     expect(() => parseWorkflow(serializeWorkflow(def))).not.toThrow();
   });
+
+  it('collapses a split-row tool-loop turn into ONE node (prompt + tools), not one per assistant message', () => {
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'read the file' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
+      ]),
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'c1', result: 'contents', isError: false },
+      ]),
+      msg(3, 'assistant', [{ type: 'text', text: 'here is what it says' }]),
+    ]);
+    expect(def.workflow.nodes.map((n) => n.id)).toEqual(['input', 'turn-1', 'output']); // ONE turn node
+    const turn1 = def.workflow.nodes[1];
+    expect(turn1?.type === 'agent' && turn1.prompt_template).toBe('read the file');
+    expect(turn1?.type === 'agent' && turn1.tools).toEqual(['read_file']);
+  });
+
+  it('dedupes a tool invoked multiple times within one turn', () => {
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'read two files' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'a' } },
+        { type: 'tool_call', id: 'c2', name: 'read_file', args: { path: 'b' } },
+      ]),
+      msg(2, 'assistant', [{ type: 'text', text: 'done' }]),
+    ]);
+    const turn1 = def.workflow.nodes[1];
+    expect(turn1?.type === 'agent' && turn1.tools).toEqual(['read_file']); // not ['read_file', 'read_file']
+  });
 });
 
 describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitter', () => {

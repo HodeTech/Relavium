@@ -265,4 +265,23 @@ describe('AgentSession.resume (1.Y)', () => {
     const only = completed[0];
     expect(only?.type === 'session:turn_completed' && only.error?.code).toBe('turn_limit');
   });
+
+  it('syncs a host-wired budget governor with the carried-over cost on resume', () => {
+    const events: SessionStreamEvent[] = [];
+    const costs: number[] = [];
+    const deps: SessionDeps = {
+      ...depsFor(capturingProvider([]), events),
+      updateCost: (cost) => {
+        costs.push(cost);
+      },
+    };
+    AgentSession.resume(params(deps), {
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      turnCount: 1,
+      cumulativeCostMicrocents: 4200,
+    });
+    // the governor is seeded once, at resume, with the absolute cumulative — so the first resumed turn's
+    // pre-egress check sees the real spend, not 0 (before any cost:updated fires).
+    expect(costs).toEqual([4200]);
+  });
 });

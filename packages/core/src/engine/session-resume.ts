@@ -65,7 +65,7 @@ function durableToLlmMessages(messages: readonly SessionMessage[]): LlmMessage[]
  */
 function trimTrailingUserTurn(messages: readonly LlmMessage[]): LlmMessage[] {
   const committed = [...messages];
-  while (committed.length > 0 && committed[committed.length - 1]?.role === 'user') {
+  while (committed.at(-1)?.role === 'user') {
     committed.pop();
   }
   return committed;
