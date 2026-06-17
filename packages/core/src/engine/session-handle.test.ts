@@ -133,6 +133,25 @@ describe('SessionHandle (1.W) — the long-lived session event stream', () => {
     b.emit(turnStarted()); // a stray post-terminal emit — not delivered to the closed stream
     expect(events.map((e) => e.type)).toEqual(['session:started', 'session:cancelled']);
   });
+
+  it('detaches the bus subscription when the consumer abandons the stream early (no leaked listener)', async () => {
+    // Regression guard for the onClose wiring: a `break`/`return` before the terminal must NOT leave the
+    // primary listener registered (filtering every later delivery into a closed buffer on a long-lived bus).
+    const b = bus();
+    const detached = vi.fn();
+    const realSubscribe = b.subscribe.bind(b);
+    vi.spyOn(b, 'subscribe').mockImplementation((listener) => {
+      const off = realSubscribe(listener);
+      return () => {
+        detached();
+        off();
+      };
+    });
+    const handle = createSessionHandle(b, 'sess-1', () => undefined);
+    const iterator = handle.events[Symbol.asyncIterator]();
+    await iterator.return?.(); // early abandon → return() → close() → onClose → unsubscribe()
+    expect(detached).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('createSessionEventSink (1.W) — AgentSession envelope-free drafts → the shared bus', () => {

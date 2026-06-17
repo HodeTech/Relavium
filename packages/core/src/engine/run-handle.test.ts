@@ -156,6 +156,25 @@ describe('RunHandle — the async-iterable event stream', () => {
     expect(after.done).toBe(true);
   });
 
+  it('detaches the bus subscription when the consumer abandons the stream early (no leaked listener)', async () => {
+    // Regression guard for the onClose wiring: a `break`/`return` before the terminal must NOT leave the
+    // primary listener registered on the (potentially shared) bus.
+    const b = bus();
+    const detached = vi.fn();
+    const realSubscribe = b.subscribe.bind(b);
+    vi.spyOn(b, 'subscribe').mockImplementation((listener) => {
+      const off = realSubscribe(listener);
+      return () => {
+        detached();
+        off();
+      };
+    });
+    const handle = createRunHandle(b, 'run-1', () => undefined);
+    const iterator = handle.events[Symbol.asyncIterator]();
+    await iterator.return?.(); // early abandon → return() → close() → onClose → unsubscribe()
+    expect(detached).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores events emitted after the terminal closed the stream (no late delivery)', async () => {
     const b = bus();
     const handle = createRunHandle(b, 'run-1', () => undefined);
