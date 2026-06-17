@@ -380,6 +380,19 @@ CREATE UNIQUE INDEX idx_session_messages_seq ON session_messages (session_id, se
 CREATE INDEX idx_session_messages_session    ON session_messages (session_id, created_at ASC);
 ```
 
+> **Mapping the durable `SessionMessage` to a row (1.X).** `@relavium/shared`'s `SessionMessage`
+> (agent-session-spec.md §"Session messages") carries the transcript body as a single
+> `content: DurableContentPart[]` array. That array is the **canonical** body and is stored as JSON in
+> **`content_parts`** — the source of truth the `@relavium/db` mapper round-trips. The remaining scalar
+> columns (`content`, `tool_calls`, `tool_call_id`, `name`, `finish_reason`, `input_tokens`,
+> `output_tokens`, `cost_microcents`) are **optional denormalized metadata** (a plain-text projection for
+> display/search and the per-message counters) the persistence layer MAY populate; they are NULL/0 when the
+> durable parts array is the sole source of a row. They keep `session_messages` in the run [`messages`](#messages)
+> shape family without forcing a session to decompose its parts. The reasoning `signature` and inline media
+> bytes are **structurally impossible** in `content_parts` — `DurableContentPart` has no `signature` field
+> and only handle-only media ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)/[ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)),
+> enforced at the mapper's parse boundary on both write and read.
+
 > A `secret`-typed value is never persisted into `session_messages` — per
 > [ADR-0029](../../decisions/0029-tool-policy-hardening.md) secrets are rejected from prompt/tool text
 > at parse, so they never reach a message body. The user's own conversational content is stored here

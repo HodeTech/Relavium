@@ -1,8 +1,12 @@
 import {
   EXECUTION_MODES,
+  FS_SCOPE_TIERS,
   RunStatusSchema,
+  SessionStatusSchema,
   type ExecutionMode,
+  type FsScopeTier,
   type RunStatus,
+  type SessionStatus,
 } from '@relavium/shared';
 import { desc, sql } from 'drizzle-orm';
 import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
@@ -353,6 +357,90 @@ export const runCosts = sqliteTable(
   (t) => [index('idx_run_costs_run').on(t.runId)],
 );
 
+// --- 10. agent_sessions (-> agents, model_catalog; the agent-first chat session, ADR-0024) ---
+
+export const agentSessions = sqliteTable(
+  'agent_sessions',
+  {
+    id: uuidPk(),
+    agentId: text('agent_id').references(() => agents.id),
+    agentSlug: text('agent_slug').notNull(),
+    agentSnapshot: jsonText('agent_snapshot'),
+    title: text('title'),
+    modelId: text('model_id').references(() => modelCatalog.id),
+    // working_dir / git_ref / fs_scope_tier are denormalized out of context_json for indexing/filtering;
+    // context_json remains the authoritative frozen SessionContext.
+    workingDir: text('working_dir'),
+    gitRef: text('git_ref'),
+    fsScopeTier: text('fs_scope_tier').$type<FsScopeTier>().notNull().default('sandboxed'),
+    status: text('status').$type<SessionStatus>().notNull().default('active'),
+    contextJson: jsonText('context_json').notNull().default('{}'),
+    totalInputTokens: tokenCount('total_input_tokens'),
+    totalOutputTokens: tokenCount('total_output_tokens'),
+    totalCostMicrocents: microcents('total_cost_microcents'),
+    exportedWorkflowPath: text('exported_workflow_path'),
+    deletedAt: epochMs('deleted_at'),
+    createdAt: epochMs('created_at').notNull(),
+    updatedAt: epochMs('updated_at').notNull(),
+  },
+  (t) => [
+    // CHECK value sets imported from @relavium/shared so the persisted enum cannot drift from the
+    // logical contract: the shared FS_SCOPE_TIERS list and the SessionStatus contract (session.ts).
+    check(
+      'agent_sessions_fs_scope_tier_check',
+      sql`${t.fsScopeTier} in (${inList(FS_SCOPE_TIERS)})`,
+    ),
+    check(
+      'agent_sessions_status_check',
+      sql`${t.status} in (${inList(SessionStatusSchema.options)})`,
+    ),
+    index('idx_agent_sessions_status')
+      .on(t.status, desc(t.updatedAt))
+      .where(sql`${t.deletedAt} is null`),
+    index('idx_agent_sessions_agent')
+      .on(t.agentId, desc(t.createdAt))
+      .where(sql`${t.agentId} is not null`),
+  ],
+);
+
+// --- 11. session_messages (-> agent_sessions CASCADE, model_catalog; append-only transcript) ---
+
+export const sessionMessages = sqliteTable(
+  'session_messages',
+  {
+    id: uuidPk(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    sequenceNumber: integer('sequence_number').notNull(),
+    // role values (system|user|assistant|tool) are documented literals; the reference DDL declares no
+    // CHECK on role (mirrors the run `messages` table), so none is added — the SessionMessageSchema
+    // (@relavium/shared) enforces the closed role set at the mapper boundary.
+    role: text('role').notNull(),
+    content: text('content'),
+    // The canonical durable transcript: SessionMessage.content (DurableContentPart[]) is stored here as
+    // JSON (database-schema.md §"Mapping SessionMessage to the row"). The other scalar columns below are
+    // optional denormalized metadata (NULL when the durable parts array is the sole source of a row).
+    contentParts: jsonText('content_parts'),
+    toolCalls: jsonText('tool_calls'),
+    toolCallId: text('tool_call_id'),
+    name: text('name'),
+    finishReason: text('finish_reason'),
+    // The model that produced an assistant turn (fallback-aware); NULL for non-assistant rows.
+    modelId: text('model_id').references(() => modelCatalog.id),
+    inputTokens: tokenCount('input_tokens'),
+    outputTokens: tokenCount('output_tokens'),
+    costMicrocents: microcents('cost_microcents'),
+    createdAt: epochMs('created_at').notNull(),
+  },
+  (t) => [
+    // UNIQUE: sequence_number is monotonic per session (append-only), so (session_id, sequence_number)
+    // must be unique — enforcing the gap-free transcript invariant at the DB level (no double-write).
+    uniqueIndex('idx_session_messages_seq').on(t.sessionId, t.sequenceNumber),
+    index('idx_session_messages_session').on(t.sessionId, t.createdAt),
+  ],
+);
+
 // --- Inferred row types (select + insert) for each table ---
 
 export type LlmProviderRow = typeof llmProviders.$inferSelect;
@@ -373,3 +461,7 @@ export type RunEventRow = typeof runEvents.$inferSelect;
 export type NewRunEventRow = typeof runEvents.$inferInsert;
 export type RunCostRow = typeof runCosts.$inferSelect;
 export type NewRunCostRow = typeof runCosts.$inferInsert;
+export type AgentSessionRow = typeof agentSessions.$inferSelect;
+export type NewAgentSessionRow = typeof agentSessions.$inferInsert;
+export type SessionMessageRow = typeof sessionMessages.$inferSelect;
+export type NewSessionMessageRow = typeof sessionMessages.$inferInsert;

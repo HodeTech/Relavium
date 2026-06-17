@@ -51,6 +51,7 @@ the **human gate** (1.Q) + **checkpoint/resume** (1.R, PR #22), **node retry** (
 both landed in **PR #26 (2026-06-16)**. With the budget governor in, **milestone 1.m4 is complete**; then the
 **end-to-end Node harness** (1.U) landed (**PR #27, 2026-06-16**) — **🎯 reaching milestone M2**: the engine runs
 end-to-end (live streaming + checkpoint + cross-process resume + retry + provider failover), completing the
-Phase-1 engine critical path. The remaining Phase-1 work is additive (the agent-first sub-spine — session
-events 1.W, persistence 1.X, … — and the multimodal sub-spine); **Phase 2 (the CLI) is unblocked**. See
+Phase-1 engine critical path. The remaining Phase-1 work is additive (the agent-first sub-spine — **session
+events 1.W ✅ (PR #28, 2026-06-17)**, persistence 1.X next, … — and the multimodal sub-spine); **Phase 2 (the
+CLI) is unblocked**. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
