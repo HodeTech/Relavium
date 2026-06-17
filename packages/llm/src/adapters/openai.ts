@@ -5,7 +5,13 @@ import OpenAI, {
   APIUserAbortError,
 } from 'openai';
 
-import { isPrivateOrLocalHost, urlHasCredentials, type ContentPart, mediaModalityOf, type StopReason } from '@relavium/shared';
+import {
+  isPrivateOrLocalHost,
+  urlHasCredentials,
+  type ContentPart,
+  mediaModalityOf,
+  type StopReason,
+} from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError } from '../errors.js';
@@ -230,7 +236,9 @@ type ToolResultPart = Extract<ContentPart, { type: 'tool_result' }>;
  * preserving `image_url` and `input_audio` media parts. When no media parts are present,
  * emit the existing simple `{ role: 'user', content: string }` (backwards-compat).
  */
-function toOpenAiUserContent(content: readonly ContentPart[]): string | OpenAI.ChatCompletionContentPart[] {
+function toOpenAiUserContent(
+  content: readonly ContentPart[],
+): string | OpenAI.ChatCompletionContentPart[] {
   let hasMedia = false;
   for (const part of content) {
     if (part.type === 'media') {
@@ -260,20 +268,32 @@ function toOpenAiUserContent(content: readonly ContentPart[]): string | OpenAI.C
               type: 'image_url',
               image_url: { url: part.source.url },
             });
-          }
-          // handle: resolved at egress by MediaStore (1.AF)
-        } else if (modality === 'audio') {
-          if (part.source.kind === 'base64') {
-const format = part.mimeType.split('/')[1]?.split(';')[0] ?? 'wav';
-             const audioFormat = format === 'mp3' ? 'mp3' : 'wav'; // SDK allows 'wav' | 'mp3'
-             parts.push({
-               type: 'input_audio' as const,
-               input_audio: { data: part.source.data, format: audioFormat },
+          } else if (part.source.kind === 'handle') {
+            throw new LlmProviderError({
+              kind: 'bad_request',
+              retryable: false,
+              message: `OpenAI does not support handle-source ${modality} input — resolve before egress (1.AF)`,
+              provider: 'openai',
             });
           }
-          // url/handle audio: deferred to 1.AF
+        } else if (modality === 'audio') {
+          if (part.source.kind === 'base64') {
+            const format = part.mimeType.split('/')[1]?.split(';')[0] ?? 'wav';
+            const audioFormat = format === 'mp3' ? 'mp3' : 'wav';
+            parts.push({
+              type: 'input_audio' as const,
+              input_audio: { data: part.source.data, format: audioFormat },
+            });
+          } else if (part.source.kind === 'url' || part.source.kind === 'handle') {
+            throw new LlmProviderError({
+              kind: 'bad_request',
+              retryable: false,
+              message: `OpenAI does not support ${part.source.kind}-source audio input — use base64 (1.AF)`,
+              provider: 'openai',
+            });
+          }
         }
-        // video: never inline on OpenAI; skip (asset via 1.AG generative path)
+        // video: never inline on OpenAI; the capability gate already rejects it
         break;
       }
       default:
@@ -450,7 +470,11 @@ function assertHttpsBaseUrl(url: string): void {
   if (urlHasCredentials(url)) {
     throw new InvalidBaseUrlError(url, 'must not contain embedded credentials');
   }
-  const host = parsed.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const host = parsed.hostname
+    .toLowerCase()
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .replace(/\.+$/, '');
   if (isPrivateOrLocalHost(host)) {
     throw new InvalidBaseUrlError(url, 'resolves to a private, loopback, or link-local address');
   }

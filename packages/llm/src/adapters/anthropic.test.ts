@@ -156,52 +156,60 @@ describe('AnthropicAdapter', () => {
     });
   });
 
-  it('skips handle and url media sources (deferred to 1.AF)', async () => {
-    let sent: Record<string, unknown> = {};
+  it('rejects handle and url media sources with an explicit bad_request error (1.AF)', async () => {
     const adapter = createAnthropicAdapter({
-      fetch: (_input, init) => {
-        sent = parseJsonBody(init);
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              id: 'm',
-              type: 'message',
-              role: 'assistant',
-              model: 'claude-sonnet-4-6',
-              content: [{ type: 'text', text: 'ok' }],
-              stop_reason: 'end_turn',
-              stop_sequence: null,
-              usage: { input_tokens: 1, output_tokens: 1 },
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      },
+      fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
       maxRetries: 0,
     });
-    await adapter.generate(
-      {
-        model: 'claude-sonnet-4-6',
-        maxTokens: 16,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'media',
-                mimeType: 'image/png',
-                source: { kind: 'handle', ref: 'media://sha256-' + 'a'.repeat(64) },
-              },
-              { type: 'text', text: 'what is this' },
-            ],
-          },
-        ],
-      },
-      'k',
-    );
-    const messages = sent['messages'] as Record<string, unknown>[];
-    const content = messages[0]?.['content'] as Record<string, unknown>[];
-    expect(content).toEqual([{ type: 'text', text: 'what is this' }]);
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'handle', ref: 'media://sha256-' + 'a'.repeat(64) },
+                },
+                { type: 'text', text: 'what is this' },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('Anthropic does not support handle-source image input — use base64 (1.AF)');
+
+    const adapter2 = createAnthropicAdapter({
+      fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
+      maxRetries: 0,
+    });
+    await expect(
+      adapter2.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'application/pdf',
+                  source: { kind: 'url', url: 'https://example.com/doc.pdf' },
+                },
+                { type: 'text', text: 'summarize this' },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('Anthropic does not support url-source document input — use base64 (1.AF)');
   });
 
   it('maps every Anthropic stop reason to the canonical 5-value enum', () => {

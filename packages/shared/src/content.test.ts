@@ -484,8 +484,9 @@ describe('refineInFlightMediaPart — the seam ingestion rules (ADR-0031)', () =
 
   it('rejects a url carrier with embedded credentials', () => {
     expect(
-      boundary.safeParse(media('image/png', { kind: 'url', url: 'https://user:pass@example.com/a.png' }))
-        .success,
+      boundary.safeParse(
+        media('image/png', { kind: 'url', url: 'https://user:pass@example.com/a.png' }),
+      ).success,
     ).toBe(false);
   });
 
@@ -689,6 +690,10 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['100.63.255.255', 'just below CGNAT range'],
     ['100.128.0.1', 'just above CGNAT range'],
     ['128.0.0.1', 'public IP'],
+    ['fda.gov', 'public hostname starting with fd'],
+    ['fca.com', 'public hostname starting with fc'],
+    ['fe80.com', 'public hostname starting with fe80'],
+    ['fcbarcelona.com', 'public hostname starting with fc'],
   ];
 
   for (const [host, label] of BLOCKED_HOSTS) {

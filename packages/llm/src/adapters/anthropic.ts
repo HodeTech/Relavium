@@ -235,31 +235,49 @@ function toAnthropicBlock(
   }
 }
 
-function toAnthropicContentBlocks(
-  content: readonly ContentPart[],
-): Anthropic.ContentBlockParam[] {
+function toAnthropicContentBlocks(content: readonly ContentPart[]): Anthropic.ContentBlockParam[] {
   const blocks: Anthropic.ContentBlockParam[] = [];
   for (const part of content) {
     if (part.type === 'media') {
       const modality = mediaModalityOf(part.mimeType);
-      if (modality === 'image' && part.source.kind === 'base64') {
-        blocks.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: part.mimeType as Anthropic.Base64ImageSource['media_type'],
-            data: part.source.data,
-          },
-        });
-      } else if (modality === 'document' && part.source.kind === 'base64') {
-        blocks.push({
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: 'application/pdf' as const,
-            data: part.source.data,
-          },
-        });
+      if (modality === 'image') {
+        if (part.source.kind === 'base64') {
+          blocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: part.mimeType as Anthropic.Base64ImageSource['media_type'],
+              data: part.source.data,
+            },
+          });
+        } else {
+          throw new LlmProviderError(
+            makeLlmError({
+              provider: PROVIDER,
+              kind: 'bad_request',
+              message: `Anthropic does not support ${part.source.kind}-source image input — use base64 (1.AF)`,
+            }),
+          );
+        }
+      } else if (modality === 'document') {
+        if (part.source.kind === 'base64') {
+          blocks.push({
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf' as const,
+              data: part.source.data,
+            },
+          });
+        } else {
+          throw new LlmProviderError(
+            makeLlmError({
+              provider: PROVIDER,
+              kind: 'bad_request',
+              message: `Anthropic does not support ${part.source.kind}-source document input — use base64 (1.AF)`,
+            }),
+          );
+        }
       }
       continue;
     }

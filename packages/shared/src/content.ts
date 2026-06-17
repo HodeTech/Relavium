@@ -693,7 +693,12 @@ export interface DeInlineMedia {
 export function isPrivateOrLocalHost(host: string): boolean {
   const h = host.toLowerCase();
 
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) {
+  if (
+    h === 'localhost' ||
+    h.endsWith('.localhost') ||
+    h.endsWith('.local') ||
+    h.endsWith('.internal')
+  ) {
     return true;
   }
 
@@ -701,7 +706,7 @@ export function isPrivateOrLocalHost(host: string): boolean {
     return true;
   }
 
-  if (h.startsWith('127.') || h === '::1' || h === '::') {
+  if (h.startsWith('127.')) {
     return true;
   }
 
@@ -709,50 +714,66 @@ export function isPrivateOrLocalHost(host: string): boolean {
     return true;
   }
 
-  const m172 = /^172\.(\d{1,3})\./.exec(h);
-  if (m172 !== null) {
-    const octet = Number(m172[1]);
-    if (octet >= 16 && octet <= 31) return true;
+  if (isPrivate172(h)) {
+    return true;
   }
 
   if (h.startsWith('192.168.')) {
     return true;
   }
 
-  const m100 = /^100\.(\d{1,3})\./.exec(h);
-  if (m100 !== null) {
-    const octet = Number(m100[1]);
-    if (octet >= 64 && octet <= 127) return true;
+  if (isCgnat100(h)) {
+    return true;
   }
 
   if (h.startsWith('169.254.')) {
     return true;
   }
 
-  if (h.startsWith('fe80:') || h.startsWith('fe80:')) {
-    return true;
+  if (h.includes(':')) {
+    return isPrivateIpv6(h);
   }
 
+  return false;
+}
+
+function isPrivate172(h: string): boolean {
+  const m = /^172\.(\d{1,3})\./.exec(h);
+  if (m === null) return false;
+  const octet = Number(m[1]);
+  return octet >= 16 && octet <= 31;
+}
+
+function isCgnat100(h: string): boolean {
+  const m = /^100\.(\d{1,3})\./.exec(h);
+  if (m === null) return false;
+  const octet = Number(m[1]);
+  return octet >= 64 && octet <= 127;
+}
+
+function isPrivateIpv6(h: string): boolean {
+  if (h === '::1' || h === '::') {
+    return true;
+  }
+  if (h.startsWith('fe80:')) {
+    return true;
+  }
   if (h.startsWith('fc') || h.startsWith('fd')) {
     const next = h.charCodeAt(2);
     if ((next >= 0x30 && next <= 0x39) || (next >= 0x61 && next <= 0x66)) {
       return true;
     }
   }
-
-  if (h.includes(':')) {
-    const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(h);
-    if (embeddedDotted !== null) {
-      return isPrivateOrLocalHost(embeddedDotted[1] ?? '');
-    }
-    const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
-    if (embeddedHex !== null) {
-      const hi = Number.parseInt(embeddedHex[1] ?? '0', 16);
-      const lo = Number.parseInt(embeddedHex[2] ?? '0', 16);
-      return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
-    }
+  const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(h);
+  if (embeddedDotted !== null) {
+    return isPrivateOrLocalHost(embeddedDotted[1] ?? '');
   }
-
+  const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (embeddedHex !== null) {
+    const hi = Number.parseInt(embeddedHex[1] ?? '0', 16);
+    const lo = Number.parseInt(embeddedHex[2] ?? '0', 16);
+    return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+  }
   return false;
 }
 

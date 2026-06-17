@@ -286,17 +286,27 @@ function toGeminiContents(
   return contents;
 }
 
-function toGeminiMediaPart(
-  part: Extract<ContentPart, { type: 'media' }>,
-): Record<string, unknown> | undefined {
+function toGeminiMediaPart(part: Extract<ContentPart, { type: 'media' }>): Record<string, unknown> {
   const modality = mediaModalityOf(part.mimeType);
   if (modality === undefined) {
-    return undefined;
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: `unsupported media mime type: ${part.mimeType}`,
+      }),
+    );
   }
   if (part.source.kind === 'base64') {
     return { inlineData: { mimeType: part.mimeType, data: part.source.data } };
   }
-  return undefined;
+  throw new LlmProviderError(
+    makeLlmError({
+      provider: PROVIDER,
+      kind: 'bad_request',
+      message: `${part.source.kind} source is unsupported for ${modality} media`,
+    }),
+  );
 }
 
 function toGeminiParts(
@@ -313,10 +323,7 @@ function toGeminiParts(
       const name = nameById.get(part.toolCallId) ?? part.toolCallId;
       parts.push({ functionResponse: { name, response: toResponseObject(part.result) } });
     } else if (part.type === 'media') {
-      const mediaPart = toGeminiMediaPart(part);
-      if (mediaPart !== undefined) {
-        parts.push(mediaPart);
-      }
+      parts.push(toGeminiMediaPart(part));
     }
     // reasoning parts are ephemeral (ADR-0030) — dropped here, never replayed to the provider.
   }

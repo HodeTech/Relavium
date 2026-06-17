@@ -104,12 +104,18 @@ describe('OpenAI-compatible adapter', () => {
         {
           role: 'user' as const,
           content: [
-            { type: 'media' as const, mimeType: 'image/png', source: { kind: 'base64' as const, data: 'aGVsbG8=' } },
+            {
+              type: 'media' as const,
+              mimeType: 'image/png',
+              source: { kind: 'base64' as const, data: 'aGVsbG8=' },
+            },
           ],
         },
       ],
     };
-    await expect(dsAdapter.generate(imageReq, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    await expect(dsAdapter.generate(imageReq, 'k')).rejects.toThrowError(
+      UnsupportedCapabilityError,
+    );
     expect(() => dsAdapter.stream(imageReq, 'k')).toThrowError(UnsupportedCapabilityError);
 
     // OpenAI: video is unsupported → typed error (handle source: video ceiling=0 forbids inline).
@@ -122,12 +128,18 @@ describe('OpenAI-compatible adapter', () => {
         {
           role: 'user' as const,
           content: [
-            { type: 'media' as const, mimeType: 'video/mp4', source: { kind: 'handle' as const, ref: `media://sha256-${'f'.repeat(64)}` } },
+            {
+              type: 'media' as const,
+              mimeType: 'video/mp4',
+              source: { kind: 'handle' as const, ref: `media://sha256-${'f'.repeat(64)}` },
+            },
           ],
         },
       ],
     };
-    await expect(oaiAdapter.generate(videoReq, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
+    await expect(oaiAdapter.generate(videoReq, 'k')).rejects.toThrowError(
+      UnsupportedCapabilityError,
+    );
     expect(() => oaiAdapter.stream(videoReq, 'k')).toThrowError(UnsupportedCapabilityError);
   });
 

@@ -15,6 +15,76 @@ export function isAbortSignal(value: unknown): value is AbortSignal {
 }
 
 /**
+ * Gate every media part and tool_result media attachment against the provider's input modality
+ * capabilities (1.AE, ADR-0031). Throws `UnsupportedCapabilityError` on the first violation.
+ */
+function gateInputModalities(
+  provider: ProviderId,
+  inputCaps: CapabilityFlags['media']['input'],
+  messages: LlmRequest['messages'],
+): void {
+  for (const message of messages) {
+    for (const part of message.content) {
+      if (part.type === 'media') {
+        gateModality(provider, inputCaps, part.mimeType);
+      }
+      if (part.type === 'tool_result' && part.media !== undefined && part.media.length > 0) {
+        for (const mediaPart of part.media) {
+          gateModality(provider, inputCaps, mediaPart.mimeType, ' in tool_result');
+        }
+      }
+    }
+  }
+}
+
+function gateModality(
+  provider: ProviderId,
+  inputCaps: Record<string, boolean>,
+  mimeType: string,
+  suffix: string = '',
+): void {
+  const modality = mediaModalityOf(mimeType);
+  if (modality === undefined) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      `unsupported MIME type '${mimeType}'${suffix}`,
+    );
+  }
+  if (!inputCaps[modality]) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      `input modality '${modality}' (${mimeType})${suffix} not supported`,
+    );
+  }
+}
+
+/**
+ * Gate output modalities by MEMBERSHIP in `media.outputCombinations` (ADR-0031 decision #3).
+ * A request for `['text', 'audio']` is valid only if some output combination contains both.
+ */
+function gateOutputCombinations(
+  provider: ProviderId,
+  supports: CapabilityFlags,
+  outputModalities: LlmRequest['outputModalities'],
+): void {
+  if (outputModalities === undefined) return;
+  const nonText = outputModalities.filter((modality) => modality !== 'text');
+  if (nonText.length === 0) return;
+  const outputOk = supports.media.outputCombinations.some((combo) =>
+    nonText.every((modality) => combo.includes(modality)),
+  );
+  if (!outputOk) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      `output modalities [${nonText.join(', ')}] not in any supported output combination`,
+    );
+  }
+}
+
+/**
  * The per-modality media capability gate (1.AE). Every adapter calls this at `generate()`/`stream()`
  * entry, AFTER `assertSupported` and `assertStreamable`, so there is never a cap-less window between
  * the ADR-0031 shape landing and the per-modality wiring. An unsupported modality is thrown as
@@ -25,81 +95,17 @@ export function isAbortSignal(value: unknown): value is AbortSignal {
  * First, each message is validated through `LlmMessageSchema` to activate the superRefine
  * guards (media ceiling/caps, URL gate, MIME type validation, anti-amplification caps) — defense-in-depth
  * so requests that bypass the engine's own validation are still caught at the seam.
- *
- * The output modality check validates MEMBERSHIP in `media.outputCombinations` (ADR-0031 decision #3):
- * a request for `['text', 'audio']` is valid only if the provider's output Combinations include a set
- * that **contains** both `text` and `audio` — independent booleans would advertise wire-invalid combos.
  */
 export function assertMediaCapabilities(
   provider: ProviderId,
   supports: CapabilityFlags,
   req: LlmRequest,
 ): void {
-  // 0. Activate the Zod-level superRefine guards (media ceiling/caps, URL gate, MIME, anti-amp caps).
   for (const message of req.messages) {
     LlmMessageSchema.parse(message);
   }
-
-  const inputCaps = supports.media.input;
-
-  // 1. Gate input modalities — every media part and tool_result media attachment
-  for (const message of req.messages) {
-    for (const part of message.content) {
-      if (part.type === 'media') {
-        const modality = mediaModalityOf(part.mimeType);
-        if (modality === undefined) {
-          throw new UnsupportedCapabilityError(
-            provider,
-            'media',
-            `unsupported MIME type '${part.mimeType}'`,
-          );
-        }
-        if (!inputCaps[modality]) {
-          throw new UnsupportedCapabilityError(
-            provider,
-            'media',
-            `input modality '${modality}' (${part.mimeType}) not supported`,
-          );
-        }
-      }
-      if (part.type === 'tool_result' && part.media !== undefined && part.media.length > 0) {
-        for (const mediaPart of part.media) {
-          const modality = mediaModalityOf(mediaPart.mimeType);
-          if (modality === undefined) {
-            throw new UnsupportedCapabilityError(
-              provider,
-              'media',
-              `unsupported MIME type '${mediaPart.mimeType}' in tool_result attachment`,
-            );
-          }
-          if (!inputCaps[modality]) {
-            throw new UnsupportedCapabilityError(
-              provider,
-              'media',
-              `input modality '${modality}' (${mediaPart.mimeType}) in tool_result not supported`,
-            );
-          }
-        }
-      }
-    }
-  }
-
-  // 2. Gate output modalities — membership check against outputCombinations
-  if (req.outputModalities !== undefined) {
-    const nonText = req.outputModalities.filter((modality) => modality !== 'text');
-    if (nonText.length > 0) {
-      const outputOk = supports.media.outputCombinations.some((combo) =>
-        nonText.every((modality) => combo.includes(modality)),
-      );
-      if (!outputOk) {
-        throw new UnsupportedCapabilityError(
-          provider,
-          'media',
-          `output modalities [${nonText.join(', ')}] not in any supported output combination`,
-        );
-      }
-    }
-  }
+  gateInputModalities(provider, supports.media.input, req.messages);
+  gateOutputCombinations(provider, supports, req.outputModalities);
 }
 
 /**
