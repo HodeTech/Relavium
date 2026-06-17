@@ -18,6 +18,8 @@ export {
   messages,
   runEvents,
   runCosts,
+  agentSessions,
+  sessionMessages,
 } from './schema.js';
 
 export type {
@@ -39,6 +41,23 @@ export type {
   NewRunEventRow,
   RunCostRow,
   NewRunCostRow,
+  AgentSessionRow,
+  NewAgentSessionRow,
+  SessionMessageRow,
+  NewSessionMessageRow,
 } from './schema.js';
 
 export { createClient, runMigrations, type Db, type DbClient } from './client.js';
+
+// Session persistence (1.X) — the directly-stored, append-only transcript layer over the
+// agent_sessions + session_messages tables. The domain ↔ row mappers double as the validation
+// boundary; the platform-free engine never imports this (a host wires it over the encrypted history.db).
+export {
+  createSessionStore,
+  toAgentSessionRow,
+  fromAgentSessionRow,
+  toSessionMessageRow,
+  fromSessionMessageRow,
+  type SessionStore,
+  type SessionMessageMeta,
+} from './session-store.js';

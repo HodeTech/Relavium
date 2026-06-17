@@ -19,7 +19,7 @@ import { messages, runEvents, runs, stepExecutions, workflows } from './schema.j
 
 const TS = 1_700_000_000_000; // fixed epoch-ms so assertions are deterministic
 
-/** The nine Phase-1 local tables (database-schema.md). */
+/** The eleven Phase-1 local tables (database-schema.md) — nine run-history + two agent-session (1.X). */
 const EXPECTED_TABLES = [
   'llm_providers',
   'model_catalog',
@@ -30,6 +30,8 @@ const EXPECTED_TABLES = [
   'messages',
   'run_events',
   'run_costs',
+  'agent_sessions',
+  'session_messages',
 ] as const;
 
 let tmpDir: string;
@@ -75,6 +77,8 @@ describe('@relavium/db migrations + client', () => {
       'idx_runs_status',
       'idx_run_events_run_seq',
       'idx_step_exec_model',
+      'idx_agent_sessions_status',
+      'idx_session_messages_seq',
     ]) {
       expect(indexes).toContain(idx);
     }
@@ -196,6 +200,16 @@ describe('@relavium/db migrations + client', () => {
     // and the CHECK/index DDL, so a silent schema regeneration is caught.
     const ddl = readFileSync(
       fileURLToPath(new URL('../drizzle/0000_organic_the_santerians.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(ddl).toMatchSnapshot();
+  });
+
+  it('the 0001 migration DDL matches the committed snapshot (agent_sessions + session_messages, 1.X)', () => {
+    // Byte-for-byte snapshot of the session-persistence migration — pins the two tables' columns,
+    // the fs_scope_tier/status CHECKs, the cascade FK, and the unique (session_id, sequence_number) index.
+    const ddl = readFileSync(
+      fileURLToPath(new URL('../drizzle/0001_pale_scorpion.sql', import.meta.url)),
       'utf8',
     );
     expect(ddl).toMatchSnapshot();

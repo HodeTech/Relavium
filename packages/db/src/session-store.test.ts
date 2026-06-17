@@ -1,0 +1,332 @@
+import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
+import { eq } from 'drizzle-orm';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { createClient, runMigrations, type DbClient } from './client.js';
+import { agentSessions, llmProviders, modelCatalog, sessionMessages } from './schema.js';
+import { createSessionStore, type SessionStore } from './session-store.js';
+
+/** Seed a provider + model_catalog row so a session/message `model_id` FK resolves (catalog UUID). */
+function seedModelCatalog(client: DbClient): void {
+  client.db
+    .insert(llmProviders)
+    .values({
+      id: 'prov-1',
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      createdAt: TS_MS,
+      updatedAt: TS_MS,
+    })
+    .run();
+  client.db
+    .insert(modelCatalog)
+    .values({
+      id: 'model-1',
+      providerId: 'prov-1',
+      modelId: 'claude-opus-4-8',
+      displayName: 'Opus 4.8',
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 64_000,
+      createdAt: TS_MS,
+      updatedAt: TS_MS,
+    })
+    .run();
+}
+
+/**
+ * 1.X session-persistence round-trip: persist an `agent_sessions` row + its append-only
+ * `session_messages` transcript through the `SessionStore`, reload it (the resume path), and assert the
+ * durable contract holds — gap-free ordering, cascade delete, the CHECK constraints, and durable content
+ * (handle-only media, signature-less reasoning) surviving a round-trip.
+ */
+
+const TS_ISO = '2026-06-17T08:00:00.000Z';
+const TS_MS = Date.parse(TS_ISO); // epoch-ms for raw inserts that bypass the mapper
+const HANDLE = `media://sha256-${'a'.repeat(64)}`;
+const CTX = { workingDir: '/workspace/s', fsScopeTier: 'sandboxed' as const };
+
+const makeSession = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecord => ({
+  id: 'sess-1',
+  agentSlug: 'chatter',
+  context: CTX,
+  status: 'active',
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
+  totalCostMicrocents: 0,
+  createdAt: TS_ISO,
+  updatedAt: TS_ISO,
+  ...overrides,
+});
+
+const makeMessage = (seq: number, overrides: Partial<SessionMessage> = {}): SessionMessage => ({
+  id: `msg-${seq}`,
+  sessionId: 'sess-1',
+  sequenceNumber: seq,
+  role: 'user',
+  content: [{ type: 'text', text: 'hi' }],
+  timestamp: TS_ISO,
+  ...overrides,
+});
+
+let client: DbClient;
+let store: SessionStore;
+
+beforeEach(() => {
+  client = createClient(':memory:');
+  runMigrations(client.db);
+  store = createSessionStore(client.db);
+});
+
+afterEach(() => {
+  client.sqlite.close();
+});
+
+describe('SessionStore (1.X) — persist + resume', () => {
+  it('round-trips a session and its ordered transcript (the resume path)', () => {
+    store.createSession(makeSession({ title: 'My chat' }));
+    store.appendMessage(makeMessage(0, { content: [{ type: 'text', text: 'hello' }] }));
+    store.appendMessage(
+      makeMessage(1, { role: 'assistant', content: [{ type: 'text', text: 'hi there' }] }),
+    );
+
+    const full = store.loadFull('sess-1');
+    expect(full).toBeDefined();
+    expect(full?.session).toEqual(makeSession({ title: 'My chat' }));
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1]);
+    expect(full?.messages[0]?.content).toEqual([{ type: 'text', text: 'hello' }]);
+    expect(full?.messages[1]?.role).toBe('assistant');
+  });
+
+  it('returns undefined for an absent session', () => {
+    expect(store.loadSession('nope')).toBeUndefined();
+    expect(store.loadFull('nope')).toBeUndefined();
+  });
+
+  it('updateSession overwrites mutable fields by id', () => {
+    store.createSession(makeSession());
+    store.updateSession(
+      makeSession({
+        status: 'ended',
+        totalInputTokens: 10,
+        totalCostMicrocents: 500,
+        updatedAt: TS_ISO,
+      }),
+    );
+    const session = store.loadSession('sess-1');
+    expect(session?.status).toBe('ended');
+    expect(session?.totalInputTokens).toBe(10);
+    expect(session?.totalCostMicrocents).toBe(500);
+  });
+
+  it('cascades the transcript when the parent agent_sessions row is deleted', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0));
+    store.appendMessage(makeMessage(1));
+    client.db.delete(agentSessions).where(eq(agentSessions.id, 'sess-1')).run();
+    expect(store.loadMessages('sess-1')).toHaveLength(0);
+  });
+
+  it('rejects a duplicate (session_id, sequence_number) — the gap-free transcript invariant', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0));
+    expect(() => {
+      store.appendMessage(makeMessage(0, { id: 'msg-dup' }));
+    }).toThrow();
+  });
+
+  it('round-trips durable content (reasoning text + handle-only media), with no signature persisted', () => {
+    store.createSession(makeSession());
+    store.appendMessage(
+      makeMessage(0, {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'thinking' },
+          { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+        ],
+      }),
+    );
+    const messages = store.loadMessages('sess-1');
+    const reasoning = messages[0]?.content[0];
+    expect(reasoning).toEqual({ type: 'reasoning', text: 'thinking' });
+    expect(reasoning !== undefined && 'signature' in reasoning).toBe(false);
+    const media = messages[0]?.content[1];
+    expect(media?.type).toBe('media');
+    expect(media?.type === 'media' && media.source).toEqual({ kind: 'handle', ref: HANDLE });
+  });
+
+  it('persists optional denormalized metadata without changing the SessionMessage round-trip', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0, { role: 'assistant' }), {
+      content: 'hi',
+      inputTokens: 12,
+      outputTokens: 7,
+      costMicrocents: 99,
+      finishReason: 'stop',
+    });
+    const row = client.db
+      .select()
+      .from(sessionMessages)
+      .where(eq(sessionMessages.sessionId, 'sess-1'))
+      .get();
+    expect(row?.inputTokens).toBe(12);
+    expect(row?.outputTokens).toBe(7);
+    expect(row?.costMicrocents).toBe(99);
+    expect(row?.finishReason).toBe('stop');
+    // The canonical SessionMessage carries only its durable fields — the metadata is not part of it.
+    const [message] = store.loadMessages('sess-1');
+    expect(message?.role).toBe('assistant');
+    expect('finishReason' in (message ?? {})).toBe(false);
+  });
+
+  it('persists a modelId that references the model_catalog row (FK-resolved), and rejects an unknown one', () => {
+    // modelId is a model_catalog id (a catalog UUID the host resolves, fallback-aware) — NOT a raw model
+    // string — mirroring the run-side step_executions.model_id FK (database-schema.md §session_messages).
+    seedModelCatalog(client);
+    store.createSession(makeSession({ modelId: 'model-1' }));
+    store.appendMessage(makeMessage(0, { role: 'assistant', modelId: 'model-1' }));
+    expect(store.loadSession('sess-1')?.modelId).toBe('model-1');
+    expect(store.loadMessages('sess-1')[0]?.modelId).toBe('model-1');
+    // An unknown catalog id violates the model_catalog FK on BOTH tables (session + message).
+    expect(() => {
+      store.appendMessage(makeMessage(1, { role: 'assistant', modelId: 'ghost-model' }));
+    }).toThrow();
+    expect(() => {
+      store.createSession(makeSession({ id: 'sess-2', modelId: 'ghost-model' }));
+    }).toThrow();
+  });
+
+  it('round-trips the optional fields — agentSnapshot, exportedWorkflowPath, deletedAt', () => {
+    const agentSnapshot = AgentSchema.parse({
+      id: 'chatter',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'You are concise.',
+    });
+    store.createSession(
+      makeSession({
+        title: 'Exported chat',
+        status: 'exported',
+        agentSnapshot,
+        exportedWorkflowPath: 'flows/chat.relavium.yaml',
+        deletedAt: TS_ISO,
+      }),
+    );
+    const loaded = store.loadSession('sess-1');
+    expect(loaded?.agentSnapshot).toEqual(agentSnapshot); // the JSON snapshot column round-trips
+    expect(loaded?.exportedWorkflowPath).toBe('flows/chat.relavium.yaml');
+    expect(loaded?.deletedAt).toBe(TS_ISO); // the soft-delete tombstone survives the epoch-ms edge
+  });
+
+  it('updateSession preserves the immutable created_at while advancing updated_at', () => {
+    const t1 = '2026-06-17T08:00:00.000Z';
+    const t2 = '2026-06-17T09:30:00.000Z';
+    store.createSession(makeSession({ createdAt: t1, updatedAt: t1 }));
+    // A caller passing a DIFFERENT createdAt must NOT rewrite the stored creation timestamp.
+    store.updateSession(makeSession({ status: 'ended', createdAt: t2, updatedAt: t2 }));
+    const s = store.loadSession('sess-1');
+    expect(s?.createdAt).toBe(t1); // frozen at creation
+    expect(s?.updatedAt).toBe(t2); // advanced
+    expect(s?.status).toBe('ended'); // a genuinely mutable field changed
+  });
+
+  it('round-trips multi-part content in order, and an empty content array', () => {
+    store.createSession(makeSession());
+    const parts: SessionMessage['content'] = [
+      { type: 'text', text: 'first' },
+      { type: 'reasoning', text: 'mid' },
+      { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+      { type: 'text', text: 'last' },
+    ];
+    store.appendMessage(makeMessage(0, { role: 'assistant', content: parts }));
+    store.appendMessage(makeMessage(1, { role: 'user', content: [] }));
+    const messages = store.loadMessages('sess-1');
+    expect(messages[0]?.content.map((p) => p.type)).toEqual(['text', 'reasoning', 'media', 'text']);
+    expect(messages[0]?.content[0]).toEqual({ type: 'text', text: 'first' });
+    expect(messages[0]?.content[3]).toEqual({ type: 'text', text: 'last' });
+    expect(messages[1]?.content).toEqual([]);
+  });
+
+  it('rejects on read a corrupt content_parts that bypassed the write path (inline base64 media)', () => {
+    // The read-side security guarantee (ADR-0031): even if a base64/inline-media part is force-inserted into
+    // content_parts (bypassing toSessionMessageRow), fromSessionMessageRow's Zod parse must reject it on load
+    // so an inline-bytes part can never be RETURNED from the durable store.
+    store.createSession(makeSession());
+    client.db
+      .insert(sessionMessages)
+      .values({
+        id: 'm-corrupt',
+        sessionId: 'sess-1',
+        sequenceNumber: 0,
+        role: 'assistant',
+        contentParts: JSON.stringify([
+          { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'AAAA' } },
+        ]),
+        createdAt: TS_MS,
+      })
+      .run();
+    expect(() => store.loadMessages('sess-1')).toThrow();
+  });
+});
+
+describe('agent_sessions CHECK constraints (raw insert bypassing the mapper)', () => {
+  it('rejects a status outside the closed set', () => {
+    expect(() => {
+      client.db
+        .insert(agentSessions)
+        .values({
+          id: 's2',
+          agentSlug: 'x',
+          status: 'paused' as never,
+          createdAt: TS_MS,
+          updatedAt: TS_MS,
+        })
+        .run();
+    }).toThrow();
+  });
+
+  it('rejects an fs_scope_tier outside the closed set', () => {
+    expect(() => {
+      client.db
+        .insert(agentSessions)
+        .values({
+          id: 's3',
+          agentSlug: 'x',
+          fsScopeTier: 'root' as never,
+          createdAt: TS_MS,
+          updatedAt: TS_MS,
+        })
+        .run();
+    }).toThrow();
+  });
+
+  it('rejects a session_messages row whose session_id has no parent (FK enforcement)', () => {
+    expect(() => {
+      client.db
+        .insert(sessionMessages)
+        .values({
+          id: 'm-orphan',
+          sessionId: 'ghost',
+          sequenceNumber: 0,
+          role: 'user',
+          createdAt: TS_MS,
+        })
+        .run();
+    }).toThrow();
+  });
+
+  it('rejects an agent_sessions row whose agent_id has no parent (FK enforcement)', () => {
+    expect(() => {
+      client.db
+        .insert(agentSessions)
+        .values({
+          id: 's5',
+          agentSlug: 'x',
+          agentId: 'ghost-agent',
+          createdAt: TS_MS,
+          updatedAt: TS_MS,
+        })
+        .run();
+    }).toThrow();
+  });
+});
