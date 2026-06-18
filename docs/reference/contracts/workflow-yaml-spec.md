@@ -136,6 +136,7 @@ Common interpolation namespaces:
 - `{{inputs.<name>}}` — declared workflow inputs.
 - `{{ctx.<key>}}` — context entries.
 - `{{run.outputs["<node-id>"]}}` — a completed node's output, in a template field; the same data is read as bare `run.outputs["<node-id>"]` (no `{{ }}`) inside a `condition` / `transform` / `merge_fn` expression.
+- `{{run.id}}` — the run's id (1.AF) — primarily for an output node's `save_to` path template (e.g. `out/{{ run.id }}/image.png`). The interpolation engine (1.L2) recognizes the `run.id` namespace alongside `run.outputs`.
 - Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`.
 
 > **Evaluation timing.** `context` entries are evaluated **eagerly, exactly once, before any node runs**, and the resolved values are immutable and cached for the whole run. A pipe-filter failure (e.g. `read_file` on a missing path) is a **validation error** that fails the run before it starts (CLI exit code 2), never a mid-run surprise. A `context` value may reference `{{inputs.*}}` but **not** `{{run.outputs[...]}}` (no node has run yet) — doing so is a parse error.
@@ -172,18 +173,20 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 | `type` | Purpose | Key fields |
 | --- | --- | --- |
 | `input` | Workflow entry point; emits the resolved inputs. | — |
-| `agent` | Invoke an agent (LLM call with tools). | `agent_ref`, `prompt_template`, `tools`, `model`, `temperature`, `max_tokens`, `timeout_ms`, `retry` |
+| `agent` | Invoke an agent (LLM call with tools). | `agent_ref`, `prompt_template`, `tools`, `model`, `temperature`, `max_tokens`, `output_modalities`, `timeout_ms`, `retry` |
 | `human_gate` | Pause for human approval / input / review. | `gate_type`, `assignee`, `message_template`, `timeout_ms`, `timeout_action` |
 | `condition` | Branch on a JS expression over run outputs. | `expression`, `branches[]` (`when`, `target_node`), `default`, `retry` |
 | `transform` | Reshape state without an LLM (JS expression). | `transform`, `retry` |
 | `parallel` | Fan out to several nodes concurrently. | `parallel_of[]` |
 | `merge` | Fan in / combine parallel results. | `merge_strategy`, `merge_fn`, `retry` |
-| `output` | Terminal node capturing the final result. | `output_format` |
+| `output` | Terminal node capturing the final result. | `output_format`, `save_to` |
 
 > **Canvas vs. engine node taxonomy.** The desktop canvas renders a richer set of node *components* (e.g. `FanOutNode`, `AggregatorNode`, `LoopNode`, `ToolNode`), and the engine's internal node-type enum additionally recognizes `tool`, `loop`, and `subworkflow`. The v1.0 YAML above is the user-authored surface; the full catalog and how the two map is in [../shared-core/node-types.md](../shared-core/node-types.md).
 
 > **`retry` on non-agent nodes.** `condition`, `transform`, and `merge` accept the same optional `retry`
 > budget as `agent` — the engine's above-chain node-retry ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)): on a retryable failure the whole node is re-dispatched up to `max` total attempts with `backoff`/`backoff_ms`, optionally filtered by `retry_on`. The field shape is owned by [agent-yaml-spec.md](agent-yaml-spec.md#retry-vs-fallback). `input`, `output`, `parallel`, and `human_gate` carry no `retry` (they cannot produce a transient failure; a gate timeout is fatal).
+
+> **`save_to` on an `output` node (1.AF, [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A9 / [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).** An optional **relative** path template the surface writes generated media bytes to (e.g. `save_to: 'out/{{ run.id }}/image.png'`). It may interpolate `{{ run.id }}` (and any other template namespace). **Authoring fail-fast:** an absolute path (`/…`), a Windows drive (`C:\` / `C:/`), a UNC path (`\\…`), or a `..` traversal segment is rejected at parse. The DAG edge and every run event carry the media **handle**, never bytes — `save_to` materializes bytes only at the **surface** boundary, through a host write port that additionally enforces `realpath`+`commonpath` fail-closed against a scope root (security-review.md §Media byte delivery). Exported YAML therefore carries a handle or a relative `save_to` path, never bytes ([ADR-0009](../../decisions/0009-git-native-workflow-yaml.md)).
 
 ### `agent` node
 
@@ -206,6 +209,7 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
     type: object
     required: [score]
     properties: { score: { type: number } }
+  output_modalities: [text, image]   # optional (1.AF): non-text output to request; OUTPUT_MODALITIES vocab
   timeout_ms: 60000
   retry: { max: 3, backoff: linear } # linear | exponential
 ```
@@ -218,6 +222,8 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 > `transform`) validates the node's output and powers type-safe downstream interpolation
 > and VS Code completion ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). A
 > `condition` node selects a branch rather than producing shaped data, so it carries no `output_schema`.
+
+> **`output_modalities` (1.AF, [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).** An optional **non-empty** array of the non-text output a turn requests, lowered to `LlmRequest.outputModalities`. The member vocabulary is `OUTPUT_MODALITIES` = `text` | `image` | `audio` | `video`; `document` is **rejected** (PDF is input-only, never a chat-turn output), and an **empty array is rejected** (omit the field for the default, text-only). Beyond the vocabulary check at parse, the requested set is validated at **load time** against the resolved model's `media.outputCombinations` **membership** — an incapable model or a wire-invalid combination is a load-time error, never a silent runtime drop (the catalog-aware engine-loader pass, since the YAML schema has no model catalog). Generated bytes ride the seam as a **handle**; the surface writes them only via an output node's `save_to` (below).
 
 ### `human_gate` node
 

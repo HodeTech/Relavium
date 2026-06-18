@@ -159,7 +159,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`mediaUnits` mapping (OpenAI audio tokens, others nil for now)** — `Usage.mediaUnits` ships as
   an optional field (ADR-0031 decision #4) but no adapter populates it yet. OpenAI reports
   `completion_tokens_details.audio_tokens` which maps to `{ modality: 'audio', direction: 'output',
-  units: n, unit: 'second' }`; Anthropic and Gemini report no media-specific billing counters in their
+  units: n, unit: 'count' }` (the RAW token count — audio_tokens are tokens, not seconds); Anthropic and Gemini report no media-specific billing counters in their
   current usage shapes. Wire OpenAI audio-token billing at 1.AF when the engine surfaces usage to the
   session; leave Anthropic/Gemini nil until those providers add billing counters. **Report the raw
   `audio_tokens` count (no fabricated tokens→seconds conversion) to avoid mis-billing** ([ADR-0044](../decisions/0044-media-access-governance-read-media-save-to-cost.md)).
