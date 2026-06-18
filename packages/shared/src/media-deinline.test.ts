@@ -133,13 +133,42 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     expect(media.source).toMatchObject({ kind: 'handle' });
   });
 
-  it('throws on an un-re-hosted url media source (re-host is the D9 engine step)', async () => {
-    const { store } = makeStubStore();
-    // a url part is not flagged by the byte scan, so pair it with a base64 part to force the walk
-    const value: unknown = [
-      base64MediaPart,
+  it('hard-fails on an un-re-hosted url media part, even url-ONLY (re-host is the D9 engine step)', async () => {
+    const { store, puts } = makeStubStore();
+    // url-only: containsDurableUnsafeMedia flags a url media part (not just bytes), so the walk runs and
+    // the rewrite throws — a url must never silently pass through to a durable position.
+    const urlOnly: unknown = [
       { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://x.example/a.png' } },
     ];
-    await expect(deInlineMedia(value, store)).rejects.toThrow(/re-host a url media source/);
+    await expect(deInlineMedia(urlOnly, store)).rejects.toThrow(/re-host a url media source/);
+    expect(puts).toHaveLength(0);
+  });
+
+  // --- I3 leak regression: non-canonical byte carriers must HARD-FAIL, never pass through (review HIGH #1)
+  it('hard-fails (no leak, no put) on a base64 data: URI string in an opaque value', async () => {
+    const { store, puts } = makeStubStore();
+    const value: unknown = { node: 'x', out: 'data:image/png;base64,aGVsbG8=' };
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/data: URI/);
+    expect(puts).toHaveLength(0);
+  });
+
+  it('hard-fails on a loose base64 source not wrapped in a media part', async () => {
+    const { store } = makeStubStore();
+    const value: unknown = { smuggled: { kind: 'base64', data: 'aGVsbG8=' } };
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/loose base64 media source/);
+  });
+
+  it('hard-fails on a raw binary buffer (never mangles a typed array into a numeric object)', async () => {
+    const { store } = makeStubStore();
+    const value: unknown = { blob: new Uint8Array([1, 2, 3, 4, 5]) };
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/raw binary buffer/);
+  });
+
+  it('hard-fails (modality fail-closed) on a media part with an unknown mimeType', async () => {
+    const { store } = makeStubStore();
+    const bad: unknown = [
+      { type: 'media', mimeType: 'application/zip', source: { kind: 'base64', data: 'aGVsbG8=' } },
+    ];
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/unsupported media mimeType/);
   });
 });

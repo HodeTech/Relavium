@@ -336,6 +336,49 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
     }
   });
+
+  it('hard-fails the run (no leak, no put) on a smuggled base64 data: URI in a node output — even WITH a store', async () => {
+    // I3 regression (review HIGH #1): a non-canonical byte carrier in an opaque z.unknown() output must
+    // NOT pass through the with-store de-inline. It hard-fails → run:failed; the bytes never persist.
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { img: 'data:image/png;base64,aGVsbG8=' } }) },
+        host,
+      ).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    expect(puts).toHaveLength(0); // the carrier hard-failed — nothing was stored
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    const runId = events[0]?.runId;
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
+    }
+  });
+
+  it('stays total (exactly one terminal, no hang) when store.put REJECTS on a media-bearing run', async () => {
+    // Totality regression (review HIGH #2): a store.put rejection (disk full / transient IO) on a
+    // media-bearing terminal must NOT escape the catch-less #loop as an unhandled rejection / hang. The
+    // terminal still settles with its media payload stripped (byte-free).
+    const rejectingStore: MediaStore = {
+      put: () => Promise.reject(new Error('disk full')),
+      get: () => Promise.reject(new Error('unused')),
+      resolveForEgress: () => Promise.reject(new Error('unused')),
+    };
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore: rejectingStore });
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: MEDIA_PART }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+  });
 });
 
 // --- cancellation -----------------------------------------------------------------------------
@@ -1822,6 +1865,24 @@ describe('WorkflowEngine — crash reconciliation', () => {
     await seedStarted(store, 'paused-1', 'human_gate:paused');
     const engine = engineWith(undefined, createInMemoryHost({ store }));
     expect(await engine.reconcile()).toHaveLength(0);
+  });
+
+  it('reconcile() run:failed is media-free (ADR-0042 §2 backstop — it bypasses the #emitDurable choke point)', async () => {
+    // reconcile() constructs run:failed directly (hardcoded partialOutputs:{}) and persists via the store,
+    // bypassing the deInlineMedia choke point. Pin that it carries no media + empty partialOutputs, so a
+    // future widening that adds node output to reconcile (which would skip de-inline) is caught here.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-media');
+    const engine = engineWith(undefined, createInMemoryHost({ store }));
+    const reconciled = await engine.reconcile();
+    expect(reconciled).toHaveLength(1);
+    const event = reconciled[0];
+    expect(event?.type).toBe('run:failed');
+    if (event?.type === 'run:failed') {
+      expect(event.partialOutputs).toEqual({});
+    }
+    expect(JSON.stringify(reconciled)).not.toMatch(/base64|aGVsbG8/);
+    expect(JSON.stringify(store.eventsFor('crashed-media'))).not.toMatch(/base64|aGVsbG8/);
   });
 });
 

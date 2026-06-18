@@ -32,7 +32,7 @@ import {
   GateDecisionSchema,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
-  containsInlineMediaBytes,
+  containsDurableUnsafeMedia,
   deInlineMedia,
   type ExecutionMode,
   type GateDecision,
@@ -1374,14 +1374,17 @@ class RunExecution {
     // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
     // the durable record on restart.
     //
-    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. `#bus.next` assigns the
-    // seq synchronously in call order, and #emitDurable is invoked synchronously at the top of each
-    // settle path before any await — so chaining each deliver onto a single per-run #deliveryTail makes
-    // a higher-seq event wait for the lower-seq event's deliver. Persists stay concurrent; only delivery
-    // is serialized. Without this, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud)
-    // could resolve out of order — delivering a later node:completed (or the terminal) first, closing
-    // the stream, and dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore
-    // resolves synchronously, which masks it; the seam exists precisely so an async store plugs in.
+    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. The media de-inline runs
+    // first (the `await` below), THEN `#bus.next` assigns the seq and the per-run `#deliveryTail` capture
+    // happens — with NO `await` between them, so seq-assignment-and-delivery-chaining stays atomic per
+    // event; chaining each deliver onto the single tail makes a higher-seq event wait for the lower-seq
+    // event's deliver. Persists stay concurrent; only delivery is serialized. (The de-inline `await`
+    // moves WHEN the seq is assigned relative to other emits — gap-free + monotonic still hold, since the
+    // counter only advances on a successful `next`, and concurrent events have no canonical order.)
+    // Without the tail, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud) could resolve
+    // out of order — delivering a later node:completed (or the terminal) first, closing the stream, and
+    // dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore resolves
+    // synchronously, which masks it; the seam exists precisely so an async store plugs in.
     //
     // MEDIA DE-INLINE (1.AF, ADR-0042 §2): run `deInlineMedia` on the draft FIRST — before `#bus.next`
     // stamps + validates and before the durable write + delivery below — so the numbered, persisted,
@@ -1395,15 +1398,16 @@ class RunExecution {
     try {
       durable = await this.#deInlineDraft(draft);
     } catch (error) {
-      // A media-bearing draft with NO MediaStore injected. For a NON-terminal event, re-throw — the
-      // #onOutcome / #begin backstops map it to a single run:failed. For a TERMINAL event the run MUST
-      // still settle (exactly-one-terminal-event), so strip its best-effort media payload to empty
-      // rather than block the terminal or leak inline bytes (I3); the run:failed error states the cause.
-      if (
-        error instanceof RunLoopInvariantError &&
-        error.code === 'media_store_unavailable' &&
-        TERMINAL_TYPES.has(draft.type)
-      ) {
+      // The de-inline could not make this draft durable-safe — a missing MediaStore, a `store.put`
+      // rejection (disk full / transient IO), an un-re-hosted url, a non-canonical byte carrier, or
+      // invalid base64. For a NON-terminal event, re-throw — the #onOutcome / #begin backstops map it to
+      // a single run:failed. For a TERMINAL event the run MUST still settle (exactly-one-terminal-event
+      // is sacred), so strip its best-effort media payload to empty (stripTerminalMediaPayload yields a
+      // byte-free draft) rather than block the terminal forever (a hang + unhandled rejection out of the
+      // catch-less #loop) or leak inline bytes (I3). This rescues ANY de-inline failure on a terminal,
+      // not only the missing-store one; the run:failed error (set when the first media-bearing
+      // node:completed threw and #onOutcome caught it) states the cause.
+      if (TERMINAL_TYPES.has(draft.type)) {
         durable = stripTerminalMediaPayload(draft);
       } else {
         throw error;
@@ -1454,7 +1458,11 @@ class RunExecution {
     if (store !== undefined) {
       return (await deInlineMedia(draft, store)) as RunEventDraft;
     }
-    if (containsInlineMediaBytes(draft)) {
+    // No store: a draft carrying inline bytes OR an un-re-hosted url media part cannot be made
+    // durable-safe — throw (the broadened #emitDurable catch + the #onOutcome/#begin backstops map it to
+    // a single run:failed; a terminal is stripped). `containsDurableUnsafeMedia` (not the byte-only scan)
+    // also catches a url-only payload, so it cannot pass silently.
+    if (containsDurableUnsafeMedia(draft)) {
       throw new RunLoopInvariantError(
         'media_store_unavailable',
         'a media-bearing event was emitted but no MediaStore was injected into the ExecutionHost (1.AF, I3)',

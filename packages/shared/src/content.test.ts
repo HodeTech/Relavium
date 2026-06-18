@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  containsDurableUnsafeMedia,
   containsInlineMediaBytes,
   ContentPartSchema,
+  decodeBase64,
   decodedBase64ByteLength,
   DurableContentPartSchema,
   DurableMediaPartSchema,
@@ -350,6 +352,41 @@ describe('media helpers (ADR-0031)', () => {
     expect(decodedBase64ByteLength('a!c=')).toBeUndefined(); // illegal character
     expect(decodedBase64ByteLength('=abc')).toBeUndefined(); // padding not terminal
     expect(decodedBase64ByteLength('a===')).toBeUndefined(); // over-padded
+  });
+
+  it('decodeBase64 round-trips bytes (incl. >= 128) and fails closed on invalid input', () => {
+    const bytes = (s: string): number[] => Array.from(s).map((c) => c.charCodeAt(0));
+    expect(Array.from(decodeBase64('aGVsbG8=') ?? [])).toEqual(bytes('hello')); // =-padded
+    expect(Array.from(decodeBase64('aA==') ?? [])).toEqual([0x68]); // ==-padded → 'h'
+    expect(Array.from(decodeBase64('aGVsbG8h') ?? [])).toEqual(bytes('hello!')); // no padding
+    // a multi-block value with high bytes (>= 128) — base64 of [0,127,128,255,1,254]
+    const high = new Uint8Array([0, 127, 128, 255, 1, 254]);
+    const b64High = 'AH+A/wH+';
+    expect(Array.from(decodeBase64(b64High) ?? [])).toEqual(Array.from(high));
+    // round-trip an arbitrary byte set against the documented value
+    expect(decodeBase64('@@@@')).toBeUndefined(); // illegal characters
+    expect(decodeBase64('abc')).toBeUndefined(); // not a multiple of 4
+    expect(decodeBase64('')).toBeUndefined();
+  });
+
+  it('containsDurableUnsafeMedia flags a url media part too (unlike the byte-only scan)', () => {
+    const urlPart = { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://x/y' } };
+    const handlePart = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+    };
+    // a url media part: byte-only scan misses it; the durable-unsafe scan catches it
+    expect(containsInlineMediaBytes(urlPart)).toBe(false);
+    expect(containsDurableUnsafeMedia(urlPart)).toBe(true);
+    // it still flags everything the byte scan flags
+    expect(containsDurableUnsafeMedia({ a: { kind: 'base64', data: TINY_BASE64 } })).toBe(true);
+    expect(containsDurableUnsafeMedia(`data:image/png;base64,${TINY_BASE64}`)).toBe(true);
+    expect(containsDurableUnsafeMedia(new Uint8Array([1, 2]))).toBe(true);
+    // a handle media part + a plain url string + text are durable-safe (not flagged)
+    expect(containsDurableUnsafeMedia(handlePart)).toBe(false);
+    expect(containsDurableUnsafeMedia({ link: 'https://example.com', kind: 'url' })).toBe(false);
+    expect(containsDurableUnsafeMedia('just text')).toBe(false);
   });
 
   it('finds inline media bytes nested anywhere in an opaque value, cycle-safely', () => {

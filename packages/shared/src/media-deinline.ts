@@ -1,6 +1,10 @@
 import {
-  containsInlineMediaBytes,
+  containsDurableUnsafeMedia,
+  isBase64DataUri,
+  isBinaryBuffer,
+  isCanonicalBase64Source,
   decodeBase64,
+  mediaModalityOf,
   type ContentPart,
   type DurableContentPart,
   type MediaStore,
@@ -8,28 +12,28 @@ import {
 
 /**
  * `deInlineMedia` (1.AF, ADR-0031 §Guardrails B1 / ADR-0042 §2) — the engine-owned flight→durable
- * transform run at the ONE emit/persist choke point. It replaces every in-flight `base64` media
- * **part** with a content-addressed handle (writing the bytes through the injected host `MediaStore`)
- * and populates the durable Y3 `byteLength`, so the compiler-proven handle-only durable form is what
- * leaves the engine — no media bytes ever reach a run event, log, DB row, exported YAML, IPC frame,
- * or the derived checkpoint snapshot (I3).
+ * transform run at the ONE emit/persist choke point. Its CONTRACT: the returned value is
+ * **durable-safe** — it contains only handles + text + plain data, never inline media bytes or an
+ * un-re-hosted url (I3). It achieves this by rewriting every in-flight **canonical media part**
+ * (`{ type:'media', mimeType, source }`) with a base64 source into a content-addressed handle (writing
+ * the bytes through the injected host `MediaStore`, populating the durable Y3 `byteLength`), and by
+ * **hard-failing (throwing) on anything else that carries bytes or an un-re-hosted url** — so nothing
+ * can leak by passing silently through. It walks a typed `ContentPart[]` and, via the `unknown`
+ * overload, an opaque event payload / node output / `tool_call.args` / `tool_result.result` a Zod
+ * refine cannot recurse into.
  *
- * It rewrites only a **canonical in-flight media part** (`{ type:'media', mimeType, source }`) wherever
- * it appears — both a typed `ContentPart[]` and, via the `unknown` overload, an opaque event payload /
- * node output / `tool_call.args` / `tool_result.result` a Zod refine cannot recurse into. A bare loose
- * `{ kind:'base64' }` source without the media-part wrapper is deliberately NOT rewritten (it has no
- * `mimeType` to content-address and is not a legitimate media payload): it is left for the
- * `containsInlineMediaBytes` backstop to hard-fail at the durable boundary — surfacing the programming
- * error rather than silently inventing a handle.
+ * What it THROWS on (caught at the engine choke point → a single `run:failed`, or a stripped terminal):
+ * a base64 `data:` URI string, a loose `{ kind:'base64' }` source not wrapped in a media part, a raw
+ * binary buffer, a media part with an unknown source kind or an unknown modality, and a **`url`** media
+ * source (re-hosting a url to a handle needs the host media-egress fetch and is the separate engine step
+ * — [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md), 1.AF/D9 —
+ * which re-hosts *before* this transform; until then an un-re-hosted url must never pass). Error
+ * messages name the carrier kind only — never the bytes/URL/handle/secret.
  *
- * The walk is **non-mutating** (it returns new structures, never edits the input), **cycle-safe**, and
+ * The walk is **non-mutating** (returns new structures, never edits the input), **cycle-safe**, and
  * preserves `Array`/`Map`/`Set`/plain-object shape and shared references (one clone per distinct node).
- *
- * A `url` media source is NOT re-hosted here — that requires the host media-egress fetch capability and
- * is the separate engine step ([ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md),
- * 1.AF/D9), which re-hosts a url to a handle *before* this transform. Encountering an un-re-hosted
- * `url` media source throws (it must never silently pass — an un-re-hosted url hard-fails the durable
- * parse anyway).
+ * The no-media fast path ({@link containsDurableUnsafeMedia} — which also flags a url media part, unlike
+ * the byte-only scan) returns the input unchanged for the dominant text/handle-only emit case.
  */
 export function deInlineMedia(
   parts: readonly ContentPart[],
@@ -37,10 +41,11 @@ export function deInlineMedia(
 ): Promise<DurableContentPart[]>;
 export function deInlineMedia(value: unknown, store: MediaStore): Promise<unknown>;
 export async function deInlineMedia(value: unknown, store: MediaStore): Promise<unknown> {
-  // No-media fast path — the dominant text/tool-only emit case pays only a cheap cycle-safe scan, no
-  // store round-trip and no clone. (A `url`-only media part is not flagged by the scan; url re-host is
-  // the separate D9 engine step, so a url part legitimately passes through this transform untouched.)
-  if (!containsInlineMediaBytes(value)) {
+  // No-unsafe-media fast path — the dominant text/handle-only emit pays only a cheap cycle-safe scan,
+  // no store round-trip and no clone. This scan ALSO flags a url media part (containsDurableUnsafeMedia,
+  // not the byte-only containsInlineMediaBytes), so a url-only payload is never skipped → it reaches the
+  // walk and throws (it must not silently persist an un-re-hosted url).
+  if (!containsDurableUnsafeMedia(value)) {
     return value;
   }
   return rewrite(value, store, new Map<object, unknown>());
@@ -81,7 +86,13 @@ async function rewriteMediaPart(
   }
   const data = source['data'];
   if (kind !== 'base64' || typeof data !== 'string') {
-    return node; // unknown carrier — leave it for the durable backstop to reject
+    // An unknown source kind on a media part cannot be made durable-safe — fail closed (never pass through).
+    throw new Error(`deInlineMedia: unsupported media source kind '${String(kind)}' on a media part`);
+  }
+  // Fail-closed on an unknown modality (mirrors the seam ingestion refine) — mimeType is bounded (≤255)
+  // and not a secret/byte payload, so it is safe to name.
+  if (mediaModalityOf(mimeType) === undefined) {
+    throw new Error(`deInlineMedia: unsupported media mimeType '${mimeType}'`);
   }
   const bytes = decodeBase64(data);
   if (bytes === undefined) {
@@ -106,12 +117,26 @@ async function rewrite(
   store: MediaStore,
   cache: Map<object, unknown>,
 ): Promise<unknown> {
+  if (typeof value === 'string') {
+    if (isBase64DataUri(value)) {
+      throw new Error(
+        'deInlineMedia: a base64 data: URI may not cross the durable boundary — emit a media part (it becomes a handle) instead',
+      );
+    }
+    return value;
+  }
   if (typeof value !== 'object' || value === null) {
     return value;
   }
   const cached = cache.get(value);
   if (cached !== undefined) {
     return cached; // a node already (being) rewritten — preserve cycles + shared references
+  }
+  // A raw binary buffer is media bytes by definition and can never be durable-safe — fail closed BEFORE
+  // the record branch (which would otherwise mangle a typed array into a numeric-indexed object and leak
+  // the byte values verbatim).
+  if (isBinaryBuffer(value)) {
+    throw new Error('deInlineMedia: a raw binary buffer may not cross the durable boundary');
   }
 
   if (Array.isArray(value)) {
@@ -139,13 +164,20 @@ async function rewrite(
     return clone;
   }
   if (!isRecord(value)) {
-    return value; // a non-plain object (Date, typed array, …) — opaque, left as-is
+    return value; // a non-plain, non-buffer object (Date, RegExp, …) — opaque, left as-is
   }
 
   if (isInflightMediaPart(value)) {
     const durable = await rewriteMediaPart(value, store);
     cache.set(value, durable);
     return durable;
+  }
+  // A loose base64 source NOT wrapped in a media part has no mimeType to content-address — it cannot be
+  // made durable-safe, so fail closed rather than recurse-and-pass-through (the prior leak path).
+  if (isCanonicalBase64Source(value)) {
+    throw new Error(
+      'deInlineMedia: a loose base64 media source may not cross the durable boundary — wrap it in a media part',
+    );
   }
 
   const clone: Record<string, unknown> = {};
