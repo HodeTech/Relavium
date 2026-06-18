@@ -51,8 +51,11 @@ export const OutputModalitiesSchema = z
  * delivery). The deep path discipline is the host's; this is the authoring guard.
  */
 export const SaveToSchema = nonEmptyString
-  .refine((p) => !p.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(p), {
-    message: 'save_to must be a relative path (no leading "/" or drive letter)',
+  .refine((p) => !p.startsWith('/') && !p.startsWith('\\') && !/^[A-Za-z]:[\\/]/.test(p), {
+    // Reject an absolute POSIX path ("/…"), a Windows drive ("C:\" / "C:/"), and a leading backslash —
+    // which also covers a UNC path ("\\server\share"). The host write port's realpath+commonpath gate is
+    // the binding control on the interpolated result; this is the authoring fail-fast.
+    message: 'save_to must be a relative path (no leading "/" or "\\", and no drive letter)',
   })
   .refine((p) => !p.split(/[\\/]/).includes('..'), {
     message: 'save_to must not contain a ".." path segment',

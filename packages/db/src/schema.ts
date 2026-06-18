@@ -454,7 +454,10 @@ export const mediaObjects = sqliteTable(
   'media_objects',
   {
     id: uuidPk(),
-    handle: text('handle').notNull(),
+    // A UNIQUE CONSTRAINT (not merely a unique index): the media_references FK targets handle, and a
+    // Postgres FK target must be a unique constraint / PK (a bare unique index is insufficient) — so
+    // `.unique()` keeps the SQLite↔Postgres parity ([ADR-0005]/[ADR-0042]).
+    handle: text('handle').notNull().unique(),
     mimeType: text('mime_type').notNull(),
     modality: text('modality').$type<MediaModality>().notNull(),
     byteLength: integer('byte_length').notNull(),
@@ -465,7 +468,6 @@ export const mediaObjects = sqliteTable(
   },
   (t) => [
     check('media_objects_modality_check', sql`${t.modality} in (${inList(MEDIA_MODALITIES)})`),
-    uniqueIndex('idx_media_objects_handle').on(t.handle),
     // GC sweep cursor: live objects ordered by recency-of-reference (grace-window candidates first).
     index('idx_media_objects_gc')
       .on(t.lastReferencedAt)

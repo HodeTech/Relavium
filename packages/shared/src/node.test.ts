@@ -102,6 +102,13 @@ describe('NodeSchema', () => {
     expect(NodeSchema.safeParse({ id: 'o', type: 'output', save_to: 'C:\\win.png' }).success).toBe(
       false,
     );
+    // both drive-letter forms and a UNC path are rejected
+    expect(NodeSchema.safeParse({ id: 'o', type: 'output', save_to: 'C:/win.png' }).success).toBe(
+      false,
+    );
+    expect(
+      NodeSchema.safeParse({ id: 'o', type: 'output', save_to: '\\\\server\\share\\x.png' }).success,
+    ).toBe(false);
     // strict objects still reject an unknown key, and output_modalities is agent-only
     expect(NodeSchema.safeParse({ id: 'o', type: 'output', bogus: 1 }).success).toBe(false);
     expect(

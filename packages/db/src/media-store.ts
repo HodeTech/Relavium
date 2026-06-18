@@ -54,8 +54,9 @@ export class FilesystemMediaStore implements MediaStore {
   }
 
   // `mimeType` is intentionally not a parameter here (a fewer-param method still satisfies the
-  // `MediaStore` interface): the CAS is pure bytes-by-content-hash; the engine records mimeType in the
-  // `media_objects` row, not in the blob store.
+  // `MediaStore` interface): the CAS is pure bytes-by-content-hash. mimeType is NOT persisted yet — the
+  // P3/P4 media-lifecycle wiring (D10/D11) will record it (and byteLength/modality) in the `media_objects`
+  // row when the store is invoked; no code populates that table at P1+P2.
   put(bytes: Uint8Array): Promise<string> {
     return this.#write(bytes);
   }
@@ -70,8 +71,14 @@ export class FilesystemMediaStore implements MediaStore {
   }
 
   async get(handle: string): Promise<Uint8Array> {
-    const buf = await readFile(this.#pathFor(digestOf(handle)));
-    return new Uint8Array(buf);
+    const digest = digestOf(handle);
+    const bytes = new Uint8Array(await readFile(this.#pathFor(digest)));
+    // Content-address integrity: the handle IS the sha256, so verify the bytes on read — a corrupted
+    // file (bit rot, partial write, tampering) is caught here rather than propagating corrupt bytes.
+    if (sha256Hex(bytes) !== digest) {
+      throw new Error('media bytes failed their content-address (sha256) integrity check');
+    }
+    return bytes;
   }
 
   // `provider` is intentionally not a parameter yet (a fewer-param method satisfies the interface):
@@ -98,7 +105,9 @@ export class InMemoryMediaStore implements MediaStore {
 
   put(bytes: Uint8Array): Promise<string> {
     const handle = handleOf(bytes);
-    this.#blobs.set(handle, bytes);
+    // Defensive copy on write (match FilesystemMediaStore.get's copy-on-read): a later mutation of the
+    // caller's array must never corrupt the content-addressed blob this handle names.
+    this.#blobs.set(handle, bytes.slice());
     return Promise.resolve(handle);
   }
 
@@ -109,7 +118,7 @@ export class InMemoryMediaStore implements MediaStore {
     const bytes = this.#blobs.get(handle);
     return bytes === undefined
       ? Promise.reject(new Error(`no media bytes for ${handle}`))
-      : Promise.resolve(bytes);
+      : Promise.resolve(bytes.slice()); // copy on read — the caller cannot mutate the stored blob
   }
 
   async resolveForEgress(handle: string): Promise<MediaSource> {

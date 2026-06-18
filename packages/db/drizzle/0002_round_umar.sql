@@ -11,7 +11,7 @@ CREATE TABLE `media_objects` (
 	CONSTRAINT "media_objects_modality_check" CHECK("media_objects"."modality" in ('image', 'audio', 'video', 'document'))
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `idx_media_objects_handle` ON `media_objects` (`handle`);--> statement-breakpoint
+CREATE UNIQUE INDEX `media_objects_handle_unique` ON `media_objects` (`handle`);--> statement-breakpoint
 CREATE INDEX `idx_media_objects_gc` ON `media_objects` (`last_referenced_at`) WHERE "media_objects"."deleted_at" is null;--> statement-breakpoint
 CREATE TABLE `media_references` (
 	`id` text PRIMARY KEY NOT NULL,

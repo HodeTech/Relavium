@@ -55,4 +55,15 @@ describe('InMemoryMediaStore (1.AF — reference impl)', () => {
     await expect(store.get(`media://sha256-${'f'.repeat(64)}`)).rejects.toThrow(/no media bytes/);
     await expect(store.get('nonsense')).rejects.toThrow(/handle/);
   });
+
+  it('copies on put and get — a caller mutation cannot corrupt the stored blob', async () => {
+    const store = new InMemoryMediaStore();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const handle = await store.put(bytes);
+    bytes[0] = 99; // mutate the caller's array AFTER put
+    const got = await store.get(handle);
+    expect([...got]).toEqual([1, 2, 3]); // the stored blob is intact (put copied)
+    got[0] = 88; // mutate the returned array
+    expect([...(await store.get(handle))]).toEqual([1, 2, 3]); // still intact (get copied)
+  });
 });

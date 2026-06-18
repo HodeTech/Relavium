@@ -92,7 +92,7 @@ describe('@relavium/db migrations + client', () => {
       'idx_step_exec_model',
       'idx_agent_sessions_status',
       'idx_session_messages_seq',
-      'idx_media_objects_handle',
+      'media_objects_handle_unique',
       'idx_media_references_unique',
     ]) {
       expect(indexes).toContain(idx);
@@ -235,7 +235,7 @@ describe('@relavium/db migrations + client', () => {
     // modality/scope_kind CHECKs, the handle UNIQUE + the cascade FK to media_objects(handle), and the
     // (handle, scope_kind, scope_id) per-distinct-reference unique index (ADR-0042).
     const ddl = readFileSync(
-      fileURLToPath(new URL('../drizzle/0002_tiresome_multiple_man.sql', import.meta.url)),
+      fileURLToPath(new URL('../drizzle/0002_round_umar.sql', import.meta.url)),
       'utf8',
     );
     expect(ddl).toMatchSnapshot();

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "59897473-fb5c-4836-85c3-82d7fb336782",
+  "id": "ab5cbf24-8061-468e-b16f-b8ba751ad8d4",
   "prevId": "b746cb45-0fa2-4b58-9b19-0e259b75af22",
   "tables": {
     "agent_sessions": {
@@ -526,8 +526,8 @@
         }
       },
       "indexes": {
-        "idx_media_objects_handle": {
-          "name": "idx_media_objects_handle",
+        "media_objects_handle_unique": {
+          "name": "media_objects_handle_unique",
           "columns": [
             "handle"
           ],
