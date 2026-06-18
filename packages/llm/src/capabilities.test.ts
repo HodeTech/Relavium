@@ -50,6 +50,33 @@ describe('capability gating', () => {
     expect(requiredCapabilities(TOOL_REQ)).toEqual(['tools']);
   });
 
+  it('coarsely requires `vision` for ANY media part (documented 1.AE behavior; per-modality is 1.AF)', () => {
+    // Pins the intentional coarseness: a non-image modality still requires `vision` today, so a future
+    // 1.AF per-modality refinement of the FallbackChain pre-skip must update this test deliberately.
+    const audioReq: LlmRequest = {
+      model: 'm',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'aGVsbG8=' } },
+          ],
+        },
+      ],
+    };
+    expect(requiredCapabilities(audioReq)).toEqual(['vision']);
+    // A provider that supports audio input but not image (vision:false) is therefore (coarsely) skipped —
+    // the per-modality assertMediaCapabilities gate at the adapter is the precise check until 1.AF.
+    const audioOnly: CapabilityFlags = {
+      ...NONE,
+      media: {
+        input: { image: false, audio: true, video: false, document: false },
+        outputCombinations: [],
+      },
+    };
+    expect(supportsRequest(audioOnly, audioReq)).toBe(false);
+  });
+
   it('supportsRequest reflects whether the provider can serve the request', () => {
     expect(supportsRequest(ALL, TOOL_REQ)).toBe(true);
     expect(supportsRequest(NONE, TOOL_REQ)).toBe(false);

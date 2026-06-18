@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-16
+> Last updated: 2026-06-18
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -104,19 +104,25 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   **✅ Landed at 1.AD (PR #11, 2026-06-10):** `byteLength?`/`durationMs?` ship on `DurableMediaPart` only
   (the in-flight arm stays lean — parse-stripped, tested), with the `durationMs`-is-audio/video-only rule
   enforced on both the standalone schema and the durable union.
-- [ ] **Shared SSRF range-primitive (the `url`-carrier precondition)** — the one shared HTTPS-only /
+- [x] **Shared SSRF range-primitive (the `url`-carrier precondition)** — the one shared HTTPS-only /
   block-private-loopback-link-local-metadata-CGNAT / DNS-resolution + per-hop-redirect-revalidation /
   IPv4-mapped-IPv6-decode primitive that `assertHttpsBaseUrl` (openai.ts) is the best-effort placeholder
   for. security-review.md mandates **one** primitive across all egress paths; the media `url` carrier
-  (input + provider-returned output) is gated **feature-flag-OFF** until it lands. **Land at 1.AE**, with
-  the landing-gate CI test (url rejected while flag off). **A runtime-*derived* base URL** (auto-selected /
-  resolved, not literally user-supplied) is re-checked through this same primitive against its
-  **post-resolution IP**; an explicit-local-endpoint opt-out **narrows, never removes**, the
-  metadata-IP/link-local block. **The primitive must also pin the connection to the IP it validated**
-  (connect-by-validated-IP / a lookup-pinned agent): validating one resolution and letting the HTTP
-  client re-resolve is a TOCTOU window DNS-rebinding walks through — the check and the connect must
-  see the same address (a binding control in [security-review.md](../standards/security-review.md)).
+  (input + provider-returned output) is gated **feature-flag-OFF** until it lands. **Landing (1.AE, PR #32):**
+  `isPrivateOrLocalHost()`, `extractHttpsHost()`, `urlHasCredentials()` shipped in `@relavium/shared`
+  (pure sync, platform-free) with 40+ SSRF tests. `assertHttpsBaseUrl` in openai.ts delegates to the
+  shared functions + `new URL()` normalization. `MEDIA_URL_SOURCE_ENABLED` flipped to `true` with
+  per-URL SSRF validation at the seam boundary (`refineInFlightMediaPart`). The host-side DNS/connect
+  enforcement (`EgressCapability.fetch`) remains a Phase-2 forward obligation (see below).
   *(security-review.md; openai.ts; 1.AE)*
+- [ ] **Host-side SSRF enforcement in `EgressCapability.fetch` (DNS resolve + connect-by-validated-IP + per-hop redirect re-validation)** — the shared SSRF range-primitive (1.AE) covers the **policy** half
+  (literal format checks on URLs and hostnames); the **mechanism** half — resolving a hostname to its
+  IP, validating the IP against the same range block, pinning the connection to that IP (connect-by-validated-IP),
+  and re-validating on every redirect hop — belongs to the host-side `EgressCapability.fetch` (already
+  defined in `packages/core/src/tools/types.ts`). When the desktop or CLI surface implements that fetch
+  hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
+  URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
+  catch DNS rebinding or a public hostname resolving to a private IP. *(packages/core/src/tools/types.ts; security-review.md; Phase 2)*
 - [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
   now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
   (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
@@ -141,6 +147,33 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Retire the `vision` derived alias (OQ6 default)** — `CapabilityFlags.vision` is kept as a derived
   alias of `media.input.image` for live consumers (`db.supports_vision`, adapter `supports.vision`);
   schedule removal once those migrate to `media.input.image`. *(types.ts; a later cleanup)*
+
+### 1.AE forward-obligations (PR #32)
+
+- [ ] **Conformance test additions — image-in, audio-in, pdf-in per provider** — the 1.AE media input
+  wiring (OpenAI `image_url`/`input_audio`, Anthropic `image`/`document` blocks, Gemini `inlineData`)
+  is unit-tested but the conformance replay fixtures don't yet exercise media-in scenarios. Add recorded
+  fixture-replay conformance tests per provider: image-in (all three), audio-in (OpenAI, Gemini), pdf-in
+  (Anthropic, Gemini). Requires real API calls to record fixtures, then replay — do in a follow-up after
+  the PR lands. *(packages/llm/src/conformance/; 1.AE follow-up)*
+- [ ] **`mediaUnits` mapping (OpenAI audio tokens, others nil for now)** — `Usage.mediaUnits` ships as
+  an optional field (ADR-0031 decision #4) but no adapter populates it yet. OpenAI reports
+  `completion_tokens_details.audio_tokens` which maps to `{ modality: 'audio', direction: 'output',
+  units: n, unit: 'second' }`; Anthropic and Gemini report no media-specific billing counters in their
+  current usage shapes. Wire OpenAI audio-token billing at 1.AF when the engine surfaces usage to the
+  session; leave Anthropic/Gemini nil until those providers add billing counters. *(packages/llm/src/adapters/openai.ts; 1.AF)*
+- [ ] **OpenAI reasoning-model capability matrix (`OPENAI_REASONING_CAPS`)** — o1/o3/o4-mini have a
+  separate media capability surface (no audio input, restricted tools, etc.). The current `openai.ts`
+  uses one `OPENAI_SUPPORTS` matrix for all GPT models; reasoning models need their own matrix selected
+  by model id, paralleling how DeepSeek already has `DEEPSEEK_SUPPORTS`. Wire when reasoning-model
+  media support is specified. *(packages/llm/src/adapters/openai.ts; 1.AF/1.AG)*
+- [ ] **Handle and URL media source resolution in adapters (`1.AF` MediaStore integration)** — `handle`
+  sources (`media://sha256-<hex>`) and `url` sources are accepted at the seam boundary but skipped
+  (not wired) in the adapter content-building functions (`toOpenAiUserContent`, `toAnthropicContentBlocks`,
+  `toGeminiMediaPart`) with `// handle: resolved at egress by MediaStore (1.AF)` / `// url/handle
+  audio: deferred to 1.AF` comments. The engine's `deInlineMedia` + `MediaStore` contract resolves
+  handles at egress; URL sources are fetched through `EgressCapability.fetch` (the SSRF mechanism
+  half). Wire when the engine plumbing lands (1.AF). *(packages/llm/src/adapters/{openai,anthropic,gemini}.ts; 1.AF)*
 
 ### Engine/seam policy & surface follow-ups (2026-06-09 hardening-analysis pass)
 

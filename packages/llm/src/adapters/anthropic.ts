@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 
+import { mediaModalityOf } from '@relavium/shared';
 import type { ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
@@ -19,7 +20,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { assertNoMediaRequested, isAbortSignal } from './shared.js';
+import { assertMediaCapabilities, isAbortSignal } from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -47,11 +48,14 @@ const SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,
   parallelToolCalls: true,
-  vision: false,
+  vision: true,
   promptCache: true,
-  reasoning: true,
+  reasoning: false,
   media: {
-    input: { image: false, audio: false, video: false, document: false },
+    // document stays false until handle resolution lands (1.AF): base64 documents are blocked by the
+    // seam ceiling (INLINE_MEDIA_CEILING.document = 0), so advertising document:true would be
+    // "advertised-but-unsendable" — the gate would admit a PDF the mapper then rejects (ADR-0031).
+    input: { image: true, audio: false, video: false, document: false },
     outputCombinations: [],
   },
 };
@@ -206,9 +210,6 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
 
 // --- Request building: canonical → Anthropic wire --------------------------------------------
 
-// Reasoning is lowered separately in `toAnthropicMessage` (a signed part → a `thinking` block, ADR-0039)
-// and media was rejected pre-flight by `assertNoMediaRequested` (shape-only until 1.AE — ADR-0031),
-// so the wire-able content this handles is the closed text / tool_call / tool_result set.
 function toAnthropicBlock(
   part: Exclude<ContentPart, { type: 'reasoning' } | { type: 'media' }>,
 ): Anthropic.ContentBlockParam {
@@ -218,6 +219,8 @@ function toAnthropicBlock(
     case 'tool_call':
       return { type: 'tool_use', id: part.id, name: part.name, input: part.args };
     case 'tool_result': {
+      // `part.media` (handle-only durable attachments) is intentionally not lowered here — deferred to
+      // 1.AF (resolve via EgressCapability before egress); gate-admitted on capable providers, not yet sent.
       const block: Anthropic.ToolResultBlockParam = {
         type: 'tool_result',
         tool_use_id: part.toolCallId,
@@ -237,29 +240,110 @@ function toAnthropicBlock(
   }
 }
 
-function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
-  // Anthropic has only user/assistant roles; tool results ride in a user-role message. A SIGNED
-  // reasoning part is lowered back to a `thinking` block so a same-provider continuation replays it
-  // (ADR-0039); the `FallbackChain` has already stripped reasoning on a cross-provider advance, so any
-  // reasoning part that reaches here is replay-safe for THIS provider. A redacted / signatureless
-  // reasoning part cannot be replayed (its opaque continuation token is absent) and is dropped — a
-  // recorded follow-up (redacted_thinking + Gemini part-level signatures need a canonical carrier).
-  // Media is dropped (shape-only until 1.AE).
-  const content: Anthropic.ContentBlockParam[] = [];
-  for (const part of message.content) {
-    if (part.type === 'media') {
-      continue;
+/** A typed Anthropic `bad_request` for an unsendable shape (never a silent drop — ADR-0031). */
+function anthropicBadRequest(message: string): LlmProviderError {
+  return new LlmProviderError(makeLlmError({ provider: PROVIDER, kind: 'bad_request', message }));
+}
+
+/** The image subtypes Anthropic's base64 image block accepts (the SDK's closed `media_type` union). */
+const ANTHROPIC_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+
+/** Narrow a MIME to an Anthropic-accepted image subtype (so the wire `media_type` needs no unsafe cast). */
+function isAnthropicImageType(mime: string): mime is Anthropic.Base64ImageSource['media_type'] {
+  return (ANTHROPIC_IMAGE_TYPES as readonly string[]).includes(mime);
+}
+
+/**
+ * Lower one media part to an Anthropic content block — **base64 only**. A `url`/`handle` source is
+ * rejected: a media url is fetched by the host/engine, never the adapter (ADR-0031 §A7), and a handle is
+ * resolved before egress (1.AF). image → `image` block; document → `document` block (PDF). Other
+ * modalities throw as a fail-closed backstop (the capability gate rejects them first).
+ */
+function toAnthropicMediaBlock(
+  part: Extract<ContentPart, { type: 'media' }>,
+): Anthropic.ContentBlockParam {
+  const modality = mediaModalityOf(part.mimeType);
+  if (modality === 'image') {
+    if (part.source.kind !== 'base64') {
+      throw anthropicBadRequest(
+        `Anthropic does not support ${part.source.kind}-source image input — use base64 (1.AF)`,
+      );
     }
-    if (part.type === 'reasoning') {
-      if (part.redacted === true || part.signature === undefined) {
-        continue;
-      }
-      content.push({ type: 'thinking', thinking: part.text, signature: part.signature });
-      continue;
+    if (!isAnthropicImageType(part.mimeType)) {
+      // Subtype gate: the modality gate admits any image/*, but Anthropic accepts only these four — reject
+      // an unsupported subtype pre-egress with a clear message rather than letting it 400 on the wire.
+      throw anthropicBadRequest(
+        `Anthropic image input supports only ${ANTHROPIC_IMAGE_TYPES.join(', ')}, not '${part.mimeType}'`,
+      );
     }
-    content.push(toAnthropicBlock(part));
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: part.mimeType, data: part.source.data },
+    };
   }
-  return { role: message.role === 'assistant' ? 'assistant' : 'user', content };
+  if (modality === 'document') {
+    if (part.source.kind !== 'base64') {
+      throw anthropicBadRequest(
+        `Anthropic does not support ${part.source.kind}-source document input — use base64 (1.AF)`,
+      );
+    }
+    return {
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: part.source.data },
+    };
+  }
+  throw anthropicBadRequest(`Anthropic does not support ${modality ?? 'unknown'} media input`);
+}
+
+/**
+ * Lower one NON-media part onto `blocks`: reasoning becomes a `thinking` block only when it carries a
+ * replayable signature (redacted / signature-less reasoning is ephemeral and dropped — ADR-0030);
+ * everything else maps via {@link toAnthropicBlock}. Shared by every content-lowering loop.
+ */
+function pushNonMediaBlock(
+  part: Exclude<ContentPart, { type: 'media' }>,
+  blocks: Anthropic.ContentBlockParam[],
+): void {
+  if (part.type === 'reasoning') {
+    if (part.redacted === true || part.signature === undefined) {
+      return;
+    }
+    blocks.push({ type: 'thinking', thinking: part.text, signature: part.signature });
+    return;
+  }
+  blocks.push(toAnthropicBlock(part));
+}
+
+function toAnthropicContentBlocks(content: readonly ContentPart[]): Anthropic.ContentBlockParam[] {
+  const blocks: Anthropic.ContentBlockParam[] = [];
+  for (const part of content) {
+    if (part.type === 'media') {
+      blocks.push(toAnthropicMediaBlock(part));
+      continue;
+    }
+    pushNonMediaBlock(part, blocks);
+  }
+  return blocks;
+}
+
+function toAnthropicMessage(message: LlmMessage): Anthropic.MessageParam {
+  if (message.role === 'assistant') {
+    const content: Anthropic.ContentBlockParam[] = [];
+    for (const part of message.content) {
+      if (part.type === 'media') {
+        // Provider-output media is de-inlined to a handle and never replayed (ADR-0031); a media part on
+        // an assistant turn is a misuse — fail loud rather than silently dropping it.
+        throw anthropicBadRequest(
+          'assistant-role media is not supported (provider output media is not replayed)',
+        );
+      }
+      pushNonMediaBlock(part, content);
+    }
+    return { role: 'assistant', content };
+  }
+  // User turns (media or not) lower through the same path — toAnthropicContentBlocks maps any media
+  // and pushes every non-media block, so a media-free user message produces the identical blocks.
+  return { role: 'user', content: toAnthropicContentBlocks(message.content) };
 }
 
 /** Normalize a message's content to a block array (Anthropic allows a bare string for a text turn). */
@@ -621,7 +705,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
-      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
@@ -643,7 +727,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
-      assertNoMediaRequested(PROVIDER, req); // no media in/out is wired until 1.AE/1.AG (ADR-0031)
+      assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(createClient(key), req);
     },
   };

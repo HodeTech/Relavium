@@ -79,13 +79,13 @@ describe('OpenAI-compatible adapter', () => {
   it('exposes openai + deepseek ids with their capability surfaces', () => {
     expect(openaiAdapter.id).toBe('openai');
     expect(deepseekAdapter.id).toBe('deepseek');
-    // Honestly all-false at 1.AD (ADR-0031, shape only): the request path still flattens user
-    // content to text (the §1.4 textOf bug, fixed at 1.AE), so neither media nor its vision alias
-    // may be advertised yet.
-    expect(openaiAdapter.supports.vision).toBe(false);
+    // 1.AE: OpenAI wires image + audio media input and vision (the alias of media.input.image).
+    // document stays false until handle resolution lands (1.AF — base64 document is blocked by the seam
+    // ceiling). DeepSeek remains text-only (all-false media matrix, ADR-0031).
+    expect(openaiAdapter.supports.vision).toBe(true);
     expect(openaiAdapter.supports.media).toEqual({
-      input: { image: false, audio: false, video: false, document: false },
-      outputCombinations: [],
+      input: { image: true, audio: true, video: false, document: false },
+      outputCombinations: [['text'], ['text', 'audio']],
     });
     expect(openaiAdapter.supports.reasoning).toBe(false);
     expect(deepseekAdapter.supports.reasoning).toBe(true);
@@ -93,12 +93,14 @@ describe('OpenAI-compatible adapter', () => {
     expect(deepseekAdapter.supports.media.outputCombinations).toEqual([]);
   });
 
-  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
-    const adapter = createOpenAiAdapter({
+  it('rejects an unsupported media modality with a typed capability error (1.AE, ADR-0031)', async () => {
+    // DeepSeek: all-false media matrix — every media part is rejected.
+    const dsAdapter = createOpenAiAdapter({
+      providerId: 'deepseek',
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
-    const req = {
-      model: 'gpt-5.5',
+    const imageReq = {
+      model: 'deepseek-reasoner',
       messages: [
         {
           role: 'user' as const,
@@ -112,8 +114,229 @@ describe('OpenAI-compatible adapter', () => {
         },
       ],
     };
-    await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
-    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+    await expect(dsAdapter.generate(imageReq, 'k')).rejects.toThrowError(
+      UnsupportedCapabilityError,
+    );
+    expect(() => dsAdapter.stream(imageReq, 'k')).toThrowError(UnsupportedCapabilityError);
+
+    // OpenAI: video is unsupported → typed error (handle source: video ceiling=0 forbids inline).
+    const oaiAdapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    const videoReq = {
+      model: 'gpt-4.1',
+      messages: [
+        {
+          role: 'user' as const,
+          content: [
+            {
+              type: 'media' as const,
+              mimeType: 'video/mp4',
+              source: { kind: 'handle' as const, ref: `media://sha256-${'f'.repeat(64)}` },
+            },
+          ],
+        },
+      ],
+    };
+    await expect(oaiAdapter.generate(videoReq, 'k')).rejects.toThrowError(
+      UnsupportedCapabilityError,
+    );
+    expect(() => oaiAdapter.stream(videoReq, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('lowers a supported media user message to image_url + input_audio (generate — the §1.AE textOf fix)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-5.5',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'describe + transcribe' },
+              {
+                type: 'media',
+                mimeType: 'image/png',
+                source: { kind: 'base64', data: 'aW1hZ2U=' },
+              },
+              {
+                type: 'media',
+                mimeType: 'audio/mpeg',
+                source: { kind: 'base64', data: 'YXVkaW8=' },
+              },
+            ],
+          },
+        ],
+      },
+      'k',
+    );
+    const messages = sent['messages'] as Record<string, unknown>[];
+    const content = messages[0]?.['content'] as Record<string, unknown>[];
+    expect(Array.isArray(content)).toBe(true); // unflattened to a content array, NOT a flat string
+    expect(content).toContainEqual({ type: 'text', text: 'describe + transcribe' });
+    expect(content).toContainEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+    });
+    // audio/mpeg (the canonical MP3 MIME) → format 'mp3', NOT a silent 'wav' coercion (M4).
+    expect(content).toContainEqual({
+      type: 'input_audio',
+      input_audio: { data: 'YXVkaW8=', format: 'mp3' },
+    });
+  });
+
+  it('lowers media on the STREAM path too (shared buildCommonBody — the §1.AE both-paths requirement)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    try {
+      await collect(
+        adapter.stream(
+          {
+            model: 'gpt-5.5',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'media',
+                    mimeType: 'image/png',
+                    source: { kind: 'base64', data: 'aW1hZ2U=' },
+                  },
+                ],
+              },
+            ],
+          },
+          'k',
+        ),
+      );
+    } catch {
+      // The request body is captured at fetch time; a non-SSE okResponse may end the stream early here.
+    }
+    expect(sent['stream']).toBe(true);
+    const content = (sent['messages'] as Record<string, unknown>[])[0]?.['content'] as Record<
+      string,
+      unknown
+    >[];
+    expect(content).toContainEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+    });
+  });
+
+  it('rejects an unsupported audio subtype rather than mislabeling it as wav (audio/ogg — M4)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gpt-5.5',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'audio/ogg',
+                  source: { kind: 'base64', data: 'YXVkaW8=' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow(/only mp3 and wav/);
+  });
+
+  it('gates document input off until 1.AF (a handle-source PDF is rejected, never sent as image_url — H3)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gpt-5.5',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'application/pdf',
+                  source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('rejects a url-source image rather than forwarding it to the provider (ADR-0031 §A7 — H1)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gpt-5.5',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'url', url: 'https://example.com/photo.png' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow(/does not support url-source image input/);
+  });
+
+  it('rejects media on an assistant turn rather than silently dropping it via textOf (M2)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gpt-5.5',
+          messages: [
+            { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'base64', data: 'aW1hZ2U=' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow(/assistant-role media is not supported/);
   });
 
   it('maps finish reasons to the canonical enum (incl. graceful unknown → stop)', () => {
@@ -782,6 +1005,23 @@ describe('OpenAI-compatible adapter — baseURL SSRF guard', () => {
     ]) {
       expect(() => createOpenAiAdapter({ baseURL: url })).toThrow(InvalidBaseUrlError);
     }
+  });
+
+  it('redacts embedded credentials from InvalidBaseUrlError — never leaks user:pass into the error', () => {
+    // A base URL with userinfo + a blocked host: neither the credentials, the path, nor the query may
+    // appear in the thrown error or its `.url` field (security-review.md §Network/outbound URLs).
+    let caught: InvalidBaseUrlError | undefined;
+    try {
+      createOpenAiAdapter({ baseURL: 'https://leakuser:s3cr3tpass@127.0.0.1/v1?token=leaktoken' });
+    } catch (err) {
+      caught = err instanceof InvalidBaseUrlError ? err : undefined;
+    }
+    expect(caught).toBeInstanceOf(InvalidBaseUrlError);
+    for (const secret of ['leakuser', 's3cr3tpass', 'leaktoken', '@']) {
+      expect(caught?.message).not.toContain(secret);
+      expect(caught?.url).not.toContain(secret);
+    }
+    expect(caught?.url).toBe('https://127.0.0.1'); // only the credential-free scheme+host summary survives
   });
 
   it('accepts an uppercase HTTPS scheme (normalized) and a public host', () => {

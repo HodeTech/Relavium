@@ -7,7 +7,9 @@ import {
   DurableContentPartSchema,
   DurableMediaPartSchema,
   DurableMediaSourceSchema,
+  extractHttpsHost,
   INLINE_MEDIA_CEILING,
+  isPrivateOrLocalHost,
   MEDIA_MESSAGE_CAPS,
   MEDIA_URL_SOURCE_ENABLED,
   MediaPartSchema,
@@ -15,6 +17,7 @@ import {
   mediaModalityOf,
   persistableMediaRefine,
   refineInFlightMediaPart,
+  urlHasCredentials,
 } from './content.js';
 import type { AbortSignalLike, ContentPart, DurableContentPart, MediaPart } from './content.js';
 
@@ -409,9 +412,9 @@ describe('the tier policy constants (ADR-0031)', () => {
     );
   });
 
-  it('pins the url carrier feature flag OFF until the shared SSRF primitive lands (1.AE)', () => {
-    // Flipping this is a deliberate landing-gate act (ADR-0031 §Reserved shape), not a drive-by.
-    expect(MEDIA_URL_SOURCE_ENABLED).toBe(false);
+  it('pins the url carrier feature flag ON now that the SSRF primitive has landed (1.AE)', () => {
+    // Flipping this from false to true is a deliberate landing-gate act (ADR-0031 §Reserved shape).
+    expect(MEDIA_URL_SOURCE_ENABLED).toBe(true);
   });
 });
 
@@ -465,11 +468,50 @@ describe('refineInFlightMediaPart — the seam ingestion rules (ADR-0031)', () =
     ).toBe(false);
   });
 
-  it('rejects the url carrier while the SSRF landing gate is off', () => {
+  it('accepts a url carrier with HTTPS + public host now that the SSRF primitive has landed (1.AE)', () => {
     expect(
       boundary.safeParse(media('image/png', { kind: 'url', url: 'https://example.com/a.png' }))
         .success,
+    ).toBe(true);
+  });
+
+  it('rejects a url carrier that is not HTTPS', () => {
+    expect(
+      boundary.safeParse(media('image/png', { kind: 'url', url: 'http://example.com/a.png' }))
+        .success,
     ).toBe(false);
+  });
+
+  it('rejects a url carrier with embedded credentials', () => {
+    expect(
+      boundary.safeParse(
+        media('image/png', { kind: 'url', url: 'https://user:pass@example.com/a.png' }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('rejects a url carrier pointing to a private/loopback/link-local host', () => {
+    expect(
+      boundary.safeParse(media('image/png', { kind: 'url', url: 'https://127.0.0.1/a.png' }))
+        .success,
+    ).toBe(false);
+    expect(
+      boundary.safeParse(media('image/png', { kind: 'url', url: 'https://10.0.0.1/a.png' }))
+        .success,
+    ).toBe(false);
+    expect(
+      boundary.safeParse(media('image/png', { kind: 'url', url: 'https://192.168.1.1/a.png' }))
+        .success,
+    ).toBe(false);
+    // End-to-end through refineInFlightMediaPart → extractHttpsHost → isPrivateOrLocalHost: the harder
+    // forms (cloud-metadata, bracketed IPv6 loopback, CGNAT) must also be rejected at the url carrier.
+    for (const url of [
+      'https://169.254.169.254/a.png',
+      'https://[::1]/a.png',
+      'https://100.64.0.1/a.png',
+    ]) {
+      expect(boundary.safeParse(media('image/png', { kind: 'url', url })).success).toBe(false);
+    }
   });
 
   it('rejects an unknown modality and invalid base64 (fail-closed)', () => {
@@ -608,5 +650,176 @@ describe('round-trip fidelity (1.AD acceptance: the new shapes parse AND round-t
         }).success,
       ).toBe(false);
     }
+  });
+});
+
+describe('SSRF range-block (isPrivateOrLocalHost)', () => {
+  const BLOCKED_HOSTS: Array<[string, string]> = [
+    ['127.0.0.1', 'loopback'],
+    ['127.1.2.3', 'loopback 127/8'],
+    ['0.0.0.0', 'unspecified 0/8'],
+    ['0.1.2.3', 'unspecified 0/8'],
+    ['10.0.0.1', 'private 10/8'],
+    ['10.255.255.255', 'private 10/8 max'],
+    ['172.16.0.1', 'private 172.16/12'],
+    ['172.31.255.255', 'private 172.16/12 max'],
+    ['192.168.0.1', 'private 192.168/16'],
+    ['192.168.255.255', 'private 192.168/16 max'],
+    ['169.254.169.254', 'cloud metadata IP'],
+    ['169.254.0.1', 'link-local 169.254/16'],
+    ['100.64.0.1', 'CGNAT 100.64/10'],
+    ['100.127.255.255', 'CGNAT 100.64/10 max'],
+    ['::1', 'IPv6 loopback'],
+    ['::', 'IPv6 unspecified'],
+    ['fe80::1', 'IPv6 link-local fe80::/10'],
+    ['fc00::1', 'IPv6 unique-local fc00::/7'],
+    ['fd12:3456::1', 'IPv6 unique-local fd00::/8'],
+    ['::ffff:127.0.0.1', 'IPv4-mapped loopback'],
+    ['::ffff:10.0.0.1', 'IPv4-mapped private 10/8'],
+    ['::ffff:192.168.1.1', 'IPv4-mapped private 192.168/16'],
+    ['::ffff:169.254.169.254', 'IPv4-mapped cloud metadata'],
+    ['::ffff:100.64.0.1', 'IPv4-mapped CGNAT'],
+    ['64:ff9b::127.0.0.1', 'NAT64-mapped loopback'],
+    ['64:ff9b::10.0.0.1', 'NAT64-mapped private'],
+    ['64:ff9b::169.254.169.254', 'NAT64-mapped cloud metadata'],
+    ['localhost', 'hostname localhost'],
+    ['myapp.localhost', 'hostname .localhost suffix'],
+    ['myapp.local', 'hostname .local suffix'],
+    ['myapp.internal', 'hostname .internal suffix'],
+    // Alternate IPv4 encodings of a blocked address must not bypass the range block.
+    ['2130706433', 'decimal IPv4 loopback (= 127.0.0.1)'],
+    ['0x7f000001', 'hex IPv4 loopback (= 127.0.0.1)'],
+    ['0x7f.0.0.1', 'hex-octet loopback'],
+    ['0177.0.0.1', 'octal-octet loopback'],
+    ['127.1', 'inet_aton short-form loopback'],
+    ['0', 'bare integer 0 (= 0.0.0.0)'],
+    // FQDN trailing dot must not bypass a hostname-suffix or range check.
+    ['localhost.', 'trailing-dot localhost'],
+    ['127.0.0.1.', 'trailing-dot loopback'],
+    // Compressed / fully-expanded IPv6 loopback must decode to the same blocked address.
+    ['0::1', 'compressed IPv6 loopback'],
+    ['0000:0000:0000:0000:0000:0000:0000:0001', 'fully-expanded IPv6 loopback'],
+    // A bracketed IPv6 literal (as a URL authority carries it) is unbracketed before the range check.
+    ['[::1]', 'bracketed IPv6 loopback'],
+    ['[fe80::1]', 'bracketed IPv6 link-local'],
+  ];
+
+  const ALLOWED_HOSTS: Array<[string, string]> = [
+    ['8.8.8.8', 'Google DNS'],
+    ['1.1.1.1', 'Cloudflare DNS'],
+    ['142.250.80.46', 'public IP'],
+    ['api.openai.com', 'public hostname'],
+    ['2001:4860:4860::8888', 'public IPv6'],
+    ['172.15.0.1', 'just below 172.16/12 range'],
+    ['172.32.0.1', 'just above 172.16/12 range'],
+    ['100.63.255.255', 'just below CGNAT range'],
+    ['100.128.0.1', 'just above CGNAT range'],
+    ['128.0.0.1', 'public IP'],
+    ['fda.gov', 'public hostname starting with fd'],
+    ['fca.com', 'public hostname starting with fc'],
+    ['fe80.com', 'public hostname starting with fe80'],
+    ['fcbarcelona.com', 'public hostname starting with fc'],
+    ['134744072', 'decimal form of public 8.8.8.8 — numeric normalization must not over-block'],
+    ['example.com.', 'public hostname with a trailing dot — must not over-block'],
+    // A public FQDN whose first label spells a private-range prefix must NOT be blocked — the range
+    // checks apply only to a fully-numeric dotted-decimal IPv4, never to a hostname (a real bug we fixed).
+    ['10.ai', 'public TLD whose label starts with the 10/8 prefix'],
+    ['127.example.com', 'public FQDN whose first label is 127'],
+    ['192.168.fm', 'public FQDN whose labels match the 192.168 prefix'],
+    ['172.16.api.com', 'public FQDN whose labels match the 172.16/12 prefix'],
+    ['100.64.example.com', 'public FQDN whose labels match the CGNAT prefix'],
+  ];
+
+  for (const [host, label] of BLOCKED_HOSTS) {
+    it(`blocks ${host} (${label})`, () => {
+      expect(isPrivateOrLocalHost(host)).toBe(true);
+    });
+  }
+
+  for (const [host, label] of ALLOWED_HOSTS) {
+    it(`allows ${host} (${label})`, () => {
+      expect(isPrivateOrLocalHost(host)).toBe(false);
+    });
+  }
+
+  it('is case-insensitive', () => {
+    expect(isPrivateOrLocalHost('LOCALHOST')).toBe(true);
+    expect(isPrivateOrLocalHost('LocalHost')).toBe(true);
+    expect(isPrivateOrLocalHost('::FFFF:127.0.0.1')).toBe(true);
+  });
+
+  it('blocks IPv4-mapped IPv6 hex form (::ffff:a9fe:a9fe = 169.254.169.254)', () => {
+    expect(isPrivateOrLocalHost('::ffff:a9fe:a9fe')).toBe(true);
+  });
+
+  it('blocks NAT64 hex form (64:ff9b::a9fe:a9fe = 169.254.169.254)', () => {
+    expect(isPrivateOrLocalHost('64:ff9b::a9fe:a9fe')).toBe(true);
+  });
+
+  it('allows public IPv6 that starts with fc/fd-like hex but is not unique-local (e.g. fcxx with non-hex)', () => {
+    expect(isPrivateOrLocalHost('fc00::1')).toBe(true);
+    expect(isPrivateOrLocalHost('fd12::1')).toBe(true);
+  });
+
+  it('blocks IPv6 link-local fe80::', () => {
+    expect(isPrivateOrLocalHost('fe80::1')).toBe(true);
+    expect(isPrivateOrLocalHost('FE80::1')).toBe(true);
+  });
+});
+
+describe('extractHttpsHost + urlHasCredentials (SSRF URL policy)', () => {
+  it('extracts a plain HTTPS host', () => {
+    expect(extractHttpsHost('https://api.openai.com/v1/chat')).toEqual({
+      host: 'api.openai.com',
+      hasCredentials: false,
+    });
+  });
+
+  it('rejects non-HTTPS schemes', () => {
+    expect(extractHttpsHost('http://api.openai.com')).toBeNull(); // NOSONAR — cleartext URL is the exact input under test
+    expect(extractHttpsHost('ftp://example.com')).toBeNull();
+  });
+
+  it('rejects URLs with credentials', () => {
+    expect(urlHasCredentials('https://user:pass@api.openai.com')).toBe(true);
+    expect(urlHasCredentials('https://api.openai.com')).toBe(false);
+  });
+
+  it('extracts host from IPv6 literal in brackets', () => {
+    expect(extractHttpsHost('https://[::1]/path')).toEqual({
+      host: '::1',
+      hasCredentials: false,
+    });
+  });
+
+  it('detects @ in authority as credentials', () => {
+    const result = extractHttpsHost('https://key@host.example.com/path');
+    expect(result).not.toBeNull();
+    expect(result!.hasCredentials).toBe(true);
+    expect(result!.host).toBe('host.example.com');
+  });
+
+  it('rejects URLs with C0 control characters in authority', () => {
+    expect(extractHttpsHost('https://host.example.com\r\n')).toBeNull();
+  });
+
+  it('rejects URLs with backslash in authority', () => {
+    expect(extractHttpsHost(String.raw`https://host\example.com`)).toBeNull();
+  });
+
+  it('rejects a percent-encoded authority (a literal host never contains %; no decode here)', () => {
+    expect(extractHttpsHost('https://ex%41mple.com')).toBeNull();
+    expect(extractHttpsHost('https://%31%32%37.0.0.1')).toBeNull();
+  });
+
+  it('rejects an unmatched IPv6 bracket', () => {
+    expect(extractHttpsHost('https://[::1/path')).toBeNull();
+  });
+
+  it('lowercases the host', () => {
+    expect(extractHttpsHost('https://API.OPENAI.COM')).toEqual({
+      host: 'api.openai.com',
+      hasCredentials: false,
+    });
   });
 });

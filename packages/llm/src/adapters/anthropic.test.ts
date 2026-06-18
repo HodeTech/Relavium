@@ -70,19 +70,19 @@ describe('AnthropicAdapter', () => {
       tools: true,
       streaming: true,
       parallelToolCalls: true,
-      // Honestly all-false at 1.AD (ADR-0031, shape only): no media input is wired until 1.AE,
-      // and vision is the derived alias of media.input.image, so it reads false too.
-      vision: false,
+      vision: true,
       promptCache: true,
-      reasoning: true,
+      reasoning: false,
       media: {
-        input: { image: false, audio: false, video: false, document: false },
+        // document stays false until handle resolution lands (1.AF) — base64 document is blocked by the
+        // seam ceiling, so advertising it would be "advertised-but-unsendable" (ADR-0031).
+        input: { image: true, audio: false, video: false, document: false },
         outputCombinations: [],
       },
     });
   });
 
-  it('rejects a media part with a typed capability error until 1.AE wires media input (ADR-0031)', async () => {
+  it('rejects an unsupported media modality (audio) with a typed capability error', async () => {
     const adapter = createAnthropicAdapter({
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
@@ -94,7 +94,7 @@ describe('AnthropicAdapter', () => {
           content: [
             {
               type: 'media' as const,
-              mimeType: 'image/png',
+              mimeType: 'audio/wav',
               source: { kind: 'base64' as const, data: 'aGVsbG8=' },
             },
           ],
@@ -103,6 +103,194 @@ describe('AnthropicAdapter', () => {
     };
     await expect(adapter.generate(req, 'k')).rejects.toThrowError(UnsupportedCapabilityError);
     expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('wires image media parts onto the Anthropic wire format (document uses handle, deferred to 1.AF)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-sonnet-4-6',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'claude-sonnet-4-6',
+        maxTokens: 16,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'describe this' },
+              {
+                type: 'media',
+                mimeType: 'image/png',
+                source: { kind: 'base64', data: 'aW1hZ2U=' },
+              },
+            ],
+          },
+        ],
+      },
+      'k',
+    );
+    const messages = sent['messages'] as Record<string, unknown>[];
+    expect(messages).toHaveLength(1);
+    const content = messages[0]?.['content'] as Record<string, unknown>[];
+    expect(content[0]).toEqual({ type: 'text', text: 'describe this' });
+    expect(content[1]).toEqual({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' },
+    });
+  });
+
+  it('rejects handle and url media sources with an explicit bad_request error (1.AF)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
+      maxRetries: 0,
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'handle', ref: 'media://sha256-' + 'a'.repeat(64) },
+                },
+                { type: 'text', text: 'what is this' },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('Anthropic does not support handle-source image input — use base64 (1.AF)');
+
+    const adapter2 = createAnthropicAdapter({
+      fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
+      maxRetries: 0,
+    });
+    await expect(
+      adapter2.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'url', url: 'https://example.com/photo.png' },
+                },
+                { type: 'text', text: 'describe this' },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('Anthropic does not support url-source image input — use base64 (1.AF)');
+  });
+
+  it('rejects media on an assistant turn rather than silently dropping it (M2)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
+      maxRetries: 0,
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'base64', data: 'aW1hZ2U=' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('assistant-role media is not supported');
+  });
+
+  it('gates document input off until 1.AF (a handle-source PDF is rejected — H3)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'application/pdf',
+                  source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('rejects an unsupported image subtype pre-egress (image/tiff is not jpeg/png/gif/webp)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'media', mimeType: 'image/tiff', source: { kind: 'base64', data: 'aW1n' } },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow(/image input supports only/);
   });
 
   it('maps every Anthropic stop reason to the canonical 5-value enum', () => {

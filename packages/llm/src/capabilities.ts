@@ -13,18 +13,24 @@ import type { CapabilityFlags, LlmRequest, ProviderId } from './types.js';
 export type Capability = keyof CapabilityFlags;
 
 /**
- * The capabilities a request requires, given the current request surface. Only `tools` is gated
- * here today: promptCache/parallelToolCalls ride `providerOptions`, and while media IS now
- * expressible in a canonical `LlmRequest` (media parts, `outputModalities` — ADR-0031), its
- * gating — the per-modality input check derived from the request's media parts plus the
- * `outputModalities` MEMBERSHIP check against `media.outputCombinations` — lands with the engine
- * media plumbing (1.AF); at 1.AD the `media` matrix is shape only and the live media gate is the
- * adapters' shared `assertNoMediaRequested` pre-flight.
+ * The capabilities a request requires, given the current request surface. `tools` and `vision` are
+ * the two checked here (vision is the derived alias of `media.input.image` — ADR-0031). The precise
+ * per-modality input check + the `outputCombinations` membership check are performed by
+ * `assertMediaCapabilities` at each adapter entry point (1.AE), which gives specific error messages.
+ *
+ * NOTE — this is deliberately COARSE for the FallbackChain pre-skip: it requires `vision` (image) for
+ * ANY media part, so audio/video/document are not yet distinguished here and `outputModalities` adds no
+ * requirement. That can over- or under-skip a provider whose image support diverges from the modality
+ * actually requested — harmless today (no shipped provider supports a non-image modality without also
+ * supporting image), and replaced by per-modality + outputCombinations gating in 1.AF (types.ts).
  */
 export function requiredCapabilities(req: LlmRequest): Capability[] {
   const required: Capability[] = [];
   if (req.tools !== undefined && req.tools.length > 0) {
     required.push('tools');
+  }
+  if (req.messages.some((m) => m.content.some((p) => p.type === 'media'))) {
+    required.push('vision');
   }
   return required;
 }

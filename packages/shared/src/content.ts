@@ -54,12 +54,13 @@ export const MEDIA_MESSAGE_CAPS = {
 } as const;
 
 /**
- * The `url` media carrier is a **hard landing gate** (ADR-0031 §Reserved shape): it stays OFF — a
- * `url` source is rejected at the seam ingestion boundary — until the one shared SSRF
- * range-primitive lands (1.AE). The flag is deliberately typed `boolean` (not `false`) because it
- * flips on later; the gate test in content.test.ts pins the rejection while it is off.
+ * The `url` media carrier landing gate (ADR-0031 §Reserved shape): the SSRF range-primitive has
+ * landed (1.AE — `extractHttpsHost`, `isPrivateOrLocalHost`, `urlHasCredentials`), so URL sources
+ * are now accepted at the seam boundary. The policy half (literal format + credential + range-block
+ * checks) lives in `refineInFlightMediaPart`; the mechanism half (DNS resolve + connect-by-validated-IP
+ * + per-hop redirect re-validation) belongs to the host-side `EgressCapability.fetch`.
  */
-export const MEDIA_URL_SOURCE_ENABLED: boolean = false;
+export const MEDIA_URL_SOURCE_ENABLED: boolean = true;
 
 /* ------------------------------------------------------------------------------------------------
  * Media helpers (pure, platform-free)
@@ -108,7 +109,8 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 /**
  * The decoded byte count of a base64 string, or `undefined` when the string is not valid padded
  * base64. The ceiling/caps bound **decoded** bytes (a 256 KB ceiling is ~341 KB of base64 string),
- * so every cap comparison goes through this one accounting.
+ * so every cap comparison goes through this one accounting. Runs an O(n) regex validation over the
+ * whole string before the arithmetic (bounded by the inline-media ceiling, so the worst case is small).
  */
 export function decodedBase64ByteLength(data: string): number | undefined {
   if (data.length === 0 || data.length % 4 !== 0 || !BASE64_PATTERN.test(data)) {
@@ -563,6 +565,33 @@ export function refineInFlightMediaPart(
     });
     return 0;
   }
+  if (part.source.kind === 'url') {
+    const host = extractHttpsHost(part.source.url);
+    if (host === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'media url source must be a valid HTTPS URL',
+        path: [...path, 'source', 'url'],
+      });
+      return 0;
+    }
+    if (host.hasCredentials) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'media url source must not contain embedded credentials',
+        path: [...path, 'source', 'url'],
+      });
+      return 0;
+    }
+    if (isPrivateOrLocalHost(host.host)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'media url source must not resolve to a private, loopback, or link-local address',
+        path: [...path, 'source', 'url'],
+      });
+      return 0;
+    }
+  }
   if (part.source.kind !== 'base64') {
     return 0;
   }
@@ -632,6 +661,328 @@ export interface MediaStore {
 export interface DeInlineMedia {
   (parts: readonly ContentPart[], store: MediaStore): Promise<DurableContentPart[]>;
   (value: unknown, store: MediaStore): Promise<unknown>;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * SSRF range-block — the one shared primitive (1.AE, security-review.md, ADR-0031 §Guardrails)
+ *
+ * The policy half of the SSRF guard: given a hostname string (post-URL-parse, lowercased,
+ * bracket-stripped for IPv6), return whether it is a private, loopback, link-local, CGNAT,
+ * or cloud-metadata address that must never be an egress target. The mechanism half
+ * (DNS resolution + connect-by-validated-IP + per-hop redirect re-validation) lives in the
+ * host-side EgressCapability.fetch implementation — see docs/standards/security-review.md.
+ *
+ * Every egress caller (provider baseURL, http_request, MCP server URLs, and the media url
+ * carrier) reuses this one function — never a second hand-rolled parser.
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Returns `true` when `host` is a private, loopback, link-local, CGNAT, cloud-metadata,
+ * or otherwise non-routable address that must never be an egress target.
+ *
+ * Accepts an IPv4 dotted-decimal, an IPv6 literal (with or without brackets), or a
+ * hostname. IPv4-mapped IPv6 forms like `::ffff:127.0.0.1` and NAT64 `64:ff9b::127.0.0.1`
+ * are decoded and re-checked against the IPv4 rules so they cannot bypass the block.
+ *
+ * This is the **literal-hostname check** only (no DNS resolution). The host-side
+ * EgressCapability.fetch resolves the hostname and re-runs this check on every resolved IP,
+ * then pins the connection to a validated IP — closing the DNS-rebinding and
+ * post-resolution-redirect TOCTOU windows.
+ *
+ * Canonical test surface: docs/standards/testing.md §Security-critical primitive tests.
+ */
+export function isPrivateOrLocalHost(host: string): boolean {
+  // Normalize BEFORE range-checking so an alternate encoding of a blocked address cannot bypass the
+  // block: lowercase, strip the FQDN trailing dot(s) (`localhost.` ≡ `localhost`), decode IPv6 literals
+  // to their 8 groups, and canonicalize any numeric-IPv4 form (decimal `2130706433`, hex `0x7f000001`,
+  // octal `0177.0.0.1`, inet_aton short forms `a` / `a.b` / `a.b.c`) to dotted-decimal.
+  let h = stripTrailingDots(host.toLowerCase());
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1); // unbracket an IPv6 literal so parseIpv6Groups sees the bare address
+  }
+
+  if (
+    h === 'localhost' ||
+    h.endsWith('.localhost') ||
+    h.endsWith('.local') ||
+    h.endsWith('.internal')
+  ) {
+    return true;
+  }
+
+  if (h.includes(':')) {
+    const groups = parseIpv6Groups(h);
+    return groups !== null && isPrivateIpv6Groups(groups);
+  }
+
+  // Range-check ONLY a successfully-canonicalized dotted-decimal IPv4. A non-numeric host (e.g. `10.ai`,
+  // `192.168.fm`) returns null here and must NOT be matched by the dotted-prefix tests — the private
+  // hostname suffixes were already handled above, and a resolvable name's authoritative range block is
+  // the host-side DNS-resolve+pin (1.AF). (Without this guard the `?? h` fallback wrongly blocked public
+  // FQDNs whose first label spells a private-range prefix.)
+  const dotted = canonicalizeNumericIpv4(h);
+  if (dotted === null) {
+    return false;
+  }
+  return (
+    dotted.startsWith('0.') ||
+    dotted.startsWith('127.') ||
+    dotted.startsWith('10.') ||
+    isPrivate172(dotted) ||
+    dotted.startsWith('192.168.') ||
+    isCgnat100(dotted) ||
+    dotted.startsWith('169.254.')
+  );
+}
+
+/** Block the 172.16/12 private range (172.16.0.0 – 172.31.255.255) on a dotted-decimal host. */
+function isPrivate172(h: string): boolean {
+  const m = /^172\.(\d{1,3})\./.exec(h);
+  if (m === null) return false;
+  const octet = Number(m[1]);
+  return octet >= 16 && octet <= 31;
+}
+
+/** Block the 100.64/10 CGNAT range (100.64.0.0 – 100.127.255.255) on a dotted-decimal host. */
+function isCgnat100(h: string): boolean {
+  const m = /^100\.(\d{1,3})\./.exec(h);
+  if (m === null) return false;
+  const octet = Number(m[1]);
+  return octet >= 64 && octet <= 127;
+}
+
+/** Strip FQDN trailing dot(s) without a quantified regex (`host.` ≡ `host`; ReDoS-free, S5852-clean). */
+function stripTrailingDots(host: string): string {
+  let result = host;
+  while (result.endsWith('.')) {
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
+/** Parse one inet_aton IPv4 part — decimal, `0x`-hex, or `0`-octal — to its value, or `null` if non-numeric. */
+function parseIpv4Octet(part: string): number | null {
+  let value: number;
+  if (/^0x[0-9a-f]+$/.test(part)) {
+    value = Number.parseInt(part.slice(2), 16);
+  } else if (/^0[0-7]*$/.test(part)) {
+    value = part.length === 1 ? 0 : Number.parseInt(part.slice(1), 8);
+  } else if (/^[1-9]\d*$/.test(part)) {
+    value = Number.parseInt(part, 10);
+  } else {
+    return null;
+  }
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Pack inet_aton parts to dotted-decimal: each leading part is one byte, the last fills the remaining
+ * low-order bytes. Returns `null` if a leading part exceeds one byte or the final part overflows its bytes.
+ */
+function packIpv4(values: readonly number[]): string | null {
+  const lastIndex = values.length - 1;
+  for (let i = 0; i < lastIndex; i++) {
+    if ((values[i] ?? 0) > 0xff) {
+      return null;
+    }
+  }
+  if ((values[lastIndex] ?? 0) >= 2 ** (8 * (4 - lastIndex))) {
+    return null;
+  }
+  let ipNum = values[lastIndex] ?? 0;
+  for (let i = 0; i < lastIndex; i++) {
+    ipNum += (values[i] ?? 0) * 2 ** (8 * (3 - i));
+  }
+  return `${Math.floor(ipNum / 2 ** 24) % 256}.${Math.floor(ipNum / 2 ** 16) % 256}.${
+    Math.floor(ipNum / 2 ** 8) % 256
+  }.${ipNum % 256}`;
+}
+
+/**
+ * Canonicalize a numeric IPv4 authority — decimal, `0x`-hex, or `0`-octal parts, in inet_aton's 1–4
+ * part short forms (`a`, `a.b`, `a.b.c`, `a.b.c.d`) — to dotted-decimal, or `null` when the host is not
+ * an all-numeric IPv4 form. Closes the decimal/hex/octal encoding bypasses a prefix-only check would miss.
+ */
+function canonicalizeNumericIpv4(host: string): string | null {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) {
+    return null;
+  }
+  const values: number[] = [];
+  for (const part of parts) {
+    const value = parseIpv4Octet(part);
+    if (value === null) {
+      return null;
+    }
+    values.push(value);
+  }
+  return packIpv4(values);
+}
+
+/**
+ * Substitute a trailing embedded IPv4 (`…:a.b.c.d`) with two hex groups IN PLACE — keeping the preceding
+ * colons (incl. a `::`) intact (`64:ff9b::127.0.0.1` → `64:ff9b::7f00:1`). Returns the string unchanged
+ * when there is no embedded IPv4, or `null` if the embedded tail is not a valid IPv4.
+ */
+function substituteEmbeddedIpv4(s: string): string | null {
+  const lastColon = s.lastIndexOf(':');
+  if (lastColon === -1 || !s.slice(lastColon + 1).includes('.')) {
+    return s;
+  }
+  const dotted = canonicalizeNumericIpv4(s.slice(lastColon + 1));
+  if (dotted === null) {
+    return null;
+  }
+  const o = dotted.split('.').map(Number);
+  const hi = (((o[0] ?? 0) << 8) | (o[1] ?? 0)).toString(16);
+  const lo = (((o[2] ?? 0) << 8) | (o[3] ?? 0)).toString(16);
+  return `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
+}
+
+/** Expand an all-hex IPv6 literal (with at most one `::`) to its 16-bit groups, or `null` if malformed. */
+function expandIpv6(s: string): number[] | null {
+  const doubleColon = s.indexOf('::');
+  if (doubleColon === -1) {
+    return s === '' ? [] : s.split(':').map((seg) => Number.parseInt(seg, 16));
+  }
+  const beforeSegs = s.slice(0, doubleColon) === '' ? [] : s.slice(0, doubleColon).split(':');
+  const afterSegs = s.slice(doubleColon + 2) === '' ? [] : s.slice(doubleColon + 2).split(':');
+  const known = beforeSegs.length + afterSegs.length;
+  if (known >= 8) {
+    return null; // a `::` must elide ≥1 zero group (RFC 4291 §2.2); 8 explicit groups + `::` is malformed
+  }
+  return [
+    ...beforeSegs.map((seg) => Number.parseInt(seg, 16)),
+    ...new Array<number>(8 - known).fill(0),
+    ...afterSegs.map((seg) => Number.parseInt(seg, 16)),
+  ];
+}
+
+/**
+ * Parse an IPv6 literal (bracket-stripped; optional `%zone`; optional trailing embedded IPv4) into its
+ * eight 16-bit groups, expanding `::`. Returns `null` if it is not a well-formed IPv6 literal — so a
+ * compressed/expanded/zero-padded form (`0::1`, `0000:…:0001`) decodes to the same groups as `::1`.
+ */
+function parseIpv6Groups(host: string): number[] | null {
+  const substituted = substituteEmbeddedIpv4(host.split('%')[0] ?? host);
+  if (substituted === null) {
+    return null;
+  }
+  const groups = expandIpv6(substituted);
+  if (groups?.length !== 8) {
+    return null;
+  }
+  for (const group of groups) {
+    if (!Number.isInteger(group) || group < 0 || group > 0xffff) {
+      return null;
+    }
+  }
+  return groups;
+}
+
+/**
+ * Range-check decoded IPv6 groups: unspecified (`::`), loopback (`::1`), link-local (`fe80::/10`),
+ * unique-local (`fc00::/7`), and IPv4-mapped (`::ffff:a.b.c.d`) / NAT64 (`64:ff9b::a.b.c.d`) embeddings
+ * which are re-checked through the IPv4 rules.
+ */
+function isPrivateIpv6Groups(g: number[]): boolean {
+  if (g.every((x) => x === 0)) {
+    return true; // ::
+  }
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) {
+    return true; // ::1 loopback
+  }
+  if (((g[0] ?? 0) & 0xffc0) === 0xfe80) {
+    return true; // fe80::/10 link-local
+  }
+  if (((g[0] ?? 0) & 0xfe00) === 0xfc00) {
+    return true; // fc00::/7 unique-local
+  }
+  const zeroHigh = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0;
+  if (zeroHigh && g[4] === 0 && g[5] === 0xffff) {
+    return isPrivateOrLocalHost(ipv4FromGroups(g[6] ?? 0, g[7] ?? 0)); // ::ffff:a.b.c.d
+  }
+  if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+    return isPrivateOrLocalHost(ipv4FromGroups(g[6] ?? 0, g[7] ?? 0)); // 64:ff9b::/96 NAT64
+  }
+  return false;
+}
+
+/** Reassemble two 16-bit IPv6 groups into a dotted-decimal IPv4 (the embedded-IPv4 low 32 bits). */
+function ipv4FromGroups(hi: number, lo: number): string {
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
+/** The HTTPS authority — everything between `https://` and the first `/`, `?`, or `#`. The single source
+ *  for the two URL policy helpers below, so their scheme + capture can never drift apart. */
+const HTTPS_AUTHORITY_PATTERN = /^https:\/\/([^/?#]+)/i;
+
+/**
+ * Returns `true` when an HTTPS URL string contains credentials (`user:pass@`) in its authority
+ * component. Used by the SSRF policy to reject URLs that embed secrets in the URL itself
+ * (security-review.md). HTTPS-only, matching {@link extractHttpsHost} (a non-HTTPS URL is rejected
+ * upstream by the same scheme check, so the two never disagree on scheme).
+ */
+export function urlHasCredentials(url: string): boolean {
+  const match = HTTPS_AUTHORITY_PATTERN.exec(url);
+  if (match === null) return false;
+  return match[1]?.includes('@') ?? false;
+}
+
+/**
+ * Extract the lowercased host from an HTTPS URL, plus whether the URL's authority contains embedded
+ * credentials. Pure string parsing (no URL global — the engine-purity `lib` has no DOM). Returns
+ * `null` for a non-HTTPS URL or a malformed authority. The host has any FQDN trailing dot(s) stripped
+ * (`host.` ≡ `host`) so a trailing-dot form cannot bypass an exact-FQDN allowlist or the range block.
+ *
+ * This is the exact-FQDN **policy** half; the SSRF range-block ({@link isPrivateOrLocalHost} +
+ * host-side DNS resolution) is the host's job. Shared by the media-url validator
+ * ({@link refineInFlightMediaPart}) and the engine's `enforceHttpEgress`.
+ */
+export function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
+  const match = HTTPS_AUTHORITY_PATTERN.exec(url);
+  if (match === null) {
+    return null;
+  }
+  const rawAuthority = match[1] ?? '';
+  if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
+    // A percent-encoded authority is never a literal host — fail closed rather than decode/normalize here
+    // (a WHATWG client would percent-decode it, which could mask a blocked address).
+    return null;
+  }
+  let authority = rawAuthority;
+  let hasCredentials = false;
+  const at = authority.lastIndexOf('@');
+  if (at !== -1) {
+    hasCredentials = true;
+    authority = authority.slice(at + 1);
+  }
+  let host: string;
+  if (authority.startsWith('[')) {
+    const end = authority.indexOf(']');
+    if (end === -1) {
+      return null; // unmatched IPv6 bracket — malformed authority, fail closed
+    }
+    host = authority.slice(1, end);
+  } else {
+    const colon = authority.indexOf(':');
+    host = colon === -1 ? authority : authority.slice(0, colon);
+  }
+  return { host: stripTrailingDots(host.toLowerCase()), hasCredentials };
+}
+
+/**
+ * Reject authority strings containing C0 controls, DEL, or backslash — smuggling
+ * attacks that exploit URL parser differences (e.g. `\r`, `\n`, `\0`, `\\`).
+ */
+function hasSmugglingChar(authority: string): boolean {
+  for (let i = 0; i < authority.length; i++) {
+    const code = authority.codePointAt(i) ?? Number.NaN;
+    if (code <= 0x20 || code === 0x7f || code === 0x5c) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /* ------------------------------------------------------------------------------------------------

@@ -1,5 +1,8 @@
-import type { LlmRequest, ProviderId } from '../types.js';
+import { mediaModalityOf } from '@relavium/shared';
+
 import { UnsupportedCapabilityError } from '../errors.js';
+import { LlmMessageSchema } from '../types.js';
+import type { CapabilityFlags, LlmRequest, ProviderId } from '../types.js';
 
 /**
  * Shared helpers for the provider adapters — the platform-coupled zone (`src/adapters/*`) that may
@@ -12,31 +15,99 @@ export function isAbortSignal(value: unknown): value is AbortSignal {
 }
 
 /**
- * Fail fast on any media in a request until the wiring lands (input 1.AE, output 1.AG). The
- * ADR-0031 shape landed at 1.AD with every adapter's `supports.media` honestly all-false, so
- * media reaching an adapter — a `media` part with ANY carrier, a `tool_result` carrying typed
- * `media` attachments (which the request builders would otherwise drop on the floor), or a
- * non-text `outputModalities` request (which would otherwise be silently ignored and answered
- * with text) — is an unsupported request: thrown as the same typed error the capability gate
- * uses, NEVER silently dropped/flattened (the §1.4 silent-flatten bug class this guard exists to
- * block). One shared pre-flight pass so all three adapters reject identically; this guard is the
- * LIVE media gate until requests are validated through `LlmMessageSchema` / the 1.AF
- * `requiredCapabilities()` media gating at the same entry — remove it per adapter only then.
+ * Gate every media part and tool_result media attachment against the provider's input modality
+ * capabilities (1.AE, ADR-0031). Throws `UnsupportedCapabilityError` on the first violation.
  */
-export function assertNoMediaRequested(provider: ProviderId, req: LlmRequest): void {
-  if (req.outputModalities?.some((modality) => modality !== 'text') === true) {
-    throw new UnsupportedCapabilityError(provider, 'media');
-  }
-  for (const message of req.messages) {
+function gateInputModalities(
+  provider: ProviderId,
+  inputCaps: CapabilityFlags['media']['input'],
+  messages: LlmRequest['messages'],
+): void {
+  for (const message of messages) {
     for (const part of message.content) {
       if (part.type === 'media') {
-        throw new UnsupportedCapabilityError(provider, 'media');
+        gateModality(provider, inputCaps, part.mimeType);
       }
       if (part.type === 'tool_result' && part.media !== undefined && part.media.length > 0) {
-        throw new UnsupportedCapabilityError(provider, 'media');
+        for (const mediaPart of part.media) {
+          gateModality(provider, inputCaps, mediaPart.mimeType, ' in tool_result');
+        }
       }
     }
   }
+}
+
+function gateModality(
+  provider: ProviderId,
+  inputCaps: CapabilityFlags['media']['input'],
+  mimeType: string,
+  suffix: string = '',
+): void {
+  const modality = mediaModalityOf(mimeType);
+  if (modality === undefined) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      `unsupported MIME type '${mimeType}'${suffix}`,
+    );
+  }
+  if (!inputCaps[modality]) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      `input modality '${modality}' (${mimeType})${suffix} not supported`,
+    );
+  }
+}
+
+/**
+ * Gate output modalities by MEMBERSHIP in `media.outputCombinations` (ADR-0031 decision #3).
+ * A request for `['text', 'audio']` is valid only if some output combination contains both.
+ */
+function gateOutputCombinations(
+  provider: ProviderId,
+  supports: CapabilityFlags,
+  outputModalities: LlmRequest['outputModalities'],
+): void {
+  if (outputModalities === undefined) return;
+  const nonText = outputModalities.filter((modality) => modality !== 'text');
+  if (nonText.length === 0) return;
+  const outputOk = supports.media.outputCombinations.some((combo) =>
+    nonText.every((modality) => combo.includes(modality)),
+  );
+  if (!outputOk) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      `output modalities [${nonText.join(', ')}] not in any supported output combination`,
+    );
+  }
+}
+
+/**
+ * The per-modality media capability gate (1.AE). Every adapter calls this at `generate()`/`stream()`
+ * entry, AFTER `assertSupported` and `assertStreamable`, so there is never a cap-less window between
+ * the ADR-0031 shape landing and the per-modality wiring. An unsupported modality is thrown as
+ * `UnsupportedCapabilityError('media')` with a specific detail string — NEVER silently dropped or
+ * flattened (the §1.4 bug class this guard exists to block). DeepSeek's all-false matrix causes
+ * every media part to be rejected identically to the old blanket `assertNoMediaRequested`.
+ *
+ * First, each message is validated through `LlmMessageSchema` to activate the superRefine
+ * guards (media ceiling/caps, URL gate, MIME type validation, anti-amplification caps) — defense-in-depth
+ * so requests that bypass the engine's own validation are still caught at the seam. This re-parses the
+ * full history per call — O(history-length) — a cost deliberately accepted: LLM round-trips dominate, and
+ * the scan only does real work on media/tool_result parts (it is the sole seam-side enforcement point).
+ */
+export function assertMediaCapabilities(
+  provider: ProviderId,
+  supports: CapabilityFlags,
+  req: LlmRequest,
+): void {
+  for (const message of req.messages) {
+    LlmMessageSchema.parse(message);
+  }
+  gateInputModalities(provider, supports.media.input, req.messages);
+  gateOutputCombinations(provider, supports, req.outputModalities);
 }
 
 /**
