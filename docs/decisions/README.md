@@ -85,6 +85,9 @@ flowchart TD
 | 0039 | [Same-provider signed-reasoning replay — a behavioral amendment to ADR-0030](0039-same-provider-reasoning-replay.md) | Accepted | 2026-06-14 |
 | 0040 | [Node-level retry budget above the provider fallback chain (1.S) — amends ADR-0038](0040-node-retry-budget-above-the-chain.md) | Accepted | 2026-06-15 |
 | 0041 | [External action-governance seam — the optional, host-injected `ActionGuard` over side-effecting tool actions](0041-external-action-governance-seam.md) | Accepted | 2026-06-18 |
+| 0042 | [Engine media storage substrate — the `MediaStore` host port, the `deInlineMedia` choke-point ordering, and the `media_objects` retention/GC store (amends 0036)](0042-engine-media-storage-substrate-mediastore-deinline-retention.md) | Accepted | 2026-06-18 |
+| 0043 | [Media egress — the binary media-egress capability, the `FallbackChain`↔`MediaStore` re-materialization contract, and the SSRF mechanism half (amends 0031)](0043-media-egress-failover-rematerialization-ssrf.md) | Accepted | 2026-06-18 |
+| 0044 | [Media access & spend governance — `read_media` scope-set authz, the byte-delivery gate, the `save_to` write port, and the per-modality media cost (amends 0028 and 0029)](0044-media-access-governance-read-media-save-to-cost.md) | Accepted | 2026-06-18 |
 
 ## Creating a new ADR
 

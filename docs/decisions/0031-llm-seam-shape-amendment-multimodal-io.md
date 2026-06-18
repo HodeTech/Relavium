@@ -17,6 +17,8 @@
 > arm afterward is exactly the breaking change this ADR exists to avoid. Decision #1 below is unchanged in
 > intent. Full reasoning: [multimodal-io-design-2026-06-07.md](../analysis/multimodal-io-design-2026-06-07.md) §3.2.
 
+> **Amended 2026-06-18 by [ADR-0042](0042-engine-media-storage-substrate-mediastore-deinline-retention.md), [ADR-0043](0043-media-egress-failover-rematerialization-ssrf.md), and [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** The 1.AF wiring of this ADR's reserved media shape, refining (never reversing) it: ADR-0042 lands the `MediaStore` host-port injection + the `deInlineMedia` choke-point ordering + the `media_objects` retention/GC store (promoting this ADR's "Open implementation details" retention default to a decision); ADR-0043 lands the binary media-egress capability + the SSRF mechanism half, and **resolves this ADR's sidecar-ownership wording** (the `(provider, sha256)` sidecar is held per-`FallbackChain` run-instance via a narrow injected hook, not the stateless adapter); ADR-0044 lands the `read_media` scope-set authz + the byte-delivery gate + the `save_to` write port + the per-modality media cost. The seam shape here is unchanged.
+
 ## Context
 
 The `@relavium/llm` seam — the request/result/stream/usage/content shapes in
