@@ -61,11 +61,21 @@ function messageMediaReason(
     }
     // Array.isArray (not `!== undefined`): a null `media` from parsed JSON would otherwise throw on iterate.
     if (part.type === 'tool_result' && Array.isArray(part.media)) {
-      for (const mediaPart of part.media) {
-        const reason = mediaInputReason(inputCaps, mediaPart.mimeType, ' in tool_result');
-        if (reason !== null) return reason;
-      }
+      const reason = toolResultMediaReason(inputCaps, part.media);
+      if (reason !== null) return reason;
     }
+  }
+  return null;
+}
+
+/** The first unsupported-modality reason among a `tool_result`'s attached media parts, or null. */
+function toolResultMediaReason(
+  inputCaps: CapabilityFlags['media']['input'],
+  media: readonly { readonly mimeType: string }[],
+): string | null {
+  for (const mediaPart of media) {
+    const reason = mediaInputReason(inputCaps, mediaPart.mimeType, ' in tool_result');
+    if (reason !== null) return reason;
   }
   return null;
 }
