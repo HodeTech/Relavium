@@ -695,7 +695,10 @@ export function isPrivateOrLocalHost(host: string): boolean {
   // block: lowercase, strip the FQDN trailing dot(s) (`localhost.` ≡ `localhost`), decode IPv6 literals
   // to their 8 groups, and canonicalize any numeric-IPv4 form (decimal `2130706433`, hex `0x7f000001`,
   // octal `0177.0.0.1`, inet_aton short forms `a` / `a.b` / `a.b.c`) to dotted-decimal.
-  const h = stripTrailingDots(host.toLowerCase());
+  let h = stripTrailingDots(host.toLowerCase());
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1); // unbracket an IPv6 literal so parseIpv6Groups sees the bare address
+  }
 
   if (
     h === 'localhost' ||
@@ -863,7 +866,7 @@ function parseIpv6Groups(host: string): number[] | null {
     return null;
   }
   const groups = expandIpv6(substituted);
-  if (groups === null || groups.length !== 8) {
+  if (groups?.length !== 8) {
     return null;
   }
   for (const group of groups) {
@@ -935,7 +938,9 @@ export function extractHttpsHost(url: string): { host: string; hasCredentials: b
     return null;
   }
   const rawAuthority = match[1] ?? '';
-  if (hasSmugglingChar(rawAuthority)) {
+  if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
+    // A percent-encoded authority is never a literal host — fail closed rather than decode/normalize here
+    // (a WHATWG client would percent-decode it, which could mask a blocked address).
     return null;
   }
   let authority = rawAuthority;
@@ -948,7 +953,10 @@ export function extractHttpsHost(url: string): { host: string; hasCredentials: b
   let host: string;
   if (authority.startsWith('[')) {
     const end = authority.indexOf(']');
-    host = end === -1 ? authority : authority.slice(1, end);
+    if (end === -1) {
+      return null; // unmatched IPv6 bracket — malformed authority, fail closed
+    }
+    host = authority.slice(1, end);
   } else {
     const colon = authority.indexOf(':');
     host = colon === -1 ? authority : authority.slice(0, colon);

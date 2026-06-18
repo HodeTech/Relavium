@@ -690,6 +690,9 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     // Compressed / fully-expanded IPv6 loopback must decode to the same blocked address.
     ['0::1', 'compressed IPv6 loopback'],
     ['0000:0000:0000:0000:0000:0000:0000:0001', 'fully-expanded IPv6 loopback'],
+    // A bracketed IPv6 literal (as a URL authority carries it) is unbracketed before the range check.
+    ['[::1]', 'bracketed IPv6 loopback'],
+    ['[fe80::1]', 'bracketed IPv6 link-local'],
   ];
 
   const ALLOWED_HOSTS: Array<[string, string]> = [
@@ -785,7 +788,16 @@ describe('extractHttpsHost + urlHasCredentials (SSRF URL policy)', () => {
   });
 
   it('rejects URLs with backslash in authority', () => {
-    expect(extractHttpsHost('https://host\\example.com')).toBeNull();
+    expect(extractHttpsHost(String.raw`https://host\example.com`)).toBeNull();
+  });
+
+  it('rejects a percent-encoded authority (a literal host never contains %; no decode here)', () => {
+    expect(extractHttpsHost('https://ex%41mple.com')).toBeNull();
+    expect(extractHttpsHost('https://%31%32%37.0.0.1')).toBeNull();
+  });
+
+  it('rejects an unmatched IPv6 bracket', () => {
+    expect(extractHttpsHost('https://[::1/path')).toBeNull();
   });
 
   it('lowercases the host', () => {
