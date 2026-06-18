@@ -317,33 +317,46 @@ export function containsDurableUnsafeMedia(value: unknown): boolean {
         continue;
       }
       seen.add(current);
-      if (isBinaryBuffer(current)) {
+      if (objectNodeIsDurableUnsafe(current, stack)) {
         return true;
       }
-      if (Array.isArray(current)) {
-        for (const item of current) stack.push(item);
-        continue;
-      }
-      if (current instanceof Map) {
-        for (const [key, item] of current) stack.push(key, item);
-        continue;
-      }
-      if (current instanceof Set) {
-        for (const item of current) stack.push(item);
-        continue;
-      }
-      if (!isRecord(current)) {
-        continue;
-      }
-      if (isCanonicalBase64Source(current) || isUrlMediaPart(current)) {
-        return true;
-      }
-      for (const nested of Object.values(current)) stack.push(nested);
     }
     return false;
   } catch {
     return true; // fail closed — same posture as containsInlineMediaBytes
   }
+}
+
+/**
+ * One node of the durable-unsafe scan (the {@link objectNodeHasInlineBytes} twin): `true` when the node
+ * itself is durable-unsafe (a binary buffer, a canonical base64 source, or a url media part), otherwise
+ * its children are queued onto `stack`. Split out so {@link containsDurableUnsafeMedia} stays simple
+ * (sonar S3776).
+ */
+function objectNodeIsDurableUnsafe(node: object, stack: unknown[]): boolean {
+  if (isBinaryBuffer(node)) {
+    return true;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) stack.push(item);
+    return false;
+  }
+  if (node instanceof Map) {
+    for (const [key, item] of node) stack.push(key, item);
+    return false;
+  }
+  if (node instanceof Set) {
+    for (const item of node) stack.push(item);
+    return false;
+  }
+  if (!isRecord(node)) {
+    return false;
+  }
+  if (isCanonicalBase64Source(node) || isUrlMediaPart(node)) {
+    return true;
+  }
+  for (const nested of Object.values(node)) stack.push(nested);
+  return false;
 }
 
 /**

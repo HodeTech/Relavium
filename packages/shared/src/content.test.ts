@@ -370,7 +370,11 @@ describe('media helpers (ADR-0031)', () => {
   });
 
   it('containsDurableUnsafeMedia flags a url media part too (unlike the byte-only scan)', () => {
-    const urlPart = { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://x/y' } };
+    const urlPart = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'url', url: 'https://x/y' },
+    };
     const handlePart = {
       type: 'media',
       mimeType: 'image/png',

@@ -155,6 +155,42 @@ const SEQUENTIAL = `  id: seq
 
 // --- the happy path: stream + gap-free sequence + cost accrual --------------------------------
 
+/** A canonical in-flight base64 media part (5 decoded bytes) — the media-de-inline tests' fixture. */
+const MEDIA_PART = {
+  type: 'media' as const,
+  mimeType: 'image/png',
+  source: { kind: 'base64' as const, data: 'aGVsbG8=' }, // "hello"
+};
+
+/** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the tests. */
+function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: Uint8Array }[] } {
+  const puts: { handle: string; bytes: Uint8Array }[] = [];
+  const digest = (bytes: Uint8Array): string => {
+    let hex = '';
+    for (let seed = 0; seed < 8; seed += 1) {
+      let h = (2166136261 ^ (seed * 0x9e3779b1)) >>> 0;
+      for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0;
+      hex += h.toString(16).padStart(8, '0');
+    }
+    return hex;
+  };
+  const store: MediaStore = {
+    put: (bytes) => {
+      const handle = `media://sha256-${digest(bytes)}`;
+      puts.push({ handle, bytes });
+      return Promise.resolve(handle);
+    },
+    get: (handle) => {
+      const found = puts.find((p) => p.handle === handle);
+      return found === undefined
+        ? Promise.reject(new Error('no bytes'))
+        : Promise.resolve(found.bytes);
+    },
+    resolveForEgress: () => Promise.reject(new Error('unused by this test')),
+  };
+  return { store, puts };
+}
+
 describe('WorkflowEngine — the event stream', () => {
   it('runs a sequential plan, streaming a gap-free, monotonic sequenceNumber and ending in run:completed', async () => {
     const engine = engineWith({
@@ -248,45 +284,15 @@ describe('WorkflowEngine — the event stream', () => {
 // --- media de-inline at the emit choke point (1.AF) -------------------------------------------
 
 describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-0042)', () => {
-  const MEDIA_PART = {
-    type: 'media' as const,
-    mimeType: 'image/png',
-    source: { kind: 'base64' as const, data: 'aGVsbG8=' }, // "hello" — 5 decoded bytes
-  };
-
-  /** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the test. */
-  function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: Uint8Array }[] } {
-    const puts: { handle: string; bytes: Uint8Array }[] = [];
-    const digest = (bytes: Uint8Array): string => {
-      let hex = '';
-      for (let seed = 0; seed < 8; seed += 1) {
-        let h = (2166136261 ^ (seed * 0x9e3779b1)) >>> 0;
-        for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0;
-        hex += h.toString(16).padStart(8, '0');
-      }
-      return hex;
-    };
-    const store: MediaStore = {
-      put: (bytes) => {
-        const handle = `media://sha256-${digest(bytes)}`;
-        puts.push({ handle, bytes });
-        return Promise.resolve(handle);
-      },
-      get: (handle) => {
-        const found = puts.find((p) => p.handle === handle);
-        return found === undefined ? Promise.reject(new Error('no bytes')) : Promise.resolve(found.bytes);
-      },
-      resolveForEgress: () => Promise.reject(new Error('unused by this test')),
-    };
-    return { store, puts };
-  }
-
   it('de-inlines a media-bearing node output to a handle in the persisted + delivered event (no base64, gap-free seq)', async () => {
     const { store: mediaStore, puts } = stubMediaStore();
     const runStore = new InMemoryRunStore();
     const host = createInMemoryHost({ store: runStore, mediaStore });
     const events = await drain(
-      engineWith({ work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start({
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({
         workflow: workflow(SEQUENTIAL),
       }),
     );

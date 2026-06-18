@@ -80,7 +80,9 @@ describe('capability gating', () => {
       messages: [
         {
           role: 'user',
-          content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } }],
+          content: [
+            { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } },
+          ],
         },
       ],
     };

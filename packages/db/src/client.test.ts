@@ -264,7 +264,9 @@ describe('@relavium/db migrations + client', () => {
       ])
       .run();
     // the refcount derives from the row count
-    expect(client.db.select().from(mediaReferences).where(eq(mediaReferences.handle, handle)).all()).toHaveLength(2);
+    expect(
+      client.db.select().from(mediaReferences).where(eq(mediaReferences.handle, handle)).all(),
+    ).toHaveLength(2);
     // a scope references a handle at most once (the per-distinct-reference UNIQUE)
     expect(() =>
       client.db
@@ -276,19 +278,28 @@ describe('@relavium/db migrations + client', () => {
     expect(() =>
       client.db
         .insert(mediaReferences)
-        .values({ id: randomUUID(), handle, scopeKind: 'bogus' as 'run', scopeId: 'x', createdAt: TS })
+        // @ts-expect-error — a deliberately invalid scope_kind to verify the DB CHECK rejects it at runtime
+        .values({ id: randomUUID(), handle, scopeKind: 'bogus', scopeId: 'x', createdAt: TS })
         .run(),
     ).toThrow(/CHECK constraint failed/i);
     // an FK to a non-existent handle is rejected
     expect(() =>
       client.db
         .insert(mediaReferences)
-        .values({ id: randomUUID(), handle: `media://sha256-${'b'.repeat(64)}`, scopeKind: 'run', scopeId: 'r', createdAt: TS })
+        .values({
+          id: randomUUID(),
+          handle: `media://sha256-${'b'.repeat(64)}`,
+          scopeKind: 'run',
+          scopeId: 'r',
+          createdAt: TS,
+        })
         .run(),
     ).toThrow(/FOREIGN KEY constraint failed/i);
     // deleting the object cascades its references
     client.db.delete(mediaObjects).where(eq(mediaObjects.handle, handle)).run();
-    expect(client.db.select().from(mediaReferences).where(eq(mediaReferences.handle, handle)).all()).toHaveLength(0);
+    expect(
+      client.db.select().from(mediaReferences).where(eq(mediaReferences.handle, handle)).all(),
+    ).toHaveLength(0);
   });
 
   it('rejects a step_executions row whose run_id does not exist (foreign_keys = ON rejects)', () => {

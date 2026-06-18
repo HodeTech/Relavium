@@ -111,7 +111,10 @@ export function mapUsage(usage: {
   completion_tokens?: number | null;
   prompt_tokens_details?: { cached_tokens?: number | null; audio_tokens?: number | null } | null;
   prompt_cache_hit_tokens?: number | null;
-  completion_tokens_details?: { reasoning_tokens?: number | null; audio_tokens?: number | null } | null;
+  completion_tokens_details?: {
+    reasoning_tokens?: number | null;
+    audio_tokens?: number | null;
+  } | null;
 }): Usage {
   const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
   const gross = usage.prompt_tokens ?? 0;

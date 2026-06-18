@@ -77,7 +77,11 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
 
   it('rewrites a base64 media part nested in an opaque (unknown) value', async () => {
     const { store, puts } = makeStubStore();
-    const value: unknown = { node: 'gen', output: { artifacts: [base64MediaPart] }, meta: { n: 1 } };
+    const value: unknown = {
+      node: 'gen',
+      output: { artifacts: [base64MediaPart] },
+      meta: { n: 1 },
+    };
     const out = await deInlineMedia(value, store);
     const put0 = puts[0];
     expect(put0).toBeDefined();
@@ -138,7 +142,11 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     // url-only: containsDurableUnsafeMedia flags a url media part (not just bytes), so the walk runs and
     // the rewrite throws — a url must never silently pass through to a durable position.
     const urlOnly: unknown = [
-      { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://x.example/a.png' } },
+      {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'url', url: 'https://x.example/a.png' },
+      },
     ];
     await expect(deInlineMedia(urlOnly, store)).rejects.toThrow(/re-host a url media source/);
     expect(puts).toHaveLength(0);

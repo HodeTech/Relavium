@@ -306,7 +306,7 @@ export function createInMemoryHost(options?: {
     checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
     newAbortController: createAbortController,
     setTimer: timers.setTimer,
-    ...(options?.mediaStore !== undefined ? { mediaStore: options.mediaStore } : {}),
+    ...(options?.mediaStore ? { mediaStore: options.mediaStore } : {}),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };

@@ -87,7 +87,9 @@ async function rewriteMediaPart(
   const data = source['data'];
   if (kind !== 'base64' || typeof data !== 'string') {
     // An unknown source kind on a media part cannot be made durable-safe — fail closed (never pass through).
-    throw new Error(`deInlineMedia: unsupported media source kind '${String(kind)}' on a media part`);
+    throw new Error(
+      `deInlineMedia: unsupported media source kind '${String(kind)}' on a media part`,
+    );
   }
   // Fail-closed on an unknown modality (mirrors the seam ingestion refine) — mimeType is bounded (≤255)
   // and not a secret/byte payload, so it is safe to name.
@@ -139,29 +141,9 @@ async function rewrite(
     throw new Error('deInlineMedia: a raw binary buffer may not cross the durable boundary');
   }
 
-  if (Array.isArray(value)) {
-    const clone: unknown[] = [];
-    cache.set(value, clone);
-    for (const item of value) {
-      clone.push(await rewrite(item, store, cache));
-    }
-    return clone;
-  }
-  if (value instanceof Map) {
-    const clone = new Map<unknown, unknown>();
-    cache.set(value, clone);
-    for (const [k, v] of value) {
-      clone.set(await rewrite(k, store, cache), await rewrite(v, store, cache));
-    }
-    return clone;
-  }
-  if (value instanceof Set) {
-    const clone = new Set<unknown>();
-    cache.set(value, clone);
-    for (const item of value) {
-      clone.add(await rewrite(item, store, cache));
-    }
-    return clone;
+  const container = await rewriteContainer(value, store, cache);
+  if (container !== null) {
+    return container.clone;
   }
   if (!isRecord(value)) {
     return value; // a non-plain, non-buffer object (Date, RegExp, …) — opaque, left as-is
@@ -186,4 +168,42 @@ async function rewrite(
     clone[key] = await rewrite(nested, store, cache);
   }
   return clone;
+}
+
+/**
+ * Rewrite an `Array` / `Map` / `Set` container (returns `{ clone }`), or `null` when `value` is not one
+ * (so {@link rewrite} falls through to the record/leaf cases). The clone is registered in `cache` BEFORE
+ * recursing into children, so a cycle through the container resolves to the same clone. Split out of
+ * `rewrite` to keep its cognitive complexity in check (sonar S3776).
+ */
+async function rewriteContainer(
+  value: object,
+  store: MediaStore,
+  cache: Map<object, unknown>,
+): Promise<{ clone: unknown } | null> {
+  if (Array.isArray(value)) {
+    const clone: unknown[] = [];
+    cache.set(value, clone);
+    for (const item of value) {
+      clone.push(await rewrite(item, store, cache));
+    }
+    return { clone };
+  }
+  if (value instanceof Map) {
+    const clone = new Map<unknown, unknown>();
+    cache.set(value, clone);
+    for (const [k, v] of value) {
+      clone.set(await rewrite(k, store, cache), await rewrite(v, store, cache));
+    }
+    return { clone };
+  }
+  if (value instanceof Set) {
+    const clone = new Set<unknown>();
+    cache.set(value, clone);
+    for (const item of value) {
+      clone.add(await rewrite(item, store, cache));
+    }
+    return { clone };
+  }
+  return null;
 }

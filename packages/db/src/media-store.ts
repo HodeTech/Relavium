@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import { MEDIA_HANDLE_PATTERN, type MediaSource, type MediaStore } from '@relavium/shared';
@@ -65,8 +65,14 @@ export class FilesystemMediaStore implements MediaStore {
     const handle = handleOf(bytes);
     const path = this.#pathFor(digestOf(handle));
     await mkdir(dirname(path), { recursive: true });
-    // Content-addressed ⇒ same bytes write the same path; an overwrite is byte-identical (idempotent).
-    await writeFile(path, bytes);
+    // Atomic publish: write a unique temp file in the same directory, then rename it onto the final
+    // content-addressed path. An interrupted write leaves a stray `.tmp`, never a partial blob at the
+    // canonical path — so a later get() never serves (and its sha256 check never trips on) a truncated
+    // file. `rename` within a directory is atomic on POSIX. Content-addressed ⇒ the final path is
+    // byte-identical across writers, so racing an identical publish is harmless.
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    await writeFile(tmp, bytes);
+    await rename(tmp, path);
     return handle;
   }
 
@@ -92,7 +98,10 @@ export class FilesystemMediaStore implements MediaStore {
   /** Resolve the CAS path for a validated digest, fail-closed if it would escape the store root. */
   #pathFor(digest: string): string {
     const full = resolve(this.#root, join(digest.slice(0, 2), digest.slice(2)));
-    if (full !== this.#root && !full.startsWith(this.#root + sep)) {
+    // Normalize the boundary so a root that already ends in `sep` (the filesystem root `/` or `C:\`)
+    // does not produce a `//`/`C:\\` prefix that a valid child path would fail to match (false positive).
+    const prefix = this.#root.endsWith(sep) ? this.#root : this.#root + sep;
+    if (full !== this.#root && !full.startsWith(prefix)) {
       throw new Error('media path escapes the store root');
     }
     return full;

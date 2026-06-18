@@ -43,20 +43,31 @@ export function requiredCapabilities(req: LlmRequest): Capability[] {
 export function mediaSupportReason(supports: CapabilityFlags, req: LlmRequest): string | null {
   const inputCaps = supports.media.input;
   for (const message of req.messages) {
-    for (const part of message.content) {
-      if (part.type === 'media') {
-        const reason = mediaInputReason(inputCaps, part.mimeType);
+    const reason = messageMediaReason(inputCaps, message);
+    if (reason !== null) return reason;
+  }
+  return outputCombinationReason(supports, req.outputModalities);
+}
+
+/** The first unsupported-modality reason in one message's content (its media + tool_result media), or null. */
+function messageMediaReason(
+  inputCaps: CapabilityFlags['media']['input'],
+  message: LlmRequest['messages'][number],
+): string | null {
+  for (const part of message.content) {
+    if (part.type === 'media') {
+      const reason = mediaInputReason(inputCaps, part.mimeType);
+      if (reason !== null) return reason;
+    }
+    // Array.isArray (not `!== undefined`): a null `media` from parsed JSON would otherwise throw on iterate.
+    if (part.type === 'tool_result' && Array.isArray(part.media)) {
+      for (const mediaPart of part.media) {
+        const reason = mediaInputReason(inputCaps, mediaPart.mimeType, ' in tool_result');
         if (reason !== null) return reason;
-      }
-      if (part.type === 'tool_result' && part.media !== undefined) {
-        for (const mediaPart of part.media) {
-          const reason = mediaInputReason(inputCaps, mediaPart.mimeType, ' in tool_result');
-          if (reason !== null) return reason;
-        }
       }
     }
   }
-  return outputCombinationReason(supports, req.outputModalities);
+  return null;
 }
 
 /** A single media input part's modality vs the provider's input flags. Unknown MIME ⇒ `null` (schema's job). */

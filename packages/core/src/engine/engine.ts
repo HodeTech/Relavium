@@ -623,14 +623,33 @@ class RunExecution {
       state.status = 'completed';
       state.output = decision.payload ?? { decision: decision.decision };
     }
-    await this.#emitDurable({
-      type: 'human_gate:resumed',
-      runId: this.runId,
-      nodeId: gate.vertexId,
-      decision: decision.decision,
-      decidedBy: decision.decidedBy,
-      ...(decision.payload === undefined ? {} : { payload: decision.payload }),
-    });
+    // The payload (a gate `input` value, `z.unknown()`) is the one resume event that can carry media. If
+    // de-inline cannot make it durable-safe, the emit throws — but the gate is already resolved + the
+    // vertex marked completed, so we must NOT skip #schedule() (that would strand the resumed run with no
+    // terminal). Mirror #onOutcome: fail the run on the throw, and ALWAYS #schedule(). (The gate's media
+    // output then surfaces at the terminal, where the #emitDurable terminal-strip keeps it byte-free.)
+    try {
+      await this.#emitDurable({
+        type: 'human_gate:resumed',
+        runId: this.runId,
+        nodeId: gate.vertexId,
+        decision: decision.decision,
+        decidedBy: decision.decidedBy,
+        ...(decision.payload === undefined ? {} : { payload: decision.payload }),
+      });
+    } catch {
+      if (this.#failure === undefined && !this.#cancelling) {
+        this.#failure = {
+          nodeId: gate.vertexId,
+          error: {
+            code: 'internal',
+            message: 'the gate decision payload could not be made durable-safe',
+            retryable: false,
+          },
+        };
+        this.#abort.abort();
+      }
+    }
     this.#schedule();
   }
 
