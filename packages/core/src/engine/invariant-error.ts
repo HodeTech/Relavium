@@ -16,7 +16,8 @@
 export type RunLoopInvariantCode =
   | 'both_correlation_keys' // an event draft carried BOTH runId and sessionId (exactly one is required)
   | 'no_correlation_key' // an event draft carried NEITHER runId nor sessionId
-  | 'concurrent_consumer'; // a second next() while one is already parked on a single-consumer stream
+  | 'concurrent_consumer' // a second next() while one is already parked on a single-consumer stream
+  | 'media_store_unavailable'; // a media-bearing event was emitted but no MediaStore was injected (1.AF, I3)
 
 export class RunLoopInvariantError extends Error {
   readonly code: RunLoopInvariantCode;

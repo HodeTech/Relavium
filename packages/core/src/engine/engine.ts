@@ -32,6 +32,8 @@ import {
   GateDecisionSchema,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
+  containsInlineMediaBytes,
+  deInlineMedia,
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
@@ -49,6 +51,7 @@ import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
+import { RunLoopInvariantError } from './invariant-error.js';
 import { BudgetGovernor, DEFAULT_MAX_TOKENS_ESTIMATE } from './budget-governor.js';
 import type { CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
@@ -85,6 +88,23 @@ const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>(
   'run:failed',
   'run:cancelled',
 ]);
+
+/**
+ * Strip the best-effort media-bearing payload from a TERMINAL draft to an empty record (1.AF). Used only
+ * as the last-resort fallback when `deInlineMedia` cannot run (a media-bearing run with no `MediaStore`
+ * injected): the terminal event MUST still emit (exactly-one-terminal-event), and it must carry no inline
+ * bytes (I3), so `run:completed.outputs` / `run:failed.partialOutputs` are emptied rather than blocking
+ * the terminal or leaking. The run still settles; the `run:failed` error explains the cause.
+ */
+function stripTerminalMediaPayload(draft: RunEventDraft): RunEventDraft {
+  if (draft.type === 'run:completed') {
+    return { ...draft, outputs: {} };
+  }
+  if (draft.type === 'run:failed') {
+    return { ...draft, partialOutputs: {} };
+  }
+  return draft;
+}
 
 /** The terminal `RunStatus` values — a checkpoint in one of these is a finished run (1.R resume no-op). */
 const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
@@ -1362,7 +1382,34 @@ class RunExecution {
     // could resolve out of order — delivering a later node:completed (or the terminal) first, closing
     // the stream, and dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore
     // resolves synchronously, which masks it; the seam exists precisely so an async store plugs in.
-    const event = this.#bus.next(draft);
+    //
+    // MEDIA DE-INLINE (1.AF, ADR-0042 §2): run `deInlineMedia` on the draft FIRST — before `#bus.next`
+    // stamps + validates and before the durable write + delivery below — so the numbered, persisted,
+    // delivered event is handle-only (I3); the durable schema's typed media positions are handle-only and
+    // would reject in-flight base64 at validation. This single `await` is the only addition; the
+    // synchronous seq-assign / persist-before-deliver / `#deliveryTail` ordering below is unchanged, and a
+    // no-media draft pays only a cheap cycle-safe scan (no store round-trip). Secret masking already
+    // happened upstream (input masking at run setup; per-node output masking via `secretInputNames`), so
+    // de-inline is the sole emit-time transform here and composes with masking only by sequence.
+    let durable: RunEventDraft;
+    try {
+      durable = await this.#deInlineDraft(draft);
+    } catch (error) {
+      // A media-bearing draft with NO MediaStore injected. For a NON-terminal event, re-throw — the
+      // #onOutcome / #begin backstops map it to a single run:failed. For a TERMINAL event the run MUST
+      // still settle (exactly-one-terminal-event), so strip its best-effort media payload to empty
+      // rather than block the terminal or leak inline bytes (I3); the run:failed error states the cause.
+      if (
+        error instanceof RunLoopInvariantError &&
+        error.code === 'media_store_unavailable' &&
+        TERMINAL_TYPES.has(draft.type)
+      ) {
+        durable = stripTerminalMediaPayload(draft);
+      } else {
+        throw error;
+      }
+    }
+    const event = this.#bus.next(durable);
     const prior = this.#deliveryTail;
     const settled = (async (): Promise<void> => {
       try {
@@ -1389,6 +1436,31 @@ class RunExecution {
     })();
     this.#deliveryTail = settled.catch(() => undefined);
     await settled;
+  }
+
+  /**
+   * The flight→durable media transform for the one emit choke point (1.AF, ADR-0042 §2). With a media
+   * store injected, `deInlineMedia` rewrites every in-flight base64 media part to a handle (a no-op
+   * cheap scan when there is no media — the dominant text/tool-only case), and the result is still a
+   * `RunEventDraft` (structure-preserving — it only swaps a media leaf's base64 source for a handle;
+   * `#bus.next` re-validates it against the durable schema regardless). With NO store injected, a
+   * **media-bearing** draft cannot be made handle-only — throwing is the only safe option (never
+   * persist/deliver inline bytes, I3). The throw is the same class as a malformed-draft Zod failure, so
+   * it is caught by the same backstops: `#onOutcome`'s try/catch (the node-settle path) and `#begin`'s
+   * (the `run:started` path) map it to a single `run:failed`. A text-only draft passes straight through.
+   */
+  async #deInlineDraft(draft: RunEventDraft): Promise<RunEventDraft> {
+    const store = this.#host.mediaStore;
+    if (store !== undefined) {
+      return (await deInlineMedia(draft, store)) as RunEventDraft;
+    }
+    if (containsInlineMediaBytes(draft)) {
+      throw new RunLoopInvariantError(
+        'media_store_unavailable',
+        'a media-bearing event was emitted but no MediaStore was injected into the ExecutionHost (1.AF, I3)',
+      );
+    }
+    return draft;
   }
 
   #elapsedMs(): number {

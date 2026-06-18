@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RunEvent } from '@relavium/shared';
+import type { MediaStore, RunEvent } from '@relavium/shared';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -242,6 +242,99 @@ describe('WorkflowEngine — the event stream', () => {
     }
     expect(completed.totalCostMicrocents).toBe(150);
     expect(completed.totalTokensUsed).toEqual({ input: 2, output: 2 });
+  });
+});
+
+// --- media de-inline at the emit choke point (1.AF) -------------------------------------------
+
+describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-0042)', () => {
+  const MEDIA_PART = {
+    type: 'media' as const,
+    mimeType: 'image/png',
+    source: { kind: 'base64' as const, data: 'aGVsbG8=' }, // "hello" — 5 decoded bytes
+  };
+
+  /** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the test. */
+  function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: Uint8Array }[] } {
+    const puts: { handle: string; bytes: Uint8Array }[] = [];
+    const digest = (bytes: Uint8Array): string => {
+      let hex = '';
+      for (let seed = 0; seed < 8; seed += 1) {
+        let h = (2166136261 ^ (seed * 0x9e3779b1)) >>> 0;
+        for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0;
+        hex += h.toString(16).padStart(8, '0');
+      }
+      return hex;
+    };
+    const store: MediaStore = {
+      put: (bytes) => {
+        const handle = `media://sha256-${digest(bytes)}`;
+        puts.push({ handle, bytes });
+        return Promise.resolve(handle);
+      },
+      get: (handle) => {
+        const found = puts.find((p) => p.handle === handle);
+        return found === undefined ? Promise.reject(new Error('no bytes')) : Promise.resolve(found.bytes);
+      },
+      resolveForEgress: () => Promise.reject(new Error('unused by this test')),
+    };
+    return { store, puts };
+  }
+
+  it('de-inlines a media-bearing node output to a handle in the persisted + delivered event (no base64, gap-free seq)', async () => {
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore });
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+
+    const put0 = puts[0];
+    expect(put0).toBeDefined();
+    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    const output = done?.type === 'node:completed' ? done.output : undefined;
+    expect(output).toEqual({
+      image: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'handle', ref: put0?.handle },
+        byteLength: 5,
+      },
+    });
+    // I3 — no base64 bytes anywhere in the DELIVERED stream or the PERSISTED run-event log.
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    const runId = events[0]?.runId;
+    expect(runId).toBeDefined();
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
+    }
+    // The gap-free, monotonic sequenceNumber is preserved across the async de-inline.
+    events.forEach((event, index) => expect(event.sequenceNumber).toBe(index));
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run (never leaks) when media is emitted but no MediaStore is injected', async () => {
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore }); // deliberately no mediaStore
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: MEDIA_PART }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('internal');
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+    // The bytes never reached a stamped/persisted event (the bytes-bearing node:completed was dropped).
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    const runId = events[0]?.runId;
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
+    }
   });
 });
 
