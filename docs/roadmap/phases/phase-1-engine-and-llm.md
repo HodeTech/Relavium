@@ -929,7 +929,7 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   green at the new total; **llm-provider-seam.md carries the ADR-0031 amendment section** (placeholder
   replaced). *(Freeze-criticality recorded in the design doc §9: the three union/capability shapes are
   truly breaking-to-defer; the optional fields/methods are landed-early-by-choice per A1.)*
-- **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
+- **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** ✅ — **Done (PR #32, 2026-06-18).** Fix the OpenAI `textOf` flatten
   (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
   wire image/audio/video **input** in Anthropic/OpenAI/Gemini; set the capability matrix; add conformance
   scenarios (image-in, audio-in, `mediaUnits` mapping). **Wiring order (1.AD review note):** the shared
@@ -945,6 +945,18 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   passes its **direct negative-case tests** (metadata IP, link-local, IPv4-mapped IPv6, post-DNS-resolution
   IP, per-hop redirect — testing.md §Security-critical primitive tests; a runtime-*derived* base URL is
   re-checked the same way).
+  - *Landed (PR #32; multi-round + a final 8-dimension Sonnet adversarial review — **no SSRF bypass found**):*
+    the OpenAI `textOf` unflatten (`image_url` + `input_audio`, generate **and** stream); per-modality
+    `assertMediaCapabilities` (replacing the blanket guard, with `LlmMessageSchema.parse` active — no cap-less
+    window); base64 image/audio input across the three adapters with **honest** matrices (`document`/`video`
+    stay `false` — base64-ceiling-blocked, handle/url deferred); the shared SSRF **policy** primitive in
+    `@relavium/shared` (`isPrivateOrLocalHost`/`extractHttpsHost` — numeric-IPv4 / IPv6 / trailing-dot /
+    percent / bracket normalization), **the one primitive reused** by the provider-`baseURL` + `http_request`
+    callers, with the `url` carrier flag ON but adapters **rejecting** url sources (no adapter-side fetch);
+    and the `InvalidBaseUrlError` credential-redaction fix. **Deferred to 1.AF** (recorded in deferred-tasks.md):
+    the SSRF **mechanism** half (host `EgressCapability` DNS-resolve + connect-by-validated-IP + per-hop
+    redirect re-validation), the precise per-modality `requiredCapabilities()` FallbackChain skip,
+    `mediaUnits` population, recorded media-in conformance fixtures, and handle/url media resolution.
 - **1.AF — Engine media plumbing (Phase C).** `requiredCapabilities()` media-gating (input + the
   `outputCombinations` **membership** check) + `FallbackChain` provider-skip + the ephemeral-sidecar
   strip/re-materialize-**before-the-retried-request** on failover (B5); the `MediaStore` contract + host
@@ -1155,7 +1167,7 @@ flowchart LR
 | 1.Z | C | 1.V, 1.L | 1.AA | ✅ — **Done (PR #30, 2026-06-17)** |
 | **1.AA** | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ✅ — **Done (2026-06-17)** |
 | 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
-| 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
+| 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ✅ — **Done (PR #32, 2026-06-18)** |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
 | 1.AG | D | 1.AF | 1.AH | ◇ |
 | 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
