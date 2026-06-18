@@ -561,56 +561,10 @@ class RunExecution {
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
 
-    // A rejected budget gate is a run-level budget failure, not a completed gate vertex.
-    if (gate.isBudgetGate && decision.decision === 'rejected') {
-      const state = this.#states.get(gate.vertexId);
-      if (state !== undefined) {
-        state.status = 'failed';
-      }
-      if (this.#failure === undefined && !this.#cancelling) {
-        this.#failure = {
-          nodeId: gate.vertexId,
-          error: {
-            code: 'budget_exceeded',
-            message: 'the budget gate was rejected',
-            retryable: false,
-          },
-        };
-        this.#abort.abort();
-      }
-      await this.#emitDurable({
-        type: 'human_gate:resumed',
-        runId: this.runId,
-        nodeId: gate.vertexId,
-        decision: 'rejected',
-        decidedBy: decision.decidedBy,
-      });
-      this.#schedule();
-      return;
-    }
-
-    // An APPROVED budget gate must CONTINUE the deferred call (H3): the agent vertex paused pre-egress and
-    // produced no output, so completing it with the decision payload would short-circuit the call. Instead
-    // arm a one-shot pre-egress bypass for the vertex and re-dispatch it (reset to `pending` → `#claimReady`
-    // re-claims it). The first dispatch did no egress, so re-running is idempotent. Per the maintainer
-    // decision (continue the call, one-shot per RE-RUN — never per-LLM-call, which would re-pause and, since
-    // re-dispatch re-runs the turn from scratch, loop forever): `#runAttempt` consumes the one-shot so this
-    // ONE re-dispatched step runs to completion uncapped, then the cap re-arms for the next step. (A budget
-    // pause raised MID-tool-loop still re-runs the earlier in-turn calls on resume — the same limitation as
-    // "checkpoint/resume of a mid-tool-loop turn", deferred; the common first-call pause is exact.)
-    if (gate.isBudgetGate && decision.decision === 'approved') {
-      this.#budgetApprovedVertices.add(gate.vertexId);
-      const state = this.#states.get(gate.vertexId);
-      if (state !== undefined) {
-        state.status = 'pending';
-      }
-      await this.#emitDurable({
-        type: 'human_gate:resumed',
-        runId: this.runId,
-        nodeId: gate.vertexId,
-        decision: 'approved',
-        decidedBy: decision.decidedBy,
-      });
+    // A budget gate's two decisions (reject ⇒ a run-level budget failure; approve ⇒ continue the deferred
+    // pre-egress call) resolve in #resolveBudgetGate; a `true` return means it owned this gate — then only
+    // #schedule(). Kept out of line so resume()'s cognitive complexity stays in budget (sonar S3776).
+    if (await this.#resolveBudgetGate(gate, decision)) {
       this.#schedule();
       return;
     }
@@ -651,6 +605,72 @@ class RunExecution {
       }
     }
     this.#schedule();
+  }
+
+  /**
+   * Apply a decision to a BUDGET gate (the pre-egress governor's pause). Returns `true` when `gate` was a
+   * budget gate AND the decision was handled here (the caller then only {@link resume}-schedules); `false`
+   * to fall through to the general completed-gate path. Both arms only persist — the schedule()/return is
+   * the caller's. Split out of resume() to keep its cognitive complexity in budget (sonar S3776).
+   */
+  async #resolveBudgetGate(
+    gate: { readonly vertexId: string; readonly isBudgetGate: boolean },
+    decision: GateDecision,
+  ): Promise<boolean> {
+    if (!gate.isBudgetGate) {
+      return false;
+    }
+    const state = this.#states.get(gate.vertexId);
+    // A rejected budget gate is a run-level budget failure, not a completed gate vertex.
+    if (decision.decision === 'rejected') {
+      if (state !== undefined) {
+        state.status = 'failed';
+      }
+      if (this.#failure === undefined && !this.#cancelling) {
+        this.#failure = {
+          nodeId: gate.vertexId,
+          error: {
+            code: 'budget_exceeded',
+            message: 'the budget gate was rejected',
+            retryable: false,
+          },
+        };
+        this.#abort.abort();
+      }
+      await this.#emitDurable({
+        type: 'human_gate:resumed',
+        runId: this.runId,
+        nodeId: gate.vertexId,
+        decision: 'rejected',
+        decidedBy: decision.decidedBy,
+      });
+      return true;
+    }
+    // An APPROVED budget gate must CONTINUE the deferred call (H3): the agent vertex paused pre-egress and
+    // produced no output, so completing it with the decision payload would short-circuit the call. Instead
+    // arm a one-shot pre-egress bypass for the vertex and re-dispatch it (reset to `pending` → `#claimReady`
+    // re-claims it). The first dispatch did no egress, so re-running is idempotent. Per the maintainer
+    // decision (continue the call, one-shot per RE-RUN — never per-LLM-call, which would re-pause and, since
+    // re-dispatch re-runs the turn from scratch, loop forever): `#runAttempt` consumes the one-shot so this
+    // ONE re-dispatched step runs to completion uncapped, then the cap re-arms for the next step. (A budget
+    // pause raised MID-tool-loop still re-runs the earlier in-turn calls on resume — the same limitation as
+    // "checkpoint/resume of a mid-tool-loop turn", deferred; the common first-call pause is exact.)
+    if (decision.decision === 'approved') {
+      this.#budgetApprovedVertices.add(gate.vertexId);
+      if (state !== undefined) {
+        state.status = 'pending';
+      }
+      await this.#emitDurable({
+        type: 'human_gate:resumed',
+        runId: this.runId,
+        nodeId: gate.vertexId,
+        decision: 'approved',
+        decidedBy: decision.decidedBy,
+      });
+      return true;
+    }
+    // An 'input_provided' decision on a budget gate is not expected — fall through to the general path.
+    return false;
   }
 
   // --- the scheduler --------------------------------------------------------------------------

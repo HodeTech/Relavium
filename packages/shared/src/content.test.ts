@@ -355,7 +355,7 @@ describe('media helpers (ADR-0031)', () => {
   });
 
   it('decodeBase64 round-trips bytes (incl. >= 128) and fails closed on invalid input', () => {
-    const bytes = (s: string): number[] => Array.from(s).map((c) => c.charCodeAt(0));
+    const bytes = (s: string): number[] => Array.from(s).map((c) => c.codePointAt(0) ?? 0);
     expect(Array.from(decodeBase64('aGVsbG8=') ?? [])).toEqual(bytes('hello')); // =-padded
     expect(Array.from(decodeBase64('aA==') ?? [])).toEqual([0x68]); // ==-padded → 'h'
     expect(Array.from(decodeBase64('aGVsbG8h') ?? [])).toEqual(bytes('hello!')); // no padding

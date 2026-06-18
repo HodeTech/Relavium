@@ -55,15 +55,23 @@ function messageMediaReason(
   message: LlmRequest['messages'][number],
 ): string | null {
   for (const part of message.content) {
-    if (part.type === 'media') {
-      const reason = mediaInputReason(inputCaps, part.mimeType);
-      if (reason !== null) return reason;
-    }
-    // Array.isArray (not `!== undefined`): a null `media` from parsed JSON would otherwise throw on iterate.
-    if (part.type === 'tool_result' && Array.isArray(part.media)) {
-      const reason = toolResultMediaReason(inputCaps, part.media);
-      if (reason !== null) return reason;
-    }
+    const reason = partMediaReason(inputCaps, part);
+    if (reason !== null) return reason;
+  }
+  return null;
+}
+
+/** The unsupported-modality reason for ONE content part — its own media, or a tool_result's media. */
+function partMediaReason(
+  inputCaps: CapabilityFlags['media']['input'],
+  part: LlmRequest['messages'][number]['content'][number],
+): string | null {
+  if (part.type === 'media') {
+    return mediaInputReason(inputCaps, part.mimeType);
+  }
+  // Array.isArray (not `!== undefined`): a null `media` from parsed JSON would otherwise throw on iterate.
+  if (part.type === 'tool_result' && Array.isArray(part.media)) {
+    return toolResultMediaReason(inputCaps, part.media);
   }
   return null;
 }

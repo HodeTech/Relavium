@@ -130,7 +130,7 @@ const BASE64_DECODE_TABLE = ((): Int16Array => {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const table = new Int16Array(128).fill(-1);
   for (let i = 0; i < alphabet.length; i += 1) {
-    table[alphabet.charCodeAt(i)] = i;
+    table[alphabet.codePointAt(i) ?? 0] = i;
   }
   return table;
 })();
@@ -156,10 +156,10 @@ export function decodeBase64(data: string): Uint8Array | undefined {
   const out = new Uint8Array(byteLength);
   let outIndex = 0;
   for (let i = 0; i < data.length; i += 4) {
-    const c0 = sextet(data.charCodeAt(i));
-    const c1 = sextet(data.charCodeAt(i + 1));
-    const c2 = data[i + 2] === '=' ? 0 : sextet(data.charCodeAt(i + 2));
-    const c3 = data[i + 3] === '=' ? 0 : sextet(data.charCodeAt(i + 3));
+    const c0 = sextet(data.codePointAt(i) ?? 0);
+    const c1 = sextet(data.codePointAt(i + 1) ?? 0);
+    const c2 = data[i + 2] === '=' ? 0 : sextet(data.codePointAt(i + 2) ?? 0);
+    const c3 = data[i + 3] === '=' ? 0 : sextet(data.codePointAt(i + 3) ?? 0);
     const triple = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
     if (outIndex < byteLength) out[outIndex++] = (triple >> 16) & 0xff;
     if (outIndex < byteLength) out[outIndex++] = (triple >> 8) & 0xff;
