@@ -50,9 +50,7 @@ describe('capability gating', () => {
     expect(requiredCapabilities(TOOL_REQ)).toEqual(['tools']);
   });
 
-  it('coarsely requires `vision` for ANY media part (documented 1.AE behavior; per-modality is 1.AF)', () => {
-    // Pins the intentional coarseness: a non-image modality still requires `vision` today, so a future
-    // 1.AF per-modality refinement of the FallbackChain pre-skip must update this test deliberately.
+  it('gates media PER-MODALITY for the FallbackChain pre-skip (1.AF — not coarse vision)', () => {
     const audioReq: LlmRequest = {
       model: 'm',
       messages: [
@@ -64,17 +62,34 @@ describe('capability gating', () => {
         },
       ],
     };
-    expect(requiredCapabilities(audioReq)).toEqual(['vision']);
-    // A provider that supports audio input but not image (vision:false) is therefore (coarsely) skipped —
-    // the per-modality assertMediaCapabilities gate at the adapter is the precise check until 1.AF.
+    // Media is no longer a flat `Capability`: `requiredCapabilities` covers only flat flags (tools).
+    expect(requiredCapabilities(audioReq)).toEqual([]);
     const audioOnly: CapabilityFlags = {
       ...NONE,
+      tools: true,
       media: {
         input: { image: false, audio: true, video: false, document: false },
         outputCombinations: [],
       },
     };
-    expect(supportsRequest(audioOnly, audioReq)).toBe(false);
+    // THE FLIP: an audio-capable provider now SERVES an audio request (was coarsely skipped pre-1.AF).
+    expect(supportsRequest(audioOnly, audioReq)).toBe(true);
+    // An image-incapable provider is skipped for an IMAGE request; a fully-capable one serves it.
+    const imageReq: LlmRequest = {
+      model: 'm',
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } }],
+        },
+      ],
+    };
+    expect(supportsRequest(audioOnly, imageReq)).toBe(false);
+    expect(supportsRequest(ALL, imageReq)).toBe(true);
+    // Output-combination MEMBERSHIP is part of the pre-skip too.
+    const imageOutReq: LlmRequest = { ...TEXT_REQ, outputModalities: ['text', 'image'] };
+    expect(supportsRequest(ALL, imageOutReq)).toBe(true); // ALL has ['text','image']
+    expect(supportsRequest(audioOnly, imageOutReq)).toBe(false); // outputCombinations []
   });
 
   it('supportsRequest reflects whether the provider can serve the request', () => {

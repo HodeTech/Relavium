@@ -125,6 +125,49 @@ export function decodedBase64ByteLength(data: string): number | undefined {
   return (data.length / 4) * 3 - padding;
 }
 
+/** charCode → 6-bit value lookup for standard base64 (RFC 4648 §4); built once at module load. */
+const BASE64_DECODE_TABLE = ((): Int16Array => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const table = new Int16Array(128).fill(-1);
+  for (let i = 0; i < alphabet.length; i += 1) {
+    table[alphabet.charCodeAt(i)] = i;
+  }
+  return table;
+})();
+
+/**
+ * Decode a standard padded base64 string to its raw bytes, or `undefined` when it is not valid
+ * base64 (delegating the same validation as {@link decodedBase64ByteLength}). Pure and platform-free
+ * (no `atob`/`Buffer` — `types: []` admits neither): `deInlineMedia` uses it to turn an in-flight
+ * `base64` media source into the `Uint8Array` the host `MediaStore.put` content-addresses to a handle.
+ */
+export function decodeBase64(data: string): Uint8Array | undefined {
+  const byteLength = decodedBase64ByteLength(data);
+  if (byteLength === undefined) {
+    return undefined;
+  }
+  // `data` is already validated padded base64 (alphabet + length % 4 === 0), so every position
+  // exists and every non-`=` char maps to a 0..63 value; `sextet` keeps the lookup total for the
+  // `noUncheckedIndexedAccess` compiler (a `-1`/undefined can never occur after that validation).
+  const sextet = (charCode: number): number => {
+    const value = BASE64_DECODE_TABLE[charCode];
+    return value === undefined || value < 0 ? 0 : value;
+  };
+  const out = new Uint8Array(byteLength);
+  let outIndex = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const c0 = sextet(data.charCodeAt(i));
+    const c1 = sextet(data.charCodeAt(i + 1));
+    const c2 = data[i + 2] === '=' ? 0 : sextet(data.charCodeAt(i + 2));
+    const c3 = data[i + 3] === '=' ? 0 : sextet(data.charCodeAt(i + 3));
+    const triple = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+    if (outIndex < byteLength) out[outIndex++] = (triple >> 16) & 0xff;
+    if (outIndex < byteLength) out[outIndex++] = (triple >> 8) & 0xff;
+    if (outIndex < byteLength) out[outIndex++] = triple & 0xff;
+  }
+  return out;
+}
+
 /**
  * A `data:[<mediatype>][;attr=value…];base64,` URI — the other way raw media bytes hide inside an
  * opaque string. RFC 2397 makes the mediatype optional and allows any number of `;attr=value`

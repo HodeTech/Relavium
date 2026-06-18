@@ -12,6 +12,7 @@
 
 export * from './constants.js';
 export * from './content.js';
+export * from './media-deinline.js';
 export * from './agent.js';
 export * from './node.js';
 export * from './edge.js';

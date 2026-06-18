@@ -7,6 +7,7 @@ import {
   positiveInt,
   temperatureSchema,
 } from './common.js';
+import { OUTPUT_MODALITIES } from './constants.js';
 // RetrySchema is owned by agent.ts; node.ts depends on agent.ts one-way — agent.ts must never
 // import node.ts (the dependency stays acyclic).
 import { RetrySchema } from './agent.js';
@@ -28,6 +29,34 @@ import { RetrySchema } from './agent.js';
  * accepted. (A custom `merge_fn` is always `js` and carries no `expression_type` selector.)
  */
 export const ExpressionTypeSchema = z.enum(['js']);
+
+/**
+ * The authored `output_modalities` on an `agent` node (1.AF, ADR-0031/0044) — the non-text output a
+ * turn requests, lowered to `LlmRequest.outputModalities`. Member vocabulary is `OUTPUT_MODALITIES`
+ * (`text` | `image` | `audio` | `video`); `document` is **not** an output modality (PDF is input-only),
+ * so it is rejected by the enum. An **empty array is rejected** (`.min(1)`): omit the field to request
+ * the default (text). Load-time MEMBERSHIP against the model's `media.outputCombinations` is a separate
+ * engine-loader pass (1.AF) — the schema only constrains the vocabulary.
+ */
+export const OutputModalitiesSchema = z
+  .array(z.enum(OUTPUT_MODALITIES))
+  .min(1, 'output_modalities must declare at least one modality (omit the field for text-only)');
+
+/**
+ * The authored `save_to` on an `output` node (1.AF, ADR-0031/0044, A9) — a **relative** path template
+ * the surface writes generated media bytes to (the engine carries the handle on the edge; bytes
+ * materialize only at the surface boundary). It may interpolate `{{ run.id }}`. Authored fail-fast:
+ * an absolute path or a `..` traversal segment is rejected at parse; the host write port additionally
+ * enforces `realpath`+`commonpath` fail-closed against a scope root (security-review.md §Media byte
+ * delivery). The deep path discipline is the host's; this is the authoring guard.
+ */
+export const SaveToSchema = nonEmptyString
+  .refine((p) => !p.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(p), {
+    message: 'save_to must be a relative path (no leading "/" or drive letter)',
+  })
+  .refine((p) => !p.split(/[\\/]/).includes('..'), {
+    message: 'save_to must not contain a ".." path segment',
+  });
 
 /** Human-gate kind. */
 export const GateTypeSchema = z.enum(['approval', 'input', 'review']);
@@ -69,6 +98,7 @@ export const AgentNodeSchema = z
     temperature: temperatureSchema.optional(), // provider-agnostic [0, 2] (common.ts)
     max_tokens: positiveInt.optional(),
     output_schema: OutputSchemaSchema.optional(),
+    output_modalities: OutputModalitiesSchema.optional(), // non-text output request (1.AF, ADR-0031/0044)
     timeout_ms: positiveInt.optional(),
     retry: RetrySchema.optional(),
   })
@@ -145,6 +175,7 @@ export const OutputNodeSchema = z
     id: kebabIdSchema,
     type: z.literal('output'),
     output_format: z.string().optional(),
+    save_to: SaveToSchema.optional(), // surface-only media write target (1.AF, ADR-0031/0044, A9)
   })
   .strict();
 

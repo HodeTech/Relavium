@@ -24,6 +24,7 @@ import type {
   LlmProvider,
   LlmRequest,
   LlmResult,
+  MediaUnitsEntry,
   ProviderId,
   StreamChunk,
   ToolChoice,
@@ -108,9 +109,9 @@ export function mapStopReason(reason: string | null | undefined): StopReason {
 export function mapUsage(usage: {
   prompt_tokens?: number | null;
   completion_tokens?: number | null;
-  prompt_tokens_details?: { cached_tokens?: number | null } | null;
+  prompt_tokens_details?: { cached_tokens?: number | null; audio_tokens?: number | null } | null;
   prompt_cache_hit_tokens?: number | null;
-  completion_tokens_details?: { reasoning_tokens?: number | null } | null;
+  completion_tokens_details?: { reasoning_tokens?: number | null; audio_tokens?: number | null } | null;
 }): Usage {
   const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
   const gross = usage.prompt_tokens ?? 0;
@@ -126,6 +127,22 @@ export function mapUsage(usage: {
   const reasoning = usage.completion_tokens_details?.reasoning_tokens ?? 0;
   if (reasoning > 0) {
     out.reasoningTokens = reasoning;
+  }
+  // Media usage (ADR-0031/0044, 1.AF): OpenAI reports audio tokens. Report the RAW token count
+  // (`unit: 'count'`) — NOT a fabricated tokens→seconds conversion, which would mis-bill — on the
+  // disjoint `mediaUnits` axis, never folded into the token counts above. Anthropic/Gemini expose no
+  // media counter yet, so they leave `mediaUnits` nil.
+  const mediaUnits: MediaUnitsEntry[] = [];
+  const inputAudio = usage.prompt_tokens_details?.audio_tokens ?? 0;
+  if (inputAudio > 0) {
+    mediaUnits.push({ modality: 'audio', direction: 'input', units: inputAudio, unit: 'count' });
+  }
+  const outputAudio = usage.completion_tokens_details?.audio_tokens ?? 0;
+  if (outputAudio > 0) {
+    mediaUnits.push({ modality: 'audio', direction: 'output', units: outputAudio, unit: 'count' });
+  }
+  if (mediaUnits.length > 0) {
+    out.mediaUnits = mediaUnits;
   }
   return out;
 }
