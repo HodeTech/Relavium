@@ -1,5 +1,4 @@
-import { mediaModalityOf } from '@relavium/shared';
-
+import { mediaSupportReason } from '../capabilities.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmMessageSchema } from '../types.js';
 import type { CapabilityFlags, LlmRequest, ProviderId } from '../types.js';
@@ -15,88 +14,20 @@ export function isAbortSignal(value: unknown): value is AbortSignal {
 }
 
 /**
- * Gate every media part and tool_result media attachment against the provider's input modality
- * capabilities (1.AE, ADR-0031). Throws `UnsupportedCapabilityError` on the first violation.
- */
-function gateInputModalities(
-  provider: ProviderId,
-  inputCaps: CapabilityFlags['media']['input'],
-  messages: LlmRequest['messages'],
-): void {
-  for (const message of messages) {
-    for (const part of message.content) {
-      if (part.type === 'media') {
-        gateModality(provider, inputCaps, part.mimeType);
-      }
-      if (part.type === 'tool_result' && part.media !== undefined && part.media.length > 0) {
-        for (const mediaPart of part.media) {
-          gateModality(provider, inputCaps, mediaPart.mimeType, ' in tool_result');
-        }
-      }
-    }
-  }
-}
-
-function gateModality(
-  provider: ProviderId,
-  inputCaps: CapabilityFlags['media']['input'],
-  mimeType: string,
-  suffix: string = '',
-): void {
-  const modality = mediaModalityOf(mimeType);
-  if (modality === undefined) {
-    throw new UnsupportedCapabilityError(
-      provider,
-      'media',
-      `unsupported MIME type '${mimeType}'${suffix}`,
-    );
-  }
-  if (!inputCaps[modality]) {
-    throw new UnsupportedCapabilityError(
-      provider,
-      'media',
-      `input modality '${modality}' (${mimeType})${suffix} not supported`,
-    );
-  }
-}
-
-/**
- * Gate output modalities by MEMBERSHIP in `media.outputCombinations` (ADR-0031 decision #3).
- * A request for `['text', 'audio']` is valid only if some output combination contains both.
- */
-function gateOutputCombinations(
-  provider: ProviderId,
-  supports: CapabilityFlags,
-  outputModalities: LlmRequest['outputModalities'],
-): void {
-  if (outputModalities === undefined) return;
-  const nonText = outputModalities.filter((modality) => modality !== 'text');
-  if (nonText.length === 0) return;
-  const outputOk = supports.media.outputCombinations.some((combo) =>
-    nonText.every((modality) => combo.includes(modality)),
-  );
-  if (!outputOk) {
-    throw new UnsupportedCapabilityError(
-      provider,
-      'media',
-      `output modalities [${nonText.join(', ')}] not in any supported output combination`,
-    );
-  }
-}
-
-/**
- * The per-modality media capability gate (1.AE). Every adapter calls this at `generate()`/`stream()`
- * entry, AFTER `assertSupported` and `assertStreamable`, so there is never a cap-less window between
- * the ADR-0031 shape landing and the per-modality wiring. An unsupported modality is thrown as
+ * The per-modality media capability gate (1.AE/1.AF). Every adapter calls this at `generate()`/`stream()`
+ * entry, AFTER `assertSupported` and `assertStreamable`. An unsupported modality is thrown as
  * `UnsupportedCapabilityError('media')` with a specific detail string — NEVER silently dropped or
- * flattened (the §1.4 bug class this guard exists to block). DeepSeek's all-false matrix causes
- * every media part to be rejected identically to the old blanket `assertNoMediaRequested`.
+ * flattened (the §1.4 bug class this guard exists to block). DeepSeek's all-false matrix causes every
+ * media part to be rejected.
  *
- * First, each message is validated through `LlmMessageSchema` to activate the superRefine
- * guards (media ceiling/caps, URL gate, MIME type validation, anti-amplification caps) — defense-in-depth
- * so requests that bypass the engine's own validation are still caught at the seam. This re-parses the
- * full history per call — O(history-length) — a cost deliberately accepted: LLM round-trips dominate, and
- * the scan only does real work on media/tool_result parts (it is the sole seam-side enforcement point).
+ * Order is deliberate and load-bearing: each message is validated through `LlmMessageSchema` FIRST to
+ * activate the superRefine guards (media ceiling/caps, URL gate, MIME-type validation, anti-amplification
+ * caps) — so an unknown MIME or an over-ceiling inline payload is a `ZodError` (schema-level), not a
+ * capability error. Only then is the per-modality / output-combination gate applied, via the ONE shared
+ * {@link mediaSupportReason} predicate that the `FallbackChain` pre-skip (`supportsRequest`) also uses —
+ * so the pre-skip verdict can never disagree with this adapter throw. The schema re-parse is
+ * O(history-length) per call — deliberately accepted (LLM round-trips dominate; it is the sole seam-side
+ * enforcement point).
  */
 export function assertMediaCapabilities(
   provider: ProviderId,
@@ -106,8 +37,10 @@ export function assertMediaCapabilities(
   for (const message of req.messages) {
     LlmMessageSchema.parse(message);
   }
-  gateInputModalities(provider, supports.media.input, req.messages);
-  gateOutputCombinations(provider, supports, req.outputModalities);
+  const reason = mediaSupportReason(supports, req);
+  if (reason !== null) {
+    throw new UnsupportedCapabilityError(provider, 'media', reason);
+  }
 }
 
 /**

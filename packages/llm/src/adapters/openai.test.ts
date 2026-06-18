@@ -823,6 +823,26 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
     ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 12 });
   });
 
+  it('mapUsage surfaces audio tokens as a mediaUnits entry (raw count, no seconds — 1.AF/ADR-0044)', () => {
+    expect(
+      mapUsage({
+        prompt_tokens: 30,
+        completion_tokens: 40,
+        prompt_tokens_details: { audio_tokens: 7 },
+        completion_tokens_details: { audio_tokens: 13 },
+      }),
+    ).toEqual({
+      inputTokens: 30,
+      outputTokens: 40,
+      mediaUnits: [
+        { modality: 'audio', direction: 'input', units: 7, unit: 'count' },
+        { modality: 'audio', direction: 'output', units: 13, unit: 'count' },
+      ],
+    });
+    // No audio tokens ⇒ no mediaUnits axis at all.
+    expect(mapUsage({ prompt_tokens: 5, completion_tokens: 5 }).mediaUnits).toBeUndefined();
+  });
+
   it('lowers responseFormat json to response_format json_schema', async () => {
     let sent: Record<string, unknown> = {};
     const adapter = createOpenAiAdapter({

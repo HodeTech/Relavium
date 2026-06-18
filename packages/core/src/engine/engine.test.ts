@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RunEvent } from '@relavium/shared';
+import type { MediaStore, RunEvent } from '@relavium/shared';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -155,6 +155,42 @@ const SEQUENTIAL = `  id: seq
 
 // --- the happy path: stream + gap-free sequence + cost accrual --------------------------------
 
+/** A canonical in-flight base64 media part (5 decoded bytes) — the media-de-inline tests' fixture. */
+const MEDIA_PART = {
+  type: 'media' as const,
+  mimeType: 'image/png',
+  source: { kind: 'base64' as const, data: 'aGVsbG8=' }, // "hello"
+};
+
+/** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the tests. */
+function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: Uint8Array }[] } {
+  const puts: { handle: string; bytes: Uint8Array }[] = [];
+  const digest = (bytes: Uint8Array): string => {
+    let hex = '';
+    for (let seed = 0; seed < 8; seed += 1) {
+      let h = (2166136261 ^ (seed * 0x9e3779b1)) >>> 0;
+      for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0;
+      hex += h.toString(16).padStart(8, '0');
+    }
+    return hex;
+  };
+  const store: MediaStore = {
+    put: (bytes) => {
+      const handle = `media://sha256-${digest(bytes)}`;
+      puts.push({ handle, bytes });
+      return Promise.resolve(handle);
+    },
+    get: (handle) => {
+      const found = puts.find((p) => p.handle === handle);
+      return found === undefined
+        ? Promise.reject(new Error('no bytes'))
+        : Promise.resolve(found.bytes);
+    },
+    resolveForEgress: () => Promise.reject(new Error('unused by this test')),
+  };
+  return { store, puts };
+}
+
 describe('WorkflowEngine — the event stream', () => {
   it('runs a sequential plan, streaming a gap-free, monotonic sequenceNumber and ending in run:completed', async () => {
     const engine = engineWith({
@@ -242,6 +278,112 @@ describe('WorkflowEngine — the event stream', () => {
     }
     expect(completed.totalCostMicrocents).toBe(150);
     expect(completed.totalTokensUsed).toEqual({ input: 2, output: 2 });
+  });
+});
+
+// --- media de-inline at the emit choke point (1.AF) -------------------------------------------
+
+describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-0042)', () => {
+  it('de-inlines a media-bearing node output to a handle in the persisted + delivered event (no base64, gap-free seq)', async () => {
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+
+    const put0 = puts[0];
+    expect(put0).toBeDefined();
+    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    const output = done?.type === 'node:completed' ? done.output : undefined;
+    expect(output).toEqual({
+      image: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'handle', ref: put0?.handle },
+        byteLength: 5,
+      },
+    });
+    // I3 — no base64 bytes anywhere in the DELIVERED stream or the PERSISTED run-event log.
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    const runId = events[0]?.runId;
+    expect(runId).toBeDefined();
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
+    }
+    // The gap-free, monotonic sequenceNumber is preserved across the async de-inline.
+    events.forEach((event, index) => expect(event.sequenceNumber).toBe(index));
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run (never leaks) when media is emitted but no MediaStore is injected', async () => {
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore }); // deliberately no mediaStore
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: MEDIA_PART }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('internal');
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+    // The bytes never reached a stamped/persisted event (the bytes-bearing node:completed was dropped).
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    const runId = events[0]?.runId;
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
+    }
+  });
+
+  it('hard-fails the run (no leak, no put) on a smuggled base64 data: URI in a node output — even WITH a store', async () => {
+    // I3 regression (review HIGH #1): a non-canonical byte carrier in an opaque z.unknown() output must
+    // NOT pass through the with-store de-inline. It hard-fails → run:failed; the bytes never persist.
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { img: 'data:image/png;base64,aGVsbG8=' } }) },
+        host,
+      ).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    expect(puts).toHaveLength(0); // the carrier hard-failed — nothing was stored
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    const runId = events[0]?.runId;
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('aGVsbG8=');
+    }
+  });
+
+  it('stays total (exactly one terminal, no hang) when store.put REJECTS on a media-bearing run', async () => {
+    // Totality regression (review HIGH #2): a store.put rejection (disk full / transient IO) on a
+    // media-bearing terminal must NOT escape the catch-less #loop as an unhandled rejection / hang. The
+    // terminal still settles with its media payload stripped (byte-free).
+    const rejectingStore: MediaStore = {
+      put: () => Promise.reject(new Error('disk full')),
+      get: () => Promise.reject(new Error('unused')),
+      resolveForEgress: () => Promise.reject(new Error('unused')),
+    };
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore: rejectingStore });
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: MEDIA_PART }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
   });
 });
 
@@ -535,6 +677,85 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     assertGapFreeSeq(events); // gap-free across pause + resume
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
+  });
+
+  it('de-inlines a media-bearing gate decision.payload to a handle on human_gate:resumed (no base64)', async () => {
+    // The resume() decision.payload (z.unknown()) is the one #emitDurable de-inline caller a gate exercises;
+    // it must flow through the SAME I3 choke point, so the delivered + persisted human_gate:resumed carries a
+    // handle, never the base64 bytes.
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore });
+    const engine = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }) },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, {
+            decision: 'approved',
+            decidedBy: 'tester',
+            payload: { image: MEDIA_PART },
+          });
+        }
+      }
+    }
+    const resumed = events.find((e) => e.type === 'human_gate:resumed');
+    if (resumed?.type !== 'human_gate:resumed') {
+      throw new Error('expected human_gate:resumed');
+    }
+    const put0 = puts[0];
+    expect(put0).toBeDefined();
+    expect(resumed.payload).toEqual({
+      image: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'handle', ref: put0?.handle },
+        byteLength: 5,
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    expect(JSON.stringify(runStore.eventsFor(handle.runId))).not.toContain('aGVsbG8=');
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run (no leak, no hang) when a gate decision.payload carries media but no MediaStore', async () => {
+    // No store ⇒ resume()'s de-inline of the media payload throws; resume()'s catch fails the run AND always
+    // #schedule()s (no stranded run), and the bytes never reach a stamped/persisted event.
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore }); // deliberately no mediaStore
+    const engine = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }) },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, {
+            decision: 'approved',
+            decidedBy: 'tester',
+            payload: MEDIA_PART,
+          });
+        }
+      }
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    const failed = events.find((e) => e.type === 'run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('internal');
+    }
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    expect(JSON.stringify(runStore.eventsFor(handle.runId))).not.toContain('aGVsbG8=');
   });
 
   it('rejects a resume with an unknown gateId while paused (unknown_gate)', async () => {
@@ -1729,6 +1950,24 @@ describe('WorkflowEngine — crash reconciliation', () => {
     await seedStarted(store, 'paused-1', 'human_gate:paused');
     const engine = engineWith(undefined, createInMemoryHost({ store }));
     expect(await engine.reconcile()).toHaveLength(0);
+  });
+
+  it('reconcile() run:failed is media-free (ADR-0042 §2 backstop — it bypasses the #emitDurable choke point)', async () => {
+    // reconcile() constructs run:failed directly (hardcoded partialOutputs:{}) and persists via the store,
+    // bypassing the deInlineMedia choke point. Pin that it carries no media + empty partialOutputs, so a
+    // future widening that adds node output to reconcile (which would skip de-inline) is caught here.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-media');
+    const engine = engineWith(undefined, createInMemoryHost({ store }));
+    const reconciled = await engine.reconcile();
+    expect(reconciled).toHaveLength(1);
+    const event = reconciled[0];
+    expect(event?.type).toBe('run:failed');
+    if (event?.type === 'run:failed') {
+      expect(event.partialOutputs).toEqual({});
+    }
+    expect(JSON.stringify(reconciled)).not.toMatch(/base64|aGVsbG8/);
+    expect(JSON.stringify(store.eventsFor('crashed-media'))).not.toMatch(/base64|aGVsbG8/);
   });
 });
 

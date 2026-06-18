@@ -407,6 +407,53 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 > ([keychain-and-secrets.md](keychain-and-secrets.md)), so a session written on one surface opens on
 > another — there is no per-surface session store.
 
+### Media tables (1.AF)
+
+These two tables are the **media retention/GC store** ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)) — the **first persisted, mutable state outside the [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) derived-from-`run_events` model** (a retention store, NOT a checkpoint store). The byte blobs themselves live in a host content-addressed store (a filesystem CAS on CLI/VS Code, the Rust CAS on desktop — [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)), **not** in the database; these tables track existence, metadata, references (the refcount), and the `read_media` authz scope-set. The content-addressed `media://sha256-<64hex>` handle **is** the integrity hash — there is no separate checksum column. *(At P1+P2 the schema is landed but the row-writer / refcount / sweep wiring is not — P3/P4, D10/D11 — so these tables ship empty.)*
+
+#### `media_objects`
+
+One row per distinct stored media blob, keyed by its content-address handle.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY (UUID) |
+| `handle` | TEXT | NOT NULL **UNIQUE** — the `media://sha256-<64hex>` content-address. A UNIQUE **constraint** (not merely an index) so the `media_references` Postgres FK can target it ([ADR-0005](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md) parity) |
+| `mime_type` | TEXT | NOT NULL |
+| `modality` | TEXT | NOT NULL — CHECK in (`image`, `audio`, `video`, `document`) (the `@relavium/shared` `MEDIA_MODALITIES` set) |
+| `byte_length` | INTEGER | NOT NULL — what a `read_media` `Range` request is bounded against (host-populated; never a client-supplied size) |
+| `duration_ms` | INTEGER | NULL — audio/video only |
+| `last_referenced_at` | INTEGER | NOT NULL — epoch-ms; the grace-window basis for GC |
+| `deleted_at` | INTEGER | NULL — soft-delete (the table convention); set by GC byte-reclamation |
+| `created_at` | INTEGER | NOT NULL |
+
+```sql
+CREATE UNIQUE INDEX media_objects_handle_unique ON media_objects (handle);
+CREATE INDEX idx_media_objects_gc ON media_objects (last_referenced_at) WHERE deleted_at IS NULL;
+```
+
+#### `media_references`
+
+The **per-distinct-reference junction** the refcount derives from, and the persistence home of the `read_media` scope-set authz. Cascades from `media_objects`.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY (UUID) |
+| `handle` | TEXT | NOT NULL REFERENCES `media_objects(handle)` ON DELETE CASCADE |
+| `scope_kind` | TEXT | NOT NULL — CHECK in (`run`, `node`, `session`, `workspace`) (the `MEDIA_SCOPE_KINDS` superset) |
+| `scope_id` | TEXT | NOT NULL |
+| `created_at` | INTEGER | NOT NULL |
+
+```sql
+CREATE UNIQUE INDEX idx_media_references_unique ON media_references (handle, scope_kind, scope_id);
+CREATE INDEX idx_media_references_scope  ON media_references (scope_kind, scope_id);
+CREATE INDEX idx_media_references_handle ON media_references (handle);
+```
+
+> **Refcount ↔ authz keying — one junction, two roles ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §3 / [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).** A handle's refcount is its **row count** here. `scope_kind` is a deliberate **superset**: `run` / `node` references are lifetime/refcount entries ONLY (the terminal-state sweep reclaims a run's `run` rows when it reaches `run:completed|failed|cancelled`), while `session` / (reserved) `workspace` are ALSO the `read_media` authz `Scope` kinds — `read_media` authz consults **only** the `session`/`workspace` rows, so a `run`/`node` reference **never grants read**. A handle may carry both a `run` reference (lifetime) and a `session` reference (authz); the terminal sweep removing the run row leaves the handle alive while a session row remains.
+
+> **Retention / GC ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §4).** A handle whose reference count reaches zero enters a **grace window** (default **7 days**, measured from `last_referenced_at`); refcount-GC reclaims the bytes and sets `deleted_at` only after it elapses — distinct from the 90-day `run_events` prune. GC ownership is the host's (Rust on desktop / filesystem on CLI/VS Code).
+
 ## Common query patterns
 
 | Pattern | Where it's used | Index relied on |

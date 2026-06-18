@@ -32,6 +32,8 @@ import {
   GateDecisionSchema,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
+  containsDurableUnsafeMedia,
+  deInlineMedia,
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
@@ -49,6 +51,7 @@ import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
+import { RunLoopInvariantError } from './invariant-error.js';
 import { BudgetGovernor, DEFAULT_MAX_TOKENS_ESTIMATE } from './budget-governor.js';
 import type { CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
@@ -85,6 +88,23 @@ const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>(
   'run:failed',
   'run:cancelled',
 ]);
+
+/**
+ * Strip the best-effort media-bearing payload from a TERMINAL draft to an empty record (1.AF). Used only
+ * as the last-resort fallback when `deInlineMedia` cannot run (a media-bearing run with no `MediaStore`
+ * injected): the terminal event MUST still emit (exactly-one-terminal-event), and it must carry no inline
+ * bytes (I3), so `run:completed.outputs` / `run:failed.partialOutputs` are emptied rather than blocking
+ * the terminal or leaking. The run still settles; the `run:failed` error explains the cause.
+ */
+function stripTerminalMediaPayload(draft: RunEventDraft): RunEventDraft {
+  if (draft.type === 'run:completed') {
+    return { ...draft, outputs: {} };
+  }
+  if (draft.type === 'run:failed') {
+    return { ...draft, partialOutputs: {} };
+  }
+  return draft;
+}
 
 /** The terminal `RunStatus` values — a checkpoint in one of these is a finished run (1.R resume no-op). */
 const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
@@ -541,9 +561,68 @@ class RunExecution {
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
 
+    // A budget gate's two decisions (reject ⇒ a run-level budget failure; approve ⇒ continue the deferred
+    // pre-egress call) resolve in #resolveBudgetGate; a `true` return means it owned this gate — then only
+    // #schedule(). Kept out of line so resume()'s cognitive complexity stays in budget (sonar S3776).
+    if (await this.#resolveBudgetGate(gate, decision)) {
+      this.#schedule();
+      return;
+    }
+
+    // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
+    // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
+    // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
+    const state = this.#states.get(gate.vertexId);
+    if (state !== undefined) {
+      state.status = 'completed';
+      state.output = decision.payload ?? { decision: decision.decision };
+    }
+    // The payload (a gate `input` value, `z.unknown()`) is the one resume event that can carry media. If
+    // de-inline cannot make it durable-safe, the emit throws — but the gate is already resolved + the
+    // vertex marked completed, so we must NOT skip #schedule() (that would strand the resumed run with no
+    // terminal). Mirror #onOutcome: fail the run on the throw, and ALWAYS #schedule(). (The gate's media
+    // output then surfaces at the terminal, where the #emitDurable terminal-strip keeps it byte-free.)
+    try {
+      await this.#emitDurable({
+        type: 'human_gate:resumed',
+        runId: this.runId,
+        nodeId: gate.vertexId,
+        decision: decision.decision,
+        decidedBy: decision.decidedBy,
+        ...(decision.payload === undefined ? {} : { payload: decision.payload }),
+      });
+    } catch {
+      if (this.#failure === undefined && !this.#cancelling) {
+        this.#failure = {
+          nodeId: gate.vertexId,
+          error: {
+            code: 'internal',
+            message: 'the gate decision payload could not be made durable-safe',
+            retryable: false,
+          },
+        };
+        this.#abort.abort();
+      }
+    }
+    this.#schedule();
+  }
+
+  /**
+   * Apply a decision to a BUDGET gate (the pre-egress governor's pause). Returns `true` when `gate` was a
+   * budget gate AND the decision was handled here (the caller then only {@link resume}-schedules); `false`
+   * to fall through to the general completed-gate path. Both arms only persist — the schedule()/return is
+   * the caller's. Split out of resume() to keep its cognitive complexity in budget (sonar S3776).
+   */
+  async #resolveBudgetGate(
+    gate: { readonly vertexId: string; readonly isBudgetGate: boolean },
+    decision: GateDecision,
+  ): Promise<boolean> {
+    if (!gate.isBudgetGate) {
+      return false;
+    }
+    const state = this.#states.get(gate.vertexId);
     // A rejected budget gate is a run-level budget failure, not a completed gate vertex.
-    if (gate.isBudgetGate && decision.decision === 'rejected') {
-      const state = this.#states.get(gate.vertexId);
+    if (decision.decision === 'rejected') {
       if (state !== undefined) {
         state.status = 'failed';
       }
@@ -565,10 +644,8 @@ class RunExecution {
         decision: 'rejected',
         decidedBy: decision.decidedBy,
       });
-      this.#schedule();
-      return;
+      return true;
     }
-
     // An APPROVED budget gate must CONTINUE the deferred call (H3): the agent vertex paused pre-egress and
     // produced no output, so completing it with the decision payload would short-circuit the call. Instead
     // arm a one-shot pre-egress bypass for the vertex and re-dispatch it (reset to `pending` → `#claimReady`
@@ -578,9 +655,8 @@ class RunExecution {
     // ONE re-dispatched step runs to completion uncapped, then the cap re-arms for the next step. (A budget
     // pause raised MID-tool-loop still re-runs the earlier in-turn calls on resume — the same limitation as
     // "checkpoint/resume of a mid-tool-loop turn", deferred; the common first-call pause is exact.)
-    if (gate.isBudgetGate && decision.decision === 'approved') {
+    if (decision.decision === 'approved') {
       this.#budgetApprovedVertices.add(gate.vertexId);
-      const state = this.#states.get(gate.vertexId);
       if (state !== undefined) {
         state.status = 'pending';
       }
@@ -591,27 +667,10 @@ class RunExecution {
         decision: 'approved',
         decidedBy: decision.decidedBy,
       });
-      this.#schedule();
-      return;
+      return true;
     }
-
-    // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
-    // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
-    // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
-    const state = this.#states.get(gate.vertexId);
-    if (state !== undefined) {
-      state.status = 'completed';
-      state.output = decision.payload ?? { decision: decision.decision };
-    }
-    await this.#emitDurable({
-      type: 'human_gate:resumed',
-      runId: this.runId,
-      nodeId: gate.vertexId,
-      decision: decision.decision,
-      decidedBy: decision.decidedBy,
-      ...(decision.payload === undefined ? {} : { payload: decision.payload }),
-    });
-    this.#schedule();
+    // An 'input_provided' decision on a budget gate is not expected — fall through to the general path.
+    return false;
   }
 
   // --- the scheduler --------------------------------------------------------------------------
@@ -953,8 +1012,11 @@ class RunExecution {
           break;
       }
     } catch {
-      // Backstop for an UNEXPECTED throw while settling a node — e.g. a bus/Zod stamp failure on a
-      // malformed event. (A durable persist rejection no longer reaches here: #emitDurable is total.)
+      // Backstop while settling a node: a bus/Zod stamp failure on a malformed event, OR — by design — a
+      // media de-inline failure re-thrown by #emitDurable for a NON-terminal media-bearing node output (an
+      // un-re-hosted url, a non-canonical byte carrier, a missing/erroring MediaStore). Both map to a single
+      // run:failed here. (A durable PERSIST rejection still never reaches here: #emitDurable absorbs persist
+      // faults and self-schedules; only the de-inline transform re-throws, and only for non-terminal events.)
       this.#failNodeInternal(vertex, 'the engine failed while settling a node');
     }
     this.#schedule();
@@ -1345,7 +1407,9 @@ class RunExecution {
 
   async #emitDurable(draft: RunEventDraft): Promise<void> {
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
-    // can never re-run a completed node or lose its output). This method is **total**: a store fault
+    // can never re-run a completed node or lose its output). This method is **total for store faults** (the
+    // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
+    // the #onOutcome/#begin backstops; see MEDIA DE-INLINE): a store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
     // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free
@@ -1354,15 +1418,46 @@ class RunExecution {
     // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
     // the durable record on restart.
     //
-    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. `#bus.next` assigns the
-    // seq synchronously in call order, and #emitDurable is invoked synchronously at the top of each
-    // settle path before any await — so chaining each deliver onto a single per-run #deliveryTail makes
-    // a higher-seq event wait for the lower-seq event's deliver. Persists stay concurrent; only delivery
-    // is serialized. Without this, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud)
-    // could resolve out of order — delivering a later node:completed (or the terminal) first, closing
-    // the stream, and dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore
-    // resolves synchronously, which masks it; the seam exists precisely so an async store plugs in.
-    const event = this.#bus.next(draft);
+    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. The media de-inline runs
+    // first (the `await` below), THEN `#bus.next` assigns the seq and the per-run `#deliveryTail` capture
+    // happens — with NO `await` between them, so seq-assignment-and-delivery-chaining stays atomic per
+    // event; chaining each deliver onto the single tail makes a higher-seq event wait for the lower-seq
+    // event's deliver. Persists stay concurrent; only delivery is serialized. (The de-inline `await`
+    // moves WHEN the seq is assigned relative to other emits — gap-free + monotonic still hold, since the
+    // counter only advances on a successful `next`, and concurrent events have no canonical order.)
+    // Without the tail, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud) could resolve
+    // out of order — delivering a later node:completed (or the terminal) first, closing the stream, and
+    // dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore resolves
+    // synchronously, which masks it; the seam exists precisely so an async store plugs in.
+    //
+    // MEDIA DE-INLINE (1.AF, ADR-0042 §2): run `deInlineMedia` on the draft FIRST — before `#bus.next`
+    // stamps + validates and before the durable write + delivery below — so the numbered, persisted,
+    // delivered event is handle-only (I3); the durable schema's typed media positions are handle-only and
+    // would reject in-flight base64 at validation. This single `await` is the only addition; the
+    // synchronous seq-assign / persist-before-deliver / `#deliveryTail` ordering below is unchanged, and a
+    // no-media draft pays only a cheap cycle-safe scan (no store round-trip). Secret masking already
+    // happened upstream (input masking at run setup; per-node output masking via `secretInputNames`), so
+    // de-inline is the sole emit-time transform here and composes with masking only by sequence.
+    let durable: RunEventDraft;
+    try {
+      durable = await this.#deInlineDraft(draft);
+    } catch (error) {
+      // The de-inline could not make this draft durable-safe — a missing MediaStore, a `store.put`
+      // rejection (disk full / transient IO), an un-re-hosted url, a non-canonical byte carrier, or
+      // invalid base64. For a NON-terminal event, re-throw — the #onOutcome / #begin backstops map it to
+      // a single run:failed. For a TERMINAL event the run MUST still settle (exactly-one-terminal-event
+      // is sacred), so strip its best-effort media payload to empty (stripTerminalMediaPayload yields a
+      // byte-free draft) rather than block the terminal forever (a hang + unhandled rejection out of the
+      // catch-less #loop) or leak inline bytes (I3). This rescues ANY de-inline failure on a terminal,
+      // not only the missing-store one; the run:failed error (set when the first media-bearing
+      // node:completed threw and #onOutcome caught it) states the cause.
+      if (TERMINAL_TYPES.has(draft.type)) {
+        durable = stripTerminalMediaPayload(draft);
+      } else {
+        throw error;
+      }
+    }
+    const event = this.#bus.next(durable);
     const prior = this.#deliveryTail;
     const settled = (async (): Promise<void> => {
       try {
@@ -1389,6 +1484,35 @@ class RunExecution {
     })();
     this.#deliveryTail = settled.catch(() => undefined);
     await settled;
+  }
+
+  /**
+   * The flight→durable media transform for the one emit choke point (1.AF, ADR-0042 §2). With a media
+   * store injected, `deInlineMedia` rewrites every in-flight base64 media part to a handle (a no-op
+   * cheap scan when there is no media — the dominant text/tool-only case), and the result is still a
+   * `RunEventDraft` (structure-preserving — it only swaps a media leaf's base64 source for a handle;
+   * `#bus.next` re-validates it against the durable schema regardless). With NO store injected, a
+   * **media-bearing** draft cannot be made handle-only — throwing is the only safe option (never
+   * persist/deliver inline bytes, I3). The throw is the same class as a malformed-draft Zod failure, so
+   * it is caught by the same backstops: `#onOutcome`'s try/catch (the node-settle path) and `#begin`'s
+   * (the `run:started` path) map it to a single `run:failed`. A text-only draft passes straight through.
+   */
+  async #deInlineDraft(draft: RunEventDraft): Promise<RunEventDraft> {
+    const store = this.#host.mediaStore;
+    if (store !== undefined) {
+      return (await deInlineMedia(draft, store)) as RunEventDraft;
+    }
+    // No store: a draft carrying inline bytes OR an un-re-hosted url media part cannot be made
+    // durable-safe — throw (the broadened #emitDurable catch + the #onOutcome/#begin backstops map it to
+    // a single run:failed; a terminal is stripped). `containsDurableUnsafeMedia` (not the byte-only scan)
+    // also catches a url-only payload, so it cannot pass silently.
+    if (containsDurableUnsafeMedia(draft)) {
+      throw new RunLoopInvariantError(
+        'media_store_unavailable',
+        'a media-bearing event was emitted but no MediaStore was injected into the ExecutionHost (1.AF, I3)',
+      );
+    }
+    return draft;
   }
 
   #elapsedMs(): number {

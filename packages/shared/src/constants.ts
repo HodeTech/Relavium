@@ -144,6 +144,22 @@ export const MEDIA_BILLED_MODALITIES = ['image', 'audio', 'video'] as const;
 export type MediaBilledModality = (typeof MEDIA_BILLED_MODALITIES)[number];
 
 /**
+ * The **media reference scope kinds** persisted in the `media_references` junction (ADR-0042 §3).
+ * A deliberate **superset** with two roles: `run` / `node` references are refcount + terminal-sweep
+ * lifetime entries only, while `session` / `workspace` are **also** the `read_media` authz `Scope`
+ * kinds (ADR-0044). The refcount derives from ALL rows; the terminal sweep reclaims the `run` rows;
+ * `read_media` authz consults ONLY {@link MEDIA_AUTHZ_SCOPE_KINDS} rows — a `run`/`node` reference
+ * never grants read. `workspace` is **reserved** (documented, not implemented) so cross-session
+ * shared-asset reads are an additive scope kind with no handle-model migration.
+ */
+export const MEDIA_SCOPE_KINDS = ['run', 'node', 'session', 'workspace'] as const;
+export type MediaScopeKind = (typeof MEDIA_SCOPE_KINDS)[number];
+
+/** The subset of {@link MEDIA_SCOPE_KINDS} that GRANTS `read_media` access (ADR-0044, A8). */
+export const MEDIA_AUTHZ_SCOPE_KINDS = ['session', 'workspace'] as const;
+export type MediaAuthzScopeKind = (typeof MEDIA_AUTHZ_SCOPE_KINDS)[number];
+
+/**
  * The eight **authored** YAML node types (workflow-yaml-spec.md v1.0). The richer
  * canvas-component / engine-enum taxonomy (which adds `tool`, `loop`, `subworkflow`)
  * is reconciled in node-types.md; these eight are the user-authored surface.

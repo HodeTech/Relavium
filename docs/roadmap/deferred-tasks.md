@@ -113,7 +113,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (pure sync, platform-free) with 40+ SSRF tests. `assertHttpsBaseUrl` in openai.ts delegates to the
   shared functions + `new URL()` normalization. `MEDIA_URL_SOURCE_ENABLED` flipped to `true` with
   per-URL SSRF validation at the seam boundary (`refineInFlightMediaPart`). The host-side DNS/connect
-  enforcement (`EgressCapability.fetch`) remains a Phase-2 forward obligation (see below).
+  enforcement for the **media** url path is pulled into 1.AF on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the general tool/MCP fetch enforcement lands with that surface hook (see below).
   *(security-review.md; openai.ts; 1.AE)*
 - [ ] **Host-side SSRF enforcement in `EgressCapability.fetch` (DNS resolve + connect-by-validated-IP + per-hop redirect re-validation)** — the shared SSRF range-primitive (1.AE) covers the **policy** half
   (literal format checks on URLs and hostnames); the **mechanism** half — resolving a hostname to its
@@ -122,7 +122,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   defined in `packages/core/src/tools/types.ts`). When the desktop or CLI surface implements that fetch
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
-  catch DNS rebinding or a public hostname resolving to a private IP. *(packages/core/src/tools/types.ts; security-review.md; Phase 2)*
+  catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **general tool/MCP** `EgressCapability.fetch` enforcement still lands when the desktop/CLI surface implements that fetch hook. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; tool/MCP → surface fetch hook)*
 - [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
   now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
   (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
@@ -131,7 +131,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a
   per-model media rate in `pricing.ts`/`model_catalog`; the governor estimates `units × rate` pre-egress.
-  *(config.ts; pricing.ts; database-schema.md; wired at 1.AF/1.AG)*
+  **Decided in [ADR-0044](../decisions/0044-media-access-governance-read-media-save-to-cost.md)** (disjoint cost class folded into the existing `max_cost_microcents` cap — **no new cap dimension**; a distinct media count/bytes cap is deferred as additive). *(config.ts; pricing.ts; database-schema.md; wired at 1.AF)*
 - [ ] **`partialRef` partial-write semantics (A3, reserved)** — `media_delta.partialRef` ships in the
   frozen triad (1.AD) but is **reserved, host-implementation-defined**; the `MediaStore` contract defines
   only `put(completeBytes)`. Specify append-vs-per-delta-put semantics when the surface that renders
@@ -140,10 +140,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `handle → allowedScopes: Set<Scope>` with `Scope = { kind:'session', id }` today; the
   `{ kind:'workspace', id }` kind is **reserved (documented, not implemented)** so cross-session /
   shared-asset reads are an additive scope kind, no handle-model migration. Implement only when a
-  shared-asset feature has a real consumer. *(1.AF; ADR-0031 read_media guardrail)*
+  shared-asset feature has a real consumer. *(reserved; [ADR-0044](../decisions/0044-media-access-governance-read-media-save-to-cost.md) ships the `session` kind at 1.AF, defers the `workspace` kind)*
 - [ ] **`MediaStore` retention/GC + `media_objects` table (defaulted)** — per-distinct-reference
   `refcount` + `last_referenced_at` + grace window, separate from the 90-day `run_events` prune; GC owner
-  is the host (Rust desktop / filesystem CLI). Lands with the table at **1.AF**. *(database-schema.md; 1.AF)*
+  is the host (Rust desktop / filesystem CLI). **Decided in [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)** — a `media_references` refcount junction + a 7-day-default grace window + a terminal-state sweep; lands with the table at **1.AF**. *(database-schema.md; 1.AF)*
 - [ ] **Retire the `vision` derived alias (OQ6 default)** — `CapabilityFlags.vision` is kept as a derived
   alias of `media.input.image` for live consumers (`db.supports_vision`, adapter `supports.vision`);
   schedule removal once those migrate to `media.input.image`. *(types.ts; a later cleanup)*
@@ -159,9 +159,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`mediaUnits` mapping (OpenAI audio tokens, others nil for now)** — `Usage.mediaUnits` ships as
   an optional field (ADR-0031 decision #4) but no adapter populates it yet. OpenAI reports
   `completion_tokens_details.audio_tokens` which maps to `{ modality: 'audio', direction: 'output',
-  units: n, unit: 'second' }`; Anthropic and Gemini report no media-specific billing counters in their
+  units: n, unit: 'count' }` (the RAW token count — audio_tokens are tokens, not seconds); Anthropic and Gemini report no media-specific billing counters in their
   current usage shapes. Wire OpenAI audio-token billing at 1.AF when the engine surfaces usage to the
-  session; leave Anthropic/Gemini nil until those providers add billing counters. *(packages/llm/src/adapters/openai.ts; 1.AF)*
+  session; leave Anthropic/Gemini nil until those providers add billing counters. **Report the raw
+  `audio_tokens` count (no fabricated tokens→seconds conversion) to avoid mis-billing** ([ADR-0044](../decisions/0044-media-access-governance-read-media-save-to-cost.md)).
+  *(packages/llm/src/adapters/openai.ts; 1.AF)*
 - [ ] **OpenAI reasoning-model capability matrix (`OPENAI_REASONING_CAPS`)** — o1/o3/o4-mini have a
   separate media capability surface (no audio input, restricted tools, etc.). The current `openai.ts`
   uses one `OPENAI_SUPPORTS` matrix for all GPT models; reasoning models need their own matrix selected

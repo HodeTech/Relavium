@@ -12,7 +12,7 @@ import type {
   StreamChunk,
   Usage,
 } from './types.js';
-import { supportsRequest } from './capabilities.js';
+import { requestSupportReason } from './capabilities.js';
 
 export type { BackoffStrategy };
 
@@ -528,8 +528,11 @@ export class FallbackChain {
     if (opts?.streaming === true && !entry.provider.supports.streaming) {
       return 'provider does not support streaming';
     }
-    if (!supportsRequest(entry.provider.supports, req)) {
-      return 'provider does not support a required capability';
+    const unsupported = requestSupportReason(entry.provider.supports, req);
+    if (unsupported !== null) {
+      // Per-modality (1.AF): an incapable provider is SKIPPED with the specific reason, never silently
+      // flattened; the reason matches the adapter-entry `assertMediaCapabilities` throw (one predicate).
+      return `provider cannot serve the request: ${unsupported}`;
     }
     return undefined;
   }

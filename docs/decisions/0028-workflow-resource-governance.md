@@ -4,6 +4,8 @@
 - **Date**: 2026-06-05
 - **Related**: [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0014-managed-metering-quota-and-billing.md](0014-managed-metering-quota-and-billing.md), [../reference/contracts/workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md), [../reference/contracts/sse-event-schema.md](../reference/contracts/sse-event-schema.md), [../reference/contracts/ipc-contract.md](../reference/contracts/ipc-contract.md), [../architecture/execution-model.md](../architecture/execution-model.md)
 
+> **Amended 2026-06-18 by [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** A refinement, not a reversal: ADR-0044 adds a **disjoint per-modality media cost class** to this ADR's pre-egress governor — it widens the pre-egress hook to carry `outputModalities`/a media-unit estimate and folds the media estimate into the **existing** `max_cost_microcents` cap (no new cap dimension, no new event/error class). This ADR's budget / timeout / concurrency decisions are unchanged.
+
 ## Context
 
 A workflow can spend real money. A fan-out of agent nodes, a fallback chain that tries several

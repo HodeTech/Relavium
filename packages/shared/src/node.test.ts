@@ -60,6 +60,63 @@ describe('NodeSchema', () => {
     }
   });
 
+  it('accepts output_modalities on an agent node and rejects document/empty/unknown (1.AF, ADR-0044)', () => {
+    const ok = { id: 'a', type: 'agent', agent_ref: 'x', output_modalities: ['text', 'image'] };
+    expect(NodeSchema.safeParse(ok).success).toBe(true);
+    // `document` is input-only — not an output modality; `audio`/`video` are valid.
+    expect(
+      NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'x', output_modalities: ['audio'] })
+        .success,
+    ).toBe(true);
+    expect(
+      NodeSchema.safeParse({
+        id: 'a',
+        type: 'agent',
+        agent_ref: 'x',
+        output_modalities: ['document'],
+      }).success,
+    ).toBe(false);
+    // an empty array is rejected (omit the field for text-only)
+    expect(
+      NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'x', output_modalities: [] })
+        .success,
+    ).toBe(false);
+    // an unknown value is rejected
+    expect(
+      NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'x', output_modalities: ['gif'] })
+        .success,
+    ).toBe(false);
+  });
+
+  it('accepts a relative save_to on an output node, rejects absolute/traversal/unknown-key (1.AF, A9)', () => {
+    expect(
+      NodeSchema.safeParse({ id: 'o', type: 'output', save_to: 'out/{{ run.id }}/image.png' })
+        .success,
+    ).toBe(true);
+    expect(NodeSchema.safeParse({ id: 'o', type: 'output', save_to: '/etc/passwd' }).success).toBe(
+      false,
+    );
+    expect(
+      NodeSchema.safeParse({ id: 'o', type: 'output', save_to: '../escape/x.png' }).success,
+    ).toBe(false);
+    expect(
+      NodeSchema.safeParse({ id: 'o', type: 'output', save_to: String.raw`C:\win.png` }).success,
+    ).toBe(false);
+    // both drive-letter forms and a UNC path are rejected
+    expect(NodeSchema.safeParse({ id: 'o', type: 'output', save_to: 'C:/win.png' }).success).toBe(
+      false,
+    );
+    expect(
+      NodeSchema.safeParse({ id: 'o', type: 'output', save_to: String.raw`\\server\share\x.png` })
+        .success,
+    ).toBe(false);
+    // strict objects still reject an unknown key, and output_modalities is agent-only
+    expect(NodeSchema.safeParse({ id: 'o', type: 'output', bogus: 1 }).success).toBe(false);
+    expect(
+      NodeSchema.safeParse({ id: 'o', type: 'output', output_modalities: ['image'] }).success,
+    ).toBe(false);
+  });
+
   it('rejects a retry_on listing a non-retryable error code (ADR-0040 A.4)', () => {
     // `tool_denied` is fatal — retrying it just re-denies; the subset enum rejects it at parse.
     const bad = {

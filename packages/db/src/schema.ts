@@ -1,10 +1,14 @@
 import {
   EXECUTION_MODES,
   FS_SCOPE_TIERS,
+  MEDIA_MODALITIES,
+  MEDIA_SCOPE_KINDS,
   RunStatusSchema,
   SessionStatusSchema,
   type ExecutionMode,
   type FsScopeTier,
+  type MediaModality,
+  type MediaScopeKind,
   type RunStatus,
   type SessionStatus,
 } from '@relavium/shared';
@@ -441,6 +445,66 @@ export const sessionMessages = sqliteTable(
   ],
 );
 
+// --- 12. media_objects (no FK; the host-owned media retention/GC store, ADR-0042) ---
+// The FIRST persisted mutable state outside the ADR-0003 derived-from-run_events model — a retention
+// store, NOT a checkpoint store. The content-addressed `media://sha256-<64hex>` handle is the integrity
+// hash (no separate checksum). `deleted_at` (the table soft-delete convention) is set by refcount-GC
+// byte-reclamation once the grace window (default 7 days, from `last_referenced_at`) has elapsed.
+export const mediaObjects = sqliteTable(
+  'media_objects',
+  {
+    id: uuidPk(),
+    // A UNIQUE CONSTRAINT (not merely a unique index): the media_references FK targets handle, and a
+    // Postgres FK target must be a unique constraint / PK (a bare unique index is insufficient) — so
+    // `.unique()` keeps the SQLite↔Postgres parity ([ADR-0005]/[ADR-0042]).
+    handle: text('handle').notNull().unique(),
+    mimeType: text('mime_type').notNull(),
+    modality: text('modality').$type<MediaModality>().notNull(),
+    byteLength: integer('byte_length').notNull(),
+    durationMs: integer('duration_ms'),
+    lastReferencedAt: epochMs('last_referenced_at').notNull(),
+    deletedAt: epochMs('deleted_at'),
+    createdAt: epochMs('created_at').notNull(),
+  },
+  (t) => [
+    check('media_objects_modality_check', sql`${t.modality} in (${inList(MEDIA_MODALITIES)})`),
+    // GC sweep cursor: live objects ordered by recency-of-reference (grace-window candidates first).
+    index('idx_media_objects_gc')
+      .on(t.lastReferencedAt)
+      .where(sql`${t.deletedAt} is null`),
+  ],
+);
+
+// --- 13. media_references (-> media_objects.handle CASCADE; per-distinct-reference junction, ADR-0042) ---
+// One junction serves BOTH refcount/sweep and read_media authz. `scope_kind` is a superset:
+// `run`/`node` are refcount + terminal-sweep lifetime entries; `session`/`workspace` are ALSO the
+// ADR-0044 read_media authz Scope kinds (authz consults session/workspace rows ONLY — a run/node
+// reference never grants read). The refcount derives from the row count; the terminal sweep removes
+// the run's `run` rows.
+export const mediaReferences = sqliteTable(
+  'media_references',
+  {
+    id: uuidPk(),
+    handle: text('handle')
+      .notNull()
+      .references(() => mediaObjects.handle, { onDelete: 'cascade' }),
+    scopeKind: text('scope_kind').$type<MediaScopeKind>().notNull(),
+    scopeId: text('scope_id').notNull(),
+    createdAt: epochMs('created_at').notNull(),
+  },
+  (t) => [
+    check(
+      'media_references_scope_kind_check',
+      sql`${t.scopeKind} in (${inList(MEDIA_SCOPE_KINDS)})`,
+    ),
+    // A scope references a handle at most once (per-distinct-reference; the refcount = row count).
+    uniqueIndex('idx_media_references_unique').on(t.handle, t.scopeKind, t.scopeId),
+    // Terminal-state sweep (reclaim a run's refs) + read_media authz lookup (by scope).
+    index('idx_media_references_scope').on(t.scopeKind, t.scopeId),
+    index('idx_media_references_handle').on(t.handle),
+  ],
+);
+
 // --- Inferred row types (select + insert) for each table ---
 
 export type LlmProviderRow = typeof llmProviders.$inferSelect;
@@ -465,3 +529,7 @@ export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type NewAgentSessionRow = typeof agentSessions.$inferInsert;
 export type SessionMessageRow = typeof sessionMessages.$inferSelect;
 export type NewSessionMessageRow = typeof sessionMessages.$inferInsert;
+export type MediaObjectRow = typeof mediaObjects.$inferSelect;
+export type NewMediaObjectRow = typeof mediaObjects.$inferInsert;
+export type MediaReferenceRow = typeof mediaReferences.$inferSelect;
+export type NewMediaReferenceRow = typeof mediaReferences.$inferInsert;

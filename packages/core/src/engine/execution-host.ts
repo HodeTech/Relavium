@@ -15,7 +15,7 @@
  * and as the local reference.
  */
 
-import type { AbortSignalLike, RunEvent } from '@relavium/shared';
+import type { AbortSignalLike, MediaStore, RunEvent } from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
 
@@ -145,6 +145,15 @@ export interface ExecutionHost {
   readonly newAbortController: () => AbortControllerLike;
   /** Arm a one-shot timer (gate / run `timeout_ms`); see {@link SetTimer}. */
   readonly setTimer: SetTimer;
+  /**
+   * The host blob store the engine de-inlines in-flight media into at the one emit/persist choke point
+   * (1.AF, [ADR-0042](../../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)).
+   * **Optional and absent-tolerant**: a text-only host (or a run that produces no media) leaves it
+   * `undefined` and never enters a byte path. The engine references it only by the handle string; a host
+   * (CLI/VS Code filesystem CAS, desktop Rust CAS) injects an implementation. A media-bearing event with
+   * NO store injected is a loud configuration breach (`media_store_unavailable`), never a silent byte leak.
+   */
+  readonly mediaStore?: MediaStore;
 }
 
 // --- In-memory reference implementation (engine tests + the local reference) -------------------
@@ -283,6 +292,8 @@ export function createInMemoryHost(options?: {
   store?: RunStore;
   checkpointer?: Checkpointer;
   baseEpochMs?: number;
+  /** Inject a media store so a run that produces media de-inlines it (1.AF); omit for a text-only host. */
+  mediaStore?: MediaStore;
 }): ExecutionHost & { store: RunStore } & Pick<ManualTimerController, 'fireTimers' | 'armedCount'> {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
@@ -295,6 +306,7 @@ export function createInMemoryHost(options?: {
     checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
     newAbortController: createAbortController,
     setTimer: timers.setTimer,
+    ...(options?.mediaStore ? { mediaStore: options.mediaStore } : {}),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };

@@ -929,7 +929,7 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   green at the new total; **llm-provider-seam.md carries the ADR-0031 amendment section** (placeholder
   replaced). *(Freeze-criticality recorded in the design doc §9: the three union/capability shapes are
   truly breaking-to-defer; the optional fields/methods are landed-early-by-choice per A1.)*
-- **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** Fix the OpenAI `textOf` flatten
+- **1.AE — Media input adapters + the two latent-bug fixes (Phase B).** ✅ — **Done (PR #32, 2026-06-18).** Fix the OpenAI `textOf` flatten
   (unflatten `user` content to `ChatCompletionContentPart[]` — the prerequisite for any OpenAI media);
   wire image/audio/video **input** in Anthropic/OpenAI/Gemini; set the capability matrix; add conformance
   scenarios (image-in, audio-in, `mediaUnits` mapping). **Wiring order (1.AD review note):** the shared
@@ -945,6 +945,18 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   passes its **direct negative-case tests** (metadata IP, link-local, IPv4-mapped IPv6, post-DNS-resolution
   IP, per-hop redirect — testing.md §Security-critical primitive tests; a runtime-*derived* base URL is
   re-checked the same way).
+  - *Landed (PR #32; multi-round + a final 8-dimension Sonnet adversarial review — **no SSRF bypass found**):*
+    the OpenAI `textOf` unflatten (`image_url` + `input_audio`, generate **and** stream); per-modality
+    `assertMediaCapabilities` (replacing the blanket guard, with `LlmMessageSchema.parse` active — no cap-less
+    window); base64 image/audio input across the three adapters with **honest** matrices (`document`/`video`
+    stay `false` — base64-ceiling-blocked, handle/url deferred); the shared SSRF **policy** primitive in
+    `@relavium/shared` (`isPrivateOrLocalHost`/`extractHttpsHost` — numeric-IPv4 / IPv6 / trailing-dot /
+    percent / bracket normalization), **the one primitive reused** by the provider-`baseURL` + `http_request`
+    callers, with the `url` carrier flag ON but adapters **rejecting** url sources (no adapter-side fetch);
+    and the `InvalidBaseUrlError` credential-redaction fix. **Deferred to 1.AF** (recorded in deferred-tasks.md):
+    the SSRF **mechanism** half (host `EgressCapability` DNS-resolve + connect-by-validated-IP + per-hop
+    redirect re-validation), the precise per-modality `requiredCapabilities()` FallbackChain skip,
+    `mediaUnits` population, recorded media-in conformance fixtures, and handle/url media resolution.
 - **1.AF — Engine media plumbing (Phase C).** `requiredCapabilities()` media-gating (input + the
   `outputCombinations` **membership** check) + `FallbackChain` provider-skip + the ephemeral-sidecar
   strip/re-materialize-**before-the-retried-request** on failover (B5); the `MediaStore` contract + host
@@ -960,6 +972,26 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   **never returns a raw key from an IPC command** (direct test); and a run reaching a **terminal event
   (`run:completed|failed|cancelled`) deterministically reclaims its media refs** so a FAILED/CANCELLED run
   leaves no orphaned partial media (a terminal-state sweep, not refcount-GC alone).
+  - 🔨 *In progress on `development` (NOT merged — see [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs).*
+    **Landed (P1 + P2):** D5/D6 per-modality `requiredCapabilities()` + `FallbackChain` provider-skip
+    (one shared `mediaSupportReason` predicate); D3 `deInlineMedia` (cycle-safe flight→durable transform +
+    a pure base64 decoder); D1 `MediaStore` contract impls (`FilesystemMediaStore` CAS + `InMemoryMediaStore`);
+    D10 the `media_objects` + `media_references` tables + migration 0002; D14 strict `output_modalities`/`save_to`
+    node fields; D18 OpenAI `audio_tokens`→`mediaUnits`; **D2** the optional `mediaStore?` on `ExecutionHost`;
+    **D4** `deInlineMedia` at the **one `#emitDurable` choke point** (before `#bus.next`, gap-free seq +
+    persist-before-deliver preserved; missing-store → loud `run:failed`, terminal stays emit-safe); plus the
+    canonical-home doc updates that landed with the code — database-schema.md §Media tables, workflow-yaml-spec
+    (`output_modalities` / `save_to` / `{{ run.id }}`), and sse-event-schema (`mediaUnits` on `cost:updated`).
+    All green (`pnpm turbo` 16/16) + Leakwatch-clean.
+    **Remaining (P3 + P4):** D8 adapter handle/url resolution, D7 the B5 sidecar re-materialize, **D9 the
+    binary media-egress capability + the SSRF mechanism half** (security-critical — needs a dedicated
+    security-review pass per ADR-0043); **D12/D13 `read_media` + the byte-delivery gate** (security-critical
+    — ADR-0044/security-review.md), D11 the terminal-state sweep, D15 the `output_modalities` load-check,
+    D16 the `save_to` write port, D17 the per-modality media cost governor, the keychain-bridge IPC test;
+    plus the **still-pending** canonical-home doc updates: config-spec (the media GC grace key — P4/D11) and
+    security-review (the SSRF/egress controls — P3/D9). _(database-schema, workflow-yaml-spec, and
+    sse-event-schema already landed with the P1+P2 code — see above.)_ The matrix row stays ◇ until the 1.AF
+    PR merges (Done-after-merge).
 - **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
   `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
@@ -1155,7 +1187,7 @@ flowchart LR
 | 1.Z | C | 1.V, 1.L | 1.AA | ✅ — **Done (PR #30, 2026-06-17)** |
 | **1.AA** | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ✅ — **Done (2026-06-17)** |
 | 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
-| 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ◇ |
+| 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ✅ — **Done (PR #32, 2026-06-18)** |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
 | 1.AG | D | 1.AF | 1.AH | ◇ |
 | 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |

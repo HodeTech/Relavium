@@ -4,6 +4,8 @@
 - **Date**: 2026-06-05
 - **Related**: [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0023-strict-authored-yaml-validation.md](0023-strict-authored-yaml-validation.md), [../standards/security-review.md](../standards/security-review.md), [../reference/contracts/workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md), [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md), [../reference/shared-core/mcp-integration.md](../reference/shared-core/mcp-integration.md)
 
+> **Amended 2026-06-18 by [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** A refinement, not a reversal: ADR-0044 adds the `read_media` scope-set authz and an **additive** `ToolPolicyDenyReason` member `media_scope_denied` (alongside this ADR's existing six reasons). This ADR's tool-policy decisions are unchanged.
+
 ## Context
 
 Four tool-policy ambiguities in the current specs are individually small and collectively a real

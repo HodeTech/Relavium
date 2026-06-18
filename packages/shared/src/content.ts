@@ -125,6 +125,49 @@ export function decodedBase64ByteLength(data: string): number | undefined {
   return (data.length / 4) * 3 - padding;
 }
 
+/** charCode → 6-bit value lookup for standard base64 (RFC 4648 §4); built once at module load. */
+const BASE64_DECODE_TABLE = ((): Int16Array => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const table = new Int16Array(128).fill(-1);
+  for (let i = 0; i < alphabet.length; i += 1) {
+    table[alphabet.codePointAt(i) ?? 0] = i;
+  }
+  return table;
+})();
+
+/**
+ * Decode a standard padded base64 string to its raw bytes, or `undefined` when it is not valid
+ * base64 (delegating the same validation as {@link decodedBase64ByteLength}). Pure and platform-free
+ * (no `atob`/`Buffer` — `types: []` admits neither): `deInlineMedia` uses it to turn an in-flight
+ * `base64` media source into the `Uint8Array` the host `MediaStore.put` content-addresses to a handle.
+ */
+export function decodeBase64(data: string): Uint8Array | undefined {
+  const byteLength = decodedBase64ByteLength(data);
+  if (byteLength === undefined) {
+    return undefined;
+  }
+  // `data` is already validated padded base64 (alphabet + length % 4 === 0), so every position
+  // exists and every non-`=` char maps to a 0..63 value; `sextet` keeps the lookup total for the
+  // `noUncheckedIndexedAccess` compiler (a `-1`/undefined can never occur after that validation).
+  const sextet = (charCode: number): number => {
+    const value = BASE64_DECODE_TABLE[charCode];
+    return value === undefined || value < 0 ? 0 : value;
+  };
+  const out = new Uint8Array(byteLength);
+  let outIndex = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const c0 = sextet(data.codePointAt(i) ?? 0);
+    const c1 = sextet(data.codePointAt(i + 1) ?? 0);
+    const c2 = data[i + 2] === '=' ? 0 : sextet(data.codePointAt(i + 2) ?? 0);
+    const c3 = data[i + 3] === '=' ? 0 : sextet(data.codePointAt(i + 3) ?? 0);
+    const triple = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+    if (outIndex < byteLength) out[outIndex++] = (triple >> 16) & 0xff;
+    if (outIndex < byteLength) out[outIndex++] = (triple >> 8) & 0xff;
+    if (outIndex < byteLength) out[outIndex++] = triple & 0xff;
+  }
+  return out;
+}
+
 /**
  * A `data:[<mediatype>][;attr=value…];base64,` URI — the other way raw media bytes hide inside an
  * opaque string. RFC 2397 makes the mediatype optional and allows any number of `;attr=value`
@@ -133,6 +176,11 @@ export function decodedBase64ByteLength(data: string): number | undefined {
  */
 const DATA_URI_BASE64_PATTERN = /^data:[^,]*;base64,/i;
 
+/** A base64 `data:` URI string — a smuggled byte carrier (never durable-safe). */
+export function isBase64DataUri(value: string): boolean {
+  return DATA_URI_BASE64_PATTERN.test(value);
+}
+
 /**
  * Raw binary in an opaque position (a typed array, `DataView`, `ArrayBuffer`, or
  * `SharedArrayBuffer` — all ES built-ins, so the check stays platform-free) IS media bytes by
@@ -140,7 +188,7 @@ const DATA_URI_BASE64_PATTERN = /^data:[^,]*;base64,/i;
  * also be an OOM hazard). `SharedArrayBuffer` is typeof-guarded because hosts may hide it
  * (browser COOP/COEP gating) even though its lib type always exists.
  */
-function isBinaryBuffer(value: object): boolean {
+export function isBinaryBuffer(value: object): boolean {
   return (
     ArrayBuffer.isView(value) ||
     value instanceof ArrayBuffer ||
@@ -154,8 +202,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** The canonical in-flight base64 carrier shape, found loose inside an opaque value. */
-function isCanonicalBase64Source(record: Record<string, unknown>): boolean {
+export function isCanonicalBase64Source(record: Record<string, unknown>): boolean {
   return record['kind'] === 'base64' && typeof record['data'] === 'string';
+}
+
+/** A `{ type:'media', source:{ kind:'url' } }` part — a url media source that is NOT yet a handle. */
+function isUrlMediaPart(record: Record<string, unknown>): boolean {
+  const source = record['source'];
+  return record['type'] === 'media' && isRecord(source) && source['kind'] === 'url';
 }
 
 /**
@@ -235,6 +289,74 @@ export function containsInlineMediaBytes(value: unknown): boolean {
     // turn every mounting schema's safeParse into a throwing call. Treat it as containing bytes.
     return true;
   }
+}
+
+/**
+ * Deep, cycle-safe scan for anything that is NOT durable-safe in an opaque value: everything
+ * {@link containsInlineMediaBytes} flags (a base64 `data:` URI, a loose `{ kind:'base64' }` source, a
+ * raw binary buffer) PLUS a **url media part** (`{ type:'media', source:{ kind:'url' } }`) — a url that
+ * has not been re-hosted to a handle and so cannot cross a durable / run-event / checkpoint boundary
+ * (ADR-0043; the re-host *mechanism* is 1.AF/D9). The engine's de-inline fast-path + no-store guard use
+ * THIS (not the byte-only scan) so a url-only payload is never silently passed through. A bare
+ * `{ kind:'url' }` object that is not a media part is left alone — a plain URL string is legitimate
+ * non-media data.
+ */
+export function containsDurableUnsafeMedia(value: unknown): boolean {
+  try {
+    const seen = new Set<object>();
+    const stack: unknown[] = [value];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (typeof current === 'string') {
+        if (DATA_URI_BASE64_PATTERN.test(current)) {
+          return true;
+        }
+        continue;
+      }
+      if (typeof current !== 'object' || current === null || seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      if (objectNodeIsDurableUnsafe(current, stack)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true; // fail closed — same posture as containsInlineMediaBytes
+  }
+}
+
+/**
+ * One node of the durable-unsafe scan (the {@link objectNodeHasInlineBytes} twin): `true` when the node
+ * itself is durable-unsafe (a binary buffer, a canonical base64 source, or a url media part), otherwise
+ * its children are queued onto `stack`. Split out so {@link containsDurableUnsafeMedia} stays simple
+ * (sonar S3776).
+ */
+function objectNodeIsDurableUnsafe(node: object, stack: unknown[]): boolean {
+  if (isBinaryBuffer(node)) {
+    return true;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) stack.push(item);
+    return false;
+  }
+  if (node instanceof Map) {
+    for (const [key, item] of node) stack.push(key, item);
+    return false;
+  }
+  if (node instanceof Set) {
+    for (const item of node) stack.push(item);
+    return false;
+  }
+  if (!isRecord(node)) {
+    return false;
+  }
+  if (isCanonicalBase64Source(node) || isUrlMediaPart(node)) {
+    return true;
+  }
+  for (const nested of Object.values(node)) stack.push(nested);
+  return false;
 }
 
 /**

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-17
+> Last updated: 2026-06-19
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -183,7 +183,8 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > consumers 1.K/1.O** (the same cheap-window move as ADR-0030), so the media union members are
 > non-breaking; the seam doc carries the full amendment section. **1.AE–1.AH (media
 > input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane ran straight to
-> **1.K** (✅ Done, PR #13), which closed it.
+> **1.K** (✅ Done, PR #13), which closed it. **1.AE (media-input adapters + the shared SSRF policy
+> primitive) is now ✅ Done (PR #32, 2026-06-18)**; 1.AF–1.AH remain.
 
 > **Review-pass follow-ups landed (PR #12, merged 2026-06-11).** The 2026-06-10 engine/tooling
 > review pass landed as docs/decisions only — no Phase-1 workstream changed: **MCP client scheduling**
@@ -212,9 +213,22 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > the `SessionStore` + domain↔row mappers (data-layer only); then **session checkpoint/resume (1.Y) +
 > export-to-workflow (1.Z) are ✅ Done (PR #30, 2026-06-17)** — `reconstructSessionState`/`AgentSession.resume`
 > + the `serializeWorkflow`/`sessionToWorkflow` pair (the per-turn `AgentSession`→store wiring stays with 1.AA).
-> **1.AA is now ✅ Done (2026-06-17)**, completing **1.m5**. The remaining Phase-1 work is **additive and
-> off the critical path**: only the 1.m6 multimodal sub-spine (1.AE–1.AH) remains before Phase 1 closes.
-> **Phase 2 (CLI, milestone M3) is unblocked.**
+> **1.AA is now ✅ Done (2026-06-17)**, completing **1.m5**. On the 1.m6 multimodal sub-spine,
+> **media-input adapters + the shared SSRF policy primitive (1.AE) are ✅ Done (PR #32, 2026-06-18)** —
+> after a multi-round + final 8-dimension adversarial review (no SSRF bypass found); the SSRF *mechanism*
+> half (host DNS-resolve + connect-by-validated-IP), per-modality FallbackChain gating, `mediaUnits`, and
+> handle/url media resolution are deferred to **1.AF**. **1.AF (engine media plumbing) is 🔨 in progress on
+> `development`** — its three design ADRs (0042/0043/0044) are Accepted, and **P1 + P2 have landed (NOT yet
+> merged):** the `MediaStore` contract impls + `media_objects`/`media_references` tables (migration 0002),
+> per-modality capability gating + `FallbackChain` skip, `deInlineMedia`, the strict `output_modalities`/
+> `save_to` node fields, OpenAI `mediaUnits`, and **the I3 keystone — `deInlineMedia` at the one
+> `#emitDurable` choke point** (all green, Leakwatch-clean). **Remaining (P3 + P4, some security-critical):**
+> the binary media-egress + SSRF mechanism half (D9), `read_media` + the byte-delivery gate (D12/D13),
+> the failover sidecar (D7), adapter handle/url resolution (D8), the terminal sweep (D11), the
+> `output_modalities` load-check (D15), the `save_to` write port (D16), and the per-modality media cost
+> governor (D17) — D9 and D12/D13 want a dedicated security-review pass. The remaining Phase-1 work is
+> **additive and off the critical path**: only **1.AF–1.AH** (engine media plumbing, output, surfaces) remain
+> before Phase 1 closes. **Phase 2 (CLI, milestone M3) is unblocked.**
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.
