@@ -1,6 +1,6 @@
 # The `ActionGuard` Seam — external action-governance
 
-- **Status**: Draft ([ADR-0041](../../decisions/0041-external-action-governance-seam.md) is Proposed; this reference lands only if/when 0041 is Accepted)
+- **Status**: Accepted ([ADR-0041](../../decisions/0041-external-action-governance-seam.md) Accepted 2026-06-18) — the contract is settled and this is its one canonical home; **implementation is deferred to the Phase-2 enterprise track and off by default** (no Phase-1 code — the engine seam types, the per-surface host wiring, and the additive `fsWrite?` / `governed_block` changes land with that implementation, gated on the external-governor direction; see the *Entry-point scope* section)
 - **Canonical home**: the contract for the **optional, host-injected `ActionGuard`** that an external action-governance control plane (reference implementation: **Provna**) plugs into at the side-effecting tool boundary — the verdict union, the `ActionIntent` payload, the decide/commit/compensate lifecycle, and the engine-opaque receipt/compensation handles
 - **Related**: [../../decisions/0041-external-action-governance-seam.md](../../decisions/0041-external-action-governance-seam.md) (the decision), [tool-registry.md](tool-registry.md) (the `ToolHost` seam + the dispatch lifecycle this composes into), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md) (the policy/mechanism split), [../../decisions/0029-tool-policy-hardening.md](../../decisions/0029-tool-policy-hardening.md) (the always-on guardrails that run first), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) (the durable suspend/resume the approval verdict reuses), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md) (the side-effect journaling precedent), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxonomy) (the `tool_denied` code an `ActionDecision` of kind `block` maps to), [../../standards/security-review.md](../../standards/security-review.md#prompt-injection-posture) (the untrusted-data taint this consumes), [../../product-constraints.md](../../product-constraints.md) (the local-first, no-cloud-dependency constraint the off-by-default rule preserves)
 
@@ -73,7 +73,7 @@ interface ActionIntent {
  * fs WRITE → `fs-write`. The fs-write split needs a discriminator the current `ToolPolicyClass` LACKS —
  * `fsScoped` is `true` for reads AND writes alike (`read_file` / `write_file` / `list_directory` share it),
  * so ADR-0041 proposes an additive **`fsWrite?: boolean`** on `ToolPolicyClass` (canonical in tool-registry.md;
- * lands when 0041 is Accepted). Until it lands, an implementation MUST NOT govern fs reads as `fs-write`.
+ * lands with the Phase-2 implementation). Until it lands, an implementation MUST NOT govern fs reads as `fs-write`.
  * Local read-only tools (fs read, `git_status`, clipboard) are NOT governed. EGRESS IS governed even when
  * read-only (e.g. `web_search`): egress is an exfiltration *sink* for the IFC pillar (the query is the
  * lethal-trifecta channel), so the guard sees every egress for IFC/authz/audit — a read-only egress simply
@@ -122,7 +122,7 @@ A discriminated union the registry lowers into its **existing** control flow —
 ```ts
 type ActionDecision =
   | { readonly verdict: 'allow'; readonly plan: ActionPlan }
-  | { readonly verdict: 'block'; readonly reason: ToolPolicyDenyReason }                    // → tool_denied (fatal); stable reason code from tool-registry.md §Error taxonomy
+  | { readonly verdict: 'block'; readonly reason: ToolPolicyDenyReason }                    // → tool_denied (fatal); reason from tool-registry.md §Error taxonomy — incl. the additive `governed_block` member (below)
   | { readonly verdict: 'require-approval'; readonly approval: ApprovalRequest; readonly plan: ActionPlan }
   | { readonly verdict: 'transform'; readonly narrowedArgs: Untrusted<JsonValue>; readonly plan: ActionPlan };
 
@@ -130,18 +130,18 @@ type ActionDecision =
  *  The engine journals it (replay) and hands it back to `commit`; it never inspects the internals. */
 interface ActionPlan {
   readonly idempotencyKey: string;   // the guard's SEMANTIC effect key (NOT the request body hash) — replay-stable
-  readonly opaque: OpaqueGuardState; // engine-opaque (Readonly<Record<string, unknown>>) — compensation descriptor, audit ref, etc.
+  readonly opaque: OpaqueGuardState; // engine-opaque (Readonly<Record<string, JsonValue>>) — compensation descriptor, audit ref, etc.
 }
 
 /** The approval ask — surfaced through the SAME durable human gate as a `human_in_the_loop` node (ADR-0036). */
 interface ApprovalRequest {
   readonly summary: string;                 // human-facing: what is about to happen (the dry-run preview)
   readonly riskTier: 'low' | 'elevated' | 'high' | 'irreversible';
-  readonly timeoutPolicy?: HumanGateTimeout; // the `human_in_the_loop` gate's timeout shape ([node-types.md](node-types.md)) — reused, not redefined; absent ⇒ host default
+  readonly timeoutPolicy?: HumanGateTimeoutConfig; // the `human_in_the_loop` config's `timeout_ms` / `on_timeout` shape ([node-types.md §human_in_the_loop_config](node-types.md)) — reused, not redefined; absent ⇒ host default
 }
 ```
 
-`ToolPolicyDenyReason` is the stable, closed reason-code union used by `ToolPolicyError` in [tool-registry.md §Error taxonomy](tool-registry.md#error-taxonomy); reusing it for the `block` verdict keeps the governor denial in the same taxonomy as the engine's own guardrail denials.
+`ToolPolicyDenyReason` is the stable, closed reason-code union used by `ToolPolicyError` in [tool-registry.md §Error taxonomy](tool-registry.md#error-taxonomy); reusing it for the `block` verdict keeps the governor denial in the same taxonomy as the engine's own guardrail denials. Its current members (`not_granted` / `command_not_allowed` / `domain_not_allowed` / `insecure_url` / `gate_required` / `provider_executed`) are all guardrail-specific and name no governor-originated denial, so ADR-0041 proposes a single **additive `governed_block`** member on `ToolPolicyDenyReason` (canonical in [tool-registry.md §Error taxonomy](tool-registry.md#error-taxonomy)) for an IFC violation / authz refusal / policy block. The engine-visible code stays coarse and the union stays closed; the governor's **detailed, human-facing reason lives in the engine-opaque audit record** (carried in `OpaqueGuardState`), never in the engine's taxonomy. Like the additive `fsWrite?` flag, `governed_block` lands with the Phase-2 implementation; until then the union is unchanged.
 
 Engine interpretation of each verdict:
 
@@ -154,7 +154,7 @@ Engine interpretation of each verdict:
 
 ## Supporting types
 
-The remaining types the seam references. `ToolId`, `JsonValue`, and `AbortSignalLike` are imported from [tool-registry.md](tool-registry.md) / `@relavium/shared`, not redefined; `Untrusted<T>` is the engine's branded untrusted marker, canonical in [tool-registry.md §Untrusted-data taint](tool-registry.md#untrusted-data-taint-1t-marks-1o-places); `HumanGateTimeout` is the `human_in_the_loop` node's timeout shape, canonical in [node-types.md](node-types.md) (reused, not redefined — rule 8).
+The remaining types the seam references. `ToolId`, `JsonValue`, and `AbortSignalLike` are imported from [tool-registry.md](tool-registry.md) / `@relavium/shared`, not redefined; `Untrusted<T>` is the engine's branded untrusted marker, canonical in [tool-registry.md §Untrusted-data taint](tool-registry.md#untrusted-data-taint-1t-marks-1o-places); `HumanGateTimeoutConfig` is **not a new type** — it names the `human_in_the_loop` node's authored timeout config (`timeout_ms` + `on_timeout`: `approve` / `reject`), whose one canonical home is [node-types.md §human_in_the_loop_config](node-types.md) (reused, not redefined — rule 8).
 
 ```ts
 /** What `commit` returns: the untrusted-marked tool result + the engine-opaque receipt the registry journals. */
@@ -278,4 +278,4 @@ const result = await registry.dispatch(toolCall, ctx);
 
 `createToolRegistry` still performs **no** I/O and reads **no** ambient state; a stub `ActionGuard` (like the stub `ToolHost`) keeps the whole registry unit-testable with zero real side effects. Adding a guard never widens what a node may call — `ctx.grantedToolIds` + [ADR-0029](../../decisions/0029-tool-policy-hardening.md) still gate the call first; the guard can only restrict further.
 
-> **Engine-opaque by design.** `OpaqueGuardState`, `ActionReceipt`, and the compensation/audit internals are `Readonly<Record<string, unknown>>` the engine carries and journals but never interprets — the governor's IFC engine, compensation library, per-action authorization, and tamper-evident audit live entirely on the **external** side of the seam (see [ADR-0041](../../decisions/0041-external-action-governance-seam.md)). Relavium owns the boundary; the governor owns the guarantees.
+> **Engine-opaque by design.** `OpaqueGuardState`, `ActionReceipt`, and the compensation/audit internals are `Readonly<Record<string, JsonValue>>` the engine carries and journals but never interprets — the governor's IFC engine, compensation library, per-action authorization, and tamper-evident audit live entirely on the **external** side of the seam (see [ADR-0041](../../decisions/0041-external-action-governance-seam.md)). Relavium owns the boundary; the governor owns the guarantees.
