@@ -757,7 +757,7 @@ describe('extractHttpsHost + urlHasCredentials (SSRF URL policy)', () => {
   });
 
   it('rejects non-HTTPS schemes', () => {
-    expect(extractHttpsHost('http://api.openai.com')).toBeNull();
+    expect(extractHttpsHost('http://api.openai.com')).toBeNull(); // NOSONAR — cleartext URL is the exact input under test
     expect(extractHttpsHost('ftp://example.com')).toBeNull();
   });
 

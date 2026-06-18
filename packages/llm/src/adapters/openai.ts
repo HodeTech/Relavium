@@ -488,11 +488,8 @@ function assertHttpsBaseUrl(url: string): void {
   if (urlHasCredentials(url)) {
     throw new InvalidBaseUrlError(url, 'must not contain embedded credentials');
   }
-  const host = parsed.hostname
-    .toLowerCase()
-    .replace(/^\[/, '')
-    .replace(/\]$/, '')
-    .replace(/\.+$/, '');
+  // Strip IPv6 brackets; the trailing-dot FQDN normalization is handled inside isPrivateOrLocalHost.
+  const host = parsed.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
   if (isPrivateOrLocalHost(host)) {
     throw new InvalidBaseUrlError(url, 'resolves to a private, loopback, or link-local address');
   }

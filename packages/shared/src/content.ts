@@ -695,7 +695,7 @@ export function isPrivateOrLocalHost(host: string): boolean {
   // block: lowercase, strip the FQDN trailing dot(s) (`localhost.` ≡ `localhost`), decode IPv6 literals
   // to their 8 groups, and canonicalize any numeric-IPv4 form (decimal `2130706433`, hex `0x7f000001`,
   // octal `0177.0.0.1`, inet_aton short forms `a` / `a.b` / `a.b.c`) to dotted-decimal.
-  const h = host.toLowerCase().replace(/\.+$/, '');
+  const h = stripTrailingDots(host.toLowerCase());
 
   if (
     h === 'localhost' ||
@@ -740,42 +740,43 @@ function isCgnat100(h: string): boolean {
   return octet >= 64 && octet <= 127;
 }
 
-/**
- * Canonicalize a numeric IPv4 authority — decimal, `0x`-hex, or `0`-octal parts, in inet_aton's 1–4
- * part short forms (`a`, `a.b`, `a.b.c`, `a.b.c.d`) — to dotted-decimal, or `null` when the host is not
- * an all-numeric IPv4 form (i.e. it is a hostname, or an invalid/overflowing literal). This closes the
- * decimal/hex/octal encoding bypasses that a prefix-only check (`startsWith('127.')`) would miss.
- */
-function canonicalizeNumericIpv4(host: string): string | null {
-  const parts = host.split('.');
-  if (parts.length < 1 || parts.length > 4) {
+/** Strip FQDN trailing dot(s) without a quantified regex (`host.` ≡ `host`; ReDoS-free, S5852-clean). */
+function stripTrailingDots(host: string): string {
+  let result = host;
+  while (result.endsWith('.')) {
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
+/** Parse one inet_aton IPv4 part — decimal, `0x`-hex, or `0`-octal — to its value, or `null` if non-numeric. */
+function parseIpv4Octet(part: string): number | null {
+  let value: number;
+  if (/^0x[0-9a-f]+$/.test(part)) {
+    value = Number.parseInt(part.slice(2), 16);
+  } else if (/^0[0-7]*$/.test(part)) {
+    value = part.length === 1 ? 0 : Number.parseInt(part.slice(1), 8);
+  } else if (/^[1-9]\d*$/.test(part)) {
+    value = Number.parseInt(part, 10);
+  } else {
     return null;
   }
-  const values: number[] = [];
-  for (const part of parts) {
-    let value: number;
-    if (/^0x[0-9a-f]+$/.test(part)) {
-      value = Number.parseInt(part.slice(2), 16);
-    } else if (/^0[0-7]*$/.test(part)) {
-      value = part.length === 1 ? 0 : Number.parseInt(part.slice(1), 8);
-    } else if (/^[1-9][0-9]*$/.test(part)) {
-      value = Number.parseInt(part, 10);
-    } else {
-      return null;
-    }
-    if (!Number.isSafeInteger(value) || value < 0) {
-      return null;
-    }
-    values.push(value);
-  }
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Pack inet_aton parts to dotted-decimal: each leading part is one byte, the last fills the remaining
+ * low-order bytes. Returns `null` if a leading part exceeds one byte or the final part overflows its bytes.
+ */
+function packIpv4(values: readonly number[]): string | null {
   const lastIndex = values.length - 1;
   for (let i = 0; i < lastIndex; i++) {
     if ((values[i] ?? 0) > 0xff) {
-      return null; // a leading part wider than one byte is not a valid inet_aton form
+      return null;
     }
   }
   if ((values[lastIndex] ?? 0) >= 2 ** (8 * (4 - lastIndex))) {
-    return null; // the final part overflows the bytes it must fill
+    return null;
   }
   let ipNum = values[lastIndex] ?? 0;
   for (let i = 0; i < lastIndex; i++) {
@@ -787,46 +788,82 @@ function canonicalizeNumericIpv4(host: string): string | null {
 }
 
 /**
+ * Canonicalize a numeric IPv4 authority — decimal, `0x`-hex, or `0`-octal parts, in inet_aton's 1–4
+ * part short forms (`a`, `a.b`, `a.b.c`, `a.b.c.d`) — to dotted-decimal, or `null` when the host is not
+ * an all-numeric IPv4 form. Closes the decimal/hex/octal encoding bypasses a prefix-only check would miss.
+ */
+function canonicalizeNumericIpv4(host: string): string | null {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) {
+    return null;
+  }
+  const values: number[] = [];
+  for (const part of parts) {
+    const value = parseIpv4Octet(part);
+    if (value === null) {
+      return null;
+    }
+    values.push(value);
+  }
+  return packIpv4(values);
+}
+
+/**
+ * Parse an IPv6 literal (bracket-stripped; optional `%zone`; optional trailing embedded IPv4) into its
+ * eight 16-bit groups, expanding `::`. Returns `null` if it is not a well-formed IPv6 literal — so a
+ * compressed/expanded/zero-padded form (`0::1`, `0000:…:0001`) decodes to the same groups as `::1`.
+ */
+/**
+ * Substitute a trailing embedded IPv4 (`…:a.b.c.d`) with two hex groups IN PLACE — keeping the preceding
+ * colons (incl. a `::`) intact (`64:ff9b::127.0.0.1` → `64:ff9b::7f00:1`). Returns the string unchanged
+ * when there is no embedded IPv4, or `null` if the embedded tail is not a valid IPv4.
+ */
+function substituteEmbeddedIpv4(s: string): string | null {
+  const lastColon = s.lastIndexOf(':');
+  if (lastColon === -1 || !s.slice(lastColon + 1).includes('.')) {
+    return s;
+  }
+  const dotted = canonicalizeNumericIpv4(s.slice(lastColon + 1));
+  if (dotted === null) {
+    return null;
+  }
+  const o = dotted.split('.').map(Number);
+  const hi = (((o[0] ?? 0) << 8) | (o[1] ?? 0)).toString(16);
+  const lo = (((o[2] ?? 0) << 8) | (o[3] ?? 0)).toString(16);
+  return `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
+}
+
+/** Expand an all-hex IPv6 literal (with at most one `::`) to its 16-bit groups, or `null` if malformed. */
+function expandIpv6(s: string): number[] | null {
+  const doubleColon = s.indexOf('::');
+  if (doubleColon === -1) {
+    return s === '' ? [] : s.split(':').map((seg) => Number.parseInt(seg, 16));
+  }
+  const beforeSegs = s.slice(0, doubleColon) === '' ? [] : s.slice(0, doubleColon).split(':');
+  const afterSegs = s.slice(doubleColon + 2) === '' ? [] : s.slice(doubleColon + 2).split(':');
+  const known = beforeSegs.length + afterSegs.length;
+  if (known > 8) {
+    return null;
+  }
+  return [
+    ...beforeSegs.map((seg) => Number.parseInt(seg, 16)),
+    ...new Array<number>(8 - known).fill(0),
+    ...afterSegs.map((seg) => Number.parseInt(seg, 16)),
+  ];
+}
+
+/**
  * Parse an IPv6 literal (bracket-stripped; optional `%zone`; optional trailing embedded IPv4) into its
  * eight 16-bit groups, expanding `::`. Returns `null` if it is not a well-formed IPv6 literal — so a
  * compressed/expanded/zero-padded form (`0::1`, `0000:…:0001`) decodes to the same groups as `::1`.
  */
 function parseIpv6Groups(host: string): number[] | null {
-  let s = host.split('%')[0] ?? host;
-  // Convert a trailing embedded IPv4 (`…:a.b.c.d`) to two hex groups IN PLACE — keeping the preceding
-  // colons (incl. a `::`) intact — so the rest parses uniformly (`64:ff9b::127.0.0.1` → `64:ff9b::7f00:1`).
-  const lastColon = s.lastIndexOf(':');
-  if (lastColon !== -1 && s.slice(lastColon + 1).includes('.')) {
-    const dotted = canonicalizeNumericIpv4(s.slice(lastColon + 1));
-    if (dotted === null) {
-      return null;
-    }
-    const octets = dotted.split('.').map(Number);
-    const hi = (((octets[0] ?? 0) << 8) | (octets[1] ?? 0)).toString(16);
-    const lo = (((octets[2] ?? 0) << 8) | (octets[3] ?? 0)).toString(16);
-    s = `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
+  const substituted = substituteEmbeddedIpv4(host.split('%')[0] ?? host);
+  if (substituted === null) {
+    return null;
   }
-  const doubleColon = s.indexOf('::');
-  let groups: number[];
-  if (doubleColon === -1) {
-    const segs = s === '' ? [] : s.split(':');
-    groups = segs.map((seg) => Number.parseInt(seg, 16));
-  } else {
-    const before = s.slice(0, doubleColon);
-    const after = s.slice(doubleColon + 2);
-    const beforeSegs = before === '' ? [] : before.split(':');
-    const afterSegs = after === '' ? [] : after.split(':');
-    const known = beforeSegs.length + afterSegs.length;
-    if (known > 8) {
-      return null;
-    }
-    groups = [
-      ...beforeSegs.map((seg) => Number.parseInt(seg, 16)),
-      ...new Array<number>(8 - known).fill(0),
-      ...afterSegs.map((seg) => Number.parseInt(seg, 16)),
-    ];
-  }
-  if (groups.length !== 8) {
+  const groups = expandIpv6(substituted);
+  if (groups === null || groups.length !== 8) {
     return null;
   }
   for (const group of groups) {
@@ -916,7 +953,7 @@ export function extractHttpsHost(url: string): { host: string; hasCredentials: b
     const colon = authority.indexOf(':');
     host = colon === -1 ? authority : authority.slice(0, colon);
   }
-  return { host: host.toLowerCase().replace(/\.+$/, ''), hasCredentials };
+  return { host: stripTrailingDots(host.toLowerCase()), hasCredentials };
 }
 
 /**
