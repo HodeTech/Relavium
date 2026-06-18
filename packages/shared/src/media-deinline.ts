@@ -154,6 +154,17 @@ async function rewrite(
     cache.set(value, durable);
     return durable;
   }
+  // A url media part with NO mimeType slips past isInflightMediaPart (which requires a string mimeType) yet
+  // is still flagged by containsDurableUnsafeMedia (its isUrlMediaPart requires no mimeType) — so close that
+  // scan/rewrite asymmetry here: throw on a `{ type:'media', source:{ kind:'url' } }` regardless of mimeType,
+  // exactly mirroring the scan, so an un-re-hosted url can NEVER silently clone through to a durable position
+  // (I3). A url part WITH a mimeType already throws inside rewriteMediaPart above; this is the opaque case.
+  const urlSource = value['source'];
+  if (value['type'] === 'media' && isRecord(urlSource) && urlSource['kind'] === 'url') {
+    throw new Error(
+      'deInlineMedia cannot re-host a url media source — the engine media-egress step (1.AF, ADR-0043) must materialize it to a handle first',
+    );
+  }
   // A loose base64 source NOT wrapped in a media part has no mimeType to content-address — it cannot be
   // made durable-safe, so fail closed rather than recurse-and-pass-through (the prior leak path).
   if (isCanonicalBase64Source(value)) {

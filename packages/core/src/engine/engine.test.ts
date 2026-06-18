@@ -679,6 +679,85 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
   });
 
+  it('de-inlines a media-bearing gate decision.payload to a handle on human_gate:resumed (no base64)', async () => {
+    // The resume() decision.payload (z.unknown()) is the one #emitDurable de-inline caller a gate exercises;
+    // it must flow through the SAME I3 choke point, so the delivered + persisted human_gate:resumed carries a
+    // handle, never the base64 bytes.
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore });
+    const engine = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }) },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, {
+            decision: 'approved',
+            decidedBy: 'tester',
+            payload: { image: MEDIA_PART },
+          });
+        }
+      }
+    }
+    const resumed = events.find((e) => e.type === 'human_gate:resumed');
+    if (resumed?.type !== 'human_gate:resumed') {
+      throw new Error('expected human_gate:resumed');
+    }
+    const put0 = puts[0];
+    expect(put0).toBeDefined();
+    expect(resumed.payload).toEqual({
+      image: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'handle', ref: put0?.handle },
+        byteLength: 5,
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    expect(JSON.stringify(runStore.eventsFor(handle.runId))).not.toContain('aGVsbG8=');
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run (no leak, no hang) when a gate decision.payload carries media but no MediaStore', async () => {
+    // No store ⇒ resume()'s de-inline of the media payload throws; resume()'s catch fails the run AND always
+    // #schedule()s (no stranded run), and the bytes never reach a stamped/persisted event.
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore }); // deliberately no mediaStore
+    const engine = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }) },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, {
+            decision: 'approved',
+            decidedBy: 'tester',
+            payload: MEDIA_PART,
+          });
+        }
+      }
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    const failed = events.find((e) => e.type === 'run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('internal');
+    }
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    expect(JSON.stringify(runStore.eventsFor(handle.runId))).not.toContain('aGVsbG8=');
+  });
+
   it('rejects a resume with an unknown gateId while paused (unknown_gate)', async () => {
     const engine = engineWith({
       g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }),

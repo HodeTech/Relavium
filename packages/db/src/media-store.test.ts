@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +43,23 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
   it('rejects a non-handle string (never reads an arbitrary path)', async () => {
     await expect(store.get('../../etc/passwd')).rejects.toThrow(/handle/);
     await expect(store.get('media://sha256-not-hex')).rejects.toThrow(/handle/);
+  });
+
+  it('rejects a tampered/corrupt blob on read (sha256 integrity-on-read)', async () => {
+    // The CAS tamper-evidence property is the security-critical core of the content-addressed store: the
+    // handle IS the sha256, so a corrupted/partial/tampered blob must be REJECTED on read, never served.
+    // A fresh root keeps the corrupted blob from perturbing the shared-store round-trip/idempotency tests.
+    const tamperRoot = mkdtempSync(join(tmpdir(), 'relavium-media-tamper-'));
+    try {
+      const tamperStore = new FilesystemMediaStore(tamperRoot);
+      const handle = await tamperStore.put(HELLO);
+      const digest = handle.slice('media://sha256-'.length);
+      const casPath = join(tamperRoot, digest.slice(0, 2), digest.slice(2));
+      writeFileSync(casPath, new Uint8Array([0xff])); // overwrite the stored bytes in place
+      await expect(tamperStore.get(handle)).rejects.toThrow(/content-address/);
+    } finally {
+      rmSync(tamperRoot, { recursive: true, force: true });
+    }
   });
 });
 

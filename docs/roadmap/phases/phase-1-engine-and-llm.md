@@ -979,15 +979,19 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
     D10 the `media_objects` + `media_references` tables + migration 0002; D14 strict `output_modalities`/`save_to`
     node fields; D18 OpenAI `audio_tokens`→`mediaUnits`; **D2** the optional `mediaStore?` on `ExecutionHost`;
     **D4** `deInlineMedia` at the **one `#emitDurable` choke point** (before `#bus.next`, gap-free seq +
-    persist-before-deliver preserved; missing-store → loud `run:failed`, terminal stays emit-safe). All green
-    (`pnpm turbo` 16/16; core 735 tests) + Leakwatch-clean.
+    persist-before-deliver preserved; missing-store → loud `run:failed`, terminal stays emit-safe); plus the
+    canonical-home doc updates that landed with the code — database-schema.md §Media tables, workflow-yaml-spec
+    (`output_modalities` / `save_to` / `{{ run.id }}`), and sse-event-schema (`mediaUnits` on `cost:updated`).
+    All green (`pnpm turbo` 16/16) + Leakwatch-clean.
     **Remaining (P3 + P4):** D8 adapter handle/url resolution, D7 the B5 sidecar re-materialize, **D9 the
     binary media-egress capability + the SSRF mechanism half** (security-critical — needs a dedicated
     security-review pass per ADR-0043); **D12/D13 `read_media` + the byte-delivery gate** (security-critical
     — ADR-0044/security-review.md), D11 the terminal-state sweep, D15 the `output_modalities` load-check,
     D16 the `save_to` write port, D17 the per-modality media cost governor, the keychain-bridge IPC test;
-    plus the canonical-home doc updates (database-schema / workflow-yaml-spec / config-spec / security-review /
-    sse-event-schema). The matrix row stays ◇ until the 1.AF PR merges (Done-after-merge).
+    plus the **still-pending** canonical-home doc updates: config-spec (the media GC grace key — P4/D11) and
+    security-review (the SSRF/egress controls — P3/D9). _(database-schema, workflow-yaml-spec, and
+    sse-event-schema already landed with the P1+P2 code — see above.)_ The matrix row stays ◇ until the 1.AF
+    PR merges (Done-after-merge).
 - **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
   `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo

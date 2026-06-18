@@ -1012,8 +1012,11 @@ class RunExecution {
           break;
       }
     } catch {
-      // Backstop for an UNEXPECTED throw while settling a node — e.g. a bus/Zod stamp failure on a
-      // malformed event. (A durable persist rejection no longer reaches here: #emitDurable is total.)
+      // Backstop while settling a node: a bus/Zod stamp failure on a malformed event, OR — by design — a
+      // media de-inline failure re-thrown by #emitDurable for a NON-terminal media-bearing node output (an
+      // un-re-hosted url, a non-canonical byte carrier, a missing/erroring MediaStore). Both map to a single
+      // run:failed here. (A durable PERSIST rejection still never reaches here: #emitDurable absorbs persist
+      // faults and self-schedules; only the de-inline transform re-throws, and only for non-terminal events.)
       this.#failNodeInternal(vertex, 'the engine failed while settling a node');
     }
     this.#schedule();
@@ -1404,7 +1407,9 @@ class RunExecution {
 
   async #emitDurable(draft: RunEventDraft): Promise<void> {
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
-    // can never re-run a completed node or lose its output). This method is **total**: a store fault
+    // can never re-run a completed node or lose its output). This method is **total for store faults** (the
+    // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
+    // the #onOutcome/#begin backstops; see MEDIA DE-INLINE): a store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
     // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free

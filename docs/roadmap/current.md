@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-17
+> Last updated: 2026-06-19
 
 - **Related**: [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 

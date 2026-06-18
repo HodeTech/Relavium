@@ -179,4 +179,48 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     ];
     await expect(deInlineMedia(bad, store)).rejects.toThrow(/unsupported media mimeType/);
   });
+
+  // --- review HIGH (rank 1): a url media part with NO mimeType slips past isInflightMediaPart (which
+  // requires a string mimeType) but IS flagged by the scan (isUrlMediaPart requires no mimeType) — it must
+  // HARD-FAIL, never silently clone the url through to a durable position. Pins the scan/rewrite-asymmetry fix.
+  it('hard-fails on a url media part with NO mimeType (mimeType-less opaque url, no leak, no put)', async () => {
+    const { store, puts } = makeStubStore();
+    const bare: unknown = {
+      type: 'media',
+      source: { kind: 'url', url: 'https://x.example/a.png' },
+    };
+    await expect(deInlineMedia(bare, store)).rejects.toThrow(/re-host a url media source/);
+    // and nested inside an opaque tree (the unknown-overload walk)
+    const nested: unknown = [
+      { type: 'media', source: { kind: 'url', url: 'https://x.example/b.png' } },
+    ];
+    await expect(deInlineMedia(nested, store)).rejects.toThrow(/re-host a url media source/);
+    expect(puts).toHaveLength(0);
+  });
+
+  it('hard-fails (invalid base64) on a media part whose base64 source.data is not valid base64', async () => {
+    const { store, puts } = makeStubStore();
+    const bad: unknown = [
+      { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: '@@@@' } },
+    ];
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/not valid base64/);
+    expect(puts).toHaveLength(0);
+  });
+
+  it('hard-fails on an unknown media source kind (co-located with a real carrier so the scan runs)', async () => {
+    const { store } = makeStubStore();
+    // A standalone { kind:'blob' } is byte/url-free, so the scan skips it (returns it unchanged); co-locating
+    // a real base64 carrier makes the walk run and reach the unknown-kind throw (fail-closed on unknown kind).
+    const value: unknown = [
+      { type: 'media', mimeType: 'image/png', source: { kind: 'blob', ref: 'x' } },
+      base64MediaPart,
+    ];
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/unsupported media source kind/);
+  });
+
+  it('puts a shared media-part reference only once within a single call (cache-before-recursion dedup)', async () => {
+    const { store, puts } = makeStubStore();
+    await deInlineMedia([base64MediaPart, base64MediaPart], store);
+    expect(puts).toHaveLength(1); // the same reference is rewritten once, not per occurrence
+  });
 });
