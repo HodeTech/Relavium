@@ -110,6 +110,55 @@ describe('Gemini adapter', () => {
     }
   });
 
+  it('rejects media on an assistant turn rather than silently forwarding it (M2 parity)', async () => {
+    const adapter = createGeminiAdapter({ transport: fakeTransport({ candidates: [] }) });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gemini-2.5-flash',
+          messages: [
+            { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'base64', data: 'aW1hZ2U=' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('assistant-role media is not supported');
+  });
+
+  it('gates document input off until 1.AF (a handle-source PDF is rejected — H3)', async () => {
+    const adapter = createGeminiAdapter({ transport: fakeTransport({ candidates: [] }) });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gemini-2.5-flash',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'application/pdf',
+                  source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+  });
+
   it('rejects an unsupported output modality with a typed capability error', async () => {
     const transport = fakeTransport({ candidates: [] });
     const adapter = createGeminiAdapter({ transport });

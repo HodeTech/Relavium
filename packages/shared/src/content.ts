@@ -109,7 +109,8 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 /**
  * The decoded byte count of a base64 string, or `undefined` when the string is not valid padded
  * base64. The ceiling/caps bound **decoded** bytes (a 256 KB ceiling is ~341 KB of base64 string),
- * so every cap comparison goes through this one accounting.
+ * so every cap comparison goes through this one accounting. Runs an O(n) regex validation over the
+ * whole string before the arithmetic (bounded by the inline-media ceiling, so the worst case is small).
  */
 export function decodedBase64ByteLength(data: string): number | undefined {
   if (data.length === 0 || data.length % 4 !== 0 || !BASE64_PATTERN.test(data)) {
@@ -714,8 +715,15 @@ export function isPrivateOrLocalHost(host: string): boolean {
     return groups !== null && isPrivateIpv6Groups(groups);
   }
 
-  const dotted = canonicalizeNumericIpv4(h) ?? h;
-
+  // Range-check ONLY a successfully-canonicalized dotted-decimal IPv4. A non-numeric host (e.g. `10.ai`,
+  // `192.168.fm`) returns null here and must NOT be matched by the dotted-prefix tests — the private
+  // hostname suffixes were already handled above, and a resolvable name's authoritative range block is
+  // the host-side DNS-resolve+pin (1.AF). (Without this guard the `?? h` fallback wrongly blocked public
+  // FQDNs whose first label spells a private-range prefix.)
+  const dotted = canonicalizeNumericIpv4(h);
+  if (dotted === null) {
+    return false;
+  }
   return (
     dotted.startsWith('0.') ||
     dotted.startsWith('127.') ||
@@ -812,11 +820,6 @@ function canonicalizeNumericIpv4(host: string): string | null {
 }
 
 /**
- * Parse an IPv6 literal (bracket-stripped; optional `%zone`; optional trailing embedded IPv4) into its
- * eight 16-bit groups, expanding `::`. Returns `null` if it is not a well-formed IPv6 literal — so a
- * compressed/expanded/zero-padded form (`0::1`, `0000:…:0001`) decodes to the same groups as `::1`.
- */
-/**
  * Substitute a trailing embedded IPv4 (`…:a.b.c.d`) with two hex groups IN PLACE — keeping the preceding
  * colons (incl. a `::`) intact (`64:ff9b::127.0.0.1` → `64:ff9b::7f00:1`). Returns the string unchanged
  * when there is no embedded IPv4, or `null` if the embedded tail is not a valid IPv4.
@@ -845,8 +848,8 @@ function expandIpv6(s: string): number[] | null {
   const beforeSegs = s.slice(0, doubleColon) === '' ? [] : s.slice(0, doubleColon).split(':');
   const afterSegs = s.slice(doubleColon + 2) === '' ? [] : s.slice(doubleColon + 2).split(':');
   const known = beforeSegs.length + afterSegs.length;
-  if (known > 8) {
-    return null;
+  if (known >= 8) {
+    return null; // a `::` must elide ≥1 zero group (RFC 4291 §2.2); 8 explicit groups + `::` is malformed
   }
   return [
     ...beforeSegs.map((seg) => Number.parseInt(seg, 16)),
@@ -910,6 +913,10 @@ function ipv4FromGroups(hi: number, lo: number): string {
   return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
 }
 
+/** The HTTPS authority — everything between `https://` and the first `/`, `?`, or `#`. The single source
+ *  for the two URL policy helpers below, so their scheme + capture can never drift apart. */
+const HTTPS_AUTHORITY_PATTERN = /^https:\/\/([^/?#]+)/i;
+
 /**
  * Returns `true` when an HTTPS URL string contains credentials (`user:pass@`) in its authority
  * component. Used by the SSRF policy to reject URLs that embed secrets in the URL itself
@@ -917,7 +924,7 @@ function ipv4FromGroups(hi: number, lo: number): string {
  * upstream by the same scheme check, so the two never disagree on scheme).
  */
 export function urlHasCredentials(url: string): boolean {
-  const match = /^https:\/\/([^/?#]+)/i.exec(url);
+  const match = HTTPS_AUTHORITY_PATTERN.exec(url);
   if (match === null) return false;
   return match[1]?.includes('@') ?? false;
 }
@@ -933,7 +940,7 @@ export function urlHasCredentials(url: string): boolean {
  * ({@link refineInFlightMediaPart}) and the engine's `enforceHttpEgress`.
  */
 export function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
-  const match = /^https:\/\/([^/?#]+)/i.exec(url);
+  const match = HTTPS_AUTHORITY_PATTERN.exec(url);
   if (match === null) {
     return null;
   }

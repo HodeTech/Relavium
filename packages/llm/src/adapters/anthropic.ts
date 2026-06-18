@@ -219,6 +219,8 @@ function toAnthropicBlock(
     case 'tool_call':
       return { type: 'tool_use', id: part.id, name: part.name, input: part.args };
     case 'tool_result': {
+      // `part.media` (handle-only durable attachments) is intentionally not lowered here — deferred to
+      // 1.AF (resolve via EgressCapability before egress); gate-admitted on capable providers, not yet sent.
       const block: Anthropic.ToolResultBlockParam = {
         type: 'tool_result',
         tool_use_id: part.toolCallId,
@@ -243,6 +245,14 @@ function anthropicBadRequest(message: string): LlmProviderError {
   return new LlmProviderError(makeLlmError({ provider: PROVIDER, kind: 'bad_request', message }));
 }
 
+/** The image subtypes Anthropic's base64 image block accepts (the SDK's closed `media_type` union). */
+const ANTHROPIC_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+
+/** Narrow a MIME to an Anthropic-accepted image subtype (so the wire `media_type` needs no unsafe cast). */
+function isAnthropicImageType(mime: string): mime is Anthropic.Base64ImageSource['media_type'] {
+  return (ANTHROPIC_IMAGE_TYPES as readonly string[]).includes(mime);
+}
+
 /**
  * Lower one media part to an Anthropic content block — **base64 only**. A `url`/`handle` source is
  * rejected: a media url is fetched by the host/engine, never the adapter (ADR-0031 §A7), and a handle is
@@ -259,13 +269,16 @@ function toAnthropicMediaBlock(
         `Anthropic does not support ${part.source.kind}-source image input — use base64 (1.AF)`,
       );
     }
+    if (!isAnthropicImageType(part.mimeType)) {
+      // Subtype gate: the modality gate admits any image/*, but Anthropic accepts only these four — reject
+      // an unsupported subtype pre-egress with a clear message rather than letting it 400 on the wire.
+      throw anthropicBadRequest(
+        `Anthropic image input supports only ${ANTHROPIC_IMAGE_TYPES.join(', ')}, not '${part.mimeType}'`,
+      );
+    }
     return {
       type: 'image',
-      source: {
-        type: 'base64',
-        media_type: part.mimeType as Anthropic.Base64ImageSource['media_type'],
-        data: part.source.data,
-      },
+      source: { type: 'base64', media_type: part.mimeType, data: part.source.data },
     };
   }
   if (modality === 'document') {

@@ -196,11 +196,25 @@ describe('assertMediaCapabilities — per-modality input/output gate (1.AE, ADR-
         },
       ],
     };
+    const withVideoHandle: LlmRequest = {
+      model: 'm',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'media', mimeType: 'video/mp4', source: { kind: 'handle', ref: HANDLE } },
+          ],
+        },
+      ],
+    };
     expect(() => assertMediaCapabilities('anthropic', anthropicMedia, withImage)).not.toThrow();
     expect(() => assertMediaCapabilities('anthropic', anthropicMedia, withPdfHandle)).not.toThrow();
     expect(() => assertMediaCapabilities('anthropic', anthropicMedia, withAudio)).toThrowError(
       UnsupportedCapabilityError,
     );
+    expect(() =>
+      assertMediaCapabilities('anthropic', anthropicMedia, withVideoHandle),
+    ).toThrowError(UnsupportedCapabilityError);
   });
 
   it('allows all four input modalities for Gemini (video/document use handles)', () => {

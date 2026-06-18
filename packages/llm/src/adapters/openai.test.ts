@@ -286,6 +286,32 @@ describe('OpenAI-compatible adapter', () => {
     ).rejects.toThrowError(UnsupportedCapabilityError);
   });
 
+  it('rejects a url-source image rather than forwarding it to the provider (ADR-0031 §A7 — H1)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'gpt-5.5',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'url', url: 'https://example.com/photo.png' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow(/does not support url-source image input/);
+  });
+
   it('rejects media on an assistant turn rather than silently dropping it via textOf (M2)', async () => {
     const adapter = createOpenAiAdapter({
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),

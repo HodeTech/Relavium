@@ -503,6 +503,15 @@ describe('refineInFlightMediaPart — the seam ingestion rules (ADR-0031)', () =
       boundary.safeParse(media('image/png', { kind: 'url', url: 'https://192.168.1.1/a.png' }))
         .success,
     ).toBe(false);
+    // End-to-end through refineInFlightMediaPart → extractHttpsHost → isPrivateOrLocalHost: the harder
+    // forms (cloud-metadata, bracketed IPv6 loopback, CGNAT) must also be rejected at the url carrier.
+    for (const url of [
+      'https://169.254.169.254/a.png',
+      'https://[::1]/a.png',
+      'https://100.64.0.1/a.png',
+    ]) {
+      expect(boundary.safeParse(media('image/png', { kind: 'url', url })).success).toBe(false);
+    }
   });
 
   it('rejects an unknown modality and invalid base64 (fail-closed)', () => {
@@ -712,6 +721,13 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['fcbarcelona.com', 'public hostname starting with fc'],
     ['134744072', 'decimal form of public 8.8.8.8 — numeric normalization must not over-block'],
     ['example.com.', 'public hostname with a trailing dot — must not over-block'],
+    // A public FQDN whose first label spells a private-range prefix must NOT be blocked — the range
+    // checks apply only to a fully-numeric dotted-decimal IPv4, never to a hostname (a real bug we fixed).
+    ['10.ai', 'public TLD whose label starts with the 10/8 prefix'],
+    ['127.example.com', 'public FQDN whose first label is 127'],
+    ['192.168.fm', 'public FQDN whose labels match the 192.168 prefix'],
+    ['172.16.api.com', 'public FQDN whose labels match the 172.16/12 prefix'],
+    ['100.64.example.com', 'public FQDN whose labels match the CGNAT prefix'],
   ];
 
   for (const [host, label] of BLOCKED_HOSTS) {

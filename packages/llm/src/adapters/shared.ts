@@ -94,7 +94,9 @@ function gateOutputCombinations(
  *
  * First, each message is validated through `LlmMessageSchema` to activate the superRefine
  * guards (media ceiling/caps, URL gate, MIME type validation, anti-amplification caps) — defense-in-depth
- * so requests that bypass the engine's own validation are still caught at the seam.
+ * so requests that bypass the engine's own validation are still caught at the seam. This re-parses the
+ * full history per call — O(history-length) — a cost deliberately accepted: LLM round-trips dominate, and
+ * the scan only does real work on media/tool_result parts (it is the sole seam-side enforcement point).
  */
 export function assertMediaCapabilities(
   provider: ProviderId,

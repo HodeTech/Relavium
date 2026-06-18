@@ -195,6 +195,8 @@ export function mapUsage(usage: {
 /** Fold a non-streaming Gemini response into canonical content parts (text + synthesized tool_call). */
 export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): ContentPart[] {
   const parts: ContentPart[] = [];
+  // A response `inlineData` part (generated image/audio output) is intentionally NOT surfaced here —
+  // output media de-inlining is deferred to 1.AF/1.AG; only text / reasoning / functionCall are mapped today.
   for (const part of response.candidates?.[0]?.content?.parts ?? []) {
     if (part.functionCall !== undefined) {
       const name = part.functionCall.name ?? '';
@@ -281,6 +283,17 @@ function toGeminiContents(
   }
   const contents: Array<{ role: 'user' | 'model'; parts: Array<Record<string, unknown>> }> = [];
   for (const message of messages) {
+    if (message.role === 'assistant' && message.content.some((part) => part.type === 'media')) {
+      // Provider-output media is de-inlined to a handle and never replayed (ADR-0031); a media part on an
+      // assistant turn is a misuse — fail loud before egress, matching the OpenAI/Anthropic adapters (M2).
+      throw new LlmProviderError(
+        makeLlmError({
+          provider: PROVIDER,
+          kind: 'bad_request',
+          message: 'assistant-role media is not supported (provider output media is not replayed)',
+        }),
+      );
+    }
     const parts = toGeminiParts(message, nameById);
     if (parts.length > 0) {
       contents.push({ role: message.role === 'assistant' ? 'model' : 'user', parts });
@@ -324,6 +337,8 @@ function toGeminiParts(
       parts.push({ functionCall: { name: part.name, args: part.args } });
     } else if (part.type === 'tool_result') {
       const name = nameById.get(part.toolCallId) ?? part.toolCallId;
+      // `part.media` (handle-only durable attachments) is intentionally not lowered here — deferred to
+      // 1.AF (resolve via EgressCapability before egress); gate-admitted on capable providers, not yet sent.
       parts.push({ functionResponse: { name, response: toResponseObject(part.result) } });
     } else if (part.type === 'media') {
       parts.push(toGeminiMediaPart(part));

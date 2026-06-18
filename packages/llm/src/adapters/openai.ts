@@ -241,6 +241,7 @@ type ToolResultPart = Extract<ContentPart, { type: 'tool_result' }>;
  */
 function toOpenAiUserContent(
   content: readonly ContentPart[],
+  provider: ProviderId,
 ): string | OpenAI.ChatCompletionContentPart[] {
   // Single pass: build the structured parts while noting whether any media is present. A media-free
   // user message stays a plain string (backwards-compat); otherwise the structured array is sent.
@@ -251,7 +252,7 @@ function toOpenAiUserContent(
       parts.push({ type: 'text', text: part.text });
     } else if (part.type === 'media') {
       hasMedia = true;
-      parts.push(toOpenAiMediaPart(part));
+      parts.push(toOpenAiMediaPart(part, provider));
     }
     // tool_call / tool_result / reasoning are not user content — handled per-role elsewhere.
   }
@@ -261,23 +262,22 @@ function toOpenAiUserContent(
   return parts;
 }
 
-/** A typed OpenAI `bad_request` for an unsendable media shape (never a silent drop — ADR-0031). */
-function openAiBadRequest(message: string): LlmProviderError {
-  return new LlmProviderError({
-    kind: 'bad_request',
-    retryable: false,
-    message,
-    provider: 'openai',
-  });
+/** A typed `bad_request` for an unsendable media shape (never a silent drop — ADR-0031). Carries the real
+ *  provider so the shared OpenAI/DeepSeek adapter attributes the error correctly. */
+function openAiBadRequest(provider: ProviderId, message: string): LlmProviderError {
+  return new LlmProviderError({ kind: 'bad_request', retryable: false, message, provider });
 }
 
 /** Map OpenAI's two accepted input-audio formats; reject any other audio subtype rather than mis-tagging
  *  it as `wav` (so `audio/mpeg` — the canonical MP3 MIME — is `mp3`, and `audio/ogg` etc. fail loud). */
-function openAiAudioFormat(mimeType: string): 'mp3' | 'wav' {
+function openAiAudioFormat(provider: ProviderId, mimeType: string): 'mp3' | 'wav' {
   const subtype = mimeType.split('/')[1]?.split(';')[0]?.toLowerCase() ?? '';
   if (subtype === 'mp3' || subtype === 'mpeg') return 'mp3';
   if (subtype === 'wav' || subtype === 'wave' || subtype === 'x-wav') return 'wav';
-  throw openAiBadRequest(`OpenAI input audio supports only mp3 and wav, not '${mimeType}'`);
+  throw openAiBadRequest(
+    provider,
+    `OpenAI input audio supports only mp3 and wav, not '${mimeType}'`,
+  );
 }
 
 /**
@@ -288,11 +288,13 @@ function openAiAudioFormat(mimeType: string): 'mp3' | 'wav' {
  */
 function toOpenAiMediaPart(
   part: Extract<ContentPart, { type: 'media' }>,
+  provider: ProviderId,
 ): OpenAI.ChatCompletionContentPart {
   const modality = mediaModalityOf(part.mimeType);
   if (modality === 'image') {
     if (part.source.kind !== 'base64') {
       throw openAiBadRequest(
+        provider,
         `OpenAI does not support ${part.source.kind}-source image input — use base64 (1.AF)`,
       );
     }
@@ -304,15 +306,16 @@ function toOpenAiMediaPart(
   if (modality === 'audio') {
     if (part.source.kind !== 'base64') {
       throw openAiBadRequest(
+        provider,
         `OpenAI does not support ${part.source.kind}-source audio input — use base64 (1.AF)`,
       );
     }
     return {
       type: 'input_audio',
-      input_audio: { data: part.source.data, format: openAiAudioFormat(part.mimeType) },
+      input_audio: { data: part.source.data, format: openAiAudioFormat(provider, part.mimeType) },
     };
   }
-  throw openAiBadRequest(`OpenAI does not support ${modality ?? 'unknown'} media input`);
+  throw openAiBadRequest(provider, `OpenAI does not support ${modality ?? 'unknown'} media input`);
 }
 
 /** Extract the text content of a message for contexts where only text is expected (assistant, tool). */
@@ -321,10 +324,13 @@ function textOf(content: readonly ContentPart[]): string {
 }
 
 /** Map one canonical message to one or more OpenAI message params (tool results split out). */
-function toOpenAiMessages(message: LlmMessage): OpenAI.ChatCompletionMessageParam[] {
+function toOpenAiMessages(
+  message: LlmMessage,
+  provider: ProviderId,
+): OpenAI.ChatCompletionMessageParam[] {
   switch (message.role) {
     case 'user': {
-      const content = toOpenAiUserContent(message.content);
+      const content = toOpenAiUserContent(message.content, provider);
       return [{ role: 'user', content }];
     }
     case 'assistant': {
@@ -332,6 +338,7 @@ function toOpenAiMessages(message: LlmMessage): OpenAI.ChatCompletionMessagePara
         // Provider-OUTPUT media is de-inlined to a handle and never replayed (ADR-0031); a media part on
         // an assistant turn is a misuse — fail loud rather than silently drop it via textOf.
         throw openAiBadRequest(
+          provider,
           'assistant-role media is not supported (provider output media is not replayed)',
         );
       }
@@ -358,7 +365,9 @@ function toOpenAiMessages(message: LlmMessage): OpenAI.ChatCompletionMessagePara
       return [msg];
     }
     case 'tool':
-      // Each tool_result rides in its own {role:'tool'} message keyed by the tool-call id.
+      // Each tool_result rides in its own {role:'tool'} message keyed by the tool-call id. `part.media`
+      // (handle-only durable attachments) is intentionally not lowered here — deferred to 1.AF (resolve
+      // via EgressCapability before egress); it is gate-admitted on capable providers but not yet sent.
       return message.content
         .filter((part): part is ToolResultPart => part.type === 'tool_result')
         .map((part) => ({
@@ -418,7 +427,7 @@ function buildCommonBody(
     messages.push({ role: 'system', content: req.system });
   }
   for (const message of req.messages) {
-    messages.push(...toOpenAiMessages(message));
+    messages.push(...toOpenAiMessages(message, provider));
   }
   const body: Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 'stream'> = {
     model: req.model,

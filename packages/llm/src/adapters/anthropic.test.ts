@@ -243,6 +243,56 @@ describe('AnthropicAdapter', () => {
     ).rejects.toThrow('assistant-role media is not supported');
   });
 
+  it('gates document input off until 1.AF (a handle-source PDF is rejected — H3)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'application/pdf',
+                  source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('rejects an unsupported image subtype pre-egress (image/tiff is not jpeg/png/gif/webp)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'media', mimeType: 'image/tiff', source: { kind: 'base64', data: 'aW1n' } },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow(/image input supports only/);
+  });
+
   it('maps every Anthropic stop reason to the canonical 5-value enum', () => {
     expect(mapStopReason('end_turn')).toBe('stop');
     expect(mapStopReason('stop_sequence')).toBe('stop');
