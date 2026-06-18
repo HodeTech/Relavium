@@ -7,6 +7,8 @@
  * [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md).
  */
 
+import { extractHttpsHost } from '@relavium/shared';
+
 import { boundForModel } from './bounding.js';
 import {
   ToolArgsInvalidError,
@@ -330,40 +332,6 @@ function enforceHttpEgress(toolId: ToolId, url: string, ctx: ToolDispatchContext
 }
 
 /**
- * Extract the lowercased FQDN host from an HTTPS URL with pure string parsing (no `URL` global — the
- * engine-purity `lib` has no DOM). Returns null for a non-HTTPS URL. This is the exact-FQDN POLICY
- * half only; the SSRF range-block is the host's job.
- */
-function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
-  const match = /^https:\/\/([^/?#]+)/i.exec(url);
-  if (match === null) {
-    return null;
-  }
-  const rawAuthority = match[1] ?? '';
-  // Fail closed on smuggling chars (backslash / whitespace / control) that the WHATWG parser the host
-  // SSRF primitive uses may treat differently — a real FQDN never contains them.
-  if (hasSmugglingChar(rawAuthority)) {
-    return null;
-  }
-  let authority = rawAuthority;
-  let hasCredentials = false;
-  const at = authority.lastIndexOf('@');
-  if (at !== -1) {
-    hasCredentials = true;
-    authority = authority.slice(at + 1);
-  }
-  let host: string;
-  if (authority.startsWith('[')) {
-    const end = authority.indexOf(']');
-    host = end === -1 ? authority : authority.slice(1, end); // IPv6 literal
-  } else {
-    const colon = authority.indexOf(':');
-    host = colon === -1 ? authority : authority.slice(0, colon);
-  }
-  return { host: host.toLowerCase(), hasCredentials };
-}
-
-/**
  * A minimal glob: `*` (any run, incl. empty) and `?` (exactly one char); everything else is literal;
  * full-string match. Implemented as a **linear-time** iterative matcher with a single backtrack point
  * for the last `*` — NOT a compiled RegExp. A RegExp translation (`a*a*a*…`) backtracks catastrophically
@@ -479,20 +447,4 @@ function isAbort(cause: unknown, ctx: ToolDispatchContext): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * True if an authority carries a backslash, whitespace/space, or a C0/DEL control char — chars the
- * WHATWG parser the host SSRF primitive uses may treat differently, so the engine fails closed. A real
- * FQDN/authority never contains them (a hyphen `-` (0x2d) and dot `.` (0x2e) ARE allowed). A char-scan,
- * not a regex, so no control byte ever lands in this source file.
- */
-function hasSmugglingChar(authority: string): boolean {
-  for (let i = 0; i < authority.length; i++) {
-    const code = authority.codePointAt(i) ?? Number.NaN;
-    if (code <= 0x20 || code === 0x7f || code === 0x5c) {
-      return true; // <=0x20: C0 controls + space; 0x7f: DEL; 0x5c: backslash
-    }
-  }
-  return false;
 }

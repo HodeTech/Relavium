@@ -39,7 +39,7 @@ function gateInputModalities(
 
 function gateModality(
   provider: ProviderId,
-  inputCaps: Record<string, boolean>,
+  inputCaps: CapabilityFlags['media']['input'],
   mimeType: string,
   suffix: string = '',
 ): void {

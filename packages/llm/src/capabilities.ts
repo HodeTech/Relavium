@@ -14,10 +14,15 @@ export type Capability = keyof CapabilityFlags;
 
 /**
  * The capabilities a request requires, given the current request surface. `tools` and `vision` are
- * the two checked here (vision is the derived alias of `media.input.image` — ADR-0031). The
- * per-modality input/output check is performed by `assertMediaCapabilities` at each adapter entry
- * point (1.AE), which gives more specific error messages. Adding `vision` here lets the
- * FallbackChain skip providers that can't handle image input without reaching the adapter layer.
+ * the two checked here (vision is the derived alias of `media.input.image` — ADR-0031). The precise
+ * per-modality input check + the `outputCombinations` membership check are performed by
+ * `assertMediaCapabilities` at each adapter entry point (1.AE), which gives specific error messages.
+ *
+ * NOTE — this is deliberately COARSE for the FallbackChain pre-skip: it requires `vision` (image) for
+ * ANY media part, so audio/video/document are not yet distinguished here and `outputModalities` adds no
+ * requirement. That can over- or under-skip a provider whose image support diverges from the modality
+ * actually requested — harmless today (no shipped provider supports a non-image modality without also
+ * supporting image), and replaced by per-modality + outputCombinations gating in 1.AF (types.ts).
  */
 export function requiredCapabilities(req: LlmRequest): Capability[] {
   const required: Capability[] = [];

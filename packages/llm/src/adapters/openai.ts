@@ -58,7 +58,10 @@ const OPENAI_SUPPORTS: CapabilityFlags = {
   promptCache: true,
   reasoning: false,
   media: {
-    input: { image: true, audio: true, video: false, document: true },
+    // document stays false until handle resolution lands (1.AF): base64 documents are blocked by the
+    // seam ceiling (INLINE_MEDIA_CEILING.document = 0) and url/handle sources are rejected by the
+    // adapter, so advertising document:true would be "advertised-but-unsendable" (ADR-0031).
+    input: { image: true, audio: true, video: false, document: false },
     outputCombinations: [['text'], ['text', 'audio']],
   },
 };
@@ -239,69 +242,77 @@ type ToolResultPart = Extract<ContentPart, { type: 'tool_result' }>;
 function toOpenAiUserContent(
   content: readonly ContentPart[],
 ): string | OpenAI.ChatCompletionContentPart[] {
+  // Single pass: build the structured parts while noting whether any media is present. A media-free
+  // user message stays a plain string (backwards-compat); otherwise the structured array is sent.
+  const parts: OpenAI.ChatCompletionContentPart[] = [];
   let hasMedia = false;
   for (const part of content) {
-    if (part.type === 'media') {
+    if (part.type === 'text') {
+      parts.push({ type: 'text', text: part.text });
+    } else if (part.type === 'media') {
       hasMedia = true;
-      break;
+      parts.push(toOpenAiMediaPart(part));
     }
+    // tool_call / tool_result / reasoning are not user content — handled per-role elsewhere.
   }
   if (!hasMedia) {
-    return content.map((part) => (part.type === 'text' ? part.text : '')).join('');
-  }
-  const parts: OpenAI.ChatCompletionContentPart[] = [];
-  for (const part of content) {
-    switch (part.type) {
-      case 'text':
-        parts.push({ type: 'text', text: part.text });
-        break;
-      case 'media': {
-        const modality = mediaModalityOf(part.mimeType);
-        if (modality === 'image' || modality === 'document') {
-          if (part.source.kind === 'base64') {
-            parts.push({
-              type: 'image_url',
-              image_url: { url: `data:${part.mimeType};base64,${part.source.data}` },
-            });
-          } else if (part.source.kind === 'url') {
-            parts.push({
-              type: 'image_url',
-              image_url: { url: part.source.url },
-            });
-          } else if (part.source.kind === 'handle') {
-            throw new LlmProviderError({
-              kind: 'bad_request',
-              retryable: false,
-              message: `OpenAI does not support handle-source ${modality} input — resolve before egress (1.AF)`,
-              provider: 'openai',
-            });
-          }
-        } else if (modality === 'audio') {
-          if (part.source.kind === 'base64') {
-            const format = part.mimeType.split('/')[1]?.split(';')[0] ?? 'wav';
-            const audioFormat = format === 'mp3' ? 'mp3' : 'wav';
-            parts.push({
-              type: 'input_audio' as const,
-              input_audio: { data: part.source.data, format: audioFormat },
-            });
-          } else if (part.source.kind === 'url' || part.source.kind === 'handle') {
-            throw new LlmProviderError({
-              kind: 'bad_request',
-              retryable: false,
-              message: `OpenAI does not support ${part.source.kind}-source audio input — use base64 (1.AF)`,
-              provider: 'openai',
-            });
-          }
-        }
-        // video: never inline on OpenAI; the capability gate already rejects it
-        break;
-      }
-      default:
-        // text, tool_call, tool_result, reasoning are handled per-role below
-        break;
-    }
+    return parts.map((part) => (part.type === 'text' ? part.text : '')).join('');
   }
   return parts;
+}
+
+/** A typed OpenAI `bad_request` for an unsendable media shape (never a silent drop — ADR-0031). */
+function openAiBadRequest(message: string): LlmProviderError {
+  return new LlmProviderError({
+    kind: 'bad_request',
+    retryable: false,
+    message,
+    provider: 'openai',
+  });
+}
+
+/** Map OpenAI's two accepted input-audio formats; reject any other audio subtype rather than mis-tagging
+ *  it as `wav` (so `audio/mpeg` — the canonical MP3 MIME — is `mp3`, and `audio/ogg` etc. fail loud). */
+function openAiAudioFormat(mimeType: string): 'mp3' | 'wav' {
+  const subtype = mimeType.split('/')[1]?.split(';')[0]?.toLowerCase() ?? '';
+  if (subtype === 'mp3' || subtype === 'mpeg') return 'mp3';
+  if (subtype === 'wav' || subtype === 'wave' || subtype === 'x-wav') return 'wav';
+  throw openAiBadRequest(`OpenAI input audio supports only mp3 and wav, not '${mimeType}'`);
+}
+
+/**
+ * Lower one media part to an OpenAI content part. Only **base64** sources are sent: a `url` source is
+ * NEVER forwarded (ADR-0031 §A7 — a media url is fetched by the host/engine, never the adapter), and a
+ * `handle` is resolved before egress (1.AF). image → `image_url`, audio → `input_audio`; video/document
+ * are not input-supported (the capability gate rejects them — this throws as a fail-closed backstop).
+ */
+function toOpenAiMediaPart(
+  part: Extract<ContentPart, { type: 'media' }>,
+): OpenAI.ChatCompletionContentPart {
+  const modality = mediaModalityOf(part.mimeType);
+  if (modality === 'image') {
+    if (part.source.kind !== 'base64') {
+      throw openAiBadRequest(
+        `OpenAI does not support ${part.source.kind}-source image input — use base64 (1.AF)`,
+      );
+    }
+    return {
+      type: 'image_url',
+      image_url: { url: `data:${part.mimeType};base64,${part.source.data}` },
+    };
+  }
+  if (modality === 'audio') {
+    if (part.source.kind !== 'base64') {
+      throw openAiBadRequest(
+        `OpenAI does not support ${part.source.kind}-source audio input — use base64 (1.AF)`,
+      );
+    }
+    return {
+      type: 'input_audio',
+      input_audio: { data: part.source.data, format: openAiAudioFormat(part.mimeType) },
+    };
+  }
+  throw openAiBadRequest(`OpenAI does not support ${modality ?? 'unknown'} media input`);
 }
 
 /** Extract the text content of a message for contexts where only text is expected (assistant, tool). */
@@ -317,6 +328,13 @@ function toOpenAiMessages(message: LlmMessage): OpenAI.ChatCompletionMessagePara
       return [{ role: 'user', content }];
     }
     case 'assistant': {
+      if (message.content.some((part) => part.type === 'media')) {
+        // Provider-OUTPUT media is de-inlined to a handle and never replayed (ADR-0031); a media part on
+        // an assistant turn is a misuse — fail loud rather than silently drop it via textOf.
+        throw openAiBadRequest(
+          'assistant-role media is not supported (provider output media is not replayed)',
+        );
+      }
       const toolCalls = message.content
         .filter((part): part is ToolCallPart => part.type === 'tool_call')
         .map((part) => ({

@@ -108,7 +108,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   block-private-loopback-link-local-metadata-CGNAT / DNS-resolution + per-hop-redirect-revalidation /
   IPv4-mapped-IPv6-decode primitive that `assertHttpsBaseUrl` (openai.ts) is the best-effort placeholder
   for. security-review.md mandates **one** primitive across all egress paths; the media `url` carrier
-  (input + provider-returned output) is gated **feature-flag-OFF** until it lands. **Done (1.AE, PR #27):**
+  (input + provider-returned output) is gated **feature-flag-OFF** until it lands. **Landing (1.AE, PR #32):**
   `isPrivateOrLocalHost()`, `extractHttpsHost()`, `urlHasCredentials()` shipped in `@relavium/shared`
   (pure sync, platform-free) with 40+ SSRF tests. `assertHttpsBaseUrl` in openai.ts delegates to the
   shared functions + `new URL()` normalization. `MEDIA_URL_SOURCE_ENABLED` flipped to `true` with
@@ -148,7 +148,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   alias of `media.input.image` for live consumers (`db.supports_vision`, adapter `supports.vision`);
   schedule removal once those migrate to `media.input.image`. *(types.ts; a later cleanup)*
 
-### 1.AE forward-obligations (landed PR #27, 2026-06-17)
+### 1.AE forward-obligations (PR #32)
 
 - [ ] **Conformance test additions — image-in, audio-in, pdf-in per provider** — the 1.AE media input
   wiring (OpenAI `image_url`/`input_audio`, Anthropic `image`/`document` blocks, Gemini `inlineData`)

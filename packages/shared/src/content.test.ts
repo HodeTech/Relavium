@@ -677,6 +677,19 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['myapp.localhost', 'hostname .localhost suffix'],
     ['myapp.local', 'hostname .local suffix'],
     ['myapp.internal', 'hostname .internal suffix'],
+    // Alternate IPv4 encodings of a blocked address must not bypass the range block.
+    ['2130706433', 'decimal IPv4 loopback (= 127.0.0.1)'],
+    ['0x7f000001', 'hex IPv4 loopback (= 127.0.0.1)'],
+    ['0x7f.0.0.1', 'hex-octet loopback'],
+    ['0177.0.0.1', 'octal-octet loopback'],
+    ['127.1', 'inet_aton short-form loopback'],
+    ['0', 'bare integer 0 (= 0.0.0.0)'],
+    // FQDN trailing dot must not bypass a hostname-suffix or range check.
+    ['localhost.', 'trailing-dot localhost'],
+    ['127.0.0.1.', 'trailing-dot loopback'],
+    // Compressed / fully-expanded IPv6 loopback must decode to the same blocked address.
+    ['0::1', 'compressed IPv6 loopback'],
+    ['0000:0000:0000:0000:0000:0000:0000:0001', 'fully-expanded IPv6 loopback'],
   ];
 
   const ALLOWED_HOSTS: Array<[string, string]> = [
@@ -694,6 +707,8 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['fca.com', 'public hostname starting with fc'],
     ['fe80.com', 'public hostname starting with fe80'],
     ['fcbarcelona.com', 'public hostname starting with fc'],
+    ['134744072', 'decimal form of public 8.8.8.8 — numeric normalization must not over-block'],
+    ['example.com.', 'public hostname with a trailing dot — must not over-block'],
   ];
 
   for (const [host, label] of BLOCKED_HOSTS) {

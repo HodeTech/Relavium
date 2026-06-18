@@ -48,7 +48,10 @@ const GEMINI_SUPPORTS: CapabilityFlags = {
   promptCache: true,
   reasoning: false,
   media: {
-    input: { image: true, audio: true, video: true, document: true },
+    // video/document stay false until handle resolution lands (1.AF): base64 video/document are blocked
+    // by the seam ceiling (INLINE_MEDIA_CEILING = 0 for both), so advertising them would be
+    // "advertised-but-unsendable" — the gate would admit a part the mapper then rejects (ADR-0031).
+    input: { image: true, audio: true, video: false, document: false },
     outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
   },
 };

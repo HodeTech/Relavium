@@ -691,7 +691,11 @@ export interface DeInlineMedia {
  * Canonical test surface: docs/standards/testing.md §Security-critical primitive tests.
  */
 export function isPrivateOrLocalHost(host: string): boolean {
-  const h = host.toLowerCase();
+  // Normalize BEFORE range-checking so an alternate encoding of a blocked address cannot bypass the
+  // block: lowercase, strip the FQDN trailing dot(s) (`localhost.` ≡ `localhost`), decode IPv6 literals
+  // to their 8 groups, and canonicalize any numeric-IPv4 form (decimal `2130706433`, hex `0x7f000001`,
+  // octal `0177.0.0.1`, inet_aton short forms `a` / `a.b` / `a.b.c`) to dotted-decimal.
+  const h = host.toLowerCase().replace(/\.+$/, '');
 
   if (
     h === 'localhost' ||
@@ -702,41 +706,25 @@ export function isPrivateOrLocalHost(host: string): boolean {
     return true;
   }
 
-  if (h.startsWith('0.')) {
-    return true;
-  }
-
-  if (h.startsWith('127.')) {
-    return true;
-  }
-
-  if (h.startsWith('10.')) {
-    return true;
-  }
-
-  if (isPrivate172(h)) {
-    return true;
-  }
-
-  if (h.startsWith('192.168.')) {
-    return true;
-  }
-
-  if (isCgnat100(h)) {
-    return true;
-  }
-
-  if (h.startsWith('169.254.')) {
-    return true;
-  }
-
   if (h.includes(':')) {
-    return isPrivateIpv6(h);
+    const groups = parseIpv6Groups(h);
+    return groups !== null && isPrivateIpv6Groups(groups);
   }
 
-  return false;
+  const dotted = canonicalizeNumericIpv4(h) ?? h;
+
+  return (
+    dotted.startsWith('0.') ||
+    dotted.startsWith('127.') ||
+    dotted.startsWith('10.') ||
+    isPrivate172(dotted) ||
+    dotted.startsWith('192.168.') ||
+    isCgnat100(dotted) ||
+    dotted.startsWith('169.254.')
+  );
 }
 
+/** Block the 172.16/12 private range (172.16.0.0 – 172.31.255.255) on a dotted-decimal host. */
 function isPrivate172(h: string): boolean {
   const m = /^172\.(\d{1,3})\./.exec(h);
   if (m === null) return false;
@@ -744,6 +732,7 @@ function isPrivate172(h: string): boolean {
   return octet >= 16 && octet <= 31;
 }
 
+/** Block the 100.64/10 CGNAT range (100.64.0.0 – 100.127.255.255) on a dotted-decimal host. */
 function isCgnat100(h: string): boolean {
   const m = /^100\.(\d{1,3})\./.exec(h);
   if (m === null) return false;
@@ -751,50 +740,157 @@ function isCgnat100(h: string): boolean {
   return octet >= 64 && octet <= 127;
 }
 
-function isPrivateIpv6(h: string): boolean {
-  if (h === '::1' || h === '::') {
-    return true;
+/**
+ * Canonicalize a numeric IPv4 authority — decimal, `0x`-hex, or `0`-octal parts, in inet_aton's 1–4
+ * part short forms (`a`, `a.b`, `a.b.c`, `a.b.c.d`) — to dotted-decimal, or `null` when the host is not
+ * an all-numeric IPv4 form (i.e. it is a hostname, or an invalid/overflowing literal). This closes the
+ * decimal/hex/octal encoding bypasses that a prefix-only check (`startsWith('127.')`) would miss.
+ */
+function canonicalizeNumericIpv4(host: string): string | null {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) {
+    return null;
   }
-  if (h.startsWith('fe80:')) {
-    return true;
+  const values: number[] = [];
+  for (const part of parts) {
+    let value: number;
+    if (/^0x[0-9a-f]+$/.test(part)) {
+      value = Number.parseInt(part.slice(2), 16);
+    } else if (/^0[0-7]*$/.test(part)) {
+      value = part.length === 1 ? 0 : Number.parseInt(part.slice(1), 8);
+    } else if (/^[1-9][0-9]*$/.test(part)) {
+      value = Number.parseInt(part, 10);
+    } else {
+      return null;
+    }
+    if (!Number.isSafeInteger(value) || value < 0) {
+      return null;
+    }
+    values.push(value);
   }
-  if (h.startsWith('fc') || h.startsWith('fd')) {
-    const next = h.charCodeAt(2);
-    if ((next >= 0x30 && next <= 0x39) || (next >= 0x61 && next <= 0x66)) {
-      return true;
+  const lastIndex = values.length - 1;
+  for (let i = 0; i < lastIndex; i++) {
+    if ((values[i] ?? 0) > 0xff) {
+      return null; // a leading part wider than one byte is not a valid inet_aton form
     }
   }
-  const embeddedDotted = /^(?:::ffff:|64:ff9b::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(h);
-  if (embeddedDotted !== null) {
-    return isPrivateOrLocalHost(embeddedDotted[1] ?? '');
+  if ((values[lastIndex] ?? 0) >= 2 ** (8 * (4 - lastIndex))) {
+    return null; // the final part overflows the bytes it must fill
   }
-  const embeddedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
-  if (embeddedHex !== null) {
-    const hi = Number.parseInt(embeddedHex[1] ?? '0', 16);
-    const lo = Number.parseInt(embeddedHex[2] ?? '0', 16);
-    return isPrivateOrLocalHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+  let ipNum = values[lastIndex] ?? 0;
+  for (let i = 0; i < lastIndex; i++) {
+    ipNum += (values[i] ?? 0) * 2 ** (8 * (3 - i));
+  }
+  return `${Math.floor(ipNum / 2 ** 24) % 256}.${Math.floor(ipNum / 2 ** 16) % 256}.${
+    Math.floor(ipNum / 2 ** 8) % 256
+  }.${ipNum % 256}`;
+}
+
+/**
+ * Parse an IPv6 literal (bracket-stripped; optional `%zone`; optional trailing embedded IPv4) into its
+ * eight 16-bit groups, expanding `::`. Returns `null` if it is not a well-formed IPv6 literal — so a
+ * compressed/expanded/zero-padded form (`0::1`, `0000:…:0001`) decodes to the same groups as `::1`.
+ */
+function parseIpv6Groups(host: string): number[] | null {
+  let s = host.split('%')[0] ?? host;
+  // Convert a trailing embedded IPv4 (`…:a.b.c.d`) to two hex groups IN PLACE — keeping the preceding
+  // colons (incl. a `::`) intact — so the rest parses uniformly (`64:ff9b::127.0.0.1` → `64:ff9b::7f00:1`).
+  const lastColon = s.lastIndexOf(':');
+  if (lastColon !== -1 && s.slice(lastColon + 1).includes('.')) {
+    const dotted = canonicalizeNumericIpv4(s.slice(lastColon + 1));
+    if (dotted === null) {
+      return null;
+    }
+    const octets = dotted.split('.').map(Number);
+    const hi = (((octets[0] ?? 0) << 8) | (octets[1] ?? 0)).toString(16);
+    const lo = (((octets[2] ?? 0) << 8) | (octets[3] ?? 0)).toString(16);
+    s = `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+  const doubleColon = s.indexOf('::');
+  let groups: number[];
+  if (doubleColon === -1) {
+    const segs = s === '' ? [] : s.split(':');
+    groups = segs.map((seg) => Number.parseInt(seg, 16));
+  } else {
+    const before = s.slice(0, doubleColon);
+    const after = s.slice(doubleColon + 2);
+    const beforeSegs = before === '' ? [] : before.split(':');
+    const afterSegs = after === '' ? [] : after.split(':');
+    const known = beforeSegs.length + afterSegs.length;
+    if (known > 8) {
+      return null;
+    }
+    groups = [
+      ...beforeSegs.map((seg) => Number.parseInt(seg, 16)),
+      ...new Array<number>(8 - known).fill(0),
+      ...afterSegs.map((seg) => Number.parseInt(seg, 16)),
+    ];
+  }
+  if (groups.length !== 8) {
+    return null;
+  }
+  for (const group of groups) {
+    if (!Number.isInteger(group) || group < 0 || group > 0xffff) {
+      return null;
+    }
+  }
+  return groups;
+}
+
+/**
+ * Range-check decoded IPv6 groups: unspecified (`::`), loopback (`::1`), link-local (`fe80::/10`),
+ * unique-local (`fc00::/7`), and IPv4-mapped (`::ffff:a.b.c.d`) / NAT64 (`64:ff9b::a.b.c.d`) embeddings
+ * which are re-checked through the IPv4 rules.
+ */
+function isPrivateIpv6Groups(g: number[]): boolean {
+  if (g.every((x) => x === 0)) {
+    return true; // ::
+  }
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) {
+    return true; // ::1 loopback
+  }
+  if (((g[0] ?? 0) & 0xffc0) === 0xfe80) {
+    return true; // fe80::/10 link-local
+  }
+  if (((g[0] ?? 0) & 0xfe00) === 0xfc00) {
+    return true; // fc00::/7 unique-local
+  }
+  const zeroHigh = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0;
+  if (zeroHigh && g[4] === 0 && g[5] === 0xffff) {
+    return isPrivateOrLocalHost(ipv4FromGroups(g[6] ?? 0, g[7] ?? 0)); // ::ffff:a.b.c.d
+  }
+  if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+    return isPrivateOrLocalHost(ipv4FromGroups(g[6] ?? 0, g[7] ?? 0)); // 64:ff9b::/96 NAT64
   }
   return false;
 }
 
+/** Reassemble two 16-bit IPv6 groups into a dotted-decimal IPv4 (the embedded-IPv4 low 32 bits). */
+function ipv4FromGroups(hi: number, lo: number): string {
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
 /**
- * Returns `true` when a URL string contains credentials (`user:pass@`) in its
- * authority component. Used by the SSRF policy to reject URLs that embed secrets
- * in the URL itself (security-review.md).
+ * Returns `true` when an HTTPS URL string contains credentials (`user:pass@`) in its authority
+ * component. Used by the SSRF policy to reject URLs that embed secrets in the URL itself
+ * (security-review.md). HTTPS-only, matching {@link extractHttpsHost} (a non-HTTPS URL is rejected
+ * upstream by the same scheme check, so the two never disagree on scheme).
  */
 export function urlHasCredentials(url: string): boolean {
-  const match = /^https?:\/\/([^/?#]+)/i.exec(url);
+  const match = /^https:\/\/([^/?#]+)/i.exec(url);
   if (match === null) return false;
   return match[1]?.includes('@') ?? false;
 }
 
 /**
- * Extract the lowercased host from an HTTPS URL, plus whether the URL's authority
- * contains embedded credentials. Pure string parsing (no URL global — the engine-purity
- * `lib` has no DOM). Returns `null` for a non-HTTPS URL or a malformed authority.
+ * Extract the lowercased host from an HTTPS URL, plus whether the URL's authority contains embedded
+ * credentials. Pure string parsing (no URL global — the engine-purity `lib` has no DOM). Returns
+ * `null` for a non-HTTPS URL or a malformed authority. The host has any FQDN trailing dot(s) stripped
+ * (`host.` ≡ `host`) so a trailing-dot form cannot bypass an exact-FQDN allowlist or the range block.
  *
- * This is the exact-FQDN **policy** half; the SSRF range-block is the host's job.
- * Shared by the engine's `enforceHttpEgress` and the adapter's `baseURL` validation.
+ * This is the exact-FQDN **policy** half; the SSRF range-block ({@link isPrivateOrLocalHost} +
+ * host-side DNS resolution) is the host's job. Shared by the media-url validator
+ * ({@link refineInFlightMediaPart}) and the engine's `enforceHttpEgress`.
  */
 export function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
   const match = /^https:\/\/([^/?#]+)/i.exec(url);
@@ -820,7 +916,7 @@ export function extractHttpsHost(url: string): { host: string; hasCredentials: b
     const colon = authority.indexOf(':');
     host = colon === -1 ? authority : authority.slice(0, colon);
   }
-  return { host: host.toLowerCase(), hasCredentials };
+  return { host: host.toLowerCase().replace(/\.+$/, ''), hasCredentials };
 }
 
 /**

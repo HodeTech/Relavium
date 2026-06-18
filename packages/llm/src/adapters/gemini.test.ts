@@ -62,7 +62,9 @@ describe('Gemini adapter', () => {
     expect(geminiAdapter.supports.streaming).toBe(true);
     expect(geminiAdapter.supports.vision).toBe(true);
     expect(geminiAdapter.supports.media).toEqual({
-      input: { image: true, audio: true, video: true, document: true },
+      // video/document stay false until handle resolution lands (1.AF) — base64 video/document are
+      // blocked by the seam ceiling, so advertising them would be "advertised-but-unsendable" (ADR-0031).
+      input: { image: true, audio: true, video: false, document: false },
       outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
     });
   });
@@ -87,7 +89,8 @@ describe('Gemini adapter', () => {
       await expect(adapter.generate(req, 'k')).resolves.toBeDefined();
       expect(() => adapter.stream(req, 'k')).not.toThrow();
     }
-    for (const { mimeType } of [{ mimeType: 'video/mp4' }, { mimeType: 'application/pdf' }]) {
+    // A handle source on a SUPPORTED modality reaches the mapper, which rejects it (base64-only at 1.AE).
+    for (const { mimeType } of [{ mimeType: 'image/png' }, { mimeType: 'audio/wav' }]) {
       const req: LlmRequest = {
         model: 'gemini-2.5-flash',
         messages: [

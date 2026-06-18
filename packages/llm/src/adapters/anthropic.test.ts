@@ -74,7 +74,9 @@ describe('AnthropicAdapter', () => {
       promptCache: true,
       reasoning: false,
       media: {
-        input: { image: true, audio: false, video: false, document: true },
+        // document stays false until handle resolution lands (1.AF) — base64 document is blocked by the
+        // seam ceiling, so advertising it would be "advertised-but-unsendable" (ADR-0031).
+        input: { image: true, audio: false, video: false, document: false },
         outputCombinations: [],
       },
     });
@@ -199,17 +201,46 @@ describe('AnthropicAdapter', () => {
               content: [
                 {
                   type: 'media',
-                  mimeType: 'application/pdf',
-                  source: { kind: 'url', url: 'https://example.com/doc.pdf' },
+                  mimeType: 'image/png',
+                  source: { kind: 'url', url: 'https://example.com/photo.png' },
                 },
-                { type: 'text', text: 'summarize this' },
+                { type: 'text', text: 'describe this' },
               ],
             },
           ],
         },
         'k',
       ),
-    ).rejects.toThrow('Anthropic does not support url-source document input — use base64 (1.AF)');
+    ).rejects.toThrow('Anthropic does not support url-source image input — use base64 (1.AF)');
+  });
+
+  it('rejects media on an assistant turn rather than silently dropping it (M2)', async () => {
+    const adapter = createAnthropicAdapter({
+      fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
+      maxRetries: 0,
+    });
+    await expect(
+      adapter.generate(
+        {
+          model: 'claude-sonnet-4-6',
+          maxTokens: 16,
+          messages: [
+            { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'base64', data: 'aW1hZ2U=' },
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      ),
+    ).rejects.toThrow('assistant-role media is not supported');
   });
 
   it('maps every Anthropic stop reason to the canonical 5-value enum', () => {

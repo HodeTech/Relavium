@@ -1,3 +1,5 @@
+import { extractHttpsHost } from '@relavium/shared';
+
 import type { CapabilityFlags, ProviderId } from './types.js';
 
 /**
@@ -57,18 +59,35 @@ export class ToolSchemaError extends LlmConfigError {
 }
 
 /**
+ * A credential-safe summary of a base URL — scheme + host only, never the userinfo, path, query, or
+ * fragment. A base URL may embed `user:pass@host`, and that secret must never reach an error message,
+ * a log, a run event, or the frontend (security-review.md §Network/outbound URLs). `URL.host` excludes
+ * userinfo; a malformed URL (a common reason the base URL is invalid) falls back to a safe placeholder.
+ */
+function summarizeBaseUrl(url: string): string {
+  // Reuse the shared HTTPS host extractor (pure string parsing — the seam lib has no URL global). The
+  // host it returns already excludes the userinfo, so credentials cannot survive into the summary. A
+  // non-HTTPS / malformed URL (itself a common reason the base URL is invalid) is never echoed back.
+  const parsed = extractHttpsHost(url);
+  return parsed === null ? '<non-HTTPS or malformed base URL>' : `https://${parsed.host}`;
+}
+
+/**
  * The factory was given a `baseURL` that is not a safe HTTPS endpoint (e.g. an HTTP URL, a
  * loopback/link-local address, or a cloud-metadata service) — the adapter refuses to construct
- * rather than silently enabling an SSRF path that forwards the real API key.
+ * rather than silently enabling an SSRF path that forwards the real API key. The raw URL is NEVER
+ * stored or shown — it may embed credentials; only the credential-free scheme+host summary is kept.
  */
 export class InvalidBaseUrlError extends LlmConfigError {
   readonly code = 'invalid_base_url';
+  /** Credential-free scheme+host summary of the offending base URL (never the raw, creds-bearing URL). */
   readonly url: string;
 
   constructor(url: string, reason: string) {
-    super(`invalid base URL '${url}': ${reason}`);
+    const safe = summarizeBaseUrl(url);
+    super(`invalid base URL '${safe}': ${reason}`);
     this.name = 'InvalidBaseUrlError';
-    this.url = url;
+    this.url = safe;
   }
 }
 
