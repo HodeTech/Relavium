@@ -15,6 +15,13 @@
       "when": 1781673255697,
       "tag": "0001_pale_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781786726161,
+      "tag": "0002_tiresome_multiple_man",
+      "breakpoints": true
     }
   ]
 }

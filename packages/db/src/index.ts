@@ -20,6 +20,8 @@ export {
   runCosts,
   agentSessions,
   sessionMessages,
+  mediaObjects,
+  mediaReferences,
 } from './schema.js';
 
 export type {
@@ -45,6 +47,10 @@ export type {
   NewAgentSessionRow,
   SessionMessageRow,
   NewSessionMessageRow,
+  MediaObjectRow,
+  NewMediaObjectRow,
+  MediaReferenceRow,
+  NewMediaReferenceRow,
 } from './schema.js';
 
 export { createClient, runMigrations, type Db, type DbClient } from './client.js';
@@ -61,3 +67,8 @@ export {
   type SessionStore,
   type SessionMessageMeta,
 } from './session-store.js';
+
+// Media store (1.AF, ADR-0042) — the host-side content-addressed blob store the engine references by
+// handle. Node-side (node:crypto + node:fs); a host wires one into ExecutionHost.mediaStore. The pure
+// engine never imports this — it depends only on the @relavium/shared `MediaStore` interface.
+export { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';

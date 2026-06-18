@@ -9,7 +9,15 @@ import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { messages, runEvents, runs, stepExecutions, workflows } from './schema.js';
+import {
+  mediaObjects,
+  mediaReferences,
+  messages,
+  runEvents,
+  runs,
+  stepExecutions,
+  workflows,
+} from './schema.js';
 
 /**
  * 0.I smoke test: apply every migration to a fresh on-disk SQLite database via the
@@ -19,7 +27,10 @@ import { messages, runEvents, runs, stepExecutions, workflows } from './schema.j
 
 const TS = 1_700_000_000_000; // fixed epoch-ms so assertions are deterministic
 
-/** The eleven Phase-1 local tables (database-schema.md) — nine run-history + two agent-session (1.X). */
+/**
+ * The thirteen Phase-1 local tables (database-schema.md) — nine run-history + two agent-session (1.X)
+ * + two media retention (1.AF: media_objects + media_references, ADR-0042).
+ */
 const EXPECTED_TABLES = [
   'llm_providers',
   'model_catalog',
@@ -32,6 +43,8 @@ const EXPECTED_TABLES = [
   'run_costs',
   'agent_sessions',
   'session_messages',
+  'media_objects',
+  'media_references',
 ] as const;
 
 let tmpDir: string;
@@ -79,6 +92,8 @@ describe('@relavium/db migrations + client', () => {
       'idx_step_exec_model',
       'idx_agent_sessions_status',
       'idx_session_messages_seq',
+      'idx_media_objects_handle',
+      'idx_media_references_unique',
     ]) {
       expect(indexes).toContain(idx);
     }
@@ -213,6 +228,67 @@ describe('@relavium/db migrations + client', () => {
       'utf8',
     );
     expect(ddl).toMatchSnapshot();
+  });
+
+  it('the 0002 migration DDL matches the committed snapshot (media_objects + media_references, 1.AF)', () => {
+    // Byte-for-byte snapshot of the media-retention migration — pins the two tables' columns, the
+    // modality/scope_kind CHECKs, the handle UNIQUE + the cascade FK to media_objects(handle), and the
+    // (handle, scope_kind, scope_id) per-distinct-reference unique index (ADR-0042).
+    const ddl = readFileSync(
+      fileURLToPath(new URL('../drizzle/0002_tiresome_multiple_man.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(ddl).toMatchSnapshot();
+  });
+
+  it('round-trips media_objects + media_references and enforces the refcount/authz junction (1.AF)', () => {
+    const handle = `media://sha256-${'a'.repeat(64)}`;
+    client.db
+      .insert(mediaObjects)
+      .values({
+        id: randomUUID(),
+        handle,
+        mimeType: 'image/png',
+        modality: 'image',
+        byteLength: 1234,
+        lastReferencedAt: TS,
+        createdAt: TS,
+      })
+      .run();
+    // a run reference (lifetime) and a session reference (authz) on the same handle
+    client.db
+      .insert(mediaReferences)
+      .values([
+        { id: randomUUID(), handle, scopeKind: 'run', scopeId: 'run-1', createdAt: TS },
+        { id: randomUUID(), handle, scopeKind: 'session', scopeId: 'sess-1', createdAt: TS },
+      ])
+      .run();
+    // the refcount derives from the row count
+    expect(client.db.select().from(mediaReferences).where(eq(mediaReferences.handle, handle)).all()).toHaveLength(2);
+    // a scope references a handle at most once (the per-distinct-reference UNIQUE)
+    expect(() =>
+      client.db
+        .insert(mediaReferences)
+        .values({ id: randomUUID(), handle, scopeKind: 'run', scopeId: 'run-1', createdAt: TS })
+        .run(),
+    ).toThrow(/UNIQUE constraint failed/i);
+    // scope_kind is CHECK-constrained to the closed set
+    expect(() =>
+      client.db
+        .insert(mediaReferences)
+        .values({ id: randomUUID(), handle, scopeKind: 'bogus' as 'run', scopeId: 'x', createdAt: TS })
+        .run(),
+    ).toThrow(/CHECK constraint failed/i);
+    // an FK to a non-existent handle is rejected
+    expect(() =>
+      client.db
+        .insert(mediaReferences)
+        .values({ id: randomUUID(), handle: `media://sha256-${'b'.repeat(64)}`, scopeKind: 'run', scopeId: 'r', createdAt: TS })
+        .run(),
+    ).toThrow(/FOREIGN KEY constraint failed/i);
+    // deleting the object cascades its references
+    client.db.delete(mediaObjects).where(eq(mediaObjects.handle, handle)).run();
+    expect(client.db.select().from(mediaReferences).where(eq(mediaReferences.handle, handle)).all()).toHaveLength(0);
   });
 
   it('rejects a step_executions row whose run_id does not exist (foreign_keys = ON rejects)', () => {
