@@ -111,6 +111,9 @@ describe('capability gating', () => {
     // text request is never wrongly skipped/rejected (the one case pure exact-match would have regressed).
     expect(isOutputCombinationSupported([], ['text'])).toBe(true);
     expect(isOutputCombinationSupported(gemini, ['text'])).toBe(true);
+    // A DUPLICATE modality is not a member of a clean equal-length combo (exact-set, no dupes): without the
+    // reverse-inclusion check, ['image','image'] (len 2) would falsely match ['text','image'] (len 2).
+    expect(isOutputCombinationSupported([['text', 'image']], ['image', 'image'])).toBe(false);
   });
 
   it('supportsRequest reflects whether the provider can serve the request', () => {

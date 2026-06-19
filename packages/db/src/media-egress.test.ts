@@ -316,6 +316,47 @@ function fakeIncoming(status: number, chunks: readonly Uint8Array[] = []): FakeI
   return Object.assign(stream, { statusCode: status, headers: {}, destroy: () => undefined });
 }
 
+/**
+ * The mock `https.request` return value: `openConnection` only calls `.on('error', …)` then `.end()` on it.
+ * `ClientRequest` is a large class with no public constructor, so a partial stub needs the assertion — kept
+ * in this one helper rather than inline at each call site.
+ */
+function stubClientRequest(): ReturnType<typeof httpsRequest> {
+  return { on: vi.fn(), end: vi.fn() } as unknown as ReturnType<typeof httpsRequest>;
+}
+
+/**
+ * The captured options + response callback from the LAST mocked `https.request` call. The overload types its
+ * first arg as `RequestOptions | string | URL`; our `openConnection` always passes an options object + a
+ * response callback, asserted at runtime here so the narrow-shape views ({@link CapturedHttpsOptions} /
+ * {@link FakeIncoming}) are read from a verified `(object, function)` pair — the single contained assertion.
+ */
+function lastHttpsCall(): {
+  options: CapturedHttpsOptions;
+  onResponse: (incoming: FakeIncoming) => void;
+} {
+  const call = vi.mocked(httpsRequest).mock.calls.at(-1);
+  if (call === undefined) {
+    throw new Error('expected https.request to have been called');
+  }
+  const [options, onResponse] = call;
+  // Exclude the `string | URL` overload members so `options` narrows to the request-options object; our
+  // openConnection always passes that shape + a response callback. The remaining single `as` views each
+  // through the narrow shape we read (the only contained assertions).
+  if (
+    typeof options !== 'object' ||
+    options === null ||
+    options instanceof URL ||
+    typeof onResponse !== 'function'
+  ) {
+    throw new Error('expected https.request(optionsObject, responseCallback)');
+  }
+  return {
+    options, // assignable to CapturedHttpsOptions once `string | URL` are excluded — no assertion needed
+    onResponse: onResponse as (incoming: FakeIncoming) => void,
+  };
+}
+
 describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
   it('resolveHost returns an IP literal as itself, with no DNS round-trip (v4 + v6)', async () => {
     await expect(nodeMediaEgressDeps.resolveHost('203.0.113.10')).resolves.toEqual([
@@ -341,19 +382,14 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
   });
 
   it('openConnection pins the validated IP via lookup, keeps the hostname as SNI, and parses port/path', async () => {
-    vi.mocked(httpsRequest).mockReturnValue({
-      on: vi.fn(),
-      end: vi.fn(),
-    } as unknown as ReturnType<typeof httpsRequest>);
+    vi.mocked(httpsRequest).mockReturnValue(stubClientRequest());
     const request: HopRequest = {
       url: 'https://media.example.com:8443/a/b?c=d',
       hostname: 'media.example.com',
       pinnedIp: '203.0.113.10',
     };
     const pending = nodeMediaEgressDeps.openConnection(request, new AbortController().signal);
-    const callArgs = vi.mocked(httpsRequest).mock.calls.at(-1);
-    const options = callArgs?.[0] as unknown as CapturedHttpsOptions;
-    const onResponse = callArgs?.[1] as unknown as (incoming: FakeIncoming) => void;
+    const { options, onResponse } = lastHttpsCall();
     onResponse(fakeIncoming(200, [new Uint8Array([1, 2, 3])])); // deliver a 200 so the promise resolves
     const response = await pending;
 
@@ -370,17 +406,12 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
   });
 
   it('openConnection derives family 6 for an IPv6 pin and defaults a port-less url to 443', async () => {
-    vi.mocked(httpsRequest).mockReturnValue({
-      on: vi.fn(),
-      end: vi.fn(),
-    } as unknown as ReturnType<typeof httpsRequest>);
+    vi.mocked(httpsRequest).mockReturnValue(stubClientRequest());
     const pending = nodeMediaEgressDeps.openConnection(
       { url: 'https://v6.example.com/x', hostname: 'v6.example.com', pinnedIp: '2001:db8::1' },
       new AbortController().signal,
     );
-    const callArgs = vi.mocked(httpsRequest).mock.calls.at(-1);
-    const options = callArgs?.[0] as unknown as CapturedHttpsOptions;
-    const onResponse = callArgs?.[1] as unknown as (incoming: FakeIncoming) => void;
+    const { options, onResponse } = lastHttpsCall();
     onResponse(fakeIncoming(200));
     await pending;
 

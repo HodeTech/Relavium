@@ -118,9 +118,14 @@ export function isOutputCombinationSupported(
   requested: readonly string[],
 ): boolean {
   if (!requested.some((modality) => modality !== 'text')) return true; // text-only is always emittable
+  // Bidirectional membership at equal length ⇒ the two sets are exactly equal. The reverse inclusion is
+  // NOT redundant: a request with a DUPLICATE modality (e.g. ['image','image']) has the same length as a
+  // clean combo (['text','image']) and passes forward inclusion alone — the reverse direction rejects it.
   return outputCombinations.some(
     (combo) =>
-      combo.length === requested.length && requested.every((modality) => combo.includes(modality)),
+      combo.length === requested.length &&
+      requested.every((modality) => combo.includes(modality)) &&
+      combo.every((modality) => requested.includes(modality)),
   );
 }
 
