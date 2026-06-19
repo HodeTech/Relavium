@@ -15,7 +15,13 @@
  * and as the local reference.
  */
 
-import type { AbortSignalLike, MediaReferencePort, MediaStore, RunEvent } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  MediaReferencePort,
+  MediaStore,
+  MediaWritePort,
+  RunEvent,
+} from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
 
@@ -174,6 +180,16 @@ export interface ExecutionHost {
    * retention) leaves it `undefined`.
    */
   readonly mediaReferences?: MediaReferencePort;
+  /**
+   * The host media-write port (1.AF/D16, [ADR-0044](../../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md)
+   * §2) — the `save_to` write **mechanism**. The engine resolves an `output` node's `save_to` template to a
+   * relative path and its single produced handle to bytes (via {@link ExecutionHost.mediaStore}), then calls
+   * this port; the host jails the relative path (`realpath`+`commonpath`, symlinks OFF) under its own scope
+   * root and writes. **Optional**: a host with no write surface leaves it `undefined`, and a `save_to` then
+   * fails the node with a clear configuration error (never a silent skip — `save_to` is a real deliverable,
+   * NOT best-effort). The Node reference is `@relavium/db`'s `createFilesystemMediaWrite(scopeRoot)`.
+   */
+  readonly mediaWrite?: MediaWritePort;
 }
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
@@ -325,6 +341,8 @@ export function createInMemoryHost(options?: {
   fetchMedia?: HostMediaFetch;
   /** Inject a media-reference lifecycle port so produced handles are recorded + reclaimed (1.AF/D12c+D11). */
   mediaReferences?: MediaReferencePort;
+  /** Inject a media-write port so an `output` node's `save_to` writes its produced media (1.AF/D16). */
+  mediaWrite?: MediaWritePort;
 }): ExecutionHost & { store: RunStore } & Pick<ManualTimerController, 'fireTimers' | 'armedCount'> {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
@@ -340,6 +358,7 @@ export function createInMemoryHost(options?: {
     ...(options?.mediaStore ? { mediaStore: options.mediaStore } : {}),
     ...(options?.fetchMedia ? { fetchMedia: options.fetchMedia } : {}),
     ...(options?.mediaReferences ? { mediaReferences: options.mediaReferences } : {}),
+    ...(options?.mediaWrite ? { mediaWrite: options.mediaWrite } : {}),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };

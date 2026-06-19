@@ -886,6 +886,34 @@ export interface MediaReferencePort {
   reclaimRun(runId: string): void | Promise<void>;
 }
 
+/** The result of a {@link MediaWritePort} write — the byte count written, for an observability log only
+ *  (never the resolved path or the bytes themselves; security-review.md §Media byte delivery). */
+export interface MediaWriteResult {
+  readonly bytesWritten: number;
+}
+
+/**
+ * The host-injected media-write port (1.AF/D16,
+ * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §2) — the
+ * `save_to` write **mechanism**. The platform-pure engine resolves an `output` node's `save_to` template
+ * (the `{{ run.id }}` namespace) to a **relative** path, resolves its single produced media handle to bytes
+ * via {@link MediaStore.get}, and hands `(relativePath, bytes)` to this host port. The **host owns the
+ * mechanism**: `realpath`+`commonpath` fail-closed jailing under a configured scope root, symlinks OFF, and
+ * the actual filesystem write — the same policy/mechanism delegation as {@link MediaStore.readRange} and
+ * `ResolverCapabilities.readFile` (security-review.md §Media byte delivery). The engine never does
+ * filesystem I/O and never knows the scope root; it passes a relative path the host jails (so a host with a
+ * different sandbox root cannot be escaped from the engine side). **Not** best-effort — `save_to` is a real
+ * deliverable, so a write failure fails the `output` node (and the run), unlike the best-effort
+ * {@link MediaReferencePort}. A host with no write surface leaves `ExecutionHost.mediaWrite` `undefined`;
+ * a `save_to` on such a host fails the node with a clear configuration error (never a silent skip). The
+ * Node reference is `@relavium/db`'s `createFilesystemMediaWrite(scopeRoot)`.
+ */
+export type MediaWritePort = (
+  relativePath: string,
+  bytes: Uint8Array,
+  signal?: AbortSignalLike,
+) => Promise<MediaWriteResult>;
+
 /** Queue a walked node's children (array items / Map keys+values / Set values / record values) onto `stack`. */
 function pushMediaWalkChildren(node: object, stack: unknown[]): void {
   if (Array.isArray(node)) {

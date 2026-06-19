@@ -49,8 +49,8 @@ import {
 } from '@relavium/shared';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
-import { resolveContext } from '../interpolation/resolve.js';
-import type { ResolverCapabilities } from '../interpolation/scope.js';
+import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
+import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -915,7 +915,9 @@ class RunExecution {
         attemptNumber,
         ...(preEgress === undefined ? {} : { preEgress }),
       };
-      return await this.#executor.execute(ctx);
+      // After the executor completes, an `output` node with `save_to` writes its produced media to the
+      // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
+      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx));
     } catch {
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).
@@ -1541,6 +1543,85 @@ class RunExecution {
       return undefined;
     }
     return (url) => fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal);
+  }
+
+  /**
+   * Apply an `output` node's `save_to` (1.AF/D16, ADR-0044 §2) once its executor has `completed`: returns
+   * the outcome unchanged when there is nothing to write (not an output node, no `save_to`, or a
+   * non-`completed` outcome), else writes the produced media and returns the outcome on success or a typed
+   * `failed` outcome on error. `save_to` is a real deliverable, so a failure FAILS the node (→ run:failed)
+   * — it is NOT best-effort (contrast the retention {@link #recordProducedMedia}). Output nodes carry no
+   * node-retry budget ({@link #retryConfig}), so the write runs once.
+   */
+  async #applySaveTo(vertex: PlanVertex, outcome: NodeOutcome): Promise<NodeOutcome> {
+    if (outcome.kind !== 'completed') {
+      return outcome;
+    }
+    const config = vertex.config;
+    if (config.kind !== 'output' || config.node.save_to === undefined) {
+      return outcome;
+    }
+    const failure = await this.#performSaveTo(config.node.save_to, outcome.output);
+    return failure === undefined ? outcome : { kind: 'failed', error: failure };
+  }
+
+  /**
+   * The `save_to` write itself (1.AF/D16): resolve the template's `{{ run.id }}` to a relative path,
+   * extract the SINGLE produced media handle from the (de-inlined) output, resolve it to bytes via the host
+   * `MediaStore`, and write through the host media-write port. Returns `undefined` on success, else a typed,
+   * secret-free {@link NodeFailure}. The bytes/handle/resolved-path never enter the message (I3).
+   */
+  async #performSaveTo(saveTo: string, output: unknown): Promise<NodeFailure | undefined> {
+    const store = this.#host.mediaStore;
+    const write = this.#host.mediaWrite;
+    if (store === undefined || write === undefined) {
+      return {
+        code: 'validation',
+        message:
+          'an output node declares `save_to` but the host wired no media store / media-write port',
+        retryable: false,
+      };
+    }
+    try {
+      // Resolve `save_to` with ONLY `run.id` in scope (no inputs/ctx/run.outputs): a filesystem path
+      // template must not draw arbitrary authored data into the path. The host realpath+commonpath jail is
+      // the binding control; this narrows the surface (defense-in-depth).
+      const scope: RunScope = { inputs: {}, ctx: {}, outputs: {}, runId: this.runId };
+      const relativePath = await resolveTemplate(saveTo, scope, {}, this.#abort.signal);
+      // `state.output` retains the RAW in-flight form (deInlineMedia is non-mutating), so de-inline a copy
+      // to obtain the durable handle. The content-addressed `put` is idempotent — these are the same bytes
+      // the node:completed emit stores, so the double de-inline is correct, not a second distinct write.
+      const durable = await deInlineMedia(output, store, this.#mediaUrlFetch());
+      const handles = collectDurableMediaHandles(durable);
+      if (handles.length !== 1) {
+        return {
+          code: 'validation',
+          message:
+            handles.length === 0
+              ? 'output node `save_to`: the captured output contains no media handle to write'
+              : `output node \`save_to\`: the captured output contains ${handles.length} media handles — save_to writes exactly one`,
+          retryable: false,
+        };
+      }
+      const [handle] = handles;
+      if (handle === undefined) {
+        return { code: 'internal', message: 'output node `save_to`: no handle', retryable: false }; // unreachable (length === 1)
+      }
+      const bytes = await store.get(handle.handle);
+      await write(relativePath, bytes, this.#abort.signal);
+      return undefined;
+    } catch {
+      if (this.#abort.signal.aborted) {
+        // A cancel / sibling-abort raced the write — surface a fatal cancel (never a retryable failure), so
+        // the engine's cancel-wins precedence closes the run as cancelled / the sibling's cause.
+        return { code: 'cancelled', message: 'the run was cancelled', retryable: false };
+      }
+      return {
+        code: 'internal',
+        message: 'output node `save_to`: the media write failed',
+        retryable: false,
+      };
+    }
   }
 
   /**

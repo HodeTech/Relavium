@@ -29,6 +29,12 @@ export interface RunScope {
   readonly ctx: Readonly<Record<string, unknown>>;
   /** Completed node outputs, keyed by node id — `{{run.outputs["<id>"]}}`. */
   readonly outputs: Readonly<Record<string, unknown>>;
+  /**
+   * The run id — `{{ run.id }}` (1.AF/D16, ADR-0044 §2). Optional: only the contexts that carry it
+   * (today the engine's `output`-node `save_to` resolution) can serve `{{ run.id }}`; elsewhere a
+   * `{{ run.id }}` reference surfaces a typed `unresolved_reference` rather than resolving to nothing.
+   */
+  readonly runId?: string;
 }
 
 /** Side-effecting capabilities the host injects because the pure engine cannot implement them. */

@@ -164,7 +164,7 @@ unless the user has explicitly opted into a local endpoint) applies to all three
 - Outbound requests carry the AbortSignal and a timeout; a hung provider must not pin a
   worker open.
 
-## Media byte delivery (`read_media`, Range, upload)
+## Media byte delivery (`read_media`, Range, `save_to`, upload)
 
 Media artifacts are served back to a surface (e.g. the desktop WebView) only through the **one bounded
 `read_media(ref)` gate** ([ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) — never
@@ -182,9 +182,19 @@ upload surface must confirm:
 - **`read_media` is session-scoped** (the scope-set authz of ADR-0031/0032): a session may read only a handle
   it produced or explicitly received — "know a sha256" is not authorization. The Rust CAS / file layer
   resolves paths with `realpath` + `commonpath` **fail-closed** (no path-traversal; symlinks off).
+- **`save_to` writes are jailed identically** ([ADR-0044](../decisions/0044-media-access-governance-read-media-save-to-cost.md)
+  §2). An `output` node's `save_to` is a write of model-produced bytes to a **relative** path; the
+  platform-pure engine resolves the path (only `{{ run.id }}` in scope) and the single produced handle to
+  bytes, then hands `(relativePath, bytes)` to a **host media-write port**. The host enforces the same
+  fail-closed discipline as the read gate: reject an absolute / drive / UNC / `..` path; `realpath` the scope
+  root; verify the deepest existing ancestor is within the root **before** any `mkdir`/write (a symlinked
+  ancestor that escapes is caught before anything is created outside the root); refuse a symlink at the final
+  component; publish atomically (temp + `rename`, which never follows a final-component symlink). The engine
+  never does filesystem I/O and never knows the scope root.
 
-*(Not yet built — these are binding acceptance criteria for the `read_media` / Rust-CAS workstreams,
-1.AF/1.AH.)*
+*(Not yet built for the surface — these are binding acceptance criteria for the `read_media` / Rust-CAS
+workstreams, 1.AF/1.AH. The `save_to` host write port + its jail land in 1.AF (`@relavium/db`'s
+`createFilesystemMediaWrite`); the surface rendering is 1.AH.)*
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 

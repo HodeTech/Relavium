@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MediaReferencePort, MediaStore, RunEvent } from '@relavium/shared';
+import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -532,6 +532,172 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     // A retention-port failure is swallowed — the run reaches its normal terminal, I3/totality untouched.
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+  });
+});
+
+// --- output-node save_to (1.AF/D16, ADR-0044 §2) ----------------------------------------------
+
+/** A record-only {@link MediaWritePort} stub for the engine save_to tests. */
+function stubMediaWrite(): {
+  write: MediaWritePort;
+  writes: { path: string; bytes: Uint8Array }[];
+} {
+  const writes: { path: string; bytes: Uint8Array }[] = [];
+  const write: MediaWritePort = (path, bytes) => {
+    writes.push({ path, bytes });
+    return Promise.resolve({ bytesWritten: bytes.length });
+  };
+  return { write, writes };
+}
+
+/** A workflow whose `output` node declares `save_to` (interpolating `{{ run.id }}`); `gen` feeds it. */
+const SAVE_TO_WF = `  id: saveto
+  nodes:
+    - { id: start, type: input }
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output, save_to: 'media/{{ run.id }}/image.png' }
+  edges:
+    - { from: start, to: gen }
+    - { from: gen, to: out }`;
+
+describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () => {
+  it('writes the produced media via the host mediaWrite port, interpolating run.id into the path', async () => {
+    const { store: mediaStore, puts } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    // The output node captures its feeder's media (mimicking the io.ts output handler's verbatim capture).
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: workflow(SAVE_TO_WF),
+        },
+      ),
+    );
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    const runId = events[0]?.runId;
+    expect(runId).toBeDefined();
+    expect(writes).toHaveLength(1);
+    // run.id was interpolated into the relative path (no `{{ … }}` left, the actual runId embedded).
+    expect(writes[0]?.path).toBe(`media/${runId}/image.png`);
+    expect([...(writes[0]?.bytes ?? [])]).toEqual([...(puts[0]?.bytes ?? [])]); // the de-inlined bytes
+    expect(writes[0]?.bytes.length).toBe(5); // "hello"
+  });
+
+  it('fails the run when save_to is declared but the captured output carries NO media handle', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const events = await drain(
+      engineWith(
+        { out: () => ({ kind: 'completed', output: { text: 'no media here' } }) },
+        host,
+      ).start({ workflow: workflow(SAVE_TO_WF) }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(writes).toHaveLength(0); // nothing written
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('fails the run when the captured output carries MORE THAN ONE media handle (save_to writes exactly one)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const second = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'base64' as const, data: 'd29ybGQ=' },
+    }; // "world"
+    const events = await drain(
+      engineWith(
+        { out: () => ({ kind: 'completed', output: { a: MEDIA_PART, b: second } }) },
+        host,
+      ).start({ workflow: workflow(SAVE_TO_WF) }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(writes).toHaveLength(0);
+  });
+
+  it('fails the run when save_to is declared but the host wired no media-write port', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore }); // no mediaWrite
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: workflow(SAVE_TO_WF),
+        },
+      ),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('fails the run when the host media-write port throws (save_to is a real deliverable, not best-effort)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const throwing: MediaWritePort = () => Promise.reject(new Error('disk full'));
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: throwing,
+    });
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: workflow(SAVE_TO_WF),
+        },
+      ),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('internal');
+      // Secret-free: the write reason ("disk full") is never echoed into the run-event error message.
+      expect(failed.error.message).not.toContain('disk full');
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('does not invoke save_to for an output node WITHOUT a save_to field (unchanged capture path)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({
+        workflow: workflow(SEQUENTIAL), // `done` output node has no save_to
+      }),
+    );
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    expect(writes).toHaveLength(0); // no save_to ⇒ the write port is never called
   });
 });
 

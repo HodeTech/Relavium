@@ -57,6 +57,22 @@ describe('parseTemplate', () => {
     expect(ref).toMatchObject({ kind: 'node', identifier: 'style-review-node', path: '' });
   });
 
+  it('parses {{ run.id }} as kind `run` (1.AF/D16 — the save_to namespace)', () => {
+    expect(refOf(parseTemplate('{{ run.id }}')[0])).toMatchObject({
+      kind: 'run',
+      identifier: 'id',
+      path: '',
+    });
+  });
+
+  it('does NOT read `run.identity` / `run.id_x` as run.id (the lookahead stops a prefix collision)', () => {
+    // A longer identifier that merely starts with `id` is `unknown`, never silently truncated to run.id.
+    expect(refOf(parseTemplate('{{ run.identity }}')[0])).toMatchObject({ kind: 'unknown' });
+    expect(refOf(parseTemplate('{{ run.id_x }}')[0])).toMatchObject({ kind: 'unknown' });
+    // And `run.outputs[…]` is still the node namespace (matched before run.id).
+    expect(refOf(parseTemplate('{{ run.outputs["n"] }}')[0])).toMatchObject({ kind: 'node' });
+  });
+
   it('parses a single pipe filter with no arguments', () => {
     const ref = refOf(parseTemplate('{{run.outputs["n"].issues | length}}')[0]);
     expect(ref.path).toBe('.issues');
