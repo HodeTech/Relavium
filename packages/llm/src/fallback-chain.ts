@@ -1,4 +1,4 @@
-import type { BackoffStrategy } from '@relavium/shared';
+import type { BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
 import type { CostTracker, CostUpdate } from './cost-tracker.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
@@ -153,6 +153,17 @@ export interface FallbackChainOptions {
    * `false`/absent makes the auth failure fatal. Never becomes a retry loop.
    */
   readonly onAuthError?: (provider: ProviderId) => boolean | Promise<boolean>;
+  /**
+   * Resolve a durable media `handle` to the in-flight {@link MediaSource} a specific provider's egress
+   * needs (1.AF/D8, [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md)).
+   * Host-injected (backed by `MediaStore.resolveForEgress`) so the **chain stays byte-free + platform-free**
+   * — it calls a function, never holds a `MediaStore`. Before each attempted entry the chain re-materializes
+   * every `handle` source in the request for that entry's provider (so the adapter only ever sees an
+   * already-resolved source); a non-base64 provider ref is cached per `(provider, handle)` and re-materialized
+   * on a cross-provider advance, a base64 source is never cached (the sidecar stays byte-free). Absent ⇒ a
+   * `handle` source is sent to the adapter unchanged (no-op).
+   */
+  readonly resolveForEgress?: (handle: string, provider: ProviderId) => Promise<MediaSource>;
 }
 
 const DEFAULT_BACKOFF_BASE_MS = 250;
@@ -211,6 +222,13 @@ function isContentChunk(chunk: StreamChunk): boolean {
   return chunk.type !== 'stop' && chunk.type !== 'error';
 }
 
+/** True when any message carries a durable `handle` media source needing egress re-materialization (D8). */
+function hasHandleMedia(req: LlmRequest): boolean {
+  return req.messages.some((message) =>
+    message.content.some((part) => part.type === 'media' && part.source.kind === 'handle'),
+  );
+}
+
 /** What one `generate` attempt produced. */
 type GenerateAttempt =
   | { readonly status: 'success'; readonly result: LlmResult }
@@ -226,6 +244,12 @@ export class FallbackChain {
   readonly #cooldownMs: number;
   /** Per-provider cooldown expiry (ms), persisted across calls on this instance (rate-limit nuance). */
   readonly #cooldownUntil = new Map<ProviderId, number>();
+  // The media egress re-materialization sidecar (ADR-0043 §4, D7): a per-`(provider, handle)` cache of
+  // NON-base64 resolved sources (a provider-hosted ref). It is byte-free (a base64 source is never cached),
+  // never persisted/logged/checkpointed, and survives across generate/stream calls on this instance so a
+  // multi-call tool loop reuses a provider ref instead of re-uploading; a cross-provider advance misses
+  // the cache (a different key) and re-materializes, so a foreign provider's ref never crosses a boundary.
+  readonly #egressSidecar = new Map<string, MediaSource>();
   // The cross-CALL reasoning strip latch (ADR-0039). Unlike the per-call `ChainRun.#lastProvider`,
   // this survives across generate/stream calls so a multi-turn tool loop on ONE chain instance strips
   // a prior provider's signed reasoning before it can reach a different provider's next call. A chain
@@ -279,7 +303,11 @@ export class FallbackChain {
           continue;
         }
         const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-        const result = await this.#runEntryGenerate(entry, entryReq, req, run);
+        const materialized = await this.#materializeForEntry(entry, entryReq, run);
+        if (materialized === undefined) {
+          continue; // a failed media re-materialization advances to the next provider (retryable-advance)
+        }
+        const result = await this.#runEntryGenerate(entry, materialized, req, run);
         if (result !== undefined) {
           return result;
         }
@@ -345,7 +373,11 @@ export class FallbackChain {
           continue;
         }
         const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-        const action = yield* this.#runEntryStream(entry, entryReq, req, run);
+        const materialized = await this.#materializeForEntry(entry, entryReq, run);
+        if (materialized === undefined) {
+          continue; // a failed media re-materialization advances to the next provider (retryable-advance)
+        }
+        const action = yield* this.#runEntryStream(entry, materialized, req, run);
         if (action === 'done') {
           return;
         }
@@ -513,6 +545,77 @@ export class FallbackChain {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Re-materialize every durable `handle` media source in `entryReq` to the in-flight source `provider`
+   * needs (D8), via the injected {@link FallbackChainOptions.resolveForEgress} hook. Returns the resolved
+   * request, or `undefined` when the resolution failed — recorded as a visible failed attempt so the caller
+   * advances to the next provider (retryable-advance, ADR-0043 §4). A secret-free message names the reason
+   * only — never the handle, a resolved path, a host stack, or bytes.
+   */
+  async #materializeForEntry(
+    entry: FallbackPlanEntry,
+    entryReq: LlmRequest,
+    run: ChainRun,
+  ): Promise<LlmRequest | undefined> {
+    try {
+      return await this.#materializeMedia(entryReq, entry.provider.id);
+    } catch {
+      const error = makeLlmError({
+        provider: entry.provider.id,
+        kind: 'unknown',
+        message: 'media re-materialization failed before egress',
+      });
+      run.lastError = error;
+      this.#emit({ ...run.next(entry), error });
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolve every `handle` media source in the request to the in-flight source `provider` needs, leaving
+   * `base64`/`url` sources untouched. Non-mutating (returns a fresh request) and allocates only when the
+   * request actually carries a handle source (the dominant text/base64 case pays a cheap scan).
+   */
+  async #materializeMedia(req: LlmRequest, provider: ProviderId): Promise<LlmRequest> {
+    const resolve = this.#options.resolveForEgress;
+    if (resolve === undefined || !hasHandleMedia(req)) {
+      return req;
+    }
+    const messages: LlmMessage[] = [];
+    for (const message of req.messages) {
+      const content: ContentPart[] = [];
+      for (const part of message.content) {
+        content.push(
+          part.type === 'media' && part.source.kind === 'handle'
+            ? { ...part, source: await this.#resolveHandle(part.source.ref, provider, resolve) }
+            : part,
+        );
+      }
+      messages.push({ ...message, content });
+    }
+    return { ...req, messages };
+  }
+
+  /** Resolve one handle for `provider`, caching only a non-base64 ref in the byte-free egress sidecar. */
+  async #resolveHandle(
+    handle: string,
+    provider: ProviderId,
+    resolve: (handle: string, provider: ProviderId) => Promise<MediaSource>,
+  ): Promise<MediaSource> {
+    const key = `${provider} ${handle}`;
+    const cached = this.#egressSidecar.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const resolved = await resolve(handle, provider);
+    if (resolved.kind !== 'base64') {
+      // Cache only a provider ref (url/handle) — a base64 source carries bytes and is never cached, so the
+      // sidecar stays byte-free (ADR-0043 §4). A later same-provider re-use then skips the re-upload.
+      this.#egressSidecar.set(key, resolved);
+    }
+    return resolved;
   }
 
   /** Whether to skip an entry without consuming an attempt (cooldown or unmet capability). */

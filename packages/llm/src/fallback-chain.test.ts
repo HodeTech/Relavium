@@ -49,6 +49,8 @@ interface FakeProvider {
 function makeProvider(opts: {
   id: ProviderId;
   supports?: { tools?: boolean; streaming?: boolean };
+  /** A full capability override (e.g. a media-capable provider for the egress re-materialization tests). */
+  capabilities?: CapabilityFlags;
   generate?: (req: LlmRequest, key: string, call: number) => Promise<LlmResult>;
   stream?: (req: LlmRequest, key: string, call: number) => AsyncIterable<StreamChunk>;
 }): FakeProvider {
@@ -57,7 +59,7 @@ function makeProvider(opts: {
   let streamCalls = 0;
   const provider: LlmProvider = {
     id: opts.id,
-    supports: caps(opts.supports),
+    supports: opts.capabilities ?? caps(opts.supports),
     generate(req, key) {
       calls.push(req);
       genCalls += 1;
@@ -1392,5 +1394,177 @@ describe('cost + credential robustness', () => {
     const error = chunks.find((c) => c.type === 'error');
     expect(error?.type === 'error' && error.error.kind).toBe('auth');
     expect(error?.type === 'error' && error.error.message).not.toContain(secret);
+  });
+});
+
+// --- media egress re-materialization (1.AF, D7/D8, ADR-0043) -----------------------------------
+
+describe('FallbackChain media egress re-materialization (D7/D8)', () => {
+  const MEDIA_CAPS: CapabilityFlags = {
+    tools: true,
+    streaming: true,
+    parallelToolCalls: false,
+    vision: true,
+    promptCache: false,
+    reasoning: false,
+    media: {
+      input: { image: true, audio: true, video: true, document: true },
+      outputCombinations: [],
+    },
+  };
+  const HANDLE = `media://sha256-${'a'.repeat(64)}`;
+  const handleReq: LlmRequest = {
+    model: 'incoming',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe' },
+          { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+        ],
+      },
+    ],
+  };
+  const sentSource = (fake: FakeProvider, call = 0): unknown => {
+    const part = fake.calls[call]?.messages[0]?.content[1];
+    return part?.type === 'media' ? part.source : null;
+  };
+
+  it('resolves a handle media source to its in-flight source before the provider sees it (D8)', async () => {
+    const provider = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('ok'),
+    });
+    const resolveCalls: Array<{ handle: string; provider: ProviderId }> = [];
+    const { options } = makeOptions({
+      resolveForEgress: (handle, p) => {
+        resolveCalls.push({ handle, provider: p });
+        return Promise.resolve({ kind: 'base64', data: 'aGVsbG8=' });
+      },
+    });
+    await new FallbackChain([entry(provider, 'gpt-x')], options).generate(handleReq);
+    expect(resolveCalls).toEqual([{ handle: HANDLE, provider: 'openai' }]);
+    expect(sentSource(provider)).toEqual({ kind: 'base64', data: 'aGVsbG8=' }); // no handle to the adapter
+  });
+
+  it('leaves a handle source unchanged when no resolveForEgress hook is wired (no-op)', async () => {
+    const provider = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('ok'),
+    });
+    const { options } = makeOptions();
+    await new FallbackChain([entry(provider, 'gpt-x')], options).generate(handleReq);
+    expect(sentSource(provider)).toEqual({ kind: 'handle', ref: HANDLE });
+  });
+
+  it('caches a non-base64 provider ref and reuses it on a later same-provider call (byte-free sidecar, D7)', async () => {
+    const provider = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('ok'),
+    });
+    let resolveCount = 0;
+    const { options } = makeOptions({
+      resolveForEgress: () => {
+        resolveCount += 1;
+        return Promise.resolve({ kind: 'url', url: 'https://files.openai/abc' });
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'gpt-x')], options);
+    await chain.generate(handleReq);
+    await chain.generate(handleReq); // a later call on the SAME instance
+    expect(resolveCount).toBe(1); // the provider ref was cached + reused (no re-upload)
+    expect(sentSource(provider, 1)).toEqual({ kind: 'url', url: 'https://files.openai/abc' });
+  });
+
+  it('never caches a base64 source (byte-free sidecar) — re-resolves on each call', async () => {
+    const provider = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('ok'),
+    });
+    let resolveCount = 0;
+    const { options } = makeOptions({
+      resolveForEgress: () => {
+        resolveCount += 1;
+        return Promise.resolve({ kind: 'base64', data: 'aGVsbG8=' });
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'gpt-x')], options);
+    await chain.generate(handleReq);
+    await chain.generate(handleReq);
+    expect(resolveCount).toBe(2); // base64 carries bytes — never cached; re-resolved (sidecar stays byte-free)
+  });
+
+  it('re-materializes per-provider across a failover (a foreign ref never crosses the boundary, D7)', async () => {
+    const primary = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: rejects('openai', 'overloaded'),
+    });
+    const fallback = makeProvider({
+      id: 'anthropic',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('ok'),
+    });
+    const seen: ProviderId[] = [];
+    const { options } = makeOptions({
+      resolveForEgress: (_handle, p) => {
+        seen.push(p);
+        return Promise.resolve({ kind: 'url', url: `https://files.${p}/abc` });
+      },
+    });
+    const chain = new FallbackChain(
+      [entry(primary, 'gpt-x'), entry(fallback, 'claude-x')],
+      options,
+    );
+    await chain.generate(handleReq);
+    expect(seen).toEqual(['openai', 'anthropic']); // resolved independently for each provider
+    expect(sentSource(fallback)).toEqual({ kind: 'url', url: 'https://files.anthropic/abc' });
+  });
+
+  it('advances to the next provider when re-materialization fails (retryable-advance, D7)', async () => {
+    const primary = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('primary'),
+    });
+    const fallback = makeProvider({
+      id: 'anthropic',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('fallback'),
+    });
+    const { options, trace } = makeOptions({
+      resolveForEgress: (_handle, p) =>
+        p === 'openai'
+          ? Promise.reject(new Error('upload failed'))
+          : Promise.resolve({ kind: 'base64', data: 'aGVsbG8=' }),
+    });
+    const chain = new FallbackChain(
+      [entry(primary, 'gpt-x'), entry(fallback, 'claude-x')],
+      options,
+    );
+    const res = await chain.generate(handleReq);
+    expect(res.content).toEqual([{ type: 'text', text: 'fallback' }]); // advanced past the failed materialization
+    expect(primary.calls).toHaveLength(0); // primary never got a request — materialization failed first
+    const failed = trace.find((r) => r.outcome === 'failed');
+    expect(failed?.error?.message).toMatch(/re-materialization failed/); // visible + secret-free
+  });
+
+  it('makes a re-materialization failure fatal when there is no next provider', async () => {
+    const provider = makeProvider({
+      id: 'openai',
+      capabilities: MEDIA_CAPS,
+      generate: resolves('ok'),
+    });
+    const { options } = makeOptions({
+      resolveForEgress: () => Promise.reject(new Error('upload failed')),
+    });
+    const chain = new FallbackChain([entry(provider, 'gpt-x')], options);
+    const error = await rejectedError(chain.generate(handleReq));
+    expect(error.message).toMatch(/re-materialization failed/);
+    expect(provider.calls).toHaveLength(0);
   });
 });

@@ -66,6 +66,12 @@ export interface AgentRunnerDeps {
   readonly now?: ChainCapabilities['now'];
   /** Optional single out-of-band credential refresh (host-owned). */
   readonly onAuthError?: ChainCapabilities['onAuthError'];
+  /**
+   * Host media-egress resolver (1.AF/D8) — turns a durable `handle` media source into the in-flight source
+   * a provider needs, before egress (backed by `MediaStore.resolveForEgress`). Forwarded into the chain so
+   * the adapter only ever sees a resolved source; absent on a text-only host (a handle is then sent as-is).
+   */
+  readonly resolveForEgress?: ChainCapabilities['resolveForEgress'];
   /** Host capability for the `read_file` interpolation filter in a prompt (delegated workspace sandbox). */
   readonly resolverCapabilities?: ResolverCapabilities;
   /** The filesystem scope tier for tool dispatch (default `'sandboxed'` — the safe tier). */
@@ -329,6 +335,7 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
     sleep: deps.sleep,
     ...(deps.now === undefined ? {} : { now: deps.now }),
     ...(deps.onAuthError === undefined ? {} : { onAuthError: deps.onAuthError }),
+    ...(deps.resolveForEgress === undefined ? {} : { resolveForEgress: deps.resolveForEgress }),
   };
 }
 

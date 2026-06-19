@@ -85,7 +85,7 @@ export type PreEgressHook = (info: {
 /** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
 export type ChainCapabilities = Pick<
   FallbackChainOptions,
-  'keyFor' | 'sleep' | 'now' | 'onAuthError'
+  'keyFor' | 'sleep' | 'now' | 'onAuthError' | 'resolveForEgress'
 >;
 
 /** Everything one agent turn needs — no run/session correlation key, no `NodeExecContext`. */
