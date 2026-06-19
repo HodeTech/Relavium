@@ -2,7 +2,11 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { createMediaReferenceStore, type MediaReferenceStore } from './media-reference-store.js';
+import {
+  createMediaReferencePort,
+  createMediaReferenceStore,
+  type MediaReferenceStore,
+} from './media-reference-store.js';
 import { mediaObjects } from './schema.js';
 
 const HANDLE = `media://sha256-${'a'.repeat(64)}`;
@@ -77,5 +81,16 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     // The session authz row survives — a terminal sweep of one run never revokes a session's read.
     expect(store.describe(HANDLE)?.allowedScopes).toEqual([{ kind: 'session', id: 's1' }]);
     expect(store.removeRunReferences('nope')).toBe(0); // no matching run rows
+  });
+
+  it('createMediaReferencePort records the object + a run ref, and reclaimRun removes the run ref (D12c/D11)', async () => {
+    const port = createMediaReferencePort(store);
+    await port.recordRunMedia(
+      { handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 },
+      'run-1',
+    );
+    expect(store.describe(HANDLE)?.byteLength).toBe(5); // the media_objects row was recorded
+    await port.reclaimRun('run-1');
+    expect(store.removeRunReferences('run-1')).toBe(0); // the run ref was already reclaimed by the port
   });
 });

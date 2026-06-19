@@ -92,6 +92,7 @@ export {
 // behind the engine's terminal sweep; the pure engine never imports it.
 export {
   createMediaReferenceStore,
+  createMediaReferencePort,
   type MediaReferenceStore,
   type MediaObjectInput,
   type MediaHandleRecord,

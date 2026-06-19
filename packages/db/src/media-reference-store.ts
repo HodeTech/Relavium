@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import type { MediaModality, MediaScopeKind, Scope } from '@relavium/shared';
+import type {
+  DurableMediaMeta,
+  MediaModality,
+  MediaReferencePort,
+  MediaScopeKind,
+  Scope,
+} from '@relavium/shared';
 import { and, eq } from 'drizzle-orm';
 
 import type { Db } from './client.js';
@@ -120,6 +126,24 @@ export function createMediaReferenceStore(
         .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
         .run();
       return result.changes;
+    },
+  };
+}
+
+/**
+ * Adapt a {@link MediaReferenceStore} to the engine's {@link MediaReferencePort} (1.AF/D12c + D11): the
+ * host wires this behind `ExecutionHost.mediaReferences` so the pure engine records a produced handle's
+ * `run` reference at the de-inline choke point and reclaims the run's references at its terminal event.
+ * `DurableMediaMeta` is structurally a {@link MediaObjectInput}, so the record forwards it directly.
+ */
+export function createMediaReferencePort(store: MediaReferenceStore): MediaReferencePort {
+  return {
+    recordRunMedia(meta: DurableMediaMeta, runId: string): void {
+      store.recordObject(meta);
+      store.addReference(meta.handle, 'run', runId);
+    },
+    reclaimRun(runId: string): void {
+      store.removeRunReferences(runId);
     },
   };
 }
