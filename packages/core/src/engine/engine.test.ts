@@ -637,6 +637,41 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
     expect(writes).toHaveLength(0);
   });
 
+  it('fails with `validation` (not `internal`) when the save_to path template cannot be resolved', async () => {
+    // A `save_to` referencing a non-`run.id` namespace passes the relative-path schema but resolves to
+    // nothing at runtime (only run.id is in scope) — an InterpolationError the engine classifies as a
+    // validation (authoring) fault, never an engine `internal` fault.
+    const { store: mediaStore, puts } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const wf = workflow(`  id: saveto-badtmpl
+  nodes:
+    - { id: start, type: input }
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output, save_to: 'out/{{ inputs.missing }}/x.png' }
+  edges:
+    - { from: start, to: gen }
+    - { from: gen, to: out }`);
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: wf,
+        },
+      ),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(writes).toHaveLength(0); // the path never resolved → never written
+    expect(puts).toHaveLength(0); // and never de-inlined/stored
+  });
+
   it('fails the run when save_to is declared but the host wired no media-write port', async () => {
     const { store: mediaStore } = stubMediaStore();
     const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore }); // no mediaWrite

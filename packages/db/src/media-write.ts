@@ -24,14 +24,42 @@ import type { AbortSignalLike, MediaWritePort, MediaWriteResult } from '@relaviu
  * - **Symlinks OFF** — the final component is `lstat`-checked and a symlink is refused; the publish is an
  *   atomic temp-write + `rename` (which replaces a name, never follows a final symlink — the binding control).
  *
- * Errors name a **reason only** — never the resolved path, the scope root, or the bytes (rule 6 / I3).
+ * Errors are a {@link MediaWriteError} naming a **reason only** — never the resolved path, the scope root, or
+ * the bytes (rule 6 / I3). A raw Node `fs` error (whose `message`/`path`/`dest` would carry the absolute
+ * path) is caught at the boundary and re-wrapped, so the port honours its own contract regardless of caller.
  */
 export function createFilesystemMediaWrite(scopeRoot: string): MediaWritePort {
   return (relativePath: string, bytes: Uint8Array, signal?: AbortSignalLike) =>
     writeJailed(scopeRoot, relativePath, bytes, signal);
 }
 
+/** A media-write failure naming a reason only (never a path / the bytes) — mirrors `MediaEgressError`. */
+export class MediaWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MediaWriteError';
+  }
+}
+
 async function writeJailed(
+  scopeRoot: string,
+  relativePath: string,
+  bytes: Uint8Array,
+  signal: AbortSignalLike | undefined,
+): Promise<MediaWriteResult> {
+  try {
+    return await writeJailedUnsafe(scopeRoot, relativePath, bytes, signal);
+  } catch (error) {
+    // The port's own checks already throw a reason-only MediaWriteError; re-throw those verbatim. A RAW
+    // Node fs error (realpath/mkdir/writeFile/rename/lstat) carries the absolute path in `.message`/`.path`/
+    // `.dest` — re-wrap it so the resolved path never escapes the port (the I3 self-defending contract).
+    throw error instanceof MediaWriteError
+      ? error
+      : new MediaWriteError('save_to: the filesystem write failed');
+  }
+}
+
+async function writeJailedUnsafe(
   scopeRoot: string,
   relativePath: string,
   bytes: Uint8Array,
@@ -46,6 +74,8 @@ async function writeJailed(
   const targetDir = dirname(lexicalTarget);
   // Resolve the deepest EXISTING ancestor and verify it is within the root BEFORE any mkdir, so a
   // symlinked ancestor pointing outside the root is caught before we create or write anything there.
+  // (A `mkdir(recursive)` through a not-yet-checked symlinked ancestor could create stray empty dirs
+  // outside the root, but the post-mkdir realpath re-check below throws before ANY byte is written.)
   assertWithinRoot(realRoot, await deepestExistingReal(targetDir));
   throwIfAborted(signal);
   await mkdir(targetDir, { recursive: true });
@@ -58,14 +88,18 @@ async function writeJailed(
   throwIfAborted(signal);
   // Atomic publish: write a unique temp file in the same (in-root) dir, then rename it onto the final
   // path. `rename` replaces the name atomically and never follows a final-component symlink, so a partial
-  // write never lands at the target and a racing symlink cannot redirect the bytes.
+  // write never lands at the target and a racing symlink cannot redirect the bytes. The `finally` reclaims
+  // the temp on ANY non-success exit (a writeFile/rename throw, or a cancel), leaving no orphaned `.tmp`.
   const tmp = join(realDir, `.save-to.${randomUUID()}.tmp`);
-  await writeFile(tmp, bytes);
+  let published = false;
   try {
+    await writeFile(tmp, bytes);
     await rename(tmp, finalTarget);
-  } catch (error) {
-    await rm(tmp, { force: true }).catch(() => undefined); // best-effort cleanup of the orphaned temp
-    throw error;
+    published = true;
+  } finally {
+    if (!published) {
+      await rm(tmp, { force: true }).catch(() => undefined); // best-effort cleanup of the orphaned temp
+    }
   }
   return { bytesWritten: bytes.length };
 }
@@ -73,17 +107,17 @@ async function writeJailed(
 /** Reject anything that is not a pure relative path (absolute / drive / UNC / a `..` traversal segment). */
 function assertRelativePath(relativePath: string): void {
   if (relativePath === '') {
-    throw new Error('save_to: the resolved path is empty');
+    throw new MediaWriteError('save_to: the resolved path is empty');
   }
   if (
     isAbsolute(relativePath) ||
     relativePath.startsWith('\\') || // leading backslash / UNC (`\\server\share`)
     /^[A-Za-z]:[\\/]/.test(relativePath) // Windows drive (`C:\` / `C:/`) — isAbsolute misses it on POSIX
   ) {
-    throw new Error('save_to: the resolved path must be relative');
+    throw new MediaWriteError('save_to: the resolved path must be relative');
   }
   if (relativePath.split(/[\\/]/).includes('..')) {
-    throw new Error('save_to: the resolved path must not contain a ".." segment');
+    throw new MediaWriteError('save_to: the resolved path must not contain a ".." segment');
   }
 }
 
@@ -93,7 +127,7 @@ function assertWithinRoot(realRoot: string, target: string): void {
   // a doubled separator a valid child path would fail to match (a false positive).
   const prefix = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
   if (target !== realRoot && !target.startsWith(prefix)) {
-    throw new Error('save_to: the resolved path escapes the scope root');
+    throw new MediaWriteError('save_to: the resolved path escapes the scope root');
   }
 }
 
@@ -107,7 +141,7 @@ async function deepestExistingReal(startDir: string): Promise<string> {
       const parent = dirname(dir);
       if (parent === dir) {
         // Unreachable in practice: the scope root exists, and the target is lexically within it.
-        throw new Error('save_to: no existing ancestor directory could be resolved');
+        throw new MediaWriteError('save_to: no existing ancestor directory could be resolved');
       }
       dir = parent;
     }
@@ -119,7 +153,7 @@ async function assertNotSymlink(target: string): Promise<void> {
   try {
     const stat = await lstat(target);
     if (stat.isSymbolicLink()) {
-      throw new Error('save_to: refusing to write through a symlink');
+      throw new MediaWriteError('save_to: refusing to write through a symlink');
     }
   } catch (error) {
     if (errnoCode(error) === 'ENOENT') {
@@ -141,6 +175,6 @@ function errnoCode(error: unknown): string | undefined {
 /** Cooperative cancellation — throw before the (potentially slow) filesystem steps if the run aborted. */
 function throwIfAborted(signal: AbortSignalLike | undefined): void {
   if (signal?.aborted === true) {
-    throw new Error('save_to: the write was aborted');
+    throw new MediaWriteError('save_to: the write was aborted');
   }
 }

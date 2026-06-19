@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createFilesystemMediaWrite } from './media-write.js';
+import { createFilesystemMediaWrite, MediaWriteError } from './media-write.js';
 
 const BYTES = new Uint8Array([0x68, 0x69]); // "hi"
 
@@ -45,11 +45,18 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
     await expect(write('', BYTES)).rejects.toThrow(/empty/);
   });
 
-  it('fails closed when the scope root does not exist', async () => {
-    const write = createFilesystemMediaWrite(join(root, 'does-not-exist'));
-    await expect(write('x.png', BYTES)).rejects.toThrow();
+  it('fails closed when the scope root does not exist, as a reason-only MediaWriteError (no path leak)', async () => {
+    const missingRoot = join(root, 'does-not-exist-secret-name');
+    const write = createFilesystemMediaWrite(missingRoot);
+    const error = await write('x.png', BYTES).catch((e: unknown) => e);
+    // A raw Node fs error (realpath ENOENT) carries the absolute path; the port re-wraps it so the
+    // resolved path / scope root never escapes (the I3 self-defending contract).
+    expect(error).toBeInstanceOf(MediaWriteError);
+    if (error instanceof MediaWriteError) {
+      expect(error.message).not.toContain('does-not-exist-secret-name');
+    }
     // Nothing was written anywhere.
-    expect(() => readFileSync(join(root, 'does-not-exist', 'x.png'))).toThrow();
+    expect(() => readFileSync(join(missingRoot, 'x.png'))).toThrow();
   });
 
   it('refuses to write through a symlinked ancestor directory that escapes the root', async () => {

@@ -101,4 +101,4 @@ export {
 // Media write (1.AF/D16, ADR-0044 §2) — the host-side fail-closed `save_to` write port (realpath+commonpath
 // jail under a scope root, symlinks off, atomic publish). A host wires it into `ExecutionHost.mediaWrite`;
 // the pure engine never imports it (Node `node:fs` — it depends only on the @relavium/shared `MediaWritePort`).
-export { createFilesystemMediaWrite } from './media-write.js';
+export { createFilesystemMediaWrite, MediaWriteError } from './media-write.js';

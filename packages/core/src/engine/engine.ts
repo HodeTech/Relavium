@@ -49,6 +49,7 @@ import {
 } from '@relavium/shared';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
+import { InterpolationError } from '../errors.js';
 import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
@@ -1613,11 +1614,21 @@ class RunExecution {
       const bytes = await store.get(handle.handle);
       await write(relativePath, bytes, this.#abort.signal);
       return undefined;
-    } catch {
+    } catch (error) {
       if (this.#abort.signal.aborted) {
         // A cancel / sibling-abort raced the write — surface a fatal cancel (never a retryable failure), so
         // the engine's cancel-wins precedence closes the run as cancelled / the sibling's cause.
         return { code: 'cancelled', message: 'the run was cancelled', retryable: false };
+      }
+      if (error instanceof InterpolationError) {
+        // A bad `save_to` path TEMPLATE (e.g. a non-`run.id` reference that resolves to nothing) is an
+        // authoring/validation fault, not an engine fault — classify it as `validation`, distinct from a
+        // genuine write failure below. Secret-free: the template/value never enters the message.
+        return {
+          code: 'validation',
+          message: 'output node `save_to`: the path template could not be resolved',
+          retryable: false,
+        };
       }
       return {
         code: 'internal',

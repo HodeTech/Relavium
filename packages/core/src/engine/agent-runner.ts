@@ -124,16 +124,19 @@ export function buildMediaUnitsEstimate(
   if (outputModalities === undefined) {
     return [];
   }
-  const billed = new Set<string>(MEDIA_BILLED_MODALITIES);
   const estimate: MediaUnitsEstimate[] = [];
   for (const modality of outputModalities) {
-    if (!billed.has(modality)) {
+    if (!isBilledModality(modality)) {
       continue; // `text` (and `document`, never an output) are not media-billed
     }
-    const m = modality as MediaBilledModality;
-    estimate.push({ modality: m, units: config?.[m] ?? DEFAULT_MEDIA_UNIT_ESTIMATE[m] });
+    estimate.push({ modality, units: config?.[modality] ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality] });
   }
   return estimate;
+}
+
+/** Type guard: is an output modality a BILLED media modality (image/audio/video)? Narrows without a cast. */
+function isBilledModality(modality: OutputModality): modality is MediaBilledModality {
+  return (MEDIA_BILLED_MODALITIES as readonly string[]).includes(modality);
 }
 
 /**
