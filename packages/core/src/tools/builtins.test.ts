@@ -1,8 +1,9 @@
+import type { Scope } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
-import { ToolArgsInvalidError, ToolUnavailableError } from './errors.js';
-import type { ToolDef, ToolDispatchContext, ToolHost } from './types.js';
+import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
+import type { MediaReadAccess, ToolDef, ToolDispatchContext, ToolHost } from './types.js';
 
 function tool(id: string): ToolDef {
   const found = BUILTIN_TOOLS.find((candidate) => candidate.id === id);
@@ -98,9 +99,9 @@ const CASES: readonly ToolCase[] = [
 ];
 
 describe('built-in catalog', () => {
-  it('registers 12 unique built-ins, all sourced "builtin"', () => {
-    expect(BUILTIN_TOOLS).toHaveLength(12);
-    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(12);
+  it('registers 13 unique built-ins, all sourced "builtin"', () => {
+    expect(BUILTIN_TOOLS).toHaveLength(13);
+    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(13);
     expect(BUILTIN_TOOLS.every((candidate) => candidate.source === 'builtin')).toBe(true);
   });
 
@@ -317,5 +318,95 @@ describe('built-in git tool hardening', () => {
     const target = tool('git_commit');
     await target.dispatch(target.parseArgs({ message: 'm' }), { process: { spawn } }, ctx);
     expect(spawn).toHaveBeenCalledWith('git', ['commit', '-m', 'm', '--'], {}, {}, undefined);
+  });
+});
+
+describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
+  const HANDLE = `media://sha256-${'a'.repeat(64)}`;
+  const SESSION: Scope = { kind: 'session', id: 's1' };
+
+  function access(allowed: readonly Scope[], byteLength = 5): MediaReadAccess {
+    return {
+      describe: () =>
+        Promise.resolve({ mimeType: 'image/png', byteLength, allowedScopes: allowed }),
+      readRange: (_handle, range) =>
+        Promise.resolve({ kind: 'base64', data: `B${range.start}-${range.end}` }),
+    };
+  }
+  function mediaCtx(requestingScope: Scope, mediaRead: MediaReadAccess): ToolDispatchContext {
+    return { ...ctx, requestingScope, mediaRead };
+  }
+
+  it('returns the media inline (whole-handle default) when the scope is in allowedScopes', async () => {
+    const t = tool('read_media');
+    const out = await t.dispatch(
+      t.parseArgs({ handle: HANDLE }),
+      {},
+      mediaCtx(SESSION, access([SESSION], 5)),
+    );
+    expect(out).toEqual({
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'B0-4' },
+    });
+  });
+
+  it('honors an explicit inclusive byte range', async () => {
+    const t = tool('read_media');
+    const out = await t.dispatch(
+      t.parseArgs({ handle: HANDLE, start: 1, end: 3 }),
+      {},
+      mediaCtx(SESSION, access([SESSION], 10)),
+    );
+    expect(out).toMatchObject({ source: { kind: 'base64', data: 'B1-3' } });
+  });
+
+  it('denies (media_scope_denied) when the scope is NOT in allowedScopes', async () => {
+    const t = tool('read_media');
+    const err = await rejection(() =>
+      t.dispatch(
+        t.parseArgs({ handle: HANDLE }),
+        {},
+        mediaCtx(SESSION, access([{ kind: 'session', id: 'other' }], 5)),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolPolicyError);
+    expect((err as ToolPolicyError).reason).toBe('media_scope_denied');
+  });
+
+  it('rejects an unknown handle (describe → undefined)', async () => {
+    const t = tool('read_media');
+    const unknown: MediaReadAccess = {
+      describe: () => Promise.resolve(undefined),
+      readRange: () => Promise.reject(new Error('must not read')),
+    };
+    const err = await rejection(() =>
+      t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, unknown)),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+  });
+
+  it('rejects an out-of-bounds range BEFORE any host read (fail-closed)', async () => {
+    const t = tool('read_media');
+    let read = false;
+    const spy: MediaReadAccess = {
+      describe: () =>
+        Promise.resolve({ mimeType: 'image/png', byteLength: 5, allowedScopes: [SESSION] }),
+      readRange: () => {
+        read = true;
+        return Promise.resolve({ kind: 'base64', data: 'x' });
+      },
+    };
+    const err = await rejection(() =>
+      t.dispatch(t.parseArgs({ handle: HANDLE, start: 0, end: 99 }), {}, mediaCtx(SESSION, spy)),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+    expect(read).toBe(false);
+  });
+
+  it('is unavailable when the host wires no media-read delegate', async () => {
+    const t = tool('read_media');
+    const err = await rejection(() => t.dispatch(t.parseArgs({ handle: HANDLE }), {}, ctx));
+    expect(err).toBeInstanceOf(ToolUnavailableError);
   });
 });
