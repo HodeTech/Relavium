@@ -1,4 +1,4 @@
-import type { CapabilityFlags } from '@relavium/llm';
+import { isOutputCombinationSupported, type CapabilityFlags } from '@relavium/llm';
 
 import { WorkflowValidationError, type WorkflowIssue } from './errors.js';
 import type { WorkflowDefinition } from './parser.js';
@@ -10,20 +10,6 @@ import type { WorkflowDefinition } from './parser.js';
  * per-modality `FallbackChain` pre-skip — never a silent runtime drop.
  */
 export type WorkflowModelCatalog = (modelId: string) => CapabilityFlags | undefined;
-
-/**
- * Is the requested output-modality set a MEMBER of a model's declared `outputCombinations` (ADR-0031
- * decision #3)? Output capability is a per-model **combination** constraint — the requested set must
- * exactly match one declared combination, not merely be a subset of the union of all of them.
- */
-function isOutputComboSupported(
-  combos: readonly (readonly string[])[],
-  requested: readonly string[],
-): boolean {
-  return combos.some(
-    (combo) => combo.length === requested.length && requested.every((m) => combo.includes(m)),
-  );
-}
 
 /**
  * Engine-loader pass (1.AF/D15, ADR-0044 §2): validate every agent node's authored `output_modalities`
@@ -47,7 +33,7 @@ export function validateWorkflowWithCatalog(
     if (caps === undefined) {
       continue; // unresolvable model — defer to the runtime FallbackChain pre-skip (never a silent drop)
     }
-    if (!isOutputComboSupported(caps.media.outputCombinations, node.output_modalities)) {
+    if (!isOutputCombinationSupported(caps.media.outputCombinations, node.output_modalities)) {
       issues.push({
         field: `node \`${node.id}\`.output_modalities`,
         message: `model '${node.model}' does not support the output-modality combination [${node.output_modalities.join(', ')}]`,

@@ -102,20 +102,42 @@ function mediaInputReason(
   return null;
 }
 
-/** Requested `outputModalities` vs MEMBERSHIP in `media.outputCombinations` (ADR-0031 decision #3). */
+/**
+ * Is the requested output-modality set supported by a model's declared `outputCombinations` (ADR-0031
+ * decision #3)? Output capability is a per-model **combination** constraint: the requested set must
+ * EXACTLY equal one declared combination — a *closed set*, **not** a subset of the union (a subset would
+ * admit the wire-invalid combinations — e.g. Gemini image+audio — the closed set exists to reject). One
+ * exception: **`text` is always emittable**, so a request carrying no non-`text` modality is supported by
+ * any model (the no-media `[]`-combo models — Anthropic/DeepSeek — declare no combination to match, yet
+ * still emit text). This is the **single source of truth** for BOTH the runtime `FallbackChain` pre-skip
+ * ({@link outputCombinationReason} / {@link supportsRequest}) and the engine's load-time
+ * `validateWorkflowWithCatalog` — so the load-time and runtime verdicts can never diverge (1.AF review H2).
+ */
+export function isOutputCombinationSupported(
+  outputCombinations: readonly (readonly string[])[],
+  requested: readonly string[],
+): boolean {
+  if (!requested.some((modality) => modality !== 'text')) return true; // text-only is always emittable
+  // Bidirectional membership at equal length ⇒ the two sets are exactly equal. The reverse inclusion is
+  // NOT redundant: a request with a DUPLICATE modality (e.g. ['image','image']) has the same length as a
+  // clean combo (['text','image']) and passes forward inclusion alone — the reverse direction rejects it.
+  return outputCombinations.some(
+    (combo) =>
+      combo.length === requested.length &&
+      requested.every((modality) => combo.includes(modality)) &&
+      combo.every((modality) => requested.includes(modality)),
+  );
+}
+
+/** Requested `outputModalities` vs exact MEMBERSHIP in `media.outputCombinations` (ADR-0031 decision #3). */
 function outputCombinationReason(
   supports: CapabilityFlags,
   outputModalities: LlmRequest['outputModalities'],
 ): string | null {
   if (outputModalities === undefined) return null;
-  const nonText = outputModalities.filter((modality) => modality !== 'text');
-  if (nonText.length === 0) return null;
-  const outputOk = supports.media.outputCombinations.some((combo) =>
-    nonText.every((modality) => combo.includes(modality)),
-  );
-  return outputOk
+  return isOutputCombinationSupported(supports.media.outputCombinations, outputModalities)
     ? null
-    : `output modalities [${nonText.join(', ')}] not in any supported output combination`;
+    : `output modalities [${outputModalities.join(', ')}] not a supported output combination`;
 }
 
 /**

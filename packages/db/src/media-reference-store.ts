@@ -98,12 +98,21 @@ export function createMediaReferenceStore(
     },
 
     addReference(handle: string, scopeKind: MediaScopeKind, scopeId: string): void {
+      const ts = now();
       db.insert(mediaReferences)
-        .values({ id: randomUUID(), handle, scopeKind, scopeId, createdAt: now() })
+        .values({ id: randomUUID(), handle, scopeKind, scopeId, createdAt: ts })
         // A scope references a handle at most once (the refcount is the distinct-row count).
         .onConflictDoNothing({
           target: [mediaReferences.handle, mediaReferences.scopeKind, mediaReferences.scopeId],
         })
+        .run();
+      // Fresh reference activity ⇒ refresh the GC cursor. The grace window is measured from
+      // `last_referenced_at` (ADR-0042 §4), so it must track the last reference-SET mutation, not just
+      // production time — else a handle re-referenced long after it was produced inherits a stale, already-
+      // expired cursor and is reclaimed on the next sweep instead of getting a fresh grace window.
+      db.update(mediaObjects)
+        .set({ lastReferencedAt: ts })
+        .where(eq(mediaObjects.handle, handle))
         .run();
     },
 
@@ -137,10 +146,29 @@ export function createMediaReferenceStore(
     },
 
     removeRunReferences(runId: string): number {
+      const ts = now();
+      // Capture the handles this run referenced BEFORE the delete, so the grace window of every handle this
+      // sweep drops toward zero starts NOW (ADR-0042 §4 — measured from `last_referenced_at`), not from the
+      // handle's production time. Without this, a long-lived handle losing its last reference is reclaimed
+      // on the very next sweep with zero effective grace.
+      const affected = db
+        .selectDistinct({ handle: mediaReferences.handle })
+        .from(mediaReferences)
+        .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
+        .all();
       const result = db
         .delete(mediaReferences)
         .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
         .run();
+      const handles = affected.map((row) => row.handle);
+      // CHUNK the `handle IN (…)` refresh under SQLite's bound-parameter floor (a wide fan-out run can
+      // reference many handles); one shared `ts` keeps the batches consistent.
+      for (let i = 0; i < handles.length; i += SQLITE_INARRAY_CHUNK) {
+        db.update(mediaObjects)
+          .set({ lastReferencedAt: ts })
+          .where(inArray(mediaObjects.handle, handles.slice(i, i + SQLITE_INARRAY_CHUNK)))
+          .run();
+      }
       return result.changes;
     },
 

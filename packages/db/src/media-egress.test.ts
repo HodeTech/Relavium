@@ -1,11 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { request as httpsRequest } from 'node:https';
+
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   fetchMediaBytes,
   MediaEgressError,
+  nodeMediaEgressDeps,
   type HopRequest,
   type MediaEgressDeps,
 } from './media-egress.js';
+
+// Mock `node:https` so the CONCRETE `nodeMediaEgressDeps.openConnection` (the un-injectable pin/SNI/port
+// wiring) is exercised deterministically — without a real TLS handshake (the default deps keep verification
+// ON, so a self-signed localhost cert cannot be trusted, and a trusted cert cannot be injected). The
+// fakeDeps tests never reach the real openConnection, so the mock is inert for them. (E43-7)
+vi.mock('node:https', () => ({ request: vi.fn() }));
 
 const PUBLIC_IP = '203.0.113.10'; // TEST-NET-3 documentation range — not in any SSRF private block
 const PUBLIC_IP_2 = '198.51.100.7'; // TEST-NET-2 — a second public address for redirect targets
@@ -274,5 +283,141 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     expect(err).toBeInstanceOf(Error);
     expect(err.code).toBe('blocked_host');
     expect(err.name).toBe('MediaEgressError');
+  });
+});
+
+/* --- the concrete Node mechanism (nodeMediaEgressDeps) — the un-injectable pin/SNI/port wiring (E43-7) --- */
+
+/** The shape of the captured `node:https.request` options we assert (a narrow view of RequestOptions). */
+interface CapturedHttpsOptions {
+  readonly hostname?: string;
+  readonly port?: number;
+  readonly path?: string;
+  readonly servername?: string;
+  readonly lookup?: (
+    hostname: string,
+    opts: unknown,
+    cb: (err: Error | null, address: string, family: number) => void,
+  ) => void;
+}
+
+/** A minimal IncomingMessage stand-in: an async byte stream plus the status/headers/destroy openConnection reads. */
+type FakeIncoming = AsyncIterable<Uint8Array> & {
+  readonly statusCode: number;
+  readonly headers: { readonly location?: string };
+  readonly destroy: () => void;
+};
+
+function fakeIncoming(status: number, chunks: readonly Uint8Array[] = []): FakeIncoming {
+  const stream = (async function* gen(): AsyncGenerator<Uint8Array> {
+    await Promise.resolve();
+    for (const chunk of chunks) yield chunk;
+  })();
+  return Object.assign(stream, { statusCode: status, headers: {}, destroy: () => undefined });
+}
+
+/**
+ * The mock `https.request` return value: `openConnection` only calls `.on('error', …)` then `.end()` on it.
+ * `ClientRequest` is a large class with no public constructor, so a partial stub needs the assertion — kept
+ * in this one helper rather than inline at each call site.
+ */
+function stubClientRequest(): ReturnType<typeof httpsRequest> {
+  return { on: vi.fn(), end: vi.fn() } as unknown as ReturnType<typeof httpsRequest>;
+}
+
+/**
+ * The captured options + response callback from the LAST mocked `https.request` call. The overload types its
+ * first arg as `RequestOptions | string | URL`; our `openConnection` always passes an options object + a
+ * response callback, asserted at runtime here so the narrow-shape views ({@link CapturedHttpsOptions} /
+ * {@link FakeIncoming}) are read from a verified `(object, function)` pair — the single contained assertion.
+ */
+function lastHttpsCall(): {
+  options: CapturedHttpsOptions;
+  onResponse: (incoming: FakeIncoming) => void;
+} {
+  const call = vi.mocked(httpsRequest).mock.calls.at(-1);
+  if (call === undefined) {
+    throw new Error('expected https.request to have been called');
+  }
+  const [options, onResponse] = call;
+  // Exclude the `string | URL` overload members so `options` narrows to the request-options object; our
+  // openConnection always passes that shape + a response callback. The remaining single `as` views each
+  // through the narrow shape we read (the only contained assertions).
+  if (
+    typeof options !== 'object' ||
+    options === null ||
+    options instanceof URL ||
+    typeof onResponse !== 'function'
+  ) {
+    throw new Error('expected https.request(optionsObject, responseCallback)');
+  }
+  return {
+    options, // assignable to CapturedHttpsOptions once `string | URL` are excluded — no assertion needed
+    onResponse: onResponse as (incoming: FakeIncoming) => void,
+  };
+}
+
+describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
+  it('resolveHost returns an IP literal as itself, with no DNS round-trip (v4 + v6)', async () => {
+    await expect(nodeMediaEgressDeps.resolveHost('203.0.113.10')).resolves.toEqual([
+      '203.0.113.10',
+    ]);
+    await expect(nodeMediaEgressDeps.resolveHost('2001:db8::1')).resolves.toEqual(['2001:db8::1']);
+    await expect(nodeMediaEgressDeps.resolveHost('::1')).resolves.toEqual(['::1']);
+  });
+
+  it('the DEFAULT deps reject a loopback/link-local literal, opening no connection (fail-closed)', async () => {
+    // Drives nodeMediaEgressDeps (no `deps` arg) through the policy: the shared range-block rejects before
+    // openConnection, so the real https.request is never called — a regression that opened the socket first
+    // would fail this.
+    await expect(
+      fetchMediaBytes('https://127.0.0.1/a.png', { maxBytes: 1000 }),
+    ).rejects.toMatchObject({
+      code: 'blocked_host', // loopback
+    });
+    await expect(
+      fetchMediaBytes('https://169.254.169.254/latest', { maxBytes: 1000 }),
+    ).rejects.toMatchObject({ code: 'blocked_host' }); // the cloud-metadata link-local address
+    expect(httpsRequest).not.toHaveBeenCalled();
+  });
+
+  it('openConnection pins the validated IP via lookup, keeps the hostname as SNI, and parses port/path', async () => {
+    vi.mocked(httpsRequest).mockReturnValue(stubClientRequest());
+    const request: HopRequest = {
+      url: 'https://media.example.com:8443/a/b?c=d',
+      hostname: 'media.example.com',
+      pinnedIp: '203.0.113.10',
+    };
+    const pending = nodeMediaEgressDeps.openConnection(request, new AbortController().signal);
+    const { options, onResponse } = lastHttpsCall();
+    onResponse(fakeIncoming(200, [new Uint8Array([1, 2, 3])])); // deliver a 200 so the promise resolves
+    const response = await pending;
+
+    expect(response.status).toBe(200);
+    // Pinned to the pre-validated IP, but TLS verification stays ON against the original hostname (SNI).
+    expect(options.servername).toBe('media.example.com');
+    expect(options.hostname).toBe('media.example.com');
+    expect(options.port).toBe(8443);
+    expect(options.path).toBe('/a/b?c=d');
+    // The lookup callback resolves to EXACTLY the pinned IP (v4 family) — never a re-resolve (TOCTOU defense).
+    const lookupCb = vi.fn();
+    options.lookup?.('media.example.com', {}, lookupCb);
+    expect(lookupCb).toHaveBeenCalledWith(null, '203.0.113.10', 4);
+  });
+
+  it('openConnection derives family 6 for an IPv6 pin and defaults a port-less url to 443', async () => {
+    vi.mocked(httpsRequest).mockReturnValue(stubClientRequest());
+    const pending = nodeMediaEgressDeps.openConnection(
+      { url: 'https://v6.example.com/x', hostname: 'v6.example.com', pinnedIp: '2001:db8::1' },
+      new AbortController().signal,
+    );
+    const { options, onResponse } = lastHttpsCall();
+    onResponse(fakeIncoming(200));
+    await pending;
+
+    expect(options.port).toBe(443); // no port in the url → the https default
+    const lookupCb = vi.fn();
+    options.lookup?.('v6.example.com', {}, lookupCb);
+    expect(lookupCb).toHaveBeenCalledWith(null, '2001:db8::1', 6);
   });
 });

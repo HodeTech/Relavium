@@ -104,6 +104,7 @@ export type { LlmConfigErrorCode } from './errors.js';
 export {
   requiredCapabilities,
   supportsRequest,
+  isOutputCombinationSupported,
   assertSupported,
   assertStreamable,
 } from './capabilities.js';
