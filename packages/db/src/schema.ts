@@ -9,6 +9,7 @@ import {
   type FsScopeTier,
   type MediaModality,
   type MediaScopeKind,
+  type MediaSurface,
   type RunStatus,
   type SessionStatus,
 } from '@relavium/shared';
@@ -114,9 +115,11 @@ export const modelCatalog = sqliteTable(
     // Inline-vs-generative media-output routing (1.AG/ADR-0045 §1): a 'generative' model routes an agent
     // node to generateMedia() (separate-endpoint sync / async-LRO); 'chat' (default) uses the normal turn
     // with output_modalities. Projects onto CapabilityFlags.media.surface; data-driven (no hardcoded ids).
-    mediaSurface: text('media_surface', { enum: ['chat', 'generative'] })
-      .notNull()
-      .default('chat'),
+    // Value-set enforced by the `MediaSurface` type + the shared `MEDIA_SURFACES` Zod boundary (a DB CHECK
+    // is deferred: drizzle cannot ADD a CHECK to a *new* column on an existing table without a table-rebuild
+    // migration whose INSERT…SELECT references the not-yet-existing column — the sibling checks live in the
+    // initial CREATE, this column is an ALTER ADD).
+    mediaSurface: text('media_surface').$type<MediaSurface>().notNull().default('chat'),
     supportsToolCalling: boolFlag('supports_tool_calling', false),
     supportsVision: boolFlag('supports_vision', false),
     supportsStreaming: boolFlag('supports_streaming', true),

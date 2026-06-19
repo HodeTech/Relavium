@@ -149,6 +149,15 @@ export const MEDIA_BILLED_MODALITIES = ['image', 'audio', 'video'] as const;
 export type MediaBilledModality = (typeof MEDIA_BILLED_MODALITIES)[number];
 
 /**
+ * A model's **media-output surface** (`model_catalog.media_surface`, 1.AG/ADR-0045 §1). `'chat'`
+ * (default) routes an agent node to the normal turn with `output_modalities`; `'generative'` routes
+ * it to the separate-endpoint `generateMedia()` (sync or async LRO). Data-drives the inline-vs-generative
+ * dispatch (no hardcoded model ids). Projects onto `CapabilityFlags.media.surface` in `@relavium/llm`.
+ */
+export const MEDIA_SURFACES = ['chat', 'generative'] as const;
+export type MediaSurface = (typeof MEDIA_SURFACES)[number];
+
+/**
  * The **media reference scope kinds** persisted in the `media_references` junction (ADR-0042 §3).
  * A deliberate **superset** with two roles: `run` / `node` references are refcount + terminal-sweep
  * lifetime entries only, while `session` / `workspace` are **also** the `read_media` authz `Scope`

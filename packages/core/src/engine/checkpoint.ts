@@ -198,6 +198,14 @@ function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
   if (event.type !== 'media_job:submitted') {
     return;
   }
+  // Defensive: never resurrect a node that has already SETTLED. The emit-order invariant (a submit precedes
+  // its node's terminal) holds, so this is belt-and-suspenders — but it makes the fold order-independent, so
+  // a stale/duplicate submit folded after a node:completed/failed/skipped cannot re-park the node or re-add a
+  // cleared entry.
+  const settled = acc.nodeStates.get(event.nodeId)?.status;
+  if (settled === 'completed' || settled === 'failed' || settled === 'skipped') {
+    return;
+  }
   acc.nodeStates.set(event.nodeId, { status: 'paused' });
   acc.pendingMediaJobs.set(event.nodeId, {
     nodeId: event.nodeId,

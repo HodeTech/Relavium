@@ -229,6 +229,18 @@ const reject: Record<string, Record<string, unknown>> = {
     attemptNumber: 1,
     error: { code: 'tool_failed', message: 'x', retryable: true },
   },
+  'media_job:submitted (bad provider)': {
+    ...valid['media_job:submitted'],
+    provider: 'cohere', // not in LLM_PROVIDERS
+  },
+  'media_job:submitted (bad modality)': {
+    ...valid['media_job:submitted'],
+    modality: 'document', // billed modalities are image|audio|video only
+  },
+  'media_job:submitted (non-datetime deadlineAt)': {
+    ...valid['media_job:submitted'],
+    deadlineAt: 'soon',
+  },
   'human_gate:paused (bad gateType)': {
     type: 'human_gate:paused',
     ...env,

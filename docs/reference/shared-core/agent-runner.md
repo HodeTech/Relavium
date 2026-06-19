@@ -48,7 +48,7 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 | `UnknownToolError` / `ToolArgsInvalidError` | (model-correctable) | — | converted to an `isError` tool result fed back, within a bounded correction budget; after it ⇒ `tool_failed` |
 | `ToolExecutionError` | `tool_failed` | true | |
 | absent host capability | `internal` | false | |
-| chain-exhausted `LlmError` | `provider_auth` / `provider_rate_limit` / `provider_unavailable` / `validation` (content_filter, bad_request) / `internal` (unknown) | per `LlmError.retryable` | classified from `error.kind`, never `error.message` |
+| chain-exhausted `LlmError` | `provider_auth` / `provider_rate_limit` / `provider_unavailable` / `content_filter` (content_filter, 1.AG/ADR-0045 §6) / `validation` (bad_request) / `internal` (unknown) | per `LlmError.retryable` | classified from `error.kind`, never `error.message` |
 | max-tool-turns hit | `turn_limit` | false | |
 
 ## Events

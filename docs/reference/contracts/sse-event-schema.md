@@ -158,7 +158,7 @@ export interface MediaJobSubmittedEvent extends BaseEvent {
   type: 'media_job:submitted'; // 1.AG/ADR-0045 §2 — an async media job was submitted; the node PARKS (non-terminal suspension). DURABLE (resume re-attaches).
   nodeId: string;
   jobId: string;               // the Relavium-opaque job id the engine re-polls — never the vendor operation-name (ADR-0011 I1)
-  provider: string;            // the LLM provider id bound to the job (failover does not apply to an in-flight job)
+  provider: 'anthropic' | 'openai' | 'gemini' | 'deepseek'; // the bound LlmProviderId (closed z.enum(LLM_PROVIDERS); failover does not apply to an in-flight job)
   model: string;               // canonical model id
   modality: 'image' | 'audio' | 'video';
   startedAt: string;           // ISO-8601 submit time
