@@ -65,6 +65,14 @@ describe('resolveTemplate — happy paths', () => {
     await expectCode('{{ run.id }}', scope(), 'unresolved_reference');
   });
 
+  it('a trailing path on run.id resolves to nothing — run.id is a flat string (1.AF/D16)', async () => {
+    // run.id.score / run.id[0] parse as kind:run with a path; getByPath on a string yields undefined →
+    // a typed unresolved_reference, never a silent value.
+    const s = scope({ runId: 'run-1' });
+    await expectCode('{{ run.id.score }}', s, 'unresolved_reference');
+    await expectCode('{{ run.id[0] }}', s, 'unresolved_reference');
+  });
+
   it('stringifies number and boolean values', async () => {
     const s = scope({ inputs: { n: 42, flag: true } });
     await expect(resolveTemplate('{{inputs.n}}/{{inputs.flag}}', s)).resolves.toBe('42/true');

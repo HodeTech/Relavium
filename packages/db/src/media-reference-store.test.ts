@@ -107,6 +107,8 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
   });
 
   it('createMediaReferencePort records the object + a run ref, and reclaimRun removes the run ref (D12c/D11)', async () => {
+    // The SQLite port is synchronous (better-sqlite3), but MediaReferencePort returns void | Promise<void>
+    // for a future async store (Phase-2 Postgres) — so the calls are awaited (also satisfies no-floating-promises).
     const port = createMediaReferencePort(store);
     await port.recordRunMedia(
       { handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 },

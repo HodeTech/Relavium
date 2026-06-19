@@ -223,6 +223,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
   result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
 
+> **2026-06-19 — second (Sonnet) review pass on PR #35.** A full re-review (9 dimensions, double-verified)
+> on top of the first review's fixes confirmed **0 blockers/highs in reachable code**; ~17 small fixes
+> landed in the follow-up commit. The items below are the **deferred** remainder — a read_media *result-shape*
+> contract that the 1.AH wiring must resolve coherently (it touches the inert read_media path, so fixing it in
+> isolation now risks conflicting with the 1.AH host design), plus one test-injection gap.
+
+- [ ] **`read_media` result must be schema-conforming for a multi-turn message (1.AH read_media contract).**
+  `read_media` returns a `{ type:'media', source:{ kind:'base64', data } }` MediaPart placed in
+  `tool_result.result`; on the **next** LLM call `LlmMessageSchema.superRefine` runs `containsInlineMediaBytes`
+  over the tool-result part and **rejects inline base64** — so a wired read_media would break the turn. The
+  result should carry a **handle** (durable form, resolved on egress by the seam), not inline base64. **Defer
+  with the 1.AH host wiring** (it co-decides base64-vs-handle for `MediaReadAccess`): (a) read_media returns a
+  handle source; (b) **narrow `MediaReadAccess.readRange`** from `Promise<MediaSource>` to the chosen base64/
+  handle form (today the wide type permits a `url`/`handle` source a host could mis-return → I3/SSRF surface);
+  (c) **thread `AbortSignalLike`** into `MediaReadAccess.describe`/`readRange` (the only host-delegated path with
+  no cancellation, unlike `MediaStore.readRange`). *(Sonnet review HIGH/MEDIUM, latent — read_media is inert;
+  packages/core/src/tools/builtins.ts + types.ts; 1.AH)*
+- [ ] **Budget-governor media-cost block/warn/fail path has no non-zero-estimate test.** No shipped model
+  carries a `mediaOutputRates` row, so `estimateMediaCost` always returns 0 and the governor's media-driven
+  `warn`/`fail`/`pause` arm is never exercised end-to-end (the units×rate math IS covered in `mediaCost`/
+  `estimateMediaCost` unit tests). Add coverage when a media-priced model lands (or refactor the governor to
+  accept an injectable estimator). *(low test gap · packages/core/src/engine/budget-governor.test.ts)*
+
 ### Engine/seam policy & surface follow-ups (2026-06-09 hardening-analysis pass)
 
 > A hardening-analysis pass over the seam / fallback / byte-delivery / i18n surfaces (validated against the

@@ -588,13 +588,29 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     });
   };
 
+  const preEgress = params.preEgress;
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
     costTracker,
     onAttempt,
-    // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn,
-    // so a failover to a more expensive model is also gated (1.AC).
-    ...(params.preEgress === undefined ? {} : { preAttempt: params.preEgress }),
+    // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn, so a failover
+    // to a more expensive model is also gated (1.AC). The chain's PreAttemptHook only supplies `{ model,
+    // maxTokens }`, so wrap the hook to also carry the turn-static media estimate (1.AF/D17) — otherwise the
+    // failover-attempt budget check would silently drop the media addend (ADR-0044 §3).
+    ...(preEgress === undefined
+      ? {}
+      : {
+          preAttempt: (info: { readonly model: string; readonly maxTokens?: number }) =>
+            preEgress({
+              ...info,
+              ...(params.outputModalities === undefined
+                ? {}
+                : { outputModalities: params.outputModalities }),
+              ...(params.mediaUnitsEstimate === undefined
+                ? {}
+                : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
+            }),
+        }),
   });
 
   const messages: LlmMessage[] = params.messages.map((m) => ({

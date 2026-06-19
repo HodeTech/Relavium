@@ -12,6 +12,9 @@ import { and, eq, inArray, isNull, lte, notInArray } from 'drizzle-orm';
 import type { Db } from './client.js';
 import { mediaObjects, mediaReferences } from './schema.js';
 
+/** Max handles per `handle IN (…)` UPDATE — under SQLite's 999-bound-parameter floor (older builds). */
+const SQLITE_INARRAY_CHUNK = 900;
+
 /**
  * The `media_references` / `media_objects` host store (1.AF/D12c + D11, ADR-0042 §3-4 / ADR-0044 §1) — the
  * Node/SQLite reference for the media retention + authz junction. One junction serves BOTH the refcount /
@@ -159,11 +162,16 @@ export function createMediaReferenceStore(
       if (handles.length > 0) {
         // Soft-delete EXACTLY the expired handles found above (not a re-run of the 0-ref filter, which
         // would ignore the grace window). better-sqlite3 is single-connection, so select-then-update is
-        // consistent within this method.
-        db.update(mediaObjects)
-          .set({ deletedAt: now() })
-          .where(inArray(mediaObjects.handle, handles))
-          .run();
+        // consistent within this method. CHUNK the `handle IN (…)` list so a large sweep never exceeds
+        // SQLite's bound-parameter limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds) — a multi-day
+        // orphan backlog can easily surpass it; one shared `deletedAt` keeps the batches consistent.
+        const deletedAt = now();
+        for (let i = 0; i < handles.length; i += SQLITE_INARRAY_CHUNK) {
+          db.update(mediaObjects)
+            .set({ deletedAt })
+            .where(inArray(mediaObjects.handle, handles.slice(i, i + SQLITE_INARRAY_CHUNK)))
+            .run();
+        }
       }
       return handles;
     },

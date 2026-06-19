@@ -847,7 +847,9 @@ export function validateByteRange(
  */
 export const ScopeSchema = z.object({
   kind: z.enum(MEDIA_AUTHZ_SCOPE_KINDS),
-  id: nonEmptyString,
+  // Bounded like the other authored ids (a session/workspace id is a UUID / short slug) so it cannot bloat a
+  // `media_references.scope_id` row — matching the mimeType/name ≤255 convention elsewhere in this file.
+  id: nonEmptyString.max(255),
 });
 export type Scope = z.infer<typeof ScopeSchema>;
 
@@ -935,7 +937,12 @@ function durableMediaMetaOf(node: object): DurableMediaMeta | undefined {
   const source = node['source'];
   const mimeType = node['mimeType'];
   const byteLength = node['byteLength'];
-  if (!isRecord(source) || source['kind'] !== 'handle' || typeof source['ref'] !== 'string') {
+  if (
+    !isRecord(source) ||
+    source['kind'] !== 'handle' ||
+    typeof source['ref'] !== 'string' ||
+    !MEDIA_HANDLE_PATTERN.test(source['ref']) // only a well-formed media://sha256-<64hex> ref is durable-recordable
+  ) {
     return undefined;
   }
   if (typeof mimeType !== 'string' || typeof byteLength !== 'number') {

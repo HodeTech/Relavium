@@ -381,8 +381,9 @@ ${AGENT}
   });
 
   it('does NOT flag a {{run.id}} context value as a pre-run node-output reference (1.AF/D16)', () => {
-    // run.id is available from run start (it is NOT run.outputs), so a context value referencing it is not
-    // an "uses a node output before any node runs" violation — kind `run` is not kind `node`.
+    // STATIC analysis only: kind `run` is not kind `node`, so analyzePreRunReferences does not flag it.
+    // (run.id is NOT actually resolvable in a context value — resolveContext builds a scope with no runId,
+    // so {{run.id}} there throws unresolved_reference at RUNTIME; it just isn't a pre-run *node-output* error.)
     const wf = parseWorkflow(`schema_version: '1.0'
 workflow:
   id: w

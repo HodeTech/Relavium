@@ -84,11 +84,17 @@ describe('boundForModel', () => {
     expect(bounded.value).toBeUndefined();
   });
 
-  it('renders an unserializable (circular) result without throwing', async () => {
+  it('renders a circular result without throwing (the cycle-safe redaction walk breaks the cycle)', async () => {
     const circular: Record<string, unknown> = {};
     circular['self'] = circular;
     const bounded = await boundForModel(circular, BIG, host());
     expect(bounded.truncated).toBe(false);
+    // The redaction walk replaces the back-reference with a marker, so the summary serialises (no throw).
+    expect(bounded.summary).toContain('cyclic');
+  });
+
+  it('renders a genuinely unserializable result (a bare function) as the fallback', async () => {
+    const bounded = await boundForModel(() => 1, BIG, host());
     expect(bounded.summary).toBe('[unserializable]');
   });
 
@@ -182,5 +188,31 @@ describe('boundForModel', () => {
     const bounded = await boundForModel('data:image/png;base64,aGVsbG8=', BIG, host());
     expect(bounded.summary).not.toContain('aGVsbG8');
     expect(bounded.summary).toContain('omitted');
+  });
+
+  it('redacts base64 from EVERY element of an array-of-media result (the redaction walk recurses arrays)', async () => {
+    const a = 'aGVsbG8gZmlyc3QgbWVkaWEgcGFydCBwYXlsb2Fk';
+    const b = 'd29ybGQgc2Vjb25kIG1lZGlhIHBhcnQgcGF5bG9hZA==';
+    const result = [
+      { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: a } },
+      { type: 'media', mimeType: 'audio/mpeg', source: { kind: 'base64', data: b } },
+    ];
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.summary).not.toContain(a);
+    expect(bounded.summary).not.toContain(b);
+    expect(bounded.value).toBe(result); // model-facing value keeps the bytes
+  });
+
+  it('redacts a raw binary buffer (Uint8Array) from the summary — never JSON the decimal byte values (I3)', async () => {
+    // "HELLO" as raw bytes; without redaction JSON.stringify yields {"0":72,"1":69,…} — a decimal byte leak.
+    const result = { thumb: new Uint8Array([72, 69, 76, 76, 79]) };
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.summary).not.toMatch(/"0":72|72,69,76/);
+    expect(bounded.summary).toContain('binary buffer omitted');
+  });
+
+  it('leaves a Date / Map result rendered natively (not collapsed to {} by the redaction walk)', async () => {
+    const date = await boundForModel({ at: new Date('2026-06-19T00:00:00.000Z') }, BIG, host());
+    expect(date.summary).toContain('2026-06-19'); // Date → ISO string via JSON.stringify, not {}
   });
 });

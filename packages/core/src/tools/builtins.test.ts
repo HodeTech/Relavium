@@ -412,7 +412,7 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     expect(err).toBeInstanceOf(ToolUnavailableError);
   });
 
-  it('returns an empty source for a whole-handle read of a zero-byte handle (no off-by-one rejection)', async () => {
+  it('returns a HANDLE source (schema-valid, not empty base64) for a whole-handle read of a zero-byte handle', async () => {
     const t = tool('read_media');
     let read = false;
     const empty: MediaReadAccess = {
@@ -424,10 +424,11 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
       },
     };
     const out = await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, empty));
+    // A handle source (not `{ kind:'base64', data:'' }`, which violates the base64 nonEmptyString contract).
     expect(out).toEqual({
       type: 'media',
       mimeType: 'image/png',
-      source: { kind: 'base64', data: '' },
+      source: { kind: 'handle', ref: HANDLE },
     });
     expect(read).toBe(false); // the empty whole-handle read short-circuits before any host read
   });
@@ -443,5 +444,34 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
       t.dispatch(t.parseArgs({ handle: HANDLE, start: 0, end: 0 }), {}, mediaCtx(SESSION, empty)),
     );
     expect(err).toBeInstanceOf(ToolArgsInvalidError);
+  });
+
+  it('denies (media_scope_denied) a zero-byte handle when the scope is NOT granted — authz BEFORE the 0-byte short-circuit', async () => {
+    const t = tool('read_media');
+    let read = false;
+    const empty: MediaReadAccess = {
+      describe: () =>
+        Promise.resolve({
+          mimeType: 'image/png',
+          byteLength: 0,
+          allowedScopes: [{ kind: 'session', id: 'other' }],
+        }),
+      readRange: () => {
+        read = true;
+        return Promise.resolve({ kind: 'base64', data: 'x' });
+      },
+    };
+    const err = await rejection(() =>
+      t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, empty)),
+    );
+    expect(err).toBeInstanceOf(ToolPolicyError);
+    expect(err).toMatchObject({ reason: 'media_scope_denied' }); // not the empty-content short-circuit
+    expect(read).toBe(false);
+  });
+
+  it('rejects a syntactically malformed handle at parse time (engine-pure structural check)', () => {
+    const t = tool('read_media');
+    expect(() => t.parseArgs({ handle: '../../etc/passwd' })).toThrow();
+    expect(() => t.parseArgs({ handle: 'media://sha256-not-hex' })).toThrow();
   });
 });

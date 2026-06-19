@@ -8,7 +8,12 @@
  * until the shared SSRF primitive lands (1.AE) — i.e. their host capability is simply not wired yet.
  */
 
-import { scopeSetIncludes, validateByteRange, type MediaPart } from '@relavium/shared';
+import {
+  MEDIA_HANDLE_PATTERN,
+  scopeSetIncludes,
+  validateByteRange,
+  type MediaPart,
+} from '@relavium/shared';
 import { z } from 'zod';
 
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
@@ -456,7 +461,9 @@ const readMediaTool = defineBuiltin({
     'Read a produced/received media handle (optionally a byte range) and return it inline for the model.',
   args: z
     .object({
-      handle: z.string().min(1),
+      // Structural validation at the engine-pure policy layer: a malformed handle is rejected at parse
+      // (a clear invalid_args on `handle`) rather than only at the host describe() (unknown_handle).
+      handle: z.string().regex(MEDIA_HANDLE_PATTERN, 'must be a media://sha256-<64hex> handle'),
       start: z.number().int().nonnegative().optional(),
       end: z.number().int().nonnegative().optional(),
     })
@@ -465,8 +472,8 @@ const readMediaTool = defineBuiltin({
     type: 'object',
     properties: {
       handle: { type: 'string' },
-      start: { type: 'integer' },
-      end: { type: 'integer' },
+      start: { type: 'integer', minimum: 0 },
+      end: { type: 'integer', minimum: 0 },
     },
     required: ['handle'],
     additionalProperties: false,
@@ -493,11 +500,17 @@ const readMediaTool = defineBuiltin({
         'read_media: the requesting scope may not read this media handle',
       );
     }
-    // A zero-byte handle has no valid inclusive range; a whole-handle read returns an empty source rather
-    // than tripping the fail-closed check on the default `end = byteLength - 1 = -1` (1.AF off-by-one). An
-    // EXPLICIT range on a 0-byte handle still falls through to validateByteRange and is correctly rejected.
+    // A zero-byte handle has no valid inclusive range; a whole-handle read returns the HANDLE source (the
+    // schema-valid representation of empty content — `{ kind:'base64', data:'' }` would violate the
+    // base64 `nonEmptyString` contract and break deInlineMedia's empty-decode) rather than tripping the
+    // fail-closed check on the default `end = byteLength - 1 = -1` (1.AF off-by-one). An EXPLICIT range on
+    // a 0-byte handle still falls through to validateByteRange and is correctly rejected.
     if (info.byteLength === 0 && args.start === undefined && args.end === undefined) {
-      return { type: 'media', mimeType: info.mimeType, source: { kind: 'base64', data: '' } };
+      return {
+        type: 'media',
+        mimeType: info.mimeType,
+        source: { kind: 'handle', ref: args.handle },
+      };
     }
     // Whole-handle when no range is given; else validate the inclusive [start,end] against the durable
     // byteLength (the engine-pure policy — fail-closed on a bad/out-of-bounds range before the host read).

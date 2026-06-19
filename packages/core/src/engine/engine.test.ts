@@ -701,6 +701,9 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
     expect(failed?.type).toBe('run:failed');
     if (failed?.type === 'run:failed') {
       expect(failed.error.code).toBe('validation');
+      // Secret-free: the failing reference name never rides the NodeFailure message (a fixed reason string).
+      expect(failed.error.message).not.toContain('inputs.missing');
+      expect(failed.error.message).not.toContain('inputs');
     }
     expect(writes).toHaveLength(0); // the path never resolved → never written
     expect(puts).toHaveLength(0); // and never de-inlined/stored

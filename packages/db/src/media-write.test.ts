@@ -63,7 +63,12 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
     // root/link -> outside ; a write to link/x.png would land OUTSIDE the scope root.
     symlinkSync(outside, join(root, 'link'), 'dir');
     const write = createFilesystemMediaWrite(root);
-    await expect(write('link/x.png', BYTES)).rejects.toThrow(/escapes the scope root/);
+    const error = await write('link/x.png', BYTES).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MediaWriteError); // reason-only type, never a raw Node fs error
+    if (error instanceof MediaWriteError) {
+      expect(error.message).toMatch(/escapes the scope root/);
+      expect(error.message).not.toContain(outside); // the resolved path never leaks (I3 contract)
+    }
     // The bytes never reached the symlink target.
     expect(() => readFileSync(join(outside, 'x.png'))).toThrow();
   });
@@ -73,7 +78,12 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
     writeFileSync(target, new Uint8Array([0]));
     symlinkSync(target, join(root, 'evil.png'), 'file'); // root/evil.png -> outside/real.png
     const write = createFilesystemMediaWrite(root);
-    await expect(write('evil.png', BYTES)).rejects.toThrow(/symlink/);
+    const error = await write('evil.png', BYTES).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MediaWriteError);
+    if (error instanceof MediaWriteError) {
+      expect(error.message).toMatch(/symlink/);
+      expect(error.message).not.toContain(outside);
+    }
     // The symlink target file is untouched (1 byte, not overwritten with BYTES).
     expect(readFileSync(target).length).toBe(1);
   });

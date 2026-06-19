@@ -11,8 +11,8 @@
  */
 
 import {
-  containsInlineMediaBytes,
   isBase64DataUri,
+  isBinaryBuffer,
   isCanonicalBase64Source,
   type AbortSignalLike,
 } from '@relavium/shared';
@@ -77,8 +77,11 @@ function countLines(text: string): number {
  * resulting flat string, not a structured media source). The MODEL-facing result value is left intact
  * (the model still receives the bytes via the seam); only this text projection is redacted. Cycle-safe.
  */
-function isRecord(value: object): value is Record<string, unknown> {
-  return !Array.isArray(value); // a non-null object that is not an array — narrows without an `as` cast
+/** A PLAIN object (Object/null prototype) — NOT a Date/RegExp/Map/Set/class instance, which JSON.stringify
+ *  renders natively and the walk must leave untouched (else a Date would collapse to `{}`). Narrows without an `as`. */
+function isPlainObject(value: object): value is Record<string, unknown> {
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
@@ -95,12 +98,16 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   if (Array.isArray(value)) {
     return value.map((item) => redactInlineMediaForText(item, seen));
   }
-  if (!isRecord(value)) {
-    return value; // unreachable after the array check above; narrows `value` to Record for the compiler
+  if (isBinaryBuffer(value)) {
+    return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
+  }
+  if (!isPlainObject(value)) {
+    return value; // Date/RegExp/Map/Set/class instance — leave for JSON.stringify's native handling
   }
   if (isCanonicalBase64Source(value)) {
     const data = value['data'];
-    return { kind: 'base64', bytes: typeof data === 'string' ? data.length : 0 }; // drop the bytes
+    // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
+    return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
   }
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
@@ -119,13 +126,13 @@ function toText(result: unknown): string {
     return '';
   }
   try {
-    // Redact INSIDE the try so a throwing getter/proxy in the result during the redaction walk (or the
-    // scan) degrades to '[unserializable]' rather than escaping. Only walk+clone when there is inline media
-    // to redact (the dominant text/JSON case pays one cheap scan). JSON.stringify returns undefined for a
-    // value with no JSON form (a bare function/symbol); the `??` keeps a string without an `[object Object]`.
-    const safe = containsInlineMediaBytes(result)
-      ? redactInlineMediaForText(result, new WeakSet<object>())
-      : result;
+    // Always run the redaction walk for a non-string result (inside the try so a throwing getter/proxy
+    // degrades to '[unserializable]' rather than escaping): it strips inline base64 sources, base64 data:
+    // URIs, AND raw binary buffers at any nesting before JSON-serialisation, so no media bytes (base64 or
+    // decimal) can ride the summary/spill/preview (I3). A non-media object is returned as a structural clone
+    // (same JSON). JSON.stringify returns undefined for a value with no JSON form (a bare function/symbol);
+    // the `??` keeps a string without an `[object Object]`.
+    const safe = redactInlineMediaForText(result, new WeakSet<object>());
     return JSON.stringify(safe) ?? '[unserializable]';
   } catch {
     return '[unserializable]'; // circular reference / throwing toJSON / throwing getter during redaction
