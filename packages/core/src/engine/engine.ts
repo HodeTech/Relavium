@@ -33,8 +33,10 @@ import {
   GateDecisionSchema,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
+  collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   deInlineMedia,
+  type DurableMediaMeta,
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
@@ -1460,6 +1462,13 @@ class RunExecution {
       }
     }
     const event = this.#bus.next(durable);
+    // Record the run's reference for every produced durable media handle (1.AF/D12c), then release the
+    // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
+    // retention failure never touches the I3 / gap-free / exactly-one-terminal guarantees below.
+    this.#recordProducedMedia(durable);
+    if (TERMINAL_TYPES.has(event.type)) {
+      this.#reclaimRunMedia();
+    }
     const prior = this.#deliveryTail;
     const settled = (async (): Promise<void> => {
       try {
@@ -1532,6 +1541,54 @@ class RunExecution {
       return undefined;
     }
     return (url) => fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal);
+  }
+
+  /**
+   * Record the producing run's reference for every durable media handle a just-stamped event carries
+   * (1.AF/D12c, ADR-0042 §3). **Best-effort**: a collection or host-write failure is swallowed — it never
+   * touches the I3 / gap-free / exactly-one-terminal guarantees (a missing ref only risks GC
+   * over/under-retention). No-op without a `mediaReferences` host port or when the event carries no handle.
+   */
+  #recordProducedMedia(durable: RunEventDraft): void {
+    const port = this.#host.mediaReferences;
+    if (port === undefined) {
+      return;
+    }
+    let produced: DurableMediaMeta[];
+    try {
+      produced = collectDurableMediaHandles(durable);
+    } catch {
+      return; // a collection failure is never fatal
+    }
+    for (const meta of produced) {
+      this.#bestEffortMediaRef(() => port.recordRunMedia(meta, this.runId));
+    }
+  }
+
+  /**
+   * D11 terminal-state sweep: reclaim the run's `run`-kind media references at its terminal event (ADR-0042
+   * §4), best-effort like {@link #recordProducedMedia}. A `session`/`workspace` reference (a read-grant)
+   * survives the sweep, keeping shared media alive past the run.
+   */
+  #reclaimRunMedia(): void {
+    const port = this.#host.mediaReferences;
+    if (port === undefined) {
+      return;
+    }
+    this.#bestEffortMediaRef(() => port.reclaimRun(this.runId));
+  }
+
+  /** Run a media-reference port call best-effort: a sync throw or an async rejection is swallowed, so a
+   *  retention failure never breaks the run (the port is documented best-effort, ADR-0042 §3-4). */
+  #bestEffortMediaRef(call: () => void | Promise<void>): void {
+    try {
+      const result = call();
+      if (result instanceof Promise) {
+        result.catch(() => undefined); // never an unhandled rejection
+      }
+    } catch {
+      // best-effort retention; the run is unaffected (I3 / totality untouched)
+    }
   }
 
   #elapsedMs(): number {

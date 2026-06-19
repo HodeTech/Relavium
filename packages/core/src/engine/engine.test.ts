@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MediaStore, RunEvent } from '@relavium/shared';
+import type { MediaReferencePort, MediaStore, RunEvent } from '@relavium/shared';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -482,6 +482,56 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     if (runId !== undefined) {
       expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('media.example');
     }
+  });
+
+  it('records a produced handle reference for the run + reclaims it at the terminal (D12c/D11)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const records: Array<{ handle: string; runId: string }> = [];
+    const reclaims: string[] = [];
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: (meta, runId) => {
+        records.push({ handle: meta.handle, runId });
+      },
+      reclaimRun: (runId) => {
+        reclaims.push(runId);
+      },
+    };
+    const host = createInMemoryHost({ store: runStore, mediaStore, mediaReferences });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const runId = events[0]?.runId;
+    expect(records.length).toBeGreaterThanOrEqual(1); // the produced handle was recorded for the run
+    expect(records.every((r) => r.runId === runId)).toBe(true);
+    expect(records[0]?.handle).toMatch(/^media:\/\/sha256-/);
+    expect(reclaims).toEqual([runId]); // exactly one terminal sweep, for this run
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('stays unaffected (run completes) when the media-reference port THROWS (best-effort, D12c/D11)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => {
+        throw new Error('reference db down');
+      },
+      reclaimRun: () => {
+        throw new Error('reference db down');
+      },
+    };
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore, mediaReferences });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    // A retention-port failure is swallowed — the run reaches its normal terminal, I3/totality untouched.
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
   });
 });
 
