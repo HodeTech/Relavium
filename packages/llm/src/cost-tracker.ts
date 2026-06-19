@@ -1,3 +1,5 @@
+import type { MediaBilledModality } from '@relavium/shared';
+
 import { UnknownModelError } from './errors.js';
 import {
   isCanonicalModelId,
@@ -5,7 +7,7 @@ import {
   MODEL_PRICING,
   type ModelPricing,
 } from './pricing.js';
-import type { Usage } from './types.js';
+import type { MediaUnitsEntry, Usage } from './types.js';
 
 /**
  * Cost tracking Relavium owns, keyed on the canonical model id — never read from a provider
@@ -43,8 +45,49 @@ export function cost(modelId: string, usage: Usage): number {
     perClass(usage.inputTokens, p.inputPerMtokMicrocents) +
     perClass(usage.outputTokens, p.outputPerMtokMicrocents) +
     perClass(cacheReadTokens, p.cachedInputPerMtokMicrocents) +
-    perClass(cacheWriteTokens, p.cacheWritePerMtokMicrocents ?? 0)
+    perClass(cacheWriteTokens, p.cacheWritePerMtokMicrocents ?? 0) +
+    // Media is a DISJOINT addend (1.AF/D17, ADR-0044 §3) — priced per image / audio-second / video-second,
+    // never mixed into the token cost path, so the cumulative figure folds realized media spend.
+    mediaCost(p, usage.mediaUnits)
   );
+}
+
+/** The canonical billed unit per modality: `image` is per-COUNT, `audio`/`video` per-SECOND. */
+function unitMatchesBilledModality(
+  modality: MediaBilledModality,
+  unit: 'count' | 'second',
+): boolean {
+  return modality === 'image' ? unit === 'count' : unit === 'second';
+}
+
+/**
+ * The integer micro-cent cost of one usage record's media units (1.AF/D17, ADR-0044 §3) — a disjoint
+ * addend, never mixed into the token path. Prices only **`output`-direction** entries (input media bills as
+ * input tokens already, folded into `inputTokens` by the adapter), and only when the model declares a rate
+ * for that modality AND the reported `unit` matches its canonical billed unit (image=count, audio/video=
+ * second). A missing rate, or a token-`count` audio unit from a token-based provider with only a per-second
+ * rate, contributes **0** (observability-only) — never a hard fail (H4). Exported for direct unit testing
+ * against a constructed `ModelPricing`, since no 1.AF model carries a media rate.
+ */
+export function mediaCost(
+  pricing: ModelPricing,
+  mediaUnits: readonly MediaUnitsEntry[] | undefined,
+): number {
+  if (mediaUnits === undefined) {
+    return 0;
+  }
+  let total = 0;
+  for (const entry of mediaUnits) {
+    if (entry.direction !== 'output') {
+      continue; // input media is billed as input tokens, never double-counted here
+    }
+    const rate = pricing.mediaOutputRates?.[entry.modality];
+    if (rate === undefined || !unitMatchesBilledModality(entry.modality, entry.unit)) {
+      continue; // unpriced modality, or a unit that does not match the model's billed unit → observability-only
+    }
+    total += entry.units * rate;
+  }
+  return total;
 }
 
 /** The cost figures for one `cost:updated` event (the engine adds `nodeId` / `model` / `attemptNumber`). */

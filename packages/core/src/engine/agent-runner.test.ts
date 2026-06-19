@@ -11,7 +11,12 @@ import { describe, expect, it } from 'vitest';
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
 import type { ToolCallPart, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
-import { createAgentNodeExecutor, type AgentRunnerDeps } from './agent-runner.js';
+import {
+  buildMediaUnitsEstimate,
+  createAgentNodeExecutor,
+  DEFAULT_MEDIA_UNIT_ESTIMATE,
+  type AgentRunnerDeps,
+} from './agent-runner.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 
 const CAPS: CapabilityFlags = {
@@ -388,5 +393,27 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     await exec.execute(ctx);
     // System is authored-only — an untrusted run.outputs value must NEVER appear resolved in `system`.
     expect(req()?.system).not.toContain('SENTINEL-UNTRUSTED-VALUE');
+  });
+});
+
+describe('buildMediaUnitsEstimate (1.AF/D17 — media-cost unit estimate)', () => {
+  it('returns [] for a text-only node (no output_modalities)', () => {
+    expect(buildMediaUnitsEstimate(undefined, undefined)).toEqual([]);
+  });
+
+  it('excludes `text` and emits one entry per BILLED modality with the config unit count', () => {
+    expect(buildMediaUnitsEstimate(['text', 'image', 'audio'], { image: 2, audio: 30 })).toEqual([
+      { modality: 'image', units: 2 },
+      { modality: 'audio', units: 30 },
+    ]);
+  });
+
+  it('falls back to the built-in default count for a modality the config omits', () => {
+    expect(buildMediaUnitsEstimate(['video'], { image: 9 })).toEqual([
+      { modality: 'video', units: DEFAULT_MEDIA_UNIT_ESTIMATE.video },
+    ]);
+    expect(buildMediaUnitsEstimate(['image'], undefined)).toEqual([
+      { modality: 'image', units: DEFAULT_MEDIA_UNIT_ESTIMATE.image },
+    ]);
   });
 });

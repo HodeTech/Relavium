@@ -105,6 +105,12 @@ export const modelCatalog = sqliteTable(
     inputCostPerMtokMicrocents: microcents('input_cost_per_mtok_microcents'),
     outputCostPerMtokMicrocents: microcents('output_cost_per_mtok_microcents'),
     cachedInputCostPerMtokMicrocents: microcents('cached_input_cost_per_mtok_microcents'),
+    // Per-modality media-OUTPUT rates (1.AF/D17, ADR-0044 §3) — integer µ¢ per billed unit (per image,
+    // per audio-second, per video-second). NULLABLE: a model with no metered media rate degrades to 0
+    // (H4). The projection of `ModelPricing.mediaOutputRates`; no shipped model carries one yet.
+    mediaImageCostMicrocents: integer('media_image_cost_microcents'),
+    mediaAudioCostMicrocents: integer('media_audio_cost_microcents'),
+    mediaVideoCostMicrocents: integer('media_video_cost_microcents'),
     supportsToolCalling: boolFlag('supports_tool_calling', false),
     supportsVision: boolFlag('supports_vision', false),
     supportsStreaming: boolFlag('supports_streaming', true),

@@ -26,7 +26,13 @@
  * source is always `cost:updated`).
  */
 
-import type { AbortSignalLike, ContentPart, ErrorCode, StopReason } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  ContentPart,
+  ErrorCode,
+  OutputModality,
+  StopReason,
+} from '@relavium/shared';
 import {
   CostTracker,
   FallbackChain,
@@ -36,6 +42,7 @@ import {
   type LlmError,
   type LlmMessage,
   type LlmRequest,
+  type MediaUnitsEstimate,
   type ResponseFormat,
   type StreamChunk,
   type ToolDef as LlmToolDef,
@@ -73,13 +80,19 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
 };
 
 /**
- * The pre-egress budget hook ([ADR-0028](../../../../docs/decisions/0028-workflow-resource-governance.md)) —
- * called immediately before every seam call. In 1.O the default is a no-op that always permits; 1.AC
- * replaces it with the estimator and may throw an {@link AgentTurnError} (`budget_exceeded`) to halt.
+ * The pre-egress budget hook ([ADR-0028](../../../../docs/decisions/0028-workflow-resource-governance.md),
+ * widened by [ADR-0044](../../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md)
+ * §3 for the per-modality media cost) — called immediately before every seam call. In 1.O the default is a
+ * no-op that always permits; 1.AC replaces it with the estimator and may throw an {@link AgentTurnError}
+ * (`budget_exceeded`) to halt. `outputModalities` + `mediaUnitsEstimate` (1.AF/D17) are populated by the
+ * AgentRunner from the node's `output_modalities` + the `[defaults].media_cost_estimate` unit counts so the
+ * governor can fold a media cost estimate into the projected total; both absent ⇒ a text-only turn.
  */
 export type PreEgressHook = (info: {
   readonly model: string;
   readonly maxTokens?: number;
+  readonly outputModalities?: readonly OutputModality[];
+  readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
 }) => void | Promise<void>;
 
 /** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
@@ -118,6 +131,16 @@ export interface AgentTurnParams {
   readonly limits: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  /**
+   * The non-text output the node requested (1.AF/D17) — forwarded to {@link PreEgressHook} so the budget
+   * governor knows this is a media-output turn. The AgentRunner lowers it from the node's `output_modalities`.
+   */
+  readonly outputModalities?: readonly OutputModality[];
+  /**
+   * The per-modality media-unit estimate (1.AF/D17) the governor prices into the projected pre-egress cost,
+   * built by the AgentRunner from `output_modalities` + the `[defaults].media_cost_estimate` unit counts.
+   */
+  readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
 }
 
 /** What one settled agent turn produced. */
@@ -457,6 +480,12 @@ async function awaitPreEgress(params: AgentTurnParams, activeModel: string): Pro
     await params.preEgress?.({
       model: activeModel,
       ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+      ...(params.outputModalities === undefined
+        ? {}
+        : { outputModalities: params.outputModalities }),
+      ...(params.mediaUnitsEstimate === undefined
+        ? {}
+        : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
     });
   } catch (err) {
     if (err instanceof BudgetExceededError) {

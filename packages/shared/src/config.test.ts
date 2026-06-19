@@ -127,6 +127,26 @@ describe('config schemas', () => {
     );
   });
 
+  it('accepts defaults.media_cost_estimate (1.AF/D17 per-modality unit counts) and rejects bad shapes', () => {
+    expect(
+      ProjectConfigSchema.safeParse({
+        defaults: { media_cost_estimate: { image: 2, audio: 60, video: 10 } },
+      }).success,
+    ).toBe(true);
+    // A partial subset is fine (only the declared modalities).
+    expect(
+      ProjectConfigSchema.safeParse({ defaults: { media_cost_estimate: { image: 1 } } }).success,
+    ).toBe(true);
+    // Non-negative integers — a negative count is rejected.
+    expect(
+      ProjectConfigSchema.safeParse({ defaults: { media_cost_estimate: { image: -1 } } }).success,
+    ).toBe(false);
+    // Strict: `document` is not a billed output modality (no such key).
+    expect(
+      ProjectConfigSchema.safeParse({ defaults: { media_cost_estimate: { document: 1 } } }).success,
+    ).toBe(false);
+  });
+
   it('accepts a [chat] block (agent-session defaults) and rejects a bad on_exceed', () => {
     expect(
       ProjectConfigSchema.safeParse({

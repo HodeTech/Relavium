@@ -885,7 +885,10 @@ class RunExecution {
       return undefined;
     }
     const governor = this.#budgetGovernor;
-    return (info) => governor.checkPreEgress(info.model, info.maxTokens);
+    // Pass the media-unit estimate (1.AF/D17) so the governor folds a per-modality media addend into the
+    // projection; `outputModalities` rides the hook info for request-lowering/observability but the cost
+    // calc needs only the units.
+    return (info) => governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate);
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */

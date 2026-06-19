@@ -36,6 +36,22 @@ export interface ModelPricing {
   readonly cachedInputPerMtokMicrocents: number;
   /** Cache-write price, where the provider charges one (Anthropic does); undefined otherwise. */
   readonly cacheWritePerMtokMicrocents?: number;
+  /**
+   * Per-modality media **output** rates (1.AF/D17,
+   * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — integer
+   * micro-cents per billed unit: `image` per image (the unit is a count), `audio`/`video` per second. The
+   * keys are exactly the `MEDIA_BILLED_MODALITIES` (`document`/PDF bills as tokens, so it is excluded). A
+   * **missing** modality rate (or an absent `mediaOutputRates`) means the model has no metered media rate —
+   * the realized fold and the pre-egress estimate **degrade to 0** for it (H4: never hard-fail a valid run on
+   * a missing rate), and a token-count audio unit from a token-based provider stays observability-only until a
+   * per-count rate exists. No 1.AF model emits billed media output, so every row leaves this undefined; the
+   * shape is the seam for the model catalog's media rates.
+   */
+  readonly mediaOutputRates?: {
+    readonly image?: number;
+    readonly audio?: number;
+    readonly video?: number;
+  };
 }
 
 const USD_PER_MTOK_TO_MICROCENTS = 100_000_000; // 1 USD = 1e8 micro-cents

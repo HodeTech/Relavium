@@ -116,4 +116,27 @@ describe('BudgetGovernor', () => {
     await expect(governor.checkPreEgress('my-self-hosted-model', 10_000)).resolves.toBeUndefined();
     expect(warnings).toHaveLength(0);
   });
+
+  it('accepts a media-unit estimate and folds it as a disjoint addend (1.AF/D17)', () => {
+    // No 1.AF model carries a media rate, so the media estimate degrades to 0 — the decision matches the
+    // token-only projection (the units×rate math is covered in mediaCost/estimateMediaCost). This pins the
+    // wiring: the governor accepts the estimate and never crashes/over-blocks on a media-output turn.
+    const { governor } = makeGovernor();
+    governor.updateCost(0);
+    const tokenOnly = governor.evaluatePreEgress('claude-haiku-4-5', 1000);
+    const withMedia = governor.evaluatePreEgress('claude-haiku-4-5', 1000, [
+      { modality: 'image', units: 4 },
+      { modality: 'audio', units: 30 },
+    ]);
+    expect(withMedia).toEqual(tokenOnly); // media adds 0 (unrated model) — decision unchanged
+    expect(withMedia.kind).toBe('allow');
+  });
+
+  it('an unpriced model still degrades to allow even WITH a media estimate (H4)', async () => {
+    const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+    governor.updateCost(900_000);
+    await expect(
+      governor.checkPreEgress('my-self-hosted-model', 10_000, [{ modality: 'image', units: 2 }]),
+    ).resolves.toBeUndefined();
+  });
 });
