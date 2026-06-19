@@ -781,9 +781,26 @@ export interface MediaStore {
  * checkpoint snapshots a refine cannot reach).
  */
 export interface DeInlineMedia {
-  (parts: readonly ContentPart[], store: MediaStore): Promise<DurableContentPart[]>;
-  (value: unknown, store: MediaStore): Promise<unknown>;
+  (
+    parts: readonly ContentPart[],
+    store: MediaStore,
+    fetchUrl?: MediaUrlFetch,
+  ): Promise<DurableContentPart[]>;
+  (value: unknown, store: MediaStore, fetchUrl?: MediaUrlFetch): Promise<unknown>;
 }
+
+/**
+ * The host-injected media-egress fetch (1.AF/D9, [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md)
+ * §2/§3): re-host a public-HTTPS `url` media source to its raw bytes, which the engine then
+ * content-addresses via {@link MediaStore.put}. The **host** performs the validated I/O — DNS resolve,
+ * connect by the validated IP, and re-run the one shared SSRF primitive ({@link isPrivateOrLocalHost} /
+ * {@link extractHttpsHost}) on **every redirect hop** — and enforces a streamed, size-bounded body so
+ * an over-size response is aborted and never fully buffered. The platform-pure engine supplies only the
+ * **decision** to fetch (and binds the per-fetch size bound + `AbortSignal` when it constructs the hook),
+ * so the seam type stays a narrow `url → bytes` function — never a socket in `@relavium/shared`. When no
+ * hook is wired, `deInlineMedia` hard-fails a `url` source (an un-re-hosted url may never persist, I3).
+ */
+export type MediaUrlFetch = (url: string) => Promise<Uint8Array>;
 
 /* ------------------------------------------------------------------------------------------------
  * SSRF range-block — the one shared primitive (1.AE, security-review.md, ADR-0031 §Guardrails)
