@@ -972,9 +972,10 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   **never returns a raw key from an IPC command** (direct test); and a run reaching a **terminal event
   (`run:completed|failed|cancelled`) deterministically reclaims its media refs** so a FAILED/CANCELLED run
   leaves no orphaned partial media (a terminal-state sweep, not refcount-GC alone).
-  - 🔨 *P1+P2 **merged** (PR #33); P3 + P4/D13 **merged** (PR #34); the **P4 remainder** (D12, D11, D15, D16,
-    D17 + the byte-delivery review) is landed on `development` (**pending merge**) — see
-    [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs.*
+  - ✅ **Done (PR #33/#34/#35/#36, 2026-06-20).** P1+P2 (PR #33); P3 + P4/D13 (PR #34); the **P4 remainder**
+    (D12, D11, D15, D16, D17 + the byte-delivery review) (PR #35); the **multi-agent + external review
+    follow-ups** (PR #36) — see
+    [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs. The deferred **host-wiring** half (D12 `MediaReadAccess` + session-scope population, the D15 loader call, the D17/`resolveForEgress` config wiring) and the keychain no-raw-key IPC test are owned by **1.AH** — recorded in [deferred-tasks.md](../deferred-tasks.md) §1.AF.*
     **Merged (P1 + P2, PR #33):** D5/D6 per-modality `requiredCapabilities()` + `FallbackChain` provider-skip
     (one shared `mediaSupportReason` predicate); D3 `deInlineMedia` (cycle-safe flight→durable transform +
     a pure base64 decoder); D1 `MediaStore` contract impls (`FilesystemMediaStore` CAS + `InMemoryMediaStore`);
@@ -984,7 +985,7 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
     persist-before-deliver preserved; missing-store → loud `run:failed`, terminal stays emit-safe); plus the
     canonical-home doc updates that landed with the code — database-schema.md §Media tables, workflow-yaml-spec
     (`output_modalities` / `save_to` / `{{ run.id }}`), and sse-event-schema (`mediaUnits` on `cost:updated`).
-    **Landed on `development` (P3 + P4/D13, pending merge):**
+    **Merged (P3 + P4/D13, PR #34):**
     - **D9** the binary media-egress capability + the SSRF **mechanism** half: `deInlineMedia` re-hosts a `url`
       source via an injected `MediaUrlFetch` hook (shared); `fetchMediaBytes` SSRF-validated host reference
       (db — DNS-resolve + connect-by-validated-IP + per-hop redirect re-validation + streamed size-bound,
@@ -998,7 +999,7 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
       a defensive re-bound) + the engine-pure `validateByteRange` policy (fail-closed; reused by D12 + 1.AH).
     - The dedicated **P3 egress/SSRF security-review pass** (independent adversarial — **0 blockers/highs**;
       4 lower follow-ups fixed). All green (`pnpm turbo` 16/16) + Leakwatch-clean.
-    **Landed on `development` (P4 remainder, pending merge):**
+    **Merged (P4 remainder, PR #35):**
     - **D12 `read_media`** — the 13th built-in tool + the engine-pure scope-set authz (`scopeSetIncludes`) +
       the `Range` gate + the additive `ToolPolicyDenyReason.media_scope_denied` + the `ToolDispatchContext`
       `requestingScope`/`mediaRead` fields; the `media_references` row-writing lifecycle (`MediaReferenceStore`
@@ -1032,11 +1033,20 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
       population, the D15 loader call, the D17 config/`resolveForEgress` wiring) is recorded in
       [deferred-tasks.md](../deferred-tasks.md) §1.AF P4 — these make D12/D15/D17 inert end-to-end until a
       surface (1.AH) wires them; the landed engine **policy** is complete + tested.
+    **Merged (review follow-ups, PR #36):** a **13-dimension, double-verified end-to-end review** of the whole
+    merged 1.AF (no exploitable SSRF bypass; the I3 handle-only invariant holds end-to-end) plus an external
+    (Sonar/CodeRabbit) pass — fixes landed: **H1** `agent:tool_call.toolInput` byte-redaction (the symmetric
+    twin of the result-side `outputSummary` redaction, an I3 event-stream gap); **H2** unify the load-time +
+    runtime `output_modalities` gates on one exact-membership predicate (`isOutputCombinationSupported`, +
+    bidirectional set-equality so a duplicate modality cannot false-match); the **GC grace** basis bumped to
+    de-reference time (ADR-0042 §4); an **egress mechanism test** for the concrete `nodeMediaEgressDeps`
+    pin/SNI/port wiring; and the canonical-home doc-drift cluster (thirteen built-ins, `media_scope_denied` in
+    the deny union, `read_media` catalog row, the deferred `cost:updated.mediaUnits`). All green + Leakwatch-clean.
     **Deferred to 1.AH (no 1.AF surface):** the **keychain-bridge no-raw-key IPC test** — the Tauri keychain
     IPC command does not exist in Phase 1 (`apps/desktop` is unbuilt); the gate is **owned/recorded** by 1.AF
     ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §4 + security-review.md)
-    and the direct test lands with the bridge in 1.AH. The matrix row stays ◇ until the 1.AF PR(s) merge
-    (Done-after-merge).
+    and the direct test lands with the bridge in 1.AH. **All 1.AF PRs (#33/#34/#35/#36) are merged
+    (2026-06-20) — the matrix row is now ✅ Done.**
 - **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
   `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
@@ -1072,7 +1082,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2 ✅** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** (**reached — 1.U landed, PR #27, 2026-06-16**) | **1.U** |
 | **1.m5 ✅** | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, **1.AA** |
-| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅**, 1.AE, 1.AF, 1.AG, 1.AH |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅**, 1.AG, 1.AH |
 
 ## Sequencing & parallelization
 
@@ -1233,7 +1243,7 @@ flowchart LR
 | **1.AA** | C | 1.V, 1.W, 1.X, 1.Y, 1.Z | **1.m5** | ✅ — **Done (2026-06-17)** |
 | 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ✅ — **Done (PR #32, 2026-06-18)** |
-| 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ◇ |
+| 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ✅ — **Done (PR #33/#34/#35/#36, 2026-06-20)** |
 | 1.AG | D | 1.AF | 1.AH | ◇ |
 | 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
 

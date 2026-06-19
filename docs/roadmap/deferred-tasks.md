@@ -184,7 +184,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > The comprehensive 46-agent review confirmed the **host/surface wiring** below is **not yet present** —
 > so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
 > so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
-> deferred mechanism/wiring half. *(matrix row stays ◇ until the PR merges.)*
+> deferred mechanism/wiring half. *(1.AF is ✅ Done — all PRs merged #33/#34/#35/#36, 2026-06-20; the items
+> below remain, owned by 1.AH.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
   factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns
