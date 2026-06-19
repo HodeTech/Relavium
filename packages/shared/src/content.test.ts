@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   containsInlineMediaBytes,
   ContentPartSchema,
@@ -938,5 +939,61 @@ describe('read_media authz scope (1.AF/D12 — ScopeSchema + scopeSetIncludes)',
     expect(scopeSetIncludes(allowed, { kind: 'session', id: 's2' })).toBe(false); // same kind, other id
     expect(scopeSetIncludes(allowed, { kind: 'workspace', id: 's1' })).toBe(false); // same id, other kind
     expect(scopeSetIncludes([], { kind: 'session', id: 's1' })).toBe(false); // no refs ⇒ no read (fail-closed)
+  });
+});
+
+describe('collectDurableMediaHandles (1.AF/D12c — produced-handle reference collection)', () => {
+  const H1 = `media://sha256-${'a'.repeat(64)}`;
+  const H2 = `media://sha256-${'b'.repeat(64)}`;
+  const handlePart = (handle: string, byteLength = 5) => ({
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'handle', ref: handle },
+    byteLength,
+  });
+
+  it('collects a durable handle part with its metadata (incl. optional durationMs)', () => {
+    const value = { out: { ...handlePart(H1), durationMs: 1200, mimeType: 'audio/wav' } };
+    expect(collectDurableMediaHandles(value)).toEqual([
+      { handle: H1, mimeType: 'audio/wav', modality: 'audio', byteLength: 5, durationMs: 1200 },
+    ]);
+  });
+
+  it('dedupes by handle and finds parts nested in arrays / Map / Set / cycles', () => {
+    const cyclic: Record<string, unknown> = { a: handlePart(H1) };
+    cyclic['self'] = cyclic;
+    const value = {
+      list: [handlePart(H1), handlePart(H2)],
+      map: new Map([['k', handlePart(H1)]]),
+      set: new Set([handlePart(H2)]),
+      cyclic,
+    };
+    const handles = collectDurableMediaHandles(value)
+      .map((m) => m.handle)
+      .sort();
+    expect(handles).toEqual([H1, H2]); // distinct, despite repeats across containers + the cycle
+  });
+
+  it('skips non-handle sources (base64 / url) and a handle part with no byteLength or unknown modality', () => {
+    const value = {
+      base64: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'base64', data: 'aGVsbG8=' },
+      },
+      url: { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://x/y' } },
+      noByteLength: { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: H1 } },
+      badMime: {
+        type: 'media',
+        mimeType: 'application/zip',
+        source: { kind: 'handle', ref: H2 },
+        byteLength: 3,
+      },
+    };
+    expect(collectDurableMediaHandles(value)).toEqual([]); // none is a recordable durable handle part
+  });
+
+  it('returns [] for a value with no media', () => {
+    expect(collectDurableMediaHandles({ text: 'hi', n: [1, 2, 3] })).toEqual([]);
   });
 });

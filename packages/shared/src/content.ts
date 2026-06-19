@@ -861,6 +861,95 @@ export function scopeSetIncludes(allowed: readonly Scope[], requesting: Scope): 
   return allowed.some((scope) => scope.kind === requesting.kind && scope.id === requesting.id);
 }
 
+/** Metadata for a produced durable media handle (mirrors the `media_objects` row), collected at the
+ *  de-inline choke point so the engine can record the producing run's reference (1.AF/D12c). */
+export interface DurableMediaMeta {
+  readonly handle: string;
+  readonly mimeType: string;
+  readonly modality: MediaModality;
+  readonly byteLength: number;
+  readonly durationMs?: number;
+}
+
+/**
+ * The host media-reference lifecycle port (1.AF/D12c + D11,
+ * [ADR-0042](../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
+ * §3-4): the engine records a produced handle's reference for the producing **run** at the de-inline choke
+ * point ({@link recordRunMedia}) and reclaims a run's references at its terminal event ({@link reclaimRun},
+ * the D11 sweep). **Optional + best-effort**: a record/reclaim failure is a retention concern (GC
+ * over/under-retention), NEVER an I3 or run-correctness break, so it must never fail the run. The Node
+ * reference is `@relavium/db`'s `MediaReferenceStore` behind a host adapter; the pure engine calls only
+ * this interface. (A `session`/`workspace` read-grant is the surface/`AgentSession` concern, not this.)
+ */
+export interface MediaReferencePort {
+  recordRunMedia(meta: DurableMediaMeta, runId: string): void | Promise<void>;
+  reclaimRun(runId: string): void | Promise<void>;
+}
+
+/** Queue a walked node's children (array items / Map keys+values / Set values / record values) onto `stack`. */
+function pushMediaWalkChildren(node: object, stack: unknown[]): void {
+  if (Array.isArray(node)) {
+    for (const item of node) stack.push(item);
+  } else if (node instanceof Map) {
+    for (const [key, item] of node) stack.push(key, item);
+  } else if (node instanceof Set) {
+    for (const item of node) stack.push(item);
+  } else if (isRecord(node)) {
+    for (const item of Object.values(node)) stack.push(item);
+  }
+}
+
+/** A node's {@link DurableMediaMeta} when it is a handle-only durable media part, else `undefined`. */
+function durableMediaMetaOf(node: object): DurableMediaMeta | undefined {
+  if (!isRecord(node) || node['type'] !== 'media') {
+    return undefined;
+  }
+  const source = node['source'];
+  const mimeType = node['mimeType'];
+  const byteLength = node['byteLength'];
+  if (!isRecord(source) || source['kind'] !== 'handle' || typeof source['ref'] !== 'string') {
+    return undefined;
+  }
+  if (typeof mimeType !== 'string' || typeof byteLength !== 'number') {
+    return undefined; // a handle media part missing its Y3 byteLength is not a recordable durable part
+  }
+  const modality = mediaModalityOf(mimeType);
+  if (modality === undefined) {
+    return undefined;
+  }
+  const meta: DurableMediaMeta = { handle: source['ref'], mimeType, modality, byteLength };
+  return typeof node['durationMs'] === 'number'
+    ? { ...meta, durationMs: node['durationMs'] }
+    : meta;
+}
+
+/**
+ * Collect the **distinct** durable media handles (+ their metadata) in an already-de-inlined value — every
+ * `{ type:'media', mimeType, source:{ kind:'handle', ref }, byteLength }` part. Cycle-safe, deduped by
+ * handle. The engine uses it at the emit choke point to record each produced handle's run reference
+ * (1.AF/D12c). A part whose mimeType maps to no known modality, or that lacks `byteLength`, is skipped.
+ */
+export function collectDurableMediaHandles(value: unknown): DurableMediaMeta[] {
+  const out: DurableMediaMeta[] = [];
+  const seenHandles = new Set<string>();
+  const seen = new Set<object>();
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node !== 'object' || node === null || seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+    const meta = durableMediaMetaOf(node);
+    if (meta !== undefined && !seenHandles.has(meta.handle)) {
+      seenHandles.add(meta.handle);
+      out.push(meta);
+    }
+    pushMediaWalkChildren(node, stack);
+  }
+  return out;
+}
+
 /**
  * The engine-owned flight→durable transform (ADR-0031 §Guardrails B1): replaces every in-flight
  * base64 (or unresolved url) media part with a handle by writing bytes to the `MediaStore`, so
