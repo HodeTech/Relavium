@@ -187,6 +187,7 @@ function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: U
         : Promise.resolve(found.bytes);
     },
     resolveForEgress: () => Promise.reject(new Error('unused by this test')),
+    readRange: () => Promise.reject(new Error('unused by this test')),
   };
   return { store, puts };
 }
@@ -373,6 +374,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       put: () => Promise.reject(new Error('disk full')),
       get: () => Promise.reject(new Error('unused')),
       resolveForEgress: () => Promise.reject(new Error('unused')),
+      readRange: () => Promise.reject(new Error('unused')),
     };
     const runStore = new InMemoryRunStore();
     const host = createInMemoryHost({ store: runStore, mediaStore: rejectingStore });

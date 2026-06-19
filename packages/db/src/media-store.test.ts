@@ -84,3 +84,37 @@ describe('InMemoryMediaStore (1.AF — reference impl)', () => {
     expect([...(await store.get(handle))]).toEqual([1, 2, 3]); // still intact (get copied)
   });
 });
+
+describe('MediaStore.readRange (1.AF/D13 — byte-delivery Range gate)', () => {
+  it('InMemoryMediaStore reads a valid inclusive range and rejects an out-of-bounds one', async () => {
+    const store = new InMemoryMediaStore();
+    const handle = await store.put(HELLO); // [0x68,0x65,0x6c,0x6c,0x6f] = "hello"
+    expect([...(await store.readRange(handle, { start: 1, end: 3 }))]).toEqual([0x65, 0x6c, 0x6c]); // "ell"
+    expect([...(await store.readRange(handle, { start: 0, end: 4 }))]).toEqual([...HELLO]); // whole
+    await expect(store.readRange(handle, { start: 0, end: 5 })).rejects.toThrow(/out of bounds/);
+    await expect(store.readRange(handle, { start: 3, end: 1 })).rejects.toThrow(
+      /reversed|>= start/,
+    );
+    await expect(store.readRange(handle, { start: -1, end: 2 })).rejects.toThrow(/non-negative/);
+  });
+
+  it('InMemoryMediaStore.readRange rejects a malformed handle (never reads an unknown blob)', async () => {
+    const store = new InMemoryMediaStore();
+    await expect(store.readRange('nonsense', { start: 0, end: 0 })).rejects.toThrow(/handle/);
+  });
+
+  it('FilesystemMediaStore reads a validated range (reusing the path-jail + sha256 integrity check)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-media-range-'));
+    try {
+      const store = new FilesystemMediaStore(root);
+      const handle = await store.put(HELLO);
+      expect([...(await store.readRange(handle, { start: 1, end: 2 }))]).toEqual([0x65, 0x6c]); // "el"
+      await expect(store.readRange(handle, { start: 2, end: 99 })).rejects.toThrow(/out of bounds/);
+      await expect(store.readRange('../../etc/passwd', { start: 0, end: 1 })).rejects.toThrow(
+        /handle/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

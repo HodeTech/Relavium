@@ -20,6 +20,7 @@ import {
   persistableMediaRefine,
   refineInFlightMediaPart,
   urlHasCredentials,
+  validateByteRange,
 } from './content.js';
 import type { AbortSignalLike, ContentPart, DurableContentPart, MediaPart } from './content.js';
 
@@ -862,5 +863,40 @@ describe('extractHttpsHost + urlHasCredentials (SSRF URL policy)', () => {
       host: 'api.openai.com',
       hasCredentials: false,
     });
+  });
+});
+
+describe('validateByteRange (1.AF/D13 — the engine-pure byte-delivery Range policy)', () => {
+  it('accepts a valid inclusive range within bounds', () => {
+    expect(validateByteRange({ start: 0, end: 4 }, 10)).toEqual({
+      ok: true,
+      range: { start: 0, end: 4 },
+    });
+    expect(validateByteRange({ start: 9, end: 9 }, 10)).toEqual({
+      ok: true,
+      range: { start: 9, end: 9 },
+    }); // last byte
+  });
+
+  it('rejects a negative bound (fail-closed)', () => {
+    expect(validateByteRange({ start: -1, end: 4 }, 10).ok).toBe(false);
+    expect(validateByteRange({ start: 0, end: -1 }, 10).ok).toBe(false);
+  });
+
+  it('rejects a reversed range (end < start)', () => {
+    const r = validateByteRange({ start: 5, end: 2 }, 10);
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.reason).toMatch(/reversed|>= start/);
+  });
+
+  it('rejects an out-of-bounds end (end >= byteLength)', () => {
+    expect(validateByteRange({ start: 0, end: 10 }, 10).ok).toBe(false); // end == length is out of bounds
+    expect(validateByteRange({ start: 0, end: 99 }, 10).ok).toBe(false);
+    expect(validateByteRange({ start: 0, end: 0 }, 0).ok).toBe(false); // empty store: nothing readable
+  });
+
+  it('rejects non-integer bounds (no raw parseInt trust)', () => {
+    expect(validateByteRange({ start: 0.5, end: 4 }, 10).ok).toBe(false);
+    expect(validateByteRange({ start: 0, end: Number.NaN }, 10).ok).toBe(false);
   });
 });

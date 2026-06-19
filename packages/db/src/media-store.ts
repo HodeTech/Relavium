@@ -2,7 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
-import { MEDIA_HANDLE_PATTERN, type MediaSource, type MediaStore } from '@relavium/shared';
+import {
+  MEDIA_HANDLE_PATTERN,
+  validateByteRange,
+  type ByteRange,
+  type MediaSource,
+  type MediaStore,
+} from '@relavium/shared';
 
 /**
  * Host-side `MediaStore` implementations (1.AF, ADR-0042) — the Node CLI / VS Code blob store the
@@ -37,6 +43,19 @@ function digestOf(handle: string): string {
 /** base64 of the bytes — the in-flight inline carrier `resolveForEgress` returns for the seam. */
 function toBase64Source(bytes: Uint8Array): MediaSource {
   return { kind: 'base64', data: Buffer.from(bytes).toString('base64') };
+}
+
+/**
+ * Defensively slice an **inclusive** {@link ByteRange} from already-loaded bytes (1.AF/D13). The engine
+ * pre-validates the range against `media_objects.byteLength` ({@link validateByteRange}); this re-bounds
+ * against the ACTUAL stored size and fails closed on a bad range — never trusting the caller's size.
+ */
+function sliceRange(bytes: Uint8Array, range: ByteRange): Uint8Array {
+  const checked = validateByteRange(range, bytes.length);
+  if (!checked.ok) {
+    throw new Error(`media readRange: ${checked.reason}`);
+  }
+  return bytes.slice(range.start, range.end + 1); // inclusive end ⇒ +1 for the exclusive slice bound
 }
 
 /**
@@ -87,6 +106,14 @@ export class FilesystemMediaStore implements MediaStore {
     return bytes;
   }
 
+  // The `signal` of the `MediaStore.readRange` contract is omitted (a fewer-param method satisfies the
+  // interface): the Node reference reads the bounded blob whole (it is already size-capped by the put/egress
+  // path) and reuses get()'s path-jail + sha256 integrity check, then defensively re-bounds the inclusive
+  // range. The real desktop Rust CAS (1.AH) streams the validated range with an abort.
+  async readRange(handle: string, range: ByteRange): Promise<Uint8Array> {
+    return sliceRange(await this.get(handle), range);
+  }
+
   // `provider` is intentionally not a parameter yet (a fewer-param method satisfies the interface):
   // 1.AF resolves to inline base64 for every provider. The provider-aware file re-upload optimization
   // for over-ceiling media is the egress/sidecar work (1.AF/D8, ADR-0043); the engine, not the adapter,
@@ -132,5 +159,11 @@ export class InMemoryMediaStore implements MediaStore {
 
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
+  }
+
+  // The `signal` of the `MediaStore.readRange` contract is omitted (a fewer-param method still satisfies
+  // the interface): the in-memory blob is already resident, so there is no streamed I/O to abort.
+  async readRange(handle: string, range: ByteRange): Promise<Uint8Array> {
+    return sliceRange(await this.get(handle), range);
   }
 }

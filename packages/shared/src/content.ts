@@ -779,6 +779,55 @@ export interface MediaStore {
    * adapters stay pure string→string and never hold a `MediaStore` (ADR-0031 §adapter rule).
    */
   resolveForEgress(handle: string, provider: LlmProviderId): Promise<MediaSource>;
+  /**
+   * Read a validated byte {@link ByteRange} of a handle's bytes (1.AF/D13,
+   * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) — the
+   * host byte-delivery **mechanism**: `realpath`+`commonpath` fail-closed path resolution, symlinks OFF,
+   * streamed + size-bounded I/O. The engine owns the **policy** — it validates the range against the
+   * handle's `byteLength` ({@link validateByteRange}) BEFORE calling this; the host re-bounds defensively
+   * against the actual stored size (fail-closed, never trusting a client size). The `read_media` built-in
+   * (1.AF) and the 1.AH desktop `read_media(ref)` command share this one mechanism — the gate is never
+   * written twice.
+   */
+  readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<Uint8Array>;
+}
+
+/**
+ * A byte range over a handle's bytes (1.AF/D13, ADR-0044 §1) — **inclusive** of both ends (HTTP
+ * `Range: bytes=start-end` semantics), so the served length is `end - start + 1`. The engine validates it
+ * against the handle's `byteLength` ({@link validateByteRange}) before the host reads it.
+ */
+export interface ByteRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Validate a requested {@link ByteRange} against a handle's known `byteLength` (1.AF/D13) — the engine-pure
+ * byte-delivery **policy** (security-review.md §Media byte delivery). Fail-closed: rejects a non-integer,
+ * negative, reversed (`end < start`), or out-of-bounds (`end >= byteLength`) range — never a raw `parseInt`
+ * without a bound, never trusting a client-supplied size. Returns the validated range, or a secret-free
+ * reason (a range bound, never bytes). Reused by the `read_media` tool + the 1.AH desktop command, so the
+ * Range gate is written once.
+ */
+export function validateByteRange(
+  range: ByteRange,
+  byteLength: number,
+): { ok: true; range: ByteRange } | { ok: false; reason: string } {
+  const { start, end } = range;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    return { ok: false, reason: 'range bounds must be integers' };
+  }
+  if (start < 0 || end < 0) {
+    return { ok: false, reason: 'range bounds must be non-negative' };
+  }
+  if (end < start) {
+    return { ok: false, reason: 'range end must be >= start (not reversed)' };
+  }
+  if (end >= byteLength) {
+    return { ok: false, reason: 'range end is out of bounds for the stored byte length' };
+  }
+  return { ok: true, range: { start, end } };
 }
 
 /**

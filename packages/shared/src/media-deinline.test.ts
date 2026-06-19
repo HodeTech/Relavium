@@ -37,6 +37,7 @@ function makeStubStore(): {
     },
     resolveForEgress: () =>
       Promise.reject(new Error('resolveForEgress is not exercised by deInlineMedia')),
+    readRange: () => Promise.reject(new Error('readRange is not exercised by deInlineMedia')),
   };
   return { store, puts };
 }
