@@ -7,7 +7,7 @@ import type {
   MediaScopeKind,
   Scope,
 } from '@relavium/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, notInArray } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { mediaObjects, mediaReferences } from './schema.js';
@@ -55,6 +55,14 @@ export interface MediaReferenceStore {
   describe(handle: string): MediaHandleRecord | undefined;
   /** D11 terminal sweep: remove a run's `run`-kind references (scoped to the run); returns the count removed. */
   removeRunReferences(runId: string): number;
+  /**
+   * D11 grace-window GC (ADR-0042 §4 step c): soft-delete (set `deleted_at`) every LIVE object that now
+   * has **zero** references AND whose `last_referenced_at` is older than `graceMs` before now. Returns the
+   * reclaimed handles so the host can delete their CAS bytes. A host periodic job calls this with the
+   * configured grace (default 7 days); the terminal sweep ({@link removeRunReferences}) is what drops a
+   * handle to zero refs in the first place. Idempotent — an already-deleted object is skipped.
+   */
+  reclaimExpired(graceMs: number): string[];
 }
 
 export function createMediaReferenceStore(
@@ -126,6 +134,33 @@ export function createMediaReferenceStore(
         .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
         .run();
       return result.changes;
+    },
+
+    reclaimExpired(graceMs: number): string[] {
+      const cutoff = now() - graceMs;
+      const referenced = db.select({ handle: mediaReferences.handle }).from(mediaReferences);
+      const expired = db
+        .select({ handle: mediaObjects.handle })
+        .from(mediaObjects)
+        .where(
+          and(
+            isNull(mediaObjects.deletedAt), // not already reclaimed
+            lte(mediaObjects.lastReferencedAt, cutoff), // past the grace window
+            notInArray(mediaObjects.handle, referenced), // zero references (refcount = row count)
+          ),
+        )
+        .all();
+      const handles = expired.map((row) => row.handle);
+      if (handles.length > 0) {
+        // Soft-delete EXACTLY the expired handles found above (not a re-run of the 0-ref filter, which
+        // would ignore the grace window). better-sqlite3 is single-connection, so select-then-update is
+        // consistent within this method.
+        db.update(mediaObjects)
+          .set({ deletedAt: now() })
+          .where(inArray(mediaObjects.handle, handles))
+          .run();
+      }
+      return handles;
     },
   };
 }

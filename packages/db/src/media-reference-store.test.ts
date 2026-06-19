@@ -7,7 +7,7 @@ import {
   createMediaReferenceStore,
   type MediaReferenceStore,
 } from './media-reference-store.js';
-import { mediaObjects } from './schema.js';
+import { mediaObjects, mediaReferences } from './schema.js';
 
 const HANDLE = `media://sha256-${'a'.repeat(64)}`;
 
@@ -81,6 +81,23 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     // The session authz row survives — a terminal sweep of one run never revokes a session's read.
     expect(store.describe(HANDLE)?.allowedScopes).toEqual([{ kind: 'session', id: 's1' }]);
     expect(store.removeRunReferences('nope')).toBe(0); // no matching run rows
+  });
+
+  it('reclaimExpired soft-deletes only zero-ref objects past the grace window (D11 GC)', () => {
+    // The injected clock advances +1 per read (from 1000). Record at t≈1001, last_referenced_at≈1001.
+    record();
+    store.addReference(HANDLE, 'session', 's1');
+    // Still referenced ⇒ never reclaimed, regardless of grace.
+    expect(store.reclaimExpired(0)).toEqual([]);
+    expect(store.describe(HANDLE)).toBeDefined();
+    // Drop to zero refs (a terminal sweep would do this for a run ref; here remove the session ref).
+    client.db.delete(mediaReferences).where(eq(mediaReferences.handle, HANDLE)).run();
+    // A large grace window ⇒ not yet expired (last_referenced_at is recent vs the advancing clock).
+    expect(store.reclaimExpired(1_000_000)).toEqual([]);
+    // grace 0 ⇒ now > last_referenced_at, zero refs ⇒ reclaimed (handle returned, deleted_at set).
+    expect(store.reclaimExpired(0)).toEqual([HANDLE]);
+    expect(store.describe(HANDLE)).toBeUndefined(); // soft-deleted
+    expect(store.reclaimExpired(0)).toEqual([]); // idempotent — already deleted
   });
 
   it('createMediaReferencePort records the object + a run ref, and reclaimRun removes the run ref (D12c/D11)', async () => {
