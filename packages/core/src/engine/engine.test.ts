@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MediaStore, RunEvent } from '@relavium/shared';
+import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -482,6 +482,294 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     if (runId !== undefined) {
       expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('media.example');
     }
+  });
+
+  it('records a produced handle reference for the run + reclaims it at the terminal (D12c/D11)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const records: Array<{ handle: string; runId: string }> = [];
+    const reclaims: string[] = [];
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: (meta, runId) => {
+        records.push({ handle: meta.handle, runId });
+      },
+      reclaimRun: (runId) => {
+        reclaims.push(runId);
+      },
+    };
+    const host = createInMemoryHost({ store: runStore, mediaStore, mediaReferences });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const runId = events[0]?.runId;
+    expect(records.length).toBeGreaterThanOrEqual(1); // the produced handle was recorded for the run
+    expect(records.every((r) => r.runId === runId)).toBe(true);
+    expect(records[0]?.handle).toMatch(/^media:\/\/sha256-/);
+    expect(reclaims).toEqual([runId]); // exactly one terminal sweep, for this run
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('stays unaffected (run completes) when the media-reference port THROWS (best-effort, D12c/D11)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => {
+        throw new Error('reference db down');
+      },
+      reclaimRun: () => {
+        throw new Error('reference db down');
+      },
+    };
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore, mediaReferences });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    // A retention-port failure is swallowed — the run reaches its normal terminal, I3/totality untouched.
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+  });
+
+  it('stays unaffected (run completes, no unhandled rejection) when the port REJECTS asynchronously (best-effort)', async () => {
+    // The async arm of #bestEffortMediaRef (result.catch swallow) — distinct from the sync-throw arm above.
+    // A future async (Phase-2 Postgres) host returns Promise.reject; a dropped `.catch` would surface as an
+    // unhandled rejection escaping the fire-and-forget loop. Pin that an async reject is swallowed.
+    const { store: mediaStore } = stubMediaStore();
+    const rejections: string[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      rejections.push(String(reason));
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const mediaReferences: MediaReferencePort = {
+        recordRunMedia: () => Promise.reject(new Error('async reference db down')),
+        reclaimRun: () => Promise.reject(new Error('async reference db down')),
+      };
+      const host = createInMemoryHost({
+        store: new InMemoryRunStore(),
+        mediaStore,
+        mediaReferences,
+      });
+      const events = await drain(
+        engineWith(
+          { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+          host,
+        ).start({ workflow: workflow(SEQUENTIAL) }),
+      );
+      expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+      await new Promise((resolve) => setImmediate(resolve)); // let any stray rejection surface
+      expect(rejections).toEqual([]); // the async rejection was swallowed, never unhandled
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+});
+
+// --- output-node save_to (1.AF/D16, ADR-0044 §2) ----------------------------------------------
+
+/** A record-only {@link MediaWritePort} stub for the engine save_to tests. */
+function stubMediaWrite(): {
+  write: MediaWritePort;
+  writes: { path: string; bytes: Uint8Array }[];
+} {
+  const writes: { path: string; bytes: Uint8Array }[] = [];
+  const write: MediaWritePort = (path, bytes) => {
+    writes.push({ path, bytes });
+    return Promise.resolve({ bytesWritten: bytes.length });
+  };
+  return { write, writes };
+}
+
+/** A workflow whose `output` node declares `save_to` (interpolating `{{ run.id }}`); `gen` feeds it. */
+const SAVE_TO_WF = `  id: saveto
+  nodes:
+    - { id: start, type: input }
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output, save_to: 'media/{{ run.id }}/image.png' }
+  edges:
+    - { from: start, to: gen }
+    - { from: gen, to: out }`;
+
+describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () => {
+  it('writes the produced media via the host mediaWrite port, interpolating run.id into the path', async () => {
+    const { store: mediaStore, puts } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    // The output node captures its feeder's media (mimicking the io.ts output handler's verbatim capture).
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: workflow(SAVE_TO_WF),
+        },
+      ),
+    );
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    const runId = events[0]?.runId;
+    expect(runId).toBeDefined();
+    expect(writes).toHaveLength(1);
+    // run.id was interpolated into the relative path (no `{{ … }}` left, the actual runId embedded).
+    expect(writes[0]?.path).toBe(`media/${runId}/image.png`);
+    expect([...(writes[0]?.bytes ?? [])]).toEqual([...(puts[0]?.bytes ?? [])]); // the de-inlined bytes
+    expect(writes[0]?.bytes.length).toBe(5); // "hello"
+  });
+
+  it('fails the run when save_to is declared but the captured output carries NO media handle', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const events = await drain(
+      engineWith(
+        { out: () => ({ kind: 'completed', output: { text: 'no media here' } }) },
+        host,
+      ).start({ workflow: workflow(SAVE_TO_WF) }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(writes).toHaveLength(0); // nothing written
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('fails the run when the captured output carries MORE THAN ONE media handle (save_to writes exactly one)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const second = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'base64' as const, data: 'd29ybGQ=' },
+    }; // "world"
+    const events = await drain(
+      engineWith(
+        { out: () => ({ kind: 'completed', output: { a: MEDIA_PART, b: second } }) },
+        host,
+      ).start({ workflow: workflow(SAVE_TO_WF) }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(writes).toHaveLength(0);
+  });
+
+  it('fails with `validation` (not `internal`) when the save_to path template cannot be resolved', async () => {
+    // A `save_to` referencing a non-`run.id` namespace passes the relative-path schema but resolves to
+    // nothing at runtime (only run.id is in scope) — an InterpolationError the engine classifies as a
+    // validation (authoring) fault, never an engine `internal` fault.
+    const { store: mediaStore, puts } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const wf = workflow(`  id: saveto-badtmpl
+  nodes:
+    - { id: start, type: input }
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output, save_to: 'out/{{ inputs.missing }}/x.png' }
+  edges:
+    - { from: start, to: gen }
+    - { from: gen, to: out }`);
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: wf,
+        },
+      ),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+      // Secret-free: the failing reference name never rides the NodeFailure message (a fixed reason string).
+      expect(failed.error.message).not.toContain('inputs.missing');
+      expect(failed.error.message).not.toContain('inputs');
+    }
+    expect(writes).toHaveLength(0); // the path never resolved → never written
+    expect(puts).toHaveLength(0); // and never de-inlined/stored
+  });
+
+  it('fails the run when save_to is declared but the host wired no media-write port', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore }); // no mediaWrite
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: workflow(SAVE_TO_WF),
+        },
+      ),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('validation');
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('fails the run when the host media-write port throws (save_to is a real deliverable, not best-effort)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const throwing: MediaWritePort = () => Promise.reject(new Error('disk full'));
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: throwing,
+    });
+    const events = await drain(
+      engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
+        {
+          workflow: workflow(SAVE_TO_WF),
+        },
+      ),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    expect(failed?.type).toBe('run:failed');
+    if (failed?.type === 'run:failed') {
+      expect(failed.error.code).toBe('internal');
+      // Secret-free: the write reason ("disk full") is never echoed into the run-event error message.
+      expect(failed.error.message).not.toContain('disk full');
+    }
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('does not invoke save_to for an output node WITHOUT a save_to field (unchanged capture path)', async () => {
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore,
+      mediaWrite: write,
+    });
+    const events = await drain(
+      engineWith(
+        { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+        host,
+      ).start({
+        workflow: workflow(SEQUENTIAL), // `done` output node has no save_to
+      }),
+    );
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    expect(writes).toHaveLength(0); // no save_to ⇒ the write port is never called
   });
 });
 
@@ -2048,6 +2336,36 @@ describe('WorkflowEngine — crash reconciliation', () => {
     await seedStarted(store, 'paused-1', 'human_gate:paused');
     const engine = engineWith(undefined, createInMemoryHost({ store }));
     expect(await engine.reconcile()).toHaveLength(0);
+  });
+
+  it('reclaims a crashed run’s media references at reconciliation (1.AF/D11 — no orphaned partial media)', async () => {
+    // A crashed non-resumable run never ran its in-process terminal sweep; reconcile() must reclaim its
+    // `run`-kind refs, else the partial media stays refcount>0 forever and is never GC-eligible (ADR-0042 §4).
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-refs');
+    const reclaims: string[] = [];
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => undefined,
+      reclaimRun: (runId) => {
+        reclaims.push(runId);
+      },
+    };
+    const engine = engineWith(undefined, createInMemoryHost({ store, mediaReferences }));
+    await engine.reconcile();
+    expect(reclaims).toEqual(['crashed-refs']);
+  });
+
+  it('a media-reference reclaim failure never abandons reconciliation (best-effort)', async () => {
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-a');
+    await seedStarted(store, 'crashed-b');
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => undefined,
+      reclaimRun: () => Promise.reject(new Error('reference db down')), // async rejection, swallowed
+    };
+    const engine = engineWith(undefined, createInMemoryHost({ store, mediaReferences }));
+    // Both runs still reconcile to run:failed despite the rejecting retention port.
+    expect(await engine.reconcile()).toHaveLength(2);
   });
 
   it('reconcile() run:failed is media-free (ADR-0042 §2 backstop — it bypasses the #emitDurable choke point)', async () => {

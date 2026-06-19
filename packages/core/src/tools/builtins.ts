@@ -1,5 +1,5 @@
 /**
- * The built-in `ToolDef` catalog (1.T) — the twelve tools every local agent can call
+ * The built-in `ToolDef` catalog (1.T) — the built-in tools every local agent can call
  * ([built-in-tools.md](../../../../docs/reference/shared-core/built-in-tools.md)). Each is engine-pure:
  * `parseArgs` is the executable Zod validator (the full effective-arg set, including config-only params),
  * `llmVisibleParams` is the LLM-facing projection the `ToolNormalizer` (1.E) lowers, and `dispatch`
@@ -8,9 +8,15 @@
  * until the shared SSRF primitive lands (1.AE) — i.e. their host capability is simply not wired yet.
  */
 
+import {
+  MEDIA_HANDLE_PATTERN,
+  scopeSetIncludes,
+  validateByteRange,
+  type MediaPart,
+} from '@relavium/shared';
 import { z } from 'zod';
 
-import { ToolArgsInvalidError, ToolUnavailableError } from './errors.js';
+import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
 import {
   type EgressCapability,
   type FsCapability,
@@ -122,6 +128,14 @@ const FS_POLICY: ToolPolicyClass = {
   requiresGateApproval: false,
 };
 const OS_POLICY: ToolPolicyClass = {
+  fsScoped: false,
+  spawnsProcess: false,
+  requiresGateApproval: false,
+};
+// read_media reads from the host MediaStore via the engine `ctx.mediaRead` delegate (NOT the FS-scope tier,
+// NOT an egress) and is read-only, so it needs no guardrail target / gate (ADR-0044 §1; the path-jail +
+// scope-set authz + Range gate live inside the dispatch). It bypasses the Phase-2 ActionGuard.
+const MEDIA_POLICY: ToolPolicyClass = {
   fsScoped: false,
   spawnsProcess: false,
   requiresGateApproval: false,
@@ -441,6 +455,79 @@ const notifyTool = defineBuiltin({
   },
 });
 
+const readMediaTool = defineBuiltin({
+  id: 'read_media',
+  description:
+    'Read a produced/received media handle (optionally a byte range) and return it inline for the model.',
+  args: z
+    .object({
+      // Structural validation at the engine-pure policy layer: a malformed handle is rejected at parse
+      // (a clear invalid_args on `handle`) rather than only at the host describe() (unknown_handle).
+      handle: z.string().regex(MEDIA_HANDLE_PATTERN, 'must be a media://sha256-<64hex> handle'),
+      start: z.number().int().nonnegative().optional(),
+      end: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      handle: { type: 'string' },
+      start: { type: 'integer', minimum: 0 },
+      end: { type: 'integer', minimum: 0 },
+    },
+    required: ['handle'],
+    additionalProperties: false,
+  },
+  policy: MEDIA_POLICY,
+  // Engine-pure byte-delivery gate (ADR-0044 §1): scope-set authz → Range validation → host readRange.
+  // The MediaStore + media_references access is the injected `ctx.mediaRead` delegate (NOT a ToolHost arm);
+  // the host returns an in-flight base64 source, so this dispatch never touches raw bytes.
+  dispatch: async (args, _host, ctx): Promise<MediaPart> => {
+    const access = ctx.mediaRead;
+    const requesting = ctx.requestingScope;
+    if (access === undefined || requesting === undefined) {
+      throw new ToolUnavailableError('read_media', 'media-read');
+    }
+    const info = await access.describe(args.handle);
+    if (info === undefined) {
+      throw new ToolArgsInvalidError('read_media', ['handle'], 'read_media: unknown media handle');
+    }
+    // Authz FIRST (before any byte read): scope-set membership, never owner-equality / sha256-knowledge.
+    if (!scopeSetIncludes(info.allowedScopes, requesting)) {
+      throw new ToolPolicyError(
+        'read_media',
+        'media_scope_denied',
+        'read_media: the requesting scope may not read this media handle',
+      );
+    }
+    // A zero-byte handle has no valid inclusive range; a whole-handle read returns the HANDLE source (the
+    // schema-valid representation of empty content — `{ kind:'base64', data:'' }` would violate the
+    // base64 `nonEmptyString` contract and break deInlineMedia's empty-decode) rather than tripping the
+    // fail-closed check on the default `end = byteLength - 1 = -1` (1.AF off-by-one). An EXPLICIT range on
+    // a 0-byte handle still falls through to validateByteRange and is correctly rejected.
+    if (info.byteLength === 0 && args.start === undefined && args.end === undefined) {
+      return {
+        type: 'media',
+        mimeType: info.mimeType,
+        source: { kind: 'handle', ref: args.handle },
+      };
+    }
+    // Whole-handle when no range is given; else validate the inclusive [start,end] against the durable
+    // byteLength (the engine-pure policy — fail-closed on a bad/out-of-bounds range before the host read).
+    const range = { start: args.start ?? 0, end: args.end ?? info.byteLength - 1 };
+    const checked = validateByteRange(range, info.byteLength);
+    if (!checked.ok) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['start', 'end'],
+        `read_media: ${checked.reason}`,
+      );
+    }
+    const source = await access.readRange(args.handle, checked.range);
+    return { type: 'media', mimeType: info.mimeType, source };
+  },
+});
+
 const invokeAgentTool = defineBuiltin({
   id: 'invoke_agent',
   description: 'Dispatch another agent node by id with explicit input (orchestrator delegation).',
@@ -485,6 +572,7 @@ export const BUILTIN_TOOLS: readonly ToolDef[] = [
   mcpCallTool,
   readClipboardTool,
   notifyTool,
+  readMediaTool,
   invokeAgentTool,
 ] as readonly ToolDef[];
 

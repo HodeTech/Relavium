@@ -84,11 +84,17 @@ describe('boundForModel', () => {
     expect(bounded.value).toBeUndefined();
   });
 
-  it('renders an unserializable (circular) result without throwing', async () => {
+  it('renders a circular result without throwing (the cycle-safe redaction walk breaks the cycle)', async () => {
     const circular: Record<string, unknown> = {};
     circular['self'] = circular;
     const bounded = await boundForModel(circular, BIG, host());
     expect(bounded.truncated).toBe(false);
+    // The redaction walk replaces the back-reference with a marker, so the summary serialises (no throw).
+    expect(bounded.summary).toContain('cyclic');
+  });
+
+  it('renders a genuinely unserializable result (a bare function) as the fallback', async () => {
+    const bounded = await boundForModel(() => 1, BIG, host());
     expect(bounded.summary).toBe('[unserializable]');
   });
 
@@ -144,5 +150,69 @@ describe('boundForModel', () => {
     await expect(
       boundForModel('z'.repeat(500), TINY, host({ outputStore: { spill } }), signal),
     ).rejects.toThrow(/aborted/);
+  });
+
+  it('redacts inline media base64 from the summary (I3 — a read_media result never leaks bytes to the event)', async () => {
+    // A read_media-shaped result: a media part carrying an in-flight base64 source. The model-facing value
+    // keeps the bytes (it rides the seam), but the SUMMARY (→ agent:tool_result.outputSummary, a durable
+    // run-event boundary) must carry NO base64 — the emit-time deInlineMedia choke point cannot catch a
+    // base64 substring inside a flat string, so the redaction lives here.
+    const data = 'aGVsbG8gd29ybGQgdGhpcyBpcyBub3QgYSByZWFsIGltYWdlIGJ1dCBsb25nIGVub3VnaA==';
+    const result = { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data } };
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.truncated).toBe(false);
+    expect(bounded.value).toBe(result); // model-facing value keeps the bytes (sent via the seam)
+    expect(bounded.summary).not.toContain(data); // but the event summary is byte-free
+    expect(bounded.summary).not.toContain('aGVsbG8'); // not even a leading fragment
+    expect(bounded.summary).toContain('media'); // a byte-free descriptor instead
+  });
+
+  it('never hands base64 to the spill store / preview for an over-cap media-bearing result (I3)', async () => {
+    const data = 'QQ'.repeat(5000); // a large base64 blob; the redacted descriptor still exceeds TINY's cap
+    const result = { type: 'media', mimeType: 'audio/mpeg', source: { kind: 'base64', data } };
+    let spilledText = 'unset';
+    const spill = vi.fn((text: string) => {
+      spilledText = text;
+      return Promise.resolve({ ref: 'spill://x', byteLength: 1 });
+    });
+    const bounded = await boundForModel(result, TINY, host({ outputStore: { spill } }));
+    // The text path is redacted, so whatever is summarized / spilled / previewed carries NO base64.
+    expect(spilledText).not.toContain('QQQQ');
+    expect(String(bounded.value)).not.toContain('QQQQ');
+    expect(bounded.summary).not.toContain('QQQQ');
+  });
+
+  it('redacts a base64 data: URI string from the summary (the event), keeping the model-facing value', async () => {
+    // The model-facing `value` rides the seam (in-flight, de-inlined on egress); only the SUMMARY is a
+    // durable run-event field, so only it must be byte-free.
+    const bounded = await boundForModel('data:image/png;base64,aGVsbG8=', BIG, host());
+    expect(bounded.summary).not.toContain('aGVsbG8');
+    expect(bounded.summary).toContain('omitted');
+  });
+
+  it('redacts base64 from EVERY element of an array-of-media result (the redaction walk recurses arrays)', async () => {
+    const a = 'aGVsbG8gZmlyc3QgbWVkaWEgcGFydCBwYXlsb2Fk';
+    const b = 'd29ybGQgc2Vjb25kIG1lZGlhIHBhcnQgcGF5bG9hZA==';
+    const result = [
+      { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: a } },
+      { type: 'media', mimeType: 'audio/mpeg', source: { kind: 'base64', data: b } },
+    ];
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.summary).not.toContain(a);
+    expect(bounded.summary).not.toContain(b);
+    expect(bounded.value).toBe(result); // model-facing value keeps the bytes
+  });
+
+  it('redacts a raw binary buffer (Uint8Array) from the summary — never JSON the decimal byte values (I3)', async () => {
+    // "HELLO" as raw bytes; without redaction JSON.stringify yields {"0":72,"1":69,…} — a decimal byte leak.
+    const result = { thumb: new Uint8Array([72, 69, 76, 76, 79]) };
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.summary).not.toMatch(/"0":72|72,69,76/);
+    expect(bounded.summary).toContain('binary buffer omitted');
+  });
+
+  it('leaves a Date / Map result rendered natively (not collapsed to {} by the redaction walk)', async () => {
+    const date = await boundForModel({ at: new Date('2026-06-19T00:00:00.000Z') }, BIG, host());
+    expect(date.summary).toContain('2026-06-19'); // Date → ISO string via JSON.stringify, not {}
   });
 });

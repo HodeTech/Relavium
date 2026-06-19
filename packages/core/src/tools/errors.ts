@@ -79,7 +79,8 @@ export type ToolPolicyDenyReason =
   | 'command_not_allowed' // the resolved command is not in allowedCommands / allowedCommandGlobs (or empty ⇒ deny-all)
   | 'domain_not_allowed' // the URL host is not in allowedDomains (or empty ⇒ deny-all)
   | 'insecure_url' // the URL is not HTTPS (or has credentials-in-URL)
-  | 'gate_required'; // git_commit reached without a human-gate approval
+  | 'gate_required' // git_commit reached without a human-gate approval
+  | 'media_scope_denied'; // read_media: the requesting scope is not in the handle's allowedScopes (ADR-0044 §1)
 
 /** The effective argument set failed the tool's validator or the secret-taint check. Field names only. */
 export class ToolArgsInvalidError extends ToolDispatchError {

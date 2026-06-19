@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   containsInlineMediaBytes,
   ContentPartSchema,
@@ -19,10 +20,18 @@ import {
   mediaModalityOf,
   persistableMediaRefine,
   refineInFlightMediaPart,
+  ScopeSchema,
+  scopeSetIncludes,
   urlHasCredentials,
   validateByteRange,
 } from './content.js';
-import type { AbortSignalLike, ContentPart, DurableContentPart, MediaPart } from './content.js';
+import type {
+  AbortSignalLike,
+  ContentPart,
+  DurableContentPart,
+  MediaPart,
+  Scope,
+} from './content.js';
 
 /** A syntactically valid canonical handle (64 lowercase hex). */
 const HANDLE = `media://sha256-${'a'.repeat(64)}`;
@@ -908,5 +917,83 @@ describe('validateByteRange (1.AF/D13 — the engine-pure byte-delivery Range po
     expect(validateByteRange({ start: 0, end: 0 }, -1).ok).toBe(false);
     const r = validateByteRange({ start: 0, end: 0 }, Number.NaN);
     expect(r.ok === false && r.reason).toMatch(/byteLength/);
+  });
+});
+
+describe('read_media authz scope (1.AF/D12 — ScopeSchema + scopeSetIncludes)', () => {
+  it('ScopeSchema accepts the session/workspace authz kinds, rejects run/node + empty id', () => {
+    expect(ScopeSchema.safeParse({ kind: 'session', id: 's1' }).success).toBe(true);
+    expect(ScopeSchema.safeParse({ kind: 'workspace', id: 'w1' }).success).toBe(true);
+    expect(ScopeSchema.safeParse({ kind: 'run', id: 'r1' }).success).toBe(false); // lifetime-only kind
+    expect(ScopeSchema.safeParse({ kind: 'node', id: 'n1' }).success).toBe(false);
+    expect(ScopeSchema.safeParse({ kind: 'session', id: '' }).success).toBe(false);
+  });
+
+  it('scopeSetIncludes grants only on exact kind+id membership (never owner-equality / a sha256)', () => {
+    const allowed: Scope[] = [
+      { kind: 'session', id: 's1' },
+      { kind: 'workspace', id: 'w9' },
+    ];
+    expect(scopeSetIncludes(allowed, { kind: 'session', id: 's1' })).toBe(true);
+    expect(scopeSetIncludes(allowed, { kind: 'workspace', id: 'w9' })).toBe(true);
+    expect(scopeSetIncludes(allowed, { kind: 'session', id: 's2' })).toBe(false); // same kind, other id
+    expect(scopeSetIncludes(allowed, { kind: 'workspace', id: 's1' })).toBe(false); // same id, other kind
+    expect(scopeSetIncludes([], { kind: 'session', id: 's1' })).toBe(false); // no refs ⇒ no read (fail-closed)
+  });
+});
+
+describe('collectDurableMediaHandles (1.AF/D12c — produced-handle reference collection)', () => {
+  const H1 = `media://sha256-${'a'.repeat(64)}`;
+  const H2 = `media://sha256-${'b'.repeat(64)}`;
+  const handlePart = (handle: string, byteLength = 5) => ({
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'handle', ref: handle },
+    byteLength,
+  });
+
+  it('collects a durable handle part with its metadata (incl. optional durationMs)', () => {
+    const value = { out: { ...handlePart(H1), durationMs: 1200, mimeType: 'audio/wav' } };
+    expect(collectDurableMediaHandles(value)).toEqual([
+      { handle: H1, mimeType: 'audio/wav', modality: 'audio', byteLength: 5, durationMs: 1200 },
+    ]);
+  });
+
+  it('dedupes by handle and finds parts nested in arrays / Map / Set / cycles', () => {
+    const cyclic: Record<string, unknown> = { a: handlePart(H1) };
+    cyclic['self'] = cyclic;
+    const value = {
+      list: [handlePart(H1), handlePart(H2)],
+      map: new Map([['k', handlePart(H1)]]),
+      set: new Set([handlePart(H2)]),
+      cyclic,
+    };
+    const handles = collectDurableMediaHandles(value)
+      .map((m) => m.handle)
+      .sort((a, b) => a.localeCompare(b)); // explicit comparator (Sonar S2871) — locale-stable for ASCII handles
+    expect(handles).toEqual([H1, H2]); // distinct, despite repeats across containers + the cycle
+  });
+
+  it('skips non-handle sources (base64 / url) and a handle part with no byteLength or unknown modality', () => {
+    const value = {
+      base64: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'base64', data: 'aGVsbG8=' },
+      },
+      url: { type: 'media', mimeType: 'image/png', source: { kind: 'url', url: 'https://x/y' } },
+      noByteLength: { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: H1 } },
+      badMime: {
+        type: 'media',
+        mimeType: 'application/zip',
+        source: { kind: 'handle', ref: H2 },
+        byteLength: 3,
+      },
+    };
+    expect(collectDurableMediaHandles(value)).toEqual([]); // none is a recordable durable handle part
+  });
+
+  it('returns [] for a value with no media', () => {
+    expect(collectDurableMediaHandles({ text: 'hi', n: [1, 2, 3] })).toEqual([]);
   });
 });

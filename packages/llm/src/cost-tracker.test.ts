@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
-import { CostTracker, cost, priceModel } from './cost-tracker.js';
+import { CostTracker, cost, mediaCost, priceModel } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
 import { KNOWN_MODEL_IDS, MODEL_PRICING, type ModelPricing } from './pricing.js';
+
+/** A throwaway priced model carrying media-output rates — no 1.AF table row has them, so tests construct one. */
+const PRICED_MEDIA: ModelPricing = {
+  provider: 'gemini',
+  nativeId: 'test-media',
+  displayName: 'Test Media',
+  contextWindowTokens: 1_000,
+  maxOutputTokens: 1_000,
+  inputPerMtokMicrocents: 0,
+  outputPerMtokMicrocents: 0,
+  cachedInputPerMtokMicrocents: 0,
+  mediaOutputRates: { image: 1_000, audio: 200, video: 5_000 }, // µ¢ per image / audio-sec / video-sec
+};
 
 describe('priceModel', () => {
   it('returns pricing for a known canonical model id', () => {
@@ -59,6 +72,71 @@ describe('cost', () => {
   it('rounds the per-class micro-cent figure (half-up)', () => {
     // gpt-5.4-mini cached input $0.075/MTok = 7_500_000µ¢/MTok → 1 token = 7.5 → rounds to 8.
     expect(cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 })).toBe(8);
+  });
+});
+
+describe('mediaCost (1.AF/D17 — per-modality media output addend)', () => {
+  it('prices output image (per count), audio + video (per second), summed', () => {
+    expect(
+      mediaCost(PRICED_MEDIA, [
+        { modality: 'image', direction: 'output', units: 3, unit: 'count' }, // 3 × 1_000
+        { modality: 'audio', direction: 'output', units: 10, unit: 'second' }, // 10 × 200
+        { modality: 'video', direction: 'output', units: 2, unit: 'second' }, // 2 × 5_000
+      ]),
+    ).toBe(3_000 + 2_000 + 10_000);
+  });
+
+  it('never charges INPUT-direction media (it bills as input tokens already)', () => {
+    expect(
+      mediaCost(PRICED_MEDIA, [{ modality: 'image', direction: 'input', units: 5, unit: 'count' }]),
+    ).toBe(0);
+  });
+
+  it('skips a modality the model does not rate (degrade-to-0, never hard-fail)', () => {
+    const onlyImage: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { image: 1_000 } };
+    expect(
+      mediaCost(onlyImage, [{ modality: 'audio', direction: 'output', units: 10, unit: 'second' }]),
+    ).toBe(0);
+    // No rates at all → 0 (the 1.AF reality for every real table row). The key is omitted entirely
+    // (not set to `undefined`, which exactOptionalPropertyTypes rejects).
+    const noRates: ModelPricing = {
+      provider: 'gemini',
+      nativeId: 'no-rates',
+      displayName: 'No Rates',
+      contextWindowTokens: 1_000,
+      maxOutputTokens: 1_000,
+      inputPerMtokMicrocents: 0,
+      outputPerMtokMicrocents: 0,
+      cachedInputPerMtokMicrocents: 0,
+    };
+    expect(
+      mediaCost(noRates, [{ modality: 'image', direction: 'output', units: 3, unit: 'count' }]),
+    ).toBe(0);
+  });
+
+  it('treats a token-`count` audio unit as observability-only when only a per-second rate exists', () => {
+    // A token-based provider reports audio as a raw token count (unit: 'count'); with only a per-second
+    // audio rate it does NOT bill (ADR-0044 §3 — never a fabricated tokens→seconds conversion).
+    expect(
+      mediaCost(PRICED_MEDIA, [
+        { modality: 'audio', direction: 'output', units: 500, unit: 'count' },
+      ]),
+    ).toBe(0);
+  });
+
+  it('undefined mediaUnits contributes 0 (the dominant text/handle-only case)', () => {
+    expect(mediaCost(PRICED_MEDIA, undefined)).toBe(0);
+  });
+
+  it('cost() folds media as a disjoint addend, never into the token path (real rows price media at 0)', () => {
+    // A real table row carries no media rate, so a media-bearing usage adds 0 over the token cost.
+    expect(
+      cost('claude-opus-4-8', {
+        inputTokens: 1000, // 500_000
+        outputTokens: 500, // 1_250_000
+        mediaUnits: [{ modality: 'image', direction: 'output', units: 2, unit: 'count' }],
+      }),
+    ).toBe(1_750_000);
   });
 });
 

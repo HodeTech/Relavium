@@ -107,6 +107,10 @@ function resolveHead(ref: InterpolationReference, scope: RunScope): unknown {
       return ownValue(scope.ctx, ref.identifier);
     case 'node':
       return ownValue(scope.outputs, ref.identifier);
+    case 'run':
+      // `run.id` only (the lexer emits identifier `'id'`); resolves against the scope's runId when present.
+      // `undefined` falls through to `stringify`'s typed `unresolved_reference` (never a silent empty path).
+      return scope.runId;
     case 'secrets':
       throw new InterpolationError(
         'unknown_namespace',

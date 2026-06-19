@@ -9,17 +9,22 @@
  * `merge_fn` belong to the JS sandbox (1.AB). This module is a pure lexer: text in, structured
  * segments out. It reads no files, touches no environment, and holds no state.
  *
- * The three authored namespaces (workflow-yaml-spec.md §Context-and-interpolation):
+ * The authored namespaces (workflow-yaml-spec.md §Context-and-interpolation):
  *   - `{{ inputs.<name> }}`            → kind `inputs`
  *   - `{{ ctx.<key> }}`                → kind `ctx`
  *   - `{{ run.outputs["<node-id>"] }}` → kind `node`   (the roadmap's informal `{{ node.output }}`)
+ *   - `{{ run.id }}`                   → kind `run`    (the run id; 1.AF/D16 — the `save_to` namespace)
  * The lexer additionally recognizes `{{ secrets.<name> }}` → kind `secrets` ONLY so the resolver and
  * the taint gate can reject it with a precise typed error — it is not an authored v1.0 namespace.
  * Anything else is carried as `unknown` (the resolver, not this lexer, judges validity).
+ *
+ * `run.id` is recognized here but resolves only where the {@link RunScope} carries a `runId` — today
+ * that is the engine's `output`-node `save_to` resolution (1.AF/D16, ADR-0044 §2); a `{{ run.id }}` in a
+ * scope without it surfaces a typed `unresolved_reference`, never a silent empty string.
  */
 
 /** Which run-scope namespace a reference reads from. */
-export type ReferenceKind = 'inputs' | 'ctx' | 'node' | 'secrets' | 'unknown';
+export type ReferenceKind = 'inputs' | 'ctx' | 'node' | 'run' | 'secrets' | 'unknown';
 
 /** A literal argument to a pipe filter (e.g. `default("not required")` → one string arg). */
 export type FilterArg =
@@ -147,11 +152,19 @@ function parseReference(inner: string, raw: string): InterpolationReference {
 // cap, but dotAll is simpler and faster regardless.
 const NODE_OUTPUT = /^run\.outputs\[\s*(['"])([^'"]*?)\1\s*\](.*)$/s;
 const NAMESPACED = /^(inputs|ctx|secrets)\.([A-Za-z0-9_-]+)(.*)$/s;
+// `run.id` only (the negative lookahead stops `run.identity`/`run.id_x` from being read as `run.id`);
+// `run.outputs[…]` is matched first above, so there is no collision. A trailing `.x`/`[0]` is carried
+// as `path` and resolves to nothing (run.id is a flat string) → a typed `unresolved_reference`.
+const RUN_ID = /^run\.id(?![\w-])(.*)$/s;
 
 function parseHead(head: string): Pick<InterpolationReference, 'kind' | 'identifier' | 'path'> {
   const nodeMatch = NODE_OUTPUT.exec(head);
   if (nodeMatch?.[2] !== undefined) {
     return { kind: 'node', identifier: nodeMatch[2], path: (nodeMatch[3] ?? '').trim() };
+  }
+  const runMatch = RUN_ID.exec(head);
+  if (runMatch !== null) {
+    return { kind: 'run', identifier: 'id', path: (runMatch[1] ?? '').trim() };
   }
   const nsMatch = NAMESPACED.exec(head);
   if (nsMatch?.[1] !== undefined && nsMatch[2] !== undefined) {

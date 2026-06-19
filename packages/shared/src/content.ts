@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
-import type { LlmProviderId, MediaModality } from './constants.js';
+import { MEDIA_AUTHZ_SCOPE_KINDS, type LlmProviderId, type MediaModality } from './constants.js';
 
 /**
  * Cross-package runtime contract types the `@relavium/llm` seam — and, later, the session
@@ -835,6 +835,154 @@ export function validateByteRange(
     return { ok: false, reason: 'range end is out of bounds for the stored byte length' };
   }
   return { ok: true, range: { start, end } };
+}
+
+/**
+ * A `read_media` authz scope (1.AF/D12,
+ * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §1): a
+ * `session` scope today; `workspace` is **reserved** (documented-not-implemented). A handle's
+ * `allowedScopes` is the set of its `session`/`workspace` `media_references` rows ({@link MEDIA_AUTHZ_SCOPE_KINDS}
+ * only — a `run`/`node` lifetime row never grants read). Read is granted by scope-set **membership**, never
+ * owner-equality — knowing a sha256 is not authorization.
+ */
+export const ScopeSchema = z.object({
+  kind: z.enum(MEDIA_AUTHZ_SCOPE_KINDS),
+  // Bounded like the other authored ids (a session/workspace id is a UUID / short slug) so it cannot bloat a
+  // `media_references.scope_id` row — matching the mimeType/name ≤255 convention elsewhere in this file.
+  id: nonEmptyString.max(255),
+});
+export type Scope = z.infer<typeof ScopeSchema>;
+
+/**
+ * Scope-set membership — the engine-pure half of the `read_media` byte-delivery authz (ADR-0044 §1): is the
+ * requesting scope present in a handle's `allowedScopes`? Matched by `kind` **and** `id`; owner-equality is
+ * not expressible (the set is the host-read `media_references` session/workspace rows). Reused by the
+ * `read_media` built-in tool + the 1.AH desktop command, so the authz check is written once.
+ */
+export function scopeSetIncludes(allowed: readonly Scope[], requesting: Scope): boolean {
+  return allowed.some((scope) => scope.kind === requesting.kind && scope.id === requesting.id);
+}
+
+/** Metadata for a produced durable media handle (mirrors the `media_objects` row), collected at the
+ *  de-inline choke point so the engine can record the producing run's reference (1.AF/D12c). */
+export interface DurableMediaMeta {
+  readonly handle: string;
+  readonly mimeType: string;
+  readonly modality: MediaModality;
+  readonly byteLength: number;
+  readonly durationMs?: number;
+}
+
+/**
+ * The host media-reference lifecycle port (1.AF/D12c + D11,
+ * [ADR-0042](../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
+ * §3-4): the engine records a produced handle's reference for the producing **run** at the de-inline choke
+ * point ({@link recordRunMedia}) and reclaims a run's references at its terminal event ({@link reclaimRun},
+ * the D11 sweep). **Optional + best-effort**: a record/reclaim failure is a retention concern (GC
+ * over/under-retention), NEVER an I3 or run-correctness break, so it must never fail the run. The Node
+ * reference is `@relavium/db`'s `MediaReferenceStore` behind a host adapter; the pure engine calls only
+ * this interface. (A `session`/`workspace` read-grant is the surface/`AgentSession` concern, not this.)
+ */
+export interface MediaReferencePort {
+  recordRunMedia(meta: DurableMediaMeta, runId: string): void | Promise<void>;
+  reclaimRun(runId: string): void | Promise<void>;
+}
+
+/** The result of a {@link MediaWritePort} write — the byte count written, for an observability log only
+ *  (never the resolved path or the bytes themselves; security-review.md §Media byte delivery). */
+export interface MediaWriteResult {
+  readonly bytesWritten: number;
+}
+
+/**
+ * The host-injected media-write port (1.AF/D16,
+ * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §2) — the
+ * `save_to` write **mechanism**. The platform-pure engine resolves an `output` node's `save_to` template
+ * (the `{{ run.id }}` namespace) to a **relative** path, resolves its single produced media handle to bytes
+ * via {@link MediaStore.get}, and hands `(relativePath, bytes)` to this host port. The **host owns the
+ * mechanism**: `realpath`+`commonpath` fail-closed jailing under a configured scope root, symlinks OFF, and
+ * the actual filesystem write — the same policy/mechanism delegation as {@link MediaStore.readRange} and
+ * `ResolverCapabilities.readFile` (security-review.md §Media byte delivery). The engine never does
+ * filesystem I/O and never knows the scope root; it passes a relative path the host jails (so a host with a
+ * different sandbox root cannot be escaped from the engine side). **Not** best-effort — `save_to` is a real
+ * deliverable, so a write failure fails the `output` node (and the run), unlike the best-effort
+ * {@link MediaReferencePort}. A host with no write surface leaves `ExecutionHost.mediaWrite` `undefined`;
+ * a `save_to` on such a host fails the node with a clear configuration error (never a silent skip). The
+ * Node reference is `@relavium/db`'s `createFilesystemMediaWrite(scopeRoot)`.
+ */
+export type MediaWritePort = (
+  relativePath: string,
+  bytes: Uint8Array,
+  signal?: AbortSignalLike,
+) => Promise<MediaWriteResult>;
+
+/** Queue a walked node's children (array items / Map keys+values / Set values / record values) onto `stack`. */
+function pushMediaWalkChildren(node: object, stack: unknown[]): void {
+  if (Array.isArray(node)) {
+    for (const item of node) stack.push(item);
+  } else if (node instanceof Map) {
+    for (const [key, item] of node) stack.push(key, item);
+  } else if (node instanceof Set) {
+    for (const item of node) stack.push(item);
+  } else if (isRecord(node)) {
+    for (const item of Object.values(node)) stack.push(item);
+  }
+}
+
+/** A node's {@link DurableMediaMeta} when it is a handle-only durable media part, else `undefined`. */
+function durableMediaMetaOf(node: object): DurableMediaMeta | undefined {
+  if (!isRecord(node) || node['type'] !== 'media') {
+    return undefined;
+  }
+  const source = node['source'];
+  const mimeType = node['mimeType'];
+  const byteLength = node['byteLength'];
+  if (
+    !isRecord(source) ||
+    source['kind'] !== 'handle' ||
+    typeof source['ref'] !== 'string' ||
+    !MEDIA_HANDLE_PATTERN.test(source['ref']) // only a well-formed media://sha256-<64hex> ref is durable-recordable
+  ) {
+    return undefined;
+  }
+  if (typeof mimeType !== 'string' || typeof byteLength !== 'number') {
+    return undefined; // a handle media part missing its Y3 byteLength is not a recordable durable part
+  }
+  const modality = mediaModalityOf(mimeType);
+  if (modality === undefined) {
+    return undefined;
+  }
+  const meta: DurableMediaMeta = { handle: source['ref'], mimeType, modality, byteLength };
+  return typeof node['durationMs'] === 'number'
+    ? { ...meta, durationMs: node['durationMs'] }
+    : meta;
+}
+
+/**
+ * Collect the **distinct** durable media handles (+ their metadata) in an already-de-inlined value — every
+ * `{ type:'media', mimeType, source:{ kind:'handle', ref }, byteLength }` part. Cycle-safe, deduped by
+ * handle. The engine uses it at the emit choke point to record each produced handle's run reference
+ * (1.AF/D12c). A part whose mimeType maps to no known modality, or that lacks `byteLength`, is skipped.
+ */
+export function collectDurableMediaHandles(value: unknown): DurableMediaMeta[] {
+  const out: DurableMediaMeta[] = [];
+  const seenHandles = new Set<string>();
+  const seen = new Set<object>();
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node !== 'object' || node === null || seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+    const meta = durableMediaMetaOf(node);
+    if (meta !== undefined && !seenHandles.has(meta.handle)) {
+      seenHandles.add(meta.handle);
+      out.push(meta);
+    }
+    pushMediaWalkChildren(node, stack);
+  }
+  return out;
 }
 
 /**

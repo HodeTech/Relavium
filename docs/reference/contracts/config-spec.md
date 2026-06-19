@@ -84,6 +84,11 @@ model = "claude-sonnet-4-6"        # default model for agents that omit one
 fs_scope = "sandboxed"             # sandboxed | project | full (see filesystem tiers)
 max_tokens_estimate = 4096         # per-call output-token estimate the pre-egress budget governor uses when a node/session omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block
 
+[defaults.media_cost_estimate]     # per-modality media-output UNIT-COUNT default for the pre-egress media cost estimate (1.AF/D17, ADR-0044 §3) — a COUNT, not a price; the per-unit price lives in the model catalog. Used when a media-output turn declares no volume. Omit the table for text-only workflows.
+image = 1                          # assumed images per media-output turn
+audio = 60                         # assumed audio-SECONDS per media-output turn
+video = 10                         # assumed video-SECONDS per media-output turn
+
 [variables]                        # available to all workflows in this workspace
 focus_area = "security and type safety"
 

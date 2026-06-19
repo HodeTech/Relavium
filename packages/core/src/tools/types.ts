@@ -8,7 +8,14 @@
  * `ResolverCapabilities` (1.L2) and the injected HTTP transport (ADR-0018).
  */
 
-import type { AbortSignalLike, ContentPart, FsScopeTier } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  ByteRange,
+  ContentPart,
+  FsScopeTier,
+  MediaSource,
+  Scope,
+} from '@relavium/shared';
 
 import type { Untrusted } from './untrusted.js';
 
@@ -223,6 +230,28 @@ export interface ToolNodeConfig {
   readonly outputMapping?: Readonly<Record<string, string>>;
 }
 
+/** A handle's durable metadata + its authz scopes, for the `read_media` policy (1.AF/D12, ADR-0044 §1). */
+export interface MediaHandleInfo {
+  readonly mimeType: string;
+  /** The durable byteLength (`media_objects`) the engine's `Range` math is bounded against. */
+  readonly byteLength: number;
+  /** The handle's `session`/`workspace` `media_references` rows — the set `read_media` checks membership in. */
+  readonly allowedScopes: readonly Scope[];
+}
+
+/**
+ * The engine media-read delegate for `read_media` (1.AF/D12, ADR-0044 §1) — the policy/mechanism bridge,
+ * **NOT** a {@link ToolHost} capability arm: it reuses the `ExecutionHost.mediaStore` port + the
+ * `media_references` store (mirroring the {@link ToolDispatchContext.invokeAgent} delegate). `describe`
+ * returns the handle's durable metadata + authz scopes (the engine checks scope-set membership + the
+ * `Range`); `readRange` is the host byte-delivery mechanism (D13) returning an in-flight **base64**
+ * `MediaSource` (the host encodes — the engine-pure tool never touches raw bytes).
+ */
+export interface MediaReadAccess {
+  describe(handle: string): Promise<MediaHandleInfo | undefined>;
+  readRange(handle: string, range: ByteRange): Promise<MediaSource>;
+}
+
 export interface ToolDispatchContext {
   readonly nodeId: string;
   /** The node's narrowed grant (ADR-0029(b)); a dispatch outside it is refused (registered ≠ authorized). */
@@ -239,6 +268,11 @@ export interface ToolDispatchContext {
   readonly secretArgKeys?: ReadonlySet<string>;
   /** Engine delegate for `invoke_agent` — pure orchestration, not a ToolHost I/O capability. */
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>;
+  /** The dispatching session's authz scope — `read_media` checks scope-set membership against it (1.AF/D12). */
+  readonly requestingScope?: Scope;
+  /** Engine delegate for `read_media` byte delivery (1.AF/D12) — reuses `ExecutionHost.mediaStore` + the
+   *  `media_references` store; NOT a {@link ToolHost} I/O capability (mirrors {@link invokeAgent}). */
+  readonly mediaRead?: MediaReadAccess;
   /** The model-facing result-bounding ceilings. */
   readonly limits?: ToolResultLimits;
   readonly signal?: AbortSignalLike;

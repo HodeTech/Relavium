@@ -15,13 +15,22 @@
  * credential is threaded opaquely and never stored / logged / inspected by core.
  */
 
-import type { Agent, ErrorCode, FsScopeTier } from '@relavium/shared';
+import {
+  MEDIA_BILLED_MODALITIES,
+  type Agent,
+  type ErrorCode,
+  type FsScopeTier,
+  type MediaBilledModality,
+  type MediaCostEstimate,
+  type OutputModality,
+} from '@relavium/shared';
 import {
   ResponseFormatSchema,
   ToolDefSchema,
   type FallbackPlanEntry,
   type LlmMessage,
   type LlmProvider,
+  type MediaUnitsEstimate,
   type ProviderId,
   type ResponseFormat,
   type ToolDef as LlmToolDef,
@@ -80,6 +89,57 @@ export interface AgentRunnerDeps {
   readonly limits?: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  /**
+   * Per-modality media-output **unit-count** default (1.AF/D17, ADR-0044 §3) — the host-resolved
+   * `[defaults].media_cost_estimate`. Used to build the per-turn media-unit estimate from a node's
+   * `output_modalities` when the turn declares no volume, so the budget governor can price a media-output
+   * turn pre-egress. Absent ⇒ a conservative built-in default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}).
+   */
+  readonly mediaCostEstimate?: MediaCostEstimate;
+}
+
+/**
+ * The conservative built-in per-modality media-output unit count used when neither the turn nor
+ * `[defaults].media_cost_estimate` declares a volume (1.AF/D17). A *count* (image), or *seconds*
+ * (audio/video) — the analogue of {@link DEFAULT_AGENT_TURN_LIMITS}. Deliberately small but non-zero so a
+ * model that *does* price media output is still gated; a host tunes it via config.
+ */
+export const DEFAULT_MEDIA_UNIT_ESTIMATE: Readonly<Record<MediaBilledModality, number>> = {
+  image: 1, // one image
+  audio: 60, // sixty audio-seconds
+  video: 10, // ten video-seconds
+};
+
+/**
+ * Build the per-turn media-unit estimate (1.AF/D17) from a node's `output_modalities` + the host's
+ * `media_cost_estimate` defaults: one {@link MediaUnitsEstimate} per **billed** output modality
+ * (`image`/`audio`/`video`; `text` and the never-output `document` are excluded). The per-modality count
+ * is the config default, else the built-in {@link DEFAULT_MEDIA_UNIT_ESTIMATE}. Empty when the node
+ * requests no billed media output (a text-only turn ⇒ no media addend).
+ */
+export function buildMediaUnitsEstimate(
+  outputModalities: readonly OutputModality[] | undefined,
+  config: MediaCostEstimate | undefined,
+): MediaUnitsEstimate[] {
+  if (outputModalities === undefined) {
+    return [];
+  }
+  const estimate: MediaUnitsEstimate[] = [];
+  for (const modality of outputModalities) {
+    if (!isBilledModality(modality)) {
+      continue; // `text` (and `document`, never an output) are not media-billed
+    }
+    estimate.push({ modality, units: config?.[modality] ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality] });
+  }
+  return estimate;
+}
+
+/** The billed media modalities as a string-keyed set — preserves the const-array's literal types (no cast). */
+const BILLED_MODALITIES: ReadonlySet<string> = new Set(MEDIA_BILLED_MODALITIES);
+
+/** Type guard: is an output modality a BILLED media modality (image/audio/video)? Narrows without a cast. */
+function isBilledModality(modality: OutputModality): modality is MediaBilledModality {
+  return BILLED_MODALITIES.has(modality);
 }
 
 /**
@@ -188,6 +248,18 @@ async function executeAgent(
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
       ...(preEgress === undefined ? {} : { preEgress }),
+      // Media cost governance (1.AF/D17): forward the node's requested output modalities + a per-modality
+      // unit estimate so the budget governor prices a media-output turn pre-egress. Both omitted for a
+      // text-only node (no `output_modalities`), so a text turn pays no media-estimate work.
+      ...(node.output_modalities === undefined
+        ? {}
+        : {
+            outputModalities: node.output_modalities,
+            mediaUnitsEstimate: buildMediaUnitsEstimate(
+              node.output_modalities,
+              deps.mediaCostEstimate,
+            ),
+          }),
     });
   } catch (err) {
     return turnOutcomeForError(err);

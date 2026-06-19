@@ -82,7 +82,7 @@ CREATE UNIQUE INDEX idx_llm_providers_name ON llm_providers (name) WHERE deleted
 
 #### `model_catalog`
 
-Models offered by each provider, including pricing used for local cost tracking. The `*_per_mtok_microcents` columns are price **per million tokens, in integer micro-cents** (one micro-cent = 1e-8 USD = cents x 1,000,000; see the [money/cost convention](#sqlite-type-conventions)).
+Models offered by each provider, including pricing used for local cost tracking. The `*_per_mtok_microcents` columns are price **per million tokens, in integer micro-cents** (one micro-cent = 1e-8 USD = cents x 1,000,000; see the [money/cost convention](#sqlite-type-conventions)). The three `media_*_cost_microcents` columns are the projection of `ModelPricing.mediaOutputRates` (1.AF/D17, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — integer micro-cents **per billed media-output unit** (per image, per audio-second, per video-second); **NULL** when the model has no metered media rate (the realized fold + the pre-egress estimate degrade to 0 for it — H4). `document`/PDF is excluded (it bills as tokens). No shipped model carries a media rate yet, so these are NULL across the seeded catalog.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -95,6 +95,9 @@ Models offered by each provider, including pricing used for local cost tracking.
 | `input_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `output_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `cached_input_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
+| `media_image_cost_microcents` | INTEGER | NULL — µ¢ per output image (1.AF/D17) |
+| `media_audio_cost_microcents` | INTEGER | NULL — µ¢ per output audio-second |
+| `media_video_cost_microcents` | INTEGER | NULL — µ¢ per output video-second |
 | `supports_tool_calling` | INTEGER (bool) | NOT NULL DEFAULT 0 |
 | `supports_vision` | INTEGER (bool) | NOT NULL DEFAULT 0 |
 | `supports_streaming` | INTEGER (bool) | NOT NULL DEFAULT 1 |

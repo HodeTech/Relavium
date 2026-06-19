@@ -15,7 +15,13 @@
  * and as the local reference.
  */
 
-import type { AbortSignalLike, MediaStore, RunEvent } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  MediaReferencePort,
+  MediaStore,
+  MediaWritePort,
+  RunEvent,
+} from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
 
@@ -164,6 +170,26 @@ export interface ExecutionHost {
    * is `@relavium/db`'s `fetchMediaBytes`.
    */
   readonly fetchMedia?: HostMediaFetch;
+  /**
+   * The host media-reference lifecycle port (1.AF/D12c + D11,
+   * [ADR-0042](../../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
+   * §3-4): the engine records a produced handle's run reference at the de-inline choke point and reclaims
+   * the run's references at its terminal event. **Optional + best-effort** — a record/reclaim failure is a
+   * retention concern, never an I3/run-correctness break. The Node reference is `@relavium/db`'s
+   * `createMediaReferencePort(MediaReferenceStore)`; a text-only host (or a host that does not track media
+   * retention) leaves it `undefined`.
+   */
+  readonly mediaReferences?: MediaReferencePort;
+  /**
+   * The host media-write port (1.AF/D16, [ADR-0044](../../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md)
+   * §2) — the `save_to` write **mechanism**. The engine resolves an `output` node's `save_to` template to a
+   * relative path and its single produced handle to bytes (via {@link ExecutionHost.mediaStore}), then calls
+   * this port; the host jails the relative path (`realpath`+`commonpath`, symlinks OFF) under its own scope
+   * root and writes. **Optional**: a host with no write surface leaves it `undefined`, and a `save_to` then
+   * fails the node with a clear configuration error (never a silent skip — `save_to` is a real deliverable,
+   * NOT best-effort). The Node reference is `@relavium/db`'s `createFilesystemMediaWrite(scopeRoot)`.
+   */
+  readonly mediaWrite?: MediaWritePort;
 }
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
@@ -313,6 +339,10 @@ export function createInMemoryHost(options?: {
   mediaStore?: MediaStore;
   /** Inject a media-egress fetch so a `url` media source is re-hosted (1.AF/D9); omit to hard-fail urls. */
   fetchMedia?: HostMediaFetch;
+  /** Inject a media-reference lifecycle port so produced handles are recorded + reclaimed (1.AF/D12c+D11). */
+  mediaReferences?: MediaReferencePort;
+  /** Inject a media-write port so an `output` node's `save_to` writes its produced media (1.AF/D16). */
+  mediaWrite?: MediaWritePort;
 }): ExecutionHost & { store: RunStore } & Pick<ManualTimerController, 'fireTimers' | 'armedCount'> {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
@@ -327,6 +357,8 @@ export function createInMemoryHost(options?: {
     setTimer: timers.setTimer,
     ...(options?.mediaStore ? { mediaStore: options.mediaStore } : {}),
     ...(options?.fetchMedia ? { fetchMedia: options.fetchMedia } : {}),
+    ...(options?.mediaReferences ? { mediaReferences: options.mediaReferences } : {}),
+    ...(options?.mediaWrite ? { mediaWrite: options.mediaWrite } : {}),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };

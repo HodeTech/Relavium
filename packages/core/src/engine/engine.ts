@@ -33,8 +33,10 @@ import {
   GateDecisionSchema,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
+  collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   deInlineMedia,
+  type DurableMediaMeta,
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
@@ -47,8 +49,9 @@ import {
 } from '@relavium/shared';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
-import { resolveContext } from '../interpolation/resolve.js';
-import type { ResolverCapabilities } from '../interpolation/scope.js';
+import { InterpolationError } from '../errors.js';
+import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
+import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
@@ -883,7 +886,10 @@ class RunExecution {
       return undefined;
     }
     const governor = this.#budgetGovernor;
-    return (info) => governor.checkPreEgress(info.model, info.maxTokens);
+    // Pass the media-unit estimate (1.AF/D17) so the governor folds a per-modality media addend into the
+    // projection; `outputModalities` rides the hook info for request-lowering/observability but the cost
+    // calc needs only the units.
+    return (info) => governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate);
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
@@ -913,7 +919,9 @@ class RunExecution {
         attemptNumber,
         ...(preEgress === undefined ? {} : { preEgress }),
       };
-      return await this.#executor.execute(ctx);
+      // After the executor completes, an `output` node with `save_to` writes its produced media to the
+      // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
+      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx));
     } catch {
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).
@@ -1460,6 +1468,13 @@ class RunExecution {
       }
     }
     const event = this.#bus.next(durable);
+    // Record the run's reference for every produced durable media handle (1.AF/D12c), then release the
+    // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
+    // retention failure never touches the I3 / gap-free / exactly-one-terminal guarantees below.
+    this.#recordProducedMedia(durable);
+    if (TERMINAL_TYPES.has(event.type)) {
+      this.#reclaimRunMedia();
+    }
     const prior = this.#deliveryTail;
     const settled = (async (): Promise<void> => {
       try {
@@ -1532,6 +1547,147 @@ class RunExecution {
       return undefined;
     }
     return (url) => fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal);
+  }
+
+  /**
+   * Apply an `output` node's `save_to` (1.AF/D16, ADR-0044 §2) once its executor has `completed`: returns
+   * the outcome unchanged when there is nothing to write (not an output node, no `save_to`, or a
+   * non-`completed` outcome), else writes the produced media and returns the outcome on success or a typed
+   * `failed` outcome on error. `save_to` is a real deliverable, so a failure FAILS the node (→ run:failed)
+   * — it is NOT best-effort (contrast the retention {@link #recordProducedMedia}). Output nodes carry no
+   * node-retry budget ({@link #retryConfig}), so the write runs once.
+   */
+  async #applySaveTo(vertex: PlanVertex, outcome: NodeOutcome): Promise<NodeOutcome> {
+    if (outcome.kind !== 'completed') {
+      return outcome;
+    }
+    const config = vertex.config;
+    if (config.kind !== 'output' || config.node.save_to === undefined) {
+      return outcome;
+    }
+    const failure = await this.#performSaveTo(config.node.save_to, outcome.output);
+    return failure === undefined ? outcome : { kind: 'failed', error: failure };
+  }
+
+  /**
+   * The `save_to` write itself (1.AF/D16): resolve the template's `{{ run.id }}` to a relative path,
+   * extract the SINGLE produced media handle from the (de-inlined) output, resolve it to bytes via the host
+   * `MediaStore`, and write through the host media-write port. Returns `undefined` on success, else a typed,
+   * secret-free {@link NodeFailure}. The bytes/handle/resolved-path never enter the message (I3).
+   */
+  async #performSaveTo(saveTo: string, output: unknown): Promise<NodeFailure | undefined> {
+    const store = this.#host.mediaStore;
+    const write = this.#host.mediaWrite;
+    if (store === undefined || write === undefined) {
+      return {
+        code: 'validation',
+        message:
+          'an output node declares `save_to` but the host wired no media store / media-write port',
+        retryable: false,
+      };
+    }
+    try {
+      // Resolve `save_to` with ONLY `run.id` in scope (no inputs/ctx/run.outputs): a filesystem path
+      // template must not draw arbitrary authored data into the path. The host realpath+commonpath jail is
+      // the binding control; this narrows the surface (defense-in-depth).
+      const scope: RunScope = { inputs: {}, ctx: {}, outputs: {}, runId: this.runId };
+      const relativePath = await resolveTemplate(saveTo, scope, {}, this.#abort.signal);
+      // `state.output` retains the RAW in-flight form (deInlineMedia is non-mutating), so de-inline a copy
+      // to obtain the durable handle. The content-addressed `put` is idempotent — these are the same bytes
+      // the node:completed emit stores, so the double de-inline produces the same handle, not a second
+      // distinct write. (Tradeoff: a `url`-sourced media part in a save_to output is FETCHED twice — once
+      // here, once at the node:completed emit — since the host fetch is not memoized across the two
+      // de-inline passes; the put still dedupes the bytes. A url media part on an output node is rare; the
+      // alternative — threading one de-inlined result into both paths — is deferred (deferred-tasks.md).)
+      const durable = await deInlineMedia(output, store, this.#mediaUrlFetch());
+      const handles = collectDurableMediaHandles(durable);
+      if (handles.length !== 1) {
+        return {
+          code: 'validation',
+          message:
+            handles.length === 0
+              ? 'output node `save_to`: the captured output contains no media handle to write'
+              : `output node \`save_to\`: the captured output contains ${handles.length} media handles — save_to writes exactly one`,
+          retryable: false,
+        };
+      }
+      const [handle] = handles;
+      if (handle === undefined) {
+        return { code: 'internal', message: 'output node `save_to`: no handle', retryable: false }; // unreachable (length === 1)
+      }
+      const bytes = await store.get(handle.handle);
+      await write(relativePath, bytes, this.#abort.signal);
+      return undefined;
+    } catch (error) {
+      if (this.#abort.signal.aborted) {
+        // A cancel / sibling-abort raced the write — surface a fatal cancel (never a retryable failure), so
+        // the engine's cancel-wins precedence closes the run as cancelled / the sibling's cause.
+        return { code: 'cancelled', message: 'the run was cancelled', retryable: false };
+      }
+      if (error instanceof InterpolationError) {
+        // A bad `save_to` path TEMPLATE (e.g. a non-`run.id` reference that resolves to nothing) is an
+        // authoring/validation fault, not an engine fault — classify it as `validation`, distinct from a
+        // genuine write failure below. Secret-free: the template/value never enters the message.
+        return {
+          code: 'validation',
+          message: 'output node `save_to`: the path template could not be resolved',
+          retryable: false,
+        };
+      }
+      return {
+        code: 'internal',
+        message: 'output node `save_to`: the media write failed',
+        retryable: false,
+      };
+    }
+  }
+
+  /**
+   * Record the producing run's reference for every durable media handle a just-stamped event carries
+   * (1.AF/D12c, ADR-0042 §3). **Best-effort**: a collection or host-write failure is swallowed — it never
+   * touches the I3 / gap-free / exactly-one-terminal guarantees (a missing ref only risks GC
+   * over/under-retention). No-op without a `mediaReferences` host port or when the event carries no handle.
+   */
+  #recordProducedMedia(durable: RunEventDraft): void {
+    const port = this.#host.mediaReferences;
+    if (port === undefined) {
+      return;
+    }
+    let produced: DurableMediaMeta[];
+    try {
+      produced = collectDurableMediaHandles(durable);
+    } catch {
+      return; // a collection failure is never fatal
+    }
+    for (const meta of produced) {
+      this.#bestEffortMediaRef(() => port.recordRunMedia(meta, this.runId));
+    }
+  }
+
+  /**
+   * D11 terminal-state sweep: reclaim the run's `run`-kind media references at its terminal event (ADR-0042
+   * §4), best-effort like {@link #recordProducedMedia}. A `session`/`workspace` reference (a read-grant)
+   * survives the sweep, keeping shared media alive past the run.
+   */
+  #reclaimRunMedia(): void {
+    const port = this.#host.mediaReferences;
+    if (port === undefined) {
+      return;
+    }
+    this.#bestEffortMediaRef(() => port.reclaimRun(this.runId));
+  }
+
+  /** Run a media-reference port call best-effort: a sync throw or an async rejection is swallowed, so a
+   *  retention failure never breaks the run (the port is documented best-effort, ADR-0042 §3-4). */
+  #bestEffortMediaRef(call: () => void | Promise<void>): void {
+    try {
+      const result = call();
+      if (result instanceof Promise) {
+        result.catch(() => undefined); // never an unhandled rejection
+      }
+    } catch {
+      // best-effort retention; the run is unaffected (I3 / totality untouched)
+    }
   }
 
   #elapsedMs(): number {
@@ -1751,11 +1907,35 @@ export class WorkflowEngine {
       try {
         await this.#host.store.persistEvent(event);
         reconciled.push(event);
+        // Reclaim the crashed run's media references at this terminal (1.AF/D11, ADR-0042 §4): a
+        // non-resumable run never ran its in-process #reclaimRunMedia (the process died), and reconcile()
+        // bypasses #emitDurable, so without this the run's `run`-kind refs survive forever and the partial
+        // media is never GC-eligible (refcount stuck > 0). Best-effort + idempotent like the in-process
+        // sweep — a retention failure must never abandon reconciliation (mirrors RunExecution's
+        // #bestEffortMediaRef; reclaimRun on a run with no rows is a harmless no-op).
+        this.#bestEffortReclaim(run.runId);
       } catch {
         // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
         // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
       }
     }
     return reconciled;
+  }
+
+  /** Best-effort terminal media-ref reclaim for a reconciled run — swallows a sync throw + an async
+   *  rejection so retention never breaks reconciliation (ADR-0042 §3-4; retention is never run-correctness). */
+  #bestEffortReclaim(runId: string): void {
+    const port = this.#host.mediaReferences;
+    if (port === undefined) {
+      return;
+    }
+    try {
+      const result = port.reclaimRun(runId);
+      if (result instanceof Promise) {
+        result.catch(() => undefined);
+      }
+    } catch {
+      // best-effort retention; reconciliation is unaffected
+    }
   }
 }

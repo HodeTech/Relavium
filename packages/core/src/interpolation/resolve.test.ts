@@ -49,6 +49,30 @@ describe('resolveTemplate — happy paths', () => {
     );
   });
 
+  it('resolves {{ run.id }} against the scope runId (1.AF/D16 — the save_to namespace)', async () => {
+    const s = scope({ runId: 'run-abc-123' });
+    await expect(resolveTemplate('media/{{ run.id }}/x.png', s)).resolves.toBe(
+      'media/run-abc-123/x.png',
+    );
+    // No whitespace variant + multiple occurrences.
+    await expect(resolveTemplate('{{run.id}}-{{run.id}}', s)).resolves.toBe(
+      'run-abc-123-run-abc-123',
+    );
+  });
+
+  it('errors (unresolved_reference) for {{ run.id }} when the scope carries no runId', async () => {
+    // run.id is recognized by the lexer but resolves only where a runId is in scope (today: save_to).
+    await expectCode('{{ run.id }}', scope(), 'unresolved_reference');
+  });
+
+  it('a trailing path on run.id resolves to nothing — run.id is a flat string (1.AF/D16)', async () => {
+    // run.id.score / run.id[0] parse as kind:run with a path; getByPath on a string yields undefined →
+    // a typed unresolved_reference, never a silent value.
+    const s = scope({ runId: 'run-1' });
+    await expectCode('{{ run.id.score }}', s, 'unresolved_reference');
+    await expectCode('{{ run.id[0] }}', s, 'unresolved_reference');
+  });
+
   it('stringifies number and boolean values', async () => {
     const s = scope({ inputs: { n: 42, flag: true } });
     await expect(resolveTemplate('{{inputs.n}}/{{inputs.flag}}', s)).resolves.toBe('42/true');

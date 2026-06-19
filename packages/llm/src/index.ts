@@ -121,9 +121,10 @@ export {
 // CostTracker + the canonical model-pricing table (1.B).
 export { MODEL_PRICING, KNOWN_MODEL_IDS } from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
-export { priceModel, cost, CostTracker } from './cost-tracker.js';
+export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate } from './cost-tracker.js';
-export { estimateMaxNextCost } from './budget-estimator.js';
+export { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
+export type { MediaUnitsEstimate } from './budget-estimator.js';
 
 // FallbackChain runner — fallback policy outside the adapters (1.K).
 export { FallbackChain, withFallback, stripReasoningParts } from './fallback-chain.js';

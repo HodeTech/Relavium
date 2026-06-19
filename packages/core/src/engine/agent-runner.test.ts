@@ -1,4 +1,4 @@
-import type { Agent } from '@relavium/shared';
+import type { Agent, OutputModality } from '@relavium/shared';
 import type {
   CapabilityFlags,
   LlmProvider,
@@ -11,7 +11,12 @@ import { describe, expect, it } from 'vitest';
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
 import type { ToolCallPart, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
-import { createAgentNodeExecutor, type AgentRunnerDeps } from './agent-runner.js';
+import {
+  buildMediaUnitsEstimate,
+  createAgentNodeExecutor,
+  DEFAULT_MEDIA_UNIT_ESTIMATE,
+  type AgentRunnerDeps,
+} from './agent-runner.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 
 const CAPS: CapabilityFlags = {
@@ -142,12 +147,16 @@ function ctxFor(
   };
 }
 
-/** A provider that records the request it received (for asserting assembly/precedence). */
-function reqCapturingProvider(): { provider: LlmProvider; req: () => LlmRequest | undefined } {
+/** A provider that records the request it received (for asserting assembly/precedence). `supports`
+ *  defaults to CAPS; pass an override to exercise the capability pre-skip (e.g. output combinations). */
+function reqCapturingProvider(supports: CapabilityFlags = CAPS): {
+  provider: LlmProvider;
+  req: () => LlmRequest | undefined;
+} {
   let captured: LlmRequest | undefined;
   const p: LlmProvider = {
     id: 'anthropic',
-    supports: CAPS,
+    supports,
     generate: () => {
       throw new Error('unused');
     },
@@ -157,6 +166,14 @@ function reqCapturingProvider(): { provider: LlmProvider; req: () => LlmRequest 
     },
   };
   return { provider: p, req: () => captured };
+}
+
+/** CAPS that can emit the given output-modality combinations (media-output capable). */
+function capsWithOutput(combinations: readonly (readonly OutputModality[])[]): CapabilityFlags {
+  return {
+    ...CAPS,
+    media: { input: CAPS.media.input, outputCombinations: combinations.map((c) => [...c]) },
+  };
 }
 
 describe('createAgentNodeExecutor — dispatch', () => {
@@ -388,5 +405,67 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     await exec.execute(ctx);
     // System is authored-only — an untrusted run.outputs value must NEVER appear resolved in `system`.
     expect(req()?.system).not.toContain('SENTINEL-UNTRUSTED-VALUE');
+  });
+
+  it("lowers a node's output_modalities onto the LlmRequest (1.AF/D15 — the FallbackChain pre-skip backstop)", async () => {
+    // Without this the request carries no outputModalities and the FallbackChain output-combination
+    // pre-skip can never fire, so an incapable model silently returns text (ADR-0044 §2's forbidden drop).
+    const { provider, req } = reqCapturingProvider(capsWithOutput([['text', 'image']]));
+    const exec = createAgentNodeExecutor(deps(provider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_modalities: ['text', 'image'] }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    await exec.execute(ctx);
+    expect(req()?.outputModalities).toEqual(['text', 'image']);
+  });
+
+  it('the FallbackChain SKIPS a provider that cannot emit the requested output combination (no silent text drop)', async () => {
+    // The backstop in action: a model whose outputCombinations lack the requested set is skipped — the
+    // chain exhausts and the turn FAILS, rather than the incapable provider silently returning text.
+    const { provider } = reqCapturingProvider(capsWithOutput([['text']])); // text-only model
+    const exec = createAgentNodeExecutor(deps(provider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_modalities: ['text', 'image'] }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('failed'); // skipped → chain exhausted → a typed failure, never a text completion
+  });
+
+  it('omits outputModalities from the request for a text-only node (no spurious field)', async () => {
+    const { provider, req } = reqCapturingProvider();
+    const exec = createAgentNodeExecutor(deps(provider));
+    const { ctx } = ctxFor(agentVertex());
+    await exec.execute(ctx);
+    expect(req()?.outputModalities).toBeUndefined();
+  });
+});
+
+describe('buildMediaUnitsEstimate (1.AF/D17 — media-cost unit estimate)', () => {
+  it('returns [] for a text-only node (no output_modalities)', () => {
+    expect(buildMediaUnitsEstimate(undefined, undefined)).toEqual([]);
+  });
+
+  it('excludes `text` and emits one entry per BILLED modality with the config unit count', () => {
+    expect(buildMediaUnitsEstimate(['text', 'image', 'audio'], { image: 2, audio: 30 })).toEqual([
+      { modality: 'image', units: 2 },
+      { modality: 'audio', units: 30 },
+    ]);
+  });
+
+  it('falls back to the built-in default count for a modality the config omits', () => {
+    expect(buildMediaUnitsEstimate(['video'], { image: 9 })).toEqual([
+      { modality: 'video', units: DEFAULT_MEDIA_UNIT_ESTIMATE.video },
+    ]);
+    expect(buildMediaUnitsEstimate(['image'], undefined)).toEqual([
+      { modality: 'image', units: DEFAULT_MEDIA_UNIT_ESTIMATE.image },
+    ]);
   });
 });

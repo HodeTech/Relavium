@@ -1,4 +1,9 @@
-import { estimateMaxNextCost, UnknownModelError } from '@relavium/llm';
+import {
+  estimateMaxNextCost,
+  estimateMediaCost,
+  UnknownModelError,
+  type MediaUnitsEstimate,
+} from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
 import type { RunEventDraft } from './event-bus.js';
@@ -111,17 +116,28 @@ export class BudgetGovernor {
   /**
    * Evaluate one prospective LLM call. Returns a result description (synchronous, no side effects);
    * callers apply the action by throwing the supplied error or, for `warn`, emitting the event.
+   * `mediaUnitsEstimate` (1.AF/D17) adds a disjoint per-modality media addend to the projection.
    */
-  evaluatePreEgress(model: string, maxTokens: number | undefined): BudgetCheckResult {
+  evaluatePreEgress(
+    model: string,
+    maxTokens: number | undefined,
+    mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
+  ): BudgetCheckResult {
     // A cap of 0 means UNBOUNDED (`[chat].max_cost_microcents`: "0 = unbounded"): never block, and never
     // reach the `thresholdPct` division below (which would be `/0` → NaN). A workflow `BudgetSchema` forbids
-    // 0 (`positiveInt`), but the governor is reused for the `[chat]`/session path where 0 is valid.
+    // 0 (`positiveInt`), but the governor is reused for the `[chat]`/session path where 0 is valid. This
+    // short-circuit stays BEFORE any estimate (ADR-0044 §3 — no `/0`, no estimate work when unbounded).
     if (this.#budget.max_cost_microcents <= 0) {
       return { kind: 'allow' };
     }
     let estimate: number;
     try {
-      estimate = estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate);
+      // Token estimate + the disjoint media estimate (ADR-0044 §3). estimateMediaCost prices only the
+      // modalities the model rates (a missing rate degrades to 0); both share the UnknownModelError
+      // degrade-to-allow below, so an unpriced model never hard-fails the run.
+      estimate =
+        estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate) +
+        (mediaUnitsEstimate === undefined ? 0 : estimateMediaCost(model, mediaUnitsEstimate));
     } catch (err) {
       // An unpriced model (e.g. a custom base-URL / self-hosted id with no pricing row) throws
       // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it —
@@ -175,8 +191,12 @@ export class BudgetGovernor {
    * and throws `BudgetExceededError` / `BudgetPauseError` for fail / pause. Async because the warning
    * event is durable.
    */
-  async checkPreEgress(model: string, maxTokens: number | undefined): Promise<void> {
-    const result = this.evaluatePreEgress(model, maxTokens);
+  async checkPreEgress(
+    model: string,
+    maxTokens: number | undefined,
+    mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
+  ): Promise<void> {
+    const result = this.evaluatePreEgress(model, maxTokens, mediaUnitsEstimate);
     if (result.kind === 'allow') return;
     if (result.kind === 'warn') {
       if (!this.#warningEmitted) {

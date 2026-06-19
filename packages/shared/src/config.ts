@@ -101,6 +101,23 @@ export const ChatConfigSchema = z
   .strict() // fail loud on an unknown [chat] key (strict config — ADR-0033, amends ADR-0023)
   .optional();
 
+/**
+ * Per-modality media-output **unit-count** default for the pre-egress media cost estimate (1.AF/D17,
+ * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — the analogue of
+ * `max_tokens_estimate`, but a **count** not a price: how many billed units (images, audio-seconds,
+ * video-seconds) a media-output turn is assumed to produce when it does not declare its own volume. The
+ * per-unit **price** lives in the model catalog (`ModelPricing.mediaOutputRates`), never here. `document`
+ * is absent (PDF bills as tokens, never a chat-turn output — the billed set is image/audio/video).
+ */
+export const MediaCostEstimateSchema = z
+  .object({
+    image: nonNegativeInt.optional(), // assumed images per media-output turn
+    audio: nonNegativeInt.optional(), // assumed audio-seconds per media-output turn
+    video: nonNegativeInt.optional(), // assumed video-seconds per media-output turn
+  })
+  .strict();
+export type MediaCostEstimate = z.infer<typeof MediaCostEstimateSchema>;
+
 /** `project.toml` / `workspace.toml` — project defaults, variables, project-scoped MCP, chat defaults. */
 export const ProjectConfigSchema = z
   .object({
@@ -111,6 +128,8 @@ export const ProjectConfigSchema = z
         // Per-call output-token estimate the pre-egress budget governor uses when a node/session
         // omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block.
         max_tokens_estimate: positiveInt.optional(),
+        // Per-modality media-output unit-count default for the pre-egress media cost estimate (1.AF/D17).
+        media_cost_estimate: MediaCostEstimateSchema.optional(),
       })
       .strict()
       .optional(),

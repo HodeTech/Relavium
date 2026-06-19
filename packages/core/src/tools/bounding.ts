@@ -10,7 +10,12 @@
  * See [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file).
  */
 
-import type { AbortSignalLike } from '@relavium/shared';
+import {
+  isBase64DataUri,
+  isBinaryBuffer,
+  isCanonicalBase64Source,
+  type AbortSignalLike,
+} from '@relavium/shared';
 
 import type { ToolHost, ToolResultLimits } from './types.js';
 
@@ -64,20 +69,73 @@ function countLines(text: string): number {
   return lines;
 }
 
-/** Render any result to the text the model would see (a string is itself; else compact JSON). */
+/**
+ * Replace inline media BYTES with a byte-free marker for the text/summary/spill path (1.AF — closes the
+ * I3 gap where a `read_media` (or any) tool result carrying a `{ kind:'base64', data }` source would be
+ * JSON-stringified into the `agent:tool_result.outputSummary` event / the spill / the over-cap preview —
+ * a durable/event boundary the emit-time `deInlineMedia` choke point cannot catch, since it sees only the
+ * resulting flat string, not a structured media source). The MODEL-facing result value is left intact
+ * (the model still receives the bytes via the seam); only this text projection is redacted. Cycle-safe.
+ */
+/** A PLAIN object (Object/null prototype) — NOT a Date/RegExp/Map/Set/class instance, which JSON.stringify
+ *  renders natively and the walk must leave untouched (else a Date would collapse to `{}`). Narrows without an `as`. */
+function isPlainObject(value: object): value is Record<string, unknown> {
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') {
+    return isBase64DataUri(value) ? '[base64 data URI omitted]' : value;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  if (seen.has(value)) {
+    return '[cyclic]';
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => redactInlineMediaForText(item, seen));
+  }
+  if (isBinaryBuffer(value)) {
+    return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
+  }
+  if (!isPlainObject(value)) {
+    return value; // Date/RegExp/Map/Set/class instance — leave for JSON.stringify's native handling
+  }
+  if (isCanonicalBase64Source(value)) {
+    const data = value['data'];
+    // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
+    return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    out[key] = redactInlineMediaForText(item, seen);
+  }
+  return out;
+}
+
+/** Render any result to the text the model would see (a string is itself; else compact JSON). Inline
+ *  media bytes are redacted first so the summary/spill/preview can never carry base64 (I3). */
 function toText(result: unknown): string {
   if (typeof result === 'string') {
-    return result;
+    return isBase64DataUri(result) ? '[base64 data URI omitted]' : result;
   }
   if (result === undefined) {
     return '';
   }
   try {
-    // JSON.stringify returns undefined for a value with no JSON form (a bare function/symbol); the `??`
-    // keeps a string without falling back to a `[object Object]`-style default stringification.
-    return JSON.stringify(result) ?? '[unserializable]';
+    // Always run the redaction walk for a non-string result (inside the try so a throwing getter/proxy
+    // degrades to '[unserializable]' rather than escaping): it strips inline base64 sources, base64 data:
+    // URIs, AND raw binary buffers at any nesting before JSON-serialisation, so no media bytes (base64 or
+    // decimal) can ride the summary/spill/preview (I3). A non-media object is returned as a structural clone
+    // (same JSON). JSON.stringify returns undefined for a value with no JSON form (a bare function/symbol);
+    // the `??` keeps a string without an `[object Object]`.
+    const safe = redactInlineMediaForText(result, new WeakSet<object>());
+    return JSON.stringify(safe) ?? '[unserializable]';
   } catch {
-    return '[unserializable]'; // circular reference / throwing toJSON
+    return '[unserializable]'; // circular reference / throwing toJSON / throwing getter during redaction
   }
 }
 

@@ -360,6 +360,42 @@ ${AGENT}
   edges: []`);
     expect(analyzeSecretTaint(wf)).toEqual([]);
   });
+
+  it('does NOT treat the run.id namespace as a secret source, even alongside a secret input (1.AF/D16)', () => {
+    // `{{run.id}}` is the new run-id namespace (kind `run`); it is a non-secret engine value and must never
+    // be a taint source/symbol, so a prompt mixing it with a real secret-typed input is not a leak.
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'run {{run.id}}'
+  edges: []`);
+    expect(analyzeSecretTaint(wf)).toEqual([]);
+  });
+
+  it('does NOT flag a {{run.id}} context value as a pre-run node-output reference (1.AF/D16)', () => {
+    // STATIC analysis only: kind `run` is not kind `node`, so analyzePreRunReferences does not flag it.
+    // (run.id is NOT actually resolvable in a context value — resolveContext builds a scope with no runId,
+    // so {{run.id}} there throws unresolved_reference at RUNTIME; it just isn't a pre-run *node-output* error.)
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: dir
+      value: 'out/{{run.id}}'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    expect(analyzePreRunReferences(wf)).toEqual([]);
+  });
 });
 
 describe('analyzePreRunReferences', () => {
