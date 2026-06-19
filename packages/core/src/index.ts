@@ -120,6 +120,7 @@ export type {
   CheckpointState,
   CheckpointNodeState,
   CheckpointPendingGate,
+  CheckpointPendingMediaJob,
 } from './engine/checkpoint.js';
 export type {
   ExecutionHost,

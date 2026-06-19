@@ -86,6 +86,7 @@ describe('OpenAI-compatible adapter', () => {
     expect(openaiAdapter.supports.media).toEqual({
       input: { image: true, audio: true, video: false, document: false },
       outputCombinations: [['text'], ['text', 'audio']],
+      surface: 'chat',
     });
     expect(openaiAdapter.supports.reasoning).toBe(false);
     expect(deepseekAdapter.supports.reasoning).toBe(true);

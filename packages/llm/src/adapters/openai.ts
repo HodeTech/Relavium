@@ -64,6 +64,7 @@ const OPENAI_SUPPORTS: CapabilityFlags = {
     // adapter, so advertising document:true would be "advertised-but-unsendable" (ADR-0031).
     input: { image: true, audio: true, video: false, document: false },
     outputCombinations: [['text'], ['text', 'audio']],
+    surface: 'chat', // inline audio is a chat turn; gpt-image-1/Sora generative endpoints are 1.AG Section C/D
   },
 };
 
@@ -78,6 +79,7 @@ const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   media: {
     input: { image: false, audio: false, video: false, document: false },
     outputCombinations: [],
+    surface: 'chat', // DeepSeek: text-only, no media generation — 1.AG/ADR-0045 §1
   },
 };
 

@@ -15,7 +15,7 @@
  * wrongly skip-propagated; the dimmed branches are restored from `node:skipped`.
  */
 
-import type { RunEvent, RunStatus } from '@relavium/shared';
+import type { LlmProviderId, MediaBilledModality, RunEvent, RunStatus } from '@relavium/shared';
 
 import type { NodeFailure } from './node-executor.js';
 
@@ -50,9 +50,9 @@ export interface CheckpointPendingMediaJob {
   readonly nodeId: string;
   /** The Relavium-opaque job id to re-poll (never the vendor operation-name). */
   readonly jobId: string;
-  readonly provider: string;
+  readonly provider: LlmProviderId;
   readonly model: string;
-  readonly modality: string;
+  readonly modality: MediaBilledModality;
   /** ISO-8601 submit time and absolute deadline; on resume `now > deadlineAt` short-circuits a doomed re-poll. */
   readonly startedAt: string;
   readonly deadlineAt: string;

@@ -53,6 +53,7 @@ const GEMINI_SUPPORTS: CapabilityFlags = {
     // "advertised-but-unsendable" — the gate would admit a part the mapper then rejects (ADR-0031).
     input: { image: true, audio: true, video: false, document: false },
     outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
+    surface: 'chat', // inline media-out (responseModalities) is a chat turn; generative endpoints are 1.AG Section C
   },
 };
 

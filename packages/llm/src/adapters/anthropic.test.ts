@@ -78,6 +78,7 @@ describe('AnthropicAdapter', () => {
         // seam ceiling, so advertising it would be "advertised-but-unsendable" (ADR-0031).
         input: { image: true, audio: false, video: false, document: false },
         outputCombinations: [],
+        surface: 'chat',
       },
     });
   });

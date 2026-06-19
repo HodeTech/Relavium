@@ -7,6 +7,7 @@ import {
   DurableMediaPartSchema,
   LLM_PROVIDERS,
   MEDIA_BILLED_MODALITIES,
+  MEDIA_SURFACES,
   MEDIA_HANDLE_PATTERN,
   MEDIA_MESSAGE_CAPS,
   MediaMimeTypeSchema,
@@ -196,6 +197,12 @@ export const MediaCapabilitiesSchema = z.object({
     document: z.boolean(), // application/pdf (A2) — distinct token/cost profile from image
   }),
   outputCombinations: z.array(ModalitySetSchema),
+  // The model's media-output SURFACE (1.AG/ADR-0045 §1): `'chat'` routes an agent node to the normal
+  // turn with `output_modalities`; `'generative'` routes it to the separate-endpoint `generateMedia()`
+  // (sync or async LRO). The seam projection of `model_catalog.media_surface`. **Absent ⇒ `'chat'`** (the
+  // column's NOT NULL default + the read-site `?? 'chat'`); optional so a CapabilityFlags literal that
+  // predates routing stays valid. Every Phase-1 adapter sets `'chat'` (none implements `generateMedia`).
+  surface: z.enum(MEDIA_SURFACES).optional(),
 });
 export type MediaCapabilities = z.infer<typeof MediaCapabilitiesSchema>;
 

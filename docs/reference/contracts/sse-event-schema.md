@@ -52,6 +52,7 @@ export type RunEvent =
   | NodeFailedEvent
   | NodeSkippedEvent
   | NodeRetryingEvent
+  | MediaJobSubmittedEvent
   | HumanGatePausedEvent
   | HumanGateResumedEvent
   | RunCompletedEvent

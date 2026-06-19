@@ -160,8 +160,9 @@ interface LlmProvider {
   generate(req: LlmRequest, key: string): Promise<LlmResult>;
   stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;  // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning, media } — vision is the derived alias of media.input.image (ADR-0031)
-  // ADR-0031 decision #6 — separate-endpoint media generation, RESERVED at 1.AD (A5): the methods
-  // are optional shape only; behavior + the async poll/checkpoint loop's own ADR land at 1.AG.
+  // ADR-0031 decision #6 — separate-endpoint media generation. The A5 ADR is written ([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md))
+  // and the SHAPE is now final (the additive pollMediaJob `signal` param landed, 1.AG Section A); the
+  // BEHAVIOR (sync de-inline, the async poll/checkpoint/resume/cancel loop) lands across 1.AG Sections C/D.
   generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
   pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
 }
@@ -179,6 +180,7 @@ interface CapabilityFlags {
   media: {
     input: { image: boolean; audio: boolean; video: boolean; document: boolean };
     outputCombinations: OutputModality[][];
+    surface?: 'chat' | 'generative'; // media-output surface (1.AG/ADR-0045 §1); absent ⇒ 'chat'; the seam projection of model_catalog.media_surface
   };
 }
 ```

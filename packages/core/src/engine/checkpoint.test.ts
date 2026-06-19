@@ -148,6 +148,21 @@ describe('reconstructCheckpointState', () => {
     expect(state?.pendingMediaJobs[0]?.jobId).toBe('job-new');
   });
 
+  it('clears a media-job entry on its terminal node:failed (the failed job leaves nothing to re-attach)', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-1'),
+      {
+        type: 'node:failed',
+        ...base(2),
+        nodeId: 'gen',
+        error: { code: 'content_filter', message: 'blocked', retryable: false },
+      },
+    ]);
+    expect(state?.pendingMediaJobs).toEqual([]);
+    expect(state?.nodeStates.get('gen')?.status).toBe('failed');
+  });
+
   it('clears a media-job entry on the defensive node:skipped path too (ADR-0045 §2 clear-set)', () => {
     const state = reconstructCheckpointState([
       started,

@@ -158,6 +158,18 @@ export const MEDIA_SURFACES = ['chat', 'generative'] as const;
 export type MediaSurface = (typeof MEDIA_SURFACES)[number];
 
 /**
+ * The async media-job (generateMedia LRO) poll cadence + deadline DEFAULTS (1.AG/ADR-0045 §7). The single
+ * source of these magic numbers so the engine poll loop (Section D) reads `config.defaults?.media_job_* ??
+ * MEDIA_JOB_POLL_DEFAULTS.*` instead of scattering literals. Poll at `pollInitialMs`, exponential-back-off
+ * (no jitter) capped at `pollMaxMs`, abandon a job past `deadlineMs` (from submit) as a retryable timeout.
+ */
+export const MEDIA_JOB_POLL_DEFAULTS = {
+  pollInitialMs: 5_000,
+  pollMaxMs: 30_000,
+  deadlineMs: 1_800_000, // 30 min
+} as const;
+
+/**
  * The **media reference scope kinds** persisted in the `media_references` junction (ADR-0042 §3).
  * A deliberate **superset** with two roles: `run` / `node` references are refcount + terminal-sweep
  * lifetime entries only, while `session` / `workspace` are **also** the `read_media` authz `Scope`

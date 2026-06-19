@@ -138,6 +138,16 @@ export const ProjectConfigSchema = z
         media_job_deadline_ms: positiveInt.optional(),
       })
       .strict()
+      .refine(
+        (d) =>
+          d.media_job_poll_max_ms === undefined ||
+          d.media_job_poll_initial_ms === undefined ||
+          d.media_job_poll_max_ms >= d.media_job_poll_initial_ms,
+        {
+          message: 'media_job_poll_max_ms must be >= media_job_poll_initial_ms',
+          path: ['media_job_poll_max_ms'],
+        },
+      )
       .optional(),
     variables: z.record(z.string(), z.string()).optional(),
     chat: ChatConfigSchema,

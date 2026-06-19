@@ -241,6 +241,18 @@ const reject: Record<string, Record<string, unknown>> = {
     ...valid['media_job:submitted'],
     deadlineAt: 'soon',
   },
+  'media_job:submitted (non-datetime startedAt)': {
+    ...valid['media_job:submitted'],
+    startedAt: 'tomorrow',
+  },
+  'media_job:submitted (empty jobId)': {
+    ...valid['media_job:submitted'],
+    jobId: '',
+  },
+  'media_job:submitted (missing jobId)': {
+    ...valid['media_job:submitted'],
+    jobId: undefined,
+  },
   'human_gate:paused (bad gateType)': {
     type: 'human_gate:paused',
     ...env,
@@ -544,6 +556,13 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
       RunEventSchema.safeParse({
         ...valid['node:failed'],
         error: { code: 'sandbox_error', message: 'x', retryable: false },
+      }).success,
+    ).toBe(true);
+    // The 1.AG content_filter ErrorCode parses on the event path (a content-policy block surfaces here).
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['node:failed'],
+        error: { code: 'content_filter', message: 'content policy block', retryable: false },
       }).success,
     ).toBe(true);
   });

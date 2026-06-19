@@ -496,6 +496,26 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     });
   });
 
+  it('maps a content_filter LlmError to the fatal content_filter ErrorCode (not validation) — 1.AG/ADR-0045 §6', async () => {
+    const provider = scriptedProvider('anthropic', [
+      [
+        {
+          type: 'error',
+          error: {
+            kind: 'content_filter',
+            retryable: false,
+            provider: 'anthropic',
+            message: 'content policy block',
+          },
+        },
+      ],
+    ]);
+    await expect(runAgentTurn(baseParams(provider))).rejects.toMatchObject({
+      code: 'content_filter',
+      retryable: false,
+    });
+  });
+
   it('maps an aborted signal to cancelled (cancel wins)', async () => {
     const provider = scriptedProvider('anthropic', [[{ type: 'text_delta', text: 'x' }, STOP()]]);
     const aborted = {

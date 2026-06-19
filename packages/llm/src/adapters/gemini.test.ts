@@ -66,6 +66,7 @@ describe('Gemini adapter', () => {
       // blocked by the seam ceiling, so advertising them would be "advertised-but-unsendable" (ADR-0031).
       input: { image: true, audio: true, video: false, document: false },
       outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
+      surface: 'chat',
     });
   });
 

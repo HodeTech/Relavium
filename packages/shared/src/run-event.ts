@@ -276,8 +276,9 @@ export const MediaJobSubmittedEventSchema = z.object({
   provider: z.enum(LLM_PROVIDERS),
   model: nonEmptyString, // canonical model id
   modality: z.enum(MEDIA_BILLED_MODALITIES), // image | audio | video
-  startedAt: z.string().datetime({ offset: true }),
-  // deadlineAt = startedAt + [defaults].media_job_deadline_ms; on resume `now > deadlineAt` short-circuits a doomed re-poll.
+  startedAt: z.string().datetime({ offset: true }), // ISO-8601 job-SUBMIT time (when generateMedia returned the jobId; the deadlineAt anchor), not the node-start time
+  // deadlineAt = startedAt + [defaults].media_job_deadline_ms; on resume `now > deadlineAt` short-circuits a
+  // doomed re-poll. An offset is allowed, so a consumer MUST compare via Date.parse, never lexicographically.
   deadlineAt: z.string().datetime({ offset: true }),
 });
 export type MediaJobSubmittedEvent = z.infer<typeof MediaJobSubmittedEventSchema>;
