@@ -184,15 +184,18 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
 
   it('still hard-fails a mimeType-less url part EVEN WITH a fetch hook (nothing to content-address)', async () => {
     const { store, puts } = makeStubStore();
-    const fetchUrl = (): Promise<Uint8Array> => Promise.resolve(new Uint8Array([1]));
+    let fetchCalls = 0;
+    const fetchUrl = (): Promise<Uint8Array> => {
+      fetchCalls += 1;
+      return Promise.resolve(new Uint8Array([1]));
+    };
     const bare: unknown = {
       type: 'media',
       source: { kind: 'url', url: 'https://x.example/a.png' },
     };
-    await expect(deInlineMedia(bare, store, fetchUrl)).rejects.toThrow(
-      /re-host a url media source/,
-    );
+    await expect(deInlineMedia(bare, store, fetchUrl)).rejects.toThrow(/no mimeType/);
     expect(puts).toHaveLength(0); // fail-closed before the hook — no fetch, no put
+    expect(fetchCalls).toBe(0); // the hook is never invoked — it fails closed BEFORE any fetch
   });
 
   // --- I3 leak regression: non-canonical byte carriers must HARD-FAIL, never pass through (review HIGH #1)
@@ -248,6 +251,20 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     ];
     await expect(deInlineMedia(bad, store)).rejects.toThrow(/not valid base64/);
     expect(puts).toHaveLength(0);
+  });
+
+  it('hard-fails (TypeError naming the real fault) on a base64 media source whose data is not a string', async () => {
+    const { store, puts } = makeStubStore();
+    // Co-locate with a real carrier so the scan triggers the walk — a lone non-string-data source is NOT
+    // flagged (its data isn't a string), so it would otherwise fast-path through unchanged (and fail the
+    // durable Zod schema later). The walk reaches mediaPartBytes (isInflightMediaPart only needs a string
+    // mimeType + a string kind), and the message names the actual fault (non-string data), not "unsupported kind".
+    const bad: unknown = [
+      { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 42 } },
+      base64MediaPart,
+    ];
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/source\.data must be a string/);
+    expect(puts).toHaveLength(0); // throws on item 0 before the valid carrier is put
   });
 
   it('hard-fails on an unknown media source kind (co-located with a real carrier so the scan runs)', async () => {

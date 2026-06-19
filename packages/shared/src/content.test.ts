@@ -899,4 +899,14 @@ describe('validateByteRange (1.AF/D13 — the engine-pure byte-delivery Range po
     expect(validateByteRange({ start: 0.5, end: 4 }, 10).ok).toBe(false);
     expect(validateByteRange({ start: 0, end: Number.NaN }, 10).ok).toBe(false);
   });
+
+  it('fails closed on its own bad byteLength (NaN / Infinity / negative)', () => {
+    // The exported policy must not trust its caller's byteLength — a NaN/Infinity would otherwise make the
+    // `end >= byteLength` check silently pass an out-of-bounds range.
+    expect(validateByteRange({ start: 0, end: 0 }, Number.NaN).ok).toBe(false);
+    expect(validateByteRange({ start: 0, end: 0 }, Number.POSITIVE_INFINITY).ok).toBe(false);
+    expect(validateByteRange({ start: 0, end: 0 }, -1).ok).toBe(false);
+    const r = validateByteRange({ start: 0, end: 0 }, Number.NaN);
+    expect(r.ok === false && r.reason).toMatch(/byteLength/);
+  });
 });

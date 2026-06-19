@@ -130,9 +130,10 @@ async function mediaPartBytes(
   if (kind === 'base64') {
     const data = source['data'];
     if (typeof data !== 'string') {
-      // A `typeof` guard ⇒ TypeError (the data field is the wrong type); the sibling domain/value checks
-      // below (url, unknown kind, modality, invalid base64) stay plain Error.
-      throw new TypeError("deInlineMedia: unsupported media source kind 'base64' on a media part");
+      // A `typeof` guard ⇒ TypeError, and the message names the ACTUAL fault (a non-string `data`), not a
+      // misleading "unsupported kind" — base64 IS supported here. Secret-free: the data value is never
+      // interpolated (I3). The sibling domain/value checks below stay plain Error.
+      throw new TypeError('deInlineMedia: base64 media source.data must be a string');
     }
     const bytes = decodeBase64(data);
     if (bytes === undefined) {
@@ -152,7 +153,12 @@ async function mediaPartBytes(
     return fetchUrl(url);
   }
   // An unknown source kind on a media part cannot be made durable-safe — fail closed (never pass through).
-  throw new Error(`deInlineMedia: unsupported media source kind '${String(kind)}' on a media part`);
+  // `kind` is interpolated bounded (slice 64) — on the unknown `unknown`-overload walk it is only typed
+  // `typeof === 'string'` (unlike the ≤255-bounded mimeType), so an opaque payload could otherwise supply
+  // an arbitrarily long string; the canonical values (base64/handle/url) are all short.
+  throw new Error(
+    `deInlineMedia: unsupported media source kind '${String(kind).slice(0, 64)}' on a media part`,
+  );
 }
 
 async function rewrite(
@@ -203,8 +209,10 @@ async function rewrite(
   // (I3). A url part WITH a mimeType already throws inside rewriteMediaPart above; this is the opaque case.
   const urlSource = value['source'];
   if (value['type'] === 'media' && isRecord(urlSource) && urlSource['kind'] === 'url') {
+    // Distinct suffix from the mediaPartBytes url throw above: this arm is the mimeType-LESS url part
+    // (no content type to content-address against), so it can never be re-hosted even with a fetch hook.
     throw new Error(
-      'deInlineMedia cannot re-host a url media source — the engine media-egress step (1.AF, ADR-0043) must materialize it to a handle first',
+      'deInlineMedia cannot re-host a url media source with no mimeType — there is no content type to content-address against (1.AF, ADR-0043, I3)',
     );
   }
   // A loose base64 source NOT wrapped in a media part has no mimeType to content-address — it cannot be

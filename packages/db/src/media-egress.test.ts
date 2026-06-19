@@ -248,6 +248,17 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
+  it('blocks an empty DNS resolution (no address to pin), opening no connection', async () => {
+    const { deps, calls } = fakeDeps({
+      resolve: { 'nxdomain.example': [] }, // resolver returns zero addresses
+      hops: [{ status: 200 }],
+    });
+    await expect(
+      fetchMediaBytes('https://nxdomain.example/a.png', { maxBytes: 1000 }, deps),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+    expect(calls).toHaveLength(0); // fail-closed before any openConnection (never pins to the hostname)
+  });
+
   it('normalizes a malformed redirect Location to a typed MediaEgressError (no raw URL TypeError)', async () => {
     const { deps } = fakeDeps({
       resolve: { 'a.example': [PUBLIC_IP] },

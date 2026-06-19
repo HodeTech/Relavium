@@ -814,6 +814,13 @@ export function validateByteRange(
   range: ByteRange,
   byteLength: number,
 ): { ok: true; range: ByteRange } | { ok: false; reason: string } {
+  // Guard the policy's OWN `byteLength` input first — this exported primitive fails closed on a bad bound
+  // rather than trusting its caller (a future `read_media` caller passes a `nonNegativeInt.optional()`).
+  // `Number.isInteger` also rejects NaN/Infinity, which would otherwise make the `end >= byteLength` check
+  // silently pass an out-of-bounds range.
+  if (!Number.isInteger(byteLength) || byteLength < 0) {
+    return { ok: false, reason: 'byteLength must be a non-negative integer' };
+  }
   const { start, end } = range;
   if (!Number.isInteger(start) || !Number.isInteger(end)) {
     return { ok: false, reason: 'range bounds must be integers' };
