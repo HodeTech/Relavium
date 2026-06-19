@@ -54,6 +54,15 @@ export const MEDIA_MESSAGE_CAPS = {
 } as const;
 
 /**
+ * The default per-fetch upper bound on a re-hosted media `url` download (1.AF/D9,
+ * [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §2): the
+ * engine supplies this size-bound **policy** to the host media-egress mechanism, which streams the body
+ * and aborts the moment it exceeds the bound (never fully buffered). A configurable override is a
+ * config-spec concern; this is the conservative default. Tunable constant, not frozen shape.
+ */
+export const DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+/**
  * The `url` media carrier landing gate (ADR-0031 §Reserved shape): the SSRF range-primitive has
  * landed (1.AE — `extractHttpsHost`, `isPrivateOrLocalHost`, `urlHasCredentials`), so URL sources
  * are now accepted at the seam boundary. The policy half (literal format + credential + range-block

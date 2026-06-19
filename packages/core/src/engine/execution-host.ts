@@ -154,7 +154,24 @@ export interface ExecutionHost {
    * NO store injected is a loud configuration breach (`media_store_unavailable`), never a silent byte leak.
    */
   readonly mediaStore?: MediaStore;
+  /**
+   * The host media-egress mechanism (1.AF/D9, [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md))
+   * — fetch the bytes at a public-HTTPS `url` with the SSRF-validated, size-bounded connect the engine
+   * binds into `deInlineMedia`'s url-rehost hook. The engine supplies the `maxBytes` **policy** + the run
+   * `AbortSignal`; the host performs the validated I/O (DNS-resolve + connect-by-validated-IP + per-hop
+   * redirect re-validation). **Optional + absent-tolerant**: with no egress mechanism a `url` media source
+   * hard-fails at the de-inline choke point (an un-re-hosted url may never persist, I3). The Node reference
+   * is `@relavium/db`'s `fetchMediaBytes`.
+   */
+  readonly fetchMedia?: HostMediaFetch;
 }
+
+/** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
+export type HostMediaFetch = (
+  url: string,
+  maxBytes: number,
+  signal?: AbortSignalLike,
+) => Promise<Uint8Array>;
 
 // --- In-memory reference implementation (engine tests + the local reference) -------------------
 
@@ -294,6 +311,8 @@ export function createInMemoryHost(options?: {
   baseEpochMs?: number;
   /** Inject a media store so a run that produces media de-inlines it (1.AF); omit for a text-only host. */
   mediaStore?: MediaStore;
+  /** Inject a media-egress fetch so a `url` media source is re-hosted (1.AF/D9); omit to hard-fail urls. */
+  fetchMedia?: HostMediaFetch;
 }): ExecutionHost & { store: RunStore } & Pick<ManualTimerController, 'fireTimers' | 'armedCount'> {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
@@ -307,6 +326,7 @@ export function createInMemoryHost(options?: {
     newAbortController: createAbortController,
     setTimer: timers.setTimer,
     ...(options?.mediaStore ? { mediaStore: options.mediaStore } : {}),
+    ...(options?.fetchMedia ? { fetchMedia: options.fetchMedia } : {}),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };
