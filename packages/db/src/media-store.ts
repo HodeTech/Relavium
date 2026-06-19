@@ -55,7 +55,9 @@ function sliceRange(bytes: Uint8Array, range: ByteRange): Uint8Array {
   if (!checked.ok) {
     throw new Error(`media readRange: ${checked.reason}`);
   }
-  return bytes.slice(range.start, range.end + 1); // inclusive end ⇒ +1 for the exclusive slice bound
+  // Slice with the VALIDATED snapshot (checked.range), never re-reading the input `range` — an
+  // accessor-backed / mutated range object cannot TOCTOU past the validated bounds.
+  return bytes.slice(checked.range.start, checked.range.end + 1); // inclusive end ⇒ +1 (exclusive slice)
 }
 
 /**

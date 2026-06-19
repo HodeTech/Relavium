@@ -130,7 +130,9 @@ async function mediaPartBytes(
   if (kind === 'base64') {
     const data = source['data'];
     if (typeof data !== 'string') {
-      throw new Error("deInlineMedia: unsupported media source kind 'base64' on a media part");
+      // A `typeof` guard ⇒ TypeError (the data field is the wrong type); the sibling domain/value checks
+      // below (url, unknown kind, modality, invalid base64) stay plain Error.
+      throw new TypeError("deInlineMedia: unsupported media source kind 'base64' on a media part");
     }
     const bytes = decodeBase64(data);
     if (bytes === undefined) {

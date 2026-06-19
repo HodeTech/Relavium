@@ -144,6 +144,12 @@ async function resolveValidatedIps(
     throw new MediaEgressError('blocked_host', 'media egress target did not resolve to an address');
   }
   for (const ip of ips) {
+    // Every resolved value MUST be an IP literal — otherwise a (buggy/malicious) resolver returning a
+    // hostname would pass the range-block (a hostname is not a private IP) and become the pinned `lookup`
+    // target, defeating the connect-by-validated-IP guarantee. Fail-closed on a non-IP.
+    if (isIP(ip) === 0) {
+      throw new MediaEgressError('blocked_host', 'media egress resolver returned a non-IP address');
+    }
     if (!allowPrivate && isPrivateOrLocalHost(ip)) {
       throw new MediaEgressError(
         'blocked_host',
@@ -182,10 +188,52 @@ async function readBounded(
   return out;
 }
 
+/** One validated hop's result: a redirect `Location` to follow, or the delivered size-bounded bytes. */
+type HopOutcome =
+  | { readonly kind: 'redirect'; readonly location: string }
+  | { readonly kind: 'bytes'; readonly bytes: Uint8Array };
+
+/**
+ * Perform ONE validated hop: validate the url + resolve / range-block / pin the host, open the pinned
+ * connection, and either surface a redirect `Location` (the caller re-validates it on the next hop) or
+ * read the size-bounded body. Split out of {@link fetchMediaBytes} to keep its cognitive complexity in
+ * budget (sonar S3776); any raw throw here is normalized to a typed `MediaEgressError` by the caller.
+ */
+async function performHop(
+  target: string,
+  deps: MediaEgressDeps,
+  allowPrivate: boolean,
+  signal: AbortSignal,
+  maxBytes: number,
+): Promise<HopOutcome> {
+  const host = validateEgressHost(target);
+  const ips = await resolveValidatedIps(host, deps, allowPrivate);
+  // Connect by the FIRST validated IP — every IP was range-checked + confirmed an IP literal above, so
+  // pinning means the address validated is the address connected to (no re-resolve TOCTOU window).
+  const response = await deps.openConnection(
+    { url: target, hostname: host, pinnedIp: ips[0] ?? host },
+    signal,
+  );
+  if (isRedirectStatus(response.status)) {
+    response.dispose(); // never read a redirect body
+    const location = response.location;
+    if (location === undefined || location.length === 0) {
+      throw new MediaEgressError('bad_status', 'media egress redirect had no Location');
+    }
+    return { kind: 'redirect', location };
+  }
+  if (response.status !== 200) {
+    response.dispose();
+    throw new MediaEgressError('bad_status', 'media egress received a non-200 status');
+  }
+  return { kind: 'bytes', bytes: await readBounded(response.body, maxBytes, response.dispose) };
+}
+
 /**
  * Fetch the bytes at a public-HTTPS `url`, enforcing the full SSRF + size-bound policy. The host
  * mechanism the engine binds into a `MediaUrlFetch` hook (the engine supplies `maxBytes` + the
- * `AbortSignal`). See the file header for the security contract.
+ * `AbortSignal`). See the file header for the security contract. Its ONLY thrown type is
+ * {@link MediaEgressError} — every raw resolver / socket / `new URL` / body-read error is normalized.
  */
 export async function fetchMediaBytes(
   url: string,
@@ -210,38 +258,27 @@ export async function fetchMediaBytes(
           'media egress exceeded the redirect limit',
         );
       }
-      const host = validateEgressHost(target);
-      const ips = await resolveValidatedIps(host, deps, allowPrivate);
-      // Connect by the FIRST validated IP — every IP was range-checked above, so any is safe; pinning the
-      // address means the address validated is the address connected to (no re-resolve TOCTOU window).
-      const response = await deps.openConnection(
-        { url: target, hostname: host, pinnedIp: ips[0] ?? host },
+      const outcome = await performHop(
+        target,
+        deps,
+        allowPrivate,
         controller.signal,
+        options.maxBytes,
       );
-      if (isRedirectStatus(response.status)) {
-        response.dispose(); // never read a redirect body
-        const location = response.location;
-        if (location === undefined || location.length === 0) {
-          throw new MediaEgressError('bad_status', 'media egress redirect had no Location');
-        }
-        target = new URL(location, target).toString(); // resolve a relative Location against the current url
-        continue; // re-validate the new target on the next iteration (per-hop re-validation)
+      if (outcome.kind === 'bytes') {
+        return outcome.bytes;
       }
-      if (response.status !== 200) {
-        response.dispose();
-        throw new MediaEgressError('bad_status', 'media egress received a non-200 status');
-      }
-      try {
-        return await readBounded(response.body, options.maxBytes, response.dispose);
-      } catch (error) {
-        if (error instanceof MediaEgressError) {
-          throw error; // a too_large (or other typed) failure — preserve the discriminant
-        }
-        // A socket abort/destroy mid-body-read (timeout / caller abort) surfaces a raw Node error; normalize
-        // it to the typed, secret-free network failure so the function's only thrown type is MediaEgressError.
-        throw new MediaEgressError('network', 'media egress request failed');
-      }
+      // A relative Location resolves against the current url; the next iteration re-validates it (per-hop).
+      target = new URL(outcome.location, target).toString();
     }
+  } catch (error) {
+    if (error instanceof MediaEgressError) {
+      throw error; // a typed failure (blocked_host / too_large / bad_status / …) — preserve the discriminant
+    }
+    // Any RAW throw is normalized to the typed, secret-free network failure — a resolver DNS error, an
+    // openConnection socket error, a malformed-Location `new URL` TypeError, or an aborted body read — so
+    // fetchMediaBytes's ONLY thrown type is MediaEgressError (the function's contract; never a raw leak).
+    throw new MediaEgressError('network', 'media egress request failed');
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', abort);

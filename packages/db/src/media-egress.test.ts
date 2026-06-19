@@ -228,6 +228,36 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     expect(stats.disposed).toBeGreaterThanOrEqual(1); // the stream was disposed on the way out
   });
 
+  it('normalizes a resolver rejection to a typed MediaEgressError (never a raw DNS error)', async () => {
+    const deps: MediaEgressDeps = {
+      resolveHost: () => Promise.reject(new Error('getaddrinfo ENOTFOUND a.example')),
+      openConnection: () => Promise.reject(new Error('test: must not connect')),
+    };
+    await expect(
+      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+    ).rejects.toMatchObject({ code: 'network' });
+  });
+
+  it('blocks a resolver that returns a non-IP token (the pinned target must be an IP literal)', async () => {
+    const deps: MediaEgressDeps = {
+      resolveHost: () => Promise.resolve(['not-an-ip.example']), // a hostname, never a pinnable IP
+      openConnection: () => Promise.reject(new Error('test: must not connect')),
+    };
+    await expect(
+      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('normalizes a malformed redirect Location to a typed MediaEgressError (no raw URL TypeError)', async () => {
+    const { deps } = fakeDeps({
+      resolve: { 'a.example': [PUBLIC_IP] },
+      hops: [{ status: 302, location: 'http://[' }], // unclosed IPv6 — new URL() throws
+    });
+    await expect(
+      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+    ).rejects.toMatchObject({ code: 'network' });
+  });
+
   it('exposes a typed MediaEgressError', () => {
     const err = new MediaEgressError('blocked_host', 'x');
     expect(err).toBeInstanceOf(Error);
