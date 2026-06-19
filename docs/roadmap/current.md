@@ -217,18 +217,26 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > **media-input adapters + the shared SSRF policy primitive (1.AE) are ✅ Done (PR #32, 2026-06-18)** —
 > after a multi-round + final 8-dimension adversarial review (no SSRF bypass found); the SSRF *mechanism*
 > half (host DNS-resolve + connect-by-validated-IP), per-modality FallbackChain gating, `mediaUnits`, and
-> handle/url media resolution are deferred to **1.AF**. **1.AF (engine media plumbing) is 🔨 in progress on
-> `development`** — its three design ADRs (0042/0043/0044) are Accepted, and **P1 + P2 have landed (NOT yet
-> merged):** the `MediaStore` contract impls + `media_objects`/`media_references` tables (migration 0002),
-> per-modality capability gating + `FallbackChain` skip, `deInlineMedia`, the strict `output_modalities`/
-> `save_to` node fields, OpenAI `mediaUnits`, and **the I3 keystone — `deInlineMedia` at the one
-> `#emitDurable` choke point** (all green, Leakwatch-clean). **Remaining (P3 + P4, some security-critical):**
-> the binary media-egress + SSRF mechanism half (D9), `read_media` + the byte-delivery gate (D12/D13),
-> the failover sidecar (D7), adapter handle/url resolution (D8), the terminal sweep (D11), the
-> `output_modalities` load-check (D15), the `save_to` write port (D16), and the per-modality media cost
-> governor (D17) — D9 and D12/D13 want a dedicated security-review pass. The remaining Phase-1 work is
-> **additive and off the critical path**: only **1.AF–1.AH** (engine media plumbing, output, surfaces) remain
-> before Phase 1 closes. **Phase 2 (CLI, milestone M3) is unblocked.**
+> handle/url media resolution are deferred to **1.AF**. **1.AF (engine media plumbing) is 🔨 in progress:
+> P1 + P2 merged (PR #33)**, and **P3 + P4/D13 have landed on `development` in a follow-on PR (NOT yet
+> merged)** — its three design ADRs (0042/0043/0044) are Accepted.
+> **Merged (P1+P2, PR #33):** the `MediaStore` contract impls + `media_objects`/`media_references` tables
+> (migration 0002), per-modality capability gating + `FallbackChain` skip, `deInlineMedia`, the strict
+> `output_modalities`/`save_to` node fields, OpenAI `mediaUnits`, and **the I3 keystone — `deInlineMedia`
+> at the one `#emitDurable` choke point**.
+> **Landed on `development` (pending merge):** the binary media-egress + **SSRF mechanism half** (D9 — the
+> `MediaUrlFetch` re-host hook + `fetchMediaBytes` SSRF-validated host reference: DNS-resolve +
+> connect-by-validated-IP + per-hop redirect re-validation + streamed size-bound, wired at the choke point);
+> the `FallbackChain` resolve-before-egress + **byte-free re-materialization sidecar** (D8 + D7); the
+> **byte-delivery `Range` gate** (D13 — `MediaStore.readRange` + the engine-pure `validateByteRange`); and the
+> dedicated **P3 egress/SSRF security-review** (independent adversarial — 0 blockers/highs). All green +
+> Leakwatch-clean.
+> **Remaining (P4):** `read_media` + the scope-set authz (D12), the terminal sweep + GC (D11), the
+> `save_to` write port (D16), the `output_modalities` load-check (D15), and the per-modality media cost
+> governor (D17) — D12/D13 share a dedicated byte-delivery security-review pass + the keychain no-raw-key
+> IPC test; plus the still-pending canonical-home docs (built-in-tools, config-spec, security-review). The
+> remaining Phase-1 work is **additive and off the critical path**: only **1.AF–1.AH** (engine media plumbing,
+> output, surfaces) remain before Phase 1 closes. **Phase 2 (CLI, milestone M3) is unblocked.**
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

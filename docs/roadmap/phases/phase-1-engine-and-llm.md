@@ -972,8 +972,9 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   **never returns a raw key from an IPC command** (direct test); and a run reaching a **terminal event
   (`run:completed|failed|cancelled`) deterministically reclaims its media refs** so a FAILED/CANCELLED run
   leaves no orphaned partial media (a terminal-state sweep, not refcount-GC alone).
-  - 🔨 *In progress on `development` (NOT merged — see [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs).*
-    **Landed (P1 + P2):** D5/D6 per-modality `requiredCapabilities()` + `FallbackChain` provider-skip
+  - 🔨 *P1+P2 **merged** (PR #33); P3 + P4/D13 landed on `development` in a follow-on PR (**pending merge**) —
+    see [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs.*
+    **Merged (P1 + P2, PR #33):** D5/D6 per-modality `requiredCapabilities()` + `FallbackChain` provider-skip
     (one shared `mediaSupportReason` predicate); D3 `deInlineMedia` (cycle-safe flight→durable transform +
     a pure base64 decoder); D1 `MediaStore` contract impls (`FilesystemMediaStore` CAS + `InMemoryMediaStore`);
     D10 the `media_objects` + `media_references` tables + migration 0002; D14 strict `output_modalities`/`save_to`
@@ -982,16 +983,28 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
     persist-before-deliver preserved; missing-store → loud `run:failed`, terminal stays emit-safe); plus the
     canonical-home doc updates that landed with the code — database-schema.md §Media tables, workflow-yaml-spec
     (`output_modalities` / `save_to` / `{{ run.id }}`), and sse-event-schema (`mediaUnits` on `cost:updated`).
-    All green (`pnpm turbo` 16/16) + Leakwatch-clean.
-    **Remaining (P3 + P4):** D8 adapter handle/url resolution, D7 the B5 sidecar re-materialize, **D9 the
-    binary media-egress capability + the SSRF mechanism half** (security-critical — needs a dedicated
-    security-review pass per ADR-0043); **D12/D13 `read_media` + the byte-delivery gate** (security-critical
-    — ADR-0044/security-review.md), D11 the terminal-state sweep, D15 the `output_modalities` load-check,
-    D16 the `save_to` write port, D17 the per-modality media cost governor, the keychain-bridge IPC test;
-    plus the **still-pending** canonical-home doc updates: config-spec (the media GC grace key — P4/D11) and
-    security-review (the SSRF/egress controls — P3/D9). _(database-schema, workflow-yaml-spec, and
-    sse-event-schema already landed with the P1+P2 code — see above.)_ The matrix row stays ◇ until the 1.AF
-    PR merges (Done-after-merge).
+    **Landed on `development` (P3 + P4/D13, pending merge):**
+    - **D9** the binary media-egress capability + the SSRF **mechanism** half: `deInlineMedia` re-hosts a `url`
+      source via an injected `MediaUrlFetch` hook (shared); `fetchMediaBytes` SSRF-validated host reference
+      (db — DNS-resolve + connect-by-validated-IP + per-hop redirect re-validation + streamed size-bound,
+      TLS never disabled, secret-free errors); wired at the `#emitDurable` choke point via the
+      `ExecutionHost.fetchMedia` port (a missing port ⇒ a `url` hard-fails, I3).
+    - **D8 + D7** the `FallbackChain` resolves a `handle` media source to the provider's in-flight source
+      **before egress** (the injected `resolveForEgress` hook — adapters stay pure) + the **byte-free**
+      `(provider, handle)` re-materialization sidecar (a non-base64 ref cached + reused; base64 never cached;
+      cross-provider re-materialize; retryable-advance on a re-materialization failure).
+    - **D13** the byte-delivery `Range` gate: `MediaStore.readRange` (host mechanism — path-jail + sha256 +
+      a defensive re-bound) + the engine-pure `validateByteRange` policy (fail-closed; reused by D12 + 1.AH).
+    - The dedicated **P3 egress/SSRF security-review pass** (independent adversarial — **0 blockers/highs**;
+      4 lower follow-ups fixed). All green (`pnpm turbo` 16/16) + Leakwatch-clean.
+    **Remaining (P4):** **D12 `read_media`** (the 13th tool + the scope-set authz + the additive
+    `ToolPolicyDenyReason.media_scope_denied` + the `ToolDispatchContext` `byteLength`/session-scope fields +
+    the `media_references` row-writing lifecycle); D16 the `save_to` write port; D15 the `output_modalities`
+    load-check; D17 the per-modality media cost governor; D11 the terminal-state sweep + grace-window GC; the
+    keychain-bridge no-raw-key IPC test; the **P4 byte-delivery security-review pass**; plus the still-pending
+    canonical-home doc updates: built-in-tools (`read_media`), config-spec (the media GC grace key + the media
+    cost estimate), security-review (the byte-delivery + host SSRF mechanism sections). The matrix row stays ◇
+    until the 1.AF PR(s) merge (Done-after-merge).
 - **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
   `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
