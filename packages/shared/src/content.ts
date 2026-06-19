@@ -54,6 +54,15 @@ export const MEDIA_MESSAGE_CAPS = {
 } as const;
 
 /**
+ * The default per-fetch upper bound on a re-hosted media `url` download (1.AF/D9,
+ * [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §2): the
+ * engine supplies this size-bound **policy** to the host media-egress mechanism, which streams the body
+ * and aborts the moment it exceeds the bound (never fully buffered). A configurable override is a
+ * config-spec concern; this is the conservative default. Tunable constant, not frozen shape.
+ */
+export const DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+/**
  * The `url` media carrier landing gate (ADR-0031 §Reserved shape): the SSRF range-primitive has
  * landed (1.AE — `extractHttpsHost`, `isPrivateOrLocalHost`, `urlHasCredentials`), so URL sources
  * are now accepted at the seam boundary. The policy half (literal format + credential + range-block
@@ -770,6 +779,62 @@ export interface MediaStore {
    * adapters stay pure string→string and never hold a `MediaStore` (ADR-0031 §adapter rule).
    */
   resolveForEgress(handle: string, provider: LlmProviderId): Promise<MediaSource>;
+  /**
+   * Read a validated byte {@link ByteRange} of a handle's bytes (1.AF/D13,
+   * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) — the
+   * host byte-delivery **mechanism**: `realpath`+`commonpath` fail-closed path resolution, symlinks OFF,
+   * streamed + size-bounded I/O. The engine owns the **policy** — it validates the range against the
+   * handle's `byteLength` ({@link validateByteRange}) BEFORE calling this; the host re-bounds defensively
+   * against the actual stored size (fail-closed, never trusting a client size). The `read_media` built-in
+   * (1.AF) and the 1.AH desktop `read_media(ref)` command share this one mechanism — the gate is never
+   * written twice.
+   */
+  readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<Uint8Array>;
+}
+
+/**
+ * A byte range over a handle's bytes (1.AF/D13, ADR-0044 §1) — **inclusive** of both ends (HTTP
+ * `Range: bytes=start-end` semantics), so the served length is `end - start + 1`. The engine validates it
+ * against the handle's `byteLength` ({@link validateByteRange}) before the host reads it.
+ */
+export interface ByteRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Validate a requested {@link ByteRange} against a handle's known `byteLength` (1.AF/D13) — the engine-pure
+ * byte-delivery **policy** (security-review.md §Media byte delivery). Fail-closed: rejects a non-integer,
+ * negative, reversed (`end < start`), or out-of-bounds (`end >= byteLength`) range — never a raw `parseInt`
+ * without a bound, never trusting a client-supplied size. Returns the validated range, or a secret-free
+ * reason (a range bound, never bytes). Reused by the `read_media` tool + the 1.AH desktop command, so the
+ * Range gate is written once.
+ */
+export function validateByteRange(
+  range: ByteRange,
+  byteLength: number,
+): { ok: true; range: ByteRange } | { ok: false; reason: string } {
+  // Guard the policy's OWN `byteLength` input first — this exported primitive fails closed on a bad bound
+  // rather than trusting its caller (a future `read_media` caller passes a `nonNegativeInt.optional()`).
+  // `Number.isInteger` also rejects NaN/Infinity, which would otherwise make the `end >= byteLength` check
+  // silently pass an out-of-bounds range.
+  if (!Number.isInteger(byteLength) || byteLength < 0) {
+    return { ok: false, reason: 'byteLength must be a non-negative integer' };
+  }
+  const { start, end } = range;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    return { ok: false, reason: 'range bounds must be integers' };
+  }
+  if (start < 0 || end < 0) {
+    return { ok: false, reason: 'range bounds must be non-negative' };
+  }
+  if (end < start) {
+    return { ok: false, reason: 'range end must be >= start (not reversed)' };
+  }
+  if (end >= byteLength) {
+    return { ok: false, reason: 'range end is out of bounds for the stored byte length' };
+  }
+  return { ok: true, range: { start, end } };
 }
 
 /**
@@ -781,9 +846,26 @@ export interface MediaStore {
  * checkpoint snapshots a refine cannot reach).
  */
 export interface DeInlineMedia {
-  (parts: readonly ContentPart[], store: MediaStore): Promise<DurableContentPart[]>;
-  (value: unknown, store: MediaStore): Promise<unknown>;
+  (
+    parts: readonly ContentPart[],
+    store: MediaStore,
+    fetchUrl?: MediaUrlFetch,
+  ): Promise<DurableContentPart[]>;
+  (value: unknown, store: MediaStore, fetchUrl?: MediaUrlFetch): Promise<unknown>;
 }
+
+/**
+ * The host-injected media-egress fetch (1.AF/D9, [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md)
+ * §2/§3): re-host a public-HTTPS `url` media source to its raw bytes, which the engine then
+ * content-addresses via {@link MediaStore.put}. The **host** performs the validated I/O — DNS resolve,
+ * connect by the validated IP, and re-run the one shared SSRF primitive ({@link isPrivateOrLocalHost} /
+ * {@link extractHttpsHost}) on **every redirect hop** — and enforces a streamed, size-bounded body so
+ * an over-size response is aborted and never fully buffered. The platform-pure engine supplies only the
+ * **decision** to fetch (and binds the per-fetch size bound + `AbortSignal` when it constructs the hook),
+ * so the seam type stays a narrow `url → bytes` function — never a socket in `@relavium/shared`. When no
+ * hook is wired, `deInlineMedia` hard-fails a `url` source (an un-re-hosted url may never persist, I3).
+ */
+export type MediaUrlFetch = (url: string) => Promise<Uint8Array>;
 
 /* ------------------------------------------------------------------------------------------------
  * SSRF range-block — the one shared primitive (1.AE, security-review.md, ADR-0031 §Guardrails)

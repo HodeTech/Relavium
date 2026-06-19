@@ -29,6 +29,7 @@
  */
 
 import {
+  DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES,
   GateDecisionSchema,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
@@ -37,6 +38,7 @@ import {
   type ExecutionMode,
   type GateDecision,
   type MaskedSecret,
+  type MediaUrlFetch,
   type NodeSkippedReason,
   type Retry,
   type RunEvent,
@@ -1500,7 +1502,9 @@ class RunExecution {
   async #deInlineDraft(draft: RunEventDraft): Promise<RunEventDraft> {
     const store = this.#host.mediaStore;
     if (store !== undefined) {
-      return (await deInlineMedia(draft, store)) as RunEventDraft;
+      // Pass the host media-egress hook (D9) so a `url` media source is re-hosted to a handle; undefined
+      // when the host has no egress mechanism, in which case a `url` hard-fails inside deInlineMedia (I3).
+      return (await deInlineMedia(draft, store, this.#mediaUrlFetch())) as RunEventDraft;
     }
     // No store: a draft carrying inline bytes OR an un-re-hosted url media part cannot be made
     // durable-safe — throw (the broadened #emitDurable catch + the #onOutcome/#begin backstops map it to
@@ -1513,6 +1517,21 @@ class RunExecution {
       );
     }
     return draft;
+  }
+
+  /**
+   * Build the `deInlineMedia` url-rehost hook (1.AF/D9) from the host media-egress port, bound to this
+   * run's size-bound **policy** ({@link DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES}) and abort signal — so the host
+   * mechanism receives the engine-supplied bound. `undefined` when the host has no egress mechanism, in
+   * which case a `url` media source hard-fails inside `deInlineMedia` (an un-re-hosted url may never
+   * persist, I3).
+   */
+  #mediaUrlFetch(): MediaUrlFetch | undefined {
+    const fetchMedia = this.#host.fetchMedia;
+    if (fetchMedia === undefined) {
+      return undefined;
+    }
+    return (url) => fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal);
   }
 
   #elapsedMs(): number {

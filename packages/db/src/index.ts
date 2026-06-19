@@ -72,3 +72,17 @@ export {
 // handle. Node-side (node:crypto + node:fs); a host wires one into ExecutionHost.mediaStore. The pure
 // engine never imports this — it depends only on the @relavium/shared `MediaStore` interface.
 export { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
+
+// Media egress (1.AF/D9, ADR-0043) — the host-side SSRF-validated, size-bounded URL fetch the engine
+// binds into a `MediaUrlFetch` hook so `deInlineMedia` can re-host a url media source to a handle.
+// Node-side (node:dns + node:https + node:net). The pure engine never imports this.
+export {
+  fetchMediaBytes,
+  nodeMediaEgressDeps,
+  MediaEgressError,
+  type FetchMediaBytesOptions,
+  type MediaEgressDeps,
+  type MediaEgressErrorCode,
+  type HopRequest,
+  type HopResponse,
+} from './media-egress.js';

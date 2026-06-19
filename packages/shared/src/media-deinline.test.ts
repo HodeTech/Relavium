@@ -37,6 +37,7 @@ function makeStubStore(): {
     },
     resolveForEgress: () =>
       Promise.reject(new Error('resolveForEgress is not exercised by deInlineMedia')),
+    readRange: () => Promise.reject(new Error('readRange is not exercised by deInlineMedia')),
   };
   return { store, puts };
 }
@@ -152,6 +153,51 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     expect(puts).toHaveLength(0);
   });
 
+  // --- D9: WITH an injected fetch hook, a canonical url media part is RE-HOSTED to a handle.
+  it('re-hosts a url media part to a handle via the injected fetch hook (D9 — no url in output)', async () => {
+    const { store, puts } = makeStubStore();
+    const fetched: string[] = [];
+    const FETCH_BYTES = new Uint8Array([1, 2, 3, 4]);
+    const fetchUrl = (url: string): Promise<Uint8Array> => {
+      fetched.push(url);
+      return Promise.resolve(FETCH_BYTES);
+    };
+    const urlPart: unknown = [
+      {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'url', url: 'https://x.example/a.png' },
+      },
+    ];
+    const out = (await deInlineMedia(urlPart, store, fetchUrl)) as {
+      source: unknown;
+      byteLength: number;
+    }[];
+    expect(fetched).toEqual(['https://x.example/a.png']); // the host hook was called with the url
+    const put0 = puts[0];
+    expect(put0).toBeDefined();
+    expect(put0?.bytes).toEqual(FETCH_BYTES); // the fetched bytes were content-addressed
+    expect(out[0]?.source).toEqual({ kind: 'handle', ref: put0?.handle });
+    expect(out[0]?.byteLength).toBe(4);
+    expect(JSON.stringify(out)).not.toContain('x.example'); // the url is gone — re-hosted to a handle (I3)
+  });
+
+  it('still hard-fails a mimeType-less url part EVEN WITH a fetch hook (nothing to content-address)', async () => {
+    const { store, puts } = makeStubStore();
+    let fetchCalls = 0;
+    const fetchUrl = (): Promise<Uint8Array> => {
+      fetchCalls += 1;
+      return Promise.resolve(new Uint8Array([1]));
+    };
+    const bare: unknown = {
+      type: 'media',
+      source: { kind: 'url', url: 'https://x.example/a.png' },
+    };
+    await expect(deInlineMedia(bare, store, fetchUrl)).rejects.toThrow(/no mimeType/);
+    expect(puts).toHaveLength(0); // fail-closed before the hook — no fetch, no put
+    expect(fetchCalls).toBe(0); // the hook is never invoked — it fails closed BEFORE any fetch
+  });
+
   // --- I3 leak regression: non-canonical byte carriers must HARD-FAIL, never pass through (review HIGH #1)
   it('hard-fails (no leak, no put) on a base64 data: URI string in an opaque value', async () => {
     const { store, puts } = makeStubStore();
@@ -205,6 +251,20 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     ];
     await expect(deInlineMedia(bad, store)).rejects.toThrow(/not valid base64/);
     expect(puts).toHaveLength(0);
+  });
+
+  it('hard-fails (TypeError naming the real fault) on a base64 media source whose data is not a string', async () => {
+    const { store, puts } = makeStubStore();
+    // Co-locate with a real carrier so the scan triggers the walk — a lone non-string-data source is NOT
+    // flagged (its data isn't a string), so it would otherwise fast-path through unchanged (and fail the
+    // durable Zod schema later). The walk reaches mediaPartBytes (isInflightMediaPart only needs a string
+    // mimeType + a string kind), and the message names the actual fault (non-string data), not "unsupported kind".
+    const bad: unknown = [
+      { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 42 } },
+      base64MediaPart,
+    ];
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/source\.data must be a string/);
+    expect(puts).toHaveLength(0); // throws on item 0 before the valid carrier is put
   });
 
   it('hard-fails on an unknown media source kind (co-located with a real carrier so the scan runs)', async () => {

@@ -187,6 +187,7 @@ function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: U
         : Promise.resolve(found.bytes);
     },
     resolveForEgress: () => Promise.reject(new Error('unused by this test')),
+    readRange: () => Promise.reject(new Error('unused by this test')),
   };
   return { store, puts };
 }
@@ -373,6 +374,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       put: () => Promise.reject(new Error('disk full')),
       get: () => Promise.reject(new Error('unused')),
       resolveForEgress: () => Promise.reject(new Error('unused')),
+      readRange: () => Promise.reject(new Error('unused')),
     };
     const runStore = new InMemoryRunStore();
     const host = createInMemoryHost({ store: runStore, mediaStore: rejectingStore });
@@ -384,6 +386,102 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:failed');
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+  });
+
+  it('re-hosts a url media node output to a handle via the host media-egress port (D9, no url persisted)', async () => {
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const fetched: string[] = [];
+    const FETCH_BYTES = new Uint8Array([5, 6, 7]);
+    const host = createInMemoryHost({
+      store: runStore,
+      mediaStore,
+      fetchMedia: (url) => {
+        fetched.push(url);
+        return Promise.resolve(FETCH_BYTES);
+      },
+    });
+    const urlPart = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'url' as const, url: 'https://media.example/a.png' },
+    };
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: { image: urlPart } }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(fetched).toEqual(['https://media.example/a.png']); // the host egress port was invoked
+    const put0 = puts[0];
+    expect(put0).toBeDefined();
+    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    const output = done?.type === 'node:completed' ? done.output : undefined;
+    expect(output).toEqual({
+      image: {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'handle', ref: put0?.handle },
+        byteLength: 3,
+      },
+    });
+    // I3 — the url never reached the delivered stream or the persisted log (re-hosted to a handle).
+    expect(JSON.stringify(events)).not.toContain('media.example');
+    const runId = events[0]?.runId;
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('media.example');
+    }
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('hard-fails a url media output when the host has a store but NO media-egress port (no leak)', async () => {
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({ store: runStore, mediaStore }); // store, but no fetchMedia port
+    const urlPart = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'url' as const, url: 'https://media.example/a.png' },
+    };
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: urlPart }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    expect(puts).toHaveLength(0); // an un-re-hostable url is fail-closed — nothing stored
+    expect(JSON.stringify(events)).not.toContain('media.example');
+  });
+
+  it('fails the run (no leak) when the media-egress port THROWS on a url output (D9 fetch failure)', async () => {
+    // The third D9 branch: a fetchMedia hook IS wired but rejects (an SSRF block / network error / size
+    // overrun). The rejection propagates through deInlineMedia to #emitDurable's catch → one run:failed; the
+    // url + the failure reason stay out of every delivered + persisted event (secret-free, I3).
+    const { store: mediaStore, puts } = stubMediaStore();
+    const runStore = new InMemoryRunStore();
+    const host = createInMemoryHost({
+      store: runStore,
+      mediaStore,
+      fetchMedia: () => Promise.reject(new Error('blocked_host')),
+    });
+    const urlPart = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'url' as const, url: 'https://media.example/a.png' },
+    };
+    const events = await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: urlPart }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    expect(puts).toHaveLength(0); // the fetch failed before any put
+    expect(JSON.stringify(events)).not.toContain('media.example'); // url never persisted/delivered
+    const runId = events[0]?.runId;
+    if (runId !== undefined) {
+      expect(JSON.stringify(runStore.eventsFor(runId))).not.toContain('media.example');
+    }
   });
 });
 
