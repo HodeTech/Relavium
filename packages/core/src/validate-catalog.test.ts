@@ -71,4 +71,18 @@ describe('validateWorkflowWithCatalog (1.AF/D15 — output_modalities load-check
     const catalog: WorkflowModelCatalog = () => caps([['text'], ['image']]);
     expect(() => validateWorkflowWithCatalog(wf, catalog)).toThrow(WorkflowValidationError);
   });
+
+  it('shares the runtime predicate so the load-time and runtime verdicts cannot diverge (1.AF H2)', () => {
+    // The load-check now calls @relavium/llm's isOutputCombinationSupported — the SAME predicate the runtime
+    // FallbackChain pre-skip uses. (a) text-only against a no-media `[]`-combo model is always emittable, so
+    // an explicit ['text'] must NOT throw (the one case a pure exact-match load-check would have regressed).
+    const textOnly = agentWorkflow(", model: m1, output_modalities: ['text']");
+    expect(() => validateWorkflowWithCatalog(textOnly, () => caps([]))).not.toThrow();
+    // (b) a strict subset of a single declared combination is NOT a member — the divergence the old runtime
+    // subset gate admitted (and the load-check rejected). Both gates now reject it identically.
+    const subset = agentWorkflow(", model: m1, output_modalities: ['text', 'image']");
+    expect(() =>
+      validateWorkflowWithCatalog(subset, () => caps([['text', 'image', 'audio']])),
+    ).toThrow(WorkflowValidationError);
+  });
 });

@@ -84,6 +84,19 @@ function isPlainObject(value: object): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+/**
+ * Byte-free projection of an arbitrary value for an **observability event field** (I3) — strips inline
+ * media base64 (canonical `{ kind:'base64', data }` sources, base64 `data:` URIs) and raw binary buffers
+ * at any nesting, leaving the surrounding structure intact. The symmetric twin of the `outputSummary`
+ * redaction in {@link toText}, exposed for the `agent:tool_call.toolInput` field: a model can emit a
+ * base64 `data:` URI (or a `{ kind:'base64', data }` object) as a tool argument, and that field rides the
+ * event/IPC/log stream (an I3 boundary the emit-time `deInlineMedia` choke point cannot catch, since it
+ * sees only a flat string). Display-only — the dispatch already ran on the real args. Cycle-safe.
+ */
+export function redactInlineMedia(value: unknown): unknown {
+  return redactInlineMediaForText(value, new WeakSet<object>());
+}
+
 function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
   if (typeof value === 'string') {
     return isBase64DataUri(value) ? '[base64 data URI omitted]' : value;

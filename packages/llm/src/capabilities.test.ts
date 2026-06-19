@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertStreamable,
   assertSupported,
+  isOutputCombinationSupported,
   requiredCapabilities,
   supportsRequest,
 } from './capabilities.js';
@@ -92,6 +93,24 @@ describe('capability gating', () => {
     const imageOutReq: LlmRequest = { ...TEXT_REQ, outputModalities: ['text', 'image'] };
     expect(supportsRequest(ALL, imageOutReq)).toBe(true); // ALL has ['text','image']
     expect(supportsRequest(audioOnly, imageOutReq)).toBe(false); // outputCombinations []
+  });
+
+  it('isOutputCombinationSupported is the ONE exact-membership predicate shared by both gates (1.AF H2)', () => {
+    const gemini = [['text'], ['text', 'image'], ['text', 'audio']]; // image+audio never together
+    // Exact membership of a declared combination → supported.
+    expect(isOutputCombinationSupported(gemini, ['text', 'image'])).toBe(true);
+    expect(isOutputCombinationSupported(gemini, ['text', 'audio'])).toBe(true);
+    // A wire-INVALID combination the closed set exists to reject (image+audio together) → unsupported.
+    expect(isOutputCombinationSupported(gemini, ['text', 'image', 'audio'])).toBe(false);
+    // A STRICT SUBSET of a single combo is NOT a member — the old runtime subset gate wrongly ADMITTED
+    // this (the H2 divergence: load-check rejected, runtime accepted). Now both reject it.
+    expect(isOutputCombinationSupported([['text', 'image', 'audio']], ['text', 'image'])).toBe(
+      false,
+    );
+    // text-only is always emittable, even against a no-media `[]`-combo model (Anthropic/DeepSeek) — so a
+    // text request is never wrongly skipped/rejected (the one case pure exact-match would have regressed).
+    expect(isOutputCombinationSupported([], ['text'])).toBe(true);
+    expect(isOutputCombinationSupported(gemini, ['text'])).toBe(true);
   });
 
   it('supportsRequest reflects whether the provider can serve the request', () => {

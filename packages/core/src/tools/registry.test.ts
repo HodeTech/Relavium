@@ -393,6 +393,28 @@ describe('ToolRegistry — config-only params and I/O mapping', () => {
     expect(req?.credentialRef).toBe('ref-1');
     expect(out.events.call.toolInput).toEqual({ query: 'hello world' }); // endpoint/credentialRef stripped
   });
+
+  it('redacts inline media base64 from agent:tool_call.toolInput (I3 — symmetric to the result-side outputSummary redaction)', async () => {
+    // A model can emit a base64 `data:` URI as a free-form string tool argument (here http_request's `body`
+    // and a header value). toolInput rides the event/IPC/log stream (an I3 boundary the emit-time
+    // deInlineMedia choke point cannot catch in a flat string), so the bytes must be redacted there exactly
+    // as the result side redacts outputSummary — the dispatch still ran on the real (un-redacted) args.
+    const dataUri = 'data:image/png;base64,aGVsbG8gd29ybGQgdGhpcyBpcyBub3QgYSByZWFsIGltYWdl';
+    const out = await registry().dispatch(
+      call('http_request', {
+        url: 'https://api.example.com/x',
+        body: dataUri,
+        headers: { 'x-thumb': dataUri },
+      }),
+      ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } }),
+    );
+    expect(out.events.call.toolInput).toMatchObject({
+      body: '[base64 data URI omitted]',
+      headers: { 'x-thumb': '[base64 data URI omitted]' }, // the walk recurses into nested objects
+    });
+    // No fragment of the payload survives anywhere in the event field.
+    expect(JSON.stringify(out.events.call.toolInput)).not.toContain('aGVsbG8');
+  });
 });
 
 /* --- capability availability + execution + cancellation --- */

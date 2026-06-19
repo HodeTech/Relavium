@@ -222,6 +222,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`save_to` url double-fetch** — a `url`-sourced media part in a save_to output is fetched twice (the
   save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
   result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
+- [ ] **Keychain no-raw-key IPC test (ADR-0044 §4 acceptance gate)** — ADR-0044 §4 makes "the keychain bridge
+  never returns a raw key from an IPC command" an **explicit 1.AF test deliverable**, bundled with the media
+  IPC/byte-delivery review surface. That IPC surface is the desktop/Tauri command layer, which is **unbuilt at
+  1.AF** — there is no keychain IPC command to assert against yet — so the test is deferred to the 1.AH host
+  bridge that introduces it. The Node-side keychain seam (ADR-0006) exists, but the *no-raw-key-over-IPC* gate
+  is meaningful only once the IPC command exists. **Owner: 1.AH (the keychain/media IPC bridge).** Recorded so
+  the ADR-0044 §4 acceptance is not silently dropped. *(apps/desktop keychain IPC + a direct test; 1.AH)*
+- [ ] **Surface `Usage.mediaUnits` on `cost:updated` (the disjoint per-unit observability axis)** — ADR-0031 A6
+  / ADR-0044 §3 intend the per-unit media usage (image per-count, audio/video per-second; a token-based
+  provider's audio as `unit:'count'`) to be observable on the `cost:updated` event. Realized media **spend**
+  already folds into `cumulativeCostMicrocents` (D17), but the per-unit **counts** are not surfaced: `CostUpdatedEventSchema`
+  lives in `@relavium/shared`, which cannot import `MediaUnitsEntry` from `@relavium/llm` (the layering forbids
+  shared→llm). Surfacing it requires **relocating `MediaUnitsEntrySchema` to `@relavium/shared`** (llm re-exports
+  it; `UsageSchema` keeps using it) — a seam-shape move that wants its own PR. The canonical docs (sse-event-schema.md)
+  now reflect the current state (field deferred). *(low · @relavium/shared seam move + run-event.ts + agent-turn.ts emit; a later PR)*
 
 > **2026-06-19 — second (Sonnet) review pass on PR #35.** A full re-review (9 dimensions, double-verified)
 > on top of the first review's fixes confirmed **0 blockers/highs in reachable code**; ~17 small fixes

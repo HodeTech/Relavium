@@ -106,6 +106,32 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     expect(store.describe(HANDLE)?.allowedScopes).toEqual([{ kind: 'session', id: 's1' }]);
   });
 
+  it('the terminal sweep refreshes last_referenced_at so grace measures from drop-to-zero, not production (D11)', () => {
+    // A controllable (non-advancing) clock so the test pins the GC cursor basis precisely.
+    let clock = 1_000;
+    const s = createMediaReferenceStore(client.db, () => clock);
+    s.recordObject({ handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 }); // last_ref=1000
+    s.addReference(HANDLE, 'run', 'run-1'); // the only reference
+    clock = 1_000_000; // the run lives a long time after the handle was produced
+    expect(s.removeRunReferences('run-1')).toBe(1); // terminal sweep drops the last ref → refreshes the cursor
+    // Grace window of 7: without the refresh the cursor would still be 1000 and the handle would be reclaimed
+    // immediately (1000 ≤ 1_000_000 − 7); WITH it the window starts at the de-reference, so it survives.
+    expect(s.reclaimExpired(7)).toEqual([]);
+    clock = 1_000_010; // now past the grace window
+    expect(s.reclaimExpired(7)).toEqual([HANDLE]);
+  });
+
+  it('addReference refreshes last_referenced_at (a re-referenced stale handle resets its grace window) (T-8)', () => {
+    let clock = 1_000;
+    const s = createMediaReferenceStore(client.db, () => clock);
+    s.recordObject({ handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 }); // last_ref=1000
+    clock = 1_000_000;
+    s.addReference(HANDLE, 'session', 's1'); // fresh reference activity → cursor refreshed to 1_000_000
+    client.db.delete(mediaReferences).where(eq(mediaReferences.handle, HANDLE)).run(); // now zero refs
+    // The cursor came from the addReference (1_000_000), not production (1000), so a 7-unit grace holds.
+    expect(s.reclaimExpired(7)).toEqual([]);
+  });
+
   it('createMediaReferencePort records the object + a run ref, and reclaimRun removes the run ref (D12c/D11)', async () => {
     // The SQLite port is synchronous (better-sqlite3), but MediaReferencePort returns void | Promise<void>
     // for a future async store (Phase-2 Postgres) — so the calls are awaited (also satisfies no-floating-promises).

@@ -9,7 +9,7 @@
 
 import { extractHttpsHost } from '@relavium/shared';
 
-import { boundForModel } from './bounding.js';
+import { boundForModel, redactInlineMedia } from './bounding.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
@@ -424,6 +424,13 @@ function sanitizeInput(
     for (const key of secretArgKeys) {
       delete out[key];
     }
+  }
+  // Redact inline media bytes from every surviving arg value before it becomes `agent:tool_call.toolInput`:
+  // that field rides the event/IPC/log stream (an I3 boundary), and a model can emit a base64 `data:` URI
+  // or a `{ kind:'base64', data }` object as a tool argument. Symmetric to the `outputSummary` redaction on
+  // the result side — display-only, the dispatch already ran on the real args.
+  for (const key of Object.keys(out)) {
+    out[key] = redactInlineMedia(out[key]);
   }
   return out;
 }
