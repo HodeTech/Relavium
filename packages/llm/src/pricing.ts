@@ -1,3 +1,5 @@
+import type { MediaBilledModality } from '@relavium/shared';
+
 import type { ProviderId } from './types.js';
 
 /**
@@ -47,11 +49,9 @@ export interface ModelPricing {
    * per-count rate exists. No 1.AF model emits billed media output, so every row leaves this undefined; the
    * shape is the seam for the model catalog's media rates.
    */
-  readonly mediaOutputRates?: {
-    readonly image?: number;
-    readonly audio?: number;
-    readonly video?: number;
-  };
+  // Keyed by the canonical `MediaBilledModality` set (image/audio/video) via a mapped type, so the keys
+  // stay in sync with `MEDIA_BILLED_MODALITIES` at compile time — never a hand-maintained literal.
+  readonly mediaOutputRates?: { readonly [K in MediaBilledModality]?: number };
 }
 
 const USD_PER_MTOK_TO_MICROCENTS = 100_000_000; // 1 USD = 1e8 micro-cents

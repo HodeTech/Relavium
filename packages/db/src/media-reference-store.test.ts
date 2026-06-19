@@ -98,6 +98,12 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     expect(store.reclaimExpired(0)).toEqual([HANDLE]);
     expect(store.describe(HANDLE)).toBeUndefined(); // soft-deleted
     expect(store.reclaimExpired(0)).toEqual([]); // idempotent — already deleted
+    // RESURRECTION: producing the same content-addressed bytes again must revive the handle (clear
+    // deleted_at), so describe() returns it and read_media can authorize the re-introduced content again.
+    record();
+    expect(store.describe(HANDLE)).toBeDefined();
+    store.addReference(HANDLE, 'session', 's1');
+    expect(store.describe(HANDLE)?.allowedScopes).toEqual([{ kind: 'session', id: 's1' }]);
   });
 
   it('createMediaReferencePort records the object + a run ref, and reclaimRun removes the run ref (D12c/D11)', async () => {

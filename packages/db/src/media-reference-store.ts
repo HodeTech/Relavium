@@ -83,9 +83,14 @@ export function createMediaReferenceStore(
           lastReferencedAt: ts,
           createdAt: ts,
         })
-        // Content-addressed ⇒ the bytes (and byteLength) are identical on a re-record; just refresh the GC
-        // cursor so a re-referenced object is not reclaimed mid-window.
-        .onConflictDoUpdate({ target: mediaObjects.handle, set: { lastReferencedAt: ts } })
+        // Content-addressed ⇒ the bytes (and byteLength) are identical on a re-record; refresh the GC
+        // cursor so a re-referenced object is not reclaimed mid-window, AND clear `deleted_at` so a handle
+        // GC-soft-deleted earlier is RESURRECTED when the same bytes are produced again (otherwise
+        // describe() would keep returning undefined and read_media would deny live, re-introduced content).
+        .onConflictDoUpdate({
+          target: mediaObjects.handle,
+          set: { lastReferencedAt: ts, deletedAt: null },
+        })
         .run();
     },
 

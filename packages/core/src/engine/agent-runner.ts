@@ -134,9 +134,12 @@ export function buildMediaUnitsEstimate(
   return estimate;
 }
 
+/** The billed media modalities as a string-keyed set — preserves the const-array's literal types (no cast). */
+const BILLED_MODALITIES: ReadonlySet<string> = new Set(MEDIA_BILLED_MODALITIES);
+
 /** Type guard: is an output modality a BILLED media modality (image/audio/video)? Narrows without a cast. */
 function isBilledModality(modality: OutputModality): modality is MediaBilledModality {
-  return (MEDIA_BILLED_MODALITIES as readonly string[]).includes(modality);
+  return BILLED_MODALITIES.has(modality);
 }
 
 /**

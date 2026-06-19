@@ -970,7 +970,7 @@ describe('collectDurableMediaHandles (1.AF/D12c — produced-handle reference co
     };
     const handles = collectDurableMediaHandles(value)
       .map((m) => m.handle)
-      .sort();
+      .sort((a, b) => a.localeCompare(b)); // explicit comparator (Sonar S2871) — locale-stable for ASCII handles
     expect(handles).toEqual([H1, H2]); // distinct, despite repeats across containers + the cycle
   });
 

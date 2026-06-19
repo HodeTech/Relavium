@@ -371,7 +371,9 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
       ),
     );
     expect(err).toBeInstanceOf(ToolPolicyError);
-    expect((err as ToolPolicyError).reason).toBe('media_scope_denied');
+    if (err instanceof ToolPolicyError) {
+      expect(err.reason).toBe('media_scope_denied'); // narrow, never an unsafe `as` cast
+    }
   });
 
   it('rejects an unknown handle (describe → undefined)', async () => {

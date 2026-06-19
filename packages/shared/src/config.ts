@@ -103,7 +103,7 @@ export const ChatConfigSchema = z
 
 /**
  * Per-modality media-output **unit-count** default for the pre-egress media cost estimate (1.AF/D17,
- * [ADR-0044](../decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — the analogue of
+ * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — the analogue of
  * `max_tokens_estimate`, but a **count** not a price: how many billed units (images, audio-seconds,
  * video-seconds) a media-output turn is assumed to produce when it does not declare its own volume. The
  * per-unit **price** lives in the model catalog (`ModelPricing.mediaOutputRates`), never here. `document`

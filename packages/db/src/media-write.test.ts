@@ -38,8 +38,8 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
   it('rejects an absolute path, a drive letter, a UNC path, and a `..` traversal', async () => {
     const write = createFilesystemMediaWrite(root);
     await expect(write('/etc/passwd', BYTES)).rejects.toThrow(/relative/);
-    await expect(write('C:\\win.png', BYTES)).rejects.toThrow(/relative/);
-    await expect(write('\\\\server\\share\\x.png', BYTES)).rejects.toThrow(/relative/);
+    await expect(write(String.raw`C:\win.png`, BYTES)).rejects.toThrow(/relative/);
+    await expect(write(String.raw`\\server\share\x.png`, BYTES)).rejects.toThrow(/relative/);
     await expect(write('../escape/x.png', BYTES)).rejects.toThrow(/\.\./);
     await expect(write('a/../../escape.png', BYTES)).rejects.toThrow(/\.\./);
     await expect(write('', BYTES)).rejects.toThrow(/empty/);

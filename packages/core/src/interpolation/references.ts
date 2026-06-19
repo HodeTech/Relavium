@@ -155,7 +155,7 @@ const NAMESPACED = /^(inputs|ctx|secrets)\.([A-Za-z0-9_-]+)(.*)$/s;
 // `run.id` only (the negative lookahead stops `run.identity`/`run.id_x` from being read as `run.id`);
 // `run.outputs[…]` is matched first above, so there is no collision. A trailing `.x`/`[0]` is carried
 // as `path` and resolves to nothing (run.id is a flat string) → a typed `unresolved_reference`.
-const RUN_ID = /^run\.id(?![A-Za-z0-9_])(.*)$/s;
+const RUN_ID = /^run\.id(?!\w)(.*)$/s;
 
 function parseHead(head: string): Pick<InterpolationReference, 'kind' | 'identifier' | 'path'> {
   const nodeMatch = NODE_OUTPUT.exec(head);

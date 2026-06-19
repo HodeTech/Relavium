@@ -77,6 +77,10 @@ function countLines(text: string): number {
  * resulting flat string, not a structured media source). The MODEL-facing result value is left intact
  * (the model still receives the bytes via the seam); only this text projection is redacted. Cycle-safe.
  */
+function isRecord(value: object): value is Record<string, unknown> {
+  return !Array.isArray(value); // a non-null object that is not an array — narrows without an `as` cast
+}
+
 function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
   if (typeof value === 'string') {
     return isBase64DataUri(value) ? '[base64 data URI omitted]' : value;
@@ -91,13 +95,15 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   if (Array.isArray(value)) {
     return value.map((item) => redactInlineMediaForText(item, seen));
   }
-  const record = value as Record<string, unknown>;
-  if (isCanonicalBase64Source(record)) {
-    const data = record['data'];
+  if (!isRecord(value)) {
+    return value; // unreachable after the array check above; narrows `value` to Record for the compiler
+  }
+  if (isCanonicalBase64Source(value)) {
+    const data = value['data'];
     return { kind: 'base64', bytes: typeof data === 'string' ? data.length : 0 }; // drop the bytes
   }
   const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(record)) {
+  for (const [key, item] of Object.entries(value)) {
     out[key] = redactInlineMediaForText(item, seen);
   }
   return out;
@@ -112,16 +118,17 @@ function toText(result: unknown): string {
   if (result === undefined) {
     return '';
   }
-  // Only walk+clone when there is inline media to redact (the dominant text/JSON case pays one cheap scan).
-  const safe = containsInlineMediaBytes(result)
-    ? redactInlineMediaForText(result, new WeakSet<object>())
-    : result;
   try {
-    // JSON.stringify returns undefined for a value with no JSON form (a bare function/symbol); the `??`
-    // keeps a string without falling back to a `[object Object]`-style default stringification.
+    // Redact INSIDE the try so a throwing getter/proxy in the result during the redaction walk (or the
+    // scan) degrades to '[unserializable]' rather than escaping. Only walk+clone when there is inline media
+    // to redact (the dominant text/JSON case pays one cheap scan). JSON.stringify returns undefined for a
+    // value with no JSON form (a bare function/symbol); the `??` keeps a string without an `[object Object]`.
+    const safe = containsInlineMediaBytes(result)
+      ? redactInlineMediaForText(result, new WeakSet<object>())
+      : result;
     return JSON.stringify(safe) ?? '[unserializable]';
   } catch {
-    return '[unserializable]'; // circular reference / throwing toJSON
+    return '[unserializable]'; // circular reference / throwing toJSON / throwing getter during redaction
   }
 }
 
