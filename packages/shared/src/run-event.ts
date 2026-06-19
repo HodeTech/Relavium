@@ -6,6 +6,8 @@ import {
   ERROR_CODES,
   EXECUTION_MODES,
   FS_SCOPE_TIERS,
+  LLM_PROVIDERS,
+  MEDIA_BILLED_MODALITIES,
   STOP_REASONS,
 } from './constants.js';
 import { GateTypeSchema, TimeoutActionSchema } from './node.js';
@@ -258,6 +260,28 @@ export const NodeRetryingEventSchema = z.object({
   delayMs: nonNegativeInt,
 });
 
+/**
+ * An async media-generation job was submitted to a provider; the engine now owns its
+ * poll/checkpoint/resume/cancel loop (1.AG, ADR-0045 §2). **Durable** so a crash-resume RE-ATTACHES
+ * (re-polls the persisted opaque `jobId`) rather than re-submitting (which would double-bill + orphan
+ * the vendor job). The node parks — a NON-terminal suspension — until its terminal
+ * `node:completed | node:failed | node:skipped`. Per-poll progress is transient (never persisted).
+ * `jobId` is Relavium-opaque, never the vendor operation-name (ADR-0011 I1).
+ */
+export const MediaJobSubmittedEventSchema = z.object({
+  type: z.literal('media_job:submitted'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  jobId: nonEmptyString, // the Relavium-opaque job id the engine polls (never the vendor op-name)
+  provider: z.enum(LLM_PROVIDERS),
+  model: nonEmptyString, // canonical model id
+  modality: z.enum(MEDIA_BILLED_MODALITIES), // image | audio | video
+  startedAt: z.string().datetime({ offset: true }),
+  // deadlineAt = startedAt + [defaults].media_job_deadline_ms; on resume `now > deadlineAt` short-circuits a doomed re-poll.
+  deadlineAt: z.string().datetime({ offset: true }),
+});
+export type MediaJobSubmittedEvent = z.infer<typeof MediaJobSubmittedEventSchema>;
+
 /** Why a node was skipped — `branch_not_taken` (a `condition` routed away) or `upstream_unreachable`. */
 export const NodeSkippedReasonSchema = z.enum(['branch_not_taken', 'upstream_unreachable']);
 export type NodeSkippedReason = z.infer<typeof NodeSkippedReasonSchema>;
@@ -371,6 +395,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   NodeFailedEventSchema,
   NodeSkippedEventSchema,
   NodeRetryingEventSchema,
+  MediaJobSubmittedEventSchema,
   HumanGatePausedEventSchema,
   HumanGateResumedEventSchema,
   RunCompletedEventSchema,

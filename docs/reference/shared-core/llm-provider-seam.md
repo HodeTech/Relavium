@@ -163,7 +163,7 @@ interface LlmProvider {
   // ADR-0031 decision #6 — separate-endpoint media generation, RESERVED at 1.AD (A5): the methods
   // are optional shape only; behavior + the async poll/checkpoint loop's own ADR land at 1.AG.
   generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
-  pollMediaJob?(jobId: string, key: string): Promise<MediaJobStatus>;          // pending(progress?) | done(media) | failed(LlmError)
+  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
 }
 
 // The per-modality capability matrix (ADR-0031 decision #3). Input composability is unconstrained

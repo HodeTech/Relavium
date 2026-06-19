@@ -471,6 +471,10 @@ export interface LlmProvider {
    * implements it.
    */
   generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;
-  /** Poll an async media job by its Relavium-opaque id (**reserved**, A5 — see `generateMedia`). */
-  pollMediaJob?(jobId: string, key: string): Promise<MediaJobStatus>;
+  /**
+   * Poll an async media job by its Relavium-opaque id (A5, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+   * `signal` aborts the IN-FLIGHT poll so a run cancel reaches the open provider request, not just the
+   * next schedule (an additive amendment to the 1.AD-reserved shape, made while still un-implemented).
+   */
+  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>;
 }

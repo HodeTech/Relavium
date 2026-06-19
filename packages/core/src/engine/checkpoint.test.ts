@@ -100,6 +100,54 @@ describe('reconstructCheckpointState', () => {
     expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'gate', isBudgetGate: false }]);
   });
 
+  const mediaJob = (seq: number, nodeId: string, jobId: string): RunEvent => ({
+    type: 'media_job:submitted',
+    ...base(seq),
+    nodeId,
+    jobId,
+    provider: 'openai',
+    model: 'sora',
+    modality: 'video',
+    startedAt: TS,
+    deadlineAt: '2026-01-01T00:30:00.000Z',
+  });
+
+  it('parks an in-flight async media job (paused node + pendingMediaJobs entry) — ADR-0045 §2', () => {
+    const state = reconstructCheckpointState([started, mediaJob(1, 'gen', 'job-1')]);
+    expect(state?.nodeStates.get('gen')).toEqual({ status: 'paused' }); // suspended, NOT absent → re-attach not re-run
+    expect(state?.pendingMediaJobs).toEqual([
+      {
+        nodeId: 'gen',
+        jobId: 'job-1',
+        provider: 'openai',
+        model: 'sora',
+        modality: 'video',
+        startedAt: TS,
+        deadlineAt: '2026-01-01T00:30:00.000Z',
+      },
+    ]);
+  });
+
+  it("clears the node's media-job entry on its terminal node:completed (nothing to re-attach) — ADR-0045 §2", () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-1'),
+      completed(2, 'gen', { handle: 'media://sha256-x' }),
+    ]);
+    expect(state?.pendingMediaJobs).toEqual([]);
+    expect(state?.nodeStates.get('gen')?.status).toBe('completed');
+  });
+
+  it('latest media_job:submitted wins for a node (a node-retry re-dispatch replaces the entry) — ADR-0045 §2', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-old'),
+      mediaJob(2, 'gen', 'job-new'),
+    ]);
+    expect(state?.pendingMediaJobs).toHaveLength(1);
+    expect(state?.pendingMediaJobs[0]?.jobId).toBe('job-new');
+  });
+
   it('keeps isBudgetGate=true across the budget:paused → human_gate:paused pair + restores the cumulative cost — H1/H2', () => {
     // The engine emits budget:paused THEN human_gate:paused with the SAME gateId for a budget gate. The fold
     // must not let the later human_gate:paused downgrade it to a plain human gate — else a resumed REJECTED

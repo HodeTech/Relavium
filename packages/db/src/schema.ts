@@ -111,6 +111,12 @@ export const modelCatalog = sqliteTable(
     mediaImageCostMicrocents: integer('media_image_cost_microcents'),
     mediaAudioCostMicrocents: integer('media_audio_cost_microcents'),
     mediaVideoCostMicrocents: integer('media_video_cost_microcents'),
+    // Inline-vs-generative media-output routing (1.AG/ADR-0045 §1): a 'generative' model routes an agent
+    // node to generateMedia() (separate-endpoint sync / async-LRO); 'chat' (default) uses the normal turn
+    // with output_modalities. Projects onto CapabilityFlags.media.surface; data-driven (no hardcoded ids).
+    mediaSurface: text('media_surface', { enum: ['chat', 'generative'] })
+      .notNull()
+      .default('chat'),
     supportsToolCalling: boolFlag('supports_tool_calling', false),
     supportsVision: boolFlag('supports_vision', false),
     supportsStreaming: boolFlag('supports_streaming', true),

@@ -79,6 +79,11 @@ We distinguish the two and never leak one as the other:
 - Errors surfaced through the run-event stream use the canonical `node:failed` and
   `run:failed` events (see the [SSE event schema](../reference/contracts/sse-event-schema.md));
   they carry a user-safe message plus an internal correlation id, not a raw exception.
+- **Content-policy rejections are fatal, with their own cause.** A provider content-filter block (a
+  text turn or a media generation) carries `content_filter` (1.AG,
+  [ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)) — **fatal**,
+  distinct from `validation` (an authoring/shape error) so a surface shows the right cause/remediation;
+  re-issuing the same blocked content just re-blocks, so it is never retried.
 - **Resource/limit codes are fatal-without-user-action, never silent.** `budget_exceeded`,
   `run_timeout`, and `turn_limit` (a **hard** agent/session turn/round cap — distinct from
   the `[chat].max_messages` history-**trim** threshold of

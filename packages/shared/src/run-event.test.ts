@@ -88,6 +88,17 @@ const valid: Record<string, Record<string, unknown>> = {
     error: { code: 'tool_failed', message: 'boom', retryable: true },
     delayMs: 1000,
   },
+  'media_job:submitted': {
+    type: 'media_job:submitted',
+    ...env,
+    nodeId: 'n',
+    jobId: 'job-1',
+    provider: 'openai',
+    model: 'sora',
+    modality: 'video',
+    startedAt: '2026-06-20T00:00:00.000Z',
+    deadlineAt: '2026-06-20T00:30:00.000Z',
+  },
   'human_gate:paused': {
     type: 'human_gate:paused',
     ...env,
@@ -274,7 +285,7 @@ describe('RunEvent union — every variant', () => {
     expect(RunEventSchema.safeParse(reject[name]).success).toBe(false);
   });
 
-  it('covers exactly the 20 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 21 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -289,6 +300,7 @@ describe('RunEvent union — every variant', () => {
       'node:failed',
       'node:skipped',
       'node:retrying',
+      'media_job:submitted',
       'human_gate:paused',
       'human_gate:resumed',
       'run:completed',
@@ -305,7 +317,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 20
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 21
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {

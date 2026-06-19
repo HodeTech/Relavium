@@ -187,6 +187,7 @@ function codeForLlmError(error: LlmError): ErrorCode {
     case 'cancelled':
       return 'cancelled';
     case 'content_filter':
+      return 'content_filter'; // a provider content-policy block — its own fatal cause (1.AG/ADR-0045 §6), not `validation`
     case 'bad_request':
       return 'validation';
     case 'unknown':

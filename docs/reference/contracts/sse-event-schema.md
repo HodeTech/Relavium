@@ -78,6 +78,7 @@ export type RunEvent =
 | `node:failed` | A node failed (TERMINAL — exactly one per node; emitted when the node-retry budget is exhausted, on a fatal / `retry_on`-excluded failure, **or** when a pending retry is abandoned by a cancel or a sibling abort — see 1.S). | `nodeId`, `error: {code, message, retryable, correlationId?}` (`code` is an [`ErrorCode`](#error-code-taxonomy); `correlationId` is a secret-free id joined to the internal log — ADR-0036), `attemptNumber?` (the last attempt, when a retry budget was spent — 1.S) |
 | `node:retrying` | A retryable node attempt failed and the engine will re-dispatch the whole node (1.S, [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)) — **non-terminal** (the node continues; `node:failed` is the terminal). | `nodeId`, `attemptNumber` (the attempt that just failed, 1-based), `error: {code, message, retryable}` (the `NodeFailure` shape — **no** `correlationId`; that anchors the terminal failure), `delayMs` (backoff before the next attempt) |
 | `node:skipped` | A node was skip-propagated (never ran). | `nodeId`, `reason: 'branch_not_taken' \| 'upstream_unreachable'` (`branch_not_taken` = a `condition` routed away from it; `upstream_unreachable` = every in-edge is dead because an upstream was skipped/failed). Emitted so the event log is a **complete, replayable** record — checkpoint/resume reconstructs a skipped vertex from it ([run-plan.md](../shared-core/run-plan.md)) and a surface can render the dimmed path instead of the node silently vanishing. |
+| `media_job:submitted` | An async media-generation job was submitted; the engine owns its poll/checkpoint/resume/cancel loop (1.AG, [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)) — **non-terminal** (the node parks until its `node:completed`/`node:failed`). **Durable** so a crash-resume re-attaches (re-polls the opaque `jobId`) instead of re-submitting; per-poll progress is **transient** (off this durable stream). | `nodeId`, `jobId` (Relavium-opaque — never the vendor op-name), `provider`, `model`, `modality: 'image' \| 'audio' \| 'video'`, `startedAt`, `deadlineAt` |
 | `human_gate:paused` | Execution suspended at a human gate. | `nodeId`, `gateId`, `gateType: 'approval' \| 'input' \| 'review'`, `message`, `assignee?`, `timeoutMs?`, `timeoutAction?: 'approve' \| 'reject'` (on-timeout policy, present only with `timeoutMs`), `expiresAt?` |
 | `human_gate:resumed` | A gate decision was applied; execution continues. | `nodeId`, `decision: 'approved' \| 'rejected' \| 'input_provided'`, `decidedBy`, `payload?` |
 | `run:paused` | The run is suspended with **≥1 gate pending** — the multi-gate aggregate that backs the pending-gate queue (parallel branches may each reach a gate). | `pendingGateCount`, `gateIds[]` |
@@ -151,6 +152,17 @@ export interface NodeRetryingEvent extends BaseEvent {
   attemptNumber: number;        // the attempt that just failed (1-based); the next attempt is attemptNumber + 1
   error: { code: ErrorCode; message: string; retryable: boolean }; // the NodeFailure shape — no correlationId (that anchors the terminal node:failed)
   delayMs: number;              // backoff before the next attempt
+}
+
+export interface MediaJobSubmittedEvent extends BaseEvent {
+  type: 'media_job:submitted'; // 1.AG/ADR-0045 §2 — an async media job was submitted; the node PARKS (non-terminal suspension). DURABLE (resume re-attaches).
+  nodeId: string;
+  jobId: string;               // the Relavium-opaque job id the engine re-polls — never the vendor operation-name (ADR-0011 I1)
+  provider: string;            // the LLM provider id bound to the job (failover does not apply to an in-flight job)
+  model: string;               // canonical model id
+  modality: 'image' | 'audio' | 'video';
+  startedAt: string;           // ISO-8601 submit time
+  deadlineAt: string;          // ISO-8601 = startedAt + [defaults].media_job_deadline_ms; on resume now > deadlineAt short-circuits a doomed re-poll
 }
 
 export interface HumanGatePausedEvent extends BaseEvent {
@@ -279,9 +291,9 @@ These three (and `run:paused` / `human_gate:paused`) are **non-terminal** — th
 
 `node:failed.error.code` and `run:failed.error.code` are a closed **`ErrorCode`** enum (not a free string), so surfaces can branch on cause and `retryable` is unambiguous:
 
-`validation` · `provider_auth` · `provider_rate_limit` · `provider_unavailable` · `tool_denied` · `tool_failed` · `budget_exceeded` · `run_timeout` · `turn_limit` · `cancelled` · `sandbox_error` · `internal`
+`validation` · `content_filter` · `provider_auth` · `provider_rate_limit` · `provider_unavailable` · `tool_denied` · `tool_failed` · `budget_exceeded` · `run_timeout` · `turn_limit` · `cancelled` · `sandbox_error` · `internal`
 
-The retryable/fatal mapping is owned by [error-handling.md](../../standards/error-handling.md) (e.g. `provider_rate_limit`/`provider_unavailable` retryable; `provider_auth`/`validation`/`tool_denied`/`turn_limit`/`cancelled` fatal). `turn_limit` is the limit-family code for a **hard** agent/session turn/round cap (the exact knob is settled with `AgentSession`, 1.V) — distinct from `run_timeout`/`budget_exceeded` so a capped conversation surfaces its own cause rather than a silent stop; continuing past it is an explicit user action, never a retry. It is **not** the `[chat].max_messages` knob, which is a session-history **trim** threshold ([config-spec.md](config-spec.md)) — trimming continues the session and emits no error. Messages remain user-safe and secret-free.
+The retryable/fatal mapping is owned by [error-handling.md](../../standards/error-handling.md) (e.g. `provider_rate_limit`/`provider_unavailable` retryable; `provider_auth`/`validation`/`content_filter`/`tool_denied`/`turn_limit`/`cancelled` fatal). `content_filter` is a provider content-policy rejection (text or media generation) — a fatal cause distinct from `validation` (an authoring/shape error), so a surface shows the right reason; the `content_filter` `LlmErrorKind` maps here (1.AG, [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §6). `turn_limit` is the limit-family code for a **hard** agent/session turn/round cap (the exact knob is settled with `AgentSession`, 1.V) — distinct from `run_timeout`/`budget_exceeded` so a capped conversation surfaces its own cause rather than a silent stop; continuing past it is an explicit user action, never a retry. It is **not** the `[chat].max_messages` knob, which is a session-history **trim** threshold ([config-spec.md](config-spec.md)) — trimming continues the session and emits no error. Messages remain user-safe and secret-free.
 
 ## Forward-compatibility
 

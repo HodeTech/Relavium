@@ -98,6 +98,7 @@ Models offered by each provider, including pricing used for local cost tracking.
 | `media_image_cost_microcents` | INTEGER | NULL — µ¢ per output image (1.AF/D17) |
 | `media_audio_cost_microcents` | INTEGER | NULL — µ¢ per output audio-second |
 | `media_video_cost_microcents` | INTEGER | NULL — µ¢ per output video-second |
+| `media_surface` | TEXT | NOT NULL DEFAULT `'chat'` — `'chat'` \| `'generative'`; routes an agent node to the normal turn vs `generateMedia()` (1.AG/ADR-0045 §1) |
 | `supports_tool_calling` | INTEGER (bool) | NOT NULL DEFAULT 0 |
 | `supports_vision` | INTEGER (bool) | NOT NULL DEFAULT 0 |
 | `supports_streaming` | INTEGER (bool) | NOT NULL DEFAULT 1 |
