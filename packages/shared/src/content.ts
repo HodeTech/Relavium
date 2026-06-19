@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
-import type { LlmProviderId, MediaModality } from './constants.js';
+import { MEDIA_AUTHZ_SCOPE_KINDS, type LlmProviderId, type MediaModality } from './constants.js';
 
 /**
  * Cross-package runtime contract types the `@relavium/llm` seam — and, later, the session
@@ -835,6 +835,30 @@ export function validateByteRange(
     return { ok: false, reason: 'range end is out of bounds for the stored byte length' };
   }
   return { ok: true, range: { start, end } };
+}
+
+/**
+ * A `read_media` authz scope (1.AF/D12,
+ * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §1): a
+ * `session` scope today; `workspace` is **reserved** (documented-not-implemented). A handle's
+ * `allowedScopes` is the set of its `session`/`workspace` `media_references` rows ({@link MEDIA_AUTHZ_SCOPE_KINDS}
+ * only — a `run`/`node` lifetime row never grants read). Read is granted by scope-set **membership**, never
+ * owner-equality — knowing a sha256 is not authorization.
+ */
+export const ScopeSchema = z.object({
+  kind: z.enum(MEDIA_AUTHZ_SCOPE_KINDS),
+  id: nonEmptyString,
+});
+export type Scope = z.infer<typeof ScopeSchema>;
+
+/**
+ * Scope-set membership — the engine-pure half of the `read_media` byte-delivery authz (ADR-0044 §1): is the
+ * requesting scope present in a handle's `allowedScopes`? Matched by `kind` **and** `id`; owner-equality is
+ * not expressible (the set is the host-read `media_references` session/workspace rows). Reused by the
+ * `read_media` built-in tool + the 1.AH desktop command, so the authz check is written once.
+ */
+export function scopeSetIncludes(allowed: readonly Scope[], requesting: Scope): boolean {
+  return allowed.some((scope) => scope.kind === requesting.kind && scope.id === requesting.id);
 }
 
 /**
