@@ -4,6 +4,8 @@
 - **Date**: 2026-06-15
 - **Related**: [ADR-0038](0038-agentrunner-llm-call-boundary.md) (amended — see Decision A.2), [ADR-0011](0011-internal-llm-abstraction.md) (the `FallbackChain` owns within-chain policy), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (run loop + the injected one-shot timer), [ADR-0027](0027-expression-sandbox.md) / [ADR-0029](0029-tool-policy-hardening.md) (failure classification), [error-handling.md](../standards/error-handling.md), [run-plan.md](../reference/shared-core/run-plan.md) and [node-types.md](../reference/shared-core/node-types.md) (which already pre-describe this layer), [expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md) (the `runId + nodeId + retryCount` idempotency key)
 
+> **Amended 2026-06-20 by [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md).** A scoped exception, not a reversal: for the async-media node only, ADR-0045 **re-attaches** to a persisted provider job on crash-resume instead of re-running from pending (the default A.6 quotes), and **carves the wall-clock media-poll cadence out of the A.3 deterministic-replay invariant** (an external job result is non-deterministic state already). The node-retry budget + classification rules are otherwise unchanged.
+
 ## Context
 
 Reliability in the engine has **two distinct retry concerns**, and only one is built:

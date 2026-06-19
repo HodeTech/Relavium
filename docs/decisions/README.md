@@ -88,6 +88,7 @@ flowchart TD
 | 0042 | [Engine media storage substrate — the `MediaStore` host port, the `deInlineMedia` choke-point ordering, and the `media_objects` retention/GC store (amends 0036)](0042-engine-media-storage-substrate-mediastore-deinline-retention.md) | Accepted | 2026-06-18 |
 | 0043 | [Media egress — the binary media-egress capability, the `FallbackChain`↔`MediaStore` re-materialization contract, and the SSRF mechanism half (amends 0031)](0043-media-egress-failover-rematerialization-ssrf.md) | Accepted | 2026-06-18 |
 | 0044 | [Media access & spend governance — `read_media` scope-set authz, the byte-delivery gate, the `save_to` write port, and the per-modality media cost (amends 0028 and 0029)](0044-media-access-governance-read-media-save-to-cost.md) | Accepted | 2026-06-18 |
+| 0045 | [Engine-owned async media-job loop (1.AG/A5) — the `generateMedia`/`pollMediaJob` poll/checkpoint/resume/cancel LRO, the `media_job:submitted` derived state, inline-vs-generative routing, and media-cost realization (amends 0031, 0036, 0040)](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) | Accepted | 2026-06-20 |
 
 ## Creating a new ADR
 
