@@ -86,3 +86,13 @@ export {
   type HopRequest,
   type HopResponse,
 } from './media-egress.js';
+
+// Media references (1.AF/D12c + D11, ADR-0042/0044) — the media_objects/media_references retention + authz
+// junction store. A host wires `describe` behind the read_media MediaReadAccess delegate + `removeRunReferences`
+// behind the engine's terminal sweep; the pure engine never imports it.
+export {
+  createMediaReferenceStore,
+  type MediaReferenceStore,
+  type MediaObjectInput,
+  type MediaHandleRecord,
+} from './media-reference-store.js';
