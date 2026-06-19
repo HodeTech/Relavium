@@ -283,6 +283,13 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+    // Lower the node's requested non-text output onto the request (1.AF/D15) so the FallbackChain
+    // per-attempt capability pre-skip (requestSupportReason → outputCombinationReason) can skip a model
+    // that cannot emit the combination — the runtime backstop the load-check defers to (ADR-0044 §2). Without
+    // this the request carries no outputModalities and an incapable model would silently return text.
+    ...(params.outputModalities === undefined
+      ? {}
+      : { outputModalities: [...params.outputModalities] }),
     signal: params.signal,
   };
 }

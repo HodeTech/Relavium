@@ -145,4 +145,42 @@ describe('boundForModel', () => {
       boundForModel('z'.repeat(500), TINY, host({ outputStore: { spill } }), signal),
     ).rejects.toThrow(/aborted/);
   });
+
+  it('redacts inline media base64 from the summary (I3 — a read_media result never leaks bytes to the event)', async () => {
+    // A read_media-shaped result: a media part carrying an in-flight base64 source. The model-facing value
+    // keeps the bytes (it rides the seam), but the SUMMARY (→ agent:tool_result.outputSummary, a durable
+    // run-event boundary) must carry NO base64 — the emit-time deInlineMedia choke point cannot catch a
+    // base64 substring inside a flat string, so the redaction lives here.
+    const data = 'aGVsbG8gd29ybGQgdGhpcyBpcyBub3QgYSByZWFsIGltYWdlIGJ1dCBsb25nIGVub3VnaA==';
+    const result = { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data } };
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.truncated).toBe(false);
+    expect(bounded.value).toBe(result); // model-facing value keeps the bytes (sent via the seam)
+    expect(bounded.summary).not.toContain(data); // but the event summary is byte-free
+    expect(bounded.summary).not.toContain('aGVsbG8'); // not even a leading fragment
+    expect(bounded.summary).toContain('media'); // a byte-free descriptor instead
+  });
+
+  it('never hands base64 to the spill store / preview for an over-cap media-bearing result (I3)', async () => {
+    const data = 'QQ'.repeat(5000); // a large base64 blob; the redacted descriptor still exceeds TINY's cap
+    const result = { type: 'media', mimeType: 'audio/mpeg', source: { kind: 'base64', data } };
+    let spilledText = 'unset';
+    const spill = vi.fn((text: string) => {
+      spilledText = text;
+      return Promise.resolve({ ref: 'spill://x', byteLength: 1 });
+    });
+    const bounded = await boundForModel(result, TINY, host({ outputStore: { spill } }));
+    // The text path is redacted, so whatever is summarized / spilled / previewed carries NO base64.
+    expect(spilledText).not.toContain('QQQQ');
+    expect(String(bounded.value)).not.toContain('QQQQ');
+    expect(bounded.summary).not.toContain('QQQQ');
+  });
+
+  it('redacts a base64 data: URI string from the summary (the event), keeping the model-facing value', async () => {
+    // The model-facing `value` rides the seam (in-flight, de-inlined on egress); only the SUMMARY is a
+    // durable run-event field, so only it must be byte-free.
+    const bounded = await boundForModel('data:image/png;base64,aGVsbG8=', BIG, host());
+    expect(bounded.summary).not.toContain('aGVsbG8');
+    expect(bounded.summary).toContain('omitted');
+  });
 });

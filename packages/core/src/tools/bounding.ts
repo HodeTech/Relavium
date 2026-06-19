@@ -10,7 +10,12 @@
  * See [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file).
  */
 
-import type { AbortSignalLike } from '@relavium/shared';
+import {
+  containsInlineMediaBytes,
+  isBase64DataUri,
+  isCanonicalBase64Source,
+  type AbortSignalLike,
+} from '@relavium/shared';
 
 import type { ToolHost, ToolResultLimits } from './types.js';
 
@@ -64,18 +69,57 @@ function countLines(text: string): number {
   return lines;
 }
 
-/** Render any result to the text the model would see (a string is itself; else compact JSON). */
+/**
+ * Replace inline media BYTES with a byte-free marker for the text/summary/spill path (1.AF — closes the
+ * I3 gap where a `read_media` (or any) tool result carrying a `{ kind:'base64', data }` source would be
+ * JSON-stringified into the `agent:tool_result.outputSummary` event / the spill / the over-cap preview —
+ * a durable/event boundary the emit-time `deInlineMedia` choke point cannot catch, since it sees only the
+ * resulting flat string, not a structured media source). The MODEL-facing result value is left intact
+ * (the model still receives the bytes via the seam); only this text projection is redacted. Cycle-safe.
+ */
+function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') {
+    return isBase64DataUri(value) ? '[base64 data URI omitted]' : value;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  if (seen.has(value)) {
+    return '[cyclic]';
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => redactInlineMediaForText(item, seen));
+  }
+  const record = value as Record<string, unknown>;
+  if (isCanonicalBase64Source(record)) {
+    const data = record['data'];
+    return { kind: 'base64', bytes: typeof data === 'string' ? data.length : 0 }; // drop the bytes
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(record)) {
+    out[key] = redactInlineMediaForText(item, seen);
+  }
+  return out;
+}
+
+/** Render any result to the text the model would see (a string is itself; else compact JSON). Inline
+ *  media bytes are redacted first so the summary/spill/preview can never carry base64 (I3). */
 function toText(result: unknown): string {
   if (typeof result === 'string') {
-    return result;
+    return isBase64DataUri(result) ? '[base64 data URI omitted]' : result;
   }
   if (result === undefined) {
     return '';
   }
+  // Only walk+clone when there is inline media to redact (the dominant text/JSON case pays one cheap scan).
+  const safe = containsInlineMediaBytes(result)
+    ? redactInlineMediaForText(result, new WeakSet<object>())
+    : result;
   try {
     // JSON.stringify returns undefined for a value with no JSON form (a bare function/symbol); the `??`
     // keeps a string without falling back to a `[object Object]`-style default stringification.
-    return JSON.stringify(result) ?? '[unserializable]';
+    return JSON.stringify(safe) ?? '[unserializable]';
   } catch {
     return '[unserializable]'; // circular reference / throwing toJSON
   }

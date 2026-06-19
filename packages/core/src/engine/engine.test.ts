@@ -533,6 +533,40 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
   });
+
+  it('stays unaffected (run completes, no unhandled rejection) when the port REJECTS asynchronously (best-effort)', async () => {
+    // The async arm of #bestEffortMediaRef (result.catch swallow) — distinct from the sync-throw arm above.
+    // A future async (Phase-2 Postgres) host returns Promise.reject; a dropped `.catch` would surface as an
+    // unhandled rejection escaping the fire-and-forget loop. Pin that an async reject is swallowed.
+    const { store: mediaStore } = stubMediaStore();
+    const rejections: string[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      rejections.push(String(reason));
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const mediaReferences: MediaReferencePort = {
+        recordRunMedia: () => Promise.reject(new Error('async reference db down')),
+        reclaimRun: () => Promise.reject(new Error('async reference db down')),
+      };
+      const host = createInMemoryHost({
+        store: new InMemoryRunStore(),
+        mediaStore,
+        mediaReferences,
+      });
+      const events = await drain(
+        engineWith(
+          { work: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) },
+          host,
+        ).start({ workflow: workflow(SEQUENTIAL) }),
+      );
+      expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+      await new Promise((resolve) => setImmediate(resolve)); // let any stray rejection surface
+      expect(rejections).toEqual([]); // the async rejection was swallowed, never unhandled
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });
 
 // --- output-node save_to (1.AF/D16, ADR-0044 §2) ----------------------------------------------
@@ -2299,6 +2333,36 @@ describe('WorkflowEngine — crash reconciliation', () => {
     await seedStarted(store, 'paused-1', 'human_gate:paused');
     const engine = engineWith(undefined, createInMemoryHost({ store }));
     expect(await engine.reconcile()).toHaveLength(0);
+  });
+
+  it('reclaims a crashed run’s media references at reconciliation (1.AF/D11 — no orphaned partial media)', async () => {
+    // A crashed non-resumable run never ran its in-process terminal sweep; reconcile() must reclaim its
+    // `run`-kind refs, else the partial media stays refcount>0 forever and is never GC-eligible (ADR-0042 §4).
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-refs');
+    const reclaims: string[] = [];
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => undefined,
+      reclaimRun: (runId) => {
+        reclaims.push(runId);
+      },
+    };
+    const engine = engineWith(undefined, createInMemoryHost({ store, mediaReferences }));
+    await engine.reconcile();
+    expect(reclaims).toEqual(['crashed-refs']);
+  });
+
+  it('a media-reference reclaim failure never abandons reconciliation (best-effort)', async () => {
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-a');
+    await seedStarted(store, 'crashed-b');
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => undefined,
+      reclaimRun: () => Promise.reject(new Error('reference db down')), // async rejection, swallowed
+    };
+    const engine = engineWith(undefined, createInMemoryHost({ store, mediaReferences }));
+    // Both runs still reconcile to run:failed despite the rejecting retention port.
+    expect(await engine.reconcile()).toHaveLength(2);
   });
 
   it('reconcile() run:failed is media-free (ADR-0042 §2 backstop — it bypasses the #emitDurable choke point)', async () => {

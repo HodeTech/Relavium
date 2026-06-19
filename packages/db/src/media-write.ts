@@ -93,7 +93,11 @@ async function writeJailedUnsafe(
   const tmp = join(realDir, `.save-to.${randomUUID()}.tmp`);
   let published = false;
   try {
-    await writeFile(tmp, bytes);
+    // `wx` = O_CREAT|O_EXCL: the kernel refuses to follow (or create through) a pre-existing path —
+    // including a symlink — at the temp name, and fails EEXIST. With the unguessable UUID name this also
+    // closes the (astronomically unlikely) planted-temp-symlink redirect, the one fs step otherwise relying
+    // on the random name alone (defense-in-depth, consistent with the "symlinks OFF" discipline above).
+    await writeFile(tmp, bytes, { flag: 'wx' });
     await rename(tmp, finalTarget);
     published = true;
   } finally {

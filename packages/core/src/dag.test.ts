@@ -272,6 +272,24 @@ describe('buildRunPlan — valid topological orders', () => {
     expect(sites[0]?.references[0]).toMatchObject({ kind: 'node', identifier: 'producer' });
   });
 
+  it('does NOT wire a data-dependency edge from a {{run.id}} reference (1.AF/D16 — kind `run`, not `node`)', () => {
+    // run.id is a non-node namespace, so it must add no dependency edge — unlike run.outputs above. The
+    // consumer depends only on its declared edge; the run.id site is attached un-evaluated for dispatch.
+    const p = plan(
+      doc(`  id: runid
+  agents:
+    - { id: writer, model: m, provider: anthropic, system_prompt: 'write' }
+  nodes:
+    - { id: producer, type: agent, agent_ref: writer, prompt_template: 'go' }
+    - { id: consumer, type: agent, agent_ref: writer, prompt_template: 'run {{run.id}}' }
+  edges:
+    - { from: producer, to: consumer }`),
+    );
+    expect(p.vertices.get('consumer')?.dependencies).toEqual(['producer']); // only the declared edge
+    const refs = (p.vertices.get('consumer')?.inputSites ?? [])[0]?.references ?? [];
+    expect(refs[0]).toMatchObject({ kind: 'run', identifier: 'id' });
+  });
+
   it('attaches every template field of a node as a separate input site', () => {
     const p = plan(
       doc(`  id: twosites

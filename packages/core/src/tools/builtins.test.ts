@@ -409,4 +409,37 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     const err = await rejection(() => t.dispatch(t.parseArgs({ handle: HANDLE }), {}, ctx));
     expect(err).toBeInstanceOf(ToolUnavailableError);
   });
+
+  it('returns an empty source for a whole-handle read of a zero-byte handle (no off-by-one rejection)', async () => {
+    const t = tool('read_media');
+    let read = false;
+    const empty: MediaReadAccess = {
+      describe: () =>
+        Promise.resolve({ mimeType: 'image/png', byteLength: 0, allowedScopes: [SESSION] }),
+      readRange: () => {
+        read = true;
+        return Promise.resolve({ kind: 'base64', data: 'x' });
+      },
+    };
+    const out = await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, empty));
+    expect(out).toEqual({
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: '' },
+    });
+    expect(read).toBe(false); // the empty whole-handle read short-circuits before any host read
+  });
+
+  it('still rejects an EXPLICIT range on a zero-byte handle (out of bounds, fail-closed)', async () => {
+    const t = tool('read_media');
+    const empty: MediaReadAccess = {
+      describe: () =>
+        Promise.resolve({ mimeType: 'image/png', byteLength: 0, allowedScopes: [SESSION] }),
+      readRange: () => Promise.reject(new Error('must not read')),
+    };
+    const err = await rejection(() =>
+      t.dispatch(t.parseArgs({ handle: HANDLE, start: 0, end: 0 }), {}, mediaCtx(SESSION, empty)),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+  });
 });

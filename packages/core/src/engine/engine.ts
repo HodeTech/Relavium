@@ -1594,7 +1594,11 @@ class RunExecution {
       const relativePath = await resolveTemplate(saveTo, scope, {}, this.#abort.signal);
       // `state.output` retains the RAW in-flight form (deInlineMedia is non-mutating), so de-inline a copy
       // to obtain the durable handle. The content-addressed `put` is idempotent — these are the same bytes
-      // the node:completed emit stores, so the double de-inline is correct, not a second distinct write.
+      // the node:completed emit stores, so the double de-inline produces the same handle, not a second
+      // distinct write. (Tradeoff: a `url`-sourced media part in a save_to output is FETCHED twice — once
+      // here, once at the node:completed emit — since the host fetch is not memoized across the two
+      // de-inline passes; the put still dedupes the bytes. A url media part on an output node is rare; the
+      // alternative — threading one de-inlined result into both paths — is deferred (deferred-tasks.md).)
       const durable = await deInlineMedia(output, store, this.#mediaUrlFetch());
       const handles = collectDurableMediaHandles(durable);
       if (handles.length !== 1) {
@@ -1903,11 +1907,35 @@ export class WorkflowEngine {
       try {
         await this.#host.store.persistEvent(event);
         reconciled.push(event);
+        // Reclaim the crashed run's media references at this terminal (1.AF/D11, ADR-0042 §4): a
+        // non-resumable run never ran its in-process #reclaimRunMedia (the process died), and reconcile()
+        // bypasses #emitDurable, so without this the run's `run`-kind refs survive forever and the partial
+        // media is never GC-eligible (refcount stuck > 0). Best-effort + idempotent like the in-process
+        // sweep — a retention failure must never abandon reconciliation (mirrors RunExecution's
+        // #bestEffortMediaRef; reclaimRun on a run with no rows is a harmless no-op).
+        this.#bestEffortReclaim(run.runId);
       } catch {
         // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
         // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
       }
     }
     return reconciled;
+  }
+
+  /** Best-effort terminal media-ref reclaim for a reconciled run — swallows a sync throw + an async
+   *  rejection so retention never breaks reconciliation (ADR-0042 §3-4; retention is never run-correctness). */
+  #bestEffortReclaim(runId: string): void {
+    const port = this.#host.mediaReferences;
+    if (port === undefined) {
+      return;
+    }
+    try {
+      const result = port.reclaimRun(runId);
+      if (result instanceof Promise) {
+        result.catch(() => undefined);
+      }
+    } catch {
+      // best-effort retention; reconciliation is unaffected
+    }
   }
 }

@@ -1020,6 +1020,18 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
     - Canonical-home doc updates: workflow-yaml-spec (`save_to` resolves `run.id` only), security-review
       (the `save_to` write jail), config-spec (`[defaults.media_cost_estimate]`), database-schema (the
       `model_catalog` media-rate columns). All green (`pnpm turbo` 16/16) + Leakwatch-clean.
+    - A comprehensive **46-agent review** of the whole P4 changeset (9 dimensions, every finding double-
+      verified, gap + green-toolchain pass) found **0 blockers / 0 highs in reachable shipped code**. Its
+      real findings were fixed: **`output_modalities` is now lowered onto the `LlmRequest`** (so the
+      FallbackChain output-combination pre-skip — the D15 runtime backstop — actually fires, vs a silent
+      text drop); `reconcile()` now best-effort reclaims a crashed run's media refs; `boundForModel` is
+      **media-aware** (a `read_media`/media tool result never serializes base64 into the
+      `agent:tool_result.outputSummary`/spill — the I3 gap the emit choke point cannot catch); the
+      `read_media` 0-byteLength whole-handle off-by-one; plus `wx` temp-write hardening + run.id/best-effort
+      regression pins. The deferred **host-wiring** half (D12 host `MediaReadAccess` + session-scope
+      population, the D15 loader call, the D17 config/`resolveForEgress` wiring) is recorded in
+      [deferred-tasks.md](../deferred-tasks.md) §1.AF P4 — these make D12/D15/D17 inert end-to-end until a
+      surface (1.AH) wires them; the landed engine **policy** is complete + tested.
     **Deferred to 1.AH (no 1.AF surface):** the **keychain-bridge no-raw-key IPC test** — the Tauri keychain
     IPC command does not exist in Phase 1 (`apps/desktop` is unbuilt); the gate is **owned/recorded** by 1.AF
     ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §4 + security-review.md)

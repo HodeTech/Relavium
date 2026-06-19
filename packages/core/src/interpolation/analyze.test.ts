@@ -360,6 +360,41 @@ ${AGENT}
   edges: []`);
     expect(analyzeSecretTaint(wf)).toEqual([]);
   });
+
+  it('does NOT treat the run.id namespace as a secret source, even alongside a secret input (1.AF/D16)', () => {
+    // `{{run.id}}` is the new run-id namespace (kind `run`); it is a non-secret engine value and must never
+    // be a taint source/symbol, so a prompt mixing it with a real secret-typed input is not a leak.
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+${AGENT}
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'run {{run.id}}'
+  edges: []`);
+    expect(analyzeSecretTaint(wf)).toEqual([]);
+  });
+
+  it('does NOT flag a {{run.id}} context value as a pre-run node-output reference (1.AF/D16)', () => {
+    // run.id is available from run start (it is NOT run.outputs), so a context value referencing it is not
+    // an "uses a node output before any node runs" violation — kind `run` is not kind `node`.
+    const wf = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: dir
+      value: 'out/{{run.id}}'
+  nodes:
+    - id: n
+      type: input
+  edges: []`);
+    expect(analyzePreRunReferences(wf)).toEqual([]);
+  });
 });
 
 describe('analyzePreRunReferences', () => {

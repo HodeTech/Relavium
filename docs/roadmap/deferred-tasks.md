@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-18
+> Last updated: 2026-06-19
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -176,6 +176,52 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   audio: deferred to 1.AF` comments. The engine's `deInlineMedia` + `MediaStore` contract resolves
   handles at egress; URL sources are fetched through `EgressCapability.fetch` (the SSRF mechanism
   half). Wire when the engine plumbing lands (1.AF). *(packages/llm/src/adapters/{openai,anthropic,gemini}.ts; 1.AF)*
+
+### 1.AF P4 forward-obligations — engine policy landed, HOST WIRING deferred (review 2026-06-19)
+
+> The 1.AF P4 engine-pure **policy** (read_media tool + scope-set authz + Range gate, the D15 load-check,
+> the D17 cost governor, the save_to write port, the media-reference store) landed and is fully tested.
+> The comprehensive 46-agent review confirmed the **host/surface wiring** below is **not yet present** —
+> so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
+> so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
+> deferred mechanism/wiring half. *(matrix row stays ◇ until the PR merges.)*
+
+- [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
+  factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns
+  `Uint8Array`) into the `MediaReadAccess` the tool needs (whose `readRange` returns an in-flight **base64**
+  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; 1.AH)*
+- [ ] **`read_media` session-scope population (D12 authz data, ADR-0044 §1)** — nothing writes
+  `session`/`workspace` `media_references` rows (the only writer, `createMediaReferencePort`, writes `run`
+  refs only), so `describe().allowedScopes` is always `[]` and every read denies. The input-transfer
+  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; 1.AH)*
+- [ ] **`ctx.mediaRead` / `ctx.requestingScope` not wired into the dispatch context** — the AgentRunner +
+  AgentSession build `ToolDispatchContext` without these, so `read_media` always throws
+  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 1.AH)*
+- [ ] **`validateWorkflowWithCatalog` (D15) is called by no production loader** — exported + tested, but
+  no parse/load path invokes it, so authored `output_modalities` are not load-validated (the runtime
+  FallbackChain pre-skip — now wired onto the request — is the only backstop). A host should call it
+  post-parse with the DB `model_catalog`. *(CLI/desktop load path; 1.AH/Phase-2)*
+- [ ] **`[defaults].media_cost_estimate` → `AgentRunnerDeps.mediaCostEstimate` (D17)** — the config key +
+  the dep both exist but nothing reads the config and threads it into `createAgentNodeExecutor`, so
+  `buildMediaUnitsEstimate` always uses the built-in `DEFAULT_MEDIA_UNIT_ESTIMATE`. *(host executor construction; 1.AH/Phase-2)*
+- [ ] **`resolveForEgress` (D8) not wired in the engine path** — the FallbackChain re-materialization hook
+  is never injected by the AgentRunner, so a durable handle in a transcript message is sent unchanged (no-op);
+  the D7/D8 failover re-materialization is inert until the host wires `resolveForEgress`. *(packages/core/src/engine/agent-runner.ts; 1.AH/Phase-2)*
+- [ ] **`save_to` multi-feeder output semantics** — an output node with several feeders captures a record;
+  `save_to` requires exactly one media handle across it (0/>1 → node failure). Document the "which handle"
+  contract + add a mixed-feeder test. *(low · workflow-yaml-spec.md + packages/core; 1.AH)*
+- [ ] **`save_to` accepts only the `run.id` namespace at LOAD time** — a non-`run.id` ref in `save_to`
+  (e.g. `{{ run.outputs[...] }}`) parses, creates a spurious DAG edge, and fails only at runtime. Add a
+  load-time check restricting `save_to` to `run.id` so the author gets an immediate error. *(low · packages/core load path)*
+- [ ] **CAS-orphan crash window for `save_to`** — `#performSaveTo` puts bytes (CAS) before the
+  node:completed emit records the `media_objects` row; a crash between them leaves row-less CAS bytes that
+  `reclaimExpired` (which keys off rows) can never reclaim. Needs a host CAS-orphan sweep. *(low · packages/db host GC; 1.AH/Phase-2)*
+- [ ] **Clean-terminal media-reclaim has no retry** — `#reclaimRunMedia` is best-effort at the terminal;
+  a transient async-host rejection on a cleanly-completed run leaves the `run` refs (resume short-circuits
+  on a terminal checkpoint). Consider a host periodic sweep keyed on terminal run events. *(low · host GC; 1.AH/Phase-2)*
+- [ ] **`save_to` url double-fetch** — a `url`-sourced media part in a save_to output is fetched twice (the
+  save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
+  result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
 
 ### Engine/seam policy & surface follow-ups (2026-06-09 hardening-analysis pass)
 

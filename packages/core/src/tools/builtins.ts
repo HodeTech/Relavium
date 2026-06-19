@@ -493,6 +493,12 @@ const readMediaTool = defineBuiltin({
         'read_media: the requesting scope may not read this media handle',
       );
     }
+    // A zero-byte handle has no valid inclusive range; a whole-handle read returns an empty source rather
+    // than tripping the fail-closed check on the default `end = byteLength - 1 = -1` (1.AF off-by-one). An
+    // EXPLICIT range on a 0-byte handle still falls through to validateByteRange and is correctly rejected.
+    if (info.byteLength === 0 && args.start === undefined && args.end === undefined) {
+      return { type: 'media', mimeType: info.mimeType, source: { kind: 'base64', data: '' } };
+    }
     // Whole-handle when no range is given; else validate the inclusive [start,end] against the durable
     // byteLength (the engine-pure policy — fail-closed on a bad/out-of-bounds range before the host read).
     const range = { start: args.start ?? 0, end: args.end ?? info.byteLength - 1 };
