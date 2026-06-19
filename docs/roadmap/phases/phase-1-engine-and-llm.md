@@ -972,8 +972,9 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   **never returns a raw key from an IPC command** (direct test); and a run reaching a **terminal event
   (`run:completed|failed|cancelled`) deterministically reclaims its media refs** so a FAILED/CANCELLED run
   leaves no orphaned partial media (a terminal-state sweep, not refcount-GC alone).
-  - 🔨 *P1+P2 **merged** (PR #33); P3 + P4/D13 landed on `development` in a follow-on PR (**pending merge**) —
-    see [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs.*
+  - 🔨 *P1+P2 **merged** (PR #33); P3 + P4/D13 **merged** (PR #34); the **P4 remainder** (D12, D11, D15, D16,
+    D17 + the byte-delivery review) is landed on `development` (**pending merge**) — see
+    [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)/[0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)/[0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), the three accepted 1.AF design ADRs.*
     **Merged (P1 + P2, PR #33):** D5/D6 per-modality `requiredCapabilities()` + `FallbackChain` provider-skip
     (one shared `mediaSupportReason` predicate); D3 `deInlineMedia` (cycle-safe flight→durable transform +
     a pure base64 decoder); D1 `MediaStore` contract impls (`FilesystemMediaStore` CAS + `InMemoryMediaStore`);
@@ -997,14 +998,33 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
       a defensive re-bound) + the engine-pure `validateByteRange` policy (fail-closed; reused by D12 + 1.AH).
     - The dedicated **P3 egress/SSRF security-review pass** (independent adversarial — **0 blockers/highs**;
       4 lower follow-ups fixed). All green (`pnpm turbo` 16/16) + Leakwatch-clean.
-    **Remaining (P4):** **D12 `read_media`** (the 13th tool + the scope-set authz + the additive
-    `ToolPolicyDenyReason.media_scope_denied` + the `ToolDispatchContext` `byteLength`/session-scope fields +
-    the `media_references` row-writing lifecycle); D16 the `save_to` write port; D15 the `output_modalities`
-    load-check; D17 the per-modality media cost governor; D11 the terminal-state sweep + grace-window GC; the
-    keychain-bridge no-raw-key IPC test; the **P4 byte-delivery security-review pass**; plus the still-pending
-    canonical-home doc updates: built-in-tools (`read_media`), config-spec (the media GC grace key + the media
-    cost estimate), security-review (the byte-delivery + host SSRF mechanism sections). The matrix row stays ◇
-    until the 1.AF PR(s) merge (Done-after-merge).
+    **Landed on `development` (P4 remainder, pending merge):**
+    - **D12 `read_media`** — the 13th built-in tool + the engine-pure scope-set authz (`scopeSetIncludes`) +
+      the `Range` gate + the additive `ToolPolicyDenyReason.media_scope_denied` + the `ToolDispatchContext`
+      `requestingScope`/`mediaRead` fields; the `media_references` row-writing lifecycle (`MediaReferenceStore`
+      + `createMediaReferencePort`), recording a produced handle's run ref at the `#emitDurable` choke point.
+    - **D11** the terminal-state sweep (reclaim a run's `run` refs at `run:completed|failed|cancelled`) +
+      `reclaimExpired` grace-window GC (soft-delete zero-ref objects past the configured grace).
+    - **D15** `validateWorkflowWithCatalog` — the engine-loader `output_modalities`→`media.outputCombinations`
+      membership check (host-provided catalog; defers an unresolvable model, never a silent runtime drop).
+    - **D16** the `save_to` write port — `MediaWritePort` (shared) + `ExecutionHost.mediaWrite` + the engine
+      output-node orchestration (resolve `{{ run.id }}` → relative path, extract the single produced handle →
+      `MediaStore.get` → write; fail the node, not best-effort) + the db `createFilesystemMediaWrite`
+      fail-closed jail (realpath+commonpath, symlinks off, atomic temp+rename, reason-only `MediaWriteError`).
+    - **D17** the per-modality media cost governor — `ModelPricing.mediaOutputRates` + `mediaCost`/
+      `estimateMediaCost` (a disjoint addend folded into the existing `max_cost_microcents` cap, degrade-to-0
+      on a missing rate) + the widened `PreEgressHook` (`outputModalities`/`mediaUnitsEstimate`) +
+      `[defaults].media_cost_estimate` + the `model_catalog` media-rate columns (migration 0003).
+    - The dedicated **P4 byte-delivery security-review pass** (two independent adversarial passes — **0
+      blockers/highs**, no traversal/symlink-escape/arbitrary-write reachable; 2 mediums + cheap lows fixed).
+    - Canonical-home doc updates: workflow-yaml-spec (`save_to` resolves `run.id` only), security-review
+      (the `save_to` write jail), config-spec (`[defaults.media_cost_estimate]`), database-schema (the
+      `model_catalog` media-rate columns). All green (`pnpm turbo` 16/16) + Leakwatch-clean.
+    **Deferred to 1.AH (no 1.AF surface):** the **keychain-bridge no-raw-key IPC test** — the Tauri keychain
+    IPC command does not exist in Phase 1 (`apps/desktop` is unbuilt); the gate is **owned/recorded** by 1.AF
+    ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §4 + security-review.md)
+    and the direct test lands with the bridge in 1.AH. The matrix row stays ◇ until the 1.AF PR(s) merge
+    (Done-after-merge).
 - **1.AG — Output generation (Phase D).** Inline media-out (Gemini `responseModalities`, OpenAI agentic
   image-gen via the `providerExecuted`+normalized-`media` arm, OpenAI inline audio); the
   `generateMedia`/`pollMediaJob` separate-endpoint generators (gpt-image-1, Imagen, TTS sync; Sora/Veo
