@@ -2,7 +2,12 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
-import { extractHttpsHost, isPrivateOrLocalHost, urlHasCredentials } from '@relavium/shared';
+import {
+  extractHttpsHost,
+  isPrivateOrLocalHost,
+  urlHasCredentials,
+  type AbortSignalLike,
+} from '@relavium/shared';
 
 /**
  * `fetchMediaBytes` (1.AF/D9, [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md)
@@ -56,8 +61,12 @@ export interface FetchMediaBytesOptions {
   readonly timeoutMs?: number;
   /** Maximum number of redirects followed before failing (default 5). */
   readonly maxRedirects?: number;
-  /** Cancels the fetch (composed with the timeout). */
-  readonly signal?: AbortSignal;
+  /**
+   * Cancels the fetch (composed with the timeout). Typed as the platform-free `AbortSignalLike` so the
+   * engine's `AbortControllerLike.signal` (the run abort) wires in without a cast at the `HostMediaFetch`
+   * boundary; a real `AbortSignal` structurally satisfies it.
+   */
+  readonly signal?: AbortSignalLike;
   /**
    * Allow a private/loopback target — the BYOK explicit local-endpoint opt-in (security-review.md).
    * Default `false`: private/loopback/link-local/metadata addresses are blocked.
@@ -190,7 +199,7 @@ export async function fetchMediaBytes(
   if (options.signal?.aborted === true) {
     controller.abort();
   }
-  options.signal?.addEventListener('abort', abort, { once: true });
+  options.signal?.addEventListener('abort', abort); // removed in the finally below
   const timer = setTimeout(abort, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
     let target = url;
@@ -222,7 +231,16 @@ export async function fetchMediaBytes(
         response.dispose();
         throw new MediaEgressError('bad_status', 'media egress received a non-200 status');
       }
-      return await readBounded(response.body, options.maxBytes, response.dispose);
+      try {
+        return await readBounded(response.body, options.maxBytes, response.dispose);
+      } catch (error) {
+        if (error instanceof MediaEgressError) {
+          throw error; // a too_large (or other typed) failure — preserve the discriminant
+        }
+        // A socket abort/destroy mid-body-read (timeout / caller abort) surfaces a raw Node error; normalize
+        // it to the typed, secret-free network failure so the function's only thrown type is MediaEgressError.
+        throw new MediaEgressError('network', 'media egress request failed');
+      }
     }
   } finally {
     clearTimeout(timer);

@@ -15,6 +15,8 @@ interface ScriptedHop {
   readonly status: number;
   readonly location?: string;
   readonly body?: readonly Uint8Array[];
+  /** Emit one chunk then throw a raw Node-style AbortError mid-stream (models a socket destroy on abort). */
+  readonly bodyThrows?: boolean;
 }
 
 function bodyOf(chunks: readonly Uint8Array[]): AsyncIterable<Uint8Array> {
@@ -23,6 +25,17 @@ function bodyOf(chunks: readonly Uint8Array[]): AsyncIterable<Uint8Array> {
     for (const chunk of chunks) {
       yield chunk;
     }
+  })();
+}
+
+/** A body stream that yields one chunk then throws a raw Node AbortError (a socket destroy mid-read). */
+function throwingBody(): AsyncIterable<Uint8Array> {
+  return (async function* gen(): AsyncGenerator<Uint8Array> {
+    await Promise.resolve();
+    yield new Uint8Array([1]);
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    throw err;
   })();
 }
 
@@ -50,7 +63,7 @@ function fakeDeps(config: {
       return Promise.resolve({
         status: hop.status,
         location: hop.location,
-        body: bodyOf(hop.body ?? []),
+        body: hop.bodyThrows === true ? throwingBody() : bodyOf(hop.body ?? []),
         dispose: () => {
           stats.disposed += 1;
         },
@@ -200,6 +213,19 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     await expect(
       fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'bad_status' });
+  });
+
+  it('normalizes a socket abort/destroy mid-body-read to a typed MediaEgressError (network)', async () => {
+    // The response promise has already resolved when the body stream throws; without normalization a raw
+    // Node AbortError would escape, breaking the "only MediaEgressError" contract (security-review finding).
+    const { deps, stats } = fakeDeps({
+      resolve: { 'a.example': [PUBLIC_IP] },
+      hops: [{ status: 200, bodyThrows: true }],
+    });
+    await expect(
+      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+    ).rejects.toMatchObject({ code: 'network' });
+    expect(stats.disposed).toBeGreaterThanOrEqual(1); // the stream was disposed on the way out
   });
 
   it('exposes a typed MediaEgressError', () => {
