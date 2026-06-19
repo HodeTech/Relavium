@@ -251,7 +251,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
   it('normalizes a malformed redirect Location to a typed MediaEgressError (no raw URL TypeError)', async () => {
     const { deps } = fakeDeps({
       resolve: { 'a.example': [PUBLIC_IP] },
-      hops: [{ status: 302, location: 'http://[' }], // unclosed IPv6 — new URL() throws
+      hops: [{ status: 302, location: 'https://[' }], // unclosed IPv6 — new URL() throws (scheme incidental)
     });
     await expect(
       fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
