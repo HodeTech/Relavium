@@ -271,6 +271,15 @@ async function executeAgent(
     model: result.model,
   };
 
+  // Inline media-out (1.AG/[ADR-0046]): a turn that produced media parts surfaces them as the node output
+  // (alongside the accompanying text) so the engine de-inlines the in-flight base64 to `media://` handles at
+  // `node:completed` (#emitDurable) — the I3 boundary. A text-only turn keeps its string/parsed output. This
+  // precedes output_schema: a media-output turn is not JSON-validated (the artifact is the media, not text).
+  const mediaParts = result.content.filter((part) => part.type === 'media');
+  if (mediaParts.length > 0) {
+    return { kind: 'completed', output: { text: result.text, media: mediaParts }, tokensUsed };
+  }
+
   // output_schema enforcement is NODE-SIDE (the seam's responseFormat is a request hint only; an
   // adapter never validates the response, and DeepSeek degrades to bare json_object — ADR-0038/D8).
   if (outputSchema !== undefined) {

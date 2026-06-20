@@ -36,6 +36,7 @@ import type {
 import {
   CostTracker,
   FallbackChain,
+  LlmProviderError,
   type AttemptRecord,
   type FallbackChainOptions,
   type FallbackPlanEntry,
@@ -311,26 +312,57 @@ async function streamOneTurn(
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it
-      // rather than remapping the wrapped LlmError to a generic internal code.
-      if (chunk.error.cause instanceof AgentTurnError) {
-        throw chunk.error.cause;
-      }
-      if (chunk.error.cause instanceof BudgetExceededError) {
-        throw new AgentTurnError('budget_exceeded', chunk.error.cause.message, false);
-      }
-      if (chunk.error.cause instanceof BudgetPauseError) {
-        throw chunk.error.cause;
-      }
-      throw new AgentTurnError(
-        codeForLlmError(chunk.error),
-        chunk.error.message,
-        chunk.error.retryable,
-      );
+      throwMappedChainError(chunk.error);
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
   return { content: accumulatorToContent(acc), stopReason };
+}
+
+/**
+ * Run one **inline media-out** turn via the chain's existing non-streaming `generate()` (1.AG/[ADR-0046]):
+ * a `media_surface: 'chat'` model emitting media IN the turn (Gemini `responseModalities`, OpenAI inline
+ * audio). The settled `LlmResult.content` carries in-flight base64 `media` parts; the engine de-inlines
+ * them to `media://` handles at `node:completed.output` (the 1.AF `#emitDurable` choke point). It is
+ * **terminal/single-shot** — no token streaming, no further tool round (the tool loop is built around
+ * `stream()`). Errors map identically to the streamed path: `generate()` throws an `LlmProviderError`
+ * whose `.llmError.cause` preserves a budget/turn error symmetrically with `stream()`'s error chunk.
+ */
+async function generateOneTurn(
+  chain: FallbackChain,
+  messages: readonly LlmMessage[],
+  params: AgentTurnParams,
+): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
+  try {
+    const result = await chain.generate(buildRequest(messages, params));
+    return { content: result.content, stopReason: result.stopReason };
+  } catch (err) {
+    if (err instanceof LlmProviderError) {
+      throwMappedChainError(err.llmError);
+    }
+    throw err;
+  }
+}
+
+/** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
+function throwMappedChainError(error: LlmError): never {
+  // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it rather than
+  // remapping the wrapped LlmError to a generic internal code.
+  if (error.cause instanceof AgentTurnError) {
+    throw error.cause;
+  }
+  if (error.cause instanceof BudgetExceededError) {
+    throw new AgentTurnError('budget_exceeded', error.cause.message, false);
+  }
+  if (error.cause instanceof BudgetPauseError) {
+    throw error.cause;
+  }
+  throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
+}
+
+/** True when the node authored a non-text output modality — the inline media-out routing signal (1.AG). */
+function requestsMediaOutput(params: AgentTurnParams): boolean {
+  return params.outputModalities?.some((m) => m !== 'text') ?? false;
 }
 
 /** Fold a single stream chunk into the accumulator, emitting `agent:token` for visible text deltas. */
@@ -618,6 +650,25 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     role: m.role,
     content: [...m.content],
   }));
+
+  // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
+  // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
+  // agent's final artifact and `generate()` is one round-trip). The two budget gates below mirror the text
+  // path: `awaitPreEgress` (primary-model, zero-egress-on-cancel) then the chain's per-attempt `preAttempt`.
+  if (requestsMediaOutput(params)) {
+    await awaitPreEgress(params, activeModel);
+    throwIfAborted(params.signal);
+    const turn = await generateOneTurn(chain, messages, params);
+    throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
+    return {
+      content: turn.content,
+      text: textOf(turn.content),
+      usage: { input: totalInput, output: totalOutput },
+      model: activeModel,
+      stopReason: turn.stopReason,
+    };
+  }
+
   let corrections = 0;
 
   for (let toolTurn = 0; ; toolTurn += 1) {

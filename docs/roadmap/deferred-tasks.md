@@ -127,6 +127,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
   (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
   own ADR written at 1.AG (Phase D)**. Highest behavioral complexity in the multimodal design. *(1.AG)*
+- [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
+  1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
+  `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node
+  de-inline needs a host hook reaching the *pure* adapter (the output twin of `resolveForEgress`, since
+  `media_end` is handle-only and the adapter has no `MediaStore`) or the desktop Rust CAS ([ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)).
+  Acceptable because a media-output turn is typically terminal/single-shot, so token-streaming its short
+  accompanying text is low value against a frozen-seam change. Wire at **1.AH** (the progressive-preview surface). *(packages/llm/src/types.ts seam; 1.AH)*
+- [ ] **OpenAI agentic image-gen via the Responses API — wire deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §3).**
+  The normalized delivery **shape** is defined (a `providerExecuted: true` `tool_result` carrying a
+  normalized `media` part — ADR-0031 §4.3/#7) and 1.AG Section B wires the two Chat-Completions inline
+  cases (Gemini `responseModalities` → `inlineData`, OpenAI inline audio → `audio`). OpenAI image output is
+  **not** a Chat-Completions modality (`modalities` is `text`/`audio` only); agentic image-gen is the
+  Responses API `image_generation` built-in tool — a **separate request surface** the Chat-Completions
+  adapter does not call. Wire the Responses-API path (request + `image_generation_call` output-item parse →
+  the already-defined providerExecuted media shape) when a Phase-1 model needs it. *(packages/llm/src/adapters/openai.ts; post-1.AG)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a

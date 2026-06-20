@@ -164,7 +164,35 @@ function parseToolArgs(raw: string): unknown {
   }
 }
 
-/** Fold a non-streaming assistant message into canonical content parts (text + tool_call). */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** OpenAI's accepted inline-audio output formats (a closed union on the SDK param) — used to narrow a
+ *  caller-supplied `providerOptions.audio.format` to a valid value (default `wav`). */
+const OPENAI_AUDIO_FORMATS = ['wav', 'aac', 'mp3', 'flac', 'opus', 'pcm16'] as const;
+
+/** Map a requested output-audio `format` (providerOptions.audio.format) to its MIME — OpenAI's response
+ *  echoes no format, so the requested one types the media part. Defaults to `audio/wav` (OpenAI's default). */
+export function outputAudioMime(req: LlmRequest): string {
+  const opts = req.providerOptions;
+  const audio = isRecord(opts) ? opts['audio'] : undefined;
+  switch (isRecord(audio) ? audio['format'] : undefined) {
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'opus':
+      return 'audio/opus';
+    case 'flac':
+      return 'audio/flac';
+    case 'aac':
+      return 'audio/aac';
+    case 'pcm16':
+      return 'audio/L16';
+    default:
+      return 'audio/wav';
+  }
+}
+
+/** Fold a non-streaming assistant message into canonical content parts (text + tool_call + inline audio). */
 export function mapContent(
   message: {
     content: string | null;
@@ -174,8 +202,11 @@ export function mapContent(
     tool_calls?:
       | ReadonlyArray<{ id: string; function?: { name: string; arguments: string } }>
       | undefined;
+    // Inline audio-out (modalities ['text','audio']): base64 audio + its transcript (1.AG/ADR-0046).
+    audio?: { data: string; transcript?: string | null } | null;
   },
   provider: ProviderId,
+  audioMime = 'audio/wav',
 ): ContentPart[] {
   const parts: ContentPart[] = [];
   if (
@@ -187,6 +218,19 @@ export function mapContent(
   }
   if (message.content !== null && message.content.length > 0) {
     parts.push({ type: 'text', text: message.content });
+  }
+  // Inline audio-out (1.AG/ADR-0046): surface the spoken transcript as a text part PLUS the audio as an
+  // in-flight base64 media part; the engine de-inlines the media to a handle at #emitDurable (1.AF).
+  if (message.audio !== null && message.audio !== undefined && message.audio.data.length > 0) {
+    const transcript = message.audio.transcript ?? '';
+    if (transcript.length > 0) {
+      parts.push({ type: 'text', text: transcript });
+    }
+    parts.push({
+      type: 'media',
+      mimeType: audioMime,
+      source: { kind: 'base64', data: message.audio.data },
+    });
   }
   for (const call of message.tool_calls ?? []) {
     if (call.function === undefined) {
@@ -487,6 +531,18 @@ function buildCommonBody(
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
   }
+  if (req.outputModalities?.includes('audio')) {
+    // Inline audio-out (1.AG/ADR-0046): request the text+audio combination. OpenAI requires a `voice`
+    // (any string) + `format` (a closed union); read them from providerOptions.audio when supplied, else
+    // OpenAI's defaults. `body` is spread last below, so these win over a raw providerOptions echo.
+    const audioOpts = isRecord(req.providerOptions) ? req.providerOptions['audio'] : undefined;
+    const voice =
+      isRecord(audioOpts) && typeof audioOpts['voice'] === 'string' ? audioOpts['voice'] : 'alloy';
+    const rawFormat = isRecord(audioOpts) ? audioOpts['format'] : undefined;
+    const format = OPENAI_AUDIO_FORMATS.find((f) => f === rawFormat) ?? 'wav';
+    body.modalities = ['text', 'audio'];
+    body.audio = { voice, format };
+  }
   if (req.providerOptions === undefined) {
     return body;
   }
@@ -736,7 +792,10 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
         return {
           // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
-          content: choice === undefined ? [] : mapContent(choice.message, providerId),
+          content:
+            choice === undefined
+              ? []
+              : mapContent(choice.message, providerId, outputAudioMime(req)),
           stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
           usage: completion.usage ? mapUsage(completion.usage) : ZERO_USAGE,
           raw: completion,

@@ -363,10 +363,15 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   managed-mode metering record (counts-not-content, ADR-0015).
 - **`LlmRequest.outputModalities`** — request non-text output on the inline path
   (default `['text']`), the symmetric mechanism to ADR-0030's `responseFormat`. Lowering
-  is per-adapter (Gemini `responseModalities`; OpenAI audio via Chat `modalities`).
-  **The OpenAI image-out exception:** inline image generation is the Responses
-  `image_generation` **built-in tool** — it routes through the `providerExecuted`
-  `tool_result` arm, never through `outputModalities`.
+  is per-adapter (Gemini `responseModalities`; OpenAI audio via Chat `modalities`+`audio`).
+  **Delivery path (wired at 1.AG Section B, [ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)):**
+  a media-output turn issues a single-shot **`generate()`** (the chain's existing
+  non-streaming path) whose `LlmResult.content` carries the in-flight base64 `media`
+  part — the engine de-inlines it to a `media://` handle at `#emitDurable`. The
+  **streaming** triad stays host-deferred (ADR-0046 §4). **The OpenAI image-out
+  exception:** inline image generation is the Responses `image_generation` **built-in
+  tool** — it routes through the `providerExecuted` `tool_result` arm, never through
+  `outputModalities` (the Responses-API wire is deferred; the shape is defined).
 - **`tool_result.media: DurableMediaPart[]`** (content part **and** stream arm) — typed,
   handle-only media attachments. **Raw media bytes inside the opaque `result` are
   forbidden** so the typed guard reaches provider-executed image-gen results; `result`

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
-import type { StreamChunk } from '../types.js';
+import type { LlmRequest, StreamChunk } from '../types.js';
 import {
   createOpenAiAdapter,
   deepseekAdapter,
@@ -12,6 +12,7 @@ import {
   mapUsage,
   openaiAdapter,
   openaiErrorToLlmError,
+  outputAudioMime,
 } from './openai.js';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -190,6 +191,72 @@ describe('OpenAI-compatible adapter', () => {
       type: 'input_audio',
       input_audio: { data: 'YXVkaW8=', format: 'mp3' },
     });
+  });
+
+  it('round-trips inline audio-out: lowers output_modalities → modalities+audio and parses the response (1.AG/ADR-0046)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            completion({
+              role: 'assistant',
+              content: null,
+              refusal: null,
+              audio: {
+                id: 'a1',
+                data: 'YXVkaW8tYnl0ZXM=',
+                transcript: 'spoken words',
+                expires_at: 0,
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+    });
+    const result = await adapter.generate(
+      {
+        model: 'gpt-4o-audio-preview',
+        outputModalities: ['text', 'audio'],
+        providerOptions: { audio: { voice: 'verse', format: 'mp3' } },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'say hi' }] }],
+      },
+      'k',
+    );
+    // Request side: the node's audio output_modality lowers to modalities + the merged voice/format.
+    expect(sent['modalities']).toEqual(['text', 'audio']);
+    expect(sent['audio']).toEqual({ voice: 'verse', format: 'mp3' });
+    // Response side: transcript surfaces as text PLUS the audio as an in-flight base64 media part (audio/mpeg).
+    expect(result.content).toEqual([
+      { type: 'text', text: 'spoken words' },
+      {
+        type: 'media',
+        mimeType: 'audio/mpeg',
+        source: { kind: 'base64', data: 'YXVkaW8tYnl0ZXM=' },
+      },
+    ]);
+  });
+
+  it('defaults the audio voice/format when providerOptions omits them', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o-audio-preview',
+        outputModalities: ['text', 'audio'],
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'say hi' }] }],
+      },
+      'k',
+    );
+    expect(sent['modalities']).toEqual(['text', 'audio']);
+    expect(sent['audio']).toEqual({ voice: 'alloy', format: 'wav' });
   });
 
   it('lowers media on the STREAM path too (shared buildCommonBody — the §1.AE both-paths requirement)', async () => {
@@ -399,6 +466,56 @@ describe('OpenAI-compatible adapter', () => {
       'openai',
     );
     expect(parts).toEqual([{ type: 'tool_call', id: 't1', name: 'f', args: {} }]);
+  });
+
+  it('mapContent surfaces inline audio-out as a transcript text part PLUS a base64 media part (1.AG/ADR-0046)', () => {
+    const parts = mapContent(
+      { content: null, audio: { data: 'YXVkaW8tYnl0ZXM=', transcript: 'hello there' } },
+      'openai',
+      'audio/mpeg',
+    );
+    expect(parts).toEqual([
+      { type: 'text', text: 'hello there' },
+      {
+        type: 'media',
+        mimeType: 'audio/mpeg',
+        source: { kind: 'base64', data: 'YXVkaW8tYnl0ZXM=' },
+      },
+    ]);
+  });
+
+  it('mapContent emits the audio media part even when the transcript is empty', () => {
+    const parts = mapContent(
+      { content: null, audio: { data: 'YXVkaW8=', transcript: '' } },
+      'openai',
+    );
+    expect(parts).toEqual([
+      { type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'YXVkaW8=' } },
+    ]);
+  });
+
+  it('mapContent ignores a null/empty audio field', () => {
+    expect(mapContent({ content: 'x', audio: null }, 'openai')).toEqual([
+      { type: 'text', text: 'x' },
+    ]);
+    expect(mapContent({ content: 'x', audio: { data: '', transcript: 't' } }, 'openai')).toEqual([
+      { type: 'text', text: 'x' },
+    ]);
+  });
+
+  it('outputAudioMime maps the requested providerOptions.audio.format (default wav)', () => {
+    const mk = (format?: string): LlmRequest => ({
+      model: 'gpt-4o-audio-preview',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'speak' }] }],
+      ...(format === undefined ? {} : { providerOptions: { audio: { format } } }),
+    });
+    expect(outputAudioMime(mk('mp3'))).toBe('audio/mpeg');
+    expect(outputAudioMime(mk('opus'))).toBe('audio/opus');
+    expect(outputAudioMime(mk('flac'))).toBe('audio/flac');
+    expect(outputAudioMime(mk('pcm16'))).toBe('audio/L16');
+    expect(outputAudioMime(mk('wav'))).toBe('audio/wav');
+    expect(outputAudioMime(mk())).toBe('audio/wav'); // no providerOptions → default
+    expect(outputAudioMime(mk('something-odd'))).toBe('audio/wav'); // unknown → default
   });
 });
 

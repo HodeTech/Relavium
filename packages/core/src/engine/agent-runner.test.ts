@@ -1,4 +1,4 @@
-import type { Agent, OutputModality } from '@relavium/shared';
+import type { Agent, ContentPart, OutputModality } from '@relavium/shared';
 import type {
   CapabilityFlags,
   LlmProvider,
@@ -157,8 +157,15 @@ function reqCapturingProvider(supports: CapabilityFlags = CAPS): {
   const p: LlmProvider = {
     id: 'anthropic',
     supports,
-    generate: () => {
-      throw new Error('unused');
+    // A media-output turn routes to generate() (1.AG/ADR-0046); a text turn streams. Capture on both
+    // so the request is observable whichever path the node's output_modalities select.
+    generate: (r) => {
+      captured = r;
+      return Promise.resolve({
+        content: [{ type: 'text', text: 'ok' }],
+        stopReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
     },
     stream: (r) => {
       captured = r;
@@ -187,6 +194,42 @@ describe('createAgentNodeExecutor — dispatch', () => {
     if (outcome.kind === 'completed') {
       expect(outcome.output).toBe('sum');
       expect(outcome.tokensUsed).toEqual({ input: 3, output: 2, model: 'claude-opus-4-8' });
+    }
+  });
+
+  it('surfaces inline media-out as { text, media } so the engine can de-inline it (1.AG/ADR-0046)', async () => {
+    const image: ContentPart = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'aW1nLWJ5dGVz' },
+    };
+    // A provider whose generate() returns media; its stream THROWS — proving the media node routed to generate().
+    const mediaProvider: LlmProvider = {
+      id: 'gemini',
+      supports: capsWithOutput([['text', 'image']]),
+      generate: () =>
+        Promise.resolve({
+          content: [{ type: 'text', text: 'here' }, image],
+          stopReason: 'stop',
+          usage: { inputTokens: 3, outputTokens: 2 },
+        }),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for an inline media-out turn');
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(mediaProvider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_modalities: ['text', 'image'] }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      // The in-flight base64 media survives to the node output; the engine de-inlines it at #emitDurable.
+      expect(outcome.output).toEqual({ text: 'here', media: [image] });
     }
   });
 

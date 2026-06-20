@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 
 import { mediaModalityOf } from '@relavium/shared';
-import type { ContentPart, StopReason } from '@relavium/shared';
+import type { ContentPart, OutputModality, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
@@ -98,6 +98,9 @@ interface GeminiPart {
   thought?: boolean;
   thoughtSignature?: string;
   functionCall?: GeminiFunctionCall;
+  // Inline media-out (responseModalities image/audio): a generated artifact returned IN the chat turn
+  // as base64 (1.AG/ADR-0046). The engine de-inlines it to a handle at the #emitDurable choke point (1.AF).
+  inlineData?: { mimeType?: string; data?: string };
 }
 
 /** The subset of a `GenerateContentResponse` the fold reads (the real SDK type satisfies this). */
@@ -196,8 +199,6 @@ export function mapUsage(usage: {
 /** Fold a non-streaming Gemini response into canonical content parts (text + synthesized tool_call). */
 export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): ContentPart[] {
   const parts: ContentPart[] = [];
-  // A response `inlineData` part (generated image/audio output) is intentionally NOT surfaced here —
-  // output media de-inlining is deferred to 1.AF/1.AG; only text / reasoning / functionCall are mapped today.
   for (const part of response.candidates?.[0]?.content?.parts ?? []) {
     if (part.functionCall !== undefined) {
       const name = part.functionCall.name ?? '';
@@ -208,6 +209,15 @@ export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): Co
           args: part.functionCall.args ?? {},
         }),
       );
+    } else if (part.inlineData?.data !== undefined && part.inlineData.data.length > 0) {
+      // Inline media-out (responseModalities): a generated image/audio part, base64, IN the chat turn
+      // (1.AG/ADR-0046). Emit an IN-FLIGHT media part; the engine de-inlines it to a handle at #emitDurable
+      // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart.
+      parts.push({
+        type: 'media',
+        mimeType: part.inlineData.mimeType ?? 'application/octet-stream',
+        source: { kind: 'base64', data: part.inlineData.data },
+      });
     } else if (part.text !== undefined && part.text.length > 0) {
       if (part.thought === true) {
         // Reasoning (ADR-0030); thoughtSignature is the ephemeral same-provider continuity token.
@@ -355,6 +365,14 @@ function toResponseObject(result: unknown): Record<string, unknown> {
 }
 
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
+/** Map a Relavium output modality to its Gemini `responseModalities` enum value (inline media-out, 1.AG). */
+const GEMINI_RESPONSE_MODALITY: Record<OutputModality, string> = {
+  text: 'TEXT',
+  image: 'IMAGE',
+  audio: 'AUDIO',
+  video: 'VIDEO',
+};
+
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   const config: Record<string, unknown> = {};
   if (req.system !== undefined) {
@@ -376,6 +394,12 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   if (req.maxTokens !== undefined) {
     config['maxOutputTokens'] = req.maxTokens;
+  }
+  if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
+    // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,
+    // 1.AG/ADR-0046). The per-modality capability gate (assertMediaCapabilities) has already rejected an
+    // unsupported combination, so every member maps to a Gemini modality enum.
+    config['responseModalities'] = req.outputModalities.map((m) => GEMINI_RESPONSE_MODALITY[m]);
   }
   if (req.stopSequences !== undefined) {
     config['stopSequences'] = req.stopSequences;

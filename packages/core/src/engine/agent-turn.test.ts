@@ -1,4 +1,11 @@
-import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
+import type {
+  CapabilityFlags,
+  LlmProvider,
+  LlmResult,
+  ProviderId,
+  StreamChunk,
+} from '@relavium/llm';
+import type { ContentPart } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -67,6 +74,29 @@ const STOP = (reason: 'stop' | 'tool_use' = 'stop'): StreamChunk => ({
   stopReason: reason,
   usage: { inputTokens: 10, outputTokens: 5 },
 });
+
+/** Caps advertising inline image output (so the chain's per-attempt capability pre-skip keeps the model). */
+const MEDIA_CAPS: CapabilityFlags = {
+  ...CAPS,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [['image'], ['text', 'image']],
+    surface: 'chat',
+  },
+};
+
+/** A provider whose non-streaming `generate` returns a scripted `LlmResult`; its `stream` THROWS — so a
+ *  test that completes proves the media-output turn routed through `generate()`, never `stream()` (1.AG). */
+function mediaGenerateProvider(id: ProviderId, result: LlmResult): LlmProvider {
+  return {
+    id,
+    supports: MEDIA_CAPS,
+    generate: () => Promise.resolve(result),
+    stream: (): AsyncIterable<StreamChunk> => {
+      throw new Error('stream must NOT be used for an inline media-out turn');
+    },
+  };
+}
 
 const CAPABILITIES: ChainCapabilities = {
   keyFor: () => 'test-key',
@@ -155,6 +185,67 @@ describe('runAgentTurn — streaming + cost', () => {
     const cost = events.find((e) => e.type === 'cost:updated');
     expect(cost?.type === 'cost:updated' && cost.attemptNumber).toBe(1);
     expect(cost?.type === 'cost:updated' && cost.model).toBe('claude-opus-4-8');
+  });
+});
+
+describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
+  const image: ContentPart = {
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'base64', data: 'aW1nLWJ5dGVz' },
+  };
+
+  it('routes a node requesting non-text output to generate() (not stream()) and returns the media content', async () => {
+    const provider = mediaGenerateProvider('gemini', {
+      content: [{ type: 'text', text: 'here is your image' }, image],
+      stopReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    const params = baseParams(provider, {
+      planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+      outputModalities: ['text', 'image'],
+    });
+
+    const result = await runAgentTurn(params);
+
+    expect(result.stopReason).toBe('stop');
+    expect(result.content).toContainEqual(image); // the in-flight base64 media survives the turn (engine de-inlines it)
+    expect(result.text).toBe('here is your image');
+
+    // The generate() path streams no tokens, but still settles one cost:updated for the attempt.
+    const events = eventsOf(params);
+    expect(events.some((e) => e.type === 'agent:token')).toBe(false);
+    expect(events.some((e) => e.type === 'cost:updated')).toBe(true);
+  });
+
+  it('keeps a text-only node on the streaming path (no generate())', async () => {
+    // A provider whose generate throws — a text turn must never reach it.
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('generate must NOT be used for a text turn');
+      },
+      stream: () => streamOf([{ type: 'text_delta', text: 'hi' }, STOP()]),
+    };
+    const result = await runAgentTurn(baseParams(provider, { outputModalities: ['text'] }));
+    expect(result.text).toBe('hi');
+  });
+
+  it('maps a generate() chain failure into the turn error taxonomy (symmetric with the stream path)', async () => {
+    const provider: LlmProvider = {
+      id: 'gemini',
+      supports: MEDIA_CAPS,
+      generate: () => Promise.reject(new Error('boom')),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT be used for a media-out turn');
+      },
+    };
+    const params = baseParams(provider, {
+      planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+      outputModalities: ['image'],
+    });
+    await expect(runAgentTurn(params)).rejects.toBeInstanceOf(AgentTurnError);
   });
 });
 
