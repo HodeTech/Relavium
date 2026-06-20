@@ -288,8 +288,12 @@ const reject: Record<string, Record<string, unknown>> = {
     error: { code: 'internal', message: 'm', retryable: false }, // compliant — isolate the missing partialOutputs
   },
   'run:cancelled (negative sequenceNumber)': { type: 'run:cancelled', ...env, sequenceNumber: -1 },
-  'run:paused (empty gateIds)': { ...valid['run:paused'], gateIds: [] },
-  'run:paused (pendingGateCount 0)': { ...valid['run:paused'], pendingGateCount: 0 },
+  // A media-job park may carry empty gateIds / pendingGateCount 0 (1.AG Section D), so those are no longer
+  // rejected; an empty pendingMediaJobNodeIds (min 1) still is.
+  'run:paused (empty pendingMediaJobNodeIds)': {
+    ...valid['run:paused'],
+    pendingMediaJobNodeIds: [],
+  },
   'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
   'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },
   'budget:warning (negative thresholdPct)': { ...valid['budget:warning'], thresholdPct: -1 },
@@ -307,6 +311,18 @@ describe('RunEvent union — every variant', () => {
 
   it.each(Object.keys(reject))('rejects %s', (name) => {
     expect(RunEventSchema.safeParse(reject[name]).success).toBe(false);
+  });
+
+  it('accepts a media-only run:paused park: empty gateIds + pendingGateCount 0 + media node ids (1.AG Section D)', () => {
+    expect(
+      RunEventSchema.safeParse({
+        type: 'run:paused',
+        ...env,
+        pendingGateCount: 0,
+        gateIds: [],
+        pendingMediaJobNodeIds: ['work'],
+      }).success,
+    ).toBe(true);
   });
 
   it('covers exactly the 21 canonical colon-namespaced names, pinned to a literal list', () => {

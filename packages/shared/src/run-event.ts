@@ -354,9 +354,14 @@ export const RunCancelledEventSchema = z.object({
 export const RunPausedEventSchema = z.object({
   type: z.literal('run:paused'),
   ...runBase,
-  // The multi-gate aggregate — emitted while ≥1 gate is pending (parallel branches each gate).
-  pendingGateCount: positiveInt,
-  gateIds: z.array(nonEmptyString).min(1),
+  // The multi-gate aggregate — gates pending while the run parks (parallel branches each gate). `0`/empty
+  // when the run parks ONLY on an async media job (1.AG Section D); the engine emits `run:paused` only while
+  // genuinely parked (a gate OR a media job OR BOTH — AG-A-FC-3), so ≥1 reason holds by construction.
+  pendingGateCount: z.number().int().min(0),
+  gateIds: z.array(nonEmptyString),
+  // The async media-job park (1.AG Section D, [ADR-0045](../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §2):
+  // node ids parked on an engine-owned `pollMediaJob` loop, reusing the gate-suspend machinery.
+  pendingMediaJobNodeIds: z.array(nonEmptyString).min(1).optional(),
 });
 
 export const RunTimeoutEventSchema = z.object({

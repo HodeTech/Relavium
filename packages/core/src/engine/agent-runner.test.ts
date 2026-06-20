@@ -641,13 +641,20 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'internal' } });
   });
 
-  it('fails internal on a jobId (async LRO is Section D)', async () => {
+  it('hands a jobId off as a media_job outcome for the engine poll loop (1.AG Section D)', async () => {
     const jobExec = createAgentNodeExecutor(
       genDeps(generativeProvider({ result: { jobId: 'job-1', raw: {} } })),
     );
-    expect(await jobExec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
-      kind: 'failed',
-      error: { code: 'internal' },
+    const outcome = await jobExec.execute(ctxFor(genVertex({ count: 2 })).ctx);
+    expect(outcome).toMatchObject({
+      kind: 'media_job',
+      job: {
+        jobId: 'job-1',
+        provider: 'openai',
+        model: 'claude-opus-4-8',
+        modality: 'image',
+        units: 2, // the authored count → the engine's lone realized cost addend at done
+      },
     });
   });
 

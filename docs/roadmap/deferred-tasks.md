@@ -177,6 +177,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the
   engine does not yet populate `providerOptions` for a generative call, so the adapter threads only the output format
   (`req.mimeType`); a typed per-knob passthrough lands when the engine wires image knobs. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
+- [ ] **Sora/Veo async-media ADAPTERS (`generateMedia`→`{ jobId }` + `pollMediaJob`) — deferred (1.AG Section D → 1.AH).**
+  1.AG Section D landed the ENGINE-owned async-job loop (park on `media_job:submitted`, the `host.setTimer` poll
+  cadence, exp-backoff to `pollMaxMs`, deadline→retryable timeout, cross-process re-attach (MJ-1), gate-vs-media
+  resume disambiguation (AG-A-FC-3), cancel-aborts-the-in-flight-poll + terminal sweep) — proven end-to-end with a
+  STUB async provider + the manual-timer harness. **No Phase-1 adapter implements `pollMediaJob` or returns a
+  `jobId`** (the only `generateMedia` is OpenAI-image SYNC); the real Sora/Veo `generateMedia`(→jobId)/`pollMediaJob`
+  adapter implementations are the deferred wiring, alongside the per-model surface lookup + verified rates (1.AH). *(packages/llm/src/adapters/*; 1.AH)*
+- [ ] **Node-retry of a PARKED media job — deferred (1.AG Section D, ADR-0045 §3 "MAY re-dispatch").**
+  The node-retry budget (1.S) wraps the executor `#dispatch`; an async media job parks AFTER dispatch returns, and
+  the engine's out-of-band poll loop settles a deadline/poll failure as `node:failed` (retryable for a timeout) directly
+  — it does NOT re-enter the node-retry wrapper, so a parked media job is not automatically re-dispatched (a fresh paid
+  submit) on a retryable timeout. ADR-0045 §3 makes this a **MAY** ("the loop itself never silently re-submits"), so the
+  current behavior is conformant; re-dispatching a parked-then-failed media node through the node-retry budget is an
+  additive refinement. *(packages/core/src/engine/engine.ts #pollMediaJob; post-1.AG)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a

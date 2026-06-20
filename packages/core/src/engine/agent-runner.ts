@@ -18,6 +18,7 @@
 import {
   MEDIA_BILLED_MODALITIES,
   mediaModalityOf,
+  type AbortSignalLike,
   type Agent,
   type ContentPart,
   type ErrorCode,
@@ -33,11 +34,13 @@ import {
   ResponseFormatSchema,
   ToolDefSchema,
   cost,
+  makeLlmError,
   type FallbackPlanEntry,
   type LlmMessage,
   type LlmProvider,
   type MediaGenRequest,
   type MediaGenResult,
+  type MediaJobStatus,
   type MediaUnitsEntry,
   type MediaUnitsEstimate,
   type ProviderId,
@@ -60,7 +63,12 @@ import {
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
-import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
+import type {
+  MediaJobSubmission,
+  NodeExecContext,
+  NodeExecutor,
+  NodeOutcome,
+} from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
 
@@ -165,7 +173,50 @@ function isBilledModality(modality: OutputModality): modality is MediaBilledModa
  * `agent` vertex runs the AgentRunner; every other engine type is a loud typed `failed` until 1.P.
  */
 export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
-  return { execute: (ctx) => executeNode(ctx, deps) };
+  return {
+    execute: (ctx) => executeNode(ctx, deps),
+    // The engine owns the async media-job poll loop (1.AG Section D), but provider + credential resolution
+    // lives here (the AgentRunnerDeps), so the engine delegates the actual poll back through the executor.
+    pollMediaJob: (job, signal) => pollMediaJobThroughDeps(deps, job, signal),
+  };
+}
+
+/**
+ * Re-resolve the provider + credential for an async media-job poll (1.AG Section D, ADR-0045 §3) and call the
+ * adapter's `pollMediaJob`. A missing adapter / unimplemented `pollMediaJob` (host-wiring gap) or a credential
+ * failure becomes a **secret-free `failed` `MediaJobStatus`** the engine settles `node:failed` from — never a
+ * raw throw (which the engine would flatten) and never the original credential error (rule 6).
+ */
+async function pollMediaJobThroughDeps(
+  deps: AgentRunnerDeps,
+  job: MediaJobSubmission,
+  signal: AbortSignalLike,
+): Promise<MediaJobStatus> {
+  const provider = deps.resolveProvider(job.provider);
+  if (provider === undefined || provider.pollMediaJob === undefined) {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: job.provider,
+        kind: 'unknown',
+        message: `provider '${job.provider}' implements no pollMediaJob (host-wiring gap)`,
+      }),
+    };
+  }
+  let key: string;
+  try {
+    key = await deps.keyFor(job.provider);
+  } catch {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: job.provider,
+        kind: 'auth',
+        message: `credential resolution failed for provider ${job.provider}`,
+      }),
+    };
+  }
+  return provider.pollMediaJob(job.jobId, key, signal);
 }
 
 // The agent arm's local `failed` factory — the parallel of the canonical one in
@@ -460,13 +511,20 @@ async function executeGenerativeMedia(
   }
 
   if (result.jobId !== undefined) {
-    // The async LRO (the engine-owned poll/checkpoint/resume/cancel loop) is 1.AG Section D — a SYNC dispatch
-    // cannot consume a jobId. Fail loud rather than silently drop the in-flight provider job.
-    return failed(
-      'internal',
-      `agent node '${node.id}': generateMedia returned an async jobId; async media jobs are not yet supported (1.AG Section D)`,
-      false,
-    );
+    // ASYNC LRO (Sora/Veo, 1.AG Section D, ADR-0045): the provider accepted a minute-scale job and returned an
+    // opaque jobId. Hand it to the ENGINE, which owns the poll/checkpoint/resume/cancel loop — it emits
+    // `media_job:submitted`, parks the node, and drives the poll to terminal. `units` is the authored volume
+    // for the lone realized cost addend the engine emits at `done` (ADR-0045 §5) — NOT emitted here.
+    return {
+      kind: 'media_job',
+      job: {
+        jobId: result.jobId,
+        provider: provider.id,
+        model: primary.model,
+        modality: modality.modality,
+        units,
+      },
+    };
   }
   if (result.media === undefined) {
     // Defense-in-depth: the seam-schema refine (MediaGenResultSchema) already requires exactly one of
@@ -539,7 +597,7 @@ function singleBilledModality(
  * the generative path uses the AUTHOR-DECLARED volume (`count`/`duration_seconds`) directly — the realized fold
  * must reflect the actual requested volume, and the same number gates the pre-egress estimate (no host default).
  */
-function generativeUnits(modality: MediaBilledModality, node: AgentNode): number {
+export function generativeUnits(modality: MediaBilledModality, node: AgentNode): number {
   return modality === 'image'
     ? (node.count ?? DEFAULT_MEDIA_UNIT_ESTIMATE.image)
     : (node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality]);
@@ -550,7 +608,11 @@ function generativeUnits(modality: MediaBilledModality, node: AgentNode): number
  * media rate, via the shared `cost()` fold (token counts are 0). An unknown/unrated model degrades to 0 (H4)
  * — never a hard fail on a missing rate, exactly as the chat path's best-effort cost does.
  */
-function realizedMediaCost(model: string, modality: MediaBilledModality, units: number): number {
+export function realizedMediaCost(
+  model: string,
+  modality: MediaBilledModality,
+  units: number,
+): number {
   const mediaUnits: MediaUnitsEntry[] = [
     { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
   ];

@@ -26,8 +26,20 @@
  * not on the curated public surface).
  */
 
-import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
-import { RunEventSchema, type ContentPart, type MediaStore, type RunEvent } from '@relavium/shared';
+import type {
+  CapabilityFlags,
+  LlmProvider,
+  MediaJobStatus,
+  ProviderId,
+  StreamChunk,
+} from '@relavium/llm';
+import {
+  RunEventSchema,
+  type AbortSignalLike,
+  type ContentPart,
+  type MediaStore,
+  type RunEvent,
+} from '@relavium/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createExpressionSandbox, type ExpressionSandbox } from '../expression/sandbox.js';
@@ -161,6 +173,84 @@ function generativeMediaProvider(id: ProviderId = 'openai'): LlmProvider {
     },
     generateMedia: () => Promise.resolve({ media: IMAGE_PART, raw: { internal: true } }),
   };
+}
+
+/** A provider whose generateMedia SUBMITS an async job ({ jobId }) and whose pollMediaJob replays a scripted
+ *  MediaJobStatus sequence (call N → script[N]; the last entry repeats). generate/stream throw. Records the
+ *  generateMedia + pollMediaJob call counts (the re-attach test asserts generateMedia is called ONCE). */
+function asyncMediaProvider(
+  script: readonly MediaJobStatus[],
+  id: ProviderId = 'openai',
+): { provider: LlmProvider; generateCalls: () => number; pollCalls: () => number } {
+  let generateCalls = 0;
+  let pollCalls = 0;
+  const provider: LlmProvider = {
+    id,
+    supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
+    generate: () => {
+      throw new Error('generate must NOT run for a generative node');
+    },
+    stream: (): AsyncIterable<StreamChunk> => {
+      throw new Error('stream must NOT run for a generative node');
+    },
+    generateMedia: () => {
+      generateCalls += 1;
+      return Promise.resolve({ jobId: 'job-1', raw: { internal: true } });
+    },
+    pollMediaJob: (_jobId: string, _key: string, signal?: AbortSignalLike) => {
+      if (signal?.aborted === true) {
+        return Promise.reject(new Error('poll aborted')); // a run cancel aborts the in-flight poll (ADR-0045 §4)
+      }
+      const status = script[Math.min(pollCalls, script.length - 1)];
+      pollCalls += 1;
+      return Promise.resolve(status ?? { state: 'pending' });
+    },
+  };
+  return { provider, generateCalls: () => generateCalls, pollCalls: () => pollCalls };
+}
+
+/**
+ * Drive a run that parks on an async media job to its terminal. A `pending` poll re-arms a timer but emits NO
+ * event (progress is transient — ADR-0045 §2), so the run cannot be driven purely off the event stream: consume
+ * events in the background and FIRE armed poll timers until the run settles (each fire = one poll). `onPaused`
+ * (e.g. cross-process resume / cancel) runs once when the run first parks.
+ */
+async function driveMediaRun(
+  handle: RunHandle,
+  host: Host,
+  onPaused?: () => Promise<void> | void,
+): Promise<RunEvent[]> {
+  const events: RunEvent[] = [];
+  let settled = false;
+  let paused = false;
+  const consume = (async (): Promise<void> => {
+    for await (const event of handle.events) {
+      events.push(event);
+      if (
+        event.type === 'run:completed' ||
+        event.type === 'run:failed' ||
+        event.type === 'run:cancelled'
+      ) {
+        settled = true;
+      }
+    }
+  })();
+  let guard = 0;
+  while (!settled) {
+    await Promise.resolve();
+    if (!paused && events.some((e) => e.type === 'run:paused')) {
+      paused = true;
+      if (onPaused !== undefined) await onPaused();
+    }
+    if (host.armedCount() > 0) {
+      host.fireTimers();
+    }
+    if ((guard += 1) > 100_000) {
+      throw new Error('driveMediaRun did not settle');
+    }
+  }
+  await consume;
+  return events;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
@@ -326,6 +416,32 @@ workflow:
   edges:
     - { from: in, to: work }
     - { from: work, to: out }
+`,
+);
+
+/** A human gate AND a generative media node parked CONCURRENTLY (1.AG Section D, AG-A-FC-3) — two parallel
+ *  branches from `in`, joined at `out`. The resume applies the gate decision while the media job re-attaches. */
+const GATE_AND_MEDIA = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-gate-and-media
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: painter
+      model: gpt-image-1
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: in, type: input }
+    - { id: gen, type: agent, agent_ref: painter, prompt_template: 'Draw: {{inputs.topic}}', output_modalities: [image], count: 1 }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: gen }
+    - { from: in, to: g }
+    - { from: gen, to: out }
+    - { from: g, to: out }
 `,
 );
 
@@ -515,6 +631,170 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
 
     assertGapFreeSeq(events);
     assertCanonicalSchema(events);
+  });
+
+  it('async media job: parks, polls (pending then done), de-inlines to a handle, completes (1.AG Section D/ADR-0045)', async () => {
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const job = asyncMediaProvider([{ state: 'pending' }, { state: 'done', media: IMAGE_PART }]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const events = await driveMediaRun(
+      engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(events.some((e) => e.type === 'media_job:submitted')).toBe(true);
+    expect(events.some((e) => e.type === 'run:paused')).toBe(true); // PARKED, not a stall-fail (MJ-1)
+    const out = nodeOutput(events, 'work');
+    expect(out).toMatchObject({
+      media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle' } }],
+    });
+    expect(firstMediaRef(out)).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8='); // I3 — the in-flight bytes never go durable
+    expect(job.generateCalls()).toBe(1); // submitted once
+    expect(job.pollCalls()).toBeGreaterThanOrEqual(2); // pending then done
+    expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1); // the lone realized addend (§5)
+    assertGapFreeSeq(events);
+    assertCanonicalSchema(events);
+  });
+
+  it('async media job: a content-policy poll failure settles node:failed (content_filter) → run:failed', async () => {
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const job = asyncMediaProvider([
+      {
+        state: 'failed',
+        error: { provider: 'openai', kind: 'content_filter', retryable: false, message: 'blocked' },
+      },
+    ]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const events = await driveMediaRun(
+      engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host,
+    );
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const failedEvent = events.find((e) => e.type === 'node:failed');
+    expect(failedEvent?.type === 'node:failed' && failedEvent.error.code).toBe('content_filter');
+  });
+
+  it('async media job: a cross-process resume RE-ATTACHES (re-polls) the persisted jobId — never re-submits (MJ-1)', async () => {
+    const store = new InMemoryRunStore();
+    // Process 1: submit + park, then "crash" (break at run:paused; the poll timer is never fired).
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+    );
+    const { events: events1 } = await drive(
+      engine1.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    expect(events1.some((e) => e.type === 'media_job:submitted')).toBe(true);
+    expect(job1.generateCalls()).toBe(1);
+    const runId = events1[0]?.runId ?? '';
+
+    // Process 2: a fresh engine resumes purely from the store — re-attaches + re-polls to done. The opaque
+    // jobId is re-polled; generateMedia is NEVER called again (ADR-0045 §3, the no-double-submit rule).
+    const job2 = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const host2 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine2 = buildEngine(
+      host2,
+      () => job2.provider,
+      () => 'generative',
+    );
+    const events2 = await driveMediaRun(
+      await engine2.resumeFromCheckpoint({ runId, workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host2,
+    );
+    expect(events2.at(-1)?.type).toBe('run:completed');
+    expect(job2.generateCalls()).toBe(0); // RE-ATTACH, never re-submit
+    expect(job2.pollCalls()).toBeGreaterThanOrEqual(1);
+    expect(firstMediaRef(nodeOutput(events2, 'work'))).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+  });
+
+  it('async media job: a run cancel aborts the in-flight poll → run:cancelled (ADR-0045 §4)', async () => {
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const job = asyncMediaProvider([{ state: 'pending' }]); // never resolves on its own
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    // Cancel when the run first parks on the media job; the in-flight poll aborts (the stub honours the signal).
+    const events = await driveMediaRun(handle, host, () => handle.cancel());
+    expect(events.at(-1)?.type).toBe('run:cancelled');
+  });
+
+  it('AG-A-FC-3: a run parked on BOTH a human gate AND a media job resumes both — gate decision + media re-attach', async () => {
+    const store = new InMemoryRunStore();
+    // Process 1: both branches park (the gate + the media job); break at the first run:paused.
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+    );
+    const { events: events1, gateId } = await drive(
+      engine1.start({ workflow: GATE_AND_MEDIA, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    expect(events1.some((e) => e.type === 'media_job:submitted')).toBe(true);
+    expect(events1.some((e) => e.type === 'human_gate:paused')).toBe(true);
+    const paused = events1.find((e) => e.type === 'run:paused');
+    // run:paused carries BOTH reasons (the AG-A-FC-3 disambiguator).
+    expect(
+      paused?.type === 'run:paused' &&
+        paused.gateIds.length === 1 &&
+        paused.pendingMediaJobNodeIds?.includes('gen'),
+    ).toBe(true);
+    const runId = events1[0]?.runId ?? '';
+    expect(gateId).toBeDefined();
+
+    // Process 2: resume WITH the gate decision — the gate advances (decision) AND the media job re-attaches
+    // (re-poll, no decision). Both reach terminal; exactly one run terminal.
+    const job2 = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const host2 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine2 = buildEngine(
+      host2,
+      () => job2.provider,
+      () => 'generative',
+    );
+    const events2 = await driveMediaRun(
+      await engine2.resumeFromCheckpoint({
+        runId,
+        workflow: GATE_AND_MEDIA,
+        inputs: INPUTS,
+        gateId: gateId ?? '',
+        decision: { decision: 'approved', decidedBy: 'human' },
+      }),
+      host2,
+    );
+    expect(events2.at(-1)?.type).toBe('run:completed');
+    expect(events2.filter((e) => e.type === 'run:completed')).toHaveLength(1); // exactly one terminal
+    expect(job2.generateCalls()).toBe(0); // the media job re-attached, never re-submitted
+    expect(firstMediaRef(nodeOutput(events2, 'gen'))).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
   });
 
   it('flagship: one run — retry then failover, pause at the gate, cross-process resume reproduces the final output', async () => {
