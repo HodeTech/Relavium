@@ -265,6 +265,15 @@ describe('Gemini adapter', () => {
     const parts = mapContent(response, new GeminiToolCallIds());
     expect(parts).toEqual([{ type: 'text', text: 'x' }]);
   });
+
+  it('mapContent skips a mimeType-less inlineData part rather than emitting a doomed octet-stream (Opus-fix)', () => {
+    // A mimeType-less media part would HARD-FAIL the engine de-inline (mediaModalityOf undefined → run:failed),
+    // so it is dropped symmetric with the empty-data skip — never defaulted to application/octet-stream.
+    const response: GeminiResponse = {
+      candidates: [{ content: { parts: [{ inlineData: { data: 'aW1n' } }, { text: 'x' }] } }],
+    };
+    expect(mapContent(response, new GeminiToolCallIds())).toEqual([{ type: 'text', text: 'x' }]);
+  });
 });
 
 describe('geminiErrorToLlmError — classification', () => {

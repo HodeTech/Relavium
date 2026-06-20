@@ -232,6 +232,21 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     expect(result.text).toBe('hi');
   });
 
+  it('fails loud (tool_failed) when a media-output turn returns a tool_use stop — never silently drops it (Opus-fix)', async () => {
+    // ADR-0046: a media turn is single-shot/terminal — generate() cannot run a tool round, so a tool_use stop
+    // is unfollowable. It must fail loud, not complete with empty output dropping the tool call.
+    const provider = mediaGenerateProvider('gemini', {
+      content: [{ type: 'tool_call', id: 't1', name: 'echo', args: {} }],
+      stopReason: 'tool_use',
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    const params = baseParams(provider, {
+      planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+      outputModalities: ['text', 'image'],
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'tool_failed' });
+  });
+
   it('maps a generate() chain failure into the turn error taxonomy (symmetric with the stream path)', async () => {
     const provider: LlmProvider = {
       id: 'gemini',

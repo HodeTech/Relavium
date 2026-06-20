@@ -279,6 +279,19 @@ async function executeAgent(
   if (mediaParts.length > 0) {
     return { kind: 'completed', output: { text: result.text, media: mediaParts }, tokensUsed };
   }
+  if (node.output_modalities?.some((modality) => modality !== 'text')) {
+    // The node requested media output but the model produced NONE (a refusal, or a capable model that
+    // ignored the modality request). The FallbackChain pre-skip is a DECLARED-capability gate — it cannot
+    // catch a model that advertises the combination yet returns text — so detect the silent degradation
+    // here and FAIL VISIBLY (ADR-0046's additive produced-vs-requested check), rather than passing the
+    // incidental text off as a successful media turn. Non-retryable + `validation`, consistent with the
+    // sibling output_schema miss below.
+    return failed(
+      'validation',
+      `agent node '${node.id}': output_modalities requested media output but the model returned none`,
+      false,
+    );
+  }
 
   // output_schema enforcement is NODE-SIDE (the seam's responseFormat is a request hint only; an
   // adapter never validates the response, and DeepSeek degrades to bare json_object — ADR-0038/D8).

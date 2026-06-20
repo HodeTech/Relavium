@@ -360,7 +360,15 @@ function throwMappedChainError(error: LlmError): never {
   throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
 }
 
-/** True when the node authored a non-text output modality — the inline media-out routing signal (1.AG). */
+/**
+ * True when the node authored a non-text output modality — the inline media-out routing signal (1.AG).
+ *
+ * NOTE (Section C): ADR-0046 §1's full condition is `media_surface: 'chat'` **and** a non-text
+ * `output_modalities`. In Section B every media-capable model is `surface: 'chat'`, so this conjunct is
+ * vacuously true and omitted. When the generative dispatch lands (Section C, ADR-0045), this guard must
+ * additionally require the resolved model's `media_surface === 'chat'` — a `'generative'` model routes to
+ * `generateMedia`, not to the inline `generate()` path here.
+ */
 function requestsMediaOutput(params: AgentTurnParams): boolean {
   return params.outputModalities?.some((m) => m !== 'text') ?? false;
 }
@@ -660,6 +668,17 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     throwIfAborted(params.signal);
     const turn = await generateOneTurn(chain, messages, params);
     throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
+    if (turn.stopReason === 'tool_use') {
+      // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip and the tool
+      // loop is built around stream(), so a tool_use stop cannot be followed. Fail LOUD rather than silently
+      // drop the unfollowable tool call (mirrors the stream path's protocol-anomaly guard for a tool_use stop
+      // with no runnable round). A media node should not grant tools; if a provider returns one anyway, fail.
+      throw new AgentTurnError(
+        'tool_failed',
+        'a media-output turn cannot run a tool round (ADR-0046)',
+        false,
+      );
+    }
     return {
       content: turn.content,
       text: textOf(turn.content),

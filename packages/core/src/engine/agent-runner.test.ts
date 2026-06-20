@@ -233,6 +233,37 @@ describe('createAgentNodeExecutor — dispatch', () => {
     }
   });
 
+  it('FAILS visibly when a media node produced no media — never a silent text completion (Opus-fix, ADR-0046)', async () => {
+    // A capable model that returns text-only (a refusal, or ignoring the modality) must not pass off the
+    // incidental text as a successful media turn — the declared-capability pre-skip cannot catch this.
+    const textOnlyProvider: LlmProvider = {
+      id: 'gemini',
+      supports: capsWithOutput([['text', 'image']]),
+      generate: () =>
+        Promise.resolve({
+          content: [{ type: 'text', text: 'I cannot make an image' }],
+          stopReason: 'stop',
+          usage: { inputTokens: 3, outputTokens: 2 },
+        }),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a media-out turn');
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(textOnlyProvider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_modalities: ['text', 'image'] }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation', retryable: false },
+    });
+  });
+
   it('returns a loud typed failure for a non-agent node type (1.P not yet landed)', async () => {
     const exec = createAgentNodeExecutor(deps(provider([STOP])));
     const { ctx } = ctxFor({ ...agentVertex(), type: 'transform' });

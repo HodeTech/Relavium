@@ -209,13 +209,21 @@ export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): Co
           args: part.functionCall.args ?? {},
         }),
       );
-    } else if (part.inlineData?.data !== undefined && part.inlineData.data.length > 0) {
+    } else if (
+      part.inlineData?.data !== undefined &&
+      part.inlineData.data.length > 0 &&
+      part.inlineData.mimeType !== undefined &&
+      part.inlineData.mimeType.length > 0
+    ) {
       // Inline media-out (responseModalities): a generated image/audio part, base64, IN the chat turn
       // (1.AG/ADR-0046). Emit an IN-FLIGHT media part; the engine de-inlines it to a handle at #emitDurable
-      // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart.
+      // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart. A part missing data OR
+      // mimeType is skipped (Gemini always sends both for a real artifact): a mimeType-less part has no media
+      // MIME to content-address and would HARD-FAIL the de-inline (mediaModalityOf undefined → run:failed), so
+      // dropping it is symmetric with the empty-data skip — never invent a doomed `application/octet-stream`.
       parts.push({
         type: 'media',
-        mimeType: part.inlineData.mimeType ?? 'application/octet-stream',
+        mimeType: part.inlineData.mimeType,
         source: { kind: 'base64', data: part.inlineData.data },
       });
     } else if (part.text !== undefined && part.text.length > 0) {
@@ -364,8 +372,11 @@ function toResponseObject(result: unknown): Record<string, unknown> {
   return isRecord(result) ? result : { result };
 }
 
-/** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
-/** Map a Relavium output modality to its Gemini `responseModalities` enum value (inline media-out, 1.AG). */
+/** Map a Relavium output modality to its Gemini `responseModalities` enum value (inline media-out, 1.AG).
+ *  `video` is present only to satisfy `Record<OutputModality, …>` exhaustiveness: Gemini's chat-surface
+ *  `responseModalities` accepts TEXT/IMAGE/AUDIO only, and no advertised `outputCombinations` includes a
+ *  video set, so the exact-membership capability gate (`assertMediaCapabilities`) rejects a video request
+ *  before this map is read — the entry is unreachable, kept solely for type completeness. */
 const GEMINI_RESPONSE_MODALITY: Record<OutputModality, string> = {
   text: 'TEXT',
   image: 'IMAGE',
@@ -373,6 +384,7 @@ const GEMINI_RESPONSE_MODALITY: Record<OutputModality, string> = {
   video: 'VIDEO',
 };
 
+/** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   const config: Record<string, unknown> = {};
   if (req.system !== undefined) {

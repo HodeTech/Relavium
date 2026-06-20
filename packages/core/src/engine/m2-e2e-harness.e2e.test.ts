@@ -27,7 +27,7 @@
  */
 
 import type { CapabilityFlags, LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import { RunEventSchema, type ContentPart, type MediaStore, type RunEvent } from '@relavium/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createExpressionSandbox, type ExpressionSandbox } from '../expression/sandbox.js';
@@ -112,6 +112,69 @@ const retryableError = (providerId: ProviderId): StreamChunk => ({
   error: { kind: 'overloaded', retryable: true, provider: providerId, message: 'busy' },
 });
 
+/** Caps advertising inline image output (chat surface) — so the chain keeps a media-output model. */
+const MEDIA_CAPS: CapabilityFlags = {
+  ...CAPS,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [['text', 'image']],
+    surface: 'chat',
+  },
+};
+
+/** A 5-byte in-flight base64 image part — the inline media-out fixture ("hello"). */
+const IMAGE_PART: ContentPart = {
+  type: 'media',
+  mimeType: 'image/png',
+  source: { kind: 'base64', data: 'aGVsbG8=' },
+};
+
+/** A provider whose non-streaming generate() returns inline media; its stream THROWS (media routes to generate). */
+function mediaProvider(id: ProviderId = 'gemini'): LlmProvider {
+  return {
+    id,
+    supports: MEDIA_CAPS,
+    generate: () =>
+      Promise.resolve({
+        content: [{ type: 'text', text: 'here is your image' }, IMAGE_PART],
+        stopReason: 'stop',
+        usage,
+      }),
+    stream: (): AsyncIterable<StreamChunk> => {
+      throw new Error('stream must NOT run for an inline media-out turn');
+    },
+  };
+}
+
+/** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the e2e. */
+function stubMediaStore(): MediaStore {
+  const puts: { handle: string; bytes: Uint8Array }[] = [];
+  const digest = (bytes: Uint8Array): string => {
+    let hex = '';
+    for (let seed = 0; seed < 8; seed += 1) {
+      let h = (2166136261 ^ (seed * 0x9e3779b1)) >>> 0;
+      for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0;
+      hex += h.toString(16).padStart(8, '0');
+    }
+    return hex;
+  };
+  return {
+    put: (bytes) => {
+      const handle = `media://sha256-${digest(bytes)}`;
+      puts.push({ handle, bytes });
+      return Promise.resolve(handle);
+    },
+    get: (handle) => {
+      const found = puts.find((p) => p.handle === handle);
+      return found === undefined
+        ? Promise.reject(new Error('no bytes'))
+        : Promise.resolve(found.bytes);
+    },
+    resolveForEgress: () => Promise.reject(new Error('unused by this test')),
+    readRange: () => Promise.reject(new Error('unused by this test')),
+  };
+}
+
 // --- Tool stubs: a sanitized echo registry + its LLM-visible def (mirror agent-runner.e2e.test.ts) ----
 
 const echoRegistry: ToolRegistry = {
@@ -190,6 +253,28 @@ workflow:
     - { from: in, to: work }
     - { from: work, to: g }
     - { from: g, to: out }
+`,
+);
+
+/** Inline media-out — an agent node requesting image output (1.AG Section B, ADR-0046). */
+const MEDIA_OUT = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-media-out
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: painter
+      model: gemini-2.5-flash
+      provider: gemini
+      system_prompt: You make images.
+  nodes:
+    - { id: in, type: input }
+    - { id: work, type: agent, agent_ref: painter, prompt_template: 'Draw: {{inputs.topic}}', output_modalities: [text, image] }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: work }
+    - { from: work, to: out }
 `,
 );
 
@@ -318,6 +403,27 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       running += c.costMicrocents;
       expect(c.cumulativeCostMicrocents).toBe(running);
     }
+
+    assertGapFreeSeq(events);
+    assertCanonicalSchema(events);
+  });
+
+  it('inline media-out: an agent node requesting image output routes to generate() and de-inlines to a handle (1.AG/ADR-0046)', async () => {
+    // The end-to-end proof of the "previously-missing integration link": a real agent node (output_modalities
+    // [text, image]) → generate() (its stream throws) → { text, media } node output → the engine de-inlines
+    // the in-flight base64 to a media:// handle at #emitDurable, gap-free, with NO base64 on the durable stream.
+    const host = createInMemoryHost({ mediaStore: stubMediaStore() });
+    const engine = buildEngine(host, () => mediaProvider('gemini'));
+    const { events } = await drive(engine.start({ workflow: MEDIA_OUT, inputs: INPUTS }), host);
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const out = nodeOutput(events, 'work');
+    expect(out).toMatchObject({
+      text: 'here is your image',
+      media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle' } }],
+    });
+    // I3 — the in-flight base64 ("hello") never appears on the delivered (or persisted) run-event stream.
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
 
     assertGapFreeSeq(events);
     assertCanonicalSchema(events);
