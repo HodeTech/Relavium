@@ -169,7 +169,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (`audio.speech` returns raw bytes → the adapter must base64-encode them + map the requested `response_format` →
   MIME) and **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which needs a
   `GeminiTransport.generateImages` extension to keep conformance vendor-free). Neither is runtime-reachable until the
-  per-model surface lookup is host-wired (above), so they land with that 1.AH wiring. *(packages/llm/src/adapters/{openai,gemini}.ts; 1.AH)*
+  per-model surface lookup is host-wired (above), so they land with that 1.AH wiring. Two bounded image follow-ups
+  ride along: (a) **multi-image `count > 1`** — the SYNC `MediaGenResult.media` carries a SINGLE part, so the OpenAI
+  adapter currently rejects `count > 1` (never bill-N-deliver-1); delivering N needs an additive `media: MediaPart[]`
+  seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the
+  engine does not yet populate `providerOptions` for a generative call, so the adapter threads only the output format
+  (`req.mimeType`); a typed per-knob passthrough lands when the engine wires image knobs. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a

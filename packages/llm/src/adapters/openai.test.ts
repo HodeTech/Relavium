@@ -346,6 +346,52 @@ describe('OpenAI-compatible adapter', () => {
     ).rejects.toThrowError(LlmProviderError);
   });
 
+  it('generateMedia rejects count > 1 (single-artifact SYNC seam) before any egress', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image', count: 3 }, 'k'),
+    ).rejects.toThrowError(LlmProviderError);
+  });
+
+  it('generateMedia honors a requested output format (req.mimeType → output_format + result MIME)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'aW1n' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    const result = await genMedia(
+      adapter,
+      { model: 'gpt-image-1', prompt: 'x', modality: 'image', mimeType: 'image/webp' },
+      'k',
+    );
+    expect(sent['output_format']).toBe('webp');
+    expect(result.media?.mimeType).toBe('image/webp');
+  });
+
+  it('generateMedia maps an image content-policy refusal to content_filter (the documented taxonomy)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: 'blocked', code: 'content_policy_violation' } }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'content_filter' } });
+  });
+
   it('lowers media on the STREAM path too (shared buildCommonBody — the §1.AE both-paths requirement)', async () => {
     let sent: Record<string, unknown> = {};
     const adapter = createOpenAiAdapter({

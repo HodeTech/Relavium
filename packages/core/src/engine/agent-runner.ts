@@ -17,6 +17,7 @@
 
 import {
   MEDIA_BILLED_MODALITIES,
+  mediaModalityOf,
   type Agent,
   type ContentPart,
   type ErrorCode,
@@ -27,10 +28,10 @@ import {
   type OutputModality,
 } from '@relavium/shared';
 import {
+  LlmConfigError,
   LlmProviderError,
   ResponseFormatSchema,
   ToolDefSchema,
-  UnknownModelError,
   cost,
   type FallbackPlanEntry,
   type LlmMessage,
@@ -359,6 +360,18 @@ async function executeGenerativeMedia(
   const modality = singleBilledModality(node.output_modalities, node.id);
   if (!modality.ok) return failed('validation', modality.message, false);
 
+  // The seam's `MediaGenRequest.prompt` is `nonEmptyString` — a generative call needs a prompt (unlike the
+  // chat path, which tolerates an empty prompt by sending no user message). Reject an empty resolved prompt as
+  // a clean upstream validation failure here, before the gate/egress — never let it surface as a provider
+  // bad_request (the node's `prompt_template` is optional, so this is reachable).
+  if (prompt.length === 0) {
+    return failed(
+      'validation',
+      `agent node '${node.id}': a media_surface 'generative' model requires a non-empty prompt`,
+      false,
+    );
+  }
+
   const provider = primary.provider;
   if (provider.generateMedia === undefined) {
     // The catalog flagged the model 'generative' but its provider implements no generateMedia — a host-wiring
@@ -412,15 +425,34 @@ async function executeGenerativeMedia(
     signal: ctx.signal,
   };
 
+  let key: string;
+  try {
+    key = await deps.keyFor(provider.id);
+  } catch {
+    // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message — replace
+    // it with a fixed, secret-free `provider_auth` failure, exactly as the FallbackChain's `#resolveKey` does
+    // on the chat path (rule 6). The original is dropped, not carried as a cause a sink could serialize.
+    return failed(
+      'provider_auth',
+      `agent node '${node.id}': credential resolution failed for provider ${provider.id}`,
+      false,
+    );
+  }
+
   let result: MediaGenResult;
   try {
-    const key = await deps.keyFor(provider.id);
     result = await provider.generateMedia(req, key);
   } catch (err) {
     // Map a provider error through the SAME taxonomy as the chat path (codeForLlmError): a content-policy
-    // refusal → content_filter, a cancel → cancelled, etc. A non-LlmProviderError re-throws to the engine.
+    // refusal → content_filter, a cancel → cancelled, etc.
     if (err instanceof LlmProviderError) {
       return failed(codeForLlmError(err.llmError), err.llmError.message, err.llmError.retryable);
+    }
+    // A seam capability/config error (e.g. UnsupportedCapabilityError for a non-image modality / DeepSeek)
+    // extends LlmConfigError — classify it as `validation` with its secret-free message, never let the engine
+    // catch-all flatten it to an opaque `internal` (mirrors buildLlmTools / the generateMedia-undefined branch).
+    if (err instanceof LlmConfigError) {
+      return failed('validation', err.message, false);
     }
     return turnOutcomeForError(err);
   }
@@ -438,6 +470,16 @@ async function executeGenerativeMedia(
     return failed(
       'internal',
       `agent node '${node.id}': generateMedia resolved neither media nor jobId`,
+      false,
+    );
+  }
+  // Defense-in-depth: the produced media's modality must match what the node requested (and was budgeted for) —
+  // a misbehaving adapter returning an audio part for an image request is a validation failure, not a silent
+  // mis-billed handle. mediaModalityOf derives the modality from the bare MIME.
+  if (mediaModalityOf(result.media.mimeType) !== modality.modality) {
+    return failed(
+      'validation',
+      `agent node '${node.id}': generative model returned ${result.media.mimeType} but the node requested '${modality.modality}'`,
       false,
     );
   }
@@ -486,6 +528,10 @@ function singleBilledModality(
 /**
  * The authored generation volume for a modality: `count` (image) or `duration_seconds` (audio/video), each
  * falling back to the conservative built-in default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}) when unspecified.
+ *
+ * NOTE: unlike the chat path's {@link buildMediaUnitsEstimate} (which reads `[defaults].media_cost_estimate`),
+ * the generative path uses the AUTHOR-DECLARED volume (`count`/`duration_seconds`) directly — the realized fold
+ * must reflect the actual requested volume, and the same number gates the pre-egress estimate (no host default).
  */
 function generativeUnits(modality: MediaBilledModality, node: AgentNode): number {
   return modality === 'image'
@@ -504,11 +550,11 @@ function realizedMediaCost(model: string, modality: MediaBilledModality, units: 
   ];
   try {
     return cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits });
-  } catch (err) {
-    if (err instanceof UnknownModelError) {
-      return 0; // an unknown model carries no rate — degrade to 0, matching the chain's best-effort cost path
-    }
-    throw err;
+  } catch {
+    // Best-effort (H4): an unknown/unrated model — OR any pricing-layer fault — must NEVER turn a successful,
+    // already-paid generation into a failed node. Degrade to 0, matching the chain's best-effort cost fold
+    // (FallbackChain #emitSuccess swallows a pricing throw the same way).
+    return 0;
   }
 }
 

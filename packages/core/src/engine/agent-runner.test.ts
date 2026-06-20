@@ -1,9 +1,10 @@
 import type { Agent, ContentPart, OutputModality } from '@relavium/shared';
-import { LlmProviderError, makeLlmError } from '@relavium/llm';
+import { LlmProviderError, UnsupportedCapabilityError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmProvider,
   LlmRequest,
+  MediaGenRequest,
   MediaGenResult,
   ProviderId,
   StreamChunk,
@@ -686,5 +687,135 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     );
     const outcome = await exec.execute(ctxFor(genVertex()).ctx);
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'content_filter' } });
+  });
+
+  it('fails validation for an empty resolved prompt (the seam nonEmptyString contract) — no provider egress', async () => {
+    let called = false;
+    const provider = generativeProvider();
+    const wrapped: LlmProvider = {
+      ...provider,
+      generateMedia: (req, key) => {
+        called = true;
+        return provider.generateMedia?.(req, key) ?? Promise.reject(new Error('no'));
+      },
+    };
+    // A node with no prompt_template resolves to an empty prompt.
+    const exec = createAgentNodeExecutor(genDeps(wrapped));
+    const ctx = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: { id: 'n1', type: 'agent', agent_ref: 'summarizer', output_modalities: ['image'] },
+        resolvedAgent: AGENT,
+      }),
+    ).ctx;
+    expect(await exec.execute(ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation' },
+    });
+    expect(called).toBe(false);
+  });
+
+  it('maps the authored count/duration_seconds onto the MediaGenRequest at dispatch', async () => {
+    let captured: MediaGenRequest | undefined;
+    const base = capsWithOutput([['image']]);
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('unused');
+      },
+      generateMedia: (req) => {
+        captured = req;
+        return Promise.resolve({ media: image, raw: {} });
+      },
+    };
+    const exec = createAgentNodeExecutor(genDeps(provider));
+    await exec.execute(ctxFor(genVertex({ count: 4 })).ctx);
+    expect(captured?.count).toBe(4);
+    expect(captured?.durationSeconds).toBeUndefined();
+    expect(captured?.modality).toBe('image');
+    expect(captured?.prompt).toBe('Summarize: hi'); // the resolved prompt_template
+  });
+
+  it('fails internal on a neither-media-nor-jobId result (the unreachable-in-practice guard)', async () => {
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider({ result: { raw: {} } })));
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal' },
+    });
+  });
+
+  it('classifies a seam UnsupportedCapabilityError as validation (not opaque internal)', async () => {
+    const exec = createAgentNodeExecutor(
+      genDeps(
+        generativeProvider({
+          throws: new UnsupportedCapabilityError('openai', 'media', 'no audio'),
+        }),
+      ),
+    );
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation' },
+    });
+  });
+
+  it('redacts a keyFor throw into a fixed provider_auth failure (no secret leak)', async () => {
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider(), {
+        keyFor: () => {
+          throw new Error('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
+        },
+      }),
+    );
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'provider_auth' } });
+    if (outcome.kind === 'failed') {
+      expect(outcome.error.message).not.toContain('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
+    }
+  });
+
+  it('fails validation when the produced media modality does not match the request (defense-in-depth)', async () => {
+    const audio: Extract<ContentPart, { type: 'media' }> = {
+      type: 'media',
+      mimeType: 'audio/wav',
+      source: { kind: 'base64', data: 'YXVkaW8=' },
+    };
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider({ result: { media: audio, raw: {} } })),
+    );
+    // node requests image, provider returns audio → validation
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation' },
+    });
+  });
+
+  it('a pre-aborted signal fails cancelled with no generateMedia egress', async () => {
+    let called = false;
+    const provider = generativeProvider();
+    const wrapped: LlmProvider = {
+      ...provider,
+      generateMedia: (req, key) => {
+        called = true;
+        return provider.generateMedia?.(req, key) ?? Promise.reject(new Error('no'));
+      },
+    };
+    const { ctx } = ctxFor(genVertex());
+    const aborted: NodeExecContext = {
+      ...ctx,
+      signal: {
+        aborted: true,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+    };
+    expect(await createAgentNodeExecutor(genDeps(wrapped)).execute(aborted)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'cancelled' },
+    });
+    expect(called).toBe(false);
   });
 });

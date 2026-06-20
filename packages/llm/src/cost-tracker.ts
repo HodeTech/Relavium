@@ -85,7 +85,9 @@ export function mediaCost(
     if (rate === undefined || !unitMatchesBilledModality(entry.modality, entry.unit)) {
       continue; // unpriced modality, or a unit that does not match the model's billed unit → observability-only
     }
-    total += entry.units * rate;
+    // Round once to an INTEGER micro-cent (a fractional `durationSeconds` × per-second rate would otherwise
+    // produce a non-integer addend) — matching the token path's per-class rounding so every cost stays integer.
+    total += Math.round(entry.units * rate);
   }
   return total;
 }

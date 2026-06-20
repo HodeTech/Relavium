@@ -496,8 +496,11 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     });
     const media = (out as { media: { source: { kind: string; ref?: string } }[] }).media;
     expect(media[0]?.source.ref).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
-    // I3 — no base64 on the delivered (or persisted) stream; exactly one realized cost:updated for the node.
+    // I3 — no base64 on the delivered (or persisted) stream; and MediaGenResult.raw (the provider-internal
+    // diagnostic) is structurally excluded from the node output (strip-on-sink, ADR-0045 §7) — the stub's
+    // raw:{ internal:true } must never appear. Exactly one realized cost:updated for the node.
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    expect(JSON.stringify(events)).not.toContain('"internal":true');
     expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1);
 
     assertGapFreeSeq(events);

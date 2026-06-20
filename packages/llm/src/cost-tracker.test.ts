@@ -92,6 +92,16 @@ describe('mediaCost (1.AF/D17 — per-modality media output addend)', () => {
     ).toBe(0);
   });
 
+  it('rounds a fractional addend to an integer micro-cent (a fractional durationSeconds × rate)', () => {
+    // 2.5s × 201/s = 502.5 → ROUNDED to 503; the cost path must never emit a non-integer micro-cent (1.AG §5).
+    const oddAudio: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { audio: 201 } };
+    const total = mediaCost(oddAudio, [
+      { modality: 'audio', direction: 'output', units: 2.5, unit: 'second' },
+    ]);
+    expect(total).toBe(503);
+    expect(Number.isInteger(total)).toBe(true);
+  });
+
   it('skips a modality the model does not rate (degrade-to-0, never hard-fail)', () => {
     const onlyImage: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { image: 1_000 } };
     expect(

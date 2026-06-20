@@ -178,6 +178,21 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  *  caller-supplied `providerOptions.audio.format` to a valid value (default `wav`). */
 const OPENAI_AUDIO_FORMATS = ['wav', 'aac', 'mp3', 'flac', 'opus', 'pcm16'] as const;
 
+/** Map a requested image-out MIME (`MediaGenRequest.mimeType`) to OpenAI's image `output_format` enum, or
+ *  `undefined` to leave the default (gpt-image-1 → PNG). Only the gpt-image-1-supported formats are honored. */
+function imageOutputFormat(mimeType: string | undefined): 'png' | 'jpeg' | 'webp' | undefined {
+  switch (mimeType) {
+    case 'image/png':
+      return 'png';
+    case 'image/jpeg':
+      return 'jpeg';
+    case 'image/webp':
+      return 'webp';
+    default:
+      return undefined;
+  }
+}
+
 /** Map a requested output-audio `format` (providerOptions.audio.format) to its MIME — OpenAI's response
  *  echoes no format, so the requested one types the media part. Defaults to `audio/wav` (OpenAI's default). */
 export function outputAudioMime(req: LlmRequest): string {
@@ -266,6 +281,12 @@ function firstNonEmptyString(...values: readonly unknown[]): string | undefined 
   return undefined;
 }
 
+/** An OpenAI content-policy / moderation rejection code (image-gen + chat). Its own fatal cause, not a
+ *  generic bad_request — so `codeForLlmError` yields `content_filter` (1.AG/ADR-0045 §6). */
+function isContentPolicyCode(code: string | undefined): boolean {
+  return code === 'content_policy_violation' || code === 'moderation_blocked';
+}
+
 /** Normalize an SDK `APIError` into an `LlmError`, typed by the structural subset it reads. */
 function mapOpenAiApiError(
   err: { status?: unknown; code?: unknown; type?: unknown; message: string },
@@ -273,7 +294,13 @@ function mapOpenAiApiError(
 ): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = firstNonEmptyString(err.code, err.type);
-  const kind = status === undefined ? 'unknown' : kindFromHttpStatus(status);
+  // A content-policy block normalizes to content_filter regardless of HTTP status (a moderation 400 would
+  // otherwise map to bad_request) — the wired image-gen path then delivers the documented taxonomy.
+  const kind = isContentPolicyCode(code)
+    ? 'content_filter'
+    : status === undefined
+      ? 'unknown'
+      : kindFromHttpStatus(status);
   return makeLlmError({
     provider,
     kind,
@@ -837,22 +864,35 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           `${providerId} generateMedia supports only OpenAI image generation, not '${req.modality}' (audio/video deferred)`,
         );
       }
+      if (req.count !== undefined && req.count > 1) {
+        // The SYNC seam carries a SINGLE MediaPart. Rather than generate (and have the engine bill) N images
+        // and silently drop N-1, reject count > 1 loudly until a multi-part media-array result lands (a future
+        // additive ADR-0031 seam amendment, deferred-tasks.md) — never deliver fewer artifacts than billed.
+        throw new LlmProviderError(
+          makeLlmError({
+            provider: providerId,
+            kind: 'bad_request',
+            message: `OpenAI image generateMedia delivers a single image; count ${String(req.count)} > 1 is not supported on the SYNC seam`,
+          }),
+        );
+      }
+      // Honor a requested output format (req.mimeType → png/jpeg/webp); the result MIME reflects what we asked
+      // for (or gpt-image-1's PNG default). (providerOptions image knobs — size/quality — are not set by the
+      // engine in Section C; threading them is a bounded follow-up with the image-knob work, deferred-tasks.md.)
+      const outputFormat = imageOutputFormat(req.mimeType);
       let response: OpenAI.ImagesResponse;
       try {
         response = await createClient(key).images.generate(
           {
             model: req.model,
             prompt: req.prompt,
-            ...(req.count === undefined ? {} : { n: req.count }),
+            ...(outputFormat === undefined ? {} : { output_format: outputFormat }),
           },
           isAbortSignal(req.signal) ? { signal: req.signal } : {},
         );
       } catch (err) {
         throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
       }
-      // gpt-image-1 returns base64 PNG. A `count > 1` batch surfaces the FIRST image (the SYNC seam carries a
-      // single MediaPart; a multi-part media-array result is a future additive seam change) — the cost is still
-      // billed for the authored `count` (the engine's realized fold).
       const b64 = response.data?.[0]?.b64_json;
       if (b64 === undefined || b64.length === 0) {
         throw new LlmProviderError(
@@ -863,8 +903,9 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           }),
         );
       }
+      const mimeType = outputFormat === undefined ? 'image/png' : `image/${outputFormat}`;
       return {
-        media: { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: b64 } },
+        media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
         raw: response,
       };
     },
