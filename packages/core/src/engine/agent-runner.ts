@@ -353,16 +353,29 @@ async function executeAgent(
     return turnOutcomeForError(err);
   }
 
+  return buildChatTurnOutcome(node, result, outputSchema !== undefined);
+}
+
+/**
+ * Build the node outcome from a completed chat turn (1.O / 1.AG Section B). Order: a turn that produced media
+ * parts surfaces them as `{ text, media }` so the engine de-inlines the in-flight base64 to `media://` handles
+ * at #emitDurable (the I3 boundary) — this PRECEDES output_schema (a media turn is not JSON-validated). A turn
+ * that requested media but produced NONE fails `validation` (ADR-0046's produced-vs-requested check — the
+ * FallbackChain pre-skip is a declared-capability gate that cannot catch a model returning text anyway). Else,
+ * `output_schema` (when set) is enforced NODE-SIDE (the seam's responseFormat is a request hint only; an
+ * adapter never validates, and DeepSeek degrades to bare json_object — ADR-0038/D8); a non-JSON result fails
+ * `validation`. A plain text turn returns its text verbatim.
+ */
+function buildChatTurnOutcome(
+  node: AgentNode,
+  result: AgentTurnResult,
+  hasOutputSchema: boolean,
+): NodeOutcome {
   const tokensUsed = {
     input: result.usage.input,
     output: result.usage.output,
     model: result.model,
   };
-
-  // Inline media-out (1.AG/[ADR-0046]): a turn that produced media parts surfaces them as the node output
-  // (alongside the accompanying text) so the engine de-inlines the in-flight base64 to `media://` handles at
-  // `node:completed` (#emitDurable) — the I3 boundary. A text-only turn keeps its string/parsed output. This
-  // precedes output_schema: a media-output turn is not JSON-validated (the artifact is the media, not text).
   const mediaParts = result.content.filter(
     (part): part is Extract<ContentPart, { type: 'media' }> => part.type === 'media',
   );
@@ -370,33 +383,24 @@ async function executeAgent(
     return { kind: 'completed', output: { text: result.text, media: mediaParts }, tokensUsed };
   }
   if (node.output_modalities?.some((modality) => modality !== 'text')) {
-    // The node requested media output but the model produced NONE (a refusal, or a capable model that
-    // ignored the modality request). The FallbackChain pre-skip is a DECLARED-capability gate — it cannot
-    // catch a model that advertises the combination yet returns text — so detect the silent degradation
-    // here and FAIL VISIBLY (ADR-0046's additive produced-vs-requested check), rather than passing the
-    // incidental text off as a successful media turn. Non-retryable + `validation`, consistent with the
-    // sibling output_schema miss below.
     return failed(
       'validation',
       `agent node '${node.id}': output_modalities requested media output but the model returned none`,
       false,
     );
   }
-
-  // output_schema enforcement is NODE-SIDE (the seam's responseFormat is a request hint only; an
-  // adapter never validates the response, and DeepSeek degrades to bare json_object — ADR-0038/D8).
-  if (outputSchema !== undefined) {
-    const parsed = tryParseJson(result.text);
-    if (parsed === PARSE_FAILED) {
-      return failed(
-        'validation',
-        `agent node '${node.id}': output_schema is set but the model output was not valid JSON`,
-        false,
-      );
-    }
-    return { kind: 'completed', output: parsed, tokensUsed };
+  if (!hasOutputSchema) {
+    return { kind: 'completed', output: result.text, tokensUsed };
   }
-  return { kind: 'completed', output: result.text, tokensUsed };
+  const parsed = tryParseJson(result.text);
+  if (parsed === PARSE_FAILED) {
+    return failed(
+      'validation',
+      `agent node '${node.id}': output_schema is set but the model output was not valid JSON`,
+      false,
+    );
+  }
+  return { kind: 'completed', output: parsed, tokensUsed };
 }
 
 /**

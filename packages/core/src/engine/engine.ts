@@ -198,6 +198,28 @@ export interface ResumeFromCheckpointInput {
   readonly decision?: GateDecision;
 }
 
+/**
+ * Validate a {@link ResumeFromCheckpointInput}'s gate fields (1.R / 1.AG Section D). A gate resume supplies
+ * BOTH `gateId` + `decision`; a media-only resume supplies NEITHER — a half-supplied pair is a caller misuse,
+ * and a supplied `decision` must parse. Throws a typed {@link EngineStateError} (`invalid_decision`); pulled
+ * out of `resumeFromCheckpoint` so the entry stays within the cognitive-complexity budget.
+ */
+function assertValidResumeInput(input: ResumeFromCheckpointInput): void {
+  if ((input.gateId === undefined) !== (input.decision === undefined)) {
+    throw new EngineStateError(
+      'invalid_decision',
+      'resumeFromCheckpoint needs BOTH gateId + decision (a gate resume) or NEITHER (a media-job resume)',
+      { runId: input.runId, ...(input.gateId === undefined ? {} : { gateId: input.gateId }) },
+    );
+  }
+  if (input.decision !== undefined && !GateDecisionSchema.safeParse(input.decision).success) {
+    throw new EngineStateError('invalid_decision', 'the gate decision failed validation', {
+      runId: input.runId,
+      ...(input.gateId === undefined ? {} : { gateId: input.gateId }),
+    });
+  }
+}
+
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
 export interface WorkflowEngineDeps {
   readonly host: ExecutionHost;
@@ -2198,22 +2220,9 @@ export class WorkflowEngine {
    * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
    */
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
-    // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither. Validate
-    // the decision only when one is given; a half-supplied pair (one of the two) is a caller misuse.
+    // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;
-    if ((input.gateId === undefined) !== (input.decision === undefined)) {
-      throw new EngineStateError(
-        'invalid_decision',
-        'resumeFromCheckpoint needs BOTH gateId + decision (a gate resume) or NEITHER (a media-job resume)',
-        { runId: input.runId, ...(input.gateId === undefined ? {} : { gateId: input.gateId }) },
-      );
-    }
-    if (input.decision !== undefined && !GateDecisionSchema.safeParse(input.decision).success) {
-      throw new EngineStateError('invalid_decision', 'the gate decision failed validation', {
-        runId: input.runId,
-        ...(input.gateId === undefined ? {} : { gateId: input.gateId }),
-      });
-    }
+    assertValidResumeInput(input); // a half-supplied pair, or a malformed decision, is a caller misuse
     if (this.#runs.has(input.runId)) {
       throw new EngineStateError(
         'run_already_active',

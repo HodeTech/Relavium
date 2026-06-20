@@ -205,53 +205,61 @@ export function mapUsage(usage: {
 export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-    if (part.functionCall !== undefined) {
-      const name = part.functionCall.name ?? '';
-      parts.push(
-        normalizeToolCall(PROVIDER, {
-          id: ids.synthesize(name), // Gemini has no native id — mint a stable one (1.E)
-          name,
-          args: part.functionCall.args ?? {},
-        }),
-      );
-    } else if (
-      part.inlineData?.data !== undefined &&
-      part.inlineData.data.length > 0 &&
-      part.inlineData.mimeType !== undefined &&
-      part.inlineData.mimeType.length > 0
-    ) {
-      // Inline media-out (responseModalities): a generated image/audio part, base64, IN the chat turn
-      // (1.AG/ADR-0046). Emit an IN-FLIGHT media part; the engine de-inlines it to a handle at #emitDurable
-      // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart. A part missing data OR
-      // mimeType is skipped (Gemini always sends both for a real artifact): a mimeType-less part has no media
-      // MIME to content-address and would HARD-FAIL the de-inline (mediaModalityOf undefined → run:failed), so
-      // dropping it is symmetric with the empty-data skip — never invent a doomed `application/octet-stream`.
-      // Gemini AUDIO output carries a PARAMETERIZED mime (e.g. `audio/L16;codec=pcm;rate=24000`), but the seam's
-      // MediaMimeTypeSchema admits only a BARE type/subtype — strip parameters to the bare prefix (the modality
-      // derives from it; the durable media part cannot carry parameters anyway). A pathological `;…`-only value
-      // strips to empty and is skipped, not emitted as a doomed part.
-      const bareMime = part.inlineData.mimeType.split(';')[0]?.trim() ?? '';
-      if (bareMime.length > 0) {
-        parts.push({
-          type: 'media',
-          mimeType: bareMime,
-          source: { kind: 'base64', data: part.inlineData.data },
-        });
-      }
-    } else if (part.text !== undefined && part.text.length > 0) {
-      if (part.thought === true) {
-        // Reasoning (ADR-0030); thoughtSignature is the ephemeral same-provider continuity token.
-        parts.push(
-          part.thoughtSignature !== undefined && part.thoughtSignature.length > 0
-            ? { type: 'reasoning', text: part.text, signature: part.thoughtSignature }
-            : { type: 'reasoning', text: part.text },
-        );
-      } else {
-        parts.push({ type: 'text', text: part.text });
-      }
+    const mapped = mapGeminiPart(part, ids);
+    if (mapped !== undefined) {
+      parts.push(mapped);
     }
   }
   return parts;
+}
+
+/**
+ * Map ONE Gemini response part to its canonical {@link ContentPart}, or `undefined` to skip it. Mirrors the
+ * wire's mutual exclusivity in priority order — a `functionCall` part, else an inline-media part
+ * (responseModalities), else a text/reasoning part — and the **first matching KIND consumes the part**: a
+ * matched-but-unusable inline-media part (empty data/MIME) is SKIPPED, never re-interpreted as text (the early
+ * returns preserve the original `if/else if` consumption semantics). Pulled out of the `mapContent` loop so
+ * the per-part branching is not multiplied by the loop nesting (cognitive-complexity budget).
+ */
+function mapGeminiPart(part: GeminiPart, ids: GeminiToolCallIds): ContentPart | undefined {
+  if (part.functionCall !== undefined) {
+    const name = part.functionCall.name ?? '';
+    return normalizeToolCall(PROVIDER, {
+      id: ids.synthesize(name), // Gemini has no native id — mint a stable one (1.E)
+      name,
+      args: part.functionCall.args ?? {},
+    });
+  }
+  const inline = part.inlineData;
+  if (
+    inline?.data !== undefined &&
+    inline.data.length > 0 &&
+    inline.mimeType !== undefined &&
+    inline.mimeType.length > 0
+  ) {
+    // Inline media-out (responseModalities): a generated image/audio part, base64, IN the chat turn
+    // (1.AG/ADR-0046). Emit an IN-FLIGHT media part; the engine de-inlines it to a handle at #emitDurable
+    // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart. Gemini AUDIO output carries
+    // a PARAMETERIZED mime (e.g. `audio/L16;codec=pcm;rate=24000`), but the seam's MediaMimeTypeSchema admits
+    // only a BARE type/subtype — strip parameters to the bare prefix (the modality derives from it; the durable
+    // media part cannot carry parameters anyway). A pathological `;…`-only value strips to empty and is SKIPPED
+    // (returns undefined — still consumed, never re-interpreted as text), symmetric with the empty-data skip,
+    // never emitted as a doomed `application/octet-stream` that would HARD-FAIL the de-inline.
+    const bareMime = inline.mimeType.split(';')[0]?.trim() ?? '';
+    return bareMime.length > 0
+      ? { type: 'media', mimeType: bareMime, source: { kind: 'base64', data: inline.data } }
+      : undefined;
+  }
+  if (part.text === undefined || part.text.length === 0) {
+    return undefined;
+  }
+  if (part.thought !== true) {
+    return { type: 'text', text: part.text };
+  }
+  // Reasoning (ADR-0030); thoughtSignature is the ephemeral same-provider continuity token.
+  return part.thoughtSignature !== undefined && part.thoughtSignature.length > 0
+    ? { type: 'reasoning', text: part.text, signature: part.thoughtSignature }
+    : { type: 'reasoning', text: part.text };
 }
 
 /** Classify any transport/SDK throwable into a normalized `LlmError` — no vendor shape escapes. */

@@ -547,21 +547,7 @@ function buildCommonBody(
     body.tool_choice = toOpenAiToolChoice(req.toolChoice);
   }
   if (req.responseFormat?.type === 'json') {
-    if (provider === 'deepseek') {
-      // DeepSeek only supports json_object; json_schema returns 400 (ADR-0030).
-      // Note: DeepSeek json_object also requires the word "json" to appear in the prompt.
-      body.response_format = { type: 'json_object' };
-    } else {
-      // Native structured output for OpenAI (ADR-0030). The canonical JSON-Schema bridges here.
-      body.response_format = {
-        type: 'json_schema',
-        json_schema: {
-          name: toJsonSchemaName(req.responseFormat.name),
-          schema: req.responseFormat.schema as Record<string, unknown>,
-          strict: req.responseFormat.strict ?? true,
-        },
-      };
-    }
+    body.response_format = toOpenAiResponseFormat(req.responseFormat, provider);
   }
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
@@ -573,22 +559,50 @@ function buildCommonBody(
     body.stop = req.stopSequences;
   }
   if (req.outputModalities?.includes('audio')) {
-    // Inline audio-out (1.AG/ADR-0046): request the text+audio combination. OpenAI requires a `voice`
-    // (any string) + `format` (a closed union); read them from providerOptions.audio when supplied, else
-    // OpenAI's defaults. `body` is spread last below, so these win over a raw providerOptions echo.
-    const audioOpts = isRecord(req.providerOptions) ? req.providerOptions['audio'] : undefined;
-    const voice =
-      isRecord(audioOpts) && typeof audioOpts['voice'] === 'string' ? audioOpts['voice'] : 'alloy';
-    const rawFormat = isRecord(audioOpts) ? audioOpts['format'] : undefined;
-    const format = OPENAI_AUDIO_FORMATS.find((f) => f === rawFormat) ?? 'wav';
+    // Inline audio-out (1.AG/ADR-0046): request the text+audio combination. `body` is spread last below, so
+    // these win over a raw providerOptions echo.
     body.modalities = ['text', 'audio'];
-    body.audio = { voice, format };
+    body.audio = resolveOpenAiAudio(req.providerOptions);
   }
   if (req.providerOptions === undefined) {
     return body;
   }
   // The typed escape hatch (1.D): `body` is spread LAST so mapped common-path fields always win.
   return { ...req.providerOptions, ...body };
+}
+
+/** Lower a canonical `responseFormat: json` to OpenAI's `response_format`: DeepSeek supports only
+ *  `json_object` (json_schema 400s — ADR-0030; it also needs the word "json" in the prompt); OpenAI uses
+ *  native `json_schema` (the canonical JSON-Schema bridges here). */
+function toOpenAiResponseFormat(
+  responseFormat: Extract<NonNullable<LlmRequest['responseFormat']>, { type: 'json' }>,
+  provider: ProviderId,
+): NonNullable<OpenAI.ChatCompletionCreateParams['response_format']> {
+  if (provider === 'deepseek') {
+    return { type: 'json_object' };
+  }
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: toJsonSchemaName(responseFormat.name),
+      schema: responseFormat.schema as Record<string, unknown>,
+      strict: responseFormat.strict ?? true,
+    },
+  };
+}
+
+/** Resolve OpenAI inline-audio `voice` (any string) + `format` (a closed union) from
+ *  `providerOptions.audio` when supplied, else OpenAI's defaults (1.AG/ADR-0046). */
+function resolveOpenAiAudio(providerOptions: LlmRequest['providerOptions']): {
+  voice: string;
+  format: (typeof OPENAI_AUDIO_FORMATS)[number];
+} {
+  const audioOpts = isRecord(providerOptions) ? providerOptions['audio'] : undefined;
+  const voice =
+    isRecord(audioOpts) && typeof audioOpts['voice'] === 'string' ? audioOpts['voice'] : 'alloy';
+  const rawFormat = isRecord(audioOpts) ? audioOpts['format'] : undefined;
+  const format = OPENAI_AUDIO_FORMATS.find((f) => f === rawFormat) ?? 'wav';
+  return { voice, format };
 }
 
 function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
