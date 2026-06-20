@@ -289,10 +289,16 @@ const reject: Record<string, Record<string, unknown>> = {
   },
   'run:cancelled (negative sequenceNumber)': { type: 'run:cancelled', ...env, sequenceNumber: -1 },
   // A media-job park may carry empty gateIds / pendingGateCount 0 (1.AG Section D), so those are no longer
-  // rejected; an empty pendingMediaJobNodeIds (min 1) still is.
+  // rejected; an empty pendingMediaJobNodeIds (min 1) still is, and a ZERO-reason pause (no gate, no media) is
+  // rejected by the union-level superRefine.
   'run:paused (empty pendingMediaJobNodeIds)': {
     ...valid['run:paused'],
     pendingMediaJobNodeIds: [],
+  },
+  'run:paused (no suspension reason)': {
+    ...valid['run:paused'],
+    pendingGateCount: 0,
+    gateIds: [],
   },
   'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
   'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },

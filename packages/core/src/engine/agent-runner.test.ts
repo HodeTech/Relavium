@@ -6,6 +6,7 @@ import type {
   LlmRequest,
   MediaGenRequest,
   MediaGenResult,
+  MediaJobStatus,
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
@@ -825,6 +826,51 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'provider_auth' } });
     if (outcome.kind === 'failed') {
       expect(outcome.error.message).not.toContain('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
+    }
+  });
+
+  it('pollMediaJob (the engine delegate): missing pollMediaJob → failed(unknown); a keyFor throw → secret-free failed(auth)', async () => {
+    const job = {
+      jobId: 'j1',
+      provider: 'anthropic' as const,
+      model: 'm',
+      modality: 'image' as const,
+      units: 1,
+    };
+    const signal = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    // (1) The resolved provider implements no pollMediaJob → a secret-free failed(unknown) MediaJobStatus.
+    const noPoll: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => streamOf([STOP]),
+    };
+    const exec1 = createAgentNodeExecutor(deps(noPoll));
+    const r1: MediaJobStatus | undefined = await exec1.pollMediaJob?.(job, signal);
+    expect(r1).toMatchObject({ state: 'failed', error: { kind: 'unknown', retryable: false } });
+
+    // (2) keyFor throws a secret-bearing error → a FIXED secret-free failed(auth), the original dropped.
+    const withPoll: LlmProvider = {
+      ...noPoll,
+      pollMediaJob: () => Promise.resolve({ state: 'pending' }),
+    };
+    const exec2 = createAgentNodeExecutor(
+      deps(withPoll, {
+        keyFor: () => {
+          throw new Error('SECRET-KEY-RESOLUTION-DETAIL');
+        },
+      }),
+    );
+    const r2: MediaJobStatus | undefined = await exec2.pollMediaJob?.(job, signal);
+    expect(r2).toMatchObject({ state: 'failed', error: { kind: 'auth' } });
+    if (r2?.state === 'failed') {
+      expect(r2.error.message).not.toContain('SECRET-KEY-RESOLUTION-DETAIL');
     }
   });
 

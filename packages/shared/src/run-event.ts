@@ -444,6 +444,21 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['timeoutAction'],
     });
   }
+  // A pause always has a reason: ≥1 gate OR ≥1 media job (1.AG Section D). The member's field constraints were
+  // relaxed (a media-only park has 0 gates), so the disjunction is enforced here at the union level (a
+  // discriminatedUnion member can't carry its own cross-field refinement). The engine never emits a zero-reason
+  // run:paused; this rejects a malformed one.
+  if (
+    event.type === 'run:paused' &&
+    event.gateIds.length === 0 &&
+    (event.pendingMediaJobNodeIds?.length ?? 0) === 0
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'run:paused must carry at least one suspension reason (a gate or a media job)',
+      path: ['gateIds'],
+    });
+  }
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 

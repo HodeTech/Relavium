@@ -581,10 +581,12 @@ class RunExecution {
    */
   async beginResumeMediaJobs(): Promise<void> {
     this.#armRunTimeout();
-    if (this.#pendingMediaJobs.size === 0 && this.#pendingGates.size === 0) {
+    if (this.#pendingMediaJobs.size === 0) {
+      // A media-only resume REQUIRES a parked media job. A run parked ONLY on a human gate must be resumed via
+      // the gate form (gateId + decision) — resuming it here would silently re-park it forever (no decision).
       throw new EngineStateError(
         'run_not_paused',
-        'the run has no pending media job (or gate) to resume',
+        'the run has no pending media job to re-attach (a gate-parked run resumes via gateId + decision)',
         { runId: this.runId },
       );
     }
@@ -1308,10 +1310,28 @@ class RunExecution {
     }
   }
 
-  /** Remove a parked media job + disarm its timer (on done/failed/cancel). */
+  /** Remove a parked media job + disarm its timer (on done/failed). Resetting `#pauseEpisode` mirrors the gate
+   *  `resume()` so a LATER pause (a downstream gate / a second media job parking in a fresh idle cycle) re-emits
+   *  an accurate aggregate `run:paused` instead of being suppressed. */
   #clearMediaJob(nodeId: string): void {
     this.#pendingMediaJobs.delete(nodeId);
     this.#disarmMediaTimer(nodeId);
+    this.#pauseEpisode = false;
+  }
+
+  /** Emit the lone realized media-cost addend for a job (ADR-0045 §5) — folded into the run cumulative +
+   *  streamed by `#nodeEmit`. Emitted exactly once per job: at `done`, or — for a paid job abandoned by a
+   *  fail/deadline/cancel — at that settle (the provider bills regardless, a cost-integrity requirement). */
+  #emitMediaJobCost(nodeId: string, job: ParkedMediaJob): void {
+    this.#nodeEmit({
+      type: 'cost:updated',
+      nodeId,
+      model: job.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicrocents: realizedMediaCost(job.model, job.modality, job.units),
+      cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
+    });
   }
 
   /**
@@ -1327,49 +1347,59 @@ class RunExecution {
     if (this.#settled || job === undefined || vertex === undefined) {
       return; // run terminal, job cleared, or vertex gone
     }
-    if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
-      await this.#settleMediaJobFailed(vertex, {
-        code: 'provider_unavailable',
-        message: `media job '${job.jobId}' exceeded its deadline (${job.deadlineAt})`,
-        retryable: true,
-      });
-      return;
-    }
-    if (this.#executor.pollMediaJob === undefined) {
-      await this.#settleMediaJobFailed(vertex, {
-        code: 'internal',
-        message: 'the executor implements no pollMediaJob (host-wiring gap)',
-        retryable: false,
-      });
-      return;
-    }
-    const submission: MediaJobSubmission = {
-      jobId: job.jobId,
-      provider: job.provider,
-      model: job.model,
-      modality: job.modality,
-      units: job.units,
-    };
-    let status: MediaJobStatus;
+    // The whole settle path is wrapped: a synchronous bus/Zod throw (or a #nodeEmit fault) must NOT escape the
+    // fire-and-forget `void #pollMediaJob` as an unhandled rejection — route it to a single run:failed instead
+    // (mirroring the #onOutcome backstop), keeping the run total for faults.
     try {
-      status = await this.#executor.pollMediaJob(submission, this.#abort.signal);
-    } catch {
-      // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
-      // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
-      if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+      if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'provider_unavailable',
+          message: `media job '${job.jobId}' exceeded its deadline (${job.deadlineAt})`,
+          retryable: true,
+        });
         return;
       }
-      await this.#settleMediaJobFailed(vertex, {
-        code: 'internal',
-        message: 'media job poll failed',
-        retryable: false,
-      });
-      return;
+      if (this.#executor.pollMediaJob === undefined) {
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'internal',
+          message: 'the executor implements no pollMediaJob (host-wiring gap)',
+          retryable: false,
+        });
+        return;
+      }
+      const submission: MediaJobSubmission = {
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        units: job.units,
+      };
+      let status: MediaJobStatus;
+      try {
+        status = await this.#executor.pollMediaJob(submission, this.#abort.signal);
+      } catch {
+        // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
+        // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
+        if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+          return;
+        }
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'internal',
+          message: 'media job poll failed',
+          retryable: false,
+        });
+        return;
+      }
+      if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+        return; // a cancel / terminal raced the poll await — let #settle close the run
+      }
+      await this.#applyMediaJobStatus(vertex, job, status);
+    } catch {
+      if (!this.#settled) {
+        this.#clearMediaJob(nodeId);
+        this.#failNodeInternal(vertex, 'the media job poll loop failed while settling the node');
+      }
     }
-    if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
-      return; // a cancel / terminal raced the poll await — let #settle close the run
-    }
-    await this.#applyMediaJobStatus(vertex, job, status);
   }
 
   /** Route one `MediaJobStatus` to: re-arm (pending) / complete (done) / fail (failed). */
@@ -1390,12 +1420,21 @@ class RunExecution {
         await this.#settleMediaJobDone(vertex, job, status.media);
         return;
       case 'failed':
-        await this.#settleMediaJobFailed(vertex, {
+        await this.#settleMediaJobFailed(vertex, job, {
           code: codeForLlmError(status.error),
           message: status.error.message,
           retryable: status.error.retryable,
         });
         return;
+      default:
+        // Defense-in-depth: an out-of-union job state (a future seam value / a non-conforming adapter) would
+        // otherwise fall through, leaving the node parked with no re-arm and no terminal — a silent hang. Fail
+        // loudly with a terminal node:failed instead (the closed-union switch above type-checks without this).
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'internal',
+          message: 'media poll returned an unrecognized job state',
+          retryable: false,
+        });
     }
   }
 
@@ -1408,32 +1447,30 @@ class RunExecution {
     media: Extract<MediaJobStatus, { state: 'done' }>['media'],
   ): Promise<void> {
     this.#clearMediaJob(vertex.id);
-    // The lone realized cost:updated (ADR-0045 §5) — folded into the run cumulative + streamed by #nodeEmit.
-    this.#nodeEmit({
-      type: 'cost:updated',
-      nodeId: vertex.id,
-      model: job.model,
-      inputTokens: 0,
-      outputTokens: 0,
-      costMicrocents: realizedMediaCost(job.model, job.modality, job.units),
-      cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
-    });
-    // The pure-media node output de-inlines to a media:// handle at #emitDurable (the I3 boundary), exactly
-    // like the SYNC generative path; `media` is the seam MediaPart (base64 or a re-hostable url).
+    this.#emitMediaJobCost(vertex.id, job); // the lone realized cost:updated (ADR-0045 §5)
+    // The pure-media node output ({ text:'', media }) matches the SYNC generative shape exactly (so a downstream
+    // {{ outputs.x.text }} resolves to '' regardless of sync-vs-LRO) and de-inlines to a media:// handle at
+    // #emitDurable (the I3 boundary); `media` is the seam MediaPart (base64 or a re-hostable url).
     await this.#onOutcome(
       vertex,
       {
         kind: 'completed',
-        output: { media: [media] },
+        output: { text: '', media: [media] },
         tokensUsed: { input: 0, output: 0, model: job.model },
       },
       this.#elapsedMs(),
     );
   }
 
-  /** A media job failed / timed out: clear it and drive the node to `failed` through `#onOutcome`. */
-  async #settleMediaJobFailed(vertex: PlanVertex, error: NodeFailure): Promise<void> {
+  /** A media job failed / timed out: emit the paid job's lone cost addend (§5 — the provider billed even though
+   *  it failed), clear it, and drive the node to `failed` through `#onOutcome`. */
+  async #settleMediaJobFailed(
+    vertex: PlanVertex,
+    job: ParkedMediaJob,
+    error: NodeFailure,
+  ): Promise<void> {
     this.#clearMediaJob(vertex.id);
+    this.#emitMediaJobCost(vertex.id, job);
     await this.#onOutcome(vertex, { kind: 'failed', error }, this.#elapsedMs());
   }
 
@@ -1518,6 +1555,13 @@ class RunExecution {
       disarm();
     }
     this.#gateTimers.clear();
+    // A paid media job still pending at the terminal (a cancel, or a sibling's failure abandoning it) was
+    // billed by the provider even though its output is discarded — emit its lone cost addend before clearing
+    // (ADR-0045 §5, the local-only-cancel cost-integrity caveat). run:completed never reaches here with a
+    // pending job (each completes + clears at its own `done`). Emit BEFORE the terminal so the run total folds it.
+    for (const [nodeId, job] of this.#pendingMediaJobs) {
+      this.#emitMediaJobCost(nodeId, job);
+    }
     for (const disarm of this.#mediaJobTimers.values()) {
       disarm();
     }

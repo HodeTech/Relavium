@@ -797,6 +797,105 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(firstMediaRef(nodeOutput(events2, 'gen'))).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
   });
 
+  it('async media job: a resume past the deadline short-circuits to a retryable timeout, never re-polls (ADR-0045 §3)', async () => {
+    const store = new InMemoryRunStore();
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() }); // clock ~2026-01-01
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+    );
+    const { events: events1 } = await drive(
+      engine1.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    const runId = events1[0]?.runId ?? '';
+
+    // Process 2: a clock FAR past the 30-min default deadline → the re-attach's first poll short-circuits to a
+    // retryable timeout BEFORE polling (the provider has surely dropped the job). The done-script never runs.
+    const job2 = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const host2 = createInMemoryHost({
+      store,
+      mediaStore: stubMediaStore(),
+      baseEpochMs: Date.parse('2026-02-01T00:00:00.000Z'),
+    });
+    const engine2 = buildEngine(
+      host2,
+      () => job2.provider,
+      () => 'generative',
+    );
+    const events2 = await driveMediaRun(
+      await engine2.resumeFromCheckpoint({ runId, workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host2,
+    );
+    expect(events2.at(-1)?.type).toBe('run:failed');
+    const failed = events2.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.code).toBe('provider_unavailable');
+    expect(failed?.type === 'node:failed' && failed.error.retryable).toBe(true);
+    expect(job2.pollCalls()).toBe(0); // short-circuited before polling
+    expect(job2.generateCalls()).toBe(0); // never re-submitted
+  });
+
+  it('async media job: an IN-FLIGHT poll is aborted by a run cancel (deterministic) → run:cancelled (ADR-0045 §4)', async () => {
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore: stubMediaStore() });
+    let observedAbort = false;
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('generate must NOT run');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run');
+      },
+      generateMedia: () => Promise.resolve({ jobId: 'job-1', raw: {} }),
+      // A poll that stays IN-FLIGHT until the run abort signal fires (then rejects) — proving the cancel
+      // reaches the open provider request, not just the next schedule.
+      pollMediaJob: (_jobId: string, _key: string, signal?: AbortSignalLike) =>
+        new Promise<MediaJobStatus>((_resolve, reject) => {
+          if (signal?.aborted === true) {
+            reject(new Error('aborted'));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            observedAbort = true;
+            reject(new Error('aborted'));
+          });
+        }),
+    };
+    const engine = buildEngine(
+      host,
+      () => provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    const events = await driveMediaRun(handle, host, () => handle.cancel());
+    expect(events.at(-1)?.type).toBe('run:cancelled');
+    expect(observedAbort).toBe(true); // the in-flight poll observed the abort
+  });
+
+  it('async media job: survives repeated pending polls (backoff re-arm) before done', async () => {
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore: stubMediaStore() });
+    const job = asyncMediaProvider([
+      { state: 'pending' },
+      { state: 'pending' },
+      { state: 'pending' },
+      { state: 'done', media: IMAGE_PART },
+    ]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const events = await driveMediaRun(engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }), host);
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(job.pollCalls()).toBeGreaterThanOrEqual(4); // 3 pending + done
+    expect(events.filter((e) => e.type === 'node:completed' && e.nodeId === 'work')).toHaveLength(1);
+    expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1); // still exactly one addend
+  });
+
   it('flagship: one run — retry then failover, pause at the gate, cross-process resume reproduces the final output', async () => {
     // The primary (anthropic) ALWAYS errors retryably pre-content; the fallback (openai) fails the first
     // dispatch then succeeds — so dispatch 1 exhausts the chain (→ node retry), dispatch 2 fails over to the

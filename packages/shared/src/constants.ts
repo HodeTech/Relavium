@@ -159,9 +159,11 @@ export type MediaSurface = (typeof MEDIA_SURFACES)[number];
 
 /**
  * The async media-job (generateMedia LRO) poll cadence + deadline DEFAULTS (1.AG/ADR-0045 §7). The single
- * source of these magic numbers so the engine poll loop (Section D) reads `config.defaults?.media_job_* ??
- * MEDIA_JOB_POLL_DEFAULTS.*` instead of scattering literals. Poll at `pollInitialMs`, exponential-back-off
- * (no jitter) capped at `pollMaxMs`, abandon a job past `deadlineMs` (from submit) as a retryable timeout.
+ * source of these magic numbers — the engine poll loop (Section D) uses them directly: poll at `pollInitialMs`,
+ * exponential-back-off (no jitter) capped at `pollMaxMs`, abandon a job past `deadlineMs` (from submit) as a
+ * retryable timeout. The `[defaults].media_job_poll_initial_ms` / `_max_ms` / `_deadline_ms` config OVERRIDES
+ * exist + validate (config.ts), but the engine does NOT yet read them — wiring the host-resolved overrides into
+ * the run loop (the `max_tokens_estimate` pattern) is 1.AH host-wiring, like the other `[defaults].*` reads.
  */
 export const MEDIA_JOB_POLL_DEFAULTS = {
   pollInitialMs: 5_000,
