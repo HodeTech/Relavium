@@ -469,6 +469,20 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['pendingGateCount'],
     });
   }
+  // `deadlineAt = startedAt + media_job_deadline_ms` by construction, so deadlineAt < startedAt is a malformed
+  // durable event that would invert the resume `now > deadlineAt` short-circuit. Compare via Date.parse (an
+  // offset is allowed, so never lexically). Enforced at the union level — a member-level `.refine()` would make
+  // a ZodEffects and break the discriminatedUnion (same reason the run:paused cross-field checks live here).
+  if (
+    event.type === 'media_job:submitted' &&
+    Date.parse(event.deadlineAt) < Date.parse(event.startedAt)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'media_job:submitted deadlineAt must be >= startedAt',
+      path: ['deadlineAt'],
+    });
+  }
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 

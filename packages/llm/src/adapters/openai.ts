@@ -20,6 +20,7 @@ import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
   LlmError,
+  LlmErrorKind,
   LlmMessage,
   LlmProvider,
   LlmRequest,
@@ -297,11 +298,14 @@ function mapOpenAiApiError(
   const code = firstNonEmptyString(err.code, err.type);
   // A content-policy block normalizes to content_filter regardless of HTTP status (a moderation 400 would
   // otherwise map to bad_request) — the wired image-gen path then delivers the documented taxonomy.
-  const kind = isContentPolicyCode(code)
-    ? 'content_filter'
-    : status === undefined
-      ? 'unknown'
-      : kindFromHttpStatus(status);
+  let kind: LlmErrorKind;
+  if (isContentPolicyCode(code)) {
+    kind = 'content_filter';
+  } else if (status === undefined) {
+    kind = 'unknown';
+  } else {
+    kind = kindFromHttpStatus(status);
+  }
   return makeLlmError({
     provider,
     kind,

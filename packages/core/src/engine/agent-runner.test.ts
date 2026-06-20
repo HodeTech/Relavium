@@ -578,9 +578,9 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
         throw new Error('stream must NOT run for a generative node');
       },
       generateMedia: () =>
-        behavior?.throws !== undefined
-          ? Promise.reject(behavior.throws)
-          : Promise.resolve(behavior?.result ?? { media: image, raw: { internal: true } }),
+        behavior?.throws === undefined
+          ? Promise.resolve(behavior?.result ?? { media: image, raw: { internal: true } })
+          : Promise.reject(behavior.throws),
     };
   }
   const genDeps = (p: LlmProvider, over: Partial<AgentRunnerDeps> = {}): AgentRunnerDeps =>
@@ -795,6 +795,19 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
 
   it('fails internal on a neither-media-nor-jobId result (the unreachable-in-practice guard)', async () => {
     const exec = createAgentNodeExecutor(genDeps(generativeProvider({ result: { raw: {} } })));
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal' },
+    });
+  });
+
+  it('fails internal on a BOTH-media-and-jobId result — the XOR is enforced, media is never silently discarded', async () => {
+    // The seam refine (MediaGenResultSchema) forbids both, but the adapter result is not re-parsed at the
+    // executor boundary; a hand-built result with both must fail loud (the async jobId branch would otherwise
+    // win and silently DROP the media), not produce a handle-less media_job nor a discarded image.
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider({ result: { media: image, jobId: 'job-x', raw: {} } })),
+    );
     expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
       kind: 'failed',
       error: { code: 'internal' },

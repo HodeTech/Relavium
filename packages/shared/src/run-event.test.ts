@@ -245,6 +245,13 @@ const reject: Record<string, Record<string, unknown>> = {
     ...valid['media_job:submitted'],
     startedAt: 'tomorrow',
   },
+  // deadlineAt = startedAt + media_job_deadline_ms by construction; an earlier deadlineAt is malformed and
+  // would invert the resume `now > deadlineAt` short-circuit (union-level superRefine, Date.parse-compared).
+  'media_job:submitted (deadlineAt before startedAt)': {
+    ...valid['media_job:submitted'],
+    startedAt: '2026-06-20T00:30:00.000Z',
+    deadlineAt: '2026-06-20T00:00:00.000Z',
+  },
   'media_job:submitted (empty jobId)': {
     ...valid['media_job:submitted'],
     jobId: '',

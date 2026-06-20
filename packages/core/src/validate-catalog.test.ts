@@ -48,6 +48,20 @@ describe('validateWorkflowWithCatalog (1.AF/D15 — output_modalities load-check
     expect(() => validateWorkflowWithCatalog(wf, catalog)).not.toThrow();
   });
 
+  it('THROWS for a generative-surface model with an invalid output_modalities shape (text mixed / two media) — 1.AG Section C', () => {
+    // A generative model produces pure SINGLE-modality media (the runtime singleBilledModality rule): text
+    // mixed in, or two media modalities, must fail fast at LOAD — not only at runtime dispatch.
+    const generativeCaps: CapabilityFlags = {
+      ...caps([]),
+      media: { ...caps([]).media, surface: 'generative' },
+    };
+    const catalog: WorkflowModelCatalog = () => generativeCaps;
+    const textMixed = agentWorkflow(", model: gpt-image-1, output_modalities: ['text', 'image']");
+    expect(() => validateWorkflowWithCatalog(textMixed, catalog)).toThrow(WorkflowValidationError);
+    const twoMedia = agentWorkflow(", model: gpt-image-1, output_modalities: ['image', 'audio']");
+    expect(() => validateWorkflowWithCatalog(twoMedia, catalog)).toThrow(WorkflowValidationError);
+  });
+
   it('throws a field-named WorkflowValidationError when the model cannot output the combination', () => {
     const wf = agentWorkflow(", model: m1, output_modalities: ['text', 'image']");
     const catalog: WorkflowModelCatalog = () => caps([['text']]); // text-only model

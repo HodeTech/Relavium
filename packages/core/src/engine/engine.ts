@@ -518,7 +518,7 @@ class RunExecution {
       // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
       // it never executes on a well-formed resume.
       const units =
-        vertex !== undefined && vertex.config.kind === 'agent'
+        vertex?.config.kind === 'agent'
           ? generativeUnits(job.modality, vertex.config.node)
           : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality];
       this.#pendingMediaJobs.set(job.nodeId, {

@@ -1002,10 +1002,11 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
         throw new Error('stream must NOT run');
       },
       generateMedia: () => Promise.resolve({ jobId: 'job-1', raw: {} }),
-      // An out-of-union job state (a future seam value / a non-conforming adapter) — the cast forces the
-      // closed-switch's default arm, which MUST fail the node terminally rather than leave it parked with no
-      // re-arm and no terminal (a silent hang).
-      pollMediaJob: () => Promise.resolve({ state: 'frozen' } as unknown as MediaJobStatus),
+      pollMediaJob: () =>
+        // @ts-expect-error — an out-of-union job state (a future seam value / a non-conforming adapter) forces
+        // the closed-switch's default arm, which MUST fail the node terminally rather than leave it parked with
+        // no re-arm and no terminal (a silent hang).
+        Promise.resolve<MediaJobStatus>({ state: 'frozen' }),
     };
     const engine = buildEngine(
       host,

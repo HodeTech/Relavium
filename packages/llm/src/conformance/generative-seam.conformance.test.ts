@@ -40,10 +40,10 @@ const VIDEO_REQUEST: MediaGenRequest = {
 };
 
 /** A stub whose `generateMedia`/`pollMediaJob` are non-optional, so call sites need no narrowing. */
-type GenerativeProvider = LlmProvider & {
+interface GenerativeProvider extends LlmProvider {
   generateMedia: NonNullable<LlmProvider['generateMedia']>;
   pollMediaJob: NonNullable<LlmProvider['pollMediaJob']>;
-};
+}
 
 /** A conforming async generative provider: `generateMedia` mints an opaque jobId; `pollMediaJob` walks the
  *  scripted status sequence (clamping on the last entry once exhausted). */

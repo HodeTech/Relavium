@@ -1,4 +1,5 @@
 import { isOutputCombinationSupported, type CapabilityFlags } from '@relavium/llm';
+import { MEDIA_BILLED_MODALITIES } from '@relavium/shared';
 
 import { WorkflowValidationError, type WorkflowIssue } from './errors.js';
 import type { WorkflowDefinition } from './parser.js';
@@ -36,10 +37,20 @@ export function validateWorkflowWithCatalog(
     if (caps.media.surface === 'generative') {
       // A `media_surface: 'generative'` model (gpt-image-1, Imagen, TTS) routes to `generateMedia` (1.AG
       // Section C, ADR-0045 §1); its producible output is defined by the generateMedia modality, NOT by the
-      // inline `outputCombinations` (which is empty / chat-surface only). Skip the inline load-check, else a
-      // valid generative node (`output_modalities: [image]`) would be wrongly rejected. The generative
-      // node's own one-media-modality rule is enforced at dispatch (singleBilledModality).
-      continue;
+      // inline `outputCombinations` (which is empty / chat-surface only). The inline membership check does not
+      // apply — but the SAME one-media-modality rule the runtime dispatch enforces (`singleBilledModality`:
+      // exactly one of image|audio|video, no text) IS checked here, so a malformed generative node fails fast
+      // at load rather than only at runtime.
+      const billed = node.output_modalities.filter((m) =>
+        (MEDIA_BILLED_MODALITIES as readonly string[]).includes(m),
+      );
+      if (node.output_modalities.length !== 1 || billed.length !== 1) {
+        issues.push({
+          field: `node \`${node.id}\`.output_modalities`,
+          message: `a media_surface 'generative' model requires output_modalities to declare exactly one media modality (image | audio | video) with no text, got [${node.output_modalities.join(', ')}]`,
+        });
+      }
+      continue; // the inline outputCombinations load-check does not apply to a generative model
     }
     if (!isOutputCombinationSupported(caps.media.outputCombinations, node.output_modalities)) {
       issues.push({

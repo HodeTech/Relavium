@@ -504,18 +504,7 @@ async function executeGenerativeMedia(
   try {
     result = await provider.generateMedia(req, key);
   } catch (err) {
-    // Map a provider error through the SAME taxonomy as the chat path (codeForLlmError): a content-policy
-    // refusal → content_filter, a cancel → cancelled, etc.
-    if (err instanceof LlmProviderError) {
-      return failed(codeForLlmError(err.llmError), err.llmError.message, err.llmError.retryable);
-    }
-    // A seam capability/config error (e.g. UnsupportedCapabilityError for a non-image modality / DeepSeek)
-    // extends LlmConfigError — classify it as `validation` with its secret-free message, never let the engine
-    // catch-all flatten it to an opaque `internal` (mirrors buildLlmTools / the generateMedia-undefined branch).
-    if (err instanceof LlmConfigError) {
-      return failed('validation', err.message, false);
-    }
-    return turnOutcomeForError(err);
+    return mapGenerateMediaError(err);
   }
 
   // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
@@ -530,27 +519,64 @@ async function executeGenerativeMedia(
     );
   }
 
+  return buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result);
+}
+
+/**
+ * Map a `generateMedia` throw through the SAME taxonomy as the chat path: an `LlmProviderError` →
+ * `codeForLlmError` (content-policy → `content_filter`, cancel → `cancelled`, …); an `LlmConfigError` (e.g.
+ * `UnsupportedCapabilityError` for a non-image modality / DeepSeek) → `validation` with its secret-free
+ * message (never let the engine catch-all flatten it to opaque `internal`); anything else → `turnOutcomeForError`.
+ */
+function mapGenerateMediaError(err: unknown): NodeOutcome {
+  if (err instanceof LlmProviderError) {
+    return failed(codeForLlmError(err.llmError), err.llmError.message, err.llmError.retryable);
+  }
+  if (err instanceof LlmConfigError) {
+    return failed('validation', err.message, false);
+  }
+  return turnOutcomeForError(err);
+}
+
+/**
+ * Validate a resolved `generateMedia` result against the seam contract and build the node outcome. The
+ * adapter result is NOT re-parsed at this boundary, so the `MediaGenResult` exactly-one-of refine is enforced
+ * explicitly: BOTH present would let the async `jobId` branch silently DISCARD `media`, NEITHER would leave no
+ * output — both are a misbehaving/hand-built adapter result (internal), not an authoring error. An async
+ * `jobId` → the engine's media-job handoff (Section D); a sync `media` part → the de-inlined `{ text:'', media }`
+ * output plus the lone realized `cost:updated` (ADR-0045 §5).
+ */
+function buildGenerativeOutcome(
+  ctx: NodeExecContext,
+  node: AgentNode,
+  primary: FallbackPlanEntry,
+  modality: MediaBilledModality,
+  units: number,
+  result: MediaGenResult,
+): NodeOutcome {
+  if (result.jobId !== undefined && result.media !== undefined) {
+    return failed(
+      'internal',
+      `agent node '${node.id}': generateMedia returned BOTH media and jobId (exactly one required)`,
+      false,
+    );
+  }
   if (result.jobId !== undefined) {
     // ASYNC LRO (Sora/Veo, 1.AG Section D, ADR-0045): the provider accepted a minute-scale job and returned an
-    // opaque jobId. Hand it to the ENGINE, which owns the poll/checkpoint/resume/cancel loop — it emits
-    // `media_job:submitted`, parks the node, and drives the poll to terminal. `units` is the authored volume
-    // for the lone realized cost addend the engine emits at `done` (ADR-0045 §5) — NOT emitted here.
+    // opaque jobId. Hand it to the ENGINE (poll/checkpoint/resume/cancel) — `units` is the authored volume for
+    // the lone realized cost addend the engine emits at `done` (ADR-0045 §5), NOT emitted here.
     return {
       kind: 'media_job',
       job: {
         jobId: result.jobId,
-        provider: provider.id,
+        provider: primary.provider.id,
         model: primary.model,
-        modality: modality.modality,
+        modality,
         units,
       },
     };
   }
   if (result.media === undefined) {
-    // Defense-in-depth: the seam-schema refine (MediaGenResultSchema) already requires exactly one of
-    // media|jobId, but the adapter result is not re-parsed at this boundary, so the engine guards the
-    // refine bypass explicitly rather than trusting a hand-built result (consistent with the produced-
-    // modality check below).
     return failed(
       'internal',
       `agent node '${node.id}': generateMedia resolved neither media nor jobId`,
@@ -560,14 +586,13 @@ async function executeGenerativeMedia(
   // Defense-in-depth: the produced media's modality must match what the node requested (and was budgeted for) —
   // a misbehaving adapter returning an audio part for an image request is a validation failure, not a silent
   // mis-billed handle. mediaModalityOf derives the modality from the bare MIME.
-  if (mediaModalityOf(result.media.mimeType) !== modality.modality) {
+  if (mediaModalityOf(result.media.mimeType) !== modality) {
     return failed(
       'validation',
-      `agent node '${node.id}': generative model returned ${result.media.mimeType} but the node requested '${modality.modality}'`,
+      `agent node '${node.id}': generative model returned ${result.media.mimeType} but the node requested '${modality}'`,
       false,
     );
   }
-
   // Exactly ONE realized cost:updated (ADR-0045 §5) — derived from the request volume × the per-model media
   // rate (best-effort: an unknown/unrated model degrades to 0, H4). The engine folds it into the run cumulative.
   ctx.emit({
@@ -576,10 +601,9 @@ async function executeGenerativeMedia(
     model: primary.model,
     inputTokens: 0,
     outputTokens: 0,
-    costMicrocents: realizedMediaCost(primary.model, modality.modality, units),
+    costMicrocents: realizedMediaCost(primary.model, modality, units),
     cumulativeCostMicrocents: 0, // placeholder — the engine overwrites with the authoritative run-wide total
   });
-
   // The pure-media node output ({ text:'', media:[part] }) de-inlines at #emitDurable exactly like the inline
   // path. `MediaGenResult.raw` is provider-internal and is never part of the media part (strip-on-sink, §7).
   return {
