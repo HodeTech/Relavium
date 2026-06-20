@@ -726,6 +726,8 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(job2.generateCalls()).toBe(0); // RE-ATTACH, never re-submit
     expect(job2.pollCalls()).toBeGreaterThanOrEqual(1);
     expect(firstMediaRef(nodeOutput(events2, 'work'))).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+    // The prior process already emitted run:paused for this park; the resume must NOT re-announce it (L2).
+    expect(events2.filter((e) => e.type === 'run:paused')).toHaveLength(0);
   });
 
   it('async media job: a run cancel aborts the in-flight poll → run:cancelled (ADR-0045 §4)', async () => {
@@ -740,7 +742,9 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       () => 'generative',
     );
     const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
-    // Cancel when the run first parks on the media job; the in-flight poll aborts (the stub honours the signal).
+    // Cancel once the run parks on the (never-resolving) media job: the run reaches run:cancelled through the
+    // real engine cancel path. This stub detects the abort at poll-call entry, so it proves the cancel SETTLES
+    // the run — the dedicated mid-await abort-observation proof is the deterministic test below.
     const events = await driveMediaRun(handle, host, () => handle.cancel());
     expect(events.at(-1)?.type).toBe('run:cancelled');
   });
@@ -795,6 +799,36 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events2.filter((e) => e.type === 'run:completed')).toHaveLength(1); // exactly one terminal
     expect(job2.generateCalls()).toBe(0); // the media job re-attached, never re-submitted
     expect(firstMediaRef(nodeOutput(events2, 'gen'))).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+  });
+
+  it('AG-A-FC-3 guard: a media-only resume (no gate decision) of a both-parked run is rejected (pending_gate_requires_decision)', async () => {
+    const store = new InMemoryRunStore();
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+    );
+    const { events: events1 } = await drive(
+      engine1.start({ workflow: GATE_AND_MEDIA, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    const runId = events1[0]?.runId ?? '';
+
+    const host2 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine2 = buildEngine(
+      host2,
+      () => asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]).provider,
+      () => 'generative',
+    );
+    // Neither gateId nor decision: the media-only resume form cannot resolve the still-parked gate. The engine
+    // must reject the misuse EAGERLY rather than re-attach the media job and silently re-park on the gate after
+    // it settles (L3). The half-initialized execution is dropped from #runs (a retry can re-resume correctly).
+    await expect(
+      engine2.resumeFromCheckpoint({ runId, workflow: GATE_AND_MEDIA, inputs: INPUTS }),
+    ).rejects.toMatchObject({ code: 'pending_gate_requires_decision' });
   });
 
   it('async media job: a resume past the deadline short-circuits to a retryable timeout, never re-polls (ADR-0045 §3)', async () => {
@@ -894,6 +928,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(job.pollCalls()).toBeGreaterThanOrEqual(4); // 3 pending + done
     expect(events.filter((e) => e.type === 'node:completed' && e.nodeId === 'work')).toHaveLength(1);
     expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1); // still exactly one addend
+    // The completed node reports the full submit→done wall-clock, not the ~0 of the synchronous settle (M2):
+    // each poll advanced the harness clock, so the elapsed across the 3 pending polls is strictly positive.
+    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+    expect(done?.type === 'node:completed' && done.durationMs > 0).toBe(true);
   });
 
   it('flagship: one run — retry then failover, pause at the gate, cross-process resume reproduces the final output', async () => {

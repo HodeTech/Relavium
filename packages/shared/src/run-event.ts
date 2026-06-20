@@ -459,6 +459,16 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['gateIds'],
     });
   }
+  // `pendingGateCount` is the aggregate count of `gateIds` — relaxing both fields to `min(0)` (for a media-only
+  // park) dropped the structural guarantee that they agree, so re-assert it here. A consumer that reads
+  // `pendingGateCount` as the authoritative gate count must not diverge from the `gateIds` list it pairs with.
+  if (event.type === 'run:paused' && event.pendingGateCount !== event.gateIds.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'run:paused pendingGateCount must equal gateIds.length',
+      path: ['pendingGateCount'],
+    });
+  }
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 

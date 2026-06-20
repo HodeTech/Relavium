@@ -183,9 +183,12 @@ export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
 
 /**
  * Re-resolve the provider + credential for an async media-job poll (1.AG Section D, ADR-0045 §3) and call the
- * adapter's `pollMediaJob`. A missing adapter / unimplemented `pollMediaJob` (host-wiring gap) or a credential
- * failure becomes a **secret-free `failed` `MediaJobStatus`** the engine settles `node:failed` from — never a
- * raw throw (which the engine would flatten) and never the original credential error (rule 6).
+ * adapter's `pollMediaJob`. The two resolution faults this owns — a missing adapter / unimplemented
+ * `pollMediaJob` (host-wiring gap) and a credential failure — become a **secret-free `failed` `MediaJobStatus`**
+ * the engine settles `node:failed` from (never the original credential error — rule 6). A throw from the
+ * adapter's OWN `pollMediaJob` (a transient transport fault, or the abort rejection when the run is cancelled)
+ * PROPAGATES — the engine's poll-loop `try/catch` handles it: an abort / terminal / cleared job returns
+ * silently, a live fault settles a retryable `node:failed`.
  */
 async function pollMediaJobThroughDeps(
   deps: AgentRunnerDeps,
@@ -435,7 +438,8 @@ async function executeGenerativeMedia(
   }
 
   // The authored output volume → the per-modality unit count (count for image; duration_seconds for
-  // audio/video). The SAME number drives the pre-egress estimate (gate only) and the realized fold (§5).
+  // audio/video, × count when both are authored — ADR-0045 §5). The SAME number drives the pre-egress estimate
+  // (gate only) and the realized fold (§5).
   const units = generativeUnits(modality.modality, node);
 
   // Pre-egress budget gate (1.AC): the authored media volume, NEVER added to cumulative (gate only). A
@@ -590,17 +594,22 @@ function singleBilledModality(
 }
 
 /**
- * The authored generation volume for a modality: `count` (image) or `duration_seconds` (audio/video), each
- * falling back to the conservative built-in default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}) when unspecified.
+ * The authored generation volume for a modality: `count` (image) or `duration_seconds` (audio/video). For an
+ * audio/video generator that takes BOTH (N clips of D seconds each), the volume is `count × duration_seconds`
+ * (ADR-0045 §5 — "count × durationSeconds for a generator that takes both"); a `duration`-only node multiplies
+ * by an implicit `count` of 1, so it is unchanged. Each missing field falls back to the conservative built-in
+ * default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}).
  *
  * NOTE: unlike the chat path's {@link buildMediaUnitsEstimate} (which reads `[defaults].media_cost_estimate`),
  * the generative path uses the AUTHOR-DECLARED volume (`count`/`duration_seconds`) directly — the realized fold
  * must reflect the actual requested volume, and the same number gates the pre-egress estimate (no host default).
  */
 export function generativeUnits(modality: MediaBilledModality, node: AgentNode): number {
-  return modality === 'image'
-    ? (node.count ?? DEFAULT_MEDIA_UNIT_ESTIMATE.image)
-    : (node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality]);
+  if (modality === 'image') {
+    return node.count ?? DEFAULT_MEDIA_UNIT_ESTIMATE.image;
+  }
+  const duration = node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality];
+  return duration * (node.count ?? 1);
 }
 
 /**

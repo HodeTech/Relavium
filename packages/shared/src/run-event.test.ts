@@ -300,6 +300,13 @@ const reject: Record<string, Record<string, unknown>> = {
     pendingGateCount: 0,
     gateIds: [],
   },
+  // pendingGateCount is the aggregate of gateIds — a divergent pair (count 5, two ids) is malformed and the
+  // union-level superRefine rejects it (the count/list relaxation must not let them drift, 1.AG Section D).
+  'run:paused (pendingGateCount/gateIds mismatch)': {
+    ...valid['run:paused'],
+    pendingGateCount: 5,
+    gateIds: ['g1', 'g2'],
+  },
   'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
   'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },
   'budget:warning (negative thresholdPct)': { ...valid['budget:warning'], thresholdPct: -1 },

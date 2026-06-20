@@ -27,7 +27,9 @@ export type NodeExecutorMap = Partial<Record<EngineNodeType, NodeExecutor>>;
 export function createDispatchingNodeExecutor(handlers: NodeExecutorMap): NodeExecutor {
   // A media job always originates from an `agent` vertex (executeGenerativeMedia, 1.AG Section D), so the
   // engine's poll delegates to the agent handler. Forward `pollMediaJob` only when an agent handler with the
-  // capability is wired (`.bind` keeps `this` — the lint-sanctioned form for an extracted method).
+  // capability is wired. The `.bind(agent)` is a no-op for behaviour today (the handler's `pollMediaJob` is an
+  // arrow that closes over its `deps` and never reads `this`); it is kept as the lint-sanctioned, future-proof
+  // form should that property ever become a `this`-referencing method.
   const agent = handlers.agent;
   return {
     execute(ctx) {

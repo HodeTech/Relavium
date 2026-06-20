@@ -102,6 +102,10 @@ interface ParkedMediaJob {
   readonly units: number;
   /** ISO-8601 absolute deadline; a poll where `now > deadlineAt` abandons the job as a retryable timeout. */
   readonly deadlineAt: string;
+  /** Elapsed-ms-since-run-start at submission — the basis for the completed node's full LRO `durationMs`
+   *  (submit→done wall-clock, not the ~0 of the synchronous settle). Recoverable across a resume from the
+   *  persisted `startedAt` (M2). */
+  readonly submittedAtMs: number;
   /** The current poll interval (ms), grown exponentially per `pending` poll, capped at `pollMaxMs`. */
   backoffMs: number;
 }
@@ -518,9 +522,20 @@ class RunExecution {
         modality: job.modality,
         units,
         deadlineAt: job.deadlineAt,
+        // Recompute elapsed-at-submit from the persisted `startedAt` against the ORIGINAL run start so a
+        // completed re-attached job reports its full submit→done wall-clock `durationMs` (M2). `cp.startedAtMs`
+        // is the same value seeded into `#startEpochMs` below.
+        submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
         backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
       });
       this.#armMediaPoll(job.nodeId);
+    }
+    // This run WAS announced `run:paused` by the prior process (it persisted a parked media job). Mark the
+    // pause episode as already-emitted so the first post-resume idle does NOT emit a DUPLICATE `run:paused`
+    // (L2). A gate resume independently resets this in `resume()` to re-announce any remaining gates, and
+    // `#clearMediaJob` resets it when a job settles — so a genuinely later pause still emits.
+    if (cp.pendingMediaJobs.length > 0) {
+      this.#pauseEpisode = true;
     }
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
@@ -587,6 +602,18 @@ class RunExecution {
       throw new EngineStateError(
         'run_not_paused',
         'the run has no pending media job to re-attach (a gate-parked run resumes via gateId + decision)',
+        { runId: this.runId },
+      );
+    }
+    if (this.#pendingGates.size > 0) {
+      // The run is parked on BOTH a media job AND a human gate (AG-A-FC-3) but the caller supplied no gate
+      // decision (the media-only resume form). Re-attaching the media job alone would leave the gate
+      // unresolved: after the job settles the run would silently re-park on the gate with no caller signal.
+      // Reject the misuse eagerly — the caller must pass the gate's gateId + decision (which advances the gate
+      // while `#seedFromCheckpoint` independently re-attaches the media job).
+      throw new EngineStateError(
+        'pending_gate_requires_decision',
+        "the run is also parked on a human gate — resume with that gate's gateId + decision (a media-only resume cannot resolve it)",
         { runId: this.runId },
       );
     }
@@ -1271,6 +1298,9 @@ class RunExecution {
       modality: job.modality,
       units: job.units,
       deadlineAt,
+      // Derive from the SAME `startedAt` that is persisted on `media_job:submitted`, so the resume-side
+      // recompute (from the checkpoint slot) yields an identical value (M2).
+      submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
       backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
     });
     await this.#emitDurable({
@@ -1383,10 +1413,14 @@ class RunExecution {
         if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
           return;
         }
+        // A raw throw escaping the executor poll on a LIVE job (the missing-adapter + credential cases are
+        // already mapped to a `failed` status upstream) is a transient provider/transport fault — classify it
+        // like the deadline path: a retryable `provider_unavailable`, so when async-node retry wiring lands
+        // (1.AH) a transient poll fault re-submits a fresh job rather than being a dead-end `internal` (N2).
         await this.#settleMediaJobFailed(vertex, job, {
-          code: 'internal',
-          message: 'media job poll failed',
-          retryable: false,
+          code: 'provider_unavailable',
+          message: `media job '${job.jobId}' poll failed`,
+          retryable: true,
         });
         return;
       }
@@ -1398,6 +1432,10 @@ class RunExecution {
       if (!this.#settled) {
         this.#clearMediaJob(nodeId);
         this.#failNodeInternal(vertex, 'the media job poll loop failed while settling the node');
+        // Drive the loop so `#step` observes `#failure` and settles `run:failed`. Unlike `#onOutcome` (whose
+        // backstop is followed by an unconditional `#schedule()`), this poll is fired out-of-band from a timer
+        // — nothing else re-enters the loop, so without this the run would hang at `run:paused` forever (M1).
+        this.#schedule();
       }
     }
   }
@@ -1458,7 +1496,9 @@ class RunExecution {
         output: { text: '', media: [media] },
         tokensUsed: { input: 0, output: 0, model: job.model },
       },
-      this.#elapsedMs(),
+      // The job's submit time (not `now`) — so `node:completed.durationMs` is the full async wall-clock
+      // (submit→done), parallel to how `#dispatch` captures `startedAtMs` before a synchronous node's await (M2).
+      job.submittedAtMs,
     );
   }
 
@@ -1471,7 +1511,9 @@ class RunExecution {
   ): Promise<void> {
     this.#clearMediaJob(vertex.id);
     this.#emitMediaJobCost(vertex.id, job);
-    await this.#onOutcome(vertex, { kind: 'failed', error }, this.#elapsedMs());
+    // `startedAtMs` is unused by the `failed` settle path (no `durationMs`), but pass the submit time for
+    // symmetry with the `done` path (M2).
+    await this.#onOutcome(vertex, { kind: 'failed', error }, job.submittedAtMs);
   }
 
   /**
@@ -1516,7 +1558,9 @@ class RunExecution {
   /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
   #failNodeInternal(vertex: PlanVertex, message: string): void {
     const state = this.#states.get(vertex.id);
-    if (state?.status === 'running') {
+    // A media-parked node is `'paused'`, not `'running'`, when its poll loop's settle-path backstop fires —
+    // transition it to `'failed'` too so the in-memory state matches the run's terminal outcome (L1).
+    if (state?.status === 'running' || state?.status === 'paused') {
       state.status = 'failed';
     }
     if (!this.#settled && this.#failure === undefined && !this.#cancelling) {

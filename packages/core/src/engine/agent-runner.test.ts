@@ -19,6 +19,7 @@ import {
   buildMediaUnitsEstimate,
   createAgentNodeExecutor,
   DEFAULT_MEDIA_UNIT_ESTIMATE,
+  generativeUnits,
   type AgentRunnerDeps,
 } from './agent-runner.js';
 import { BudgetExceededError } from './budget-governor.js';
@@ -914,5 +915,23 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       error: { code: 'cancelled' },
     });
     expect(called).toBe(false);
+  });
+});
+
+describe('generativeUnits — authored media volume (ADR-0045 §5)', () => {
+  it('image: count, defaulting to the conservative built-in when unset', () => {
+    expect(generativeUnits('image', agentNode({ count: 4 }))).toBe(4);
+    expect(generativeUnits('image', agentNode())).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.image);
+  });
+
+  it('audio/video: duration_seconds, defaulting to the conservative built-in when unset', () => {
+    expect(generativeUnits('audio', agentNode({ duration_seconds: 12 }))).toBe(12);
+    expect(generativeUnits('video', agentNode())).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.video);
+  });
+
+  it('audio/video: count × duration_seconds when BOTH are authored (N clips of D seconds)', () => {
+    expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(30);
+    // count alone (no duration) multiplies the conservative duration default — never silently dropped.
+    expect(generativeUnits('audio', agentNode({ count: 2 }))).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.audio * 2);
   });
 });
