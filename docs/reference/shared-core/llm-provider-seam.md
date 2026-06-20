@@ -377,12 +377,15 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   forbidden** so the typed guard reaches provider-executed image-gen results; `result`
   carries at most a descriptor.
 - **Optional `generateMedia?` / `pollMediaJob?` on `LlmProvider`** (decision #6;
-  **reserved**, A5) with `MediaGenRequest` / `MediaGenResult` / `MediaJobStatus`: a sync
-  generator resolves `{ media }`; an async one (Sora, Veo) resolves a **Relavium-opaque**
-  `jobId` (no vendor operation name crosses the seam); `failed` carries the existing
-  classified `LlmError` (content-policy → `content_filter`). The engine-owned
-  poll/checkpoint/resume/cancel loop gets its own ADR at 1.AG. No Phase-1 adapter
-  implements either method.
+  [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)) with
+  `MediaGenRequest` / `MediaGenResult` / `MediaJobStatus`: a sync generator resolves `{ media }`;
+  an async one (Sora, Veo) resolves a **Relavium-opaque** `jobId` (no vendor operation name
+  crosses the seam); `failed` carries the existing classified `LlmError` (content-policy →
+  `content_filter`). **Wired (1.AG Section C):** `generateMedia` SYNC — the OpenAI adapter
+  implements gpt-image-1 image generation (`images.generate` → base64 `media`); a `media_surface:
+  'generative'` agent node routes here instead of the inline `generate()`/`stream()` (the engine
+  resolves the per-model surface). OpenAI-TTS audio + Gemini-Imagen + the async `pollMediaJob`
+  poll/checkpoint/resume/cancel loop are the remaining 1.AG work (Section D + the 1.AH host-wiring).
 
   ```ts
   // RESERVED shape (A5) — deliberately minimal; behavior lands at 1.AG with its own ADR.

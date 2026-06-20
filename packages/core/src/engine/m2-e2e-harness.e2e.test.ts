@@ -122,8 +122,9 @@ const MEDIA_CAPS: CapabilityFlags = {
   },
 };
 
-/** A 5-byte in-flight base64 image part — the inline media-out fixture ("hello"). */
-const IMAGE_PART: ContentPart = {
+/** A 5-byte in-flight base64 image part — the media-out fixture ("hello"). Typed as the media variant so it
+ *  satisfies both a `ContentPart[]` (inline turn) and `MediaGenResult.media` (generative) without a cast. */
+const IMAGE_PART: Extract<ContentPart, { type: 'media' }> = {
   type: 'media',
   mimeType: 'image/png',
   source: { kind: 'base64', data: 'aGVsbG8=' },
@@ -143,6 +144,22 @@ function mediaProvider(id: ProviderId = 'gemini'): LlmProvider {
     stream: (): AsyncIterable<StreamChunk> => {
       throw new Error('stream must NOT run for an inline media-out turn');
     },
+  };
+}
+
+/** A provider flagged media_surface 'generative' whose generateMedia returns a SYNC image (1.AG Section C);
+ *  generate/stream THROW — proving a generative node routes to the separate endpoint, never the inline turn. */
+function generativeMediaProvider(id: ProviderId = 'openai'): LlmProvider {
+  return {
+    id,
+    supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
+    generate: () => {
+      throw new Error('generate must NOT run for a generative node');
+    },
+    stream: (): AsyncIterable<StreamChunk> => {
+      throw new Error('stream must NOT run for a generative node');
+    },
+    generateMedia: () => Promise.resolve({ media: IMAGE_PART, raw: { internal: true } }),
   };
 }
 
@@ -278,6 +295,28 @@ workflow:
 `,
 );
 
+/** Generative media-out — an agent node on a media_surface:'generative' model (1.AG Section C, ADR-0045). */
+const GENERATIVE_OUT = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-generative-out
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: painter
+      model: gpt-image-1
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: in, type: input }
+    - { id: work, type: agent, agent_ref: painter, prompt_template: 'Draw: {{inputs.topic}}', output_modalities: [image], count: 1 }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: work }
+    - { from: work, to: out }
+`,
+);
+
 const INPUTS = { topic: 'the report' } as const;
 
 // --- The reusable driver ---------------------------------------------------------------------------
@@ -287,6 +326,7 @@ type Host = ReturnType<typeof createInMemoryHost>;
 function buildEngine(
   host: Host,
   resolveProvider: (id: ProviderId) => LlmProvider | undefined,
+  resolveMediaSurface?: (model: string) => 'chat' | 'generative' | undefined,
 ): WorkflowEngine {
   return new WorkflowEngine({
     host,
@@ -294,6 +334,7 @@ function buildEngine(
       sandbox,
       agent: {
         resolveProvider,
+        ...(resolveMediaSurface === undefined ? {} : { resolveMediaSurface }),
         registry: echoRegistry,
         tools: [echoToolDef],
         keyFor: () => 'k',
@@ -427,6 +468,37 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(media[0]?.source.ref).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
     // I3 — the in-flight base64 ("hello") never appears on the delivered (or persisted) run-event stream.
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+
+    assertGapFreeSeq(events);
+    assertCanonicalSchema(events);
+  });
+
+  it('generative media-out: an agent node on a generative model routes to generateMedia and de-inlines to a handle (1.AG Section C/ADR-0045)', async () => {
+    // The end-to-end proof of the generative SYNC link: a real agent node on a media_surface:'generative' model
+    // → generateMedia (its generate/stream throw) → { text:'', media } node output → the engine de-inlines the
+    // in-flight base64 to a media:// handle at #emitDurable, gap-free, with NO base64 on the durable stream.
+    const host = createInMemoryHost({ mediaStore: stubMediaStore() });
+    const engine = buildEngine(
+      host,
+      () => generativeMediaProvider('openai'),
+      () => 'generative',
+    );
+    const { events } = await drive(
+      engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const out = nodeOutput(events, 'work');
+    expect(out).toMatchObject({
+      text: '', // a generative node is PURE media — no accompanying chat text
+      media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle' } }],
+    });
+    const media = (out as { media: { source: { kind: string; ref?: string } }[] }).media;
+    expect(media[0]?.source.ref).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+    // I3 — no base64 on the delivered (or persisted) stream; exactly one realized cost:updated for the node.
+    expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+    expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1);
 
     assertGapFreeSeq(events);
     assertCanonicalSchema(events);

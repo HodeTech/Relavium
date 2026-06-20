@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
-import type { LlmRequest, StreamChunk } from '../types.js';
+import type {
+  LlmProvider,
+  LlmRequest,
+  MediaGenRequest,
+  MediaGenResult,
+  StreamChunk,
+} from '../types.js';
 import {
   createOpenAiAdapter,
   deepseekAdapter,
@@ -14,6 +20,19 @@ import {
   openaiErrorToLlmError,
   outputAudioMime,
 } from './openai.js';
+
+/** Call the adapter's optional `generateMedia` via `?.()` — a call (binds `this`), never an extraction, so the
+ *  unbound-method lint stays happy; the `??` branch asserts the method is implemented. */
+function genMedia(
+  adapter: LlmProvider,
+  req: MediaGenRequest,
+  key: string,
+): Promise<MediaGenResult> {
+  return (
+    adapter.generateMedia?.(req, key) ??
+    Promise.reject(new Error('adapter implements no generateMedia'))
+  );
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -271,6 +290,60 @@ describe('OpenAI-compatible adapter', () => {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'speak' }] }],
     };
     expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('generateMedia (image) returns a base64 PNG media part from images.generate (1.AG Section C/ADR-0045)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'Z2VuLWltYWdl' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    const result = await genMedia(
+      adapter,
+      { model: 'gpt-image-1', prompt: 'a cat', modality: 'image' },
+      'k',
+    );
+    expect(result.jobId).toBeUndefined(); // SYNC arm
+    expect(result.media).toEqual({
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'Z2VuLWltYWdl' },
+    });
+  });
+
+  it('generateMedia rejects a non-image modality + DeepSeek with a typed capability error', async () => {
+    const oai = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      genMedia(oai, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+    const ds = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      genMedia(ds, { model: 'm', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('generateMedia maps a no-data image response to a typed bad_request LlmProviderError', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toThrowError(LlmProviderError);
   });
 
   it('lowers media on the STREAM path too (shared buildCommonBody — the §1.AE both-paths requirement)', async () => {

@@ -174,8 +174,10 @@ export class AgentTurnError extends Error {
   }
 }
 
-/** Map a classified `LlmError` (chain-exhausted) to the node `ErrorCode` taxonomy (never `error.message`). */
-function codeForLlmError(error: LlmError): ErrorCode {
+/** Map a classified `LlmError` (chain-exhausted) to the node `ErrorCode` taxonomy (never `error.message`).
+ *  Exported so the generative `generateMedia` dispatch (1.AG Section C, agent-runner) maps its provider
+ *  errors through the SAME taxonomy as the chat path — one classification, never a second vocabulary. */
+export function codeForLlmError(error: LlmError): ErrorCode {
   switch (error.kind) {
     case 'auth':
       return 'provider_auth';
@@ -368,11 +370,12 @@ function throwMappedChainError(error: LlmError): never {
 /**
  * True when the node authored a non-text output modality — the inline media-out routing signal (1.AG).
  *
- * NOTE (Section C): ADR-0046 §1's full condition is `media_surface: 'chat'` **and** a non-text
- * `output_modalities`. In Section B every media-capable model is `surface: 'chat'`, so this conjunct is
- * vacuously true and omitted. When the generative dispatch lands (Section C, ADR-0045), this guard must
- * additionally require the resolved model's `media_surface === 'chat'` — a `'generative'` model routes to
- * `generateMedia`, not to the inline `generate()` path here.
+ * ADR-0046 §1's full condition is `media_surface: 'chat'` **and** a non-text `output_modalities`. The
+ * `'chat'` conjunct is satisfied STRUCTURALLY, not here: the AgentRunner forks a `'generative'` model to
+ * `generateMedia` (Section C, ADR-0045 §1) BEFORE it ever calls `runAgentTurn`, so this turn-core predicate
+ * only ever runs for a `'chat'` model — a `'generative'` model never reaches the inline `generate()` path.
+ * (The turn core is correlation-agnostic and holds no `CapabilityFlags`, so the surface check rightly lives
+ * at the routing layer that resolves the provider, not in this predicate.)
  */
 function requestsMediaOutput(params: AgentTurnParams): boolean {
   return params.outputModalities?.some((m) => m !== 'text') ?? false;

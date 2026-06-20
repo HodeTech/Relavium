@@ -149,6 +149,27 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   Responses API `image_generation` built-in tool — a **separate request surface** the Chat-Completions
   adapter does not call. Wire the Responses-API path (request + `image_generation_call` output-item parse →
   the already-defined providerExecuted media shape) when a Phase-1 model needs it. *(packages/llm/src/adapters/openai.ts; post-1.AG)*
+- [ ] **Per-model `media_surface` lookup — HOST WIRING deferred (1.AG Section C → 1.AH).** Section C added
+  `AgentRunnerDeps.resolveMediaSurface?(model) → MediaSurface` (the inline-vs-generative routing discriminator,
+  default `'chat'`; tests inject it). The production wiring — the host reading `model_catalog.media_surface` (the
+  column landed in Section A) and supplying the lookup — is **1.AH host-wiring**, exactly like the D12/D15/D17
+  host-wiring obligations. Until then `resolveMediaSurface` is absent and **every** model routes inline (`'chat'`),
+  so no generative model is runtime-reachable in Phase 1; the engine mechanism + the OpenAI-image adapter are proven
+  via injected-surface tests. *(packages/core/src/engine/agent-runner.ts; host catalog read → 1.AH)*
+- [ ] **Verified generative model rates + `MODEL_PRICING` rows (1.AG Section C → 1.AH).** The Section C cost
+  mechanism (pre-egress estimate + the one realized `cost:updated`) reuses `estimateMediaCost`/`mediaCost`, which
+  **degrade to 0 on a missing rate** (H4). No generative model rows were added to `MODEL_PRICING` — fabricating
+  billing rates is a mis-bill risk and the existing rows are all "verified". Add the generative rows (gpt-image-1,
+  Imagen, OpenAI-TTS, Sora, Veo) with **verified** `mediaOutputRates` (image per-image; audio/video per-second) when
+  the catalog/pricing-page values are confirmed; until then a generative call is correctly gated/folded at 0 cost
+  (no mis-bill). *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
+- [ ] **`generateMedia` for OpenAI-TTS audio + Gemini-Imagen — adapter wires deferred (1.AG Section C → 1.AH).**
+  Section C wires `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64), proving the
+  full engine→adapter→de-inline vertical. The remaining generators are bounded follow-ups: **OpenAI-TTS audio**
+  (`audio.speech` returns raw bytes → the adapter must base64-encode them + map the requested `response_format` →
+  MIME) and **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which needs a
+  `GeminiTransport.generateImages` extension to keep conformance vendor-free). Neither is runtime-reachable until the
+  per-model surface lookup is host-wired (above), so they land with that 1.AH wiring. *(packages/llm/src/adapters/{openai,gemini}.ts; 1.AH)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a

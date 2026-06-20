@@ -1,8 +1,10 @@
 import type { Agent, ContentPart, OutputModality } from '@relavium/shared';
+import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmProvider,
   LlmRequest,
+  MediaGenResult,
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
@@ -17,6 +19,7 @@ import {
   DEFAULT_MEDIA_UNIT_ESTIMATE,
   type AgentRunnerDeps,
 } from './agent-runner.js';
+import { BudgetExceededError } from './budget-governor.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 
 const CAPS: CapabilityFlags = {
@@ -547,5 +550,141 @@ describe('buildMediaUnitsEstimate (1.AF/D17 — media-cost unit estimate)', () =
     expect(buildMediaUnitsEstimate(['image'], undefined)).toEqual([
       { modality: 'image', units: DEFAULT_MEDIA_UNIT_ESTIMATE.image },
     ]);
+  });
+});
+
+describe('createAgentNodeExecutor — generative media (1.AG Section C, generateMedia)', () => {
+  // Typed as the media variant so it satisfies MediaGenResult.media (and a node output) without a cast.
+  const image: Extract<ContentPart, { type: 'media' }> = {
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'base64', data: 'Z2VuLWltYWdl' },
+  };
+
+  /** A provider flagged media_surface 'generative' whose generateMedia returns (or throws). generate/stream
+   *  THROW — proving a generative node never touches the inline turn path. */
+  function generativeProvider(behavior?: { result?: MediaGenResult; throws?: Error }): LlmProvider {
+    const base = capsWithOutput([['image']]);
+    return {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('generate must NOT run for a generative node');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a generative node');
+      },
+      generateMedia: () =>
+        behavior?.throws !== undefined
+          ? Promise.reject(behavior.throws)
+          : Promise.resolve(behavior?.result ?? { media: image, raw: { internal: true } }),
+    };
+  }
+  const genDeps = (p: LlmProvider, over: Partial<AgentRunnerDeps> = {}): AgentRunnerDeps =>
+    deps(p, { resolveMediaSurface: () => 'generative', ...over });
+  const genVertex = (over: Partial<AgentPlanConfig['node']> = {}): PlanVertex =>
+    vertexFor({
+      kind: 'agent',
+      node: agentNode({ output_modalities: ['image'], ...over }),
+      resolvedAgent: AGENT,
+    });
+
+  it('routes a generative model to generateMedia and outputs { text:"", media:[part] } + one token-free cost:updated', async () => {
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
+    const { ctx, events } = ctxFor(genVertex());
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.output).toEqual({ text: '', media: [image] }); // raw is NOT placed in the media part
+    }
+    const cost = events.filter((e) => e.type === 'cost:updated');
+    expect(cost).toHaveLength(1); // exactly one realized addend (ADR-0045 §5)
+    expect(cost[0]).toMatchObject({ inputTokens: 0, outputTokens: 0 });
+  });
+
+  it('a chat model (default surface, no resolveMediaSurface) keeps the normal turn — never generateMedia', async () => {
+    // No resolveMediaSurface dep → default 'chat'. The provider's generateMedia would throw if reached.
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: () => streamOf([{ type: 'text_delta', text: 'hi' }, STOP]),
+      generateMedia: () => Promise.reject(new Error('generateMedia must NOT run for a chat node')),
+    };
+    const exec = createAgentNodeExecutor(deps(provider)); // no resolveMediaSurface
+    const { ctx } = ctxFor(agentVertex());
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({ kind: 'completed', output: 'hi' });
+  });
+
+  it('fails internal when the model is generative but the provider implements no generateMedia (host-wiring gap)', async () => {
+    const base = capsWithOutput([['image']]);
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => streamOf([STOP]),
+      // no generateMedia
+    };
+    const exec = createAgentNodeExecutor(genDeps(provider));
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'internal' } });
+  });
+
+  it('fails internal on a jobId (async LRO is Section D), and on a neither-media-nor-jobId result', async () => {
+    const jobExec = createAgentNodeExecutor(
+      genDeps(generativeProvider({ result: { jobId: 'job-1', raw: {} } })),
+    );
+    expect(await jobExec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal' },
+    });
+  });
+
+  it('fails validation when a generative node does not declare exactly one media modality', async () => {
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
+    // text+image (has text + two members) is rejected — a generative model emits pure media.
+    const outcome = await exec.execute(
+      ctxFor(genVertex({ output_modalities: ['text', 'image'] })).ctx,
+    );
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+  });
+
+  it('gates pre-egress: a BudgetExceededError on the generative path → budget_exceeded (no generateMedia egress)', async () => {
+    let called = false;
+    const provider = generativeProvider();
+    const wrapped: LlmProvider = {
+      ...provider,
+      generateMedia: (req, key) => {
+        called = true;
+        return provider.generateMedia?.(req, key) ?? Promise.reject(new Error('no'));
+      },
+    };
+    const exec = createAgentNodeExecutor(
+      genDeps(wrapped, {
+        preEgress: () => Promise.reject(new BudgetExceededError(100, 50, 120)),
+      }),
+    );
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'budget_exceeded' } });
+    expect(called).toBe(false); // gate fails before any provider egress
+  });
+
+  it('maps a generateMedia provider error through the chat taxonomy (content_filter stays content_filter)', async () => {
+    const exec = createAgentNodeExecutor(
+      genDeps(
+        generativeProvider({
+          throws: new LlmProviderError(
+            makeLlmError({ provider: 'openai', kind: 'content_filter', message: 'blocked' }),
+          ),
+        }),
+      ),
+    );
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'content_filter' } });
   });
 });

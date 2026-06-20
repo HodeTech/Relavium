@@ -14,7 +14,7 @@ import {
 } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
-import { InvalidBaseUrlError } from '../errors.js';
+import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -24,6 +24,8 @@ import type {
   LlmProvider,
   LlmRequest,
   LlmResult,
+  MediaGenRequest,
+  MediaGenResult,
   MediaUnitsEntry,
   ProviderId,
   StreamChunk,
@@ -819,6 +821,52 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(createClient(key), req, providerId);
+    },
+    /**
+     * Separate-endpoint media generation (1.AG Section C, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+     * SYNC image generation via gpt-image-1 (`client.images.generate` → base64). Audio (TTS via
+     * `audio.speech`) and video are NOT wired here yet — they fail loud with a typed capability error, never a
+     * silent drop (deferred — deferred-tasks.md). DeepSeek generates no media. No vendor type crosses the seam:
+     * the result is a normalized `MediaGenResult` whose `raw` is strip-discarded by sinks.
+     */
+    async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
+      if (providerId !== 'openai' || req.modality !== 'image') {
+        throw new UnsupportedCapabilityError(
+          providerId,
+          'media',
+          `${providerId} generateMedia supports only OpenAI image generation, not '${req.modality}' (audio/video deferred)`,
+        );
+      }
+      let response: OpenAI.ImagesResponse;
+      try {
+        response = await createClient(key).images.generate(
+          {
+            model: req.model,
+            prompt: req.prompt,
+            ...(req.count === undefined ? {} : { n: req.count }),
+          },
+          isAbortSignal(req.signal) ? { signal: req.signal } : {},
+        );
+      } catch (err) {
+        throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+      }
+      // gpt-image-1 returns base64 PNG. A `count > 1` batch surfaces the FIRST image (the SYNC seam carries a
+      // single MediaPart; a multi-part media-array result is a future additive seam change) — the cost is still
+      // billed for the authored `count` (the engine's realized fold).
+      const b64 = response.data?.[0]?.b64_json;
+      if (b64 === undefined || b64.length === 0) {
+        throw new LlmProviderError(
+          makeLlmError({
+            provider: providerId,
+            kind: 'bad_request',
+            message: 'OpenAI image generation returned no base64 image data',
+          }),
+        );
+      }
+      return {
+        media: { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: b64 } },
+        raw: response,
+      };
     },
   };
 }

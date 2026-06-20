@@ -23,14 +23,21 @@ import {
   type FsScopeTier,
   type MediaBilledModality,
   type MediaCostEstimate,
+  type MediaSurface,
   type OutputModality,
 } from '@relavium/shared';
 import {
+  LlmProviderError,
   ResponseFormatSchema,
   ToolDefSchema,
+  UnknownModelError,
+  cost,
   type FallbackPlanEntry,
   type LlmMessage,
   type LlmProvider,
+  type MediaGenRequest,
+  type MediaGenResult,
+  type MediaUnitsEntry,
   type MediaUnitsEstimate,
   type ProviderId,
   type ResponseFormat,
@@ -44,13 +51,14 @@ import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
+  codeForLlmError,
   runAgentTurn,
   type AgentTurnLimits,
   type AgentTurnResult,
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
-import { BudgetPauseError } from './budget-governor.js';
+import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
@@ -64,6 +72,14 @@ type AgentNode = AgentPlanConfig['node'];
 export interface AgentRunnerDeps {
   /** Resolve an authored provider id to its concrete adapter instance; `undefined` ⇒ a host-wiring gap. */
   readonly resolveProvider: (providerId: ProviderId) => LlmProvider | undefined;
+  /**
+   * Resolve a canonical model id to its `media_surface` (1.AG Section C, ADR-0045 §1) — the inline-vs-generative
+   * routing discriminator, projected from `model_catalog.media_surface`. `'generative'` routes the agent node to
+   * the separate-endpoint `generateMedia`; `'chat'` (the default, and the value when this dep is absent or returns
+   * `undefined`) uses the normal turn. The engine is platform-pure (no DB), so the host injects this catalog
+   * lookup; the production catalog wiring is host-side (1.AH), like the other 1.AF/1.AG host-wiring obligations.
+   */
+  readonly resolveMediaSurface?: (model: string) => MediaSurface | undefined;
   /** The shared tool registry (1.T) the agent dispatches through (ADR-0037). */
   readonly registry: ToolRegistry;
   /** The registry's tool defs — the source of the LLM-visible schema + descriptions for granted tools. */
@@ -214,6 +230,18 @@ async function executeAgent(
       : await resolvePrompt(node.prompt_template, ctx, deps);
   if (!prompt.ok) return failed('validation', prompt.message, false);
 
+  // Inline-vs-generative routing (1.AG Section C, ADR-0045 §1): a resolved model whose `media_surface` is
+  // 'generative' dispatches through the separate-endpoint `generateMedia` (one provider, no chain failover —
+  // §6). A 'chat' model (the default, and the value when the host wires no surface lookup) takes the normal
+  // turn below. The surface is the host-injected catalog projection (`deps.resolveMediaSurface`).
+  const primary = plan.entries[0];
+  if (
+    primary !== undefined &&
+    (deps.resolveMediaSurface?.(primary.model) ?? 'chat') === 'generative'
+  ) {
+    return executeGenerativeMedia(ctx, node, primary, prompt.text, deps);
+  }
+
   const messages = assembleMessages(agent, node, prompt.text);
   const llmTools = buildLlmTools(deps.tools, grantedToolIds);
   const outputSchema = node.output_schema ?? agent.output_schema;
@@ -310,6 +338,178 @@ async function executeAgent(
     return { kind: 'completed', output: parsed, tokensUsed };
   }
   return { kind: 'completed', output: result.text, tokensUsed };
+}
+
+/**
+ * Dispatch a `media_surface: 'generative'` agent node through the seam's `generateMedia` (1.AG Section C,
+ * [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §1/§5/§6):
+ * SYNC one-round-trip generation (gpt-image-1, Imagen, OpenAI TTS) resolving `{ media }`. ONE provider, NO
+ * cross-provider failover (a generative call is provider-bound — §6). The pre-egress budget gate runs first
+ * (the authored volume estimate, gate-only — never folded into cumulative); the in-flight media becomes the
+ * `{ text:'', media:[part] }` node output the engine de-inlines to a handle at #emitDurable (the I3 boundary,
+ * reusing 1.AF); exactly ONE realized `cost:updated` is emitted (§5). A `jobId` (async LRO) is Section D.
+ */
+async function executeGenerativeMedia(
+  ctx: NodeExecContext,
+  node: AgentNode,
+  primary: FallbackPlanEntry,
+  prompt: string,
+  deps: AgentRunnerDeps,
+): Promise<NodeOutcome> {
+  const modality = singleBilledModality(node.output_modalities, node.id);
+  if (!modality.ok) return failed('validation', modality.message, false);
+
+  const provider = primary.provider;
+  if (provider.generateMedia === undefined) {
+    // The catalog flagged the model 'generative' but its provider implements no generateMedia — a host-wiring
+    // gap (internal), distinct from an authoring error. Never a raw throw (the engine would flatten it).
+    return failed(
+      'internal',
+      `agent node '${node.id}': model '${primary.model}' is media_surface 'generative' but provider '${provider.id}' implements no generateMedia (host-wiring gap)`,
+      false,
+    );
+  }
+
+  // The authored output volume → the per-modality unit count (count for image; duration_seconds for
+  // audio/video). The SAME number drives the pre-egress estimate (gate only) and the realized fold (§5).
+  const units = generativeUnits(modality.modality, node);
+
+  // Pre-egress budget gate (1.AC): the authored media volume, NEVER added to cumulative (gate only). A
+  // BudgetExceededError → budget_exceeded; a BudgetPauseError → paused (the human-gate seam) — this mirrors
+  // the chat path's awaitPreEgress exactly so a generative call is gated identically.
+  const preEgress = ctx.preEgress ?? deps.preEgress;
+  if (preEgress !== undefined) {
+    try {
+      await preEgress({
+        model: primary.model,
+        ...(node.output_modalities === undefined
+          ? {}
+          : { outputModalities: node.output_modalities }),
+        mediaUnitsEstimate: [{ modality: modality.modality, units }],
+      });
+    } catch (err) {
+      if (err instanceof BudgetExceededError) {
+        return failed('budget_exceeded', err.message, false);
+      }
+      return turnOutcomeForError(err); // BudgetPauseError → paused; anything else re-throws → engine internal
+    }
+  }
+  // A cancel landing inside the (async) budget check costs no egress: re-check before engaging the provider.
+  if (ctx.signal.aborted) {
+    return failed(
+      'cancelled',
+      `agent node '${node.id}': run cancelled before media generation`,
+      false,
+    );
+  }
+
+  const req: MediaGenRequest = {
+    model: primary.model,
+    prompt,
+    modality: modality.modality,
+    ...(node.count === undefined ? {} : { count: node.count }),
+    ...(node.duration_seconds === undefined ? {} : { durationSeconds: node.duration_seconds }),
+    signal: ctx.signal,
+  };
+
+  let result: MediaGenResult;
+  try {
+    const key = await deps.keyFor(provider.id);
+    result = await provider.generateMedia(req, key);
+  } catch (err) {
+    // Map a provider error through the SAME taxonomy as the chat path (codeForLlmError): a content-policy
+    // refusal → content_filter, a cancel → cancelled, etc. A non-LlmProviderError re-throws to the engine.
+    if (err instanceof LlmProviderError) {
+      return failed(codeForLlmError(err.llmError), err.llmError.message, err.llmError.retryable);
+    }
+    return turnOutcomeForError(err);
+  }
+
+  if (result.jobId !== undefined) {
+    // The async LRO (the engine-owned poll/checkpoint/resume/cancel loop) is 1.AG Section D — a SYNC dispatch
+    // cannot consume a jobId. Fail loud rather than silently drop the in-flight provider job.
+    return failed(
+      'internal',
+      `agent node '${node.id}': generateMedia returned an async jobId; async media jobs are not yet supported (1.AG Section D)`,
+      false,
+    );
+  }
+  if (result.media === undefined) {
+    return failed(
+      'internal',
+      `agent node '${node.id}': generateMedia resolved neither media nor jobId`,
+      false,
+    );
+  }
+
+  // Exactly ONE realized cost:updated (ADR-0045 §5) — derived from the request volume × the per-model media
+  // rate (best-effort: an unknown/unrated model degrades to 0, H4). The engine folds it into the run cumulative.
+  ctx.emit({
+    type: 'cost:updated',
+    nodeId: node.id,
+    model: primary.model,
+    inputTokens: 0,
+    outputTokens: 0,
+    costMicrocents: realizedMediaCost(primary.model, modality.modality, units),
+    cumulativeCostMicrocents: 0, // placeholder — the engine overwrites with the authoritative run-wide total
+  });
+
+  // The pure-media node output ({ text:'', media:[part] }) de-inlines at #emitDurable exactly like the inline
+  // path. `MediaGenResult.raw` is provider-internal and is never part of the media part (strip-on-sink, §7).
+  return {
+    kind: 'completed',
+    output: { text: '', media: [result.media] },
+    tokensUsed: { input: 0, output: 0, model: primary.model },
+  };
+}
+
+/**
+ * Derive the SINGLE billed output modality a generative node produces. A generative model emits pure media,
+ * so `output_modalities` must declare exactly one of `image`/`audio`/`video` — no text, no second modality.
+ */
+function singleBilledModality(
+  outputModalities: readonly OutputModality[] | undefined,
+  nodeId: string,
+): { ok: true; modality: MediaBilledModality } | { ok: false; message: string } {
+  const all = outputModalities ?? [];
+  const billed = all.filter(isBilledModality);
+  const [only] = billed;
+  if (only === undefined || billed.length !== 1 || all.length !== 1) {
+    return {
+      ok: false,
+      message: `agent node '${nodeId}': a media_surface 'generative' model requires output_modalities to declare exactly one media modality (image | audio | video), with no text`,
+    };
+  }
+  return { ok: true, modality: only };
+}
+
+/**
+ * The authored generation volume for a modality: `count` (image) or `duration_seconds` (audio/video), each
+ * falling back to the conservative built-in default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}) when unspecified.
+ */
+function generativeUnits(modality: MediaBilledModality, node: AgentNode): number {
+  return modality === 'image'
+    ? (node.count ?? DEFAULT_MEDIA_UNIT_ESTIMATE.image)
+    : (node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality]);
+}
+
+/**
+ * Best-effort realized media cost for a generative call (ADR-0045 §5): the request volume × the per-model
+ * media rate, via the shared `cost()` fold (token counts are 0). An unknown/unrated model degrades to 0 (H4)
+ * — never a hard fail on a missing rate, exactly as the chat path's best-effort cost does.
+ */
+function realizedMediaCost(model: string, modality: MediaBilledModality, units: number): number {
+  const mediaUnits: MediaUnitsEntry[] = [
+    { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
+  ];
+  try {
+    return cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits });
+  } catch (err) {
+    if (err instanceof UnknownModelError) {
+      return 0; // an unknown model carries no rate — degrade to 0, matching the chain's best-effort cost path
+    }
+    throw err;
+  }
 }
 
 /** Build the ordered fallback plan: primary (node-over-agent model) + each authored fallback entry. */
