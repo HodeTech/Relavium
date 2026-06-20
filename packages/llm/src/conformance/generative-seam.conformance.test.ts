@@ -126,18 +126,20 @@ describe('generative seam — async media job (conformance, A5)', () => {
     }
   });
 
-  it('pollMediaJob: accepts the additive abort signal (a cancel reaches the in-flight poll, A5)', async () => {
-    let observedSignal = false;
+  it('pollMediaJob: forwards the caller-owned abort signal (a cancel reaches the in-flight poll, A5)', async () => {
+    const controller = new AbortController();
+    let forwardedCallerSignal = false;
     const provider: GenerativeProvider = {
       ...stubAsyncGenerativeProvider({ polls: [{ state: 'pending' }] }),
       pollMediaJob: (_jobId, _key, signal) => {
-        observedSignal = signal !== undefined;
+        // IDENTITY, not mere presence: the engine must thread the RUN's abort signal through, not a fresh
+        // controller of the adapter's own — else a run cancel would never reach the in-flight poll (A5 §4).
+        forwardedCallerSignal = signal === controller.signal;
         return Promise.resolve<MediaJobStatus>({ state: 'pending' });
       },
     };
-    const controller = new AbortController();
     const status = await provider.pollMediaJob('job', KEY, controller.signal);
     expect(MediaJobStatusSchema.safeParse(status).success).toBe(true);
-    expect(observedSignal).toBe(true);
+    expect(forwardedCallerSignal).toBe(true);
   });
 });
