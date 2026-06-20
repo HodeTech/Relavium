@@ -201,7 +201,9 @@ export const MediaCapabilitiesSchema = z.object({
   // turn with `output_modalities`; `'generative'` routes it to the separate-endpoint `generateMedia()`
   // (sync or async LRO). The seam projection of `model_catalog.media_surface`. **Absent ⇒ `'chat'`** (the
   // column's NOT NULL default + the read-site `?? 'chat'`); optional so a CapabilityFlags literal that
-  // predates routing stays valid. Every Phase-1 adapter sets `'chat'` (none implements `generateMedia`).
+  // predates routing stays valid. `surface` is a per-MODEL catalog property, not an adapter capability — the
+  // OpenAI adapter implements sync `generateMedia` (gpt-image-1 image, 1.AG Section C), yet its capability
+  // surface here is still `'chat'`; which models route generative is catalog state, not an adapter flag.
   surface: z.enum(MEDIA_SURFACES).optional(),
 });
 export type MediaCapabilities = z.infer<typeof MediaCapabilitiesSchema>;

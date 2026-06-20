@@ -198,9 +198,18 @@ function asyncMediaProvider(
       generateCalls += 1;
       return Promise.resolve({ jobId: 'job-1', raw: { internal: true } });
     },
-    pollMediaJob: (_jobId: string, _key: string, signal?: AbortSignalLike) => {
+    pollMediaJob: (jobId: string, _key: string, signal?: AbortSignalLike) => {
       if (signal?.aborted === true) {
         return Promise.reject(new Error('poll aborted')); // a run cancel aborts the in-flight poll (ADR-0045 §4)
+      }
+      if (jobId !== 'job-1') {
+        // The engine must re-poll the PERSISTED opaque jobId generateMedia returned — especially across a
+        // cross-process resume RE-ATTACH (MJ-1). A mismatch means a wrong/regenerated id is being polled.
+        return Promise.reject(
+          new Error(
+            `pollMediaJob got unexpected jobId '${jobId}' (expected the persisted 'job-1')`,
+          ),
+        );
       }
       const status = script[Math.min(pollCalls, script.length - 1)];
       pollCalls += 1;
@@ -1002,10 +1011,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
         throw new Error('stream must NOT run');
       },
       generateMedia: () => Promise.resolve({ jobId: 'job-1', raw: {} }),
+      // An out-of-union job state (a future seam value / a non-conforming adapter) forces the closed-switch's
+      // default arm, which MUST fail the node terminally rather than leave it parked with no re-arm (silent hang).
       pollMediaJob: () =>
-        // @ts-expect-error — an out-of-union job state (a future seam value / a non-conforming adapter) forces
-        // the closed-switch's default arm, which MUST fail the node terminally rather than leave it parked with
-        // no re-arm and no terminal (a silent hang).
+        // @ts-expect-error — 'frozen' is intentionally outside the MediaJobStatus union (see above).
         Promise.resolve<MediaJobStatus>({ state: 'frozen' }),
     };
     const engine = buildEngine(

@@ -1427,9 +1427,18 @@ class RunExecution {
   async #pollMediaJob(nodeId: string): Promise<void> {
     this.#disarmMediaTimer(nodeId);
     const job = this.#pendingMediaJobs.get(nodeId);
+    if (this.#settled || job === undefined) {
+      return; // run terminal, or the job was already cleared (nothing to clean up)
+    }
     const vertex = this.#plan.vertices.get(nodeId);
-    if (this.#settled || job === undefined || vertex === undefined) {
-      return; // run terminal, job cleared, or vertex gone
+    if (vertex === undefined) {
+      // The parked node no longer exists in the plan — only reachable via same-slug workflow CONTENT drift on
+      // resume (the identity guard checks the surrogate workflow id, not content). A silent return would strand
+      // the run paused forever on a job that can never re-attach. Clear the orphaned job and drive the loop so
+      // the now-jobless idle settles the run (a stall → run:failed) instead of hanging.
+      this.#clearMediaJob(nodeId);
+      this.#schedule();
+      return;
     }
     // The whole settle path is wrapped: a synchronous bus/Zod throw (or a #nodeEmit fault) must NOT escape the
     // fire-and-forget `void #pollMediaJob` as an unhandled rejection — route it to a single run:failed instead
