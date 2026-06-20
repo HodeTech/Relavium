@@ -160,9 +160,10 @@ interface LlmProvider {
   generate(req: LlmRequest, key: string): Promise<LlmResult>;
   stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;  // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning, media } — vision is the derived alias of media.input.image (ADR-0031)
-  // ADR-0031 decision #6 — separate-endpoint media generation. The A5 ADR is written ([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md))
-  // and the SHAPE is now final (the additive pollMediaJob `signal` param landed, 1.AG Section A); the
-  // BEHAVIOR (sync de-inline, the async poll/checkpoint/resume/cancel loop) lands across 1.AG Sections C/D.
+  // ADR-0031 decision #6 — separate-endpoint media generation. The A5 ADR ([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md))
+  // is landed and the SHAPE is final (the additive pollMediaJob `signal` param, 1.AG Section A); the BEHAVIOR
+  // is WIRED — `generateMedia` SYNC de-inline (1.AG Section C) + the engine-owned async poll/checkpoint/
+  // resume/cancel loop (1.AG Section D). The Sora/Veo/Imagen/TTS ADAPTER impls are 1.AH host-wiring.
   generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
   pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
 }
@@ -381,14 +382,19 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   `MediaGenRequest` / `MediaGenResult` / `MediaJobStatus`: a sync generator resolves `{ media }`;
   an async one (Sora, Veo) resolves a **Relavium-opaque** `jobId` (no vendor operation name
   crosses the seam); `failed` carries the existing classified `LlmError` (content-policy →
-  `content_filter`). **Wired (1.AG Section C):** `generateMedia` SYNC — the OpenAI adapter
+  `content_filter`). **Wired (1.AG Sections C/D):** `generateMedia` SYNC — the OpenAI adapter
   implements gpt-image-1 image generation (`images.generate` → base64 `media`); a `media_surface:
   'generative'` agent node routes here instead of the inline `generate()`/`stream()` (the engine
-  resolves the per-model surface). OpenAI-TTS audio + Gemini-Imagen + the async `pollMediaJob`
-  poll/checkpoint/resume/cancel loop are the remaining 1.AG work (Section D + the 1.AH host-wiring).
+  resolves the per-model surface). The ASYNC `pollMediaJob` poll/checkpoint/resume/cancel loop is
+  WIRED in the engine (Section D — `media_job:submitted` park, the derived `pendingMediaJobs` slot,
+  re-attach-on-resume, a host-timer poll cadence, deadline→retryable-timeout, cancel→abort→terminal
+  sweep; failed→`content_filter`), proven against a conforming stub async provider. The remaining
+  work is **1.AH host-wiring**: the Sora/Veo `generateMedia(→jobId)`/`pollMediaJob` adapters,
+  OpenAI-TTS + Gemini-Imagen sync adapters, the per-model `media_surface` host lookup, and verified
+  generative pricing rows.
 
   ```ts
-  // RESERVED shape (A5) — deliberately minimal; behavior lands at 1.AG with its own ADR.
+  // Seam shape (A5; ADR-0045) — behavior WIRED at 1.AG (sync generateMedia Section C, async poll loop Section D).
   interface MediaGenRequest {
     model: string;
     prompt: string;

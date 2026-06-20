@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import type { StopReason } from '@relavium/shared';
+import { MEDIA_SURFACES, type StopReason } from '@relavium/shared';
 
 import { LlmProviderError } from '../llm-error.js';
-import { LlmResultSchema, StreamChunkSchema } from '../types.js';
-import type { LlmErrorKind, LlmProvider, LlmRequest, StreamChunk } from '../types.js';
+import { LlmResultSchema, MediaGenResultSchema, StreamChunkSchema } from '../types.js';
+import type {
+  LlmErrorKind,
+  LlmProvider,
+  LlmRequest,
+  MediaGenRequest,
+  StreamChunk,
+} from '../types.js';
 import type { RecordedResponse } from './replay.js';
 
 /**
@@ -38,6 +44,9 @@ export interface ConformanceExpectations {
   readonly reasoningStream?: { text: string; reasoningTokens?: number };
   /** The JSON text a model returns under `responseFormat: json` (ADR-0030) — providers that support it. */
   readonly structuredOutput?: { text: string };
+  /** The canonical MIME a SYNC `generateMedia` image normalizes to (1.AG Section C, A5) — providers that
+   *  implement `generateMedia` supply this. */
+  readonly mediaGenerate?: { mimeType: string };
 }
 
 /** The recorded provider responses a conformance run needs — one per canonical scenario. */
@@ -58,6 +67,10 @@ export interface ConformanceFixtures {
   readonly reasoningStream?: RecordedResponse;
   /** A non-streaming reply produced under `responseFormat: json` (ADR-0030) — omit if unsupported. */
   readonly structuredOutput?: RecordedResponse;
+  /** A recorded SYNC media-generation response (e.g. an image-generation reply carrying base64) — omit for
+   *  a provider with no `generateMedia` (`media_surface: 'chat'`-only). Drives the generative seam-contract
+   *  scenario (1.AG Section C, A5). */
+  readonly mediaGenerate?: RecordedResponse;
   /**
    * A multi-turn tool loop (the path every agent node exercises): `turn1` is a tool-call reply; `turn2` is
    * the continuation the provider returns AFTER the caller appends the tool result. The conformance test
@@ -114,6 +127,12 @@ const JSON_REQUEST: LlmRequest = {
     type: 'json',
     schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
   },
+};
+
+const MEDIA_GEN_REQUEST: MediaGenRequest = {
+  model: 'conformance-image-model',
+  prompt: 'a red circle on a white background',
+  modality: 'image',
 };
 
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
@@ -325,6 +344,46 @@ export function defineConformanceSuite(
         const text = r2.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
         expect(text).toBe(loop.expected.finalText);
         expect(r2.content.every((part) => part.type !== 'tool_call')).toBe(true); // a text continuation, not another call
+      },
+    );
+
+    it('capabilities: media.surface projects to a valid MediaSurface (1.AG, A5)', () => {
+      // Every adapter's capability projection must resolve `media.surface` to a member of the closed
+      // MediaSurface union (the data-driven routing seam ADR-0045 §1 keys on) — an adapter that emits a
+      // garbage/absent surface would silently mis-route. Phase-1 adapters all project 'chat'; the per-adapter
+      // capability tests pin the exact value, this asserts the cross-adapter shape contract.
+      const surface = makeReplayAdapter(fixtures.textGenerate).supports.media.surface;
+      expect(surface).toBeDefined();
+      if (surface !== undefined) {
+        expect(MEDIA_SURFACES).toContain(surface);
+      }
+    });
+
+    it.skipIf(fixtures.mediaGenerate === undefined)(
+      'generateMedia (sync): normalizes a generated image to a base64 media part, no jobId (1.AG Section C, A5)',
+      async () => {
+        const recorded = fixtures.mediaGenerate;
+        if (recorded === undefined) {
+          return; // narrow for skipIf
+        }
+        const adapter = makeReplayAdapter(recorded);
+        if (adapter.generateMedia === undefined) {
+          throw new Error('a mediaGenerate fixture requires the adapter to implement generateMedia');
+        }
+        const result = await adapter.generateMedia(MEDIA_GEN_REQUEST, KEY);
+        // Defense-in-depth: the whole result must satisfy the canonical MediaGenResult schema (incl. the
+        // exactly-one-of media|jobId refine).
+        expect(MediaGenResultSchema.safeParse(result).success).toBe(true);
+        // SYNC: an in-flight `media` part the engine de-inlines to a handle; NEVER an async `jobId`.
+        expect(result.jobId).toBeUndefined();
+        expect(result.media?.type).toBe('media');
+        if (result.media !== undefined) {
+          expect(result.media.source.kind).toBe('base64'); // no bytes-less url leaks across the seam here
+          if (expected.mediaGenerate !== undefined) {
+            expect(result.media.mimeType).toBe(expected.mediaGenerate.mimeType);
+          }
+        }
+        expect(result.raw).toBeDefined();
       },
     );
   });

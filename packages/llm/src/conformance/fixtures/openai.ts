@@ -148,6 +148,14 @@ const structuredOutput = JSON.stringify({
   usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 },
 });
 
+// A recorded images.generate (gpt-image-1) reply — a single base64 image, the SYNC generative seam path
+// (1.AG Section C). The OpenAI SDK's images.generate goes through the same `fetch` override, so this drives
+// the real parser + our normalization offline (b64_json → a base64 `media` part, mimeType image/png default).
+const imageGenerate = JSON.stringify({
+  created: 0,
+  data: [{ b64_json: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=' }],
+});
+
 // No reasoningStream fixture: OpenAI chat.completions emits no reasoning output (the conformance
 // reasoning scenario is skipped for this provider).
 export const OPENAI_FIXTURES: ConformanceFixtures = {
@@ -158,6 +166,7 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
   rateLimit: { status: 429, body: rateLimitError },
   streamError: { status: 503, body: streamError },
   structuredOutput: { status: 200, body: structuredOutput },
+  mediaGenerate: { status: 200, body: imageGenerate },
   toolLoop: {
     turn1: { status: 200, body: toolMessage },
     turn2: { status: 200, body: textMessage },
@@ -170,5 +179,6 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
     structuredOutput: { text: '{"ok":true}' },
+    mediaGenerate: { mimeType: 'image/png' },
   },
 };

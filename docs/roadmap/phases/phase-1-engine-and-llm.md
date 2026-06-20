@@ -1056,6 +1056,11 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   node produces a handle; an async video job checkpoints, survives a simulated restart, and resumes to
   completion; **a CANCEL aborts the in-flight `pollMediaJob` (via `AbortSignal`), emits `run:cancelled`,
   and triggers the terminal-state media sweep**; a content-policy job failure maps to `content_filter`.
+  *Status (pending merge):* **Sections A–E landed on `development`** — ADR-0045 (async media-job LRO) +
+  ADR-0046 (inline media-out via `generate()`), the five engine/seam slices (contracts, inline media-out,
+  sync `generateMedia` + routing, the async poll/checkpoint/resume/cancel loop, acceptance + generative
+  conformance), each dual-reviewed (0 blocker/high). Flips to ✅ Done on PR merge; the genuinely-remaining
+  vendor-adapter + host-wiring work is **1.AH** (deferred-tasks.md). All four acceptance criteria are tested.
 - **1.AH — Surfaces & managed mode (Phase E, spans Phases 2–6).** Desktop:
   **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media
   de-inline on egress + session-scoped `read_media` command + the Rust CAS — **must land before any
@@ -1082,7 +1087,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2 ✅** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** (**reached — 1.U landed, PR #27, 2026-06-16**) | **1.U** |
 | **1.m5 ✅** | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, **1.AA** |
-| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅**, 1.AG, 1.AH |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅**, 1.AG (Sections A–E landed on development, pending merge), 1.AH |
 
 ## Sequencing & parallelization
 
@@ -1244,7 +1249,7 @@ flowchart LR
 | 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ✅ — **Done (PR #32, 2026-06-18)** |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ✅ — **Done (PR #33/#34/#35/#36, 2026-06-20)** |
-| 1.AG | D | 1.AF | 1.AH | ◇ |
+| 1.AG | D | 1.AF | 1.AH | ◇ — Sections A–E landed on `development` (pending PR merge) |
 | 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
 
 > The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`

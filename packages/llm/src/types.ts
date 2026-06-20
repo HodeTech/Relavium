@@ -408,10 +408,11 @@ export type StreamChunk = z.infer<typeof StreamChunkSchema>;
 
 /**
  * The request for a separate-endpoint media generation (`media_surface: 'generative'` models —
- * gpt-image-1, Imagen, TTS, Sora, Veo). **RESERVED shape at 1.AD (A5)** — `generateMedia` behavior,
- * the async poll/checkpoint/resume/cancel loop, and that loop's own ADR land at Phase D (1.AG).
- * Deliberately minimal: provider-specific generation knobs (voice, aspect ratio, fps, …) ride
- * `providerOptions`; conditioning-media inputs can be ADDED later (an optional field is additive).
+ * gpt-image-1, Imagen, TTS, Sora, Veo). Seam shape defined at 1.AD (A5); the BEHAVIOR is WIRED at
+ * 1.AG — sync `generateMedia` de-inline (Section C) + the engine-owned async poll/checkpoint/resume/
+ * cancel loop (ADR-0045, Section D). Deliberately minimal: provider-specific generation knobs (voice,
+ * aspect ratio, fps, …) ride `providerOptions`; conditioning-media inputs can be ADDED later (an
+ * optional field is additive).
  */
 export const MediaGenRequestSchema = z.object({
   model: nonEmptyString, // canonical model id, mapped per adapter
@@ -447,10 +448,11 @@ export const MediaGenResultSchema = z
 export type MediaGenResult = z.infer<typeof MediaGenResultSchema>;
 
 /**
- * One poll of an async media job (**reserved**, A5). `failed` carries the existing classified
- * `LlmError` — a content-policy rejection maps to `content_filter`, a deadline to the retryable
- * `timeout` — so the job path reuses the one failure vocabulary instead of inventing a second.
- * The job path never uses StopReason.
+ * One poll of an async media job (A5; the engine-owned poll/checkpoint/resume/cancel loop is wired at
+ * 1.AG Section D, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+ * `failed` carries the existing classified `LlmError` — a content-policy rejection maps to `content_filter`,
+ * a deadline to the retryable `timeout` — so the job path reuses the one failure vocabulary instead of
+ * inventing a second. The job path never uses StopReason.
  */
 export const MediaJobStatusSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('pending'), progress: z.number().min(0).max(1).optional() }),
@@ -473,15 +475,16 @@ export interface LlmProvider {
   /**
    * Separate-endpoint media generation (`media_surface: 'generative'`), OPTIONAL on the one seam —
    * deliberately not a sibling `GenerativeMediaProvider` (that would duplicate the
-   * id/key/capability/error/fallback registry). **RESERVED at 1.AD; wired at Phase D (1.AG) with
-   * its own ADR for the engine-owned poll/checkpoint/resume/cancel loop (A5).** No Phase-1 adapter
-   * implements it.
+   * id/key/capability/error/fallback registry). Shape at 1.AD; WIRED at 1.AG — the OpenAI adapter
+   * implements SYNC image generation (Section C) and the engine owns the async poll/checkpoint/resume/
+   * cancel loop (Section D, A5). The Sora/Veo/Imagen/TTS adapters are 1.AH host-wiring.
    */
   generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;
   /**
    * Poll an async media job by its Relavium-opaque id (A5, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
    * `signal` aborts the IN-FLIGHT poll so a run cancel reaches the open provider request, not just the
-   * next schedule (an additive amendment to the 1.AD-reserved shape, made while still un-implemented).
+   * next schedule. The engine drives this loop (1.AG Section D); no Phase-1 vendor adapter implements it
+   * yet (the async Sora/Veo adapters are 1.AH).
    */
   pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>;
 }

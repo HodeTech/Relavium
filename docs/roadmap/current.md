@@ -184,7 +184,7 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > non-breaking; the seam doc carries the full amendment section. **1.AE–1.AH (media
 > input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane ran straight to
 > **1.K** (✅ Done, PR #13), which closed it. **1.AE (media-input adapters + the shared SSRF policy
-> primitive) is now ✅ Done (PR #32, 2026-06-18)**; **1.AF (engine media plumbing) is now ✅ Done (PR #33/#34/#35/#36, 2026-06-20)**; 1.AG–1.AH remain.
+> primitive) is now ✅ Done (PR #32, 2026-06-18)**; **1.AF (engine media plumbing) is now ✅ Done (PR #33/#34/#35/#36, 2026-06-20)**; **1.AG (output generation) — Sections A–E landed on `development`, pending PR merge** (ADR-0045/0046; each section dual-reviewed); 1.AH remains.
 
 > **Review-pass follow-ups landed (PR #12, merged 2026-06-11).** The 2026-06-10 engine/tooling
 > review pass landed as docs/decisions only — no Phase-1 workstream changed: **MCP client scheduling**

@@ -37,6 +37,7 @@ import {
   RunEventSchema,
   type AbortSignalLike,
   type ContentPart,
+  type MediaReferencePort,
   type MediaStore,
   type RunEvent,
 } from '@relavium/shared';
@@ -747,6 +748,35 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // the run — the dedicated mid-await abort-observation proof is the deterministic test below.
     const events = await driveMediaRun(handle, host, () => handle.cancel());
     expect(events.at(-1)?.type).toBe('run:cancelled');
+  });
+
+  it('async media job: a cancel of a parked job fires the terminal media sweep (#reclaimRunMedia, ADR-0045 §4)', async () => {
+    const reclaims: string[] = [];
+    const mediaReferences: MediaReferencePort = {
+      recordRunMedia: () => undefined,
+      reclaimRun: (runId) => {
+        reclaims.push(runId);
+      },
+    };
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+      mediaReferences,
+    });
+    const job = asyncMediaProvider([{ state: 'pending' }]); // never resolves on its own
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    const events = await driveMediaRun(handle, host, () => handle.cancel());
+    expect(events.at(-1)?.type).toBe('run:cancelled');
+    const runId = events[0]?.runId ?? '';
+    // The terminal sweep must reclaim the run's media references on the CANCEL terminal too (not only on a
+    // happy-path run:completed) — a parked job's run-scoped refs (incl. any done→cancel-race produced byte)
+    // are GC-eligible the instant the run settles. Exactly one sweep, for this run.
+    expect(reclaims).toEqual([runId]);
   });
 
   it('AG-A-FC-3: a run parked on BOTH a human gate AND a media job resumes both — gate decision + media re-attach', async () => {

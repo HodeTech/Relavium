@@ -123,17 +123,18 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **general tool/MCP** `EgressCapability.fetch` enforcement still lands when the desktop/CLI surface implements that fetch hook. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; tool/MCP → surface fetch hook)*
-- [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
-  now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
-  (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
-  own ADR written at 1.AG (Phase D)**. Highest behavioral complexity in the multimodal design. *(1.AG)*
-  **Section-C wiring obligation (from 1.AG Section B):** the `requestsMediaOutput` guard in
-  [`agent-turn.ts`](../../packages/core/src/engine/agent-turn.ts) currently routes a media-output turn to the
-  inline `generate()` path on the non-text-`output_modalities` signal ALONE — ADR-0046 §1's full condition is
-  `media_surface: 'chat'` **and** a non-text `output_modalities`. The `'chat'` conjunct is vacuously true in
-  Section B (every media-capable model is `'chat'`), so it is omitted with a forward-`NOTE` in the guard's
-  JSDoc. When the generative dispatch lands (Section C, ADR-0045), the guard MUST additionally require the
-  resolved model's `media_surface === 'chat'`: a `'generative'` model routes to `generateMedia`, not here. *(1.AG Section C)*
+- [x] **Async media-job ADR + engine loop (`generateMedia`/`pollMediaJob` behavior, A5) — DONE (1.AG Sections A/C/D).**
+  [ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) is written + Accepted, and
+  the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs (Sora/Veo) landed in 1.AG
+  Section D (the run loop 1.N + checkpointer 1.R, reusing `LlmError` classification): `media_job:submitted` park,
+  the derived `pendingMediaJobs` slot, re-attach-on-resume (MJ-1), a `host.setTimer` poll cadence with exp-backoff,
+  deadline→retryable-timeout, gate-vs-media resume disambiguation (AG-A-FC-3), and cancel→abort→terminal-sweep —
+  proven end-to-end with a stub async provider + the manual-timer harness. The **Section-C wiring obligation**
+  also landed: the generative-vs-chat routing FORK moved up into `AgentRunner.executeAgent` (a `'generative'`
+  model dispatches to `generateMedia` BEFORE the turn loop), so the `requestsMediaOutput` guard in
+  [`agent-turn.ts`](../../packages/core/src/engine/agent-turn.ts) only ever sees `'chat'` models — ADR-0046 §1's
+  `media_surface: 'chat'` conjunct holds STRUCTURALLY (the guard's JSDoc `NOTE` points at the fork). The remaining
+  VENDOR-adapter + host-wiring work is tracked in the 1.AH entries below. *(1.AG Sections A/C/D — done)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
   1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
   `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node
