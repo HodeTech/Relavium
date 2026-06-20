@@ -21,6 +21,8 @@
 
 > **Amended 2026-06-20 by [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md).** A refinement, not a reversal: 1.AG wires the reserved `generateMedia`/`pollMediaJob` methods and **additively adds a `signal?` param to `pollMediaJob`** (so a cancel aborts the in-flight poll) — the only shape change to the 1.AD-frozen seam, made while the methods are still un-implemented. The reserved shapes (`MediaGenRequest`/`MediaGenResult`/`MediaJobStatus`, the opaque-jobId rule) stand.
 
+> **Amended 2026-06-20 by [ADR-0046](0046-inline-media-out-via-generate-streaming-triad-deferred.md).** A refinement, not a reversal: it pins which of §5.1's two inline-media-out paths Phase-1 (1.AG) uses — the non-streaming `generate()` path ("the more common"), de-inlined at the `#emitDurable` choke point — and defers the streaming `media_start`/`media_delta`/`media_end` triad to the host (1.AH). The seam shape (incl. the handle-only `media_end`) is unchanged.
+
 ## Context
 
 The `@relavium/llm` seam — the request/result/stream/usage/content shapes in
