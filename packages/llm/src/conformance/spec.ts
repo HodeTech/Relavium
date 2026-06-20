@@ -44,9 +44,10 @@ export interface ConformanceExpectations {
   readonly reasoningStream?: { text: string; reasoningTokens?: number };
   /** The JSON text a model returns under `responseFormat: json` (ADR-0030) — providers that support it. */
   readonly structuredOutput?: { text: string };
-  /** The canonical MIME a SYNC `generateMedia` image normalizes to (1.AG Section C, A5) — providers that
-   *  implement `generateMedia` supply this. */
-  readonly mediaGenerate?: { mimeType: string };
+  /** The canonical values a SYNC `generateMedia` image normalizes to (1.AG Section C, A5) — providers that
+   *  implement `generateMedia` supply this. `data` is the exact base64 the recorded reply carries, so a
+   *  bytes-mangling normalization regression fails the suite (parity with the text/structured scenarios). */
+  readonly mediaGenerate?: { mimeType: string; data: string };
 }
 
 /** The recorded provider responses a conformance run needs — one per canonical scenario. */
@@ -381,6 +382,12 @@ export function defineConformanceSuite(
           expect(result.media.source.kind).toBe('base64'); // no bytes-less url leaks across the seam here
           if (expected.mediaGenerate !== undefined) {
             expect(result.media.mimeType).toBe(expected.mediaGenerate.mimeType);
+            // Exact-value parity with the text/structured scenarios: the recorded base64 must round-trip
+            // byte-for-byte, so a wrong-but-nonempty normalization regression fails here too.
+            expect(result.media.source).toEqual({
+              kind: 'base64',
+              data: expected.mediaGenerate.data,
+            });
           }
         }
         expect(result.raw).toBeDefined();

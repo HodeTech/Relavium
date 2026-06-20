@@ -179,6 +179,6 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
     structuredOutput: { text: '{"ok":true}' },
-    mediaGenerate: { mimeType: 'image/png' },
+    mediaGenerate: { mimeType: 'image/png', data: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=' },
   },
 };
