@@ -369,7 +369,9 @@ export function defineConformanceSuite(
         }
         const adapter = makeReplayAdapter(recorded);
         if (adapter.generateMedia === undefined) {
-          throw new Error('a mediaGenerate fixture requires the adapter to implement generateMedia');
+          throw new Error(
+            'a mediaGenerate fixture requires the adapter to implement generateMedia',
+          );
         }
         const result = await adapter.generateMedia(MEDIA_GEN_REQUEST, KEY);
         // Defense-in-depth: the whole result must satisfy the canonical MediaGenResult schema (incl. the

@@ -523,7 +523,11 @@ async function executeGenerativeMedia(
   // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
   // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
   if (ctx.signal.aborted) {
-    return failed('cancelled', `agent node '${node.id}': run cancelled during media generation`, false);
+    return failed(
+      'cancelled',
+      `agent node '${node.id}': run cancelled during media generation`,
+      false,
+    );
   }
 
   if (result.jobId !== undefined) {

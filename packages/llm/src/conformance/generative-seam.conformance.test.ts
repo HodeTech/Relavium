@@ -2,12 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { makeLlmError } from '../llm-error.js';
 import { MediaGenResultSchema, MediaJobStatusSchema } from '../types.js';
-import type {
-  CapabilityFlags,
-  LlmProvider,
-  MediaGenRequest,
-  MediaJobStatus,
-} from '../types.js';
+import type { CapabilityFlags, LlmProvider, MediaGenRequest, MediaJobStatus } from '../types.js';
 
 /**
  * The GENERATIVE-surface seam-contract conformance suite (1.AG Section E, A5 / [ADR-0045]). The chat
@@ -80,7 +75,10 @@ function stubAsyncGenerativeProvider(opts: {
 
 describe('generative seam — async media job (conformance, A5)', () => {
   it('generateMedia (async): resolves an OPAQUE non-empty jobId and NO media (exactly-one-of)', async () => {
-    const provider = stubAsyncGenerativeProvider({ jobId: 'vendor-op-7f3a', polls: [{ state: 'pending' }] });
+    const provider = stubAsyncGenerativeProvider({
+      jobId: 'vendor-op-7f3a',
+      polls: [{ state: 'pending' }],
+    });
     const result = await provider.generateMedia(VIDEO_REQUEST, KEY);
     expect(MediaGenResultSchema.safeParse(result).success).toBe(true);
     expect(result.media).toBeUndefined();
@@ -89,7 +87,11 @@ describe('generative seam — async media job (conformance, A5)', () => {
   });
 
   it('MediaGenResult: rejects carrying BOTH media and jobId, or NEITHER (the refine is the seam guard)', () => {
-    const media = { type: 'media', mimeType: 'video/mp4', source: { kind: 'base64', data: 'AAAA' } };
+    const media = {
+      type: 'media',
+      mimeType: 'video/mp4',
+      source: { kind: 'base64', data: 'AAAA' },
+    };
     expect(MediaGenResultSchema.safeParse({ media, jobId: 'x', raw: {} }).success).toBe(false);
     expect(MediaGenResultSchema.safeParse({ raw: {} }).success).toBe(false);
   });
@@ -105,7 +107,11 @@ describe('generative seam — async media job (conformance, A5)', () => {
         media,
         {
           state: 'failed',
-          error: makeLlmError({ provider: 'openai', kind: 'content_filter', message: 'blocked by policy' }),
+          error: makeLlmError({
+            provider: 'openai',
+            kind: 'content_filter',
+            message: 'blocked by policy',
+          }),
         },
       ],
     });

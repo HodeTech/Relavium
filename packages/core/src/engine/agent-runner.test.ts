@@ -932,6 +932,8 @@ describe('generativeUnits — authored media volume (ADR-0045 §5)', () => {
   it('audio/video: count × duration_seconds when BOTH are authored (N clips of D seconds)', () => {
     expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(30);
     // count alone (no duration) multiplies the conservative duration default — never silently dropped.
-    expect(generativeUnits('audio', agentNode({ count: 2 }))).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.audio * 2);
+    expect(generativeUnits('audio', agentNode({ count: 2 }))).toBe(
+      DEFAULT_MEDIA_UNIT_ESTIMATE.audio * 2,
+    );
   });
 });

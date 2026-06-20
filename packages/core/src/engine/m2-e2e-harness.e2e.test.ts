@@ -947,7 +947,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
   });
 
   it('async media job: an IN-FLIGHT poll is aborted by a run cancel (deterministic) → run:cancelled (ADR-0045 §4)', async () => {
-    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore: stubMediaStore() });
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
     let observedAbort = false;
     const provider: LlmProvider = {
       id: 'openai',
@@ -985,7 +988,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
   });
 
   it('async media job: an UNRECOGNIZED poll state fails the node loud (no silent park-forever hang) — the default arm (N2)', async () => {
-    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore: stubMediaStore() });
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
     const provider: LlmProvider = {
       id: 'openai',
       supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
@@ -999,23 +1005,30 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       // An out-of-union job state (a future seam value / a non-conforming adapter) — the cast forces the
       // closed-switch's default arm, which MUST fail the node terminally rather than leave it parked with no
       // re-arm and no terminal (a silent hang).
-      pollMediaJob: () =>
-        Promise.resolve({ state: 'frozen' } as unknown as MediaJobStatus),
+      pollMediaJob: () => Promise.resolve({ state: 'frozen' } as unknown as MediaJobStatus),
     };
     const engine = buildEngine(
       host,
       () => provider,
       () => 'generative',
     );
-    const events = await driveMediaRun(engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }), host);
+    const events = await driveMediaRun(
+      engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host,
+    );
     expect(events.at(-1)?.type).toBe('run:failed'); // settled, not hung
     const failed = events.find((e) => e.type === 'node:failed');
     expect(failed?.type === 'node:failed' && failed.error.code).toBe('internal');
-    expect(failed?.type === 'node:failed' && failed.error.message).toContain('unrecognized job state');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain(
+      'unrecognized job state',
+    );
   });
 
   it('async media job: survives repeated pending polls (backoff re-arm) before done', async () => {
-    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore: stubMediaStore() });
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
     const job = asyncMediaProvider([
       { state: 'pending' },
       { state: 'pending' },
@@ -1027,10 +1040,15 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       () => job.provider,
       () => 'generative',
     );
-    const events = await driveMediaRun(engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }), host);
+    const events = await driveMediaRun(
+      engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host,
+    );
     expect(events.at(-1)?.type).toBe('run:completed');
     expect(job.pollCalls()).toBeGreaterThanOrEqual(4); // 3 pending + done
-    expect(events.filter((e) => e.type === 'node:completed' && e.nodeId === 'work')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'node:completed' && e.nodeId === 'work')).toHaveLength(
+      1,
+    );
     expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1); // still exactly one addend
     // The completed node reports the full submit→done wall-clock, not the ~0 of the synchronous settle (M2):
     // each poll advanced the harness clock, so the elapsed across the 3 pending polls is strictly positive.
