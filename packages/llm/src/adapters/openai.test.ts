@@ -259,6 +259,20 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['audio']).toEqual({ voice: 'alloy', format: 'wav' });
   });
 
+  it('rejects a non-text outputModalities on the STREAM path — media-out is generate()-only (1.AG/ADR-0046)', () => {
+    // The streaming media triad is host-deferred (ADR-0046 §4); the streaming fold drops media, so a stream()
+    // requesting media output would silently lose it. The guard fails loud instead (never reaching egress).
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    const req: LlmRequest = {
+      model: 'gpt-4o-audio-preview',
+      outputModalities: ['text', 'audio'],
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'speak' }] }],
+    };
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
   it('lowers media on the STREAM path too (shared buildCommonBody — the §1.AE both-paths requirement)', async () => {
     let sent: Record<string, unknown> = {};
     const adapter = createOpenAiAdapter({
@@ -512,6 +526,7 @@ describe('OpenAI-compatible adapter', () => {
     expect(outputAudioMime(mk('mp3'))).toBe('audio/mpeg');
     expect(outputAudioMime(mk('opus'))).toBe('audio/opus');
     expect(outputAudioMime(mk('flac'))).toBe('audio/flac');
+    expect(outputAudioMime(mk('aac'))).toBe('audio/aac');
     expect(outputAudioMime(mk('pcm16'))).toBe('audio/L16');
     expect(outputAudioMime(mk('wav'))).toBe('audio/wav');
     expect(outputAudioMime(mk())).toBe('audio/wav'); // no providerOptions → default

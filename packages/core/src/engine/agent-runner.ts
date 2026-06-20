@@ -18,6 +18,7 @@
 import {
   MEDIA_BILLED_MODALITIES,
   type Agent,
+  type ContentPart,
   type ErrorCode,
   type FsScopeTier,
   type MediaBilledModality,
@@ -275,7 +276,9 @@ async function executeAgent(
   // (alongside the accompanying text) so the engine de-inlines the in-flight base64 to `media://` handles at
   // `node:completed` (#emitDurable) — the I3 boundary. A text-only turn keeps its string/parsed output. This
   // precedes output_schema: a media-output turn is not JSON-validated (the artifact is the media, not text).
-  const mediaParts = result.content.filter((part) => part.type === 'media');
+  const mediaParts = result.content.filter(
+    (part): part is Extract<ContentPart, { type: 'media' }> => part.type === 'media',
+  );
   if (mediaParts.length > 0) {
     return { kind: 'completed', output: { text: result.text, media: mediaParts }, tokensUsed };
   }

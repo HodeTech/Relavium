@@ -44,6 +44,24 @@ export function assertMediaCapabilities(
 }
 
 /**
+ * Reject a non-text `outputModalities` on the STREAMING path (1.AG/[ADR-0046] §4). Inline media-out is
+ * delivered ONLY through `generate()` (the in-flight base64 rides `LlmResult.content`); the streaming media
+ * triad (`media_start`/`media_delta`/`media_end`) is host-deferred to 1.AH, and the streaming folds drop a
+ * provider's media parts — so a `stream()` that requested media output would SILENTLY lose it. Fail loud
+ * here instead. The engine routes a media-output turn to `generate()`, so this never fires on the run path;
+ * it is a defensive guard for a direct seam consumer. Call it at `stream()` entry, after the media gate.
+ */
+export function assertNoStreamingMediaOutput(provider: ProviderId, req: LlmRequest): void {
+  if (req.outputModalities?.some((modality) => modality !== 'text') === true) {
+    throw new UnsupportedCapabilityError(
+      provider,
+      'media',
+      'streaming media output is unsupported — inline media-out is delivered via generate() (ADR-0046 §4)',
+    );
+  }
+}
+
+/**
  * The single-track reasoning-channel id used by the OpenAI/DeepSeek and Gemini streaming folds — those
  * providers emit one reasoning block per response (no concurrent tracks). A provider that interleaves
  * multiple reasoning streams must move to an index-keyed id like the Anthropic adapter (`reasoning-${index}`).

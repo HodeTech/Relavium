@@ -1,3 +1,4 @@
+import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmProvider,
@@ -212,10 +213,101 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     expect(result.content).toContainEqual(image); // the in-flight base64 media survives the turn (engine de-inlines it)
     expect(result.text).toBe('here is your image');
 
-    // The generate() path streams no tokens, but still settles one cost:updated for the attempt.
+    // The generate() path streams no tokens, but still settles one cost:updated for the attempt, with the
+    // accurate per-attempt model + attemptNumber (the onAttempt plumbing is shared with the stream path).
     const events = eventsOf(params);
     expect(events.some((e) => e.type === 'agent:token')).toBe(false);
-    expect(events.some((e) => e.type === 'cost:updated')).toBe(true);
+    const cost = events.find((e) => e.type === 'cost:updated');
+    expect(cost?.type === 'cost:updated' && cost.model).toBe('gemini-2.5-flash');
+    expect(cost?.type === 'cost:updated' && cost.attemptNumber).toBe(1);
+  });
+
+  it('fails over on the generate() path: a retryable primary error advances to a capable secondary', async () => {
+    const primary: LlmProvider = {
+      id: 'gemini',
+      supports: MEDIA_CAPS,
+      generate: () =>
+        Promise.reject(
+          new LlmProviderError(
+            makeLlmError({ provider: 'gemini', kind: 'overloaded', message: 'busy' }),
+          ),
+        ),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a media-out turn');
+      },
+    };
+    const secondary = mediaGenerateProvider('openai', {
+      content: [{ type: 'text', text: 'made it' }, image],
+      stopReason: 'stop',
+      usage: { inputTokens: 4, outputTokens: 2 },
+    });
+    const params = baseParams(primary, {
+      planEntries: [
+        { provider: primary, model: 'gemini-2.5-flash', maxAttempts: 1 },
+        { provider: secondary, model: 'gpt-image-1', maxAttempts: 1 },
+      ],
+      outputModalities: ['text', 'image'],
+    });
+    const result = await runAgentTurn(params);
+    expect(result.content).toContainEqual(image);
+    expect(result.model).toBe('gpt-image-1'); // attributed to the succeeding (failed-over) model
+  });
+
+  it('maps a generate() budget-exceeded cause to budget_exceeded (the throwMappedChainError cause unwrap)', async () => {
+    const provider: LlmProvider = {
+      id: 'gemini',
+      supports: MEDIA_CAPS,
+      generate: () =>
+        Promise.reject(
+          new LlmProviderError(
+            makeLlmError({
+              provider: 'gemini',
+              kind: 'unknown',
+              message: 'budget',
+              cause: new BudgetExceededError(120, 50, 130),
+            }),
+          ),
+        ),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a media-out turn');
+      },
+    };
+    const params = baseParams(provider, {
+      planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+      outputModalities: ['image'],
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'budget_exceeded' });
+  });
+
+  it('a pre-aborted signal on the media path fails cancelled with zero generate() egress', async () => {
+    let called = false;
+    const provider: LlmProvider = {
+      id: 'gemini',
+      supports: MEDIA_CAPS,
+      generate: () => {
+        called = true;
+        return Promise.resolve({
+          content: [image],
+          stopReason: 'stop' as const,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        });
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a media-out turn');
+      },
+    };
+    const aborted = {
+      aborted: true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    const params = baseParams(provider, {
+      planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+      outputModalities: ['image'],
+      signal: aborted,
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'cancelled' });
+    expect(called).toBe(false); // a cancel before egress engages no provider
   });
 
   it('keeps a text-only node on the streaming path (no generate())', async () => {
@@ -232,9 +324,10 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     expect(result.text).toBe('hi');
   });
 
-  it('fails loud (tool_failed) when a media-output turn returns a tool_use stop — never silently drops it (Opus-fix)', async () => {
-    // ADR-0046: a media turn is single-shot/terminal — generate() cannot run a tool round, so a tool_use stop
-    // is unfollowable. It must fail loud, not complete with empty output dropping the tool call.
+  it('fails loud (provider_unavailable) when a media-output turn returns a tool_use stop — never silently drops it', async () => {
+    // ADR-0046: a media turn is single-shot/terminal and is offered NO tools, so a tool_use stop is a provider
+    // protocol anomaly (a tool call we never offered, unrunnable). It must fail loud, not complete with empty
+    // output, and uses provider_unavailable — the same code the stream path's tool_use-anomaly guard uses.
     const provider = mediaGenerateProvider('gemini', {
       content: [{ type: 'tool_call', id: 't1', name: 'echo', args: {} }],
       stopReason: 'tool_use',
@@ -244,7 +337,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
       planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
       outputModalities: ['text', 'image'],
     });
-    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'tool_failed' });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'provider_unavailable' });
   });
 
   it('maps a generate() chain failure into the turn error taxonomy (symmetric with the stream path)', async () => {

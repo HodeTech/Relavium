@@ -127,6 +127,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
   (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
   own ADR written at 1.AG (Phase D)**. Highest behavioral complexity in the multimodal design. *(1.AG)*
+  **Section-C wiring obligation (from 1.AG Section B):** the `requestsMediaOutput` guard in
+  [`agent-turn.ts`](../../packages/core/src/engine/agent-turn.ts) currently routes a media-output turn to the
+  inline `generate()` path on the non-text-`output_modalities` signal ALONE — ADR-0046 §1's full condition is
+  `media_surface: 'chat'` **and** a non-text `output_modalities`. The `'chat'` conjunct is vacuously true in
+  Section B (every media-capable model is `'chat'`), so it is omitted with a forward-`NOTE` in the guard's
+  JSDoc. When the generative dispatch lands (Section C, ADR-0045), the guard MUST additionally require the
+  resolved model's `media_surface === 'chat'`: a `'generative'` model routes to `generateMedia`, not here. *(1.AG Section C)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
   1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
   `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node

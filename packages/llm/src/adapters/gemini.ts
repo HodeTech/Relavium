@@ -19,7 +19,12 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertMediaCapabilities, isAbortSignal } from './shared.js';
+import {
+  REASONING_ID,
+  assertMediaCapabilities,
+  assertNoStreamingMediaOutput,
+  isAbortSignal,
+} from './shared.js';
 
 /**
  * The Gemini adapter (1.H) over `@google/genai` — the riskiest adapter: a restricted tool schema and
@@ -221,11 +226,18 @@ export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): Co
       // mimeType is skipped (Gemini always sends both for a real artifact): a mimeType-less part has no media
       // MIME to content-address and would HARD-FAIL the de-inline (mediaModalityOf undefined → run:failed), so
       // dropping it is symmetric with the empty-data skip — never invent a doomed `application/octet-stream`.
-      parts.push({
-        type: 'media',
-        mimeType: part.inlineData.mimeType,
-        source: { kind: 'base64', data: part.inlineData.data },
-      });
+      // Gemini AUDIO output carries a PARAMETERIZED mime (e.g. `audio/L16;codec=pcm;rate=24000`), but the seam's
+      // MediaMimeTypeSchema admits only a BARE type/subtype — strip parameters to the bare prefix (the modality
+      // derives from it; the durable media part cannot carry parameters anyway). A pathological `;…`-only value
+      // strips to empty and is skipped, not emitted as a doomed part.
+      const bareMime = part.inlineData.mimeType.split(';')[0]?.trim() ?? '';
+      if (bareMime.length > 0) {
+        parts.push({
+          type: 'media',
+          mimeType: bareMime,
+          source: { kind: 'base64', data: part.inlineData.data },
+        });
+      }
     } else if (part.text !== undefined && part.text.length > 0) {
       if (part.thought === true) {
         // Reasoning (ADR-0030); thoughtSignature is the ephemeral same-provider continuity token.
@@ -634,6 +646,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
+      assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(transport, buildGeminiRequest(req), key);
     },
   };

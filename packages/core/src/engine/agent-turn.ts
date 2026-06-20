@@ -281,7 +281,12 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
     model: params.planEntries[0]?.model ?? '',
     ...(params.system === undefined ? {} : { system: params.system }),
     messages: [...messages],
-    ...(params.tools === undefined ? {} : { tools: [...params.tools] }),
+    // A media-output turn is single-shot/terminal (1.AG/ADR-0046): it runs one `generate()` with no tool
+    // loop, so offering tools is meaningless and would invite an unrunnable `tool_use` stop. Omit them — a
+    // text turn (the only other `buildRequest` caller, via `streamOneTurn`) keeps its tool grant.
+    ...(params.tools === undefined || requestsMediaOutput(params)
+      ? {}
+      : { tools: [...params.tools] }),
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
@@ -669,13 +674,13 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     const turn = await generateOneTurn(chain, messages, params);
     throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
     if (turn.stopReason === 'tool_use') {
-      // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip and the tool
-      // loop is built around stream(), so a tool_use stop cannot be followed. Fail LOUD rather than silently
-      // drop the unfollowable tool call (mirrors the stream path's protocol-anomaly guard for a tool_use stop
-      // with no runnable round). A media node should not grant tools; if a provider returns one anyway, fail.
+      // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip with no tool
+      // loop, and `buildRequest` offers it no tools. A `tool_use` stop is therefore a provider PROTOCOL
+      // ANOMALY — the provider signalled a tool call we never offered and cannot run — so it maps to
+      // `provider_unavailable`, exactly as the stream path's `tool_use`-stop-with-nothing-runnable guard does.
       throw new AgentTurnError(
-        'tool_failed',
-        'a media-output turn cannot run a tool round (ADR-0046)',
+        'provider_unavailable',
+        'a media-output turn signalled a tool_use stop but cannot run a tool round (ADR-0046)',
         false,
       );
     }

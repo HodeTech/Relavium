@@ -422,6 +422,9 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       text: 'here is your image',
       media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle' } }],
     });
+    // The de-inlined source is a canonical media:// sha256 handle (the durable form — never a raw byte carrier).
+    const media = (out as { media: { source: { kind: string; ref?: string } }[] }).media;
+    expect(media[0]?.source.ref).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
     // I3 — the in-flight base64 ("hello") never appears on the delivered (or persisted) run-event stream.
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
 

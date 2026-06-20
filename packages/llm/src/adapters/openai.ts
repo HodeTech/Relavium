@@ -32,7 +32,12 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertMediaCapabilities, isAbortSignal } from './shared.js';
+import {
+  REASONING_ID,
+  assertMediaCapabilities,
+  assertNoStreamingMediaOutput,
+  isAbortSignal,
+} from './shared.js';
 
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
@@ -221,6 +226,8 @@ export function mapContent(
   }
   // Inline audio-out (1.AG/ADR-0046): surface the spoken transcript as a text part PLUS the audio as an
   // in-flight base64 media part; the engine de-inlines the media to a handle at #emitDurable (1.AF).
+  // OpenAI sets `message.content` to null when audio output is requested, so the transcript text and the
+  // `content` text above are mutually exclusive in practice — the transcript is not a duplicate of `content`.
   if (message.audio !== null && message.audio !== undefined && message.audio.data.length > 0) {
     const transcript = message.audio.transcript ?? '';
     if (transcript.length > 0) {
@@ -790,12 +797,14 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
         const refused =
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
+        // Compute the inline-audio output MIME only when audio was actually requested (it is read solely by
+        // mapContent's audio branch); a text turn keeps the default and pays no providerOptions scan.
+        const audioMime = req.outputModalities?.includes('audio')
+          ? outputAudioMime(req)
+          : 'audio/wav';
         return {
           // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
-          content:
-            choice === undefined
-              ? []
-              : mapContent(choice.message, providerId, outputAudioMime(req)),
+          content: choice === undefined ? [] : mapContent(choice.message, providerId, audioMime),
           stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
           usage: completion.usage ? mapUsage(completion.usage) : ZERO_USAGE,
           raw: completion,
@@ -808,6 +817,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
+      assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(createClient(key), req, providerId);
     },
   };

@@ -182,6 +182,15 @@ describe('Gemini adapter', () => {
     }
   });
 
+  it('rejects a supported media output on the STREAM path — media-out is generate()-only (1.AG/ADR-0046)', () => {
+    // Even a model-supported combination (text+image) is rejected on stream(): the streaming media triad is
+    // host-deferred (ADR-0046 §4) and the streaming fold drops media, so streaming media output would be a
+    // silent loss. generate() is the only media-out path.
+    const adapter = createGeminiAdapter({ transport: fakeTransport({ candidates: [] }) });
+    const req: LlmRequest = { ...REQ, outputModalities: ['text', 'image'] };
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
   it('maps finish reasons (STOP+tools → tool_use; SAFETY → content_filter; MALFORMED → error)', () => {
     expect(mapStopReason('STOP', false)).toBe('stop');
     expect(mapStopReason('STOP', true)).toBe('tool_use');

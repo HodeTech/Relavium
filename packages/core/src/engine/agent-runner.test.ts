@@ -158,11 +158,16 @@ function reqCapturingProvider(supports: CapabilityFlags = CAPS): {
     id: 'anthropic',
     supports,
     // A media-output turn routes to generate() (1.AG/ADR-0046); a text turn streams. Capture on both
-    // so the request is observable whichever path the node's output_modalities select.
+    // so the request is observable whichever path the node's output_modalities select. Return a media part
+    // for a media request so the node COMPLETES (not the no-media → validation failure), keeping these
+    // request-assembly tests on the success path.
     generate: (r) => {
       captured = r;
+      const wantsMedia = r.outputModalities?.some((m) => m !== 'text') ?? false;
       return Promise.resolve({
-        content: [{ type: 'text', text: 'ok' }],
+        content: wantsMedia
+          ? [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1n' } }]
+          : [{ type: 'text', text: 'ok' }],
         stopReason: 'stop',
         usage: { inputTokens: 1, outputTokens: 1 },
       });
@@ -493,7 +498,8 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
         resolvedAgent: AGENT,
       }),
     );
-    await exec.execute(ctx);
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed'); // the media provider returns a media part → success path
     expect(req()?.outputModalities).toEqual(['text', 'image']);
   });
 
