@@ -22,7 +22,7 @@ import {
   generativeUnits,
   type AgentRunnerDeps,
 } from './agent-runner.js';
-import { BudgetExceededError } from './budget-governor.js';
+import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 
 const CAPS: CapabilityFlags = {
@@ -928,6 +928,42 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       error: { code: 'cancelled' },
     });
     expect(called).toBe(false);
+  });
+
+  it('a BudgetPauseError on the generative pre-egress gate → paused (the human-gate seam, not internal)', async () => {
+    // The generative path must map a budget PAUSE to the gate seam exactly like the chat path — a future
+    // refactor that dropped the pause arm would leave a budget-paused generative run non-resumably internal-failed.
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider(), {
+        preEgress: () => Promise.reject(new BudgetPauseError(100, 50, 90)),
+      }),
+    );
+    expect((await exec.execute(ctxFor(genVertex()).ctx)).kind).toBe('paused');
+  });
+
+  it('a cancel landing DURING generateMedia (the post-await re-check) → cancelled, no stray cost:updated', async () => {
+    // The pre-egress abort check passes (signal not yet aborted), generateMedia resolves a VALID result while
+    // the run cancels mid-flight, and the post-await re-check must win — returning `cancelled` BEFORE the cost
+    // emit (#onOutcome's #settled guard cannot un-emit a fired cost:updated).
+    const sig = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    const provider: LlmProvider = {
+      ...generativeProvider(),
+      generateMedia: () => {
+        sig.aborted = true; // the run cancels while generateMedia is in-flight (it still resolves a result)
+        return Promise.resolve({ media: image, raw: {} });
+      },
+    };
+    const { ctx, events } = ctxFor(genVertex());
+    const outcome = await createAgentNodeExecutor(genDeps(provider)).execute({
+      ...ctx,
+      signal: sig,
+    });
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+    expect(events.filter((e) => e.type === 'cost:updated')).toHaveLength(0); // the post-await guard suppresses it
   });
 });
 

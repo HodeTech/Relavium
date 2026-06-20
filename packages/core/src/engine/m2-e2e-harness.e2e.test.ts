@@ -429,6 +429,24 @@ workflow:
 `,
 );
 
+/** GENERATIVE_OUT after same-slug CONTENT drift — identical `workflow.id` (so the resume identity guard, which
+ *  compares only the surrogate id, passes) but the `work` media node is GONE (in→out direct). Resuming a
+ *  checkpoint whose pendingMediaJobs references `work` against this drifted plan exercises the orphaned-vertex
+ *  path in #pollMediaJob (vertex === undefined). */
+const GENERATIVE_OUT_DRIFTED = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-generative-out
+  inputs:
+    - { name: topic, type: string }
+  nodes:
+    - { id: in, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: out }
+`,
+);
+
 /** A human gate AND a generative media node parked CONCURRENTLY (1.AG Section D, AG-A-FC-3) — two parallel
  *  branches from `in`, joined at `out`. The resume applies the gate decision while the media job re-attaches. */
 const GATE_AND_MEDIA = parseWorkflow(
@@ -771,6 +789,8 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(firstMediaRef(nodeOutput(events2, 'work'))).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
     // The prior process already emitted run:paused for this park; the resume must NOT re-announce it (L2).
     expect(events2.filter((e) => e.type === 'run:paused')).toHaveLength(0);
+    // The lone realized cost addend fires on the resume→done path too (exactly one — ADR-0045 §5).
+    expect(costsOf(events2).filter((c) => c.nodeId === 'work')).toHaveLength(1);
   });
 
   it('async media job: a run cancel aborts the in-flight poll → run:cancelled (ADR-0045 §4)', async () => {
@@ -953,6 +973,95 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(failed?.type === 'node:failed' && failed.error.retryable).toBe(true);
     expect(job2.pollCalls()).toBe(0); // short-circuited before polling
     expect(job2.generateCalls()).toBe(0); // never re-submitted
+    // The deadline-abandoned job was still provider-billed → exactly one realized cost addend (ADR-0045 §5).
+    expect(costsOf(events2).filter((c) => c.nodeId === 'work')).toHaveLength(1);
+  });
+
+  it('async media job: an orphaned-vertex resume (content drift) still emits the paid job cost addend (H1, ADR-0045 §5)', async () => {
+    const store = new InMemoryRunStore();
+    // Process 1: park the 'work' media job (then "crash" at run:paused).
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+    );
+    const { events: events1 } = await drive(
+      engine1.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    const runId = events1[0]?.runId ?? '';
+
+    // Process 2: resume against the DRIFTED workflow (same id, no 'work' node). #seedFromCheckpoint re-attaches
+    // the parked 'work' job, but the poll finds no vertex → the orphaned-vertex branch must emit the paid job's
+    // lone cost addend before clearing it (not silently drop it, the H1 bug). generateMedia/pollMediaJob are
+    // never (re-)invoked for 'work' — the branch short-circuits before the executor poll.
+    const job2 = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const host2 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine2 = buildEngine(
+      host2,
+      () => job2.provider,
+      () => 'generative',
+    );
+    const events2 = await driveMediaRun(
+      await engine2.resumeFromCheckpoint({
+        runId,
+        workflow: GENERATIVE_OUT_DRIFTED,
+        inputs: INPUTS,
+      }),
+      host2,
+    );
+    expect(events2.at(-1)?.type).toBe('run:completed'); // the drifted plan (in→out) finishes; 'work' is orphaned
+    expect(costsOf(events2).filter((c) => c.nodeId === 'work')).toHaveLength(1); // the paid orphan is still billed
+    expect(job2.generateCalls()).toBe(0); // never re-submitted
+    expect(job2.pollCalls()).toBe(0); // the orphaned-vertex branch short-circuits before the executor poll
+  });
+
+  it('async media job: a crash-in-window resume (no persisted run:paused) emits run:paused on resume (H2, ADR-0036)', async () => {
+    const store = new InMemoryRunStore();
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+    );
+    const { events: events1 } = await drive(
+      engine1.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    const runId = events1[0]?.runId ?? '';
+
+    // Simulate the CRASH-IN-WINDOW: the prior process persisted media_job:submitted but crashed BEFORE
+    // run:paused. Copy every event EXCEPT run:paused into a fresh store, so the checkpoint folds runStatus
+    // 'running' (RUN_STATUS_BY_EVENT has no media_job:submitted entry) — the resumed process MUST emit run:paused.
+    const crashStore = new InMemoryRunStore();
+    for (const e of store.eventsFor(runId)) {
+      if (e.type !== 'run:paused') {
+        await crashStore.persistEvent(e);
+      }
+    }
+    const job2 = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const host2 = createInMemoryHost({ store: crashStore, mediaStore: stubMediaStore() });
+    const engine2 = buildEngine(
+      host2,
+      () => job2.provider,
+      () => 'generative',
+    );
+    const events2 = await driveMediaRun(
+      await engine2.resumeFromCheckpoint({ runId, workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host2,
+    );
+    expect(events2.at(-1)?.type).toBe('run:completed');
+    // The prior process never announced run:paused, so the resumed process must — exactly once, before terminal.
+    const pausedIdx = events2.findIndex((e) => e.type === 'run:paused');
+    expect(events2.filter((e) => e.type === 'run:paused')).toHaveLength(1);
+    expect(pausedIdx).toBeGreaterThanOrEqual(0);
+    expect(pausedIdx).toBeLessThan(events2.length - 1); // before the terminal
+    expect(job2.generateCalls()).toBe(0); // re-attach, not re-submit
   });
 
   it('async media job: an IN-FLIGHT poll is aborted by a run cancel (deterministic) → run:cancelled (ADR-0045 §4)', async () => {

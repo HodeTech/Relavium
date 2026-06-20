@@ -558,11 +558,13 @@ class RunExecution {
       });
       this.#armMediaPoll(job.nodeId);
     }
-    // This run WAS announced `run:paused` by the prior process (it persisted a parked media job). Mark the
-    // pause episode as already-emitted so the first post-resume idle does NOT emit a DUPLICATE `run:paused`
-    // (L2). A gate resume independently resets this in `resume()` to re-announce any remaining gates, and
-    // `#clearMediaJob` resets it when a job settles — so a genuinely later pause still emits.
-    if (cp.pendingMediaJobs.length > 0) {
+    // Suppress a DUPLICATE `run:paused` on resume ONLY when the prior process actually announced one — i.e. the
+    // checkpoint's runStatus is already `'paused'` (L2). In the CRASH-IN-WINDOW case (`media_job:submitted`
+    // persisted but `run:paused` not — RUN_STATUS_BY_EVENT has no entry for `media_job:submitted`, so runStatus
+    // stays `'running'`) the prior process never emitted `run:paused`, so the resumed process MUST emit it
+    // (gap-free stream, ADR-0036) — leaving `#pauseEpisode` false here. A gate resume independently resets this
+    // in `resume()`; `#clearMediaJob` resets it when a job settles — so a genuinely later pause still emits.
+    if (cp.pendingMediaJobs.length > 0 && cp.runStatus === 'paused') {
       this.#pauseEpisode = true;
     }
     for (const gateId of cp.resolvedGateIds) {
@@ -1434,8 +1436,11 @@ class RunExecution {
     if (vertex === undefined) {
       // The parked node no longer exists in the plan — only reachable via same-slug workflow CONTENT drift on
       // resume (the identity guard checks the surrogate workflow id, not content). A silent return would strand
-      // the run paused forever on a job that can never re-attach. Clear the orphaned job and drive the loop so
-      // the now-jobless idle settles the run (a stall → run:failed) instead of hanging.
+      // the run paused forever on a job that can never re-attach. The provider billed the submitted job
+      // regardless of the drift, so emit its lone realized cost addend BEFORE clearing (ADR-0045 §5: exactly
+      // one addend on EVERY terminal path — there is no vertex to settle node:failed against, but the cost is
+      // still owed). Then clear + drive the loop so the now-jobless idle settles the run instead of hanging.
+      this.#emitMediaJobCost(nodeId, job);
       this.#clearMediaJob(nodeId);
       this.#schedule();
       return;
