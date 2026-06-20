@@ -185,6 +185,7 @@ function imageOutputFormat(mimeType: string | undefined): 'png' | 'jpeg' | 'webp
     case 'image/png':
       return 'png';
     case 'image/jpeg':
+    case 'image/jpg': // the common non-canonical alias — map it rather than silently falling back to PNG
       return 'jpeg';
     case 'image/webp':
       return 'webp';

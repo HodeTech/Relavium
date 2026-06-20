@@ -36,6 +36,18 @@ describe('validateWorkflowWithCatalog (1.AF/D15 — output_modalities load-check
     expect(() => validateWorkflowWithCatalog(wf, catalog)).not.toThrow();
   });
 
+  it('SKIPS the load-check for a generative-surface model (output is the generateMedia modality, not outputCombinations) — 1.AG Section C', () => {
+    // A generative model's outputCombinations is empty (chat-surface only); without the surface skip this
+    // would WRONGLY reject a valid generative node (output_modalities: [image]) once D15 is host-wired.
+    const wf = agentWorkflow(", model: gpt-image-1, output_modalities: ['image']");
+    const generativeCaps: CapabilityFlags = {
+      ...caps([]),
+      media: { ...caps([]).media, surface: 'generative' },
+    };
+    const catalog: WorkflowModelCatalog = () => generativeCaps;
+    expect(() => validateWorkflowWithCatalog(wf, catalog)).not.toThrow();
+  });
+
   it('throws a field-named WorkflowValidationError when the model cannot output the combination', () => {
     const wf = agentWorkflow(", model: m1, output_modalities: ['text', 'image']");
     const catalog: WorkflowModelCatalog = () => caps([['text']]); // text-only model

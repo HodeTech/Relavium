@@ -162,7 +162,9 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   billing rates is a mis-bill risk and the existing rows are all "verified". Add the generative rows (gpt-image-1,
   Imagen, OpenAI-TTS, Sora, Veo) with **verified** `mediaOutputRates` (image per-image; audio/video per-second) when
   the catalog/pricing-page values are confirmed; until then a generative call is correctly gated/folded at 0 cost
-  (no mis-bill). *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
+  (no mis-bill). **Test follow-up:** the realized-cost vertical (`realizedMediaCost` → a non-zero `cost:updated`)
+  cannot be exercised end-to-end until a generative model carries a rate; the cost MATH is unit-tested via
+  `mediaCost` against a constructed rate, and a non-zero dispatch assertion lands with these rows. *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
 - [ ] **`generateMedia` for OpenAI-TTS audio + Gemini-Imagen — adapter wires deferred (1.AG Section C → 1.AH).**
   Section C wires `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64), proving the
   full engine→adapter→de-inline vertical. The remaining generators are bounded follow-ups: **OpenAI-TTS audio**

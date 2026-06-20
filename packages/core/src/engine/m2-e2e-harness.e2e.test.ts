@@ -163,6 +163,18 @@ function generativeMediaProvider(id: ProviderId = 'openai'): LlmProvider {
   };
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+/** Extract the first media handle ref from a `{ media: [{ source: { ref } }] }` node output via a runtime
+ *  guard (no unsafe cast) — the de-inlined durable form both media-out e2e tests assert. */
+function firstMediaRef(out: unknown): string | undefined {
+  if (!isRecord(out) || !Array.isArray(out['media'])) return undefined;
+  const first: unknown = out['media'][0];
+  if (!isRecord(first) || !isRecord(first['source'])) return undefined;
+  const ref = first['source']['ref'];
+  return typeof ref === 'string' ? ref : undefined;
+}
+
 /** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the e2e. */
 function stubMediaStore(): MediaStore {
   const puts: { handle: string; bytes: Uint8Array }[] = [];
@@ -464,8 +476,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle' } }],
     });
     // The de-inlined source is a canonical media:// sha256 handle (the durable form — never a raw byte carrier).
-    const media = (out as { media: { source: { kind: string; ref?: string } }[] }).media;
-    expect(media[0]?.source.ref).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+    expect(firstMediaRef(out)).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
     // I3 — the in-flight base64 ("hello") never appears on the delivered (or persisted) run-event stream.
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
 
@@ -494,8 +505,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       text: '', // a generative node is PURE media — no accompanying chat text
       media: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle' } }],
     });
-    const media = (out as { media: { source: { kind: string; ref?: string } }[] }).media;
-    expect(media[0]?.source.ref).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+    expect(firstMediaRef(out)).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
     // I3 — no base64 on the delivered (or persisted) stream; and MediaGenResult.raw (the provider-internal
     // diagnostic) is structurally excluded from the node output (strip-on-sink, ADR-0045 §7) — the stub's
     // raw:{ internal:true } must never appear. Exactly one realized cost:updated for the node.

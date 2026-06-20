@@ -346,13 +346,13 @@ describe('OpenAI-compatible adapter', () => {
     ).rejects.toThrowError(LlmProviderError);
   });
 
-  it('generateMedia rejects count > 1 (single-artifact SYNC seam) before any egress', async () => {
+  it('generateMedia rejects count > 1 (single-artifact SYNC seam) with a typed bad_request before any egress', async () => {
     const adapter = createOpenAiAdapter({
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
     await expect(
       genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image', count: 3 }, 'k'),
-    ).rejects.toThrowError(LlmProviderError);
+    ).rejects.toMatchObject({ llmError: { kind: 'bad_request', retryable: false } });
   });
 
   it('generateMedia honors a requested output format (req.mimeType → output_format + result MIME)', async () => {
@@ -679,6 +679,15 @@ describe('openaiErrorToLlmError — classification', () => {
     expect(
       openaiErrorToLlmError(new APIError(undefined, undefined, 'mystery', undefined), 'openai'),
     ).toMatchObject({ kind: 'unknown', retryable: false });
+  });
+
+  it('classifies a content-policy / moderation code as content_filter regardless of HTTP status (1.AG §6)', () => {
+    const policy = new APIError(400, undefined, 'blocked', undefined);
+    Object.assign(policy, { code: 'content_policy_violation' });
+    expect(openaiErrorToLlmError(policy, 'openai')).toMatchObject({ kind: 'content_filter' });
+    const moderation = new APIError(400, undefined, 'blocked', undefined);
+    Object.assign(moderation, { code: 'moderation_blocked' });
+    expect(openaiErrorToLlmError(moderation, 'openai')).toMatchObject({ kind: 'content_filter' });
   });
 
   it('falls back to unknown for a non-Error throwable', () => {

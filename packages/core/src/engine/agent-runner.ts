@@ -389,15 +389,17 @@ async function executeGenerativeMedia(
 
   // Pre-egress budget gate (1.AC): the authored media volume, NEVER added to cumulative (gate only). A
   // BudgetExceededError → budget_exceeded; a BudgetPauseError → paused (the human-gate seam) — this mirrors
-  // the chat path's awaitPreEgress exactly so a generative call is gated identically.
+  // the chat path's awaitPreEgress exactly so a generative call is gated identically. `maxTokens: 0` pins the
+  // TOKEN estimate to zero — a generative call emits no tokens, so once generative pricing rows land the gate
+  // must not add a spurious token addend on top of the media estimate. `outputModalities` is the validated
+  // single modality (singleBilledModality), so the budget governor's media addend resolves the same rate.
   const preEgress = ctx.preEgress ?? deps.preEgress;
   if (preEgress !== undefined) {
     try {
       await preEgress({
         model: primary.model,
-        ...(node.output_modalities === undefined
-          ? {}
-          : { outputModalities: node.output_modalities }),
+        maxTokens: 0,
+        outputModalities: [modality.modality],
         mediaUnitsEstimate: [{ modality: modality.modality, units }],
       });
     } catch (err) {
@@ -467,6 +469,10 @@ async function executeGenerativeMedia(
     );
   }
   if (result.media === undefined) {
+    // Defense-in-depth: the seam-schema refine (MediaGenResultSchema) already requires exactly one of
+    // media|jobId, but the adapter result is not re-parsed at this boundary, so the engine guards the
+    // refine bypass explicitly rather than trusting a hand-built result (consistent with the produced-
+    // modality check below).
     return failed(
       'internal',
       `agent node '${node.id}': generateMedia resolved neither media nor jobId`,

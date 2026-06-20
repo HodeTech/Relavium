@@ -33,6 +33,14 @@ export function validateWorkflowWithCatalog(
     if (caps === undefined) {
       continue; // unresolvable model — defer to the runtime FallbackChain pre-skip (never a silent drop)
     }
+    if (caps.media.surface === 'generative') {
+      // A `media_surface: 'generative'` model (gpt-image-1, Imagen, TTS) routes to `generateMedia` (1.AG
+      // Section C, ADR-0045 §1); its producible output is defined by the generateMedia modality, NOT by the
+      // inline `outputCombinations` (which is empty / chat-surface only). Skip the inline load-check, else a
+      // valid generative node (`output_modalities: [image]`) would be wrongly rejected. The generative
+      // node's own one-media-modality rule is enforced at dispatch (singleBilledModality).
+      continue;
+    }
     if (!isOutputCombinationSupported(caps.media.outputCombinations, node.output_modalities)) {
       issues.push({
         field: `node \`${node.id}\`.output_modalities`,

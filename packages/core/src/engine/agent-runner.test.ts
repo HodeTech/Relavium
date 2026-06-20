@@ -600,7 +600,12 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     }
     const cost = events.filter((e) => e.type === 'cost:updated');
     expect(cost).toHaveLength(1); // exactly one realized addend (ADR-0045 §5)
-    expect(cost[0]).toMatchObject({ inputTokens: 0, outputTokens: 0 });
+    expect(cost[0]).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      nodeId: 'n1',
+      model: 'claude-opus-4-8',
+    });
   });
 
   it('a chat model (default surface, no resolveMediaSurface) keeps the normal turn — never generateMedia', async () => {
@@ -636,7 +641,7 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'internal' } });
   });
 
-  it('fails internal on a jobId (async LRO is Section D), and on a neither-media-nor-jobId result', async () => {
+  it('fails internal on a jobId (async LRO is Section D)', async () => {
     const jobExec = createAgentNodeExecutor(
       genDeps(generativeProvider({ result: { jobId: 'job-1', raw: {} } })),
     );
@@ -655,8 +660,9 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
   });
 
-  it('gates pre-egress: a BudgetExceededError on the generative path → budget_exceeded (no generateMedia egress)', async () => {
+  it('gates pre-egress with maxTokens:0 + the media estimate → budget_exceeded (no generateMedia egress)', async () => {
     let called = false;
+    let info: { maxTokens?: number; mediaUnitsEstimate?: unknown } | undefined;
     const provider = generativeProvider();
     const wrapped: LlmProvider = {
       ...provider,
@@ -667,12 +673,18 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     };
     const exec = createAgentNodeExecutor(
       genDeps(wrapped, {
-        preEgress: () => Promise.reject(new BudgetExceededError(100, 50, 120)),
+        preEgress: (i) => {
+          info = i;
+          return Promise.reject(new BudgetExceededError(100, 50, 120));
+        },
       }),
     );
-    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    const outcome = await exec.execute(ctxFor(genVertex({ count: 2 })).ctx);
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'budget_exceeded' } });
     expect(called).toBe(false); // gate fails before any provider egress
+    // The gate pins the TOKEN estimate to 0 (a generative call emits none) + carries the authored media volume.
+    expect(info?.maxTokens).toBe(0);
+    expect(info?.mediaUnitsEstimate).toEqual([{ modality: 'image', units: 2 }]);
   });
 
   it('maps a generateMedia provider error through the chat taxonomy (content_filter stays content_filter)', async () => {
@@ -738,6 +750,38 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(captured?.durationSeconds).toBeUndefined();
     expect(captured?.modality).toBe('image');
     expect(captured?.prompt).toBe('Summarize: hi'); // the resolved prompt_template
+  });
+
+  it('forwards duration_seconds → durationSeconds for an audio generative node', async () => {
+    let captured: MediaGenRequest | undefined;
+    const audio: Extract<ContentPart, { type: 'media' }> = {
+      type: 'media',
+      mimeType: 'audio/wav',
+      source: { kind: 'base64', data: 'YXVkaW8=' },
+    };
+    const base = capsWithOutput([['audio']]);
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('unused');
+      },
+      generateMedia: (req) => {
+        captured = req;
+        return Promise.resolve({ media: audio, raw: {} });
+      },
+    };
+    const exec = createAgentNodeExecutor(genDeps(provider));
+    const outcome = await exec.execute(
+      ctxFor(genVertex({ output_modalities: ['audio'], duration_seconds: 8 })).ctx,
+    );
+    expect(outcome.kind).toBe('completed');
+    expect(captured?.durationSeconds).toBe(8);
+    expect(captured?.modality).toBe('audio');
+    expect(captured?.count).toBeUndefined();
   });
 
   it('fails internal on a neither-media-nor-jobId result (the unreachable-in-practice guard)', async () => {
