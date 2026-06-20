@@ -446,6 +446,35 @@ workflow:
 `,
 );
 
+// GATE_AND_MEDIA plus a whole-run `timeout_ms` — used ONLY by the abandon() guard test, which rejects a resume
+// WITHOUT ever firing timers (so the inert 1h timeout never trips the manual controller, unlike the timer-firing
+// driveMediaRun tests). It exists so the rejected-resume armedCount()===0 assertion also covers abandon()'s
+// run-timeout disarm leg (#runTimeoutDisarm), not just the media-poll leg.
+const GATE_AND_MEDIA_TIMED = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-gate-and-media-timed
+  timeout_ms: 3600000
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: painter
+      model: gpt-image-1
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: in, type: input }
+    - { id: gen, type: agent, agent_ref: painter, prompt_template: 'Draw: {{inputs.topic}}', output_modalities: [image], count: 1 }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: gen }
+    - { from: in, to: g }
+    - { from: gen, to: out }
+    - { from: g, to: out }
+`,
+);
+
 const INPUTS = { topic: 'the report' } as const;
 
 // --- The reusable driver ---------------------------------------------------------------------------
@@ -689,6 +718,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events.at(-1)?.type).toBe('run:failed');
     const failedEvent = events.find((e) => e.type === 'node:failed');
     expect(failedEvent?.type === 'node:failed' && failedEvent.error.code).toBe('content_filter');
+    // The FAILED path still emits exactly one realized cost addend (the provider billed the paid job even
+    // though it was content-filtered — ADR-0045 §5); pin it so a dropped #emitMediaJobCost on the failed arm
+    // is a loud regression, not silent (L1).
+    expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1);
   });
 
   it('async media job: a cross-process resume RE-ATTACHES (re-polls) the persisted jobId — never re-submits (MJ-1)', async () => {
@@ -777,6 +810,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // happy-path run:completed) — a parked job's run-scoped refs (incl. any done→cancel-race produced byte)
     // are GC-eligible the instant the run settles. Exactly one sweep, for this run.
     expect(reclaims).toEqual([runId]);
+    // The #settle sweep also emits the paid job's lone realized cost addend before clearing it (the provider
+    // billed the cancelled-but-still-generating job — ADR-0045 §5); pin exactly one so a dropped cancel-path
+    // #emitMediaJobCost is a loud regression (L1).
+    expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1);
   });
 
   it('AG-A-FC-3: a run parked on BOTH a human gate AND a media job resumes both — gate decision + media re-attach', async () => {
@@ -841,7 +878,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       () => 'generative',
     );
     const { events: events1 } = await drive(
-      engine1.start({ workflow: GATE_AND_MEDIA, inputs: INPUTS }),
+      engine1.start({ workflow: GATE_AND_MEDIA_TIMED, inputs: INPUTS }),
       host1,
       { breakOnPause: true },
     );
@@ -857,8 +894,15 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // must reject the misuse EAGERLY rather than re-attach the media job and silently re-park on the gate after
     // it settles (L3). The half-initialized execution is dropped from #runs (a retry can re-resume correctly).
     await expect(
-      engine2.resumeFromCheckpoint({ runId, workflow: GATE_AND_MEDIA, inputs: INPUTS }),
+      engine2.resumeFromCheckpoint({ runId, workflow: GATE_AND_MEDIA_TIMED, inputs: INPUTS }),
     ).rejects.toMatchObject({ code: 'pending_gate_requires_decision' });
+    // The rejected resume must leave NO armed timer behind: before the guard threw, the constructor's
+    // #seedFromCheckpoint armed a media-poll timer for the parked job AND beginResumeMediaJobs armed the
+    // whole-run timeout (GATE_AND_MEDIA_TIMED declares timeout_ms) — the catch must abandon (disarm) BOTH legs, else
+    // an orphan timer would later poll the provider for a run the caller saw rejected (and a retry could
+    // double-attach the same jobId). armedCount()===0 pins both the #mediaJobTimers and #runTimeoutDisarm
+    // disarm legs of abandon() (H2).
+    expect(host2.armedCount()).toBe(0);
   });
 
   it('async media job: a resume past the deadline short-circuits to a retryable timeout, never re-polls (ADR-0045 §3)', async () => {
@@ -938,6 +982,36 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const events = await driveMediaRun(handle, host, () => handle.cancel());
     expect(events.at(-1)?.type).toBe('run:cancelled');
     expect(observedAbort).toBe(true); // the in-flight poll observed the abort
+  });
+
+  it('async media job: an UNRECOGNIZED poll state fails the node loud (no silent park-forever hang) — the default arm (N2)', async () => {
+    const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore: stubMediaStore() });
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('generate must NOT run');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run');
+      },
+      generateMedia: () => Promise.resolve({ jobId: 'job-1', raw: {} }),
+      // An out-of-union job state (a future seam value / a non-conforming adapter) — the cast forces the
+      // closed-switch's default arm, which MUST fail the node terminally rather than leave it parked with no
+      // re-arm and no terminal (a silent hang).
+      pollMediaJob: () =>
+        Promise.resolve({ state: 'frozen' } as unknown as MediaJobStatus),
+    };
+    const engine = buildEngine(
+      host,
+      () => provider,
+      () => 'generative',
+    );
+    const events = await driveMediaRun(engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }), host);
+    expect(events.at(-1)?.type).toBe('run:failed'); // settled, not hung
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.code).toBe('internal');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain('unrecognized job state');
   });
 
   it('async media job: survives repeated pending polls (backoff re-arm) before done', async () => {

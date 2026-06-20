@@ -289,6 +289,10 @@ async function executeAgent(
   // 'generative' dispatches through the separate-endpoint `generateMedia` (one provider, no chain failover —
   // §6). A 'chat' model (the default, and the value when the host wires no surface lookup) takes the normal
   // turn below. The surface is the host-injected catalog projection (`deps.resolveMediaSurface`).
+  // NOTE: `buildPlanEntries` above resolved the FULL fallback chain before this fork, so a `'generative'` node
+  // whose (unused, per §6) `fallback_chain` names an unwired provider fails fast at the plan-build above rather
+  // than here — intentional: a declared-but-unresolvable fallback is a workflow misconfig regardless of which
+  // surface the primary uses. The generative dispatch then consumes only `primary` (plan.entries[0]).
   const primary = plan.entries[0];
   if (
     primary !== undefined &&
@@ -512,6 +516,14 @@ async function executeGenerativeMedia(
       return failed('validation', err.message, false);
     }
     return turnOutcomeForError(err);
+  }
+
+  // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
+  // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND
+  // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
+  // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
+  if (ctx.signal.aborted) {
+    return failed('cancelled', `agent node '${node.id}': run cancelled during media generation`, false);
   }
 
   if (result.jobId !== undefined) {

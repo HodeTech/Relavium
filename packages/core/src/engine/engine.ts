@@ -511,6 +511,12 @@ class RunExecution {
     // short-circuited to a timeout by the first `#pollMediaJob` (which checks `now > deadlineAt`).
     for (const job of cp.pendingMediaJobs) {
       const vertex = plan.vertices.get(job.nodeId);
+      // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
+      // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
+      // matching the submit-side compute exactly) is the real path. The else is a defensive last resort for a
+      // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
+      // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
+      // it never executes on a well-formed resume.
       const units =
         vertex !== undefined && vertex.config.kind === 'agent'
           ? generativeUnits(job.modality, vertex.config.node)
@@ -622,6 +628,32 @@ class RunExecution {
       return;
     }
     this.#schedule();
+  }
+
+  /**
+   * Tear down a half-initialized execution that is being REJECTED before it ever ran for the caller — an
+   * invalid `resumeFromCheckpoint` form whose validation guard threw AFTER the constructor's
+   * `#seedFromCheckpoint` armed the parked jobs' media-poll timers (and after `beginResume*` armed the
+   * run-timeout). Disarm every armed timer + abort so NO orphaned poll later hits the provider for a run the
+   * caller saw rejected (which would also let a natural retry double-attach the same opaque jobId). Emits
+   * NOTHING and runs no terminal — it is an abandon, not a settle; the façade drops the execution from `#runs`.
+   */
+  abandon(): void {
+    if (this.#settled) {
+      return; // already torn down (a real settle ran) — idempotent
+    }
+    this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
+    this.#abort.abort();
+    for (const disarm of this.#gateTimers.values()) {
+      disarm();
+    }
+    this.#gateTimers.clear();
+    for (const disarm of this.#mediaJobTimers.values()) {
+      disarm();
+    }
+    this.#mediaJobTimers.clear();
+    this.#pendingMediaJobs.clear();
+    this.#disarmRunTimeout();
   }
 
   requestCancel(): void {
@@ -2249,8 +2281,13 @@ export class WorkflowEngine {
         await execution.beginResumeMediaJobs();
       }
     } catch (error) {
-      // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused throw must not
-      // strand the half-initialized execution in #runs (a retry would then wrongly hit run_already_active).
+      // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused /
+      // pending_gate_requires_decision throw must not strand the half-initialized execution in #runs (a retry
+      // would then wrongly hit run_already_active) NOR leave its armed timers firing — the constructor's
+      // #seedFromCheckpoint already armed a media-poll timer per parked job and beginResume* armed the
+      // run-timeout. Abandon (disarm + abort) BEFORE dropping it, else an orphan poll would later hit the
+      // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
+      execution.abandon();
       this.#runs.delete(input.runId);
       throw error;
     }

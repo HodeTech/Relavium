@@ -185,7 +185,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   resume disambiguation (AG-A-FC-3), cancel-aborts-the-in-flight-poll + terminal sweep) — proven end-to-end with a
   STUB async provider + the manual-timer harness. **No Phase-1 adapter implements `pollMediaJob` or returns a
   `jobId`** (the only `generateMedia` is OpenAI-image SYNC); the real Sora/Veo `generateMedia`(→jobId)/`pollMediaJob`
-  adapter implementations are the deferred wiring, alongside the per-model surface lookup + verified rates (1.AH). *(packages/llm/src/adapters/*; 1.AH)*
+  adapter implementations are the deferred wiring, alongside the per-model surface lookup + verified rates (1.AH).
+  **Conformance obligation for that 1.AH PR (review N4):** add a negative assertion that the minted opaque `jobId`
+  is NOT the recorded vendor operation name (ADR-0045 §7) and that a recorded vendor poll body's `raw` diagnostics
+  never cross the seam (strip-raw on `MediaJobStatus`) — the seam-contract stub (generative-seam.conformance.test.ts)
+  proves the SHAPE today, but only a real adapter replaying a vendor body can prove the opacity/strip invariant. *(packages/llm/src/adapters/*; 1.AH)*
 - [ ] **Node-retry of a PARKED media job — deferred (1.AG Section D, ADR-0045 §3 "MAY re-dispatch").**
   The node-retry budget (1.S) wraps the executor `#dispatch`; an async media job parks AFTER dispatch returns, and
   the engine's out-of-band poll loop settles a deadline/poll failure as `node:failed` (retryable for a timeout) directly
@@ -193,6 +197,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   submit) on a retryable timeout. ADR-0045 §3 makes this a **MAY** ("the loop itself never silently re-submits"), so the
   current behavior is conformant; re-dispatching a parked-then-failed media node through the node-retry budget is an
   additive refinement. *(packages/core/src/engine/engine.ts #pollMediaJob; post-1.AG)*
+- [ ] **Durable realized cost for a FAILED/CANCELLED paid media job (review M1, Phase 2).** `#emitMediaJobCost`
+  rides the transient `cost:updated` stream; `node:failed`/`run:failed`/`run:cancelled` carry no
+  `cumulativeCostMicrocents` (only `node:completed` snapshots it), so a durable-log reader reconstructing cost for a
+  billed-but-failed/cancelled media job sees the addend only on the LIVE stream, not the persisted log. This is the
+  PRE-EXISTING behavior of `cost:updated` (always live-only) — NOT 1.AG-introduced, and nothing in 1.AG depends on
+  durable fail-cost reconstruction (ADR-0045 §5's guarantee is about the live cost report). Snapshotting the
+  cumulative onto `node:failed`/`run:cancelled` (or a cost field on the terminal) is an additive Phase-2 durability
+  improvement. *(packages/core/src/engine/engine.ts #emitMediaJobCost; shared/run-event.ts; Phase 2)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a
