@@ -431,6 +431,10 @@ describe('encodeMediaJobId / decodeMediaJobId (opaque async-media-job bijection,
     expect(decodeMediaJobId(encodeMediaJobId(opName))).toBe(opName);
   });
 
+  it('rejects an empty vendor id at mint time (bijection contract — a prefix-only token would not decode)', () => {
+    expect(() => encodeMediaJobId('')).toThrow(/non-empty/);
+  });
+
   it('returns undefined for foreign/malformed tokens (never throws)', () => {
     expect(
       decodeMediaJobId('rlv-mediajob:2:' + Buffer.from('x').toString('base64url')),

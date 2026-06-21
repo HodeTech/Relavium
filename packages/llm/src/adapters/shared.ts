@@ -82,8 +82,13 @@ export const REASONING_ID = 'reasoning-0';
  */
 const MEDIA_JOB_PREFIX = 'rlv-mediajob:1:';
 
-/** Mint the opaque media-job id from a vendor job/operation id (base64url-encoded). */
+/** Mint the opaque media-job id from a vendor job/operation id (base64url-encoded). An empty `vendorId`
+ *  is rejected at mint time — it would produce a prefix-only token that {@link decodeMediaJobId} rejects,
+ *  breaking the bijection (the adapter call sites already guard, so this is a fail-fast contract assertion). */
 export function encodeMediaJobId(vendorId: string): string {
+  if (vendorId.length === 0) {
+    throw new Error('encodeMediaJobId: vendorId must be non-empty');
+  }
   return MEDIA_JOB_PREFIX + Buffer.from(vendorId, 'utf8').toString('base64url');
 }
 
