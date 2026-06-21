@@ -95,6 +95,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
+- [ ] **⚠ OpenAI Sora 2 + Videos API DEPRECATED — provider shutdown 2026-09-24 (affects 1.AH A3).** OpenAI
+  announced the Sora 2 video models (`sora-2`, `sora-2-pro`, `sora-2-2025-10-06`, `sora-2-2025-12-08`,
+  `sora-2-pro-2025-10-06`) + the `videos.*` API shut down **2026-09-24**. The 1.AH A3 OpenAI/Sora async-video
+  adapter targets exactly these (`videos.create`/`retrieve`/`downloadContent` + `pollMediaJobSora`). **Impact is
+  narrow:** only the Sora adapter arm + its tests; the engine async-job LRO ([ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)),
+  the shared `encode/decodeMediaJobId` codec, the generative-seam conformance, and the **Gemini/Veo (A4)** adapter
+  are provider-agnostic and **unaffected**. No live exposure today — A3 is not runtime-reachable until the
+  Phase-2 host `media_surface` wiring. **Action (maintainer call, before 2026-09-24):** when OpenAI announces a
+  replacement video model/API, retarget the A3 arm; otherwise **disable/remove** the Sora arm (the `generateMedia`
+  `video` dispatch + `pollMediaJobSora` + their tests) leaving the seam + Veo intact. Low priority until a
+  replacement lands or the date nears. *(packages/llm/src/adapters/openai.ts; 1.AH/Phase-2)*
 - [x] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
   durable form (`DurableMediaPart`) carries an optional **`byteLength?`** + audio/video **`durationMs?`**,
   host-populated at the `deInlineMedia` boundary; **no `checksum`** (the `media://sha256-<hex>` handle IS
