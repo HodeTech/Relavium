@@ -8,9 +8,10 @@ import type { CapabilityFlags, LlmProvider, MediaGenRequest, MediaJobStatus } fr
  * The GENERATIVE-surface seam-contract conformance suite (1.AG Section E, A5 / [ADR-0045]). The chat
  * conformance suite replays recorded vendor responses through each real adapter; the ASYNC generative arm
  * (a `generateMedia` that returns an opaque `jobId`, then `pollMediaJob` driving pending→done/failed) is
- * wired for OpenAI/Sora at 1.AH A3 (exercised against the real adapter in `openai.test.ts`); the Gemini/Veo
- * async adapter remains deferred (1.AH A4). This suite asserts the SEAM CONTRACT itself against a CONFORMING
- * STUB provider — the exact shape every async generative adapter must satisfy, independent of any one vendor:
+ * wired for OpenAI/Sora (1.AH A3, exercised against the real adapter in `openai.test.ts`) and Gemini/Veo
+ * (1.AH A4, exercised in `gemini.test.ts` via `fakeVideoTransport`). This suite asserts the SEAM CONTRACT
+ * itself against a CONFORMING STUB provider — the exact shape every async generative adapter must satisfy,
+ * independent of any one vendor:
  * the `MediaGenResult` exactly-one-of refine, an opaque non-empty `jobId`, the discriminated
  * `MediaJobStatus` states, and a content-policy refusal classified as the `content_filter` LlmError kind.
  * (The SYNC arm is covered against the real OpenAI adapter by the per-provider suite's `mediaGenerate`

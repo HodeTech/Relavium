@@ -98,12 +98,14 @@ function fakeVideoTransport(opts: {
   poll?: GeminiVideoPoll | readonly GeminiVideoPoll[];
 }): GeminiTransport & {
   lastVideoRequest?: GeminiVideoRequest;
+  lastOperationName?: string;
   lastPollSignal?: AbortSignalLike | undefined;
 } {
   const polls = opts.poll === undefined ? [] : 'done' in opts.poll ? [opts.poll] : opts.poll;
   let call = 0;
   const holder: GeminiTransport & {
     lastVideoRequest?: GeminiVideoRequest;
+    lastOperationName?: string;
     lastPollSignal?: AbortSignalLike | undefined;
   } = {
     ...unusedGenerative,
@@ -113,7 +115,8 @@ function fakeVideoTransport(opts: {
       holder.lastVideoRequest = request;
       return Promise.resolve(opts.operation ?? { name: 'operations/veo-1' });
     },
-    pollVideo: (_operationName, _key, signal) => {
+    pollVideo: (operationName, _key, signal) => {
+      holder.lastOperationName = operationName; // the decoded op-name the adapter threads (re-attach, §3)
       holder.lastPollSignal = signal;
       const status = polls[Math.min(call, polls.length - 1)];
       call += 1;
@@ -1054,6 +1057,16 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
     expect(transport.lastVideoRequest?.config['abortSignal']).toBe(controller.signal);
   });
 
+  it('generateMedia (video) omits durationSeconds from the config when not requested', async () => {
+    const transport = fakeVideoTransport({ operation: { name: 'operations/veo-42' } });
+    await genMedia(
+      createGeminiAdapter({ transport }),
+      { ...VIDEO_REQ, durationSeconds: undefined },
+      'k',
+    );
+    expect(transport.lastVideoRequest?.config['durationSeconds']).toBeUndefined();
+  });
+
   it('generateMedia (video) maps a missing operation name to a typed bad_request', async () => {
     const transport = fakeVideoTransport({ operation: { name: '' } });
     await expect(
@@ -1063,16 +1076,20 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
     });
   });
 
-  it('pollMediaJob maps an in-progress operation (done:false) to pending', async () => {
+  it('pollMediaJob maps an in-progress operation (done:false) to pending + threads the DECODED op-name', async () => {
     const transport = fakeVideoTransport({ poll: { done: false } });
     expect(
-      await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k'),
-    ).toEqual({
-      state: 'pending',
-    });
+      await pollMedia(
+        createGeminiAdapter({ transport }),
+        encodeMediaJobId('operations/veo-42'),
+        'k',
+      ),
+    ).toEqual({ state: 'pending' });
+    // The opaque jobId is decoded back to the vendor op-name and threaded to the transport (re-attach, §3).
+    expect(transport.lastOperationName).toBe('operations/veo-42');
   });
 
-  it('pollMediaJob walks a pending → done sequence across successive polls', async () => {
+  it('pollMediaJob walks a pending → done sequence across successive polls (clamps on the last status)', async () => {
     const transport = fakeVideoTransport({
       poll: [{ done: false }, { done: true, video: { videoBytes: B64, mimeType: 'video/mp4' } }],
     });
@@ -1080,6 +1097,7 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
     const jobId = encodeMediaJobId('op');
     expect(await pollMedia(adapter, jobId, 'k')).toEqual({ state: 'pending' });
     expect(await pollMedia(adapter, jobId, 'k')).toMatchObject({ state: 'done' });
+    expect(await pollMedia(adapter, jobId, 'k')).toMatchObject({ state: 'done' }); // clamps on the last
   });
 
   it('pollMediaJob delivers inline videoBytes as a base64 video/mp4 media part (done)', async () => {
@@ -1092,6 +1110,14 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
       state: 'done',
       media: { type: 'media', mimeType: 'video/mp4', source: { kind: 'base64', data: B64 } },
     });
+  });
+
+  it('pollMediaJob strips MIME parameters from the vendor video MIME (video/mp4;codecs=h264 → video/mp4)', async () => {
+    const transport = fakeVideoTransport({
+      poll: { done: true, video: { videoBytes: B64, mimeType: 'video/mp4; codecs=h264' } },
+    });
+    const status = await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k');
+    expect(status).toMatchObject({ media: { mimeType: 'video/mp4' } });
   });
 
   it('pollMediaJob delivers a uri-only result as a re-hostable url media source (engine de-inlines it)', async () => {
