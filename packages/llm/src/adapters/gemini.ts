@@ -182,7 +182,7 @@ export interface GeminiVideoPoll {
     uri?: string | undefined;
     mimeType?: string | undefined;
   };
-  raiFilteredCount?: number;
+  raiFilteredCount?: number | undefined;
 }
 
 /**

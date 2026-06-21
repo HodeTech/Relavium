@@ -1024,7 +1024,7 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
     expect(transport.lastVideoRequest?.prompt).toBe(VIDEO_REQ.prompt);
   });
 
-  it('generateMedia (video) strips a caller-supplied httpOptions from the Veo config (SSRF guard)', async () => {
+  it('generateMedia (video) strips httpOptions + pins numberOfVideos to 1 (SSRF + single-artifact guards)', async () => {
     const transport = fakeVideoTransport({ operation: { name: 'operations/veo-42' } });
     await genMedia(
       createGeminiAdapter({ transport }),
@@ -1032,13 +1032,26 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
         ...VIDEO_REQ,
         providerOptions: {
           httpOptions: { baseUrl: 'https://attacker.example' },
+          numberOfVideos: 5, // must be force-pinned back to 1 (the A2 single-artifact lesson)
           aspectRatio: '16:9',
         },
       },
       'k',
     );
     expect(transport.lastVideoRequest?.config['httpOptions']).toBeUndefined();
+    expect(transport.lastVideoRequest?.config['numberOfVideos']).toBe(1); // pin wins over providerOptions
     expect(transport.lastVideoRequest?.config['aspectRatio']).toBe('16:9'); // benign knob survives
+  });
+
+  it('generateMedia (video) threads the AbortSignal into the Veo create config', async () => {
+    const transport = fakeVideoTransport({ operation: { name: 'operations/veo-42' } });
+    const controller = new AbortController();
+    await genMedia(
+      createGeminiAdapter({ transport }),
+      { ...VIDEO_REQ, signal: controller.signal },
+      'k',
+    );
+    expect(transport.lastVideoRequest?.config['abortSignal']).toBe(controller.signal);
   });
 
   it('generateMedia (video) maps a missing operation name to a typed bad_request', async () => {
@@ -1059,6 +1072,16 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
     });
   });
 
+  it('pollMediaJob walks a pending → done sequence across successive polls', async () => {
+    const transport = fakeVideoTransport({
+      poll: [{ done: false }, { done: true, video: { videoBytes: B64, mimeType: 'video/mp4' } }],
+    });
+    const adapter = createGeminiAdapter({ transport });
+    const jobId = encodeMediaJobId('op');
+    expect(await pollMedia(adapter, jobId, 'k')).toEqual({ state: 'pending' });
+    expect(await pollMedia(adapter, jobId, 'k')).toMatchObject({ state: 'done' });
+  });
+
   it('pollMediaJob delivers inline videoBytes as a base64 video/mp4 media part (done)', async () => {
     const transport = fakeVideoTransport({
       poll: { done: true, video: { videoBytes: B64, mimeType: 'video/mp4' } },
@@ -1076,6 +1099,7 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
       poll: { done: true, video: { uri: 'https://generativelanguage.googleapis.com/v1/files/x' } },
     });
     const status = await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k');
+    expect(MediaJobStatusSchema.safeParse(status).success).toBe(true); // url source is a valid done state
     expect(status).toEqual({
       state: 'done',
       media: {
@@ -1135,6 +1159,20 @@ describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1
     };
     await expect(
       genMedia(createGeminiAdapter({ transport }), VIDEO_REQ, 'k'),
+    ).rejects.toMatchObject({
+      llmError: { kind: 'overloaded' },
+    });
+  });
+
+  it('surfaces a pollVideo transport rejection as a classified LlmProviderError', async () => {
+    const transport: GeminiTransport = {
+      ...unusedGenerative,
+      generate: () => Promise.reject(new Error('unused')),
+      stream: () => Promise.reject(new Error('unused')),
+      pollVideo: () => Promise.reject(Object.assign(new Error('overloaded'), { status: 503 })),
+    };
+    await expect(
+      pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k'),
     ).rejects.toMatchObject({
       llmError: { kind: 'overloaded' },
     });
