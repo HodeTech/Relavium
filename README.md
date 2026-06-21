@@ -1,21 +1,106 @@
 # Relavium
 
-> Multi-surface AI agent workflow platform — a product of [HodeTech](https://github.com/HodeTech).
+> **Start as an agent. Ship the workflow. Own every run.**
+> A multi-surface, local-first AI agent workflow platform — a product of [HodeTech](https://github.com/HodeTech).
 
-With Relavium you can **start as a conversational agent, graduate to workflows, or
-author workflows directly** — a chat session and a git-committable multi-agent,
-multi-model `.relavium.yaml` workflow are two entry points to the **same** engine.
-Run them across a Tauri desktop app, a VS Code extension, and a CLI —
-**local-first** in Phase 1, with cloud execution and a control-plane portal in
-Phase 2. The engine is a pure-TypeScript package shared by every surface,
-and multi-provider LLM access goes through Relavium's own `@relavium/llm`
-abstraction over the official provider SDKs (no Vercel, no LangChain).
+Relavium meets you where you already work — in conversation — and gives that
+conversation somewhere to go. You **start as an agent**: a multi-turn session in your
+terminal, in VS Code, or in a desktop chat panel. When a flow proves itself, you **ship
+the workflow**: export the session to a git-committable, multi-agent, multi-model
+`.relavium.yaml` pipeline that runs identically in your editor, your terminal, and your
+CI. Or author workflows directly. Either way you **own every run** — every step
+debuggable, every token and dollar tracked, every artifact yours, nothing leaving your
+machine unless you choose it.
+
+## Why Relavium?
+
+- **Four surfaces, one engine.** Desktop (Tauri), CLI, VS Code, and (Phase 2) the web
+  portal run the _identical_ pure-TypeScript engine. No Python sidecar, no single-tool
+  lock-in — every surface is a first-class execution target.
+- **A chat-to-workflow continuum.** Other tools make every session ephemeral. Relavium
+  sessions are persistent, resumable, and one-click exportable into a reviewed,
+  committed workflow.
+- **You own your LLM seam.** Multi-provider routing with fallback chains
+  (`[claude → gpt-4o → gemini]`) is first-class through Relavium's own `@relavium/llm`
+  abstraction over the official provider SDKs — no Vercel AI SDK, no LangChain.
+- **Local-first by design.** Phase 1 ships with zero cloud and no account required; keys
+  live in your OS keychain. BYOK-local stays first-class forever; Phase 2 _adds_ optional
+  managed inference and cloud execution on the same engine.
+- **Workflows are git objects.** `.relavium.yaml` files are diffable, reviewable,
+  PR-able, and shareable — team infrastructure, not a proprietary JSON blob or buried
+  Python.
+- **Multimodal, end-to-end.** Image / audio / video as input and output — including
+  rule-driven media generation — flow through the same seam and engine.
+
+## Highlights (Phase 1)
+
+- **Chat-to-workflow export** — turn a proven session into a reusable `.relavium.yaml`.
+- **Persistent, resumable agent sessions** — no run is ever ephemeral.
+- **Live execution** — tokens stream as the run progresses; parallel branches run together.
+- **Multi-model fallback chains** — runs survive provider outages and rate limits.
+- **Checkpoint & resume** — pause and resume at any node boundary, even across processes.
+- **Human gates with timeout policy** — pause for an approve / reject / input decision.
+- **Per-node cost waterfall** — token and dollar attribution per node, per model.
+- **Local-first, zero-install posture** — BYOK, OS keychain, no sign-up in Phase 1.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph Surfaces
+        D[Desktop · Tauri]
+        C[CLI]
+        V[VS Code extension]
+        P[Web portal · Phase 2]
+    end
+    subgraph Engine["@relavium/core — one pure-TypeScript engine"]
+        WE[WorkflowEngine]
+        AS[AgentSession]
+        BUS[(RunEventBus · ToolRegistry)]
+        WE --- BUS
+        AS --- BUS
+    end
+    SEAM["@relavium/llm seam"]
+    PROV[Anthropic · OpenAI/DeepSeek · Gemini]
+    D --> Engine
+    C --> Engine
+    V --> Engine
+    P --> Engine
+    Engine --> SEAM --> PROV
+```
+
+One engine, **two co-equal entry points** — `WorkflowEngine` (runs YAML pipelines) and
+`AgentSession` (runs conversational chat) — sharing the same tool registry, the same
+`@relavium/llm` multi-provider seam, and the same event bus. The engine has **zero
+platform-specific imports**, so the same source runs in the Tauri WebView, the VS Code
+host, the Node CLI, and (Phase 2) a Bun server. Supporting packages: `@relavium/shared`
+(Zod contracts), `@relavium/db` (Drizzle — SQLite locally, PostgreSQL in Phase 2), and
+`@relavium/ui` (ReactFlow canvas + shadcn). See [docs/architecture/](docs/architecture/).
+
+## Execution modes
+
+One engine, three modes behind the one `LLMProvider` seam:
+
+- **Local (BYOK)** — Phase 1 default. Your keys, your machine, zero Relavium data.
+- **Managed inference** — Phase 2, opt-in. Relavium's metered keys; the engine still runs
+  locally.
+- **Cloud execution** — Phase 2. Run workflows on cloud workers for 24/7 automation and
+  team sharing.
+
+## Status
+
+**Phase 1 — Engine and LLM is complete** (2026-06-21): the engine runs end-to-end on
+local-first BYOK — workflow parsing, DAG execution, live streaming, checkpoint/resume,
+multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (CLI) is
+next.** For live status and the full roadmap, see
+[docs/roadmap/current.md](docs/roadmap/current.md) and the
+[roadmap](docs/roadmap/README.md).
 
 ## Documentation
 
 The canonical documentation lives in [`docs/`](docs/) — start at
-[docs/README.md](docs/README.md), which is organized by *the kind of question each
-section answers*.
+[docs/README.md](docs/README.md), which is organized by _the kind of question each
+section answers_.
 
 | Start here | |
 |------------|---|
@@ -24,34 +109,9 @@ section answers*.
 | [Architecture](docs/architecture/) · [Decisions (ADRs)](docs/decisions/) · [Reference](docs/reference/) | How it works |
 | [Roadmap](docs/roadmap/README.md) · [Standards](docs/standards/) | Where it's going, and the rules |
 
-## Status
+## License
 
-**Phase 1 — engine and LLM in progress; milestone M1 (LLM seam proven) reached (PR #9,
-2026-06-07).** Phase 0 — Foundations (milestone M0, 2026-06-04) landed the Turborepo + pnpm
-monorepo, the strict toolchain + GitHub Actions CI, `@relavium/shared` (the full Zod contract
-set), the no-vendor-type seam fence, and `@relavium/db`. Phase 1 then landed
-[`@relavium/llm`](docs/roadmap/phases/phase-1-engine-and-llm.md): the provider-agnostic
-`LLMProvider` seam and **all three adapters** (Anthropic; the OpenAI-compatible adapter serving
-OpenAI + DeepSeek; Gemini), passing one shared conformance suite behind the frozen seam with no
-vendor type crossing it (PR #7–#9), followed by the **ADR-0031 multimodal seam-shape amendment
-(1.AD)** — the media content/stream union members, the per-modality capability matrix, and the
-reserved generator methods, landed **shape-only** before the seam's exhaustive consumers exist
-(PR #11, 2026-06-10). The seam's last policy layer — the `FallbackChain` runner (1.K) — then landed
-(PR #13, 2026-06-11), completing the LLM lane. The `@relavium/core` engine lane has since landed the
-**`WorkflowYAMLParser`** (1.L, PR #14), the **`{{ … }}` interpolation engine + parse-time
-secret-taint gate** (1.L2, PR #15), and the **DAG builder + `RunPlan`** (1.M) together with the
-**QuickJS-wasm expression sandbox** (1.AB) (PR #16, 2026-06-13) — all with zero platform imports.
-The **run loop** (1.N — `WorkflowEngine` + `RunEventBus`) landed (PR #17, 2026-06-13), **completing
-milestone 1.m3** (parse → DAG → run loop emits the canonical event stream); the **built-in
-`ToolRegistry`** (1.T, a 1.m4 component) landed alongside it; the **`AgentRunner`** (1.O —
-per-node LLM execution behind the seam) landed (PR #18, 2026-06-14); and the **node-type handlers**
-(1.P — the six non-agent handlers behind a dispatching executor) landed (PR #20, 2026-06-14), followed by
-the **human gate** (1.Q) + **checkpoint/resume** (1.R, PR #22), **node retry** (1.S, PR #24), and the
-**pre-egress budget governor** (1.AC) together with the agent-first **`AgentSession`** entry point (1.V) —
-both landed in **PR #26 (2026-06-16)**. With the budget governor in, **milestone 1.m4 is complete**; then the
-**end-to-end Node harness** (1.U) landed (**PR #27, 2026-06-16**) — **🎯 reaching milestone M2**: the engine runs
-end-to-end (live streaming + checkpoint + cross-process resume + retry + provider failover), completing the
-Phase-1 engine critical path. The remaining Phase-1 work is additive (the agent-first sub-spine — **session
-events 1.W ✅ (PR #28)** + **persistence 1.X ✅ (PR #29)** + **session checkpoint/resume 1.Y & export-to-workflow 1.Z ✅ (PR #30, 2026-06-17)** + **the 1.AA chat-regression harness ✅ (2026-06-17)**, completing **1.m5** — and the
-multimodal sub-spine — **media-input adapters + the shared SSRF policy primitive 1.AE ✅ (PR #32)**, **engine media plumbing 1.AF ✅ (PR #33/#34/#35/#36, 2026-06-20)**, **media output generation 1.AG ✅ (PR #37, 2026-06-21)**, and **the generative media-output adapters 1.AH ✅ (PR #38, 2026-06-21)** — all landed, **completing 1.m6 / Phase 1**; 1.AH's host-wiring half is distributed across Phases 2–6 as recorded tasks); **Phase 2 (the CLI) is unblocked**. See
-[docs/roadmap/current.md](docs/roadmap/current.md) for live status.
+Relavium is **proprietary software** — © 2026 HodeTech, all rights reserved. It is
+**not** open source and grants no rights except as expressly stated. See
+[LICENSE](LICENSE) for the full terms. For licensing inquiries, written permission, or
+commercial-use agreements, contact [HodeTech](https://github.com/HodeTech).

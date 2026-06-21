@@ -1,54 +1,8 @@
 # Phase 1 — Engine and LLM
 
-> Status: In progress — the critical path (Product Phase 1). Wave 0 (**1.L.0**) landed in
-> **PR #6**; the Wave-1 seam trio — **1.A** (types), **1.B** (CostTracker), **1.E** (ToolNormalizer)
-> — landed in **PR #7**; the first **adapter lane — 1.C** (`AnthropicAdapter`), **1.I** (`LlmError`),
-> **1.F** (conformance harness), **1.D** (capabilities + `providerOptions`) — landed in **PR #8**
-> (2026-06-06). The remaining adapters **1.G** (OpenAI/DeepSeek) ‖ **1.H** (Gemini), bundled with the
-> **seam-shape amendment [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)**
-> (reasoning channel + `responseFormat` + `providerExecuted`), and **1.J** (conformance green) landed
-> in **PR #9** (2026-06-07) — **🎯 M1 (LLM seam proven) is reached.** All three adapters pass one shared
-> conformance suite in fixture mode (live-nightly lane reserved/pending keys); no vendor type crosses the
-> seam. **1.K (FallbackChain) is ✅ Done (PR #13, 2026-06-11)** — the seam's last policy layer, with the
-> ADR-0030 strip-on-failover obligation honoured; **1.m2 (policy layers) is complete** (with the
-> CostTracker, 1.B). **1.L ✅ Done (PR #14, 2026-06-12)** — `@relavium/core` is scaffolded with the
-> `WorkflowYAMLParser` — and **1.L2 ✅ Done (PR #15, 2026-06-12)** — the `{{ … }}` interpolation engine
-> (runtime resolver + pipe-filter registry) plus the parse-time transitive secret-taint gate
-> (ADR-0029(c)). **1.M (DAG builder + `RunPlan`) and 1.AB (the QuickJS-wasm expression sandbox) are
-> ✅ Done (PR #16, 2026-06-13)** — the plan layer and the deterministic `condition`/`transform`/`merge_fn`
-> evaluator. **1.N (`WorkflowEngine` + `RunEventBus`) and 1.T (built-in `ToolRegistry`) are ✅ Done
-> (PR #17, 2026-06-13)**, completing **1.m3** (parse → DAG → run loop emits the canonical event stream).
-> With 1.K, 1.N, and 1.T all landed, the **1.O `AgentRunner` join is ✅ Done (PR #18, 2026-06-14)**, and
-> the **node-type handlers (1.P) are ✅ Done (PR #20, 2026-06-14)** — the six non-agent `NodeExecutor` arms
-> behind a dispatching executor, executor-only (no `engine.ts` change), with a pre-merge BLOCKER secret-leak
-> fixed by a `secretInputNames` masking gate on `NodeExecContext`. **Checkpoint/resume (1.R) and the human
-> gate (1.Q) are ✅ Done (PR #22, 2026-06-15)** — the derived `Checkpointer` + cross-process
-> `resumeFromCheckpoint` (idempotent re-delivery, `workflow_mismatch` identity guard) and the
-> `human_in_the_loop` gate (suspend/resume + the one-shot `setTimer` timeout port: `approve` auto-resolves,
-> `reject` fails with `run_timeout`). **Node retry (1.S) is ✅ Done (PR #24, 2026-06-15)** — the above-chain
-> whole-node retry budget ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md), Part A; the
-> user-triggered retry-from-node Part B is deferred to Phase-2). **The pre-egress budget governor (1.AC) and
-> the `AgentSession` agent-first entry point (1.V) then landed together — ✅ Done (PR #26, 2026-06-16).** 1.AC
-> was the last **1.m4** workstream, so **1.m4 is complete** (the full engine stack — node handlers, gate,
-> checkpoint/resume, retry, tools, sandbox, budget governor); 1.V opens **Lane C** (the agent-first sub-spine,
-> 1.m5). The end-to-end Node harness (**1.U**) then landed — **🎯 M2 reached (PR #27, 2026-06-16): the engine
-> runs end-to-end** (live streaming + per-node-boundary checkpointing + cross-process resume + node retry +
-> provider failover, per-attempt cost, gap-free `sequenceNumber`), **completing the Phase-1 critical path**. The
-> remaining Phase-1 work is **additive and off the critical path**: Lane C (the 1.m5 agent-first sub-spine —
-> 1.W/1.X/1.Y/1.Z all ✅ Done, plus the 1.AA chat-regression harness ✅) is **complete**, leaving only the 1.m6
-> multimodal sub-spine (1.AE–1.AH). **Phase 2
-> (CLI, milestone M3) is unblocked.** *(Session persistence, 1.X/1.Z, must exclude the reasoning signature —
-> non-persisting.)*
+> Status: ✅ **Complete** — all workstreams (1.A–1.AH) landed and merged (PR #6–#38, 2026-06-21), achieving global milestones **M1 (LLM seam proven, 2026-06-07, PR #9)** and **M2 (engine end-to-end, 2026-06-16, PR #27)**. The critical path is done: `@relavium/llm` (seam + 3 adapters + `FallbackChain` + cost tracking) and `@relavium/core` (YAML→DAG parser + run loop + checkpoint/resume + retry) are proven end-to-end by the Node harness (1.U). The additive sub-spines are also complete: Lane C (agent-first, 1.V–1.AA, milestone 1.m5) and the multimodal sub-spine (1.AD–1.AH, milestone 1.m6). [Phase 2 — CLI](phase-2-cli.md) is next (milestone M3). Deferred work — including 1.AH's host-wiring half (distributed across Phases 2–6) — is tracked in [../deferred-tasks.md](../deferred-tasks.md). For per-PR history see [../current.md](../current.md).
 >
-> **Multimodal I/O decided (2026-06-08).** First-class image/audio/video I/O (input **and** output) is a
-> second pre-freeze seam amendment in the ADR-0030 mould — [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
-> (seam) + [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) (desktop Rust
-> de-inline), designed in [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md).
-> The new sub-spine **1.AD–1.AH** (1.m6) lands the **shape (1.AD) before the exhaustive consumers 1.K/1.O**
-> so the `ContentPart`/`StreamChunk` media union members are non-breaking; the **behavior (1.AE–1.AH) is
-> additive and does NOT gate M2** (it threads into the engine and Phases 2–6, like the agent-first sub-spine).
-> **1.AD is ✅ Done (PR #11, 2026-06-10)** — the shape landed with all-false adapter matrices and the
-> fail-fast media guard; it unblocked 1.K, now also ✅ Done (PR #13).
+> **Multimodal I/O** ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) seam + [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md) desktop de-inline, designed in [multimodal-io-design-2026-06-07.md](../../analysis/multimodal-io-design-2026-06-07.md)) — the 1.m6 sub-spine **1.AD–1.AH** is complete (PR #11–#38, 2026-06-10–2026-06-21). 1.AD landed the seam shape **before the exhaustive consumers 1.K/1.O** so the `ContentPart`/`StreamChunk` media union members are non-breaking; 1.AE–1.AH behavior is done, with 1.AH's host-wiring half deferred to Phases 2–6 ([../deferred-tasks.md](../deferred-tasks.md)).
 
 - **Related**: [../README.md](../README.md), [phase-0-foundations.md](phase-0-foundations.md), [phase-2-cli.md](phase-2-cli.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md), [../../reference/shared-core/llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
