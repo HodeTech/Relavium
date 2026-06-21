@@ -123,7 +123,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **general tool/MCP** `EgressCapability.fetch` enforcement still lands when the desktop/CLI surface implements that fetch hook. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; tool/MCP → surface fetch hook)*
-- [ ] **Async media-job ADR + engine loop (`generateMedia`/`pollMediaJob` behavior, A5) — landed on `development`, pending PR merge (1.AG Sections A–E; the A5 obligation itself discharged in A/C/D).**
+- [x] **Async media-job ADR + engine loop (`generateMedia`/`pollMediaJob` behavior, A5) — ✅ DONE (1.AG, PR #37, 2026-06-21; the A5 obligation discharged in Sections A/C/D).**
   [ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) is written + Accepted, and
   the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs (Sora/Veo) landed in 1.AG
   Section D (the run loop 1.N + checkpointer 1.R, reusing `LlmError` classification): `media_job:submitted` park,
@@ -134,8 +134,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   model dispatches to `generateMedia` BEFORE the turn loop), so the `requestsMediaOutput` guard in
   [`agent-turn.ts`](../../packages/core/src/engine/agent-turn.ts) only ever sees `'chat'` models — ADR-0046 §1's
   `media_surface: 'chat'` conjunct holds STRUCTURALLY (the guard's JSDoc `NOTE` points at the fork). The remaining
-  VENDOR-adapter + host-wiring work is tracked in the 1.AH entries below. **Tick `[x]` with the merged PR number
-  when the 1.AG PR lands** (this file's rule: check off in the PR that resolves it). *(1.AG Sections A–E — on development, pending merge)*
+  VENDOR-adapter + host-wiring work is tracked in the 1.AH entries below. *(1.AG Sections A–E — ✅ merged, PR #37)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
   1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
   `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node

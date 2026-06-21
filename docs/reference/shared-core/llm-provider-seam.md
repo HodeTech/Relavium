@@ -499,8 +499,10 @@ discriminated union:
 Tool-argument JSON deltas are concatenated into `argsJsonDelta` across
 `tool_call_delta` chunks and **parsed once at `tool_call_end`**. The final
 `stop` chunk always carries `stopReason` + `usage`. The `media_start/delta/end`
-triad is part of the frozen union but **emitted by no adapter at 1.AD** — media
-output wiring is 1.AG/1.AH, consistent with the all-false `media` matrices.
+triad is part of the frozen union but **emitted by no adapter** — non-streaming
+media output landed at **1.AG** (inline via `generate()` + the generative
+endpoint, [ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)); the
+**streaming triad is deferred to 1.AH** (ADR-0046 §4).
 
 ### 5. Stop reasons
 
