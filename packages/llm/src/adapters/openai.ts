@@ -911,10 +911,10 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       return streamChunks(createClient(key), req, providerId);
     },
     /**
-     * Separate-endpoint media generation (1.AG Section C, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
-     * SYNC image generation via gpt-image-1 (`client.images.generate` → base64). Audio (TTS via
-     * `audio.speech`) and video are NOT wired here yet — they fail loud with a typed capability error, never a
-     * silent drop (deferred — deferred-tasks.md). DeepSeek generates no media. No vendor type crosses the seam:
+     * Separate-endpoint media generation (1.AG/1.AH, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+     * SYNC image (gpt-image-1 `client.images.generate` → base64) and SYNC TTS audio (`audio.speech` → base64,
+     * 1.AH A1) are wired; **video** is the ASYNC Sora path and is NOT a sync surface here — it fails loud with a
+     * typed capability error, never a silent drop. DeepSeek generates no media. No vendor type crosses the seam:
      * the result is a normalized `MediaGenResult` whose `raw` is strip-discarded by sinks.
      */
     async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {

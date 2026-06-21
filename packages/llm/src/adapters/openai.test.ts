@@ -348,6 +348,21 @@ describe('OpenAI-compatible adapter', () => {
       kind: 'base64',
       data: Buffer.from('FAKE-AUDIO-BYTES').toString('base64'),
     });
+    // I3 structural guard: `raw` carries ONLY a non-byte diagnostic — never the audio bytes.
+    expect(result.raw).toEqual({ responseFormat: 'mp3' });
+  });
+
+  it('generateMedia (audio) routes a TTS-call failure through the classifier (the catch is wired, not raw)', async () => {
+    // Prove the try/catch around `audio.speech.create` + the body read routes ANY thrown provider
+    // error through `openaiErrorToLlmError` — a rejected request surfaces as a typed `LlmProviderError`,
+    // never a raw SDK error. A connection failure classifies as `transport` (retryable).
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: () => Promise.reject(new APIConnectionError({ message: 'socket hang up' })),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'transport', retryable: true } });
   });
 
   it('generateMedia (audio) maps req.mimeType → response_format + result MIME (audio/opus → opus)', async () => {
