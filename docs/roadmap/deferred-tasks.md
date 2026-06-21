@@ -177,6 +177,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the
   engine does not yet populate `providerOptions` for a generative call, so the adapter threads only the output format
   (`req.mimeType`); a typed per-knob passthrough lands when the engine wires image knobs. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
+- [ ] **Rate-carrying media representation for raw PCM (1.AH A1 known-limitation).** OpenAI TTS `pcm` is headerless
+  16-bit LE PCM at 24 kHz, but the seam's `MediaMimeTypeSchema` forbids MIME parameters, so the bare `audio/L16`
+  cannot carry `;rate=24000` (RFC 2586's default is 8 kHz) — a consumer of an `audio/L16` part must assume 24 kHz.
+  Mirrors the pre-existing chat-audio `pcm16 → audio/L16` convention; the self-describing containers (mp3/opus/aac/
+  flac/wav) are unaffected. A rate-carrying media representation (or dropping bare-PCM from the offered set) is the
+  fix. Low priority — opt-in niche format only. *(packages/shared/src/content.ts MediaMimeTypeSchema; packages/llm/src/adapters/openai.ts; low · 1.AH/Phase-2)*
 - [ ] **Sora/Veo async-media ADAPTERS (`generateMedia`→`{ jobId }` + `pollMediaJob`) — deferred (1.AG Section D → 1.AH).**
   1.AG Section D landed the ENGINE-owned async-job loop (park on `media_job:submitted`, the `host.setTimer` poll
   cadence, exp-backoff to `pollMaxMs`, deadline→retryable timeout, cross-process re-attach (MJ-1), gate-vs-media

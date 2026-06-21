@@ -367,6 +367,15 @@ describe('OpenAI-compatible adapter', () => {
     expect(result.media?.mimeType).toBe('audio/opus');
   });
 
+  it('generateMedia (audio) maps an empty audio body to a typed bad_request LlmProviderError', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.resolve(new Response('', { status: 200 })),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'bad_request', retryable: false } });
+  });
+
   it('generateMedia rejects OpenAI video (no sync surface) + DeepSeek any modality with a typed capability error', async () => {
     const oai = createOpenAiAdapter({
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),

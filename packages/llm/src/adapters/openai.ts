@@ -605,7 +605,12 @@ function resolveOpenAiAudio(providerOptions: LlmRequest['providerOptions']): {
   return { voice, format };
 }
 
-/** The TTS `response_format` values `audio.speech` accepts, mapped to the bare MIME the seam admits (1.AH). */
+/** The TTS `response_format` values `audio.speech` accepts, mapped to the bare MIME the seam admits (1.AH).
+ *  NOTE on `pcm`: OpenAI's pcm output is headerless 16-bit LE PCM at **24 kHz**, but the seam's
+ *  `MediaMimeTypeSchema` forbids MIME parameters (no `;rate=24000`), so the bare `audio/L16` cannot carry the
+ *  rate (RFC 2586's default is 8 kHz) — a downstream consumer of an `audio/L16` part MUST assume 24 kHz. This
+ *  mirrors the pre-existing chat-audio `pcm16 → audio/L16` convention; the self-describing containers (mp3/
+ *  opus/aac/flac/wav) carry their own rate. Tracked: deferred-tasks.md (a rate-carrying media representation). */
 const TTS_FORMAT_TO_MIME = {
   mp3: 'audio/mpeg',
   opus: 'audio/opus',
@@ -1003,10 +1008,12 @@ async function openAiGenerateSpeech(
   req: MediaGenRequest,
   providerId: ProviderId,
 ): Promise<MediaGenResult> {
+  // `count` (images-per-call) is a no-op for TTS — `audio.speech` is billed per input character and yields a
+  // single audio stream, so there is no bill-N-deliver-1 hazard (unlike the image path's loud count>1 reject).
   const format = ttsResponseFormat(req.mimeType);
-  let response: Response;
+  let bytes: Uint8Array;
   try {
-    response = await client.audio.speech.create(
+    const response = await client.audio.speech.create(
       {
         model: req.model,
         voice: ttsVoice(req.providerOptions),
@@ -1015,10 +1022,13 @@ async function openAiGenerateSpeech(
       },
       isAbortSignal(req.signal) ? { signal: req.signal } : {},
     );
+    // The BINARY body download happens HERE (audio.speech is a __binaryResponse — create() returns the raw
+    // Response unconsumed), so the read MUST be inside the try: a mid-download socket reset / abort would
+    // otherwise escape unclassified and flatten to an opaque `internal` instead of a classified LlmError.
+    bytes = new Uint8Array(await response.arrayBuffer());
   } catch (err) {
     throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length === 0) {
     throw new LlmProviderError(
       makeLlmError({
