@@ -141,16 +141,21 @@ foundations. See [security-review.md](security-review.md) and
 A new dependency version is not trusted the day it ships. Supply-chain attacks land
 through freshly published versions of otherwise-reputable packages, and a brand-new
 release has had no time to be audited by anyone. So when adding a dependency or bumping
-one, **prefer a version that has been public for a while over the just-released latest**:
-do not pin to a version published within the last few days, and treat any same-day
-upgrade as something to justify, not a default. This is a review posture, not a license
-to fall behind — security patches are the exception and are pulled in promptly; the rule
-targets *unvetted novelty*, not staying current.
+one, **prefer a version that has been public for a while over the just-released latest**.
+**Concrete bar:** a minor or patch bump should be at least **7 calendar days** old before
+it enters the lockfile; a **major** bump (larger change surface, more time for the
+ecosystem to surface regressions) at least **14 days**; anything **under 72 hours** old is
+bleeding-edge and is blocked unless the PR justifies it. Treat these as the default review
+bar, not rigid math — a version a day or two under the line can still pass on reviewer
+judgement with a stated reason. This is a review posture, not a license to fall behind: a
+security or CVE fix is the explicit exception — it may skip the window entirely, with the
+reason recorded in the PR. The rule targets *unvetted novelty*, not staying current.
 
 **Applied rule:** when a `package.json` diff adds or raises a dependency, the reviewer
-checks the chosen version's publish age and questions a bleeding-edge pin with no
-security justification; the safe default is the most recent version that has been
-available long enough to have been exercised by the ecosystem. This matters most for the
+checks the chosen version's publish age against the bar above — blocking an under-72h pin
+and flagging a still-uncooled one (< 7 days, or < 14 for a major) absent a recorded
+security justification; the safe default is the newest version that has cleared the
+cooling window and been exercised by the ecosystem. This matters most for the
 dependency-heavy surfaces (the CLI's `commander`/`ink`/`@clack/prompts`/`tsup`, the
 keychain and MCP bindings) where the new-dependency count is highest. Adding a dependency
 at all still needs the principle-9 bar (an [ADR](../decisions/README.md) for a new runtime
