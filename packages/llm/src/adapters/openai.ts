@@ -8,6 +8,7 @@ import OpenAI, {
 import {
   isPrivateOrLocalHost,
   urlHasCredentials,
+  type AbortSignalLike,
   type ContentPart,
   mediaModalityOf,
   type StopReason,
@@ -27,6 +28,7 @@ import type {
   LlmResult,
   MediaGenRequest,
   MediaGenResult,
+  MediaJobStatus,
   MediaUnitsEntry,
   ProviderId,
   StreamChunk,
@@ -927,20 +929,52 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         );
       }
       const client = createClient(key);
-      // SYNC separate-endpoint generation, dispatched by modality (1.AG/1.AH, ADR-0045 §1): image →
-      // gpt-image-1 (images.generate); audio → TTS (audio.speech). Video is the ASYNC Sora path (a separate
-      // section) — not a sync surface here.
+      // Separate-endpoint generation, dispatched by modality (1.AG/1.AH, ADR-0045 §1): image → gpt-image-1
+      // (images.generate, SYNC); audio → TTS (audio.speech, SYNC); video → Sora (videos.create, ASYNC LRO —
+      // returns an opaque jobId the engine polls via pollMediaJob below).
       if (req.modality === 'image') {
         return openAiGenerateImage(client, req, providerId);
       }
       if (req.modality === 'audio') {
         return openAiGenerateSpeech(client, req, providerId);
       }
+      if (req.modality === 'video') {
+        return openAiGenerateVideo(client, req, providerId);
+      }
+      // Exhaustiveness: MEDIA_BILLED_MODALITIES is image|audio|video, so `modality` is `never` here. A new
+      // member makes this assignment a COMPILE error — a future modality fails at build, never silently at
+      // runtime; the throw is the runtime backstop.
+      const unhandled: never = req.modality;
       throw new UnsupportedCapabilityError(
         providerId,
         'media',
-        `OpenAI generateMedia has no SYNC surface for '${req.modality}' (video is the async Sora path)`,
+        `OpenAI generateMedia has no surface for modality '${String(unhandled)}'`,
       );
+    },
+    /**
+     * Poll one async media job (Sora video LRO, 1.AH A3, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+     * The engine drives this loop and re-delivers the persisted opaque jobId on resume (re-attach, §3); the
+     * adapter recovers the vendor video id by DECODING the token (stateless bijection — no instance Map — so
+     * a cold-process restart resolves it). `signal` aborts the in-flight poll/download so a run cancel reaches
+     * the open request, not just the next schedule.
+     */
+    async pollMediaJob(
+      jobId: string,
+      key: string,
+      signal?: AbortSignalLike,
+    ): Promise<MediaJobStatus> {
+      if (providerId !== 'openai') {
+        // DeepSeek (same adapter, different baseURL) has no async media jobs.
+        return {
+          state: 'failed',
+          error: makeLlmError({
+            provider: providerId,
+            kind: 'unknown',
+            message: `${providerId} has no async media jobs (only OpenAI/Sora is wired)`,
+          }),
+        };
+      }
+      return pollMediaJobSora(createClient(key), jobId, providerId, signal);
     },
   };
 }
@@ -1046,6 +1080,204 @@ async function openAiGenerateSpeech(
     },
     raw: { responseFormat: format }, // diagnostic only — never the audio bytes (I3 / strip-on-sink)
   };
+}
+
+// --- Generative media: Sora video (ASYNC LRO, 1.AH A3, ADR-0045) -----------------------------
+
+/**
+ * The opaque media-job id namespace+version. The engine persists this token in the durable
+ * `media_job:submitted` event and re-delivers it to `pollMediaJob` on resume (ADR-0045 §3 re-attach, never
+ * re-submit). The adapter has NO durable store and is rebuilt each process, so the vendor video id is
+ * reversibly ENCODED into the token (base64url so any vendor id is `:`-split-safe) rather than held in an
+ * in-memory `Map` — this IS the "vendor↔opaque map internal" of ADR-0045 §7, realized as a STATELESS
+ * bijection. The token is adapter-minted + Relavium-namespaced (NOT the bare vendor op-name / poll-URL),
+ * the engine never parses it (I1/[ADR-0011]), and the (non-secret) resource id is safe to persist. A future
+ * format change bumps the version slot (`:2:`) without an engine or schema change. Managed mode (ADR-0015)
+ * swaps the `pollMediaJob` body and keeps this prefix as the decode convention.
+ */
+const SORA_JOB_PREFIX = 'rlv-mediajob:1:';
+
+/** Mint the opaque jobId from Sora's `Video.id` (base64url-encoded). Exported for the N4 opacity test. */
+export function encodeVideoJobId(vendorId: string): string {
+  return SORA_JOB_PREFIX + Buffer.from(vendorId, 'utf8').toString('base64url');
+}
+
+/**
+ * Recover the vendor `Video.id` from an opaque jobId; `undefined` on any foreign/malformed token (never
+ * throws — a throw from `pollMediaJob` is engine-classified as retryable and would loop forever on a
+ * structurally-dead token). Exported for the opacity/round-trip test.
+ */
+export function decodeVideoJobId(jobId: string): string | undefined {
+  if (!jobId.startsWith(SORA_JOB_PREFIX)) {
+    return undefined; // a non-Relavium id or a future rlv-mediajob:2: token
+  }
+  const payload = jobId.slice(SORA_JOB_PREFIX.length);
+  if (payload.length === 0) {
+    return undefined;
+  }
+  const decoded = Buffer.from(payload, 'base64url').toString('utf8');
+  return decoded.length === 0 ? undefined : decoded;
+}
+
+/** Sora accepts only 4/8/12s clips — reject anything else loud (never round; cost-integrity, ADR-0045 §5). */
+const SORA_SECONDS: Readonly<Record<number, OpenAI.VideoSeconds>> = { 4: '4', 8: '8', 12: '12' };
+function soraSeconds(durationSeconds: number | undefined): OpenAI.VideoSeconds {
+  const n = durationSeconds ?? 4; // Sora's default clip length
+  const seconds = SORA_SECONDS[n];
+  if (seconds === undefined) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: 'openai',
+        kind: 'bad_request',
+        message: `Sora durationSeconds must be 4, 8, or 12; got ${String(n)}`,
+      }),
+    );
+  }
+  return seconds;
+}
+
+/** Optional Sora frame size from `providerOptions.video.size` (mirrors ttsVoice's `providerOptions.audio`
+ *  nesting); an unrecognized value is dropped so Sora's default applies. */
+function soraSize(
+  providerOptions: MediaGenRequest['providerOptions'],
+): OpenAI.VideoSize | undefined {
+  const videoOpts = isRecord(providerOptions) ? providerOptions['video'] : undefined;
+  const size = isRecord(videoOpts) ? videoOpts['size'] : undefined;
+  return size === '720x1280' || size === '1280x720' || size === '1024x1792' || size === '1792x1024'
+    ? size
+    : undefined;
+}
+
+/**
+ * ASYNC video generation (Sora via `videos.create` → an opaque jobId the engine polls; ADR-0045 §3). ALWAYS
+ * returns `{ jobId }` — even if Sora reports `status:'completed'` synchronously — so completion is owned by
+ * the engine's poll loop (returning `{ media }` would put it on the SYNC path and orphan the LRO). `raw`
+ * carries only a non-byte diagnostic. providerOptions is NOT spread into the SDK call — only the explicit
+ * size/seconds knobs are extracted (no transport-key surface, unlike the genai config path).
+ */
+async function openAiGenerateVideo(
+  client: OpenAI,
+  req: MediaGenRequest,
+  providerId: ProviderId,
+): Promise<MediaGenResult> {
+  const seconds = soraSeconds(req.durationSeconds); // throws bad_request if not 4/8/12
+  const size = soraSize(req.providerOptions);
+  let video: OpenAI.Video;
+  try {
+    video = await client.videos.create(
+      {
+        model: req.model,
+        prompt: req.prompt,
+        seconds,
+        ...(size === undefined ? {} : { size }),
+      },
+      isAbortSignal(req.signal) ? { signal: req.signal } : {},
+    );
+  } catch (err) {
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+  }
+  if (video.id.length === 0) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: providerId,
+        kind: 'bad_request',
+        message: 'Sora video creation returned no job id',
+      }),
+    );
+  }
+  return { jobId: encodeVideoJobId(video.id), raw: { id: video.id, status: video.status } };
+}
+
+/** Map a Sora `VideoCreateError` VALUE object (not a thrown `APIError`) to a normalized `LlmError`; a
+ *  content-policy code → `content_filter`, else the fatal `unknown` (ADR-0045 §6). */
+function mapVideoCreateError(err: OpenAI.VideoCreateError | null, provider: ProviderId): LlmError {
+  if (err === null) {
+    return makeLlmError({
+      provider,
+      kind: 'unknown',
+      message: 'Sora video job failed with no error detail',
+    });
+  }
+  const kind: LlmErrorKind = isContentPolicyCode(err.code) ? 'content_filter' : 'unknown';
+  return makeLlmError({
+    provider,
+    kind,
+    message: err.message,
+    ...(err.code.length === 0 ? {} : { code: err.code }),
+  });
+}
+
+/**
+ * Poll one Sora job by its opaque jobId (ADR-0045 §3). Decode → `videos.retrieve`; on `completed` download
+ * the MP4 bytes in the SAME try (a mid-download abort must classify as `cancelled`, never escape raw) → a
+ * base64 `media` part the engine de-inlines to a `media://` handle (I3 permits base64 IN FLIGHT; the durable
+ * boundary gets the handle). A malformed jobId returns a FATAL `failed` (not a throw — a throw is engine-
+ * classified retryable and would loop on a structurally-dead token).
+ */
+async function pollMediaJobSora(
+  client: OpenAI,
+  jobId: string,
+  providerId: ProviderId,
+  signal: AbortSignalLike | undefined,
+): Promise<MediaJobStatus> {
+  const vendorId = decodeVideoJobId(jobId);
+  if (vendorId === undefined) {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: providerId,
+        kind: 'bad_request',
+        message: 'unrecognized Sora media job token',
+      }),
+    };
+  }
+  let video: OpenAI.Video;
+  let bytes: Uint8Array | undefined;
+  try {
+    video = await client.videos.retrieve(vendorId, isAbortSignal(signal) ? { signal } : {});
+    if (video.status === 'completed') {
+      // downloadContent is a __binaryResponse (raw Response) — the body read happens HERE, so it must be
+      // inside this try or a mid-download abort/reset would escape unclassified.
+      const response = await client.videos.downloadContent(
+        vendorId,
+        undefined,
+        isAbortSignal(signal) ? { signal } : {},
+      );
+      bytes = new Uint8Array(await response.arrayBuffer());
+    }
+  } catch (err) {
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+  }
+  switch (video.status) {
+    case 'queued':
+      return { state: 'pending' };
+    case 'in_progress':
+      // Sora reports 0-100; the seam expects 0-1. Clamp defends against an out-of-range value that would
+      // fail the engine's z.number().min(0).max(1) boundary.
+      return { state: 'pending', progress: Math.min(1, Math.max(0, video.progress / 100)) };
+    case 'completed': {
+      if (bytes === undefined || bytes.length === 0) {
+        return {
+          state: 'failed',
+          error: makeLlmError({
+            provider: providerId,
+            kind: 'bad_request',
+            message: 'Sora downloadContent returned no video bytes',
+          }),
+        };
+      }
+      return {
+        state: 'done',
+        media: {
+          type: 'media',
+          mimeType: 'video/mp4',
+          source: { kind: 'base64', data: Buffer.from(bytes).toString('base64') },
+        },
+      };
+    }
+    case 'failed':
+      return { state: 'failed', error: mapVideoCreateError(video.error, providerId) };
+  }
 }
 
 /** The production OpenAI adapter. */
