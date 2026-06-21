@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
-import type { StreamChunk } from '../types.js';
+import type {
+  LlmProvider,
+  LlmRequest,
+  MediaGenRequest,
+  MediaGenResult,
+  StreamChunk,
+} from '../types.js';
 import {
   createOpenAiAdapter,
   deepseekAdapter,
@@ -12,7 +18,21 @@ import {
   mapUsage,
   openaiAdapter,
   openaiErrorToLlmError,
+  outputAudioMime,
 } from './openai.js';
+
+/** Call the adapter's optional `generateMedia` via `?.()` — a call (binds `this`), never an extraction, so the
+ *  unbound-method lint stays happy; the `??` branch asserts the method is implemented. */
+function genMedia(
+  adapter: LlmProvider,
+  req: MediaGenRequest,
+  key: string,
+): Promise<MediaGenResult> {
+  return (
+    adapter.generateMedia?.(req, key) ??
+    Promise.reject(new Error('adapter implements no generateMedia'))
+  );
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -86,6 +106,7 @@ describe('OpenAI-compatible adapter', () => {
     expect(openaiAdapter.supports.media).toEqual({
       input: { image: true, audio: true, video: false, document: false },
       outputCombinations: [['text'], ['text', 'audio']],
+      surface: 'chat',
     });
     expect(openaiAdapter.supports.reasoning).toBe(false);
     expect(deepseekAdapter.supports.reasoning).toBe(true);
@@ -189,6 +210,186 @@ describe('OpenAI-compatible adapter', () => {
       type: 'input_audio',
       input_audio: { data: 'YXVkaW8=', format: 'mp3' },
     });
+  });
+
+  it('round-trips inline audio-out: lowers output_modalities → modalities+audio and parses the response (1.AG/ADR-0046)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            completion({
+              role: 'assistant',
+              content: null,
+              refusal: null,
+              audio: {
+                id: 'a1',
+                data: 'YXVkaW8tYnl0ZXM=',
+                transcript: 'spoken words',
+                expires_at: 0,
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+    });
+    const result = await adapter.generate(
+      {
+        model: 'gpt-4o-audio-preview',
+        outputModalities: ['text', 'audio'],
+        providerOptions: { audio: { voice: 'verse', format: 'mp3' } },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'say hi' }] }],
+      },
+      'k',
+    );
+    // Request side: the node's audio output_modality lowers to modalities + the merged voice/format.
+    expect(sent['modalities']).toEqual(['text', 'audio']);
+    expect(sent['audio']).toEqual({ voice: 'verse', format: 'mp3' });
+    // Response side: transcript surfaces as text PLUS the audio as an in-flight base64 media part (audio/mpeg).
+    expect(result.content).toEqual([
+      { type: 'text', text: 'spoken words' },
+      {
+        type: 'media',
+        mimeType: 'audio/mpeg',
+        source: { kind: 'base64', data: 'YXVkaW8tYnl0ZXM=' },
+      },
+    ]);
+  });
+
+  it('defaults the audio voice/format when providerOptions omits them', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await adapter.generate(
+      {
+        model: 'gpt-4o-audio-preview',
+        outputModalities: ['text', 'audio'],
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'say hi' }] }],
+      },
+      'k',
+    );
+    expect(sent['modalities']).toEqual(['text', 'audio']);
+    expect(sent['audio']).toEqual({ voice: 'alloy', format: 'wav' });
+  });
+
+  it('rejects a non-text outputModalities on the STREAM path — media-out is generate()-only (1.AG/ADR-0046)', () => {
+    // The streaming media triad is host-deferred (ADR-0046 §4); the streaming fold drops media, so a stream()
+    // requesting media output would silently lose it. The guard fails loud instead (never reaching egress).
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    const req: LlmRequest = {
+      model: 'gpt-4o-audio-preview',
+      outputModalities: ['text', 'audio'],
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'speak' }] }],
+    };
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('generateMedia (image) returns a base64 PNG media part from images.generate (1.AG Section C/ADR-0045)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'Z2VuLWltYWdl' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    const result = await genMedia(
+      adapter,
+      { model: 'gpt-image-1', prompt: 'a cat', modality: 'image' },
+      'k',
+    );
+    expect(result.jobId).toBeUndefined(); // SYNC arm
+    expect(result.media).toEqual({
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'Z2VuLWltYWdl' },
+    });
+  });
+
+  it('generateMedia rejects a non-image modality + DeepSeek with a typed capability error', async () => {
+    const oai = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      genMedia(oai, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+    const ds = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      genMedia(ds, { model: 'm', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+  });
+
+  it('generateMedia maps a no-data image response to a typed bad_request LlmProviderError', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toThrowError(LlmProviderError);
+  });
+
+  it('generateMedia rejects count > 1 (single-artifact SYNC seam) with a typed bad_request before any egress', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image', count: 3 }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'bad_request', retryable: false } });
+  });
+
+  it('generateMedia honors a requested output format (req.mimeType → output_format + result MIME)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'aW1n' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    const result = await genMedia(
+      adapter,
+      { model: 'gpt-image-1', prompt: 'x', modality: 'image', mimeType: 'image/webp' },
+      'k',
+    );
+    expect(sent['output_format']).toBe('webp');
+    expect(result.media?.mimeType).toBe('image/webp');
+  });
+
+  it('generateMedia maps an image content-policy refusal to content_filter (the documented taxonomy)', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: 'blocked', code: 'content_policy_violation' } }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-image-1', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'content_filter' } });
   });
 
   it('lowers media on the STREAM path too (shared buildCommonBody — the §1.AE both-paths requirement)', async () => {
@@ -399,6 +600,57 @@ describe('OpenAI-compatible adapter', () => {
     );
     expect(parts).toEqual([{ type: 'tool_call', id: 't1', name: 'f', args: {} }]);
   });
+
+  it('mapContent surfaces inline audio-out as a transcript text part PLUS a base64 media part (1.AG/ADR-0046)', () => {
+    const parts = mapContent(
+      { content: null, audio: { data: 'YXVkaW8tYnl0ZXM=', transcript: 'hello there' } },
+      'openai',
+      'audio/mpeg',
+    );
+    expect(parts).toEqual([
+      { type: 'text', text: 'hello there' },
+      {
+        type: 'media',
+        mimeType: 'audio/mpeg',
+        source: { kind: 'base64', data: 'YXVkaW8tYnl0ZXM=' },
+      },
+    ]);
+  });
+
+  it('mapContent emits the audio media part even when the transcript is empty', () => {
+    const parts = mapContent(
+      { content: null, audio: { data: 'YXVkaW8=', transcript: '' } },
+      'openai',
+    );
+    expect(parts).toEqual([
+      { type: 'media', mimeType: 'audio/wav', source: { kind: 'base64', data: 'YXVkaW8=' } },
+    ]);
+  });
+
+  it('mapContent ignores a null/empty audio field', () => {
+    expect(mapContent({ content: 'x', audio: null }, 'openai')).toEqual([
+      { type: 'text', text: 'x' },
+    ]);
+    expect(mapContent({ content: 'x', audio: { data: '', transcript: 't' } }, 'openai')).toEqual([
+      { type: 'text', text: 'x' },
+    ]);
+  });
+
+  it('outputAudioMime maps the requested providerOptions.audio.format (default wav)', () => {
+    const mk = (format?: string): LlmRequest => ({
+      model: 'gpt-4o-audio-preview',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'speak' }] }],
+      ...(format === undefined ? {} : { providerOptions: { audio: { format } } }),
+    });
+    expect(outputAudioMime(mk('mp3'))).toBe('audio/mpeg');
+    expect(outputAudioMime(mk('opus'))).toBe('audio/opus');
+    expect(outputAudioMime(mk('flac'))).toBe('audio/flac');
+    expect(outputAudioMime(mk('aac'))).toBe('audio/aac');
+    expect(outputAudioMime(mk('pcm16'))).toBe('audio/L16');
+    expect(outputAudioMime(mk('wav'))).toBe('audio/wav');
+    expect(outputAudioMime(mk())).toBe('audio/wav'); // no providerOptions → default
+    expect(outputAudioMime(mk('something-odd'))).toBe('audio/wav'); // unknown → default
+  });
 });
 
 describe('openaiErrorToLlmError — classification', () => {
@@ -427,6 +679,15 @@ describe('openaiErrorToLlmError — classification', () => {
     expect(
       openaiErrorToLlmError(new APIError(undefined, undefined, 'mystery', undefined), 'openai'),
     ).toMatchObject({ kind: 'unknown', retryable: false });
+  });
+
+  it('classifies a content-policy / moderation code as content_filter regardless of HTTP status (1.AG §6)', () => {
+    const policy = new APIError(400, undefined, 'blocked', undefined);
+    Object.assign(policy, { code: 'content_policy_violation' });
+    expect(openaiErrorToLlmError(policy, 'openai')).toMatchObject({ kind: 'content_filter' });
+    const moderation = new APIError(400, undefined, 'blocked', undefined);
+    Object.assign(moderation, { code: 'moderation_blocked' });
+    expect(openaiErrorToLlmError(moderation, 'openai')).toMatchObject({ kind: 'content_filter' });
   });
 
   it('falls back to unknown for a non-Error throwable', () => {

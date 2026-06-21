@@ -45,6 +45,35 @@ describe('config schemas', () => {
     expect(ProjectConfigSchema.safeParse({}).success).toBe(true);
   });
 
+  it('accepts the media_job poll/deadline defaults; rejects non-positive (1.AG/ADR-0045 §7)', () => {
+    expect(
+      ProjectConfigSchema.safeParse({
+        defaults: {
+          media_job_poll_initial_ms: 5000,
+          media_job_poll_max_ms: 30000,
+          media_job_deadline_ms: 1_800_000,
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectConfigSchema.safeParse({ defaults: { media_job_poll_initial_ms: 0 } }).success,
+    ).toBe(false); // positiveInt rejects 0
+    expect(ProjectConfigSchema.safeParse({ defaults: { media_job_deadline_ms: -1 } }).success).toBe(
+      false,
+    );
+    expect(
+      ProjectConfigSchema.safeParse({ defaults: { media_job_poll_max_ms: 1.5 } }).success,
+    ).toBe(false); // fractional rejected
+  });
+
+  it('rejects media_job_poll_max_ms < media_job_poll_initial_ms (cross-field refine)', () => {
+    expect(
+      ProjectConfigSchema.safeParse({
+        defaults: { media_job_poll_initial_ms: 30000, media_job_poll_max_ms: 5000 },
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects an unknown/typo config key (strict — ADR-0023 parity)', () => {
     expect(GlobalConfigSchema.safeParse({ updatechannel: 'stable' }).success).toBe(false); // top-level typo
     expect(

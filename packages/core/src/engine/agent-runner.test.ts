@@ -1,8 +1,12 @@
-import type { Agent, OutputModality } from '@relavium/shared';
+import type { Agent, ContentPart, OutputModality } from '@relavium/shared';
+import { LlmProviderError, UnsupportedCapabilityError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmProvider,
   LlmRequest,
+  MediaGenRequest,
+  MediaGenResult,
+  MediaJobStatus,
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
@@ -15,8 +19,10 @@ import {
   buildMediaUnitsEstimate,
   createAgentNodeExecutor,
   DEFAULT_MEDIA_UNIT_ESTIMATE,
+  generativeUnits,
   type AgentRunnerDeps,
 } from './agent-runner.js';
+import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 
 const CAPS: CapabilityFlags = {
@@ -157,8 +163,20 @@ function reqCapturingProvider(supports: CapabilityFlags = CAPS): {
   const p: LlmProvider = {
     id: 'anthropic',
     supports,
-    generate: () => {
-      throw new Error('unused');
+    // A media-output turn routes to generate() (1.AG/ADR-0046); a text turn streams. Capture on both
+    // so the request is observable whichever path the node's output_modalities select. Return a media part
+    // for a media request so the node COMPLETES (not the no-media → validation failure), keeping these
+    // request-assembly tests on the success path.
+    generate: (r) => {
+      captured = r;
+      const wantsMedia = r.outputModalities?.some((m) => m !== 'text') ?? false;
+      return Promise.resolve({
+        content: wantsMedia
+          ? [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1n' } }]
+          : [{ type: 'text', text: 'ok' }],
+        stopReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
     },
     stream: (r) => {
       captured = r;
@@ -188,6 +206,73 @@ describe('createAgentNodeExecutor — dispatch', () => {
       expect(outcome.output).toBe('sum');
       expect(outcome.tokensUsed).toEqual({ input: 3, output: 2, model: 'claude-opus-4-8' });
     }
+  });
+
+  it('surfaces inline media-out as { text, media } so the engine can de-inline it (1.AG/ADR-0046)', async () => {
+    const image: ContentPart = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'aW1nLWJ5dGVz' },
+    };
+    // A provider whose generate() returns media; its stream THROWS — proving the media node routed to generate().
+    const mediaProvider: LlmProvider = {
+      id: 'gemini',
+      supports: capsWithOutput([['text', 'image']]),
+      generate: () =>
+        Promise.resolve({
+          content: [{ type: 'text', text: 'here' }, image],
+          stopReason: 'stop',
+          usage: { inputTokens: 3, outputTokens: 2 },
+        }),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for an inline media-out turn');
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(mediaProvider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_modalities: ['text', 'image'] }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      // The in-flight base64 media survives to the node output; the engine de-inlines it at #emitDurable.
+      expect(outcome.output).toEqual({ text: 'here', media: [image] });
+    }
+  });
+
+  it('FAILS visibly when a media node produced no media — never a silent text completion (Opus-fix, ADR-0046)', async () => {
+    // A capable model that returns text-only (a refusal, or ignoring the modality) must not pass off the
+    // incidental text as a successful media turn — the declared-capability pre-skip cannot catch this.
+    const textOnlyProvider: LlmProvider = {
+      id: 'gemini',
+      supports: capsWithOutput([['text', 'image']]),
+      generate: () =>
+        Promise.resolve({
+          content: [{ type: 'text', text: 'I cannot make an image' }],
+          stopReason: 'stop',
+          usage: { inputTokens: 3, outputTokens: 2 },
+        }),
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a media-out turn');
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(textOnlyProvider));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_modalities: ['text', 'image'] }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation', retryable: false },
+    });
   });
 
   it('returns a loud typed failure for a non-agent node type (1.P not yet landed)', async () => {
@@ -419,7 +504,8 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
         resolvedAgent: AGENT,
       }),
     );
-    await exec.execute(ctx);
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed'); // the media provider returns a media part → success path
     expect(req()?.outputModalities).toEqual(['text', 'image']);
   });
 
@@ -467,5 +553,436 @@ describe('buildMediaUnitsEstimate (1.AF/D17 — media-cost unit estimate)', () =
     expect(buildMediaUnitsEstimate(['image'], undefined)).toEqual([
       { modality: 'image', units: DEFAULT_MEDIA_UNIT_ESTIMATE.image },
     ]);
+  });
+});
+
+describe('createAgentNodeExecutor — generative media (1.AG Section C, generateMedia)', () => {
+  // Typed as the media variant so it satisfies MediaGenResult.media (and a node output) without a cast.
+  const image: Extract<ContentPart, { type: 'media' }> = {
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'base64', data: 'Z2VuLWltYWdl' },
+  };
+
+  /** A provider flagged media_surface 'generative' whose generateMedia returns (or throws). generate/stream
+   *  THROW — proving a generative node never touches the inline turn path. */
+  function generativeProvider(behavior?: { result?: MediaGenResult; throws?: Error }): LlmProvider {
+    const base = capsWithOutput([['image']]);
+    return {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('generate must NOT run for a generative node');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('stream must NOT run for a generative node');
+      },
+      generateMedia: () =>
+        behavior?.throws === undefined
+          ? Promise.resolve(behavior?.result ?? { media: image, raw: { internal: true } })
+          : Promise.reject(behavior.throws),
+    };
+  }
+  const genDeps = (p: LlmProvider, over: Partial<AgentRunnerDeps> = {}): AgentRunnerDeps =>
+    deps(p, { resolveMediaSurface: () => 'generative', ...over });
+  const genVertex = (over: Partial<AgentPlanConfig['node']> = {}): PlanVertex =>
+    vertexFor({
+      kind: 'agent',
+      node: agentNode({ output_modalities: ['image'], ...over }),
+      resolvedAgent: AGENT,
+    });
+
+  it('routes a generative model to generateMedia and outputs { text:"", media:[part] } + one token-free cost:updated', async () => {
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
+    const { ctx, events } = ctxFor(genVertex());
+    const outcome = await exec.execute(ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.output).toEqual({ text: '', media: [image] }); // raw is NOT placed in the media part
+    }
+    const cost = events.filter((e) => e.type === 'cost:updated');
+    expect(cost).toHaveLength(1); // exactly one realized addend (ADR-0045 §5)
+    expect(cost[0]).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      nodeId: 'n1',
+      model: 'claude-opus-4-8',
+    });
+  });
+
+  it('a chat model (default surface, no resolveMediaSurface) keeps the normal turn — never generateMedia', async () => {
+    // No resolveMediaSurface dep → default 'chat'. The provider's generateMedia would throw if reached.
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: () => streamOf([{ type: 'text_delta', text: 'hi' }, STOP]),
+      generateMedia: () => Promise.reject(new Error('generateMedia must NOT run for a chat node')),
+    };
+    const exec = createAgentNodeExecutor(deps(provider)); // no resolveMediaSurface
+    const { ctx } = ctxFor(agentVertex());
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({ kind: 'completed', output: 'hi' });
+  });
+
+  it('fails internal when the model is generative but the provider implements no generateMedia (host-wiring gap)', async () => {
+    const base = capsWithOutput([['image']]);
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => streamOf([STOP]),
+      // no generateMedia
+    };
+    const exec = createAgentNodeExecutor(genDeps(provider));
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'internal' } });
+  });
+
+  it('hands a jobId off as a media_job outcome for the engine poll loop (1.AG Section D)', async () => {
+    const jobExec = createAgentNodeExecutor(
+      genDeps(generativeProvider({ result: { jobId: 'job-1', raw: {} } })),
+    );
+    const outcome = await jobExec.execute(ctxFor(genVertex({ count: 2 })).ctx);
+    expect(outcome).toMatchObject({
+      kind: 'media_job',
+      job: {
+        jobId: 'job-1',
+        provider: 'openai',
+        model: 'claude-opus-4-8',
+        modality: 'image',
+        units: 2, // the authored count → the engine's lone realized cost addend at done
+      },
+    });
+  });
+
+  it('fails validation when a generative node does not declare exactly one media modality', async () => {
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
+    // text+image (has text + two members) is rejected — a generative model emits pure media.
+    const outcome = await exec.execute(
+      ctxFor(genVertex({ output_modalities: ['text', 'image'] })).ctx,
+    );
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+  });
+
+  it('gates pre-egress with maxTokens:0 + the media estimate → budget_exceeded (no generateMedia egress)', async () => {
+    let called = false;
+    let info: { maxTokens?: number; mediaUnitsEstimate?: unknown } | undefined;
+    const provider = generativeProvider();
+    const wrapped: LlmProvider = {
+      ...provider,
+      generateMedia: (req, key) => {
+        called = true;
+        return provider.generateMedia?.(req, key) ?? Promise.reject(new Error('no'));
+      },
+    };
+    const exec = createAgentNodeExecutor(
+      genDeps(wrapped, {
+        preEgress: (i) => {
+          info = i;
+          return Promise.reject(new BudgetExceededError(100, 50, 120));
+        },
+      }),
+    );
+    const outcome = await exec.execute(ctxFor(genVertex({ count: 2 })).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'budget_exceeded' } });
+    expect(called).toBe(false); // gate fails before any provider egress
+    // The gate pins the TOKEN estimate to 0 (a generative call emits none) + carries the authored media volume.
+    expect(info?.maxTokens).toBe(0);
+    expect(info?.mediaUnitsEstimate).toEqual([{ modality: 'image', units: 2 }]);
+  });
+
+  it('maps a generateMedia provider error through the chat taxonomy (content_filter stays content_filter)', async () => {
+    const exec = createAgentNodeExecutor(
+      genDeps(
+        generativeProvider({
+          throws: new LlmProviderError(
+            makeLlmError({ provider: 'openai', kind: 'content_filter', message: 'blocked' }),
+          ),
+        }),
+      ),
+    );
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'content_filter' } });
+  });
+
+  it('fails validation for an empty resolved prompt (the seam nonEmptyString contract) — no provider egress', async () => {
+    let called = false;
+    const provider = generativeProvider();
+    const wrapped: LlmProvider = {
+      ...provider,
+      generateMedia: (req, key) => {
+        called = true;
+        return provider.generateMedia?.(req, key) ?? Promise.reject(new Error('no'));
+      },
+    };
+    // A node with no prompt_template resolves to an empty prompt.
+    const exec = createAgentNodeExecutor(genDeps(wrapped));
+    const ctx = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: { id: 'n1', type: 'agent', agent_ref: 'summarizer', output_modalities: ['image'] },
+        resolvedAgent: AGENT,
+      }),
+    ).ctx;
+    expect(await exec.execute(ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation' },
+    });
+    expect(called).toBe(false);
+  });
+
+  it('maps the authored count/duration_seconds onto the MediaGenRequest at dispatch', async () => {
+    let captured: MediaGenRequest | undefined;
+    const base = capsWithOutput([['image']]);
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('unused');
+      },
+      generateMedia: (req) => {
+        captured = req;
+        return Promise.resolve({ media: image, raw: {} });
+      },
+    };
+    const exec = createAgentNodeExecutor(genDeps(provider));
+    await exec.execute(ctxFor(genVertex({ count: 4 })).ctx);
+    expect(captured?.count).toBe(4);
+    expect(captured?.durationSeconds).toBeUndefined();
+    expect(captured?.modality).toBe('image');
+    expect(captured?.prompt).toBe('Summarize: hi'); // the resolved prompt_template
+  });
+
+  it('forwards duration_seconds → durationSeconds for an audio generative node', async () => {
+    let captured: MediaGenRequest | undefined;
+    const audio: Extract<ContentPart, { type: 'media' }> = {
+      type: 'media',
+      mimeType: 'audio/wav',
+      source: { kind: 'base64', data: 'YXVkaW8=' },
+    };
+    const base = capsWithOutput([['audio']]);
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: { ...base, media: { ...base.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('unused');
+      },
+      generateMedia: (req) => {
+        captured = req;
+        return Promise.resolve({ media: audio, raw: {} });
+      },
+    };
+    const exec = createAgentNodeExecutor(genDeps(provider));
+    const outcome = await exec.execute(
+      ctxFor(genVertex({ output_modalities: ['audio'], duration_seconds: 8 })).ctx,
+    );
+    expect(outcome.kind).toBe('completed');
+    expect(captured?.durationSeconds).toBe(8);
+    expect(captured?.modality).toBe('audio');
+    expect(captured?.count).toBeUndefined();
+  });
+
+  it('fails internal on a neither-media-nor-jobId result (the unreachable-in-practice guard)', async () => {
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider({ result: { raw: {} } })));
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal' },
+    });
+  });
+
+  it('fails internal on a BOTH-media-and-jobId result — the XOR is enforced, media is never silently discarded', async () => {
+    // The seam refine (MediaGenResultSchema) forbids both, but the adapter result is not re-parsed at the
+    // executor boundary; a hand-built result with both must fail loud (the async jobId branch would otherwise
+    // win and silently DROP the media), not produce a handle-less media_job nor a discarded image.
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider({ result: { media: image, jobId: 'job-x', raw: {} } })),
+    );
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal' },
+    });
+  });
+
+  it('classifies a seam UnsupportedCapabilityError as validation (not opaque internal)', async () => {
+    const exec = createAgentNodeExecutor(
+      genDeps(
+        generativeProvider({
+          throws: new UnsupportedCapabilityError('openai', 'media', 'no audio'),
+        }),
+      ),
+    );
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation' },
+    });
+  });
+
+  it('redacts a keyFor throw into a fixed provider_auth failure (no secret leak)', async () => {
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider(), {
+        keyFor: () => {
+          throw new Error('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
+        },
+      }),
+    );
+    const outcome = await exec.execute(ctxFor(genVertex()).ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'provider_auth' } });
+    if (outcome.kind === 'failed') {
+      expect(outcome.error.message).not.toContain('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
+    }
+  });
+
+  it('pollMediaJob (the engine delegate): missing pollMediaJob → failed(unknown); a keyFor throw → secret-free failed(auth)', async () => {
+    const job = {
+      jobId: 'j1',
+      provider: 'anthropic' as const,
+      model: 'm',
+      modality: 'image' as const,
+      units: 1,
+    };
+    const signal = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    // (1) The resolved provider implements no pollMediaJob → a secret-free failed(unknown) MediaJobStatus.
+    const noPoll: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => streamOf([STOP]),
+    };
+    const exec1 = createAgentNodeExecutor(deps(noPoll));
+    const r1: MediaJobStatus | undefined = await exec1.pollMediaJob?.(job, signal);
+    expect(r1).toMatchObject({ state: 'failed', error: { kind: 'unknown', retryable: false } });
+
+    // (2) keyFor throws a secret-bearing error → a FIXED secret-free failed(auth), the original dropped.
+    const withPoll: LlmProvider = {
+      ...noPoll,
+      pollMediaJob: () => Promise.resolve({ state: 'pending' }),
+    };
+    const exec2 = createAgentNodeExecutor(
+      deps(withPoll, {
+        keyFor: () => {
+          throw new Error('SECRET-KEY-RESOLUTION-DETAIL');
+        },
+      }),
+    );
+    const r2: MediaJobStatus | undefined = await exec2.pollMediaJob?.(job, signal);
+    expect(r2).toMatchObject({ state: 'failed', error: { kind: 'auth' } });
+    if (r2?.state === 'failed') {
+      expect(r2.error.message).not.toContain('SECRET-KEY-RESOLUTION-DETAIL');
+    }
+  });
+
+  it('fails validation when the produced media modality does not match the request (defense-in-depth)', async () => {
+    const audio: Extract<ContentPart, { type: 'media' }> = {
+      type: 'media',
+      mimeType: 'audio/wav',
+      source: { kind: 'base64', data: 'YXVkaW8=' },
+    };
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider({ result: { media: audio, raw: {} } })),
+    );
+    // node requests image, provider returns audio → validation
+    expect(await exec.execute(ctxFor(genVertex()).ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation' },
+    });
+  });
+
+  it('a pre-aborted signal fails cancelled with no generateMedia egress', async () => {
+    let called = false;
+    const provider = generativeProvider();
+    const wrapped: LlmProvider = {
+      ...provider,
+      generateMedia: (req, key) => {
+        called = true;
+        return provider.generateMedia?.(req, key) ?? Promise.reject(new Error('no'));
+      },
+    };
+    const { ctx } = ctxFor(genVertex());
+    const aborted: NodeExecContext = {
+      ...ctx,
+      signal: {
+        aborted: true,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+    };
+    expect(await createAgentNodeExecutor(genDeps(wrapped)).execute(aborted)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'cancelled' },
+    });
+    expect(called).toBe(false);
+  });
+
+  it('a BudgetPauseError on the generative pre-egress gate → paused (the human-gate seam, not internal)', async () => {
+    // The generative path must map a budget PAUSE to the gate seam exactly like the chat path — a future
+    // refactor that dropped the pause arm would leave a budget-paused generative run non-resumably internal-failed.
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider(), {
+        preEgress: () => Promise.reject(new BudgetPauseError(100, 50, 90)),
+      }),
+    );
+    expect((await exec.execute(ctxFor(genVertex()).ctx)).kind).toBe('paused');
+  });
+
+  it('a cancel landing DURING generateMedia (the post-await re-check) → cancelled, no stray cost:updated', async () => {
+    // The pre-egress abort check passes (signal not yet aborted), generateMedia resolves a VALID result while
+    // the run cancels mid-flight, and the post-await re-check must win — returning `cancelled` BEFORE the cost
+    // emit (#onOutcome's #settled guard cannot un-emit a fired cost:updated).
+    const sig = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    const provider: LlmProvider = {
+      ...generativeProvider(),
+      generateMedia: () => {
+        sig.aborted = true; // the run cancels while generateMedia is in-flight (it still resolves a result)
+        return Promise.resolve({ media: image, raw: {} });
+      },
+    };
+    const { ctx, events } = ctxFor(genVertex());
+    const outcome = await createAgentNodeExecutor(genDeps(provider)).execute({
+      ...ctx,
+      signal: sig,
+    });
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
+    expect(events.filter((e) => e.type === 'cost:updated')).toHaveLength(0); // the post-await guard suppresses it
+  });
+});
+
+describe('generativeUnits — authored media volume (ADR-0045 §5)', () => {
+  it('image: count, defaulting to the conservative built-in when unset', () => {
+    expect(generativeUnits('image', agentNode({ count: 4 }))).toBe(4);
+    expect(generativeUnits('image', agentNode())).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.image);
+  });
+
+  it('audio/video: duration_seconds, defaulting to the conservative built-in when unset', () => {
+    expect(generativeUnits('audio', agentNode({ duration_seconds: 12 }))).toBe(12);
+    expect(generativeUnits('video', agentNode())).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.video);
+  });
+
+  it('audio/video: count × duration_seconds when BOTH are authored (N clips of D seconds)', () => {
+    expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(30);
+    // count alone (no duration) multiplies the conservative duration default — never silently dropped.
+    expect(generativeUnits('audio', agentNode({ count: 2 }))).toBe(
+      DEFAULT_MEDIA_UNIT_ESTIMATE.audio * 2,
+    );
   });
 });

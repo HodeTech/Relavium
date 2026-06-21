@@ -6,6 +6,8 @@ import {
   ERROR_CODES,
   EXECUTION_MODES,
   FS_SCOPE_TIERS,
+  LLM_PROVIDERS,
+  MEDIA_BILLED_MODALITIES,
   STOP_REASONS,
 } from './constants.js';
 import { GateTypeSchema, TimeoutActionSchema } from './node.js';
@@ -258,6 +260,29 @@ export const NodeRetryingEventSchema = z.object({
   delayMs: nonNegativeInt,
 });
 
+/**
+ * An async media-generation job was submitted to a provider; the engine now owns its
+ * poll/checkpoint/resume/cancel loop (1.AG, ADR-0045 §2). **Durable** so a crash-resume RE-ATTACHES
+ * (re-polls the persisted opaque `jobId`) rather than re-submitting (which would double-bill + orphan
+ * the vendor job). The node parks — a NON-terminal suspension — until its terminal
+ * `node:completed | node:failed | node:skipped`. Per-poll progress is transient (never persisted).
+ * `jobId` is Relavium-opaque, never the vendor operation-name (ADR-0011 I1).
+ */
+export const MediaJobSubmittedEventSchema = z.object({
+  type: z.literal('media_job:submitted'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  jobId: nonEmptyString, // the Relavium-opaque job id the engine polls (never the vendor op-name)
+  provider: z.enum(LLM_PROVIDERS),
+  model: nonEmptyString, // canonical model id
+  modality: z.enum(MEDIA_BILLED_MODALITIES), // image | audio | video
+  startedAt: z.string().datetime({ offset: true }), // ISO-8601 job-SUBMIT time (when generateMedia returned the jobId; the deadlineAt anchor), not the node-start time
+  // deadlineAt = startedAt + [defaults].media_job_deadline_ms; on resume `now > deadlineAt` short-circuits a
+  // doomed re-poll. An offset is allowed, so a consumer MUST compare via Date.parse, never lexicographically.
+  deadlineAt: z.string().datetime({ offset: true }),
+});
+export type MediaJobSubmittedEvent = z.infer<typeof MediaJobSubmittedEventSchema>;
+
 /** Why a node was skipped — `branch_not_taken` (a `condition` routed away) or `upstream_unreachable`. */
 export const NodeSkippedReasonSchema = z.enum(['branch_not_taken', 'upstream_unreachable']);
 export type NodeSkippedReason = z.infer<typeof NodeSkippedReasonSchema>;
@@ -329,9 +354,14 @@ export const RunCancelledEventSchema = z.object({
 export const RunPausedEventSchema = z.object({
   type: z.literal('run:paused'),
   ...runBase,
-  // The multi-gate aggregate — emitted while ≥1 gate is pending (parallel branches each gate).
-  pendingGateCount: positiveInt,
-  gateIds: z.array(nonEmptyString).min(1),
+  // The multi-gate aggregate — gates pending while the run parks (parallel branches each gate). `0`/empty
+  // when the run parks ONLY on an async media job (1.AG Section D); the engine emits `run:paused` only while
+  // genuinely parked (a gate OR a media job OR BOTH — AG-A-FC-3), so ≥1 reason holds by construction.
+  pendingGateCount: z.number().int().min(0),
+  gateIds: z.array(nonEmptyString),
+  // The async media-job park (1.AG Section D, [ADR-0045](../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §2):
+  // node ids parked on an engine-owned `pollMediaJob` loop, reusing the gate-suspend machinery.
+  pendingMediaJobNodeIds: z.array(nonEmptyString).min(1).optional(),
 });
 
 export const RunTimeoutEventSchema = z.object({
@@ -371,6 +401,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   NodeFailedEventSchema,
   NodeSkippedEventSchema,
   NodeRetryingEventSchema,
+  MediaJobSubmittedEventSchema,
   HumanGatePausedEventSchema,
   HumanGateResumedEventSchema,
   RunCompletedEventSchema,
@@ -411,6 +442,45 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       code: z.ZodIssueCode.custom,
       message: 'timeoutAction is only valid when timeoutMs is also present',
       path: ['timeoutAction'],
+    });
+  }
+  // A pause always has a reason: ≥1 gate OR ≥1 media job (1.AG Section D). The member's field constraints were
+  // relaxed (a media-only park has 0 gates), so the disjunction is enforced here at the union level (a
+  // discriminatedUnion member can't carry its own cross-field refinement). The engine never emits a zero-reason
+  // run:paused; this rejects a malformed one.
+  if (
+    event.type === 'run:paused' &&
+    event.gateIds.length === 0 &&
+    (event.pendingMediaJobNodeIds?.length ?? 0) === 0
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'run:paused must carry at least one suspension reason (a gate or a media job)',
+      path: ['gateIds'],
+    });
+  }
+  // `pendingGateCount` is the aggregate count of `gateIds` — relaxing both fields to `min(0)` (for a media-only
+  // park) dropped the structural guarantee that they agree, so re-assert it here. A consumer that reads
+  // `pendingGateCount` as the authoritative gate count must not diverge from the `gateIds` list it pairs with.
+  if (event.type === 'run:paused' && event.pendingGateCount !== event.gateIds.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'run:paused pendingGateCount must equal gateIds.length',
+      path: ['pendingGateCount'],
+    });
+  }
+  // `deadlineAt = startedAt + media_job_deadline_ms` by construction, so deadlineAt < startedAt is a malformed
+  // durable event that would invert the resume `now > deadlineAt` short-circuit. Compare via Date.parse (an
+  // offset is allowed, so never lexically). Enforced at the union level — a member-level `.refine()` would make
+  // a ZodEffects and break the discriminatedUnion (same reason the run:paused cross-field checks live here).
+  if (
+    event.type === 'media_job:submitted' &&
+    Date.parse(event.deadlineAt) < Date.parse(event.startedAt)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'media_job:submitted deadlineAt must be >= startedAt',
+      path: ['deadlineAt'],
     });
   }
 });

@@ -604,7 +604,7 @@ export class FallbackChain {
     provider: ProviderId,
     resolve: (handle: string, provider: ProviderId) => Promise<MediaSource>,
   ): Promise<MediaSource> {
-    const key = `${provider} ${handle}`;
+    const key = `${provider}\u0000${handle}`; // NUL joiner: cannot occur in a provider id or a handle
     const cached = this.#egressSidecar.get(key);
     if (cached !== undefined) {
       return cached;

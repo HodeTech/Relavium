@@ -14,16 +14,19 @@ import {
 } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
-import { InvalidBaseUrlError } from '../errors.js';
+import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
   LlmError,
+  LlmErrorKind,
   LlmMessage,
   LlmProvider,
   LlmRequest,
   LlmResult,
+  MediaGenRequest,
+  MediaGenResult,
   MediaUnitsEntry,
   ProviderId,
   StreamChunk,
@@ -32,7 +35,12 @@ import type {
   Usage,
 } from '../types.js';
 
-import { REASONING_ID, assertMediaCapabilities, isAbortSignal } from './shared.js';
+import {
+  REASONING_ID,
+  assertMediaCapabilities,
+  assertNoStreamingMediaOutput,
+  isAbortSignal,
+} from './shared.js';
 
 /**
  * The shared OpenAI-compatible adapter (1.G) — one implementation over the `openai` SDK serving both
@@ -64,6 +72,7 @@ const OPENAI_SUPPORTS: CapabilityFlags = {
     // adapter, so advertising document:true would be "advertised-but-unsendable" (ADR-0031).
     input: { image: true, audio: true, video: false, document: false },
     outputCombinations: [['text'], ['text', 'audio']],
+    surface: 'chat', // inline audio is a chat turn; gpt-image-1/Sora generative endpoints are 1.AG Section C/D
   },
 };
 
@@ -78,6 +87,7 @@ const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   media: {
     input: { image: false, audio: false, video: false, document: false },
     outputCombinations: [],
+    surface: 'chat', // DeepSeek: text-only, no media generation — 1.AG/ADR-0045 §1
   },
 };
 
@@ -162,7 +172,51 @@ function parseToolArgs(raw: string): unknown {
   }
 }
 
-/** Fold a non-streaming assistant message into canonical content parts (text + tool_call). */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** OpenAI's accepted inline-audio output formats (a closed union on the SDK param) — used to narrow a
+ *  caller-supplied `providerOptions.audio.format` to a valid value (default `wav`). */
+const OPENAI_AUDIO_FORMATS = ['wav', 'aac', 'mp3', 'flac', 'opus', 'pcm16'] as const;
+
+/** Map a requested image-out MIME (`MediaGenRequest.mimeType`) to OpenAI's image `output_format` enum, or
+ *  `undefined` to leave the default (gpt-image-1 → PNG). Only the gpt-image-1-supported formats are honored. */
+function imageOutputFormat(mimeType: string | undefined): 'png' | 'jpeg' | 'webp' | undefined {
+  switch (mimeType) {
+    case 'image/png':
+      return 'png';
+    case 'image/jpeg':
+    case 'image/jpg': // the common non-canonical alias — map it rather than silently falling back to PNG
+      return 'jpeg';
+    case 'image/webp':
+      return 'webp';
+    default:
+      return undefined;
+  }
+}
+
+/** Map a requested output-audio `format` (providerOptions.audio.format) to its MIME — OpenAI's response
+ *  echoes no format, so the requested one types the media part. Defaults to `audio/wav` (OpenAI's default). */
+export function outputAudioMime(req: LlmRequest): string {
+  const opts = req.providerOptions;
+  const audio = isRecord(opts) ? opts['audio'] : undefined;
+  switch (isRecord(audio) ? audio['format'] : undefined) {
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'opus':
+      return 'audio/opus';
+    case 'flac':
+      return 'audio/flac';
+    case 'aac':
+      return 'audio/aac';
+    case 'pcm16':
+      return 'audio/L16';
+    default:
+      return 'audio/wav';
+  }
+}
+
+/** Fold a non-streaming assistant message into canonical content parts (text + tool_call + inline audio). */
 export function mapContent(
   message: {
     content: string | null;
@@ -172,8 +226,11 @@ export function mapContent(
     tool_calls?:
       | ReadonlyArray<{ id: string; function?: { name: string; arguments: string } }>
       | undefined;
+    // Inline audio-out (modalities ['text','audio']): base64 audio + its transcript (1.AG/ADR-0046).
+    audio?: { data: string; transcript?: string | null } | null;
   },
   provider: ProviderId,
+  audioMime = 'audio/wav',
 ): ContentPart[] {
   const parts: ContentPart[] = [];
   if (
@@ -185,6 +242,21 @@ export function mapContent(
   }
   if (message.content !== null && message.content.length > 0) {
     parts.push({ type: 'text', text: message.content });
+  }
+  // Inline audio-out (1.AG/ADR-0046): surface the spoken transcript as a text part PLUS the audio as an
+  // in-flight base64 media part; the engine de-inlines the media to a handle at #emitDurable (1.AF).
+  // OpenAI sets `message.content` to null when audio output is requested, so the transcript text and the
+  // `content` text above are mutually exclusive in practice — the transcript is not a duplicate of `content`.
+  if (message.audio !== null && message.audio !== undefined && message.audio.data.length > 0) {
+    const transcript = message.audio.transcript ?? '';
+    if (transcript.length > 0) {
+      parts.push({ type: 'text', text: transcript });
+    }
+    parts.push({
+      type: 'media',
+      mimeType: audioMime,
+      source: { kind: 'base64', data: message.audio.data },
+    });
   }
   for (const call of message.tool_calls ?? []) {
     if (call.function === undefined) {
@@ -211,6 +283,12 @@ function firstNonEmptyString(...values: readonly unknown[]): string | undefined 
   return undefined;
 }
 
+/** An OpenAI content-policy / moderation rejection code (image-gen + chat). Its own fatal cause, not a
+ *  generic bad_request — so `codeForLlmError` yields `content_filter` (1.AG/ADR-0045 §6). */
+function isContentPolicyCode(code: string | undefined): boolean {
+  return code === 'content_policy_violation' || code === 'moderation_blocked';
+}
+
 /** Normalize an SDK `APIError` into an `LlmError`, typed by the structural subset it reads. */
 function mapOpenAiApiError(
   err: { status?: unknown; code?: unknown; type?: unknown; message: string },
@@ -218,7 +296,16 @@ function mapOpenAiApiError(
 ): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = firstNonEmptyString(err.code, err.type);
-  const kind = status === undefined ? 'unknown' : kindFromHttpStatus(status);
+  // A content-policy block normalizes to content_filter regardless of HTTP status (a moderation 400 would
+  // otherwise map to bad_request) — the wired image-gen path then delivers the documented taxonomy.
+  let kind: LlmErrorKind;
+  if (isContentPolicyCode(code)) {
+    kind = 'content_filter';
+  } else if (status === undefined) {
+    kind = 'unknown';
+  } else {
+    kind = kindFromHttpStatus(status);
+  }
   return makeLlmError({
     provider,
     kind,
@@ -460,21 +547,7 @@ function buildCommonBody(
     body.tool_choice = toOpenAiToolChoice(req.toolChoice);
   }
   if (req.responseFormat?.type === 'json') {
-    if (provider === 'deepseek') {
-      // DeepSeek only supports json_object; json_schema returns 400 (ADR-0030).
-      // Note: DeepSeek json_object also requires the word "json" to appear in the prompt.
-      body.response_format = { type: 'json_object' };
-    } else {
-      // Native structured output for OpenAI (ADR-0030). The canonical JSON-Schema bridges here.
-      body.response_format = {
-        type: 'json_schema',
-        json_schema: {
-          name: toJsonSchemaName(req.responseFormat.name),
-          schema: req.responseFormat.schema as Record<string, unknown>,
-          strict: req.responseFormat.strict ?? true,
-        },
-      };
-    }
+    body.response_format = toOpenAiResponseFormat(req.responseFormat, provider);
   }
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
@@ -485,11 +558,51 @@ function buildCommonBody(
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
   }
+  if (req.outputModalities?.includes('audio')) {
+    // Inline audio-out (1.AG/ADR-0046): request the text+audio combination. `body` is spread last below, so
+    // these win over a raw providerOptions echo.
+    body.modalities = ['text', 'audio'];
+    body.audio = resolveOpenAiAudio(req.providerOptions);
+  }
   if (req.providerOptions === undefined) {
     return body;
   }
   // The typed escape hatch (1.D): `body` is spread LAST so mapped common-path fields always win.
   return { ...req.providerOptions, ...body };
+}
+
+/** Lower a canonical `responseFormat: json` to OpenAI's `response_format`: DeepSeek supports only
+ *  `json_object` (json_schema 400s — ADR-0030; it also needs the word "json" in the prompt); OpenAI uses
+ *  native `json_schema` (the canonical JSON-Schema bridges here). */
+function toOpenAiResponseFormat(
+  responseFormat: Extract<NonNullable<LlmRequest['responseFormat']>, { type: 'json' }>,
+  provider: ProviderId,
+): NonNullable<OpenAI.ChatCompletionCreateParams['response_format']> {
+  if (provider === 'deepseek') {
+    return { type: 'json_object' };
+  }
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: toJsonSchemaName(responseFormat.name),
+      schema: responseFormat.schema as Record<string, unknown>,
+      strict: responseFormat.strict ?? true,
+    },
+  };
+}
+
+/** Resolve OpenAI inline-audio `voice` (any string) + `format` (a closed union) from
+ *  `providerOptions.audio` when supplied, else OpenAI's defaults (1.AG/ADR-0046). */
+function resolveOpenAiAudio(providerOptions: LlmRequest['providerOptions']): {
+  voice: string;
+  format: (typeof OPENAI_AUDIO_FORMATS)[number];
+} {
+  const audioOpts = isRecord(providerOptions) ? providerOptions['audio'] : undefined;
+  const voice =
+    isRecord(audioOpts) && typeof audioOpts['voice'] === 'string' ? audioOpts['voice'] : 'alloy';
+  const rawFormat = isRecord(audioOpts) ? audioOpts['format'] : undefined;
+  const format = OPENAI_AUDIO_FORMATS.find((f) => f === rawFormat) ?? 'wav';
+  return { voice, format };
 }
 
 function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
@@ -732,9 +845,14 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
         const refused =
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
+        // Compute the inline-audio output MIME only when audio was actually requested (it is read solely by
+        // mapContent's audio branch); a text turn keeps the default and pays no providerOptions scan.
+        const audioMime = req.outputModalities?.includes('audio')
+          ? outputAudioMime(req)
+          : 'audio/wav';
         return {
           // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
-          content: choice === undefined ? [] : mapContent(choice.message, providerId),
+          content: choice === undefined ? [] : mapContent(choice.message, providerId, audioMime),
           stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
           usage: completion.usage ? mapUsage(completion.usage) : ZERO_USAGE,
           raw: completion,
@@ -747,7 +865,68 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
+      assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(createClient(key), req, providerId);
+    },
+    /**
+     * Separate-endpoint media generation (1.AG Section C, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+     * SYNC image generation via gpt-image-1 (`client.images.generate` → base64). Audio (TTS via
+     * `audio.speech`) and video are NOT wired here yet — they fail loud with a typed capability error, never a
+     * silent drop (deferred — deferred-tasks.md). DeepSeek generates no media. No vendor type crosses the seam:
+     * the result is a normalized `MediaGenResult` whose `raw` is strip-discarded by sinks.
+     */
+    async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
+      if (providerId !== 'openai' || req.modality !== 'image') {
+        throw new UnsupportedCapabilityError(
+          providerId,
+          'media',
+          `${providerId} generateMedia supports only OpenAI image generation, not '${req.modality}' (audio/video deferred)`,
+        );
+      }
+      if (req.count !== undefined && req.count > 1) {
+        // The SYNC seam carries a SINGLE MediaPart. Rather than generate (and have the engine bill) N images
+        // and silently drop N-1, reject count > 1 loudly until a multi-part media-array result lands (a future
+        // additive ADR-0031 seam amendment, deferred-tasks.md) — never deliver fewer artifacts than billed.
+        throw new LlmProviderError(
+          makeLlmError({
+            provider: providerId,
+            kind: 'bad_request',
+            message: `OpenAI image generateMedia delivers a single image; count ${String(req.count)} > 1 is not supported on the SYNC seam`,
+          }),
+        );
+      }
+      // Honor a requested output format (req.mimeType → png/jpeg/webp); the result MIME reflects what we asked
+      // for (or gpt-image-1's PNG default). (providerOptions image knobs — size/quality — are not set by the
+      // engine in Section C; threading them is a bounded follow-up with the image-knob work, deferred-tasks.md.)
+      const outputFormat = imageOutputFormat(req.mimeType);
+      let response: OpenAI.ImagesResponse;
+      try {
+        response = await createClient(key).images.generate(
+          {
+            model: req.model,
+            prompt: req.prompt,
+            ...(outputFormat === undefined ? {} : { output_format: outputFormat }),
+          },
+          isAbortSignal(req.signal) ? { signal: req.signal } : {},
+        );
+      } catch (err) {
+        throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+      }
+      const b64 = response.data?.[0]?.b64_json;
+      if (b64 === undefined || b64.length === 0) {
+        throw new LlmProviderError(
+          makeLlmError({
+            provider: providerId,
+            kind: 'bad_request',
+            message: 'OpenAI image generation returned no base64 image data',
+          }),
+        );
+      }
+      const mimeType = outputFormat === undefined ? 'image/png' : `image/${outputFormat}`;
+      return {
+        media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
+        raw: response,
+      };
     },
   };
 }

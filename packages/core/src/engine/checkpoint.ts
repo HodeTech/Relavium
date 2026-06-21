@@ -15,7 +15,7 @@
  * wrongly skip-propagated; the dimmed branches are restored from `node:skipped`.
  */
 
-import type { RunEvent, RunStatus } from '@relavium/shared';
+import type { LlmProviderId, MediaBilledModality, RunEvent, RunStatus } from '@relavium/shared';
 
 import type { NodeFailure } from './node-executor.js';
 
@@ -41,6 +41,23 @@ export interface CheckpointPendingGate {
   readonly isBudgetGate: boolean;
 }
 
+/**
+ * An async media-generation job still in flight at the checkpoint (1.AG, ADR-0045 §2-3). The run resumes by
+ * **re-polling** the persisted opaque `jobId` (re-attach), NEVER re-submitting. Keyed by `nodeId` in the
+ * fold — one in-flight job per node, latest `media_job:submitted` wins. Carries everything a re-attach needs.
+ */
+export interface CheckpointPendingMediaJob {
+  readonly nodeId: string;
+  /** The Relavium-opaque job id to re-poll (never the vendor operation-name). */
+  readonly jobId: string;
+  readonly provider: LlmProviderId;
+  readonly model: string;
+  readonly modality: MediaBilledModality;
+  /** ISO-8601 submit time and absolute deadline; on resume `now > deadlineAt` short-circuits a doomed re-poll. */
+  readonly startedAt: string;
+  readonly deadlineAt: string;
+}
+
 /** The derived state a rehydrating run is rebuilt from — never a persisted blob (reconstructed from rows). */
 export interface CheckpointState {
   readonly schemaVersion: number;
@@ -56,6 +73,8 @@ export interface CheckpointState {
   readonly completedNodeIds: readonly string[];
   /** Gates still pending a decision — the run is resumable via `engine.resume(runId, gateId, decision)`. */
   readonly pendingGates: readonly CheckpointPendingGate[];
+  /** Async media jobs in flight at the checkpoint — the run resumes by re-polling each (re-attach, ADR-0045 §3). */
+  readonly pendingMediaJobs: readonly CheckpointPendingMediaJob[];
   /** Gate ids ALREADY resolved (a `human_gate:resumed` was persisted) — so re-delivering a decision after a
    *  reconnect is an idempotent no-op rather than advancing the run twice (execution-model.md §gate). */
   readonly resolvedGateIds: readonly string[];
@@ -92,6 +111,8 @@ interface ReconAccumulator {
   cumulativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
   readonly pendingGates: Map<string, { nodeId: string; isBudgetGate: boolean }>;
+  /** Keyed by `nodeId` — one in-flight media job per node; a re-submit replaces the entry (latest wins). */
+  readonly pendingMediaJobs: Map<string, CheckpointPendingMediaJob>;
   readonly resolvedGateIds: Set<string>;
 }
 
@@ -119,6 +140,15 @@ function applyRunEvent(acc: ReconAccumulator, event: RunEvent): void {
 
 /** Node-level settlements: completed (+ branch selection, token tally), failed, skipped. */
 function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
+  // A node's terminal clears any in-flight media job it had parked (ADR-0045 §2): the artifact (or failure)
+  // has settled, so there is nothing to re-attach to on resume.
+  if (
+    event.type === 'node:completed' ||
+    event.type === 'node:failed' ||
+    event.type === 'node:skipped'
+  ) {
+    acc.pendingMediaJobs.delete(event.nodeId);
+  }
   switch (event.type) {
     case 'node:completed':
       acc.nodeStates.set(event.nodeId, {
@@ -157,6 +187,35 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
       // 1.S/ADR-0040 — the terminal is a later node:failed/node:completed) are non-state-bearing here.
       break;
   }
+}
+
+/**
+ * Async media-job lifecycle (ADR-0045 §2-3): a `media_job:submitted` PARKS the node (a non-terminal
+ * suspension) and records the job keyed by `nodeId` (latest submit replaces — a node-retry re-dispatch
+ * mints a fresh job for the same node). The terminal clear lives in {@link applyNodeEvent}.
+ */
+function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
+  if (event.type !== 'media_job:submitted') {
+    return;
+  }
+  // Defensive: never resurrect a node that has already SETTLED. The emit-order invariant (a submit precedes
+  // its node's terminal) holds, so this is belt-and-suspenders — but it makes the fold order-independent, so
+  // a stale/duplicate submit folded after a node:completed/failed/skipped cannot re-park the node or re-add a
+  // cleared entry.
+  const settled = acc.nodeStates.get(event.nodeId)?.status;
+  if (settled === 'completed' || settled === 'failed' || settled === 'skipped') {
+    return;
+  }
+  acc.nodeStates.set(event.nodeId, { status: 'paused' });
+  acc.pendingMediaJobs.set(event.nodeId, {
+    nodeId: event.nodeId,
+    jobId: event.jobId,
+    provider: event.provider,
+    model: event.model,
+    modality: event.modality,
+    startedAt: event.startedAt,
+    deadlineAt: event.deadlineAt,
+  });
 }
 
 /** Human-gate / budget-gate lifecycle: park a pending gate, or resolve it (decision becomes the gate vertex output). */
@@ -220,6 +279,7 @@ export function reconstructCheckpointState(
     cumulativeCostMicrocents: 0,
     nodeStates: new Map(),
     pendingGates: new Map(),
+    pendingMediaJobs: new Map(),
     resolvedGateIds: new Set(),
   };
 
@@ -230,6 +290,7 @@ export function reconstructCheckpointState(
     }
     applyRunEvent(acc, event);
     applyNodeEvent(acc, event);
+    applyMediaJobEvent(acc, event);
     applyGateEvent(acc, event);
   }
 
@@ -251,6 +312,7 @@ export function reconstructCheckpointState(
       nodeId: entry.nodeId,
       isBudgetGate: entry.isBudgetGate,
     })),
+    pendingMediaJobs: [...acc.pendingMediaJobs.values()],
     resolvedGateIds: [...acc.resolvedGateIds],
     lastSequenceNumber: acc.lastSequenceNumber,
     totalInputTokens: acc.totalInputTokens,

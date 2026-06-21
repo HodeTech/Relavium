@@ -141,6 +141,21 @@ function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']
       message: 'approve?',
     });
   }
+  if (lastType === 'media_job:submitted') {
+    events.push({
+      type: 'media_job:submitted',
+      runId,
+      timestamp: startedAt,
+      sequenceNumber: 1,
+      nodeId: 'gen',
+      jobId: 'vendor-op-1',
+      provider: 'openai',
+      model: 'sora-2',
+      modality: 'video',
+      startedAt,
+      deadlineAt: '2026-06-13T00:30:00.000Z',
+    });
+  }
   return Promise.all(events.map((e) => store.persistEvent(e))).then(() => undefined);
 }
 
@@ -2334,6 +2349,17 @@ describe('WorkflowEngine — crash reconciliation', () => {
   it('leaves a gate-parked (resumable) interrupted run for resume, not reconciliation', async () => {
     const store = new InMemoryRunStore();
     await seedStarted(store, 'paused-1', 'human_gate:paused');
+    const engine = engineWith(undefined, createInMemoryHost({ store }));
+    expect(await engine.reconcile()).toHaveLength(0);
+  });
+
+  it('leaves a media-job-parked run (crash in the submit→pause window) for resume, not reconciliation (1.AG/ADR-0045 §2-3)', async () => {
+    // A crash AFTER media_job:submitted persisted but BEFORE run:paused leaves media_job:submitted as the
+    // durable last event. reconcile() must NOT fail it — the paid, still-generating provider LRO is
+    // re-attachable via resumeFromCheckpoint (re-poll the opaque jobId, never re-submit). Failing it here
+    // would orphan the job (billed, output discarded) and permanently close the run at the terminal gate.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'media-parked-1', 'media_job:submitted');
     const engine = engineWith(undefined, createInMemoryHost({ store }));
     expect(await engine.reconcile()).toHaveLength(0);
   });

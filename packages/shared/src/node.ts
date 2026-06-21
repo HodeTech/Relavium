@@ -102,6 +102,12 @@ export const AgentNodeSchema = z
     max_tokens: positiveInt.optional(),
     output_schema: OutputSchemaSchema.optional(),
     output_modalities: OutputModalitiesSchema.optional(), // non-text output request (1.AF, ADR-0031/0044)
+    // Media-volume knobs for a `media_surface: 'generative'` model (1.AG Section C, ADR-0045 §1): the author's
+    // requested output volume, mapped to `MediaGenRequest.count`/`durationSeconds` at dispatch. `count` =
+    // images per call (image generators); `duration_seconds` = target length (audio/video generators). Inline
+    // on the agent node (no nested `agent_config` object); ignored by a `'chat'` model. node-types.md is SSOT.
+    count: positiveInt.optional(),
+    duration_seconds: z.number().positive().optional(),
     timeout_ms: positiveInt.optional(),
     retry: RetrySchema.optional(),
   })

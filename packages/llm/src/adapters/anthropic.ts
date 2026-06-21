@@ -57,6 +57,7 @@ const SUPPORTS: CapabilityFlags = {
     // "advertised-but-unsendable" — the gate would admit a PDF the mapper then rejects (ADR-0031).
     input: { image: true, audio: false, video: false, document: false },
     outputCombinations: [],
+    surface: 'chat', // no media generation — 1.AG/ADR-0045 §1
   },
 };
 

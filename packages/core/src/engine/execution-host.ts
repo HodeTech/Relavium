@@ -210,6 +210,12 @@ const RESUMABLE_LAST_TYPES: ReadonlySet<RunEvent['type']> = new Set([
   'human_gate:paused',
   'run:paused',
   'budget:paused',
+  // An async media-job park (1.AG Section D, ADR-0045 §2-3): `media_job:submitted` is persisted in its own
+  // turn BEFORE the later `run:paused`, so a crash in that window leaves it as the durable last event. The
+  // run is re-attachable — the checkpoint fold derives a `pendingMediaJobs` slot from it and
+  // `resumeFromCheckpoint` re-polls the opaque jobId (never re-submits). Reconciling it to `run:failed` would
+  // orphan a paid, still-generating provider LRO, so it must be left for the resume path — like a gate park.
+  'media_job:submitted',
 ]);
 
 /** Format a counter into a syntactically-valid (RFC-4122-shaped) UUID — deterministic for tests. */

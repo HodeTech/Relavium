@@ -184,7 +184,7 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > non-breaking; the seam doc carries the full amendment section. **1.AE–1.AH (media
 > input/engine/output + surfaces) are additive and do NOT gate M2** — the seam lane ran straight to
 > **1.K** (✅ Done, PR #13), which closed it. **1.AE (media-input adapters + the shared SSRF policy
-> primitive) is now ✅ Done (PR #32, 2026-06-18)**; 1.AF–1.AH remain.
+> primitive) is now ✅ Done (PR #32, 2026-06-18)**; **1.AF (engine media plumbing) is now ✅ Done (PR #33/#34/#35/#36, 2026-06-20)**; **1.AG (output generation) — Sections A–E landed on `development`, pending PR merge** (ADR-0045/0046; each section dual-reviewed); 1.AH remains.
 
 > **Review-pass follow-ups landed (PR #12, merged 2026-06-11).** The 2026-06-10 engine/tooling
 > review pass landed as docs/decisions only — no Phase-1 workstream changed: **MCP client scheduling**
@@ -217,22 +217,22 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > **media-input adapters + the shared SSRF policy primitive (1.AE) are ✅ Done (PR #32, 2026-06-18)** —
 > after a multi-round + final 8-dimension adversarial review (no SSRF bypass found); the SSRF *mechanism*
 > half (host DNS-resolve + connect-by-validated-IP), per-modality FallbackChain gating, `mediaUnits`, and
-> handle/url media resolution are deferred to **1.AF**. **1.AF (engine media plumbing) is 🔨 in progress:
-> P1 + P2 merged (PR #33); P3 + P4/D13 merged (PR #34); the P4 remainder (D12, D11, D15, D16, D17 + the
-> byte-delivery review) is landed on `development` (NOT yet merged)** — its three design ADRs
-> (0042/0043/0044) are Accepted.
+> handle/url media resolution are deferred to **1.AF**. **1.AF (engine media plumbing) is ✅ Done
+> (PR #33/#34/#35/#36, 2026-06-20):** P1 + P2 (PR #33); P3 + P4/D13 (PR #34); the P4 remainder (D12, D11, D15,
+> D16, D17 + the byte-delivery review) (PR #35); the multi-agent + external review follow-ups (PR #36) — its
+> three design ADRs (0042/0043/0044) are Accepted.
 > **Merged (P1+P2, PR #33):** the `MediaStore` contract impls + `media_objects`/`media_references` tables
 > (migration 0002), per-modality capability gating + `FallbackChain` skip, `deInlineMedia`, the strict
 > `output_modalities`/`save_to` node fields, OpenAI `mediaUnits`, and **the I3 keystone — `deInlineMedia`
 > at the one `#emitDurable` choke point**.
-> **Landed on `development` (pending merge):** the binary media-egress + **SSRF mechanism half** (D9 — the
+> **Merged (P3 + P4/D13, PR #34):** the binary media-egress + **SSRF mechanism half** (D9 — the
 > `MediaUrlFetch` re-host hook + `fetchMediaBytes` SSRF-validated host reference: DNS-resolve +
 > connect-by-validated-IP + per-hop redirect re-validation + streamed size-bound, wired at the choke point);
 > the `FallbackChain` resolve-before-egress + **byte-free re-materialization sidecar** (D8 + D7); the
 > **byte-delivery `Range` gate** (D13 — `MediaStore.readRange` + the engine-pure `validateByteRange`); and the
 > dedicated **P3 egress/SSRF security-review** (independent adversarial — 0 blockers/highs). All green +
 > Leakwatch-clean.
-> **Landed on `development` (P4 remainder, pending merge):** `read_media` + the scope-set authz (D12), the
+> **Merged (P4 remainder, PR #35):** `read_media` + the scope-set authz (D12), the
 > terminal sweep + grace-window GC (D11), the `output_modalities` load-check (D15), the `save_to` write port
 > (D16 — engine orchestration + the db `createFilesystemMediaWrite` fail-closed jail + the `run.id`
 > interpolation namespace), and the per-modality media cost governor (D17 — `mediaCost`/`estimateMediaCost`
@@ -241,8 +241,14 @@ harness is now ✅ Done (2026-06-17), completing **1.m5**; cost-event persistenc
 > traversal/symlink-escape/arbitrary-write reachable) and the canonical-home docs (built-in-tools,
 > config-spec, security-review, database-schema, workflow-yaml-spec). All green + Leakwatch-clean. **Deferred
 > to 1.AH:** the keychain no-raw-key IPC test (no Phase-1 desktop surface; the gate is recorded per ADR-0044
-> §4). The remaining Phase-1 work is **additive and off the critical path**: only **1.AF–1.AH** (engine media
-> plumbing, output, surfaces) remain before Phase 1 closes. **Phase 2 (CLI, milestone M3) is unblocked.**
+> §4).
+> **Merged (review follow-ups, PR #36):** a **13-dimension, double-verified end-to-end review** of the merged
+> 1.AF (no exploitable SSRF bypass; the I3 handle-only invariant holds end-to-end) + an external Sonar/CodeRabbit
+> pass — H1 `agent:tool_call.toolInput` byte-redaction, H2 the unified exact-membership `output_modalities` gate
+> (+ bidirectional set-equality), the GC grace basis bumped to de-reference time, an egress-mechanism test for
+> `nodeMediaEgressDeps`, and the canonical-home doc-drift cluster. All green + Leakwatch-clean. The remaining
+> Phase-1 work is **additive and off the critical path**: only **1.AG–1.AH** (output, surfaces) remain before
+> Phase 1 closes. **Phase 2 (CLI, milestone M3) is unblocked.**
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — pick items up as Phase 1
 first touches each file.

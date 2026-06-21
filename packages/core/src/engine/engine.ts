@@ -31,6 +31,7 @@
 import {
   DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES,
   GateDecisionSchema,
+  MEDIA_JOB_POLL_DEFAULTS,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
   collectDurableMediaHandles,
@@ -39,7 +40,9 @@ import {
   type DurableMediaMeta,
   type ExecutionMode,
   type GateDecision,
+  type LlmProviderId,
   type MaskedSecret,
+  type MediaBilledModality,
   type MediaUrlFetch,
   type NodeSkippedReason,
   type Retry,
@@ -47,6 +50,7 @@ import {
   type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
+import type { MediaJobStatus } from '@relavium/llm';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
@@ -62,12 +66,15 @@ import type { CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
+  MediaJobSubmission,
   NodeExecContext,
   NodeExecutor,
   NodeFailure,
   NodeOutcome,
   NodeStreamEvent,
 } from './node-executor.js';
+import { codeForLlmError } from './agent-turn.js';
+import { DEFAULT_MEDIA_UNIT_ESTIMATE, generativeUnits, realizedMediaCost } from './agent-runner.js';
 import { createClosedRunHandle, createRunHandle, type RunHandle } from './run-handle.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
@@ -78,6 +85,29 @@ interface VertexState {
   output?: unknown;
   /** For a settled `condition`: the immediate target ids it selected (the live out-edges). */
   selectedTargets?: ReadonlySet<string>;
+}
+
+/**
+ * A parked async media job (1.AG Section D, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)) —
+ * the in-memory record the engine polls. Keyed by `nodeId` (the AG-A-FC-3 disambiguator vs `#pendingGates`,
+ * which is keyed by gateId). The credential is NEVER stored here (re-resolved per poll via the executor);
+ * `units` is the authored volume for the lone realized cost addend (recomputed from the node config on
+ * cross-process resume); `backoffMs` grows per poll (exp, capped at `pollMaxMs`).
+ */
+interface ParkedMediaJob {
+  readonly jobId: string;
+  readonly provider: LlmProviderId;
+  readonly model: string;
+  readonly modality: MediaBilledModality;
+  readonly units: number;
+  /** ISO-8601 absolute deadline; a poll where `now > deadlineAt` abandons the job as a retryable timeout. */
+  readonly deadlineAt: string;
+  /** Elapsed-ms-since-run-start at submission — the basis for the completed node's full LRO `durationMs`
+   *  (submit→done wall-clock, not the ~0 of the synchronous settle). Recoverable across a resume from the
+   *  persisted `startedAt` (M2). */
+  readonly submittedAtMs: number;
+  /** The current poll interval (ms), grown exponentially per `pending` poll, capped at `pollMaxMs`. */
+  backoffMs: number;
 }
 
 /** A vertex status counts as *settled* (its dependents can evaluate) when it is one of these. */
@@ -157,9 +187,37 @@ export interface ResumeFromCheckpointInput {
   /** MUST match the run's original mode (not yet checkpoint-derived — see the interface note). */
   readonly executionMode?: ExecutionMode;
   readonly planOptions?: BuildRunPlanOptions;
-  /** The gate to resolve + the decision to apply (the run was suspended at this gate). */
-  readonly gateId: string;
-  readonly decision: GateDecision;
+  /**
+   * The gate to resolve + the decision to apply, when the run was suspended at a HUMAN GATE. **Both omitted**
+   * for a run suspended ONLY on an async media job (1.AG Section D, ADR-0045 §3) — that resume re-attaches +
+   * re-polls the persisted job(s) with no external decision. When a run is parked on BOTH a gate and a media
+   * job (AG-A-FC-3), pass the gate's `gateId`/`decision`: the gate decision advances while `#seedFromCheckpoint`
+   * independently re-attaches the parked media job(s).
+   */
+  readonly gateId?: string;
+  readonly decision?: GateDecision;
+}
+
+/**
+ * Validate a {@link ResumeFromCheckpointInput}'s gate fields (1.R / 1.AG Section D). A gate resume supplies
+ * BOTH `gateId` + `decision`; a media-only resume supplies NEITHER — a half-supplied pair is a caller misuse,
+ * and a supplied `decision` must parse. Throws a typed {@link EngineStateError} (`invalid_decision`); pulled
+ * out of `resumeFromCheckpoint` so the entry stays within the cognitive-complexity budget.
+ */
+function assertValidResumeInput(input: ResumeFromCheckpointInput): void {
+  if ((input.gateId === undefined) !== (input.decision === undefined)) {
+    throw new EngineStateError(
+      'invalid_decision',
+      'resumeFromCheckpoint needs BOTH gateId + decision (a gate resume) or NEITHER (a media-job resume)',
+      { runId: input.runId, ...(input.gateId === undefined ? {} : { gateId: input.gateId }) },
+    );
+  }
+  if (input.decision !== undefined && !GateDecisionSchema.safeParse(input.decision).success) {
+    throw new EngineStateError('invalid_decision', 'the gate decision failed validation', {
+      runId: input.runId,
+      ...(input.gateId === undefined ? {} : { gateId: input.gateId }),
+    });
+  }
 }
 
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
@@ -233,6 +291,10 @@ class RunExecution {
   readonly #resolvedGates = new Set<string>();
   /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
   readonly #gateTimers = new Map<string, () => void>();
+  /** Parked async media jobs by nodeId (1.AG Section D) — the engine-owned poll/checkpoint/resume/cancel loop. */
+  readonly #pendingMediaJobs = new Map<string, ParkedMediaJob>();
+  /** Disarm callbacks for armed media-job poll timers, by nodeId — disarmed on settle/cancel (ADR-0045 §4). */
+  readonly #mediaJobTimers = new Map<string, () => void>();
   /** The run-level wall-clock timeout timer, when a `timeout_ms` is configured (ADR-0028). */
   #runTimeoutDisarm: (() => void) | undefined;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
@@ -461,6 +523,50 @@ class RunExecution {
         isBudgetGate: gate.isBudgetGate,
       });
     }
+    // Re-attach each parked async media job (MJ-1, ADR-0045 §3): re-register it + RE-ARM a poll of the
+    // persisted opaque jobId. NEVER re-call generateMedia — the node is `'paused'` (applyMediaJobEvent set it),
+    // not absent, so it is not re-run via the `'pending'` path; this overrides the checkpoint
+    // running-at-crash-re-runs default for the async-media node specifically. `units` is NOT persisted in the
+    // slot — recompute it from the node config (count/duration_seconds), which IS persisted in the workflow.
+    // Unlike a gate (whose decision arrives externally), a media job has no external trigger — only the
+    // engine's own re-poll advances it, so the re-arm is unconditional here. A past-deadline job is
+    // short-circuited to a timeout by the first `#pollMediaJob` (which checks `now > deadlineAt`).
+    for (const job of cp.pendingMediaJobs) {
+      const vertex = plan.vertices.get(job.nodeId);
+      // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
+      // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
+      // matching the submit-side compute exactly) is the real path. The else is a defensive last resort for a
+      // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
+      // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
+      // it never executes on a well-formed resume.
+      const units =
+        vertex?.config.kind === 'agent'
+          ? generativeUnits(job.modality, vertex.config.node)
+          : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality];
+      this.#pendingMediaJobs.set(job.nodeId, {
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        units,
+        deadlineAt: job.deadlineAt,
+        // Recompute elapsed-at-submit from the persisted `startedAt` against the ORIGINAL run start so a
+        // completed re-attached job reports its full submit→done wall-clock `durationMs` (M2). `cp.startedAtMs`
+        // is the same value seeded into `#startEpochMs` below.
+        submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
+        backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+      });
+      this.#armMediaPoll(job.nodeId);
+    }
+    // Suppress a DUPLICATE `run:paused` on resume ONLY when the prior process actually announced one — i.e. the
+    // checkpoint's runStatus is already `'paused'` (L2). In the CRASH-IN-WINDOW case (`media_job:submitted`
+    // persisted but `run:paused` not — RUN_STATUS_BY_EVENT has no entry for `media_job:submitted`, so runStatus
+    // stays `'running'`) the prior process never emitted `run:paused`, so the resumed process MUST emit it
+    // (gap-free stream, ADR-0036) — leaving `#pauseEpisode` false here. A gate resume independently resets this
+    // in `resume()`; `#clearMediaJob` resets it when a job settles — so a genuinely later pause still emits.
+    if (cp.pendingMediaJobs.length > 0 && cp.runStatus === 'paused') {
+      this.#pauseEpisode = true;
+    }
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
     }
@@ -510,6 +616,68 @@ class RunExecution {
     } else {
       await this.resume(gateId, decision);
     }
+  }
+
+  /**
+   * Resume a run suspended ONLY on async media job(s) (1.AG Section D, ADR-0045 §3) — no gate decision. The
+   * media jobs were already re-attached + re-armed by `#seedFromCheckpoint` (MJ-1); this just re-resolves the
+   * workflow context (not checkpointed) and kicks the loop, which the armed poll timers then advance. A run
+   * with no pending media job AND no pending gate is a misuse (`run_not_paused`).
+   */
+  async beginResumeMediaJobs(): Promise<void> {
+    this.#armRunTimeout();
+    if (this.#pendingMediaJobs.size === 0) {
+      // A media-only resume REQUIRES a parked media job. A run parked ONLY on a human gate must be resumed via
+      // the gate form (gateId + decision) — resuming it here would silently re-park it forever (no decision).
+      throw new EngineStateError(
+        'run_not_paused',
+        'the run has no pending media job to re-attach (a gate-parked run resumes via gateId + decision)',
+        { runId: this.runId },
+      );
+    }
+    if (this.#pendingGates.size > 0) {
+      // The run is parked on BOTH a media job AND a human gate (AG-A-FC-3) but the caller supplied no gate
+      // decision (the media-only resume form). Re-attaching the media job alone would leave the gate
+      // unresolved: after the job settles the run would silently re-park on the gate with no caller signal.
+      // Reject the misuse eagerly — the caller must pass the gate's gateId + decision (which advances the gate
+      // while `#seedFromCheckpoint` independently re-attaches the media job).
+      throw new EngineStateError(
+        'pending_gate_requires_decision',
+        "the run is also parked on a human gate — resume with that gate's gateId + decision (a media-only resume cannot resolve it)",
+        { runId: this.runId },
+      );
+    }
+    if (!(await this.#resolveContextOrFail())) {
+      await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
+      return;
+    }
+    this.#schedule();
+  }
+
+  /**
+   * Tear down a half-initialized execution that is being REJECTED before it ever ran for the caller — an
+   * invalid `resumeFromCheckpoint` form whose validation guard threw AFTER the constructor's
+   * `#seedFromCheckpoint` armed the parked jobs' media-poll timers (and after `beginResume*` armed the
+   * run-timeout). Disarm every armed timer + abort so NO orphaned poll later hits the provider for a run the
+   * caller saw rejected (which would also let a natural retry double-attach the same opaque jobId). Emits
+   * NOTHING and runs no terminal — it is an abandon, not a settle; the façade drops the execution from `#runs`.
+   */
+  abandon(): void {
+    if (this.#settled) {
+      return; // already torn down (a real settle ran) — idempotent
+    }
+    this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
+    this.#abort.abort();
+    for (const disarm of this.#gateTimers.values()) {
+      disarm();
+    }
+    this.#gateTimers.clear();
+    for (const disarm of this.#mediaJobTimers.values()) {
+      disarm();
+    }
+    this.#mediaJobTimers.clear();
+    this.#pendingMediaJobs.clear();
+    this.#disarmRunTimeout();
   }
 
   requestCancel(): void {
@@ -760,7 +928,11 @@ class RunExecution {
     if (running > 0) {
       return; // still executing — wait for the next settlement to re-evaluate
     }
-    if (this.#pendingGates.size > 0) {
+    if (this.#pendingGates.size > 0 || this.#pendingMediaJobs.size > 0) {
+      // Parked on a human gate AND/OR an async media job (1.AG Section D, MJ-1) — the run is PAUSED, not
+      // stalled. A media-parked node is invisible to #claimReady (it claims only 'pending'), so without this
+      // the run would fall through to the loud stall-fail below; the poll timer (live) or the
+      // #seedFromCheckpoint re-attach (resume) advances it. Reuses the human-gate pause emit (ADR-0045 §2).
       await this.#emitPausedOnce();
       return;
     }
@@ -1020,6 +1192,9 @@ class RunExecution {
         case 'paused':
           await this.#settlePaused(vertex, outcome.gate);
           break;
+        case 'media_job':
+          await this.#settleMediaJobParked(vertex, outcome.job);
+          break;
       }
     } catch {
       // Backstop while settling a node: a bus/Zod stamp failure on a malformed event, OR — by design — a
@@ -1155,6 +1330,260 @@ class RunExecution {
     }
   }
 
+  // --- Async media-job loop (1.AG Section D, ADR-0045) -----------------------------------------
+
+  /**
+   * A `media_job` outcome (ADR-0045 §2/§3): park the node for the engine-owned poll loop. Set status
+   * `'paused'` (slot-free, like a gate — keyed by nodeId, the AG-A-FC-3 disambiguator vs `#pendingGates`),
+   * record the job, emit the durable `media_job:submitted`, and arm the first poll. The realized cost is
+   * emitted by the poll loop at `done`, NEVER here (§5).
+   */
+  async #settleMediaJobParked(vertex: PlanVertex, job: MediaJobSubmission): Promise<void> {
+    const state = this.#states.get(vertex.id);
+    if (state !== undefined) {
+      state.status = 'paused';
+    }
+    const startedAt = this.#host.clock.now();
+    const deadlineAt = new Date(
+      Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
+    ).toISOString();
+    this.#pendingMediaJobs.set(vertex.id, {
+      jobId: job.jobId,
+      provider: job.provider,
+      model: job.model,
+      modality: job.modality,
+      units: job.units,
+      deadlineAt,
+      // Derive from the SAME `startedAt` that is persisted on `media_job:submitted`, so the resume-side
+      // recompute (from the checkpoint slot) yields an identical value (M2).
+      submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
+      backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+    });
+    await this.#emitDurable({
+      type: 'media_job:submitted',
+      runId: this.runId,
+      nodeId: vertex.id,
+      jobId: job.jobId,
+      provider: job.provider,
+      model: job.model,
+      modality: job.modality,
+      startedAt,
+      deadlineAt,
+    });
+    this.#armMediaPoll(vertex.id);
+  }
+
+  /** Arm (or re-arm) the one-shot poll timer for a parked media job via the INJECTED host timer (never an
+   *  ambient `setTimeout` — engine purity). Disarm-then-arm so a re-arm never leaks a prior timer. */
+  #armMediaPoll(nodeId: string): void {
+    const job = this.#pendingMediaJobs.get(nodeId);
+    if (job === undefined) {
+      return;
+    }
+    this.#disarmMediaTimer(nodeId);
+    const disarm = this.#host.setTimer(job.backoffMs, () => {
+      void this.#pollMediaJob(nodeId);
+    });
+    this.#mediaJobTimers.set(nodeId, disarm);
+  }
+
+  /** Disarm and forget a media-job poll timer (idempotent). */
+  #disarmMediaTimer(nodeId: string): void {
+    const disarm = this.#mediaJobTimers.get(nodeId);
+    if (disarm !== undefined) {
+      this.#mediaJobTimers.delete(nodeId);
+      disarm();
+    }
+  }
+
+  /** Remove a parked media job + disarm its timer (on done/failed). Resetting `#pauseEpisode` mirrors the gate
+   *  `resume()` so a LATER pause (a downstream gate / a second media job parking in a fresh idle cycle) re-emits
+   *  an accurate aggregate `run:paused` instead of being suppressed. */
+  #clearMediaJob(nodeId: string): void {
+    this.#pendingMediaJobs.delete(nodeId);
+    this.#disarmMediaTimer(nodeId);
+    this.#pauseEpisode = false;
+  }
+
+  /** Emit the lone realized media-cost addend for a job (ADR-0045 §5) — folded into the run cumulative +
+   *  streamed by `#nodeEmit`. Emitted exactly once per job: at `done`, or — for a paid job abandoned by a
+   *  fail/deadline/cancel — at that settle (the provider bills regardless, a cost-integrity requirement). */
+  #emitMediaJobCost(nodeId: string, job: ParkedMediaJob): void {
+    this.#nodeEmit({
+      type: 'cost:updated',
+      nodeId,
+      model: job.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicrocents: realizedMediaCost(job.model, job.modality, job.units),
+      cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
+    });
+  }
+
+  /**
+   * One poll of a parked media job (ADR-0045 §3). Idempotent against a settled run / cleared job. Past the
+   * deadline → abandon as a retryable `provider_unavailable` timeout (a node-retry MAY re-submit; the loop
+   * itself never silently re-submits). Otherwise delegate the poll to the executor (which owns provider +
+   * credential resolution), passing the run abort signal so a cancel aborts the in-flight poll.
+   */
+  async #pollMediaJob(nodeId: string): Promise<void> {
+    this.#disarmMediaTimer(nodeId);
+    const job = this.#pendingMediaJobs.get(nodeId);
+    if (this.#settled || job === undefined) {
+      return; // run terminal, or the job was already cleared (nothing to clean up)
+    }
+    const vertex = this.#plan.vertices.get(nodeId);
+    if (vertex === undefined) {
+      // The parked node no longer exists in the plan — only reachable via same-slug workflow CONTENT drift on
+      // resume (the identity guard checks the surrogate workflow id, not content). A silent return would strand
+      // the run paused forever on a job that can never re-attach. The provider billed the submitted job
+      // regardless of the drift, so emit its lone realized cost addend BEFORE clearing (ADR-0045 §5: exactly
+      // one addend on EVERY terminal path — there is no vertex to settle node:failed against, but the cost is
+      // still owed). Then clear + drive the loop so the now-jobless idle settles the run instead of hanging.
+      this.#emitMediaJobCost(nodeId, job);
+      this.#clearMediaJob(nodeId);
+      this.#schedule();
+      return;
+    }
+    // The whole settle path is wrapped: a synchronous bus/Zod throw (or a #nodeEmit fault) must NOT escape the
+    // fire-and-forget `void #pollMediaJob` as an unhandled rejection — route it to a single run:failed instead
+    // (mirroring the #onOutcome backstop), keeping the run total for faults.
+    try {
+      if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'provider_unavailable',
+          message: `media job '${job.jobId}' exceeded its deadline (${job.deadlineAt})`,
+          retryable: true,
+        });
+        return;
+      }
+      if (this.#executor.pollMediaJob === undefined) {
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'internal',
+          message: 'the executor implements no pollMediaJob (host-wiring gap)',
+          retryable: false,
+        });
+        return;
+      }
+      const submission: MediaJobSubmission = {
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        units: job.units,
+      };
+      let status: MediaJobStatus;
+      try {
+        status = await this.#executor.pollMediaJob(submission, this.#abort.signal);
+      } catch {
+        // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
+        // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
+        if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+          return;
+        }
+        // A raw throw escaping the executor poll on a LIVE job (the missing-adapter + credential cases are
+        // already mapped to a `failed` status upstream) is a transient provider/transport fault — classify it
+        // like the deadline path: a retryable `provider_unavailable`, so when async-node retry wiring lands
+        // (1.AH) a transient poll fault re-submits a fresh job rather than being a dead-end `internal` (N2).
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'provider_unavailable',
+          message: `media job '${job.jobId}' poll failed`,
+          retryable: true,
+        });
+        return;
+      }
+      if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+        return; // a cancel / terminal raced the poll await — let #settle close the run
+      }
+      await this.#applyMediaJobStatus(vertex, job, status);
+    } catch {
+      if (!this.#settled) {
+        this.#clearMediaJob(nodeId);
+        this.#failNodeInternal(vertex, 'the media job poll loop failed while settling the node');
+        // Drive the loop so `#step` observes `#failure` and settles `run:failed`. Unlike `#onOutcome` (whose
+        // backstop is followed by an unconditional `#schedule()`), this poll is fired out-of-band from a timer
+        // — nothing else re-enters the loop, so without this the run would hang at `run:paused` forever (M1).
+        this.#schedule();
+      }
+    }
+  }
+
+  /** Route one `MediaJobStatus` to: re-arm (pending) / complete (done) / fail (failed). */
+  async #applyMediaJobStatus(
+    vertex: PlanVertex,
+    job: ParkedMediaJob,
+    status: MediaJobStatus,
+  ): Promise<void> {
+    switch (status.state) {
+      case 'pending': {
+        // Exponential backoff (no jitter) capped at pollMaxMs, then re-arm. Progress is TRANSIENT (ADR-0045
+        // §2) — never persisted; no run event today.
+        job.backoffMs = Math.min(job.backoffMs * 2, MEDIA_JOB_POLL_DEFAULTS.pollMaxMs);
+        this.#armMediaPoll(vertex.id);
+        return;
+      }
+      case 'done':
+        await this.#settleMediaJobDone(vertex, job, status.media);
+        return;
+      case 'failed':
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: codeForLlmError(status.error),
+          message: status.error.message,
+          retryable: status.error.retryable,
+        });
+        return;
+      default:
+        // Defense-in-depth: an out-of-union job state (a future seam value / a non-conforming adapter) would
+        // otherwise fall through, leaving the node parked with no re-arm and no terminal — a silent hang. Fail
+        // loudly with a terminal node:failed instead (the closed-union switch above type-checks without this).
+        await this.#settleMediaJobFailed(vertex, job, {
+          code: 'internal',
+          message: 'media poll returned an unrecognized job state',
+          retryable: false,
+        });
+    }
+  }
+
+  /** A media job resolved `done`: emit the lone realized cost addend, then drive the node to `completed`
+   *  through `#onOutcome` (which de-inlines the media at `#emitDurable` + re-schedules — the out-of-band poll
+   *  is not on the `#onOutcome→#schedule` path, so completion must re-enter it). */
+  async #settleMediaJobDone(
+    vertex: PlanVertex,
+    job: ParkedMediaJob,
+    media: Extract<MediaJobStatus, { state: 'done' }>['media'],
+  ): Promise<void> {
+    this.#clearMediaJob(vertex.id);
+    this.#emitMediaJobCost(vertex.id, job); // the lone realized cost:updated (ADR-0045 §5)
+    // The pure-media node output ({ text:'', media }) matches the SYNC generative shape exactly (so a downstream
+    // {{ outputs.x.text }} resolves to '' regardless of sync-vs-LRO) and de-inlines to a media:// handle at
+    // #emitDurable (the I3 boundary); `media` is the seam MediaPart (base64 or a re-hostable url).
+    await this.#onOutcome(
+      vertex,
+      {
+        kind: 'completed',
+        output: { text: '', media: [media] },
+        tokensUsed: { input: 0, output: 0, model: job.model },
+      },
+      // The job's submit time (not `now`) — so `node:completed.durationMs` is the full async wall-clock
+      // (submit→done), parallel to how `#dispatch` captures `startedAtMs` before a synchronous node's await (M2).
+      job.submittedAtMs,
+    );
+  }
+
+  /** A media job failed / timed out: emit the paid job's lone cost addend (§5 — the provider billed even though
+   *  it failed), clear it, and drive the node to `failed` through `#onOutcome`. */
+  async #settleMediaJobFailed(
+    vertex: PlanVertex,
+    job: ParkedMediaJob,
+    error: NodeFailure,
+  ): Promise<void> {
+    this.#clearMediaJob(vertex.id);
+    this.#emitMediaJobCost(vertex.id, job);
+    // `startedAtMs` is unused by the `failed` settle path (no `durationMs`), but pass the submit time for
+    // symmetry with the `done` path (M2).
+    await this.#onOutcome(vertex, { kind: 'failed', error }, job.submittedAtMs);
+  }
+
   /**
    * A gate's timeout elapsed with no decision (1.Q). Idempotent: a no-op once the gate resolved (a human
    * beat the timer — resume disarmed it, but a fired-and-queued callback still guards here) or the run
@@ -1197,7 +1626,9 @@ class RunExecution {
   /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
   #failNodeInternal(vertex: PlanVertex, message: string): void {
     const state = this.#states.get(vertex.id);
-    if (state?.status === 'running') {
+    // A media-parked node is `'paused'`, not `'running'`, when its poll loop's settle-path backstop fires —
+    // transition it to `'failed'` too so the in-memory state matches the run's terminal outcome (L1).
+    if (state?.status === 'running' || state?.status === 'paused') {
       state.status = 'failed';
     }
     if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
@@ -1212,11 +1643,13 @@ class RunExecution {
     }
     this.#pauseEpisode = true;
     const gateIds = [...this.#pendingGates.keys()];
+    const mediaJobNodeIds = [...this.#pendingMediaJobs.keys()];
     await this.#emitDurable({
       type: 'run:paused',
       runId: this.runId,
       pendingGateCount: gateIds.length,
       gateIds,
+      ...(mediaJobNodeIds.length === 0 ? {} : { pendingMediaJobNodeIds: mediaJobNodeIds }),
     });
   }
 
@@ -1226,11 +1659,26 @@ class RunExecution {
     }
     this.#settled = true;
     this.#abort.abort(); // make sure any straggler executor sees cancellation
-    // The run is closing — no gate timer may fire afterwards (1.Q). Disarm each, then clear in one shot.
+    // The run is closing — no gate or media-poll timer may fire afterwards (1.Q / ADR-0045 §4). Disarm each,
+    // then clear in one shot. The #abort.abort() above also aborts any in-flight pollMediaJob (the signal is
+    // threaded into the executor poll), so a cancelled job's open provider request is dropped, not just its
+    // next schedule.
     for (const disarm of this.#gateTimers.values()) {
       disarm();
     }
     this.#gateTimers.clear();
+    // A paid media job still pending at the terminal (a cancel, or a sibling's failure abandoning it) was
+    // billed by the provider even though its output is discarded — emit its lone cost addend before clearing
+    // (ADR-0045 §5, the local-only-cancel cost-integrity caveat). run:completed never reaches here with a
+    // pending job (each completes + clears at its own `done`). Emit BEFORE the terminal so the run total folds it.
+    for (const [nodeId, job] of this.#pendingMediaJobs) {
+      this.#emitMediaJobCost(nodeId, job);
+    }
+    for (const disarm of this.#mediaJobTimers.values()) {
+      disarm();
+    }
+    this.#mediaJobTimers.clear();
+    this.#pendingMediaJobs.clear();
     this.#budgetApprovedVertices.clear(); // drop any unconsumed budget-approval (a sibling failure/cancel
     // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
     this.#disarmRunTimeout();
@@ -1786,13 +2234,9 @@ export class WorkflowEngine {
    * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
    */
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
-    const parsed = GateDecisionSchema.safeParse(input.decision);
-    if (!parsed.success) {
-      throw new EngineStateError('invalid_decision', 'the gate decision failed validation', {
-        runId: input.runId,
-        gateId: input.gateId,
-      });
-    }
+    // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
+    const isGateResume = input.gateId !== undefined && input.decision !== undefined;
+    assertValidResumeInput(input); // a half-supplied pair, or a malformed decision, is a caller misuse
     if (this.#runs.has(input.runId)) {
       throw new EngineStateError(
         'run_already_active',
@@ -1848,16 +2292,25 @@ export class WorkflowEngine {
     this.#runs.set(input.runId, execution);
     try {
       // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was
-      // already resolved in the prior process (no re-apply), else apply the decision. The events buffer on
-      // the returned handle for the consumer.
-      await execution.beginResume(
-        input.gateId,
-        parsed.data,
-        checkpoint.resolvedGateIds.includes(input.gateId),
-      );
+      // already resolved in the prior process (no re-apply), else apply the decision. A media-ONLY resume
+      // (no gate) re-attaches + re-polls the parked job(s). The events buffer on the returned handle.
+      if (isGateResume && input.gateId !== undefined && input.decision !== undefined) {
+        await execution.beginResume(
+          input.gateId,
+          input.decision,
+          checkpoint.resolvedGateIds.includes(input.gateId),
+        );
+      } else {
+        await execution.beginResumeMediaJobs();
+      }
     } catch (error) {
-      // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused throw must not
-      // strand the half-initialized execution in #runs (a retry would then wrongly hit run_already_active).
+      // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused /
+      // pending_gate_requires_decision throw must not strand the half-initialized execution in #runs (a retry
+      // would then wrongly hit run_already_active) NOR leave its armed timers firing — the constructor's
+      // #seedFromCheckpoint already armed a media-poll timer per parked job and beginResume* armed the
+      // run-timeout. Abandon (disarm + abort) BEFORE dropping it, else an orphan poll would later hit the
+      // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
+      execution.abandon();
       this.#runs.delete(input.runId);
       throw error;
     }

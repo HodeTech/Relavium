@@ -130,8 +130,24 @@ export const ProjectConfigSchema = z
         max_tokens_estimate: positiveInt.optional(),
         // Per-modality media-output unit-count default for the pre-egress media cost estimate (1.AF/D17).
         media_cost_estimate: MediaCostEstimateSchema.optional(),
+        // Async media-job (generateMedia LRO) poll cadence + deadline (1.AG/ADR-0045 §7). The engine
+        // polls at `poll_initial_ms`, exponential-backs-off (no jitter) capped at `poll_max_ms`, and
+        // abandons a job past `deadline_ms` (from submit) as a retryable timeout. Defaults: 5s / 30s / 30min.
+        media_job_poll_initial_ms: positiveInt.optional(),
+        media_job_poll_max_ms: positiveInt.optional(),
+        media_job_deadline_ms: positiveInt.optional(),
       })
       .strict()
+      .refine(
+        (d) =>
+          d.media_job_poll_max_ms === undefined ||
+          d.media_job_poll_initial_ms === undefined ||
+          d.media_job_poll_max_ms >= d.media_job_poll_initial_ms,
+        {
+          message: 'media_job_poll_max_ms must be >= media_job_poll_initial_ms',
+          path: ['media_job_poll_max_ms'],
+        },
+      )
       .optional(),
     variables: z.record(z.string(), z.string()).optional(),
     chat: ChatConfigSchema,

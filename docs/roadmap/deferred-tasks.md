@@ -123,10 +123,88 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **general tool/MCP** `EgressCapability.fetch` enforcement still lands when the desktop/CLI surface implements that fetch hook. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; tool/MCP → surface fetch hook)*
-- [ ] **Async media-job ADR (`generateMedia`/`pollMediaJob` behavior, A5)** — the seam shape is reserved
-  now (1.AD); the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs
-  (Sora/Veo) — in the run loop (1.N) + checkpointer (1.R), reusing `LlmError` classification — gets **its
-  own ADR written at 1.AG (Phase D)**. Highest behavioral complexity in the multimodal design. *(1.AG)*
+- [ ] **Async media-job ADR + engine loop (`generateMedia`/`pollMediaJob` behavior, A5) — landed on `development`, pending PR merge (1.AG Sections A–E; the A5 obligation itself discharged in A/C/D).**
+  [ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) is written + Accepted, and
+  the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs (Sora/Veo) landed in 1.AG
+  Section D (the run loop 1.N + checkpointer 1.R, reusing `LlmError` classification): `media_job:submitted` park,
+  the derived `pendingMediaJobs` slot, re-attach-on-resume (MJ-1), a `host.setTimer` poll cadence with exp-backoff,
+  deadline→retryable-timeout, gate-vs-media resume disambiguation (AG-A-FC-3), and cancel→abort→terminal-sweep —
+  proven end-to-end with a stub async provider + the manual-timer harness. The **Section-C wiring obligation**
+  also landed: the generative-vs-chat routing FORK moved up into `AgentRunner.executeAgent` (a `'generative'`
+  model dispatches to `generateMedia` BEFORE the turn loop), so the `requestsMediaOutput` guard in
+  [`agent-turn.ts`](../../packages/core/src/engine/agent-turn.ts) only ever sees `'chat'` models — ADR-0046 §1's
+  `media_surface: 'chat'` conjunct holds STRUCTURALLY (the guard's JSDoc `NOTE` points at the fork). The remaining
+  VENDOR-adapter + host-wiring work is tracked in the 1.AH entries below. **Tick `[x]` with the merged PR number
+  when the 1.AG PR lands** (this file's rule: check off in the PR that resolves it). *(1.AG Sections A–E — on development, pending merge)*
+- [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
+  1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
+  `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node
+  de-inline needs a host hook reaching the *pure* adapter (the output twin of `resolveForEgress`, since
+  `media_end` is handle-only and the adapter has no `MediaStore`) or the desktop Rust CAS ([ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)).
+  Acceptable because a media-output turn is typically terminal/single-shot, so token-streaming its short
+  accompanying text is low value against a frozen-seam change. Wire at **1.AH** (the progressive-preview surface). *(packages/llm/src/types.ts seam; 1.AH)*
+- [ ] **OpenAI agentic image-gen via the Responses API — wire deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §3).**
+  The normalized delivery **shape** is defined (a `providerExecuted: true` `tool_result` carrying a
+  normalized `media` part — ADR-0031 §4.3/#7) and 1.AG Section B wires the two Chat-Completions inline
+  cases (Gemini `responseModalities` → `inlineData`, OpenAI inline audio → `audio`). OpenAI image output is
+  **not** a Chat-Completions modality (`modalities` is `text`/`audio` only); agentic image-gen is the
+  Responses API `image_generation` built-in tool — a **separate request surface** the Chat-Completions
+  adapter does not call. Wire the Responses-API path (request + `image_generation_call` output-item parse →
+  the already-defined providerExecuted media shape) when a Phase-1 model needs it. *(packages/llm/src/adapters/openai.ts; post-1.AG)*
+- [ ] **Per-model `media_surface` lookup — HOST WIRING deferred (1.AG Section C → 1.AH).** Section C added
+  `AgentRunnerDeps.resolveMediaSurface?(model) → MediaSurface` (the inline-vs-generative routing discriminator,
+  default `'chat'`; tests inject it). The production wiring — the host reading `model_catalog.media_surface` (the
+  column landed in Section A) and supplying the lookup — is **1.AH host-wiring**, exactly like the D12/D15/D17
+  host-wiring obligations. Until then `resolveMediaSurface` is absent and **every** model routes inline (`'chat'`),
+  so no generative model is runtime-reachable in Phase 1; the engine mechanism + the OpenAI-image adapter are proven
+  via injected-surface tests. *(packages/core/src/engine/agent-runner.ts; host catalog read → 1.AH)*
+- [ ] **Verified generative model rates + `MODEL_PRICING` rows (1.AG Section C → 1.AH).** The Section C cost
+  mechanism (pre-egress estimate + the one realized `cost:updated`) reuses `estimateMediaCost`/`mediaCost`, which
+  **degrade to 0 on a missing rate** (H4). No generative model rows were added to `MODEL_PRICING` — fabricating
+  billing rates is a mis-bill risk and the existing rows are all "verified". Add the generative rows (gpt-image-1,
+  Imagen, OpenAI-TTS, Sora, Veo) with **verified** `mediaOutputRates` (image per-image; audio/video per-second) when
+  the catalog/pricing-page values are confirmed; until then a generative call is correctly gated/folded at 0 cost
+  (no mis-bill). **Test follow-up:** the realized-cost vertical (`realizedMediaCost` → a non-zero `cost:updated`)
+  cannot be exercised end-to-end until a generative model carries a rate; the cost MATH is unit-tested via
+  `mediaCost` against a constructed rate, and a non-zero dispatch assertion lands with these rows. *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
+- [ ] **`generateMedia` for OpenAI-TTS audio + Gemini-Imagen — adapter wires deferred (1.AG Section C → 1.AH).**
+  Section C wires `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64), proving the
+  full engine→adapter→de-inline vertical. The remaining generators are bounded follow-ups: **OpenAI-TTS audio**
+  (`audio.speech` returns raw bytes → the adapter must base64-encode them + map the requested `response_format` →
+  MIME) and **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which needs a
+  `GeminiTransport.generateImages` extension to keep conformance vendor-free). Neither is runtime-reachable until the
+  per-model surface lookup is host-wired (above), so they land with that 1.AH wiring. Two bounded image follow-ups
+  ride along: (a) **multi-image `count > 1`** — the SYNC `MediaGenResult.media` carries a SINGLE part, so the OpenAI
+  adapter currently rejects `count > 1` (never bill-N-deliver-1); delivering N needs an additive `media: MediaPart[]`
+  seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the
+  engine does not yet populate `providerOptions` for a generative call, so the adapter threads only the output format
+  (`req.mimeType`); a typed per-knob passthrough lands when the engine wires image knobs. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
+- [ ] **Sora/Veo async-media ADAPTERS (`generateMedia`→`{ jobId }` + `pollMediaJob`) — deferred (1.AG Section D → 1.AH).**
+  1.AG Section D landed the ENGINE-owned async-job loop (park on `media_job:submitted`, the `host.setTimer` poll
+  cadence, exp-backoff to `pollMaxMs`, deadline→retryable timeout, cross-process re-attach (MJ-1), gate-vs-media
+  resume disambiguation (AG-A-FC-3), cancel-aborts-the-in-flight-poll + terminal sweep) — proven end-to-end with a
+  STUB async provider + the manual-timer harness. **No Phase-1 adapter implements `pollMediaJob` or returns a
+  `jobId`** (the only `generateMedia` is OpenAI-image SYNC); the real Sora/Veo `generateMedia`(→jobId)/`pollMediaJob`
+  adapter implementations are the deferred wiring, alongside the per-model surface lookup + verified rates (1.AH).
+  **Conformance obligation for that 1.AH PR (review N4):** add a negative assertion that the minted opaque `jobId`
+  is NOT the recorded vendor operation name (ADR-0045 §7) and that a recorded vendor poll body's `raw` diagnostics
+  never cross the seam (strip-raw on `MediaJobStatus`) — the seam-contract stub (generative-seam.conformance.test.ts)
+  proves the SHAPE today, but only a real adapter replaying a vendor body can prove the opacity/strip invariant. *(packages/llm/src/adapters/*; 1.AH)*
+- [ ] **Node-retry of a PARKED media job — deferred (1.AG Section D, ADR-0045 §3 "MAY re-dispatch").**
+  The node-retry budget (1.S) wraps the executor `#dispatch`; an async media job parks AFTER dispatch returns, and
+  the engine's out-of-band poll loop settles a deadline/poll failure as `node:failed` (retryable for a timeout) directly
+  — it does NOT re-enter the node-retry wrapper, so a parked media job is not automatically re-dispatched (a fresh paid
+  submit) on a retryable timeout. ADR-0045 §3 makes this a **MAY** ("the loop itself never silently re-submits"), so the
+  current behavior is conformant; re-dispatching a parked-then-failed media node through the node-retry budget is an
+  additive refinement. *(packages/core/src/engine/engine.ts #pollMediaJob; post-1.AG)*
+- [ ] **Durable realized cost for a FAILED/CANCELLED paid media job (review M1, Phase 2).** `#emitMediaJobCost`
+  rides the transient `cost:updated` stream; `node:failed`/`run:failed`/`run:cancelled` carry no
+  `cumulativeCostMicrocents` (only `node:completed` snapshots it), so a durable-log reader reconstructing cost for a
+  billed-but-failed/cancelled media job sees the addend only on the LIVE stream, not the persisted log. This is the
+  PRE-EXISTING behavior of `cost:updated` (always live-only) — NOT 1.AG-introduced, and nothing in 1.AG depends on
+  durable fail-cost reconstruction (ADR-0045 §5's guarantee is about the live cost report). Snapshotting the
+  cumulative onto `node:failed`/`run:cancelled` (or a cost field on the terminal) is an additive Phase-2 durability
+  improvement. *(packages/core/src/engine/engine.ts #emitMediaJobCost; shared/run-event.ts; Phase 2)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a
@@ -184,7 +262,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > The comprehensive 46-agent review confirmed the **host/surface wiring** below is **not yet present** —
 > so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
 > so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
-> deferred mechanism/wiring half. *(matrix row stays ◇ until the PR merges.)*
+> deferred mechanism/wiring half. *(1.AF is ✅ Done — all PRs merged #33/#34/#35/#36, 2026-06-20; the items
+> below remain, owned by 1.AH.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
   factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns

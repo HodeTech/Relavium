@@ -66,6 +66,7 @@ describe('Gemini adapter', () => {
       // blocked by the seam ceiling, so advertising them would be "advertised-but-unsendable" (ADR-0031).
       input: { image: true, audio: true, video: false, document: false },
       outputCombinations: [['text'], ['text', 'image'], ['text', 'audio']],
+      surface: 'chat',
     });
   });
 
@@ -181,6 +182,15 @@ describe('Gemini adapter', () => {
     }
   });
 
+  it('rejects a supported media output on the STREAM path — media-out is generate()-only (1.AG/ADR-0046)', () => {
+    // Even a model-supported combination (text+image) is rejected on stream(): the streaming media triad is
+    // host-deferred (ADR-0046 §4) and the streaming fold drops media, so streaming media output would be a
+    // silent loss. generate() is the only media-out path.
+    const adapter = createGeminiAdapter({ transport: fakeTransport({ candidates: [] }) });
+    const req: LlmRequest = { ...REQ, outputModalities: ['text', 'image'] };
+    expect(() => adapter.stream(req, 'k')).toThrowError(UnsupportedCapabilityError);
+  });
+
   it('maps finish reasons (STOP+tools → tool_use; SAFETY → content_filter; MALFORMED → error)', () => {
     expect(mapStopReason('STOP', false)).toBe('stop');
     expect(mapStopReason('STOP', true)).toBe('tool_use');
@@ -229,6 +239,49 @@ describe('Gemini adapter', () => {
     if (parts[2]?.type === 'tool_call') {
       expect(parts[2].id.length).toBeGreaterThan(0); // synthesized
     }
+  });
+
+  it('mapContent surfaces inline media-out (inlineData) as an in-flight base64 media part (1.AG/ADR-0046)', () => {
+    const response: GeminiResponse = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: 'here is your image' },
+              { inlineData: { mimeType: 'image/png', data: 'aW1nLWJ5dGVz' } },
+            ],
+          },
+        },
+      ],
+    };
+    const parts = mapContent(response, new GeminiToolCallIds());
+    expect(parts[0]).toEqual({ type: 'text', text: 'here is your image' });
+    expect(parts[1]).toEqual({
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'aW1nLWJ5dGVz' },
+    });
+  });
+
+  it('mapContent skips an empty inlineData part (no data)', () => {
+    const response: GeminiResponse = {
+      candidates: [
+        {
+          content: { parts: [{ inlineData: { mimeType: 'image/png', data: '' } }, { text: 'x' }] },
+        },
+      ],
+    };
+    const parts = mapContent(response, new GeminiToolCallIds());
+    expect(parts).toEqual([{ type: 'text', text: 'x' }]);
+  });
+
+  it('mapContent skips a mimeType-less inlineData part rather than emitting a doomed octet-stream (Opus-fix)', () => {
+    // A mimeType-less media part would HARD-FAIL the engine de-inline (mediaModalityOf undefined → run:failed),
+    // so it is dropped symmetric with the empty-data skip — never defaulted to application/octet-stream.
+    const response: GeminiResponse = {
+      candidates: [{ content: { parts: [{ inlineData: { data: 'aW1n' } }, { text: 'x' }] } }],
+    };
+    expect(mapContent(response, new GeminiToolCallIds())).toEqual([{ type: 'text', text: 'x' }]);
   });
 });
 
@@ -282,6 +335,16 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     expect(request.config['toolConfig']).toEqual({
       functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['get_weather'] },
     });
+  });
+
+  it('lowers non-text output_modalities to responseModalities (inline media-out, 1.AG/ADR-0046)', () => {
+    const request = buildGeminiRequest({ ...REQ, outputModalities: ['text', 'image'] });
+    expect(request.config['responseModalities']).toEqual(['TEXT', 'IMAGE']);
+  });
+
+  it('omits responseModalities for a text-only output (default behavior unchanged)', () => {
+    const request = buildGeminiRequest({ ...REQ, outputModalities: ['text'] });
+    expect('responseModalities' in request.config).toBe(false);
   });
 
   it('threads a real AbortSignal into config.abortSignal', () => {

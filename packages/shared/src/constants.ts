@@ -32,6 +32,7 @@ export const RUN_EVENT_TYPES = [
   'node:failed',
   'node:skipped',
   'node:retrying',
+  'media_job:submitted',
   'human_gate:paused',
   'human_gate:resumed',
   'run:completed',
@@ -73,6 +74,10 @@ export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
  */
 export const ERROR_CODES = [
   'validation',
+  // A provider content-policy rejection (text or media-generation) — a FATAL cause distinct from
+  // `validation` (an authoring/shape error), so a surface shows the right reason/remediation. The
+  // `content_filter` LlmErrorKind maps here (1.AG/ADR-0045 §6); not in RETRYABLE_ERROR_CODES.
+  'content_filter',
   'provider_auth',
   'provider_rate_limit',
   'provider_unavailable',
@@ -142,6 +147,29 @@ export type OutputModality = (typeof OUTPUT_MODALITIES)[number];
  */
 export const MEDIA_BILLED_MODALITIES = ['image', 'audio', 'video'] as const;
 export type MediaBilledModality = (typeof MEDIA_BILLED_MODALITIES)[number];
+
+/**
+ * A model's **media-output surface** (`model_catalog.media_surface`, 1.AG/ADR-0045 §1). `'chat'`
+ * (default) routes an agent node to the normal turn with `output_modalities`; `'generative'` routes
+ * it to the separate-endpoint `generateMedia()` (sync or async LRO). Data-drives the inline-vs-generative
+ * dispatch (no hardcoded model ids). Projects onto `CapabilityFlags.media.surface` in `@relavium/llm`.
+ */
+export const MEDIA_SURFACES = ['chat', 'generative'] as const;
+export type MediaSurface = (typeof MEDIA_SURFACES)[number];
+
+/**
+ * The async media-job (generateMedia LRO) poll cadence + deadline DEFAULTS (1.AG/ADR-0045 §7). The single
+ * source of these magic numbers — the engine poll loop (Section D) uses them directly: poll at `pollInitialMs`,
+ * exponential-back-off (no jitter) capped at `pollMaxMs`, abandon a job past `deadlineMs` (from submit) as a
+ * retryable timeout. The `[defaults].media_job_poll_initial_ms` / `_max_ms` / `_deadline_ms` config OVERRIDES
+ * exist + validate (config.ts), but the engine does NOT yet read them — wiring the host-resolved overrides into
+ * the run loop (the `max_tokens_estimate` pattern) is 1.AH host-wiring, like the other `[defaults].*` reads.
+ */
+export const MEDIA_JOB_POLL_DEFAULTS = {
+  pollInitialMs: 5_000,
+  pollMaxMs: 30_000,
+  deadlineMs: 1_800_000, // 30 min
+} as const;
 
 /**
  * The **media reference scope kinds** persisted in the `media_references` junction (ADR-0042 §3).

@@ -36,6 +36,7 @@ import type {
 import {
   CostTracker,
   FallbackChain,
+  LlmProviderError,
   type AttemptRecord,
   type FallbackChainOptions,
   type FallbackPlanEntry,
@@ -173,8 +174,10 @@ export class AgentTurnError extends Error {
   }
 }
 
-/** Map a classified `LlmError` (chain-exhausted) to the node `ErrorCode` taxonomy (never `error.message`). */
-function codeForLlmError(error: LlmError): ErrorCode {
+/** Map a classified `LlmError` (chain-exhausted) to the node `ErrorCode` taxonomy (never `error.message`).
+ *  Exported so the generative `generateMedia` dispatch (1.AG Section C, agent-runner) maps its provider
+ *  errors through the SAME taxonomy as the chat path — one classification, never a second vocabulary. */
+export function codeForLlmError(error: LlmError): ErrorCode {
   switch (error.kind) {
     case 'auth':
       return 'provider_auth';
@@ -187,6 +190,7 @@ function codeForLlmError(error: LlmError): ErrorCode {
     case 'cancelled':
       return 'cancelled';
     case 'content_filter':
+      return 'content_filter'; // a provider content-policy block — its own fatal cause (1.AG/ADR-0045 §6), not `validation`
     case 'bad_request':
       return 'validation';
     case 'unknown':
@@ -279,7 +283,12 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
     model: params.planEntries[0]?.model ?? '',
     ...(params.system === undefined ? {} : { system: params.system }),
     messages: [...messages],
-    ...(params.tools === undefined ? {} : { tools: [...params.tools] }),
+    // A media-output turn is single-shot/terminal (1.AG/ADR-0046): it runs one `generate()` with no tool
+    // loop, so offering tools is meaningless and would invite an unrunnable `tool_use` stop. Omit them — a
+    // text turn (the only other `buildRequest` caller, via `streamOneTurn`) keeps its tool grant.
+    ...(params.tools === undefined || requestsMediaOutput(params)
+      ? {}
+      : { tools: [...params.tools] }),
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
@@ -310,26 +319,66 @@ async function streamOneTurn(
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it
-      // rather than remapping the wrapped LlmError to a generic internal code.
-      if (chunk.error.cause instanceof AgentTurnError) {
-        throw chunk.error.cause;
-      }
-      if (chunk.error.cause instanceof BudgetExceededError) {
-        throw new AgentTurnError('budget_exceeded', chunk.error.cause.message, false);
-      }
-      if (chunk.error.cause instanceof BudgetPauseError) {
-        throw chunk.error.cause;
-      }
-      throw new AgentTurnError(
-        codeForLlmError(chunk.error),
-        chunk.error.message,
-        chunk.error.retryable,
-      );
+      throwMappedChainError(chunk.error);
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
   return { content: accumulatorToContent(acc), stopReason };
+}
+
+/**
+ * Run one **inline media-out** turn via the chain's existing non-streaming `generate()` (1.AG/[ADR-0046]):
+ * a `media_surface: 'chat'` model emitting media IN the turn (Gemini `responseModalities`, OpenAI inline
+ * audio). The settled `LlmResult.content` carries in-flight base64 `media` parts; the engine de-inlines
+ * them to `media://` handles at `node:completed.output` (the 1.AF `#emitDurable` choke point). It is
+ * **terminal/single-shot** — no token streaming, no further tool round (the tool loop is built around
+ * `stream()`). Errors map identically to the streamed path: `generate()` throws an `LlmProviderError`
+ * whose `.llmError.cause` preserves a budget/turn error symmetrically with `stream()`'s error chunk.
+ */
+async function generateOneTurn(
+  chain: FallbackChain,
+  messages: readonly LlmMessage[],
+  params: AgentTurnParams,
+): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
+  try {
+    const result = await chain.generate(buildRequest(messages, params));
+    return { content: result.content, stopReason: result.stopReason };
+  } catch (err) {
+    if (err instanceof LlmProviderError) {
+      throwMappedChainError(err.llmError);
+    }
+    throw err;
+  }
+}
+
+/** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
+function throwMappedChainError(error: LlmError): never {
+  // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it rather than
+  // remapping the wrapped LlmError to a generic internal code.
+  if (error.cause instanceof AgentTurnError) {
+    throw error.cause;
+  }
+  if (error.cause instanceof BudgetExceededError) {
+    throw new AgentTurnError('budget_exceeded', error.cause.message, false);
+  }
+  if (error.cause instanceof BudgetPauseError) {
+    throw error.cause;
+  }
+  throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
+}
+
+/**
+ * True when the node authored a non-text output modality — the inline media-out routing signal (1.AG).
+ *
+ * ADR-0046 §1's full condition is `media_surface: 'chat'` **and** a non-text `output_modalities`. The
+ * `'chat'` conjunct is satisfied STRUCTURALLY, not here: the AgentRunner forks a `'generative'` model to
+ * `generateMedia` (Section C, ADR-0045 §1) BEFORE it ever calls `runAgentTurn`, so this turn-core predicate
+ * only ever runs for a `'chat'` model — a `'generative'` model never reaches the inline `generate()` path.
+ * (The turn core is correlation-agnostic and holds no `CapabilityFlags`, so the surface check rightly lives
+ * at the routing layer that resolves the provider, not in this predicate.)
+ */
+function requestsMediaOutput(params: AgentTurnParams): boolean {
+  return params.outputModalities?.some((m) => m !== 'text') ?? false;
 }
 
 /** Fold a single stream chunk into the accumulator, emitting `agent:token` for visible text deltas. */
@@ -617,6 +666,36 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     role: m.role,
     content: [...m.content],
   }));
+
+  // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
+  // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
+  // agent's final artifact and `generate()` is one round-trip). The two budget gates below mirror the text
+  // path: `awaitPreEgress` (primary-model, zero-egress-on-cancel) then the chain's per-attempt `preAttempt`.
+  if (requestsMediaOutput(params)) {
+    await awaitPreEgress(params, activeModel);
+    throwIfAborted(params.signal);
+    const turn = await generateOneTurn(chain, messages, params);
+    throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
+    if (turn.stopReason === 'tool_use') {
+      // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip with no tool
+      // loop, and `buildRequest` offers it no tools. A `tool_use` stop is therefore a provider PROTOCOL
+      // ANOMALY — the provider signalled a tool call we never offered and cannot run — so it maps to
+      // `provider_unavailable`, exactly as the stream path's `tool_use`-stop-with-nothing-runnable guard does.
+      throw new AgentTurnError(
+        'provider_unavailable',
+        'a media-output turn signalled a tool_use stop but cannot run a tool round (ADR-0046)',
+        false,
+      );
+    }
+    return {
+      content: turn.content,
+      text: textOf(turn.content),
+      usage: { input: totalInput, output: totalOutput },
+      model: activeModel,
+      stopReason: turn.stopReason,
+    };
+  }
+
   let corrections = 0;
 
   for (let toolTurn = 0; ; toolTurn += 1) {

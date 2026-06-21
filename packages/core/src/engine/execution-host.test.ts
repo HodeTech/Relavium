@@ -149,6 +149,22 @@ describe('InMemoryRunStore', () => {
         spentMicrocents: 100,
         limitMicrocents: 50,
       },
+      {
+        // An async media-job park whose `run:paused` never persisted (crash in the submit→pause window) is
+        // STILL resumable — the run re-attaches the parked job via the derived pendingMediaJobs slot (1.AG,
+        // ADR-0045 §2-3); reconciling it to run:failed would orphan a paid provider LRO.
+        type: 'media_job:submitted',
+        runId: 'r1',
+        timestamp: at,
+        sequenceNumber: 1,
+        nodeId: 'gen',
+        jobId: 'vendor-op-1',
+        provider: 'openai',
+        model: 'sora-2',
+        modality: 'video',
+        startedAt: at,
+        deadlineAt: '2026-06-13T00:30:00.000Z',
+      },
     ];
     for (const last of lastEvents) {
       const store = new InMemoryRunStore();

@@ -21,9 +21,13 @@ import type {
   AbortSignalLike,
   ErrorCode,
   HumanGatePausedEvent,
+  LlmProviderId,
+  MediaBilledModality,
   TokensUsed,
   ToolPolicy,
 } from '@relavium/shared';
+
+import type { MediaJobStatus } from '@relavium/llm';
 
 import type { RunEventDraft } from './event-bus.js';
 import type { PlanVertex } from '../run-plan.js';
@@ -92,6 +96,27 @@ export interface GateRequest {
 }
 
 /**
+ * An async media-generation job the executor submitted but cannot await synchronously (Sora/Veo,
+ * minute-scale LROs — 1.AG Section D, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+ * The executor resolved the provider + submitted the job (`generateMedia` → `{ jobId }`); the ENGINE then
+ * owns the poll/checkpoint/resume/cancel loop. The opaque `jobId` is re-polled (never re-submitted), so the
+ * record carries everything the loop needs to poll + price the result without the executor: `provider` +
+ * `model` re-resolve the adapter + credential (the key is NEVER persisted — re-resolved on resume), `modality`
+ * de-inlines + prices the `done` media, and `units` is the authored volume for the lone realized cost addend
+ * (ADR-0045 §5). `units` is recomputed from the node config on cross-process resume (it is not persisted).
+ */
+export interface MediaJobSubmission {
+  readonly jobId: string;
+  readonly provider: LlmProviderId;
+  readonly model: string;
+  readonly modality: MediaBilledModality;
+  /** The authored output volume (count for image; duration_seconds for audio/video) → the realized cost addend. */
+  readonly units: number;
+  /** Optional override of `MEDIA_JOB_POLL_DEFAULTS.deadlineMs`; the engine computes `deadlineAt` against its clock. */
+  readonly deadlineMs?: number;
+}
+
+/**
  * The result of executing one vertex. Discriminated on `kind`:
  * - `completed` — the node produced an `output` (and, for an LLM node, `tokensUsed`).
  * - `failed` — a classified failure; the run loop maps it to `node:failed` and fails the run (node
@@ -100,6 +125,8 @@ export interface GateRequest {
  *   live; every other dependent of the condition is skip-propagated by the loop.
  * - `paused` — a `human_in_the_loop` node suspends the run; the loop emits `human_gate:paused`, parks
  *   the gate, and continues other branches until it resumes via `engine.resume`.
+ * - `media_job` — a generative node submitted an async media job; the loop emits `media_job:submitted`,
+ *   parks the node (reusing the gate suspend machinery), and drives the poll loop to terminal (1.AG Section D).
  */
 export type NodeOutcome =
   | { readonly kind: 'completed'; readonly output: unknown; readonly tokensUsed?: TokensUsed }
@@ -110,7 +137,8 @@ export type NodeOutcome =
       readonly selected: readonly string[];
       readonly tokensUsed?: TokensUsed;
     }
-  | { readonly kind: 'paused'; readonly gate: GateRequest };
+  | { readonly kind: 'paused'; readonly gate: GateRequest }
+  | { readonly kind: 'media_job'; readonly job: MediaJobSubmission };
 
 /** The context handed to a node executor for one dispatch of one vertex. */
 export interface NodeExecContext {
@@ -160,4 +188,13 @@ export interface NodeExecContext {
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */
 export interface NodeExecutor {
   execute(ctx: NodeExecContext): Promise<NodeOutcome>;
+  /**
+   * Poll an async media job the executor previously submitted (1.AG Section D, ADR-0045 §3). The ENGINE owns
+   * the poll/checkpoint/resume/cancel loop, but provider + credential resolution lives in the executor (the
+   * `resolveProvider`/`keyFor` capabilities), so the engine delegates the actual poll here. The executor
+   * re-resolves the adapter + key from `job.provider` and calls `provider.pollMediaJob(job.jobId, key, signal)`.
+   * `signal` aborts the in-flight poll on a run cancel. Optional — an executor with no generative providers
+   * (or before Section D is wired) omits it; the engine treats its absence as a host-wiring gap (`internal`).
+   */
+  pollMediaJob?(job: MediaJobSubmission, signal: AbortSignalLike): Promise<MediaJobStatus>;
 }

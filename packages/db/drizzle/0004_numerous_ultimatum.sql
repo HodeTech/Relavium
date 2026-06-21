@@ -1,0 +1,1 @@
+ALTER TABLE `model_catalog` ADD `media_surface` text DEFAULT 'chat' NOT NULL;

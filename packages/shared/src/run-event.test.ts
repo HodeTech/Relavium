@@ -88,6 +88,17 @@ const valid: Record<string, Record<string, unknown>> = {
     error: { code: 'tool_failed', message: 'boom', retryable: true },
     delayMs: 1000,
   },
+  'media_job:submitted': {
+    type: 'media_job:submitted',
+    ...env,
+    nodeId: 'n',
+    jobId: 'job-1',
+    provider: 'openai',
+    model: 'sora',
+    modality: 'video',
+    startedAt: '2026-06-20T00:00:00.000Z',
+    deadlineAt: '2026-06-20T00:30:00.000Z',
+  },
   'human_gate:paused': {
     type: 'human_gate:paused',
     ...env,
@@ -218,6 +229,37 @@ const reject: Record<string, Record<string, unknown>> = {
     attemptNumber: 1,
     error: { code: 'tool_failed', message: 'x', retryable: true },
   },
+  'media_job:submitted (bad provider)': {
+    ...valid['media_job:submitted'],
+    provider: 'cohere', // not in LLM_PROVIDERS
+  },
+  'media_job:submitted (bad modality)': {
+    ...valid['media_job:submitted'],
+    modality: 'document', // billed modalities are image|audio|video only
+  },
+  'media_job:submitted (non-datetime deadlineAt)': {
+    ...valid['media_job:submitted'],
+    deadlineAt: 'soon',
+  },
+  'media_job:submitted (non-datetime startedAt)': {
+    ...valid['media_job:submitted'],
+    startedAt: 'tomorrow',
+  },
+  // deadlineAt = startedAt + media_job_deadline_ms by construction; an earlier deadlineAt is malformed and
+  // would invert the resume `now > deadlineAt` short-circuit (union-level superRefine, Date.parse-compared).
+  'media_job:submitted (deadlineAt before startedAt)': {
+    ...valid['media_job:submitted'],
+    startedAt: '2026-06-20T00:30:00.000Z',
+    deadlineAt: '2026-06-20T00:00:00.000Z',
+  },
+  'media_job:submitted (empty jobId)': {
+    ...valid['media_job:submitted'],
+    jobId: '',
+  },
+  'media_job:submitted (missing jobId)': {
+    ...valid['media_job:submitted'],
+    jobId: undefined,
+  },
   'human_gate:paused (bad gateType)': {
     type: 'human_gate:paused',
     ...env,
@@ -253,8 +295,25 @@ const reject: Record<string, Record<string, unknown>> = {
     error: { code: 'internal', message: 'm', retryable: false }, // compliant — isolate the missing partialOutputs
   },
   'run:cancelled (negative sequenceNumber)': { type: 'run:cancelled', ...env, sequenceNumber: -1 },
-  'run:paused (empty gateIds)': { ...valid['run:paused'], gateIds: [] },
-  'run:paused (pendingGateCount 0)': { ...valid['run:paused'], pendingGateCount: 0 },
+  // A media-job park may carry empty gateIds / pendingGateCount 0 (1.AG Section D), so those are no longer
+  // rejected; an empty pendingMediaJobNodeIds (min 1) still is, and a ZERO-reason pause (no gate, no media) is
+  // rejected by the union-level superRefine.
+  'run:paused (empty pendingMediaJobNodeIds)': {
+    ...valid['run:paused'],
+    pendingMediaJobNodeIds: [],
+  },
+  'run:paused (no suspension reason)': {
+    ...valid['run:paused'],
+    pendingGateCount: 0,
+    gateIds: [],
+  },
+  // pendingGateCount is the aggregate of gateIds — a divergent pair (count 5, two ids) is malformed and the
+  // union-level superRefine rejects it (the count/list relaxation must not let them drift, 1.AG Section D).
+  'run:paused (pendingGateCount/gateIds mismatch)': {
+    ...valid['run:paused'],
+    pendingGateCount: 5,
+    gateIds: ['g1', 'g2'],
+  },
   'run:timeout (negative elapsedMs)': { ...valid['run:timeout'], elapsedMs: -1 },
   'budget:warning (thresholdPct > 100)': { ...valid['budget:warning'], thresholdPct: 101 },
   'budget:warning (negative thresholdPct)': { ...valid['budget:warning'], thresholdPct: -1 },
@@ -274,7 +333,19 @@ describe('RunEvent union — every variant', () => {
     expect(RunEventSchema.safeParse(reject[name]).success).toBe(false);
   });
 
-  it('covers exactly the 20 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('accepts a media-only run:paused park: empty gateIds + pendingGateCount 0 + media node ids (1.AG Section D)', () => {
+    expect(
+      RunEventSchema.safeParse({
+        type: 'run:paused',
+        ...env,
+        pendingGateCount: 0,
+        gateIds: [],
+        pendingMediaJobNodeIds: ['work'],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('covers exactly the 21 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -289,6 +360,7 @@ describe('RunEvent union — every variant', () => {
       'node:failed',
       'node:skipped',
       'node:retrying',
+      'media_job:submitted',
       'human_gate:paused',
       'human_gate:resumed',
       'run:completed',
@@ -305,7 +377,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 20
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 21
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -520,6 +592,13 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
       RunEventSchema.safeParse({
         ...valid['node:failed'],
         error: { code: 'sandbox_error', message: 'x', retryable: false },
+      }).success,
+    ).toBe(true);
+    // The 1.AG content_filter ErrorCode parses on the event path (a content-policy block surfaces here).
+    expect(
+      RunEventSchema.safeParse({
+        ...valid['node:failed'],
+        error: { code: 'content_filter', message: 'content policy block', retryable: false },
       }).success,
     ).toBe(true);
   });

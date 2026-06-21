@@ -88,6 +88,38 @@ describe('NodeSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts the generative media-volume knobs count/duration_seconds on an agent node (1.AG/ADR-0045 §1)', () => {
+    expect(
+      NodeSchema.safeParse({
+        id: 'a',
+        type: 'agent',
+        agent_ref: 'x',
+        output_modalities: ['image'],
+        count: 4,
+      }).success,
+    ).toBe(true);
+    expect(
+      NodeSchema.safeParse({
+        id: 'a',
+        type: 'agent',
+        agent_ref: 'x',
+        output_modalities: ['audio'],
+        duration_seconds: 12.5,
+      }).success,
+    ).toBe(true);
+    // non-positive / non-integer count is rejected
+    expect(NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'x', count: 0 }).success).toBe(
+      false,
+    );
+    expect(
+      NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'x', count: 1.5 }).success,
+    ).toBe(false);
+    expect(
+      NodeSchema.safeParse({ id: 'a', type: 'agent', agent_ref: 'x', duration_seconds: -1 })
+        .success,
+    ).toBe(false);
+  });
+
   it('accepts a relative save_to on an output node, rejects absolute/traversal/unknown-key (1.AF, A9)', () => {
     expect(
       NodeSchema.safeParse({ id: 'o', type: 'output', save_to: 'out/{{ run.id }}/image.png' })

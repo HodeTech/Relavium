@@ -21,6 +21,7 @@ export type EngineStateErrorCode =
   | 'run_not_paused' // `resume` was called while the run has no pending gate to resolve
   | 'unknown_gate' // the `gateId` does not match any gate currently pending on the run
   | 'invalid_decision' // the supplied `GateDecision` failed schema validation at the boundary
+  | 'pending_gate_requires_decision' // a media-only `resumeFromCheckpoint` hit a run also parked on a gate (pass gateId + decision)
   | 'workflow_mismatch'; // `resumeFromCheckpoint` was handed a workflow that is not the one the run started on
 
 /**

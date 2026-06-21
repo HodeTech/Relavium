@@ -44,7 +44,9 @@ export function estimateMediaCost(
   for (const { modality, units } of estimate) {
     const rate = p.mediaOutputRates?.[modality];
     if (rate !== undefined && units > 0) {
-      total += units * rate;
+      // Round per entry, exactly as the realized `mediaCost` fold does (cost-tracker.ts), so the pre-egress
+      // gate estimate and the realized addend agree to the micro-cent on a fractional duration (N3).
+      total += Math.round(units * rate);
     }
   }
   return total;

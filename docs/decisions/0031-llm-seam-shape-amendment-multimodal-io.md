@@ -19,6 +19,10 @@
 
 > **Amended 2026-06-18 by [ADR-0042](0042-engine-media-storage-substrate-mediastore-deinline-retention.md), [ADR-0043](0043-media-egress-failover-rematerialization-ssrf.md), and [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** The 1.AF wiring of this ADR's reserved media shape, refining (never reversing) it: ADR-0042 lands the `MediaStore` host-port injection + the `deInlineMedia` choke-point ordering + the `media_objects` retention/GC store (promoting this ADR's "Open implementation details" retention default to a decision); ADR-0043 lands the binary media-egress capability + the SSRF mechanism half, and **resolves this ADR's sidecar-ownership wording** (the `(provider, sha256)` sidecar is held per-`FallbackChain` run-instance via a narrow injected hook, not the stateless adapter); ADR-0044 lands the `read_media` scope-set authz + the byte-delivery gate + the `save_to` write port + the per-modality media cost. The seam shape here is unchanged.
 
+> **Amended 2026-06-20 by [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md).** A refinement, not a reversal: 1.AG wires the reserved `generateMedia`/`pollMediaJob` methods and **additively adds a `signal?` param to `pollMediaJob`** (so a cancel aborts the in-flight poll) — the only shape change to the 1.AD-frozen seam, made while the methods are still un-implemented. The reserved shapes (`MediaGenRequest`/`MediaGenResult`/`MediaJobStatus`, the opaque-jobId rule) stand.
+
+> **Amended 2026-06-20 by [ADR-0046](0046-inline-media-out-via-generate-streaming-triad-deferred.md).** A refinement, not a reversal: it pins which of §5.1's two inline-media-out paths Phase-1 (1.AG) uses — the non-streaming `generate()` path ("the more common"), de-inlined at the `#emitDurable` choke point — and defers the streaming `media_start`/`media_delta`/`media_end` triad to the host (1.AH). The seam shape (incl. the handle-only `media_end`) is unchanged.
+
 ## Context
 
 The `@relavium/llm` seam — the request/result/stream/usage/content shapes in

@@ -100,6 +100,102 @@ describe('reconstructCheckpointState', () => {
     expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'gate', isBudgetGate: false }]);
   });
 
+  const mediaJob = (seq: number, nodeId: string, jobId: string): RunEvent => ({
+    type: 'media_job:submitted',
+    ...base(seq),
+    nodeId,
+    jobId,
+    provider: 'openai',
+    model: 'sora',
+    modality: 'video',
+    startedAt: TS,
+    deadlineAt: '2026-01-01T00:30:00.000Z',
+  });
+
+  it('parks an in-flight async media job (paused node + pendingMediaJobs entry) — ADR-0045 §2', () => {
+    const state = reconstructCheckpointState([started, mediaJob(1, 'gen', 'job-1')]);
+    expect(state?.nodeStates.get('gen')).toEqual({ status: 'paused' }); // suspended, NOT absent → re-attach not re-run
+    expect(state?.pendingMediaJobs).toEqual([
+      {
+        nodeId: 'gen',
+        jobId: 'job-1',
+        provider: 'openai',
+        model: 'sora',
+        modality: 'video',
+        startedAt: TS,
+        deadlineAt: '2026-01-01T00:30:00.000Z',
+      },
+    ]);
+  });
+
+  it("clears the node's media-job entry on its terminal node:completed (nothing to re-attach) — ADR-0045 §2", () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-1'),
+      completed(2, 'gen', { handle: 'media://sha256-x' }),
+    ]);
+    expect(state?.pendingMediaJobs).toEqual([]);
+    expect(state?.nodeStates.get('gen')?.status).toBe('completed');
+  });
+
+  it('latest media_job:submitted wins for a node (a node-retry re-dispatch replaces the entry) — ADR-0045 §2', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-old'),
+      mediaJob(2, 'gen', 'job-new'),
+    ]);
+    expect(state?.pendingMediaJobs).toHaveLength(1);
+    expect(state?.pendingMediaJobs[0]?.jobId).toBe('job-new');
+  });
+
+  it('clears a media-job entry on its terminal node:failed (the failed job leaves nothing to re-attach)', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-1'),
+      {
+        type: 'node:failed',
+        ...base(2),
+        nodeId: 'gen',
+        error: { code: 'content_filter', message: 'blocked', retryable: false },
+      },
+    ]);
+    expect(state?.pendingMediaJobs).toEqual([]);
+    expect(state?.nodeStates.get('gen')?.status).toBe('failed');
+  });
+
+  it('clears a media-job entry on the defensive node:skipped path too (ADR-0045 §2 clear-set)', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-1'),
+      { type: 'node:skipped', ...base(2), nodeId: 'gen', reason: 'upstream_unreachable' },
+    ]);
+    expect(state?.pendingMediaJobs).toEqual([]);
+    expect(state?.nodeStates.get('gen')?.status).toBe('skipped');
+  });
+
+  it('a stale/out-of-order media_job:submitted never resurrects an already-settled node (defensive — MJ-2)', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'gen', 'job-1'),
+      completed(2, 'gen', { handle: 'media://sha256-x' }),
+      mediaJob(3, 'gen', 'job-stale'), // an out-of-order/duplicate submit AFTER the terminal — must be ignored
+    ]);
+    expect(state?.pendingMediaJobs).toEqual([]); // not re-added
+    expect(state?.nodeStates.get('gen')?.status).toBe('completed'); // not re-parked
+  });
+
+  it('folds in-flight media jobs across MULTIPLE distinct nodes independently', () => {
+    const state = reconstructCheckpointState([
+      started,
+      mediaJob(1, 'genA', 'job-a'),
+      mediaJob(2, 'genB', 'job-b'),
+      completed(3, 'genA', { handle: 'media://sha256-a' }), // genA settles; genB stays parked
+    ]);
+    expect(state?.pendingMediaJobs.map((j) => j.nodeId)).toEqual(['genB']);
+    expect(state?.nodeStates.get('genA')?.status).toBe('completed');
+    expect(state?.nodeStates.get('genB')?.status).toBe('paused');
+  });
+
   it('keeps isBudgetGate=true across the budget:paused → human_gate:paused pair + restores the cumulative cost — H1/H2', () => {
     // The engine emits budget:paused THEN human_gate:paused with the SAME gateId for a budget gate. The fold
     // must not let the later human_gate:paused downgrade it to a plain human gate — else a resumed REJECTED
