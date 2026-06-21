@@ -136,6 +136,28 @@ about owning the *product* layers; it is not a license to re-implement vetted se
 foundations. See [security-review.md](security-review.md) and
 [ADR-0011](../decisions/0011-internal-llm-abstraction.md).
 
+## 9a. Dependency-bump cooling window
+
+A new dependency version is not trusted the day it ships. Supply-chain attacks land
+through freshly published versions of otherwise-reputable packages, and a brand-new
+release has had no time to be audited by anyone. So when adding a dependency or bumping
+one, **prefer a version that has been public for a while over the just-released latest**:
+do not pin to a version published within the last few days, and treat any same-day
+upgrade as something to justify, not a default. This is a review posture, not a license
+to fall behind — security patches are the exception and are pulled in promptly; the rule
+targets *unvetted novelty*, not staying current.
+
+**Applied rule:** when a `package.json` diff adds or raises a dependency, the reviewer
+checks the chosen version's publish age and questions a bleeding-edge pin with no
+security justification; the safe default is the most recent version that has been
+available long enough to have been exercised by the ecosystem. This matters most for the
+dependency-heavy surfaces (the CLI's `commander`/`ink`/`@clack/prompts`/`tsup`, the
+keychain and MCP bindings) where the new-dependency count is highest. Adding a dependency
+at all still needs the principle-9 bar (an [ADR](../decisions/README.md) for a new runtime
+dependency in the core path); this principle governs *which version* of an approved
+dependency to take. Native CI enforcement of the cooling window is deferred (it needs a
+tooling step that does not yet exist); until then it is a human review check.
+
 ## 10. Clean execution-mode interface — local, cloud, managed
 
 A run executes in one of three **execution modes**, all behind the single
