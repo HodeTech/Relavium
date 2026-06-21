@@ -1063,7 +1063,7 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   cross-fix defects (the orphaned-vertex cost addend + the crash-in-window `run:paused`). All four acceptance
   criteria are tested. The genuinely-remaining vendor-adapter + host-wiring work is **1.AH** (deferred-tasks.md).
 - **1.AH — Generative media-output adapters + surfaces & managed mode (Phase E, spans Phases 2–6).** The
-  Phase-1-doable half landed (unmerged): the **four generative media-output adapters** behind the
+  Phase-1-doable half is implemented behind the seam: the **four generative media-output adapters** behind the
   `@relavium/llm` seam — OpenAI-TTS (audio), Gemini-Imagen (image), OpenAI/Sora (async video), Gemini/Veo
   (async video) — plus the shared **opaque-`jobId` encode/decode** (ADR-0045 §7) and the shared **bare-MIME
   validator**, all proven with stubs + the generative conformance suite. They are **not yet runtime-reachable**:
