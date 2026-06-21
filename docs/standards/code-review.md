@@ -50,6 +50,11 @@ are actually enforced — automation catches format and types; a human catches t
   `package.json` diffs and rejects a casual `npm install` that adds a framework or
   re-introduces a banned one (Vercel AI SDK, LangChain, a Python sidecar). Dev-only tools
   are lower bar but still justified.
+- **Dependency-bump cooling window:** for an added or raised dependency, check the chosen
+  version's publish age against the
+  [§9a cooling bar](architectural-principles.md#9a-dependency-bump-cooling-window)
+  (≥ 7 days, ≥ 14 for a major, < 72 h blocked) and require a recorded security
+  justification to override it.
 - The **LLM seam holds**: no vendor SDK type imported outside `packages/llm/src/adapters/*`
   (see [code-style-typescript.md](code-style-typescript.md#module-boundaries--no-vendor-type-across-the-llm-seam)).
   This is a blocking check, not a nit.
