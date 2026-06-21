@@ -1,6 +1,6 @@
 import { GenerateVideosOperation, GoogleGenAI } from '@google/genai';
 
-import { mediaModalityOf } from '@relavium/shared';
+import { MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
 import type { AbortSignalLike, ContentPart, OutputModality, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
@@ -72,6 +72,20 @@ const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * The canonical BARE media MIME (no RFC-2045 parameters) from a vendor-reported type, validated against the
+ * shared {@link MediaMimeTypeSchema}; returns `''` when the value is absent, parameter-only, or illegal —
+ * including a CR/LF-injected MIME that a `split(';')` alone would pass through (the chars fail the regex).
+ * The vendor MIME is the de-facto guard: the production de-inline path (`MediaStore.put` /
+ * `media_objects.mimeType`) runs NO MIME regex, so callers MUST fall back (`'' → default`) or skip the part
+ * rather than persist an unvalidated MIME. Shared by all three Gemini media-MIME sites (inline media-out,
+ * Imagen image-out, Veo video-out).
+ */
+function bareMimeType(raw: string | undefined): string {
+  const bare = (raw ?? '').split(';')[0]?.trim() ?? '';
+  return MediaMimeTypeSchema.safeParse(bare).success ? bare : '';
+}
 
 /**
  * True when the prompt was actually blocked. Gemini's `blockReason` enum includes the
@@ -310,11 +324,11 @@ function mapGeminiPart(part: GeminiPart, ids: GeminiToolCallIds): ContentPart | 
     // (1.AG/ADR-0046). Emit an IN-FLIGHT media part; the engine de-inlines it to a handle at #emitDurable
     // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart. Gemini AUDIO output carries
     // a PARAMETERIZED mime (e.g. `audio/L16;codec=pcm;rate=24000`), but the seam's MediaMimeTypeSchema admits
-    // only a BARE type/subtype — strip parameters to the bare prefix (the modality derives from it; the durable
-    // media part cannot carry parameters anyway). A pathological `;…`-only value strips to empty and is SKIPPED
-    // (returns undefined — still consumed, never re-interpreted as text), symmetric with the empty-data skip,
-    // never emitted as a doomed `application/octet-stream` that would HARD-FAIL the de-inline.
-    const bareMime = inline.mimeType.split(';')[0]?.trim() ?? '';
+    // only a BARE type/subtype — bareMimeType strips parameters + validates (the modality derives from it; the
+    // durable part cannot carry parameters). A pathological `;…`-only OR illegal (CR/LF) value strips/validates
+    // to empty and is SKIPPED (returns undefined — still consumed, never re-interpreted as text), symmetric with
+    // the empty-data skip, never emitted as a doomed part that would HARD-FAIL the de-inline.
+    const bareMime = bareMimeType(inline.mimeType);
     return bareMime.length > 0
       ? { type: 'media', mimeType: bareMime, source: { kind: 'base64', data: inline.data } }
       : undefined;
@@ -802,13 +816,10 @@ async function geminiGenerateImage(
       }),
     );
   }
-  // The vendor reports the ACTUAL bytes' MIME; default to png (Imagen's default) when absent. Strip any
-  // `;`-parameters (e.g. `image/png; q=1.0`) to the canonical bare MIME — the production de-inline path
-  // (MediaStore.put / media_objects.mimeType) has no parameter-stripping CHECK, and the generate() arm
-  // (mapContent) strips identically. (`first?.` only narrows the type — the non-empty-b64 guard above
-  // already proves `first` exists at runtime.)
-  const rawMime = first?.image?.mimeType ?? '';
-  const mimeType = rawMime.split(';')[0]?.trim() || 'image/png';
+  // The vendor reports the ACTUAL bytes' MIME; bareMimeType strips `;`-parameters + validates (the
+  // production de-inline path runs no MIME regex), defaulting to png (Imagen's default) on an absent/illegal
+  // value. (`first?.` only narrows the type — the non-empty-b64 guard above already proves `first` exists.)
+  const mimeType = bareMimeType(first?.image?.mimeType) || 'image/png';
   return {
     media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
     raw: response,
@@ -904,9 +915,9 @@ async function geminiPollVideo(
     };
   }
   const video = poll.video;
-  // Strip `;`-parameters to the canonical bare MIME (vendor-reported), default video/mp4 — same as the
-  // image arm (the shared bareMime consolidation is the A6 N1 carry-forward).
-  const mimeType = (video?.mimeType ?? '').split(';')[0]?.trim() || 'video/mp4';
+  // bareMimeType strips `;`-parameters + validates the vendor MIME, defaulting to video/mp4 — same shared
+  // helper as the inline + Imagen arms.
+  const mimeType = bareMimeType(video?.mimeType) || 'video/mp4';
   if (video?.videoBytes !== undefined && video.videoBytes.length > 0) {
     return {
       state: 'done',

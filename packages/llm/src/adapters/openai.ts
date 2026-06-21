@@ -199,6 +199,33 @@ function imageOutputFormat(mimeType: string | undefined): 'png' | 'jpeg' | 'webp
   }
 }
 
+/** gpt-image-1 frame sizes (1.AH A6). */
+type ImageSize = '1024x1024' | '1024x1536' | '1536x1024' | 'auto';
+/** gpt-image-1 quality tiers (1.AH A6). */
+type ImageQuality = 'low' | 'medium' | 'high' | 'auto';
+
+/** Optional gpt-image-1 `size` knob from `providerOptions.image.size` (mirrors ttsVoice's providerOptions
+ *  nesting); an unrecognized value is dropped so the model default applies. providerOptions rides the
+ *  REQUEST BODY only — never the SDK RequestOptions (which holds baseURL/headers) — so no SSRF surface. */
+function imageSize(providerOptions: MediaGenRequest['providerOptions']): ImageSize | undefined {
+  const imageOpts = isRecord(providerOptions) ? providerOptions['image'] : undefined;
+  const size = isRecord(imageOpts) ? imageOpts['size'] : undefined;
+  return size === '1024x1024' || size === '1024x1536' || size === '1536x1024' || size === 'auto'
+    ? size
+    : undefined;
+}
+
+/** Optional gpt-image-1 `quality` knob from `providerOptions.image.quality`; an unrecognized value is dropped. */
+function imageQuality(
+  providerOptions: MediaGenRequest['providerOptions'],
+): ImageQuality | undefined {
+  const imageOpts = isRecord(providerOptions) ? providerOptions['image'] : undefined;
+  const quality = isRecord(imageOpts) ? imageOpts['quality'] : undefined;
+  return quality === 'low' || quality === 'medium' || quality === 'high' || quality === 'auto'
+    ? quality
+    : undefined;
+}
+
 /** Map a requested output-audio `format` (providerOptions.audio.format) to its MIME — OpenAI's response
  *  echoes no format, so the requested one types the media part. Defaults to `audio/wav` (OpenAI's default). */
 export function outputAudioMime(req: LlmRequest): string {
@@ -1010,6 +1037,8 @@ async function openAiGenerateImage(
     );
   }
   const outputFormat = imageOutputFormat(req.mimeType);
+  const size = imageSize(req.providerOptions);
+  const quality = imageQuality(req.providerOptions);
   let response: OpenAI.ImagesResponse;
   try {
     response = await client.images.generate(
@@ -1017,6 +1046,8 @@ async function openAiGenerateImage(
         model: req.model,
         prompt: req.prompt,
         ...(outputFormat === undefined ? {} : { output_format: outputFormat }),
+        ...(size === undefined ? {} : { size }),
+        ...(quality === undefined ? {} : { quality }),
       },
       isAbortSignal(req.signal) ? { signal: req.signal } : {},
     );

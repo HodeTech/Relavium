@@ -469,6 +469,61 @@ describe('OpenAI-compatible adapter', () => {
     expect(result.media?.mimeType).toBe('image/webp');
   });
 
+  it('generateMedia (image) forwards valid size/quality knobs from providerOptions.image; drops invalid (1.AH A6)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'aW1n' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    await genMedia(
+      adapter,
+      {
+        model: 'gpt-image-1',
+        prompt: 'x',
+        modality: 'image',
+        providerOptions: { image: { size: '1536x1024', quality: 'high', bogus: 'x' } },
+      },
+      'k',
+    );
+    expect(sent['size']).toBe('1536x1024');
+    expect(sent['quality']).toBe('high');
+    expect(sent['bogus']).toBeUndefined(); // only the recognized knobs are forwarded (no spread)
+  });
+
+  it('generateMedia (image) drops an unrecognized size/quality (no 400-inducing passthrough)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'aW1n' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    await genMedia(
+      adapter,
+      {
+        model: 'gpt-image-1',
+        prompt: 'x',
+        modality: 'image',
+        providerOptions: { image: { size: '99x99', quality: 'ultra' } },
+      },
+      'k',
+    );
+    expect(sent['size']).toBeUndefined();
+    expect(sent['quality']).toBeUndefined();
+  });
+
   it('generateMedia maps an image content-policy refusal to content_filter (the documented taxonomy)', async () => {
     const adapter = createOpenAiAdapter({
       fetch: () =>

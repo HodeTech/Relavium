@@ -895,6 +895,14 @@ describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
     expect(result.media?.mimeType).toBe('image/png');
   });
 
+  it('rejects an illegal (CR/LF-injected) vendor MIME → falls back to image/png (bareMimeType validates)', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png\nX-Injected: 1' } }],
+    });
+    const result = await genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k');
+    expect(result.media?.mimeType).toBe('image/png'); // the injected MIME never reaches media_objects.mimeType
+  });
+
   it('strips a caller-supplied httpOptions from the Imagen config (SSRF: no baseUrl/key redirect)', async () => {
     const transport = fakeImageTransport({
       generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png' } }],
