@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createGeminiAdapter,
   geminiAdapter,
+  type GeminiImageResponse,
   type GeminiResponse,
   type GeminiTransport,
 } from '../adapters/gemini.js';
@@ -24,6 +25,10 @@ const isGeminiResponse = (value: unknown): value is GeminiResponse =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isGeminiResponseArray = (value: unknown): value is GeminiResponse[] =>
   Array.isArray(value) && value.every(isGeminiResponse);
+// GeminiImageResponse's only field is optional, so any object is structurally valid; the helper reads
+// generatedImages defensively. An object/non-array check fails loud on a malformed fixture.
+const isGeminiImageResponse = (value: unknown): value is GeminiImageResponse =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 // Gemini has no `fetch` hook, so the conformance harness replays at the transport level: a recorded
 // SDK-output JSON (single response or an array of streamed responses) is parsed and served through a
@@ -59,6 +64,14 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
       return isGeminiResponseArray(parsed)
         ? Promise.resolve(toAsyncIterable(parsed))
         : Promise.reject(new Error('replay fixture is not a GeminiResponse[] array'));
+    },
+    generateImages: () => {
+      const current = nextRecording();
+      if (current.status >= 400) return rejection(current.status);
+      const parsed: unknown = JSON.parse(current.body);
+      return isGeminiImageResponse(parsed)
+        ? Promise.resolve(parsed)
+        : Promise.reject(new Error('replay fixture is not a GeminiImageResponse object'));
     },
   };
   return createGeminiAdapter({ transport });

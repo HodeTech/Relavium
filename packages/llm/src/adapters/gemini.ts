@@ -6,6 +6,7 @@ import type { ContentPart, OutputModality, StopReason } from '@relavium/shared';
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer.js';
+import { UnsupportedCapabilityError } from '../errors.js';
 import type {
   CapabilityFlags,
   LlmError,
@@ -13,6 +14,8 @@ import type {
   LlmProvider,
   LlmRequest,
   LlmResult,
+  MediaGenRequest,
+  MediaGenResult,
   StreamChunk,
   ToolChoice,
   ToolDef,
@@ -129,6 +132,25 @@ export interface GeminiRequest {
   config: Record<string, unknown>;
 }
 
+/** The lowered Imagen request the transport sends (1.AH A2; a plain object the SDK accepts). */
+export interface GeminiImageRequest {
+  model: string;
+  prompt: string;
+  config: Record<string, unknown>;
+}
+
+/**
+ * The minimal slice of the Gemini Imagen response the fold consumes — a hand-rolled structural subset so
+ * no vendor type crosses the seam (parity with {@link GeminiResponse}). `imageBytes` is base64;
+ * `raiFilteredReason` is set (with no `image`) when a candidate is dropped by the safety filter.
+ */
+export interface GeminiImageResponse {
+  generatedImages?: Array<{
+    image?: { imageBytes?: string; mimeType?: string };
+    raiFilteredReason?: string;
+  }>;
+}
+
 /**
  * The injected network seam. The default wraps `@google/genai`; the conformance harness injects a
  * replay implementation. Keeping it here lets the one adapter run on every host (ADR-0018) and lets
@@ -137,6 +159,12 @@ export interface GeminiRequest {
 export interface GeminiTransport {
   generate(request: GeminiRequest, key: string): Promise<GeminiResponse>;
   stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>>;
+  /**
+   * Imagen generative image endpoint (1.AH A2). The default wraps `ai.models.generateImages`; the
+   * conformance harness injects a replay. Required so a transport honestly declares the generative
+   * surface it services (sync image is Gemini's only Phase-1 generative arm; Veo video is 1.AH A4).
+   */
+  generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse>;
 }
 
 // --- Normalization: Gemini wire → canonical --------------------------------------------------
@@ -466,6 +494,10 @@ const sdkTransport: GeminiTransport = {
     const client = new GoogleGenAI({ apiKey: key });
     return client.models.generateContentStream(request);
   },
+  async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
+    const client = new GoogleGenAI({ apiKey: key });
+    return client.models.generateImages(request);
+  },
 };
 /* v8 ignore stop */
 
@@ -612,6 +644,81 @@ async function* streamChunks(
   yield { type: 'stop', stopReason, usage: state.usage };
 }
 
+// --- Generative media (Imagen, sync) ---------------------------------------------------------
+
+/**
+ * Imagen sync image generation (1.AH A2) — mirrors the OpenAI image arm: ONE artifact per call, base64
+ * in flight (the engine de-inlines it to a `media://` handle at the durable boundary — I3). `count > 1`
+ * is rejected loud rather than billing N and dropping N-1 (a multi-image `MediaGenResult` is a deferred
+ * seam amend). A safety-filtered candidate (`raiFilteredReason`, no `image`) maps to `content_filter`,
+ * reusing the one failure vocabulary instead of a generic empty-bytes error. `numberOfImages` is pinned
+ * to 1 AFTER any `providerOptions` spread so an author-supplied count can't smuggle past the guard.
+ */
+async function geminiGenerateImage(
+  transport: GeminiTransport,
+  req: MediaGenRequest,
+  key: string,
+): Promise<MediaGenResult> {
+  if (req.count !== undefined && req.count > 1) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: `Gemini image generateMedia delivers a single image; count ${String(req.count)} > 1 is not supported on the SYNC seam`,
+      }),
+    );
+  }
+  let response: GeminiImageResponse;
+  try {
+    response = await transport.generateImages(
+      {
+        model: req.model,
+        prompt: req.prompt,
+        // numberOfImages pinned AFTER the providerOptions spread (the single-artifact seam); abortSignal
+        // threaded so a run cancel reaches the in-flight Imagen call (parity with the generate() path).
+        config: {
+          ...(req.providerOptions ?? {}),
+          numberOfImages: 1,
+          ...(isAbortSignal(req.signal) ? { abortSignal: req.signal } : {}),
+        },
+      },
+      key,
+    );
+  } catch (err) {
+    throw new LlmProviderError(geminiErrorToLlmError(err));
+  }
+  const first = response.generatedImages?.[0];
+  const b64 = first?.image?.imageBytes;
+  if (b64 === undefined || b64.length === 0) {
+    // A dropped candidate carries the RAI reason but no bytes — surface it as content_filter, not the
+    // generic no-data path below (which is a genuine provider-contract violation).
+    if (first?.raiFilteredReason !== undefined && first.raiFilteredReason.length > 0) {
+      throw new LlmProviderError(
+        makeLlmError({
+          provider: PROVIDER,
+          kind: 'content_filter',
+          message: `Gemini image generation was filtered: ${first.raiFilteredReason}`,
+        }),
+      );
+    }
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: 'Gemini image generation returned no base64 image data',
+      }),
+    );
+  }
+  // The vendor reports the ACTUAL bytes' MIME; default to png (Imagen's default) when absent. The bare
+  // MIME is validated downstream by MediaPartSchema before anything durable is written. (`first?.` only
+  // narrows the type — the non-empty-b64 guard above already proves `first` exists at runtime.)
+  const mimeType = first?.image?.mimeType ?? 'image/png';
+  return {
+    media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
+    raw: response,
+  };
+}
+
 // --- The adapter -----------------------------------------------------------------------------
 
 /** Dependencies the conformance replayer / tests inject (the network transport). */
@@ -656,6 +763,19 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(transport, buildGeminiRequest(req), key);
+    },
+    async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
+      // SYNC separate-endpoint generation, dispatched by modality (ADR-0045 §1): image → Imagen
+      // (generateImages). Audio is not a Gemini generative surface; video is the ASYNC Veo path (1.AH A4)
+      // — both fail loud with a typed capability error, never a silent drop.
+      if (req.modality === 'image') {
+        return geminiGenerateImage(transport, req, key);
+      }
+      throw new UnsupportedCapabilityError(
+        PROVIDER,
+        'media',
+        `Gemini generateMedia has no SYNC surface for '${req.modality}' (image is Imagen; video is the async Veo path)`,
+      );
     },
   };
 }

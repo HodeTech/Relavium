@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import { GeminiToolCallIds } from '../tool-normalizer.js';
-import type { LlmRequest, StreamChunk } from '../types.js';
+import type {
+  LlmProvider,
+  LlmRequest,
+  MediaGenRequest,
+  MediaGenResult,
+  StreamChunk,
+} from '../types.js';
 import {
   buildGeminiRequest,
   createGeminiAdapter,
@@ -12,6 +18,8 @@ import {
   mapContent,
   mapStopReason,
   mapUsage,
+  type GeminiImageRequest,
+  type GeminiImageResponse,
   type GeminiRequest,
   type GeminiResponse,
   type GeminiTransport,
@@ -46,8 +54,39 @@ function fakeTransport(
         })(),
       );
     },
+    // The text-fold tests never call generateImages; the dedicated generateMedia tests build their own
+    // image transport (fakeImageTransport). Reject loud if a text test ever reaches it.
+    generateImages: () => Promise.reject(new Error('fakeTransport.generateImages not configured')),
   };
   return holder;
+}
+
+/** A transport whose `generateImages` returns a fixed Imagen response and captures the request. */
+function fakeImageTransport(
+  response: GeminiImageResponse,
+): GeminiTransport & { lastImageRequest?: GeminiImageRequest } {
+  const holder: GeminiTransport & { lastImageRequest?: GeminiImageRequest } = {
+    generate: () => Promise.reject(new Error('unused')),
+    stream: () => Promise.reject(new Error('unused')),
+    generateImages: (request) => {
+      holder.lastImageRequest = request;
+      return Promise.resolve(response);
+    },
+  };
+  return holder;
+}
+
+/** Call the adapter's optional `generateMedia` via `?.()` — a call (binds `this`), never an extraction,
+ *  so the unbound-method lint stays happy; the `??` branch asserts the method is implemented. */
+function genMedia(
+  adapter: LlmProvider,
+  req: MediaGenRequest,
+  key: string,
+): Promise<MediaGenResult> {
+  return (
+    adapter.generateMedia?.(req, key) ??
+    Promise.reject(new Error('adapter implements no generateMedia'))
+  );
 }
 
 const REQ: LlmRequest = {
@@ -500,6 +539,7 @@ describe('Gemini adapter — generate / stream via injected transport', () => {
     const transport: GeminiTransport = {
       generate: () => Promise.reject(Object.assign(new Error(`rl: ${SECRET}`), { status: 429 })),
       stream: () => Promise.reject(new Error('unused')),
+      generateImages: () => Promise.reject(new Error('unused')),
     };
     const adapter = createGeminiAdapter({ transport });
     let caught: unknown;
@@ -543,6 +583,7 @@ describe('Gemini adapter — generate / stream via injected transport', () => {
     const transport: GeminiTransport = {
       generate: () => Promise.reject(new Error('unused')),
       stream: () => Promise.reject(Object.assign(new Error('overloaded'), { status: 503 })),
+      generateImages: () => Promise.reject(new Error('unused')),
     };
     const adapter = createGeminiAdapter({ transport });
     const chunks = await collect(adapter.stream(REQ, 'k'));
@@ -569,6 +610,7 @@ describe('Gemini adapter — remaining branches', () => {
             candidates: [{ content: { parts: [{ text: 'hi' }] }, finishReason: 'STOP' }],
           }),
         stream: () => Promise.reject(new Error('unused')),
+        generateImages: () => Promise.reject(new Error('unused')),
       },
     });
     const result = await adapter.generate(REQ, 'k');
@@ -587,6 +629,7 @@ describe('Gemini adapter — remaining branches', () => {
               throw Object.assign(new Error('mid-stream'), { status: 500 });
             })(),
           ),
+        generateImages: () => Promise.reject(new Error('unused')),
       },
     });
     const chunks = await collect(adapter.stream(REQ, 'k'));
@@ -745,5 +788,107 @@ describe('Gemini adapter — usage, truncation, refusal, malformed tool (review 
     );
     expect(chunks.some((c) => c.type === 'tool_call_start')).toBe(false);
     expect(chunks.at(-1)?.type).toBe('stop');
+  });
+});
+
+describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
+  const IMG_REQ: MediaGenRequest = {
+    model: 'imagen-4.0-generate-001',
+    prompt: 'a red circle on a white background',
+    modality: 'image',
+  };
+  const B64 = 'aGVsbG8taW1hZ2Vu'; // "hello-imagen"
+
+  it('normalizes a generated image to a base64 media part (no jobId, raw retained)', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png' } }],
+    });
+    const result = await genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k');
+    expect(result.jobId).toBeUndefined(); // SYNC arm
+    expect(result.media?.type).toBe('media');
+    expect(result.media?.mimeType).toBe('image/png');
+    expect(result.media?.source).toEqual({ kind: 'base64', data: B64 });
+    expect(result.raw).toBeDefined(); // internal diagnostic — sinks strip it (I3)
+    // The single-artifact seam: numberOfImages is pinned to 1, and the prompt/model are threaded.
+    expect(transport.lastImageRequest?.config['numberOfImages']).toBe(1);
+    expect(transport.lastImageRequest?.prompt).toBe(IMG_REQ.prompt);
+  });
+
+  it('defaults the MIME to image/png when the vendor omits it', async () => {
+    const transport = fakeImageTransport({ generatedImages: [{ image: { imageBytes: B64 } }] });
+    const result = await genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k');
+    expect(result.media?.mimeType).toBe('image/png');
+  });
+
+  it('threads providerOptions into config but pins numberOfImages to 1 (count can not be smuggled)', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png' } }],
+    });
+    await genMedia(
+      createGeminiAdapter({ transport }),
+      { ...IMG_REQ, providerOptions: { aspectRatio: '16:9', numberOfImages: 5 } },
+      'k',
+    );
+    expect(transport.lastImageRequest?.config['aspectRatio']).toBe('16:9');
+    expect(transport.lastImageRequest?.config['numberOfImages']).toBe(1); // the pin wins over providerOptions
+  });
+
+  it('threads an AbortSignal into the Imagen config so a run cancel reaches the in-flight call', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png' } }],
+    });
+    const controller = new AbortController();
+    await genMedia(
+      createGeminiAdapter({ transport }),
+      { ...IMG_REQ, signal: controller.signal },
+      'k',
+    );
+    expect(transport.lastImageRequest?.config['abortSignal']).toBe(controller.signal);
+  });
+
+  it('rejects count > 1 (single-artifact SYNC seam) with a typed bad_request before any egress', async () => {
+    const transport = fakeImageTransport({ generatedImages: [] });
+    await expect(
+      genMedia(createGeminiAdapter({ transport }), { ...IMG_REQ, count: 3 }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'bad_request' } });
+    expect(transport.lastImageRequest).toBeUndefined(); // rejected before the transport call
+  });
+
+  it('maps a safety-filtered candidate (raiFilteredReason, no image) to content_filter', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ raiFilteredReason: 'Unsafe content detected' }],
+    });
+    await expect(genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k')).rejects.toMatchObject({
+      llmError: { kind: 'content_filter' },
+    });
+  });
+
+  it('maps a no-image response to a typed bad_request LlmProviderError', async () => {
+    const transport = fakeImageTransport({ generatedImages: [] });
+    await expect(genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k')).rejects.toMatchObject({
+      llmError: { kind: 'bad_request' },
+    });
+  });
+
+  it('surfaces a transport rejection as a classified LlmProviderError', async () => {
+    const transport: GeminiTransport = {
+      generate: () => Promise.reject(new Error('unused')),
+      stream: () => Promise.reject(new Error('unused')),
+      generateImages: () => Promise.reject(Object.assign(new Error('overloaded'), { status: 503 })),
+    };
+    await expect(genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k')).rejects.toMatchObject({
+      llmError: { kind: 'overloaded' },
+    });
+  });
+
+  it('rejects audio + video modalities with a typed capability error (image is the only sync surface)', async () => {
+    const transport = fakeImageTransport({ generatedImages: [] });
+    const adapter = createGeminiAdapter({ transport });
+    await expect(genMedia(adapter, { ...IMG_REQ, modality: 'audio' }, 'k')).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError,
+    );
+    await expect(genMedia(adapter, { ...IMG_REQ, modality: 'video' }, 'k')).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError,
+    );
   });
 });
