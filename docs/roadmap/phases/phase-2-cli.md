@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: Not started (Product Phase 1). Blocked on Phase 1.
+> Status: Not started — **unblocked and next** (Phase 1 complete, 2026-06-21). Build phase 2 of Product Phase 1; the global milestone in play is **M3**.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -97,10 +97,12 @@ flowchart LR
   E --> G["2.G human gate"]
   F --> G
   D --> H["2.H db + history"]
+  H --> G
   H --> I["2.I list/logs/status"]
   A --> J["2.J create/import/export"]
-  F --> K["2.K regression harness"]
-  I --> K
+  D --> K["2.K regression harness"]
+  F --> K
+  G --> K
   K --> L["2.L packaging & publish"]
   B --> R["2.R MCP client"]
   C --> R
@@ -590,9 +592,146 @@ streams. Built behind injectable ports so desktop (§3.B) and VS Code (§4.N) re
 | Authoring lifecycle (`create`/`import`/`export`) | 2.J | — |
 | CLI adopted as the engine regression harness | 2.D, 2.F, 2.K | **M3** |
 | Published, installable binary verified on all OSes | 2.L | — |
-| **Agent-first CLI** — `relavium chat` + session commands (resume / list / export / `agent run` / `gate list`): the **first user-facing `AgentSession` surface**, a committed build-phase-2 deliverable (off the M3 critical path, but a phase exit item — the agent-first headline is demonstrable here) | 2.M, 2.N, 2.O, 2.P, 2.Q | — |
+| **Agent-first CLI** — `relavium chat` + session commands (resume / list / export / `agent run` / `gate list`): the **first user-facing `AgentSession` surface**, a committed build-phase-2 deliverable (off the M3 critical path and the Phase-3 go/no-go, completed in-phase — the agent-first headline is demonstrable here) | 2.M, 2.N, 2.O, 2.P, 2.Q | — |
 | **MCP client live** — a fixture agent completes a real stdio MCP tool round-trip behind the `ToolRegistry`, per [ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md) (off the M3 critical path) | 2.R | — |
 | **Media host-wiring** — a generative media-output fixture runs end-to-end on the CLI (host `resolveMediaSurface` routing, scoped `read_media`, containment-checked `save_to`, the `EgressCapability.fetch` SSRF mechanism), the shared ports designed to fit desktop/VS Code, per the media ADRs ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)) (off the M3 critical path) | 2.S | — |
+
+## Sequencing & parallelization
+
+The [Work breakdown](#work-breakdown) above is the per-workstream *logical* DAG (each
+edge's rationale lives in its workstream prose); this section is the *scheduling* view —
+the order to build in, what blocks what, and what runs concurrently. It is the single
+home for the execution plan; the work-breakdown DAG and the [Milestones](#milestones)
+table are its inputs, not duplicates. Unlike Phase 1 (three packages behind one shared
+gate), Phase 2 is one app: a short linear **spine** that reaches the global milestone
+**M3**, with run-surface feeders and three additive lanes running concurrently around it.
+
+### One spine, parallel feeders, three additive lanes
+
+- **Spine — `2.A → 2.B → 2.D → 2.F → 2.K → 2.L`** (gates **M3** and the Phase-3 go/no-go).
+  The engine-proving path: scaffold → config → wire `run` to the engine → the
+  deterministic `--json` CI contract → the regression harness (**M3**) → the published
+  binary. Keep it short and linear; everything else hangs off it.
+- **Run-surface feeders** (each opens the moment `2.D` lands, then runs in parallel).
+  `2.E` (ink TUI) and `2.H` (durable history) both consume `2.D`'s event bus;
+  `2.H → 2.I` (`list`/`logs`/`status`); `2.G` (human gate) needs `2.E` + `2.F` (both
+  render the prompt) **and** `2.H` (the out-of-band `relavium gate <runId>` resume loads
+  persisted gate state). `2.J` (`create`/`import`/`export`) needs only `2.A` — start it
+  early as filler. `2.C` (provider/keys) feeds **live** runs and the nightly live lane; it
+  is **not** on the fixture M3 path (see the insight below).
+- **Additive lane — MCP (`2.R`).** Scheduled **early**: its implementation needs only
+  `2.B` + `2.C`; only its end-to-end acceptance additionally needs `2.F`'s `relavium run`.
+- **Additive lane — agent-first chat (`2.M → 2.N/2.O/2.P/2.Q`).** The first user-facing
+  `AgentSession` surface. `2.M` (the REPL) needs `2.C` (keys) + `2.H` (session persistence
+  in `history.db`) + the ink/output infra shared with `2.E`; the rest hang off `2.M`.
+- **Additive lane — media host-wiring (`2.S`).** The largest, **security-gated** lane (the
+  `EgressCapability.fetch` SSRF mechanism carries a dedicated security review). It needs
+  `2.D` + `2.H` plus the Phase-1 media policy (already landed). **Open it as soon as `2.D`
+  + `2.H` exist and run it in parallel** — do not save it for the end (see below).
+
+> All three additive lanes are **committed Phase-2 deliverables** but sit **off the M3
+> critical path and off the 7-item Phase-3 go/no-go** ([Exit criteria](#exit-criteria-go--no-go)):
+> they complete within the phase, in parallel, and do not block starting Phase 3.
+
+### The scheduling insight
+
+- **The M3 spine is short and almost everything parallelizes around it.** Wall-clock to M3
+  is `2.A → 2.B → 2.D → 2.F → 2.K`; the feeders and additive lanes overlap it, so the phase
+  is feeder-throughput-bound, not spine-bound.
+- **`2.D` is the keystone.** It is the first real consumer of the Phase-1 engine, so it is
+  where any engine-API friction surfaces. Treat every gap as a **Phase-1 amendment**
+  (re-tested in `@relavium/core` / `@relavium/llm`), never a CLI workaround
+  ([Risks](#risks--mitigations)) — a workaround here becomes debt every later surface
+  inherits.
+- **M3 is fixture-based, so `2.C` is off it.** The regression harness (`2.K`) and `--json`
+  mode (`2.F`) run recorded LLM fixtures — deterministic and offline — so the M3 path needs
+  no real keys. `2.C` is a feeder that unlocks *live* `provider test` / runs and the nightly
+  live lane, which is why the critical path is `{2.A, 2.B, 2.D, 2.F, 2.K}` and not `…2.C…`.
+- **Front-load `2.S`, don't tail it.** Media host-wiring is the biggest lane and carries the
+  one security-review gate; deferred to the end it becomes the long pole and risks a
+  CLI-shaped shortcut leaking into a port that desktop (§3.B) and VS Code (§4.N) inherit.
+  Open it right after `2.D` + `2.H` and let it run the whole phase.
+
+### Ordered waves (each wave is internally parallel; waves gate left-to-right)
+
+```mermaid
+flowchart LR
+  subgraph SPINE["Spine — gates M3 + Phase-3 go/no-go"]
+    direction TB
+    A["2.A skeleton"] --> B["2.B config"]
+    B --> D["2.D run → engine"]
+    D --> F["2.F --json / CI"]:::ms
+    F --> K["2.K regression harness"]:::ms
+    K --> L["2.L package & publish"]
+  end
+  subgraph FEED["Run-surface feeders (parallel, post-2.D)"]
+    direction TB
+    Cc["2.C provider / keys"]
+    E["2.E ink TUI"]
+    H["2.H db history"] --> I["2.I list / logs / status"]
+    G["2.G human gate"]
+    J["2.J create / import / export"]
+  end
+  subgraph ADD["Additive lanes (committed, off M3, parallel)"]
+    direction TB
+    R["2.R MCP client (early)"]
+    M["2.M chat REPL"] --> NQ["2.N–2.Q resume · list · export · json · agent-run"]
+    S["2.S media host-wiring (large · security-gated)"]
+  end
+
+  A --> J
+  B --> Cc
+  Cc -. live runs .-> D
+  D --> E
+  D --> H
+  E --> G
+  F --> G
+  H --> G
+  G --> K
+  B --> R
+  Cc --> R
+  F -. acceptance .-> R
+  Cc --> M
+  H --> M
+  E -. shared ink .-> M
+  D --> S
+  H --> S
+
+  classDef ms fill:#fde68a,stroke:#b45309;
+```
+
+| Wave | Goal (milestone) | Spine | Feeders (parallel) | Additive lanes (parallel) |
+| --- | --- | --- | --- | --- |
+| **W1** | scaffold + config | 2.A → 2.B | 2.J opens (needs only 2.A) | — |
+| **W2** | engine runs end-to-end | **2.D** (keystone) | 2.C (keys) | 2.R impl opens (needs 2.B + 2.C) |
+| **W3** | **M3** — CI contract + harness | 2.F → **2.K (M3)** | 2.E ‖ 2.H → 2.I; 2.G (needs 2.E, 2.F, 2.H) → feeds 2.K | 2.R accept (at 2.F) · 2.M → 2.N–2.Q · **2.S** (opens at 2.D + 2.H) |
+| **W4** | publish + phase exit | **2.L** | — | finish 2.R · chat · 2.S |
+
+### Dependency matrix
+
+`◆` = M3 spine (the linear critical path); `⬤` = run-surface feeder (parallel, overlaps the
+spine — most are Phase-3 go/no-go items); `◇` = additive lane (committed in-phase, off M3 and
+off the go/no-go). The **Phase-3 gate** column names the [go/no-go exit criterion](#exit-criteria-go--no-go)
+each workstream satisfies (— = committed but not a go/no-go gate).
+
+| WS | Lane | Depends on | Enables | Phase-3 gate |
+| --- | --- | --- | --- | --- |
+| **2.A** | ◆ spine | Phase 1 (engine @ M2) | 2.B, 2.J | #1/#4 |
+| **2.B** | ◆ spine | 2.A | 2.C, 2.D, 2.R | #1/#4 |
+| 2.C | ⬤ feeder | 2.B | 2.D (live), 2.R, 2.M | #5 (live keys; off the fixture M3 path) |
+| **2.D** | ◆ spine | 2.B (2.C for live) | 2.E, 2.F, 2.H, 2.S | #1 — **keystone** |
+| 2.E | ⬤ feeder | 2.D | 2.G, 2.M | #1 |
+| **2.F** | ◆ spine | 2.D | 2.G, 2.K, 2.R (accept) | #4 |
+| 2.G | ⬤ feeder | 2.E, 2.F, 2.H | 2.K | #3 |
+| 2.H | ⬤ feeder | 2.D | 2.I, 2.G, 2.M, 2.S | #2 |
+| 2.I | ⬤ feeder | 2.H | — | #2 |
+| 2.J | ⬤ feeder | 2.A | — | — (committed) |
+| **2.K** | ◆ spine | 2.D, 2.F, 2.G | 2.L | #4 (**M3**) |
+| **2.L** | ◆ spine | 2.K | published binary | #7 |
+| 2.M | ◇ chat | 2.C, 2.H, 2.E | 2.N–2.Q | — |
+| 2.N–2.Q | ◇ chat | 2.M | — | — |
+| 2.R | ◇ MCP | 2.B, 2.C (accept: 2.F) | — | — |
+| 2.S | ◇ media | 2.D, 2.H (+ Phase-1 media policy) | desktop §3.B / VS Code §4.N reuse the ports | — |
 
 ## Dependencies
 
