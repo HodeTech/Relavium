@@ -605,6 +605,43 @@ function resolveOpenAiAudio(providerOptions: LlmRequest['providerOptions']): {
   return { voice, format };
 }
 
+/** The TTS `response_format` values `audio.speech` accepts, mapped to the bare MIME the seam admits (1.AH). */
+const TTS_FORMAT_TO_MIME = {
+  mp3: 'audio/mpeg',
+  opus: 'audio/opus',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  wav: 'audio/wav',
+  pcm: 'audio/L16',
+} as const satisfies Record<string, string>;
+
+/** Map a requested output `mimeType` to a TTS `response_format` — the inverse of {@link TTS_FORMAT_TO_MIME}.
+ *  Default mp3 (the API default + the canonical fallback for an unspecified/unknown request). */
+function ttsResponseFormat(mimeType: string | undefined): keyof typeof TTS_FORMAT_TO_MIME {
+  switch (mimeType) {
+    case 'audio/opus':
+      return 'opus';
+    case 'audio/aac':
+      return 'aac';
+    case 'audio/flac':
+      return 'flac';
+    case 'audio/wav':
+      return 'wav';
+    case 'audio/L16':
+      return 'pcm';
+    default:
+      return 'mp3'; // 'audio/mpeg' or anything unspecified
+  }
+}
+
+/** The TTS voice from `providerOptions.audio.voice` (any string the vendor accepts), else OpenAI's `alloy`. */
+function ttsVoice(providerOptions: MediaGenRequest['providerOptions']): string {
+  const audioOpts = isRecord(providerOptions) ? providerOptions['audio'] : undefined;
+  return isRecord(audioOpts) && typeof audioOpts['voice'] === 'string'
+    ? audioOpts['voice']
+    : 'alloy';
+}
+
 function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
   return isAbortSignal(req.signal) ? { signal: req.signal } : {};
 }
@@ -876,58 +913,128 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
      * the result is a normalized `MediaGenResult` whose `raw` is strip-discarded by sinks.
      */
     async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
-      if (providerId !== 'openai' || req.modality !== 'image') {
+      // DeepSeek (the same adapter pointed at a different baseURL) generates no media.
+      if (providerId !== 'openai') {
         throw new UnsupportedCapabilityError(
           providerId,
           'media',
-          `${providerId} generateMedia supports only OpenAI image generation, not '${req.modality}' (audio/video deferred)`,
+          `${providerId} generates no media (only OpenAI generateMedia is wired)`,
         );
       }
-      if (req.count !== undefined && req.count > 1) {
-        // The SYNC seam carries a SINGLE MediaPart. Rather than generate (and have the engine bill) N images
-        // and silently drop N-1, reject count > 1 loudly until a multi-part media-array result lands (a future
-        // additive ADR-0031 seam amendment, deferred-tasks.md) — never deliver fewer artifacts than billed.
-        throw new LlmProviderError(
-          makeLlmError({
-            provider: providerId,
-            kind: 'bad_request',
-            message: `OpenAI image generateMedia delivers a single image; count ${String(req.count)} > 1 is not supported on the SYNC seam`,
-          }),
-        );
+      const client = createClient(key);
+      // SYNC separate-endpoint generation, dispatched by modality (1.AG/1.AH, ADR-0045 §1): image →
+      // gpt-image-1 (images.generate); audio → TTS (audio.speech). Video is the ASYNC Sora path (a separate
+      // section) — not a sync surface here.
+      if (req.modality === 'image') {
+        return openAiGenerateImage(client, req, providerId);
       }
-      // Honor a requested output format (req.mimeType → png/jpeg/webp); the result MIME reflects what we asked
-      // for (or gpt-image-1's PNG default). (providerOptions image knobs — size/quality — are not set by the
-      // engine in Section C; threading them is a bounded follow-up with the image-knob work, deferred-tasks.md.)
-      const outputFormat = imageOutputFormat(req.mimeType);
-      let response: OpenAI.ImagesResponse;
-      try {
-        response = await createClient(key).images.generate(
-          {
-            model: req.model,
-            prompt: req.prompt,
-            ...(outputFormat === undefined ? {} : { output_format: outputFormat }),
-          },
-          isAbortSignal(req.signal) ? { signal: req.signal } : {},
-        );
-      } catch (err) {
-        throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+      if (req.modality === 'audio') {
+        return openAiGenerateSpeech(client, req, providerId);
       }
-      const b64 = response.data?.[0]?.b64_json;
-      if (b64 === undefined || b64.length === 0) {
-        throw new LlmProviderError(
-          makeLlmError({
-            provider: providerId,
-            kind: 'bad_request',
-            message: 'OpenAI image generation returned no base64 image data',
-          }),
-        );
-      }
-      const mimeType = outputFormat === undefined ? 'image/png' : `image/${outputFormat}`;
-      return {
-        media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
-        raw: response,
-      };
+      throw new UnsupportedCapabilityError(
+        providerId,
+        'media',
+        `OpenAI generateMedia has no SYNC surface for '${req.modality}' (video is the async Sora path)`,
+      );
     },
+  };
+}
+
+/**
+ * SYNC image generation (gpt-image-1 via `images.generate` → base64). Honors a requested output format
+ * (`req.mimeType` → png/jpeg/webp; else gpt-image-1's PNG default). The single-`MediaPart` SYNC seam carries
+ * one image, so `count > 1` is rejected loud rather than billing N and dropping N-1 (a multi-image array is a
+ * deferred ADR-0031 amendment). No vendor type crosses the seam — the normalized `MediaGenResult.raw` is
+ * strip-discarded by sinks.
+ */
+async function openAiGenerateImage(
+  client: OpenAI,
+  req: MediaGenRequest,
+  providerId: ProviderId,
+): Promise<MediaGenResult> {
+  if (req.count !== undefined && req.count > 1) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: providerId,
+        kind: 'bad_request',
+        message: `OpenAI image generateMedia delivers a single image; count ${String(req.count)} > 1 is not supported on the SYNC seam`,
+      }),
+    );
+  }
+  const outputFormat = imageOutputFormat(req.mimeType);
+  let response: OpenAI.ImagesResponse;
+  try {
+    response = await client.images.generate(
+      {
+        model: req.model,
+        prompt: req.prompt,
+        ...(outputFormat === undefined ? {} : { output_format: outputFormat }),
+      },
+      isAbortSignal(req.signal) ? { signal: req.signal } : {},
+    );
+  } catch (err) {
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+  }
+  const b64 = response.data?.[0]?.b64_json;
+  if (b64 === undefined || b64.length === 0) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: providerId,
+        kind: 'bad_request',
+        message: 'OpenAI image generation returned no base64 image data',
+      }),
+    );
+  }
+  const mimeType = outputFormat === undefined ? 'image/png' : `image/${outputFormat}`;
+  return {
+    media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
+    raw: response,
+  };
+}
+
+/**
+ * SYNC text-to-speech (1.AH): `audio.speech` returns BINARY audio bytes, so the adapter base64-encodes them
+ * into an in-flight `MediaPart` (the engine de-inlines it to a handle). `req.mimeType` selects the vendor
+ * `response_format` (default mp3); `providerOptions.audio.voice` selects the voice (default `alloy`). The raw
+ * audio bytes NEVER cross the seam — `raw` carries only a tiny non-byte diagnostic (and sinks strip it anyway).
+ */
+async function openAiGenerateSpeech(
+  client: OpenAI,
+  req: MediaGenRequest,
+  providerId: ProviderId,
+): Promise<MediaGenResult> {
+  const format = ttsResponseFormat(req.mimeType);
+  let response: Response;
+  try {
+    response = await client.audio.speech.create(
+      {
+        model: req.model,
+        voice: ttsVoice(req.providerOptions),
+        input: req.prompt,
+        response_format: format,
+      },
+      isAbortSignal(req.signal) ? { signal: req.signal } : {},
+    );
+  } catch (err) {
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length === 0) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: providerId,
+        kind: 'bad_request',
+        message: 'OpenAI TTS returned no audio bytes',
+      }),
+    );
+  }
+  return {
+    media: {
+      type: 'media',
+      mimeType: TTS_FORMAT_TO_MIME[format],
+      source: { kind: 'base64', data: Buffer.from(bytes).toString('base64') },
+    },
+    raw: { responseFormat: format }, // diagnostic only — never the audio bytes (I3 / strip-on-sink)
   };
 }
 

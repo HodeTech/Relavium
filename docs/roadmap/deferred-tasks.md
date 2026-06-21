@@ -166,13 +166,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (no mis-bill). **Test follow-up:** the realized-cost vertical (`realizedMediaCost` → a non-zero `cost:updated`)
   cannot be exercised end-to-end until a generative model carries a rate; the cost MATH is unit-tested via
   `mediaCost` against a constructed rate, and a non-zero dispatch assertion lands with these rows. *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
-- [ ] **`generateMedia` for OpenAI-TTS audio + Gemini-Imagen — adapter wires deferred (1.AG Section C → 1.AH).**
-  Section C wires `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64), proving the
-  full engine→adapter→de-inline vertical. The remaining generators are bounded follow-ups: **OpenAI-TTS audio**
-  (`audio.speech` returns raw bytes → the adapter must base64-encode them + map the requested `response_format` →
-  MIME) and **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which needs a
-  `GeminiTransport.generateImages` extension to keep conformance vendor-free). Neither is runtime-reachable until the
-  per-model surface lookup is host-wired (above), so they land with that 1.AH wiring. Two bounded image follow-ups
+- [ ] **`generateMedia` for Gemini-Imagen — adapter wire deferred (1.AG Section C → 1.AH A2).**
+  Section C wired `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64); **1.AH A1
+  wired OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME map, no new dep). The
+  remaining sync generator is **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which
+  needs a `GeminiTransport.generateImages` extension to keep conformance vendor-free). Not runtime-reachable until the
+  per-model surface lookup is host-wired (above), so it lands written-now/E2E-at-1.AH-host-wiring. Two bounded image follow-ups
   ride along: (a) **multi-image `count > 1`** — the SYNC `MediaGenResult.media` carries a SINGLE part, so the OpenAI
   adapter currently rejects `count > 1` (never bill-N-deliver-1); delivering N needs an additive `media: MediaPart[]`
   seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the

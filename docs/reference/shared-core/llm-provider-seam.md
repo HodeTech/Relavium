@@ -382,16 +382,17 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   `MediaGenRequest` / `MediaGenResult` / `MediaJobStatus`: a sync generator resolves `{ media }`;
   an async one (Sora, Veo) resolves a **Relavium-opaque** `jobId` (no vendor operation name
   crosses the seam); `failed` carries the existing classified `LlmError` (content-policy →
-  `content_filter`). **Wired (1.AG Sections C/D):** `generateMedia` SYNC — the OpenAI adapter
-  implements gpt-image-1 image generation (`images.generate` → base64 `media`); a `media_surface:
-  'generative'` agent node routes here instead of the inline `generate()`/`stream()` (the engine
-  resolves the per-model surface). The ASYNC `pollMediaJob` poll/checkpoint/resume/cancel loop is
-  WIRED in the engine (Section D — `media_job:submitted` park, the derived `pendingMediaJobs` slot,
-  re-attach-on-resume, a host-timer poll cadence, deadline→retryable-timeout, cancel→abort→terminal
-  sweep; failed→`content_filter`), proven against a conforming stub async provider. The remaining
-  work is **1.AH host-wiring**: the Sora/Veo `generateMedia(→jobId)`/`pollMediaJob` adapters,
-  OpenAI-TTS + Gemini-Imagen sync adapters, the per-model `media_surface` host lookup, and verified
-  generative pricing rows.
+  `content_filter`). **Wired (1.AG Sections C/D + 1.AH adapters):** `generateMedia` SYNC — the OpenAI
+  adapter implements gpt-image-1 image generation (`images.generate` → base64 `media`) and
+  **OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME, 1.AH A1); a
+  `media_surface: 'generative'` agent node routes here instead of the inline `generate()`/`stream()`
+  (the engine resolves the per-model surface). The ASYNC `pollMediaJob` poll/checkpoint/resume/cancel
+  loop is WIRED in the engine (Section D — `media_job:submitted` park, the derived `pendingMediaJobs`
+  slot, re-attach-on-resume, a host-timer poll cadence, deadline→retryable-timeout,
+  cancel→abort→terminal sweep; failed→`content_filter`), proven against a conforming stub async
+  provider. The remaining work is **1.AH**: the Gemini-Imagen sync + Sora/Veo async
+  `generateMedia(→jobId)`/`pollMediaJob` adapters, the per-model `media_surface` host lookup, and
+  verified generative pricing rows.
 
   ```ts
   // Seam shape (A5; ADR-0045) — behavior WIRED at 1.AG (sync generateMedia Section C, async poll loop Section D).

@@ -315,12 +315,64 @@ describe('OpenAI-compatible adapter', () => {
     });
   });
 
-  it('generateMedia rejects a non-image modality + DeepSeek with a typed capability error', async () => {
+  it('generateMedia (audio/TTS) base64-encodes audio.speech bytes into a media part + maps the format MIME (1.AH)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        // audio.speech returns BINARY audio bytes; the replay string stands in for them.
+        return Promise.resolve(
+          new Response('FAKE-AUDIO-BYTES', {
+            status: 200,
+            headers: { 'content-type': 'audio/mpeg' },
+          }),
+        );
+      },
+    });
+    const result = await genMedia(
+      adapter,
+      {
+        model: 'gpt-4o-mini-tts',
+        prompt: 'hello world',
+        modality: 'audio',
+        providerOptions: { audio: { voice: 'verse' } },
+      },
+      'k',
+    );
+    expect(result.jobId).toBeUndefined(); // SYNC arm
+    expect(sent['input']).toBe('hello world');
+    expect(sent['voice']).toBe('verse'); // from providerOptions.audio.voice
+    expect(sent['response_format']).toBe('mp3'); // default when no req.mimeType
+    expect(result.media?.mimeType).toBe('audio/mpeg');
+    expect(result.media?.source).toEqual({
+      kind: 'base64',
+      data: Buffer.from('FAKE-AUDIO-BYTES').toString('base64'),
+    });
+  });
+
+  it('generateMedia (audio) maps req.mimeType → response_format + result MIME (audio/opus → opus)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(new Response('x', { status: 200 }));
+      },
+    });
+    const result = await genMedia(
+      adapter,
+      { model: 'gpt-4o-mini-tts', prompt: 'hi', modality: 'audio', mimeType: 'audio/opus' },
+      'k',
+    );
+    expect(sent['response_format']).toBe('opus');
+    expect(result.media?.mimeType).toBe('audio/opus');
+  });
+
+  it('generateMedia rejects OpenAI video (no sync surface) + DeepSeek any modality with a typed capability error', async () => {
     const oai = createOpenAiAdapter({
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
     await expect(
-      genMedia(oai, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+      genMedia(oai, { model: 'sora-2', prompt: 'x', modality: 'video' }, 'k'),
     ).rejects.toThrowError(UnsupportedCapabilityError);
     const ds = createOpenAiAdapter({
       providerId: 'deepseek',
