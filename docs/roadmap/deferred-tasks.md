@@ -59,11 +59,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   [code-style-typescript.md §Naming](../standards/code-style-typescript.md); validation is at
   the Zod boundary and branding adds cross-seam friction for little payoff. Revisit via an ADR if a
   real id-mixup bug class appears. *(minor · packages/shared/src/run.ts, node.ts)*
-- [ ] **`LICENSE` file + root `license` field** — the public repo has neither.
-  **Decided (2026-06-07): HodeTech will author its own commercial/proprietary license** — left open
-  until that license text is drafted (do NOT drop in an `UNLICENSED`/OSS placeholder in the
-  meantime). When ready, add the `LICENSE` file + the root `package.json` `"license"` string.
-  *(nit → pending the drafted license · package.json, repo root)*
+- [x] **`LICENSE` file + root `license` field** — **Done (2026-06-21, pre-Phase-2 housekeeping).**
+  Authored the **Relavium Proprietary License** (HodeTech, all rights reserved, with an
+  enforcement/legal-remedies clause) and added the root `LICENSE` file; set root
+  `package.json` `"license": "SEE LICENSE IN LICENSE"` (npm-correct pointer to the custom
+  license — not the forbidden `UNLICENSED`/OSS placeholder). This was the one true
+  before-Phase-2 blocker (Phase-2 exit criterion 7 / `npm i -g relavium`, 2.L). The text is
+  AI-drafted from the maintainer's intent — **recommend a legal review before public
+  distribution.** *(LICENSE; package.json, repo root)*
 - [x] **`node:started.nodeType` enum vs free string** — currently an unconstrained
   `nonEmptyString`. Decide whether the SSE event should carry the engine node-type enum
   (add `ENGINE_NODE_TYPES` to constants and `z.enum(...)`) or stay free-string for
@@ -571,8 +574,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**
   the author opted into (not an event-payload leak, so it does not violate the events rule the 1.P fix
   enforces), but whether a `secret`-typed input should be silently interpolated into a prompt — vs masked /
-  rejected at parse — is a policy call. Evaluate alongside the secret-handling story; if masked, reuse
-  `maskSecretInputs`. *(low · packages/core/src/engine/agent-runner.ts; security-review.md)*
+  rejected at parse — is a policy call. **Decided (2026-06-21, maintainer): REJECT AT PARSE** — a
+  `{{ inputs.<secret_name> }}` reference inside a `prompt_template` is a parse-time error with a clear
+  message (secure-by-default; surfaces author intent explicitly rather than silently egressing or silently
+  masking). **Implement in Phase-2 workstream 2.D** (the first live consumer of `prompt_template` via
+  `relavium run`), not before — no live `prompt_template` consumer exists yet. *(low → 2.D ·
+  packages/core/src/engine/agent-runner.ts + the parse/validation layer; security-review.md)*
 - [x] **Reject a plain (handle-less) edge whose `from` is a `condition` node (1.M validation)** — a `condition`
   routes only via `branches[].target_node`/`default` (materialized edges); a separately-authored plain edge
   `from: <condition>` (no `:handle`) makes its target a dependent that the handler's `selected` never names, so
@@ -802,6 +809,9 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `1.J` accepted M1 with the live lane **explicitly pending keys**; to actually exercise it,
   uncomment the `schedule:` lane and add the provider API keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
   / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY`) as CI secrets. Until then live coverage is a known gap.
+  **Decided (2026-06-21, maintainer): defer to Phase-2 workstream 2.K** — enable the live-nightly lane
+  together with the 2.K regression harness rather than as a pre-Phase-2 ops chore; fixture coverage holds
+  the line until then.
   *(minor → keys · ci.yml, packages/llm/src/conformance/*.conformance.test.ts)*
 - [ ] **Leakwatch secret-scanning CI gate** — CI has no secret-scan step. The HodeTech standard
   scanner is **Leakwatch** (never gitleaks); the blocking `ci.yml` step is wired once a
