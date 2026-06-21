@@ -31,7 +31,11 @@ const isGeminiImageResponse = (value: unknown): value is GeminiImageResponse => 
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
-  const gen = (value as { generatedImages?: unknown }).generatedImages;
+  if (!('generatedImages' in value)) {
+    return true; // the only field is optional — an object without it is structurally valid
+  }
+  // `in`-narrowing reads the property with NO unsafe `as` cast and NO `any` (Reflect.get would return any).
+  const gen: unknown = value.generatedImages;
   return gen === undefined || Array.isArray(gen);
 };
 
