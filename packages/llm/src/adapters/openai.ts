@@ -1116,7 +1116,15 @@ export function decodeVideoJobId(jobId: string): string | undefined {
     return undefined;
   }
   const decoded = Buffer.from(payload, 'base64url').toString('utf8');
-  return decoded.length === 0 ? undefined : decoded;
+  // Round-trip validation: ONLY a canonically-minted token decodes back to itself. base64url decoding is
+  // lenient (it silently drops invalid chars), so a corrupted/non-canonical payload would otherwise decode
+  // to a wrong-but-non-empty vendor id and be forwarded to videos.retrieve. Re-encoding and comparing
+  // rejects every such token here, so pollMediaJob never polls a junk vendor id. Every real minted token
+  // round-trips exactly (encode is the inverse of decode).
+  if (decoded.length === 0 || encodeVideoJobId(decoded) !== jobId) {
+    return undefined;
+  }
+  return decoded;
 }
 
 /** Sora accepts only 4/8/12s clips — reject anything else loud (never round; cost-integrity, ADR-0045 §5). */
@@ -1277,6 +1285,18 @@ async function pollMediaJobSora(
     }
     case 'failed':
       return { state: 'failed', error: mapVideoCreateError(video.error, providerId) };
+    default:
+      // The SDK types status as a closed union, but a future/unknown status string must NOT fall through
+      // to `undefined` (which would break the Promise<MediaJobStatus> contract). Fail fatal (non-retryable
+      // `unknown`), mirroring the decode-failure and engine `#applyMediaJobStatus` defaults.
+      return {
+        state: 'failed',
+        error: makeLlmError({
+          provider: providerId,
+          kind: 'unknown',
+          message: `Sora returned an unrecognized job status '${String(video.status)}'`,
+        }),
+      };
   }
 }
 

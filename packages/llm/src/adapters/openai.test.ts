@@ -1499,15 +1499,40 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     durationSeconds: 4,
   };
 
+  interface SoraCapture {
+    createBody?: Record<string, unknown>;
+    readonly signalByCall: Record<'create' | 'retrieve' | 'content', boolean>;
+  }
+  type SoraFetch = ((input: string | URL | Request, init?: RequestInit) => Promise<Response>) & {
+    capture: SoraCapture;
+  };
+
   /** Route the SDK's videos.* HTTP calls: GET …/content → the MP4 bytes; create(POST)/retrieve(GET) → a
-   *  Video JSON. */
-  function soraFetch(
-    video: Record<string, unknown>,
-    bytes = 'FAKE-MP4-BYTES',
-  ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
-    return (input) => {
+   *  Video JSON. Records the create POST body + per-call AbortSignal presence on `.capture`. */
+  function soraFetch(video: Record<string, unknown>, bytes = 'FAKE-MP4-BYTES'): SoraFetch {
+    const capture: SoraCapture = {
+      signalByCall: { create: false, retrieve: false, content: false },
+    };
+    const fn = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url.endsWith('/content')) {
+      const call = url.endsWith('/content')
+        ? 'content'
+        : init?.method === 'POST'
+          ? 'create'
+          : 'retrieve';
+      capture.signalByCall[call] = init?.signal instanceof AbortSignal;
+      if (call === 'create') {
+        // videos.create sends multipart/form-data (it supports file uploads), so the body is a FormData,
+        // not a JSON string — read its text fields.
+        const body = init?.body;
+        capture.createBody =
+          body instanceof FormData
+            ? Object.fromEntries(
+                [...body.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : '<file>']),
+              )
+            : parseJsonBody(init);
+      }
+      if (call === 'content') {
         return Promise.resolve(
           new Response(bytes, { status: 200, headers: { 'content-type': 'video/mp4' } }),
         );
@@ -1519,6 +1544,7 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
         }),
       );
     };
+    return Object.assign(fn, { capture });
   }
 
   it('encodeVideoJobId mints a Relavium-opaque token that is NOT the raw vendor id (round-trips via decode)', () => {
@@ -1535,18 +1561,47 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     expect(decodeVideoJobId('vendor-op-7f3a')).toBeUndefined(); // non-Relavium
     expect(decodeVideoJobId('')).toBeUndefined();
     expect(decodeVideoJobId('rlv-mediajob:1:')).toBeUndefined(); // empty payload
+    // Round-trip validation: a right-prefix but NON-CANONICAL payload (trailing junk base64url drops) is
+    // rejected — it would otherwise decode to a wrong-but-non-empty vendor id and be polled.
+    expect(decodeVideoJobId(encodeVideoJobId('video_x') + '!')).toBeUndefined();
   });
 
   it('generateMedia (video) ALWAYS returns an opaque jobId (no media), schema-valid, even on instant completion', async () => {
-    const adapter = createOpenAiAdapter({
-      maxRetries: 0,
-      fetch: soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 }),
-    });
+    const fetch = soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
     const result = await genMedia(adapter, VIDEO_REQ, 'k');
     expect(result.media).toBeUndefined(); // ASYNC arm — completion is the engine poll loop's job
     expect(result.jobId).toBe(encodeVideoJobId('video_xyz'));
     expect(MediaGenResultSchema.safeParse(result).success).toBe(true);
     expect(result.raw).toEqual({ id: 'video_xyz', status: 'completed' }); // no bytes in raw (I3)
+    // The create body forwards model/prompt/seconds (NOT a spread of providerOptions).
+    expect(fetch.capture.createBody).toMatchObject({
+      model: 'sora-2',
+      prompt: VIDEO_REQ.prompt,
+      seconds: '4',
+    });
+  });
+
+  it('generateMedia (video) defaults seconds to 4 (no durationSeconds) and forwards a valid size knob', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    await genMedia(
+      adapter,
+      {
+        ...VIDEO_REQ,
+        durationSeconds: undefined,
+        providerOptions: { video: { size: '1280x720' } },
+      },
+      'k',
+    );
+    expect(fetch.capture.createBody).toMatchObject({ seconds: '4', size: '1280x720' });
+  });
+
+  it('generateMedia (video) drops an unrecognized size from the create body (input filter)', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    await genMedia(adapter, { ...VIDEO_REQ, providerOptions: { video: { size: '99x99' } } }, 'k');
+    expect(fetch.capture.createBody?.['size']).toBeUndefined();
   });
 
   it('generateMedia (video) rejects a non-{4,8,12} durationSeconds with a typed bad_request before egress', async () => {
@@ -1577,6 +1632,24 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
       fetch: soraFetch({ id: 'video_xyz', status: 'in_progress', progress: 50 }),
     });
     expect(await pollMedia(inProgress, jobId, 'k')).toEqual({ state: 'pending', progress: 0.5 });
+
+    // Clamp an out-of-range progress to [0,1] (defends the engine's z.number().min(0).max(1) boundary).
+    const over = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'in_progress', progress: 150 }),
+    });
+    expect(await pollMedia(over, jobId, 'k')).toEqual({ state: 'pending', progress: 1 });
+  });
+
+  it('pollMediaJob completed-but-empty-bytes → a typed bad_request failed (defensive)', async () => {
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 }, ''),
+    });
+    expect(await pollMedia(adapter, encodeVideoJobId('video_xyz'), 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'bad_request' },
+    });
   });
 
   it('pollMediaJob completed → downloads the MP4 and returns a base64 video/mp4 media part (done)', async () => {
@@ -1623,6 +1696,23 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     });
   });
 
+  it('pollMediaJob failed with an empty error code → unknown kind, omits the empty code field', async () => {
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({
+        id: 'video_xyz',
+        status: 'failed',
+        progress: 0,
+        error: { code: '', message: 'x' },
+      }),
+    });
+    const status = await pollMedia(adapter, encodeVideoJobId('video_xyz'), 'k');
+    expect(status).toMatchObject({ state: 'failed', error: { kind: 'unknown' } });
+    if (status.state === 'failed') {
+      expect(status.error.code).toBeUndefined(); // empty code is omitted, not surfaced as ''
+    }
+  });
+
   it('pollMediaJob returns a FATAL failed (not a throw) for an unrecognized jobId token', async () => {
     let called = false;
     const adapter = createOpenAiAdapter({
@@ -1637,18 +1727,13 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     expect(called).toBe(false); // never reached the SDK — decode failed first
   });
 
-  it('pollMediaJob threads the AbortSignal into the SDK request', async () => {
-    let sawSignal = false;
-    const adapter = createOpenAiAdapter({
-      maxRetries: 0,
-      fetch: (input, init) => {
-        sawSignal = init?.signal instanceof AbortSignal;
-        return soraFetch({ id: 'video_xyz', status: 'queued' })(input, init);
-      },
-    });
+  it('pollMediaJob threads the AbortSignal into BOTH retrieve and downloadContent (completed path)', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 }, 'MP4');
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
     const controller = new AbortController();
     await pollMedia(adapter, encodeVideoJobId('video_xyz'), 'k', controller.signal);
-    expect(sawSignal).toBe(true);
+    expect(fetch.capture.signalByCall.retrieve).toBe(true);
+    expect(fetch.capture.signalByCall.content).toBe(true); // the download honors the run cancel too
   });
 
   it('DeepSeek has no async video: generateMedia(video) → capability error, pollMediaJob → failed', async () => {
