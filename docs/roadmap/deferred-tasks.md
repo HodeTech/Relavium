@@ -177,7 +177,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (no mis-bill). **Test follow-up:** the realized-cost vertical (`realizedMediaCost` → a non-zero `cost:updated`)
   cannot be exercised end-to-end until a generative model carries a rate; the cost MATH is unit-tested via
   `mediaCost` against a constructed rate, and a non-zero dispatch assertion lands with these rows. *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
-- [ ] **`generateMedia` for Gemini-Imagen — adapter wire deferred (1.AG Section C → 1.AH A2).**
+- [x] **`generateMedia` SYNC adapters (OpenAI-TTS A1, Gemini-Imagen A2) + image knobs (A6) — ✅ Done (1.AH, PR #38, 2026-06-21).** *(STILL DEFERRED below: multi-image `count > 1` + verified pricing rows.)*
   Section C wired `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64); **1.AH A1
   wired OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME map, no new dep). The
   remaining sync generator is **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which
@@ -185,26 +185,27 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   per-model surface lookup is host-wired (above), so it lands written-now/E2E-at-1.AH-host-wiring. Two bounded image follow-ups
   ride along: (a) **multi-image `count > 1`** — the SYNC `MediaGenResult.media` carries a SINGLE part, so the OpenAI
   adapter currently rejects `count > 1` (never bill-N-deliver-1); delivering N needs an additive `media: MediaPart[]`
-  seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the
-  engine does not yet populate `providerOptions` for a generative call, so the adapter threads only the output format
-  (`req.mimeType`); a typed per-knob passthrough lands when the engine wires image knobs. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
+  seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `providerOptions.image`) — **✅ Done (A6, PR #38)** on the gpt-image-1
+  adapter (body-only, narrowed to valid values, never the SDK RequestOptions); the engine POPULATING
+  `providerOptions` for a generative call is the Phase-2 host-wiring half. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
 - [ ] **Rate-carrying media representation for raw PCM (1.AH A1 known-limitation).** OpenAI TTS `pcm` is headerless
   16-bit LE PCM at 24 kHz, but the seam's `MediaMimeTypeSchema` forbids MIME parameters, so the bare `audio/L16`
   cannot carry `;rate=24000` (RFC 2586's default is 8 kHz) — a consumer of an `audio/L16` part must assume 24 kHz.
   Mirrors the pre-existing chat-audio `pcm16 → audio/L16` convention; the self-describing containers (mp3/opus/aac/
   flac/wav) are unaffected. A rate-carrying media representation (or dropping bare-PCM from the offered set) is the
   fix. Low priority — opt-in niche format only. *(packages/shared/src/content.ts MediaMimeTypeSchema; packages/llm/src/adapters/openai.ts; low · 1.AH/Phase-2)*
-- [ ] **Sora/Veo async-media ADAPTERS (`generateMedia`→`{ jobId }` + `pollMediaJob`) — deferred (1.AG Section D → 1.AH).**
+- [x] **Sora/Veo async-media ADAPTERS (`generateMedia`→`{ jobId }` + `pollMediaJob`) — ✅ Done (1.AH A3/A4, PR #38, 2026-06-21).**
   1.AG Section D landed the ENGINE-owned async-job loop (park on `media_job:submitted`, the `host.setTimer` poll
   cadence, exp-backoff to `pollMaxMs`, deadline→retryable timeout, cross-process re-attach (MJ-1), gate-vs-media
   resume disambiguation (AG-A-FC-3), cancel-aborts-the-in-flight-poll + terminal sweep) — proven end-to-end with a
-  STUB async provider + the manual-timer harness. **No Phase-1 adapter implements `pollMediaJob` or returns a
-  `jobId`** (the only `generateMedia` is OpenAI-image SYNC); the real Sora/Veo `generateMedia`(→jobId)/`pollMediaJob`
-  adapter implementations are the deferred wiring, alongside the per-model surface lookup + verified rates (1.AH).
-  **Conformance obligation for that 1.AH PR (review N4):** add a negative assertion that the minted opaque `jobId`
-  is NOT the recorded vendor operation name (ADR-0045 §7) and that a recorded vendor poll body's `raw` diagnostics
-  never cross the seam (strip-raw on `MediaJobStatus`) — the seam-contract stub (generative-seam.conformance.test.ts)
-  proves the SHAPE today, but only a real adapter replaying a vendor body can prove the opacity/strip invariant. *(packages/llm/src/adapters/*; 1.AH)*
+  STUB async provider + the manual-timer harness. The **OpenAI/Sora (A3)** + **Gemini/Veo (A4)** adapters now
+  implement `generateMedia`(video)→opaque `jobId` + `pollMediaJob`, via the shared `encode/decodeMediaJobId` codec
+  (a stateless `rlv-mediajob:1:<base64url(vendorId)>` bijection — cold-restart re-attach with no adapter state,
+  ADR-0045 §7); the engine LRO drives them. **N4 conformance obligation discharged:** the opacity test (minted
+  `jobId` ≠ the raw vendor id) ships in `openai.test.ts`, and strip-raw holds structurally (the `MediaJobStatus`
+  union carries no `raw` slot). **STILL DEFERRED:** the per-model `media_surface` host lookup (Phase-2 §2.S) +
+  verified pricing rows. **⚠ OpenAI Sora 2 + Videos API are vendor-deprecated (shutdown 2026-09-24)** — see the
+  Multimodal forward-obligations entry; impact is the A3 adapter arm only. *(packages/llm/src/adapters/*; 1.AH done / surface + rates deferred)*
 - [ ] **Node-retry of a PARKED media job — deferred (1.AG Section D, ADR-0045 §3 "MAY re-dispatch").**
   The node-retry budget (1.S) wraps the executor `#dispatch`; an async media job parks AFTER dispatch returns, and
   the engine's out-of-band poll loop settles a deadline/poll failure as `node:failed` (retryable for a timeout) directly

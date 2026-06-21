@@ -53,5 +53,5 @@ both landed in **PR #26 (2026-06-16)**. With the budget governor in, **milestone
 end-to-end (live streaming + checkpoint + cross-process resume + retry + provider failover), completing the
 Phase-1 engine critical path. The remaining Phase-1 work is additive (the agent-first sub-spine — **session
 events 1.W ✅ (PR #28)** + **persistence 1.X ✅ (PR #29)** + **session checkpoint/resume 1.Y & export-to-workflow 1.Z ✅ (PR #30, 2026-06-17)** + **the 1.AA chat-regression harness ✅ (2026-06-17)**, completing **1.m5** — and the
-multimodal sub-spine — **media-input adapters + the shared SSRF policy primitive 1.AE ✅ (PR #32)**, **engine media plumbing 1.AF ✅ (PR #33/#34/#35/#36, 2026-06-20)**, and **media output generation 1.AG ✅ (PR #37, 2026-06-21)** — landed; only 1.AH remains); **Phase 2 (the CLI) is unblocked**. See
+multimodal sub-spine — **media-input adapters + the shared SSRF policy primitive 1.AE ✅ (PR #32)**, **engine media plumbing 1.AF ✅ (PR #33/#34/#35/#36, 2026-06-20)**, **media output generation 1.AG ✅ (PR #37, 2026-06-21)**, and **the generative media-output adapters 1.AH ✅ (PR #38, 2026-06-21)** — all landed, **completing 1.m6 / Phase 1**; 1.AH's host-wiring half is distributed across Phases 2–6 as recorded tasks); **Phase 2 (the CLI) is unblocked**. See
 [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

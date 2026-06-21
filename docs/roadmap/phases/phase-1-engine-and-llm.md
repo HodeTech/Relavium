@@ -1063,7 +1063,7 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   cross-fix defects (the orphaned-vertex cost addend + the crash-in-window `run:paused`). All four acceptance
   criteria are tested. The genuinely-remaining vendor-adapter + host-wiring work is **1.AH** (deferred-tasks.md).
 - **1.AH — Generative media-output adapters + surfaces & managed mode (Phase E, spans Phases 2–6).** The
-  Phase-1-doable half is implemented behind the seam: the **four generative media-output adapters** behind the
+  Phase-1-doable half is **✅ Done (PR #38, 2026-06-21)**: the **four generative media-output adapters** behind the
   `@relavium/llm` seam — OpenAI-TTS (audio), Gemini-Imagen (image), OpenAI/Sora (async video), Gemini/Veo
   (async video) — plus the shared **opaque-`jobId` encode/decode** (ADR-0045 §7) and the shared **bare-MIME
   validator**, all proven with stubs + the generative conformance suite. They are **not yet runtime-reachable**:
@@ -1116,7 +1116,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2 ✅** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** (**reached — 1.U landed, PR #27, 2026-06-16**) | **1.U** |
 | **1.m5 ✅** | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, **1.AA** |
-| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅, 1.AG ✅**, 1.AH |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅, 1.AG ✅, 1.AH ✅** (PR #38 — adapters; 1.AH's host-wiring half spans Phases 2–6) |
 
 ## Sequencing & parallelization
 
@@ -1279,7 +1279,7 @@ flowchart LR
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ✅ — **Done (PR #32, 2026-06-18)** |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ✅ — **Done (PR #33/#34/#35/#36, 2026-06-20)** |
 | 1.AG | D | 1.AF | 1.AH | ✅ — **Done (PR #37, 2026-06-21)** |
-| 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
+| 1.AH | D | 1.AG | Phases 2–6 surfaces | ✅ — **adapters Done (PR #38, 2026-06-21)**; host-wiring spans Phases 2–6 |
 
 > The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`
 > and `1.L.0 → 1.W` into Lane C). The waves Mermaid above draws lane-internal edges plus the `1.O`
