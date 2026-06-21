@@ -1,0 +1,76 @@
+Relavium Proprietary License
+Copyright (c) 2026 HodeTech. All rights reserved.
+
+Relavium and all of its source code, object code, designs, documentation, and
+associated materials (collectively, the "Software") are the exclusive property of
+HodeTech ("HodeTech", "we", "us") and are protected by copyright, trade secret,
+and other intellectual property laws and international treaties.
+
+This is a proprietary, closed-source license. It is NOT an open-source license and
+grants NO rights other than those expressly stated below.
+
+1. RESERVATION OF RIGHTS
+   All rights in and to the Software are reserved by HodeTech. No right, title, or
+   interest in the Software is transferred to you. Any right not expressly granted
+   in writing by HodeTech is withheld.
+
+2. NO LICENSE GRANTED BY DEFAULT
+   Except under a separate written agreement signed by an authorized representative
+   of HodeTech, you are granted NO right to use, execute, copy, reproduce, modify,
+   adapt, translate, create derivative works of, merge, publish, distribute,
+   sublicense, sell, rent, lease, lend, host, offer as a service, or otherwise
+   exploit the Software, in whole or in part, in any form or by any means.
+
+3. PROHIBITED ACTS
+   Without limiting Section 2, you may not:
+   (a) reverse engineer, decompile, or disassemble the Software, or attempt to
+       derive its source code, except to the extent this restriction is prohibited
+       by applicable law;
+   (b) remove, alter, or obscure any copyright, trademark, or other proprietary
+       notice in the Software;
+   (c) use the Software, or any HodeTech name, logo, or trademark, in any way that
+       suggests an endorsement, partnership, or affiliation without prior written
+       permission; or
+   (d) circumvent or disable any technical protection or license-enforcement
+       mechanism in the Software.
+
+4. OWNERSHIP
+   The Software is licensed, not sold. HodeTech retains all ownership of and
+   intellectual property rights in the Software, including all modifications,
+   enhancements, and derivative works, regardless of who creates them.
+
+5. CONFIDENTIALITY
+   The Software, including its source code and internal design, is the confidential
+   information and trade secret of HodeTech. You must not disclose it to any third
+   party without HodeTech's prior written consent.
+
+6. ENFORCEMENT AND REMEDIES
+   Any unauthorized use, reproduction, or distribution of the Software is a material
+   violation of this license and of applicable intellectual property law. HodeTech
+   will enforce its rights to the fullest extent permitted by law and may pursue all
+   available legal and equitable remedies, including injunctive relief, damages, and
+   recovery of legal costs. A violation may also constitute a criminal offense under
+   applicable law.
+
+7. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+8. LIMITATION OF LIABILITY
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL HODETECH BE LIABLE FOR
+   ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+   ARISING OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THIS LICENSE.
+
+9. TERMINATION
+   Any rights granted under a separate written agreement terminate automatically,
+   without notice, upon any breach of this license. Upon termination you must cease
+   all use of the Software and destroy all copies in your possession or control.
+
+10. GENERAL
+    This license is governed by the laws applicable at HodeTech's principal place of
+    business, without regard to conflict-of-laws rules. If any provision is held
+    unenforceable, the remaining provisions remain in full effect.
+
+For licensing inquiries, written permission, or commercial-use agreements, contact
+HodeTech at https://github.com/HodeTech.

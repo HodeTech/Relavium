@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Relavium — multi-surface, local-first AI agent workflow platform (HodeTech). Monorepo root (tooling only).",
+  "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.12.3",
   "engines": {
     "node": ">=20.11.0",
