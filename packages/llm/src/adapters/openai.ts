@@ -1200,8 +1200,14 @@ async function openAiGenerateVideo(
 
 /** Map a Sora `VideoCreateError` VALUE object (not a thrown `APIError`) to a normalized `LlmError`; a
  *  content-policy code → `content_filter`, else the fatal `unknown` (ADR-0045 §6). */
-function mapVideoCreateError(err: OpenAI.VideoCreateError | null, provider: ProviderId): LlmError {
-  if (err === null) {
+function mapVideoCreateError(
+  err: OpenAI.VideoCreateError | null | undefined,
+  provider: ProviderId,
+): LlmError {
+  // `err == null` catches BOTH null and a runtime-absent `error` (the SDK types it required-nullable, but
+  // a provider response may omit it on a failed status); `err.code`/`err.message` are likewise read
+  // defensively (typed required, but guard against a deviating response rather than risk a TypeError).
+  if (err == null) {
     return makeLlmError({
       provider,
       kind: 'unknown',
@@ -1212,8 +1218,8 @@ function mapVideoCreateError(err: OpenAI.VideoCreateError | null, provider: Prov
   return makeLlmError({
     provider,
     kind,
-    message: err.message,
-    ...(err.code.length === 0 ? {} : { code: err.code }),
+    message: err.message ?? 'Sora video job failed',
+    ...(err.code ? { code: err.code } : {}),
   });
 }
 
@@ -1264,7 +1270,9 @@ async function pollMediaJobSora(
     case 'in_progress':
       // Sora reports 0-100; the seam expects 0-1. Clamp defends against an out-of-range value that would
       // fail the engine's z.number().min(0).max(1) boundary.
-      return { state: 'pending', progress: Math.min(1, Math.max(0, video.progress / 100)) };
+      // `?? 0`: a runtime-absent progress would make `undefined / 100` NaN, which fails the engine's
+      // z.number().min(0).max(1) on the pending status — clamp a missing value to 0.
+      return { state: 'pending', progress: Math.min(1, Math.max(0, (video.progress ?? 0) / 100)) };
     case 'completed': {
       // `bytes` is assigned in the SAME `if (status === 'completed')` block above, so at runtime it is
       // always set here; the `=== undefined` half is the TS narrowing guard (bytes is typed

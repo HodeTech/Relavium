@@ -1753,6 +1753,31 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     });
   });
 
+  it('pollMediaJob failed with a runtime-ABSENT error field → unknown (no TypeError)', async () => {
+    // The SDK types Video.error required-nullable, but a deviating response may omit it on a failed
+    // status — mapVideoCreateError must treat undefined like null, not crash on err.code.
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'failed', progress: 0 }), // no error field
+    });
+    expect(await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'unknown' },
+    });
+  });
+
+  it('pollMediaJob in_progress with a runtime-ABSENT progress → pending progress 0 (no NaN)', async () => {
+    // A missing progress would make undefined/100 NaN, failing the engine z.number().min(0).max(1).
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'in_progress' }), // no progress field
+    });
+    expect(await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k')).toEqual({
+      state: 'pending',
+      progress: 0,
+    });
+  });
+
   it('pollMediaJob failed with an empty error code → unknown kind, omits the empty code field', async () => {
     const adapter = createOpenAiAdapter({
       maxRetries: 0,

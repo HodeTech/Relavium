@@ -858,7 +858,8 @@ async function geminiGenerateVideo(
   } catch (err) {
     throw new LlmProviderError(geminiErrorToLlmError(err));
   }
-  if (op.name === undefined || op.name.length === 0) {
+  if (!op.name) {
+    // `!op.name` covers undefined, a runtime null (the API may null an operation name), and an empty string.
     throw new LlmProviderError(
       makeLlmError({
         provider: PROVIDER,
@@ -904,7 +905,9 @@ async function geminiPollVideo(
   if (!poll.done) {
     return { state: 'pending' };
   }
-  if (poll.error !== undefined) {
+  if (poll.error) {
+    // Truthy guard (not `!== undefined`): defends against a null error from a deviating transport before
+    // the `poll.error.message` read below.
     return {
       state: 'failed',
       error: makeLlmError({
