@@ -1573,12 +1573,22 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
       signalByCall: { create: false, retrieve: false, content: false },
     };
     const fn = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      const call = url.endsWith('/content')
-        ? 'content'
-        : init?.method === 'POST'
-          ? 'create'
-          : 'retrieve';
+      let url: string;
+      if (typeof input === 'string') {
+        url = input;
+      } else if (input instanceof URL) {
+        url = input.href;
+      } else {
+        url = input.url;
+      }
+      let call: 'content' | 'create' | 'retrieve';
+      if (url.endsWith('/content')) {
+        call = 'content';
+      } else if (init?.method === 'POST') {
+        call = 'create';
+      } else {
+        call = 'retrieve';
+      }
       capture.signalByCall[call] = init?.signal instanceof AbortSignal;
       if (call === 'create') {
         // videos.create sends multipart/form-data (it supports file uploads), so the body is a FormData,

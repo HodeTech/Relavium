@@ -101,7 +101,14 @@ function fakeVideoTransport(opts: {
   lastOperationName?: string;
   lastPollSignal?: AbortSignalLike | undefined;
 } {
-  const polls = opts.poll === undefined ? [] : 'done' in opts.poll ? [opts.poll] : opts.poll;
+  let polls: readonly GeminiVideoPoll[];
+  if (opts.poll === undefined) {
+    polls = [];
+  } else if ('done' in opts.poll) {
+    polls = [opts.poll]; // a single status (has the `done` discriminant) → one-element sequence
+  } else {
+    polls = opts.poll; // already a sequence
+  }
   let call = 0;
   const holder: GeminiTransport & {
     lastVideoRequest?: GeminiVideoRequest;
