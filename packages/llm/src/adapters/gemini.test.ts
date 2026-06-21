@@ -800,24 +800,56 @@ describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
   const B64 = 'aGVsbG8taW1hZ2Vu'; // "hello-imagen"
 
   it('normalizes a generated image to a base64 media part (no jobId, raw retained)', async () => {
-    const transport = fakeImageTransport({
+    const fixture: GeminiImageResponse = {
       generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png' } }],
-    });
+    };
+    const transport = fakeImageTransport(fixture);
     const result = await genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k');
     expect(result.jobId).toBeUndefined(); // SYNC arm
     expect(result.media?.type).toBe('media');
     expect(result.media?.mimeType).toBe('image/png');
     expect(result.media?.source).toEqual({ kind: 'base64', data: B64 });
-    expect(result.raw).toBeDefined(); // internal diagnostic — sinks strip it (I3)
+    expect(result.raw).toBe(fixture); // internal diagnostic (the exact transport response) — sinks strip it (I3)
     // The single-artifact seam: numberOfImages is pinned to 1, and the prompt/model are threaded.
     expect(transport.lastImageRequest?.config['numberOfImages']).toBe(1);
     expect(transport.lastImageRequest?.prompt).toBe(IMG_REQ.prompt);
+    expect(transport.lastImageRequest?.model).toBe(IMG_REQ.model);
   });
 
   it('defaults the MIME to image/png when the vendor omits it', async () => {
     const transport = fakeImageTransport({ generatedImages: [{ image: { imageBytes: B64 } }] });
     const result = await genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k');
     expect(result.media?.mimeType).toBe('image/png');
+  });
+
+  it('strips MIME parameters to the canonical bare MIME (image/png; q=1.0 → image/png)', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png; q=1.0' } }],
+    });
+    const result = await genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k');
+    expect(result.media?.mimeType).toBe('image/png');
+  });
+
+  it('strips a caller-supplied httpOptions from the Imagen config (SSRF: no baseUrl/key redirect)', async () => {
+    const transport = fakeImageTransport({
+      generatedImages: [{ image: { imageBytes: B64, mimeType: 'image/png' } }],
+    });
+    await genMedia(
+      createGeminiAdapter({ transport }),
+      {
+        ...IMG_REQ,
+        providerOptions: {
+          httpOptions: { baseUrl: 'https://attacker.example' },
+          abortSignal: new AbortController().signal,
+          aspectRatio: '16:9',
+        },
+      },
+      'k',
+    );
+    // httpOptions (SSRF) + an author-injected abortSignal are stripped; benign knobs survive.
+    expect(transport.lastImageRequest?.config['httpOptions']).toBeUndefined();
+    expect(transport.lastImageRequest?.config['abortSignal']).toBeUndefined();
+    expect(transport.lastImageRequest?.config['aspectRatio']).toBe('16:9');
   });
 
   it('threads providerOptions into config but pins numberOfImages to 1 (count can not be smuggled)', async () => {
@@ -865,6 +897,13 @@ describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
 
   it('maps a no-image response to a typed bad_request LlmProviderError', async () => {
     const transport = fakeImageTransport({ generatedImages: [] });
+    await expect(genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k')).rejects.toMatchObject({
+      llmError: { kind: 'bad_request' },
+    });
+  });
+
+  it('maps an entirely-absent generatedImages field to bad_request (optional-chain short-circuit)', async () => {
+    const transport = fakeImageTransport({});
     await expect(genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k')).rejects.toMatchObject({
       llmError: { kind: 'bad_request' },
     });

@@ -25,10 +25,15 @@ const isGeminiResponse = (value: unknown): value is GeminiResponse =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isGeminiResponseArray = (value: unknown): value is GeminiResponse[] =>
   Array.isArray(value) && value.every(isGeminiResponse);
-// GeminiImageResponse's only field is optional, so any object is structurally valid; the helper reads
-// generatedImages defensively. An object/non-array check fails loud on a malformed fixture.
-const isGeminiImageResponse = (value: unknown): value is GeminiImageResponse =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+// GeminiImageResponse's only field (generatedImages) is optional; reject non-objects, arrays, and a
+// present-but-non-array generatedImages so a malformed fixture fails the guard rather than the fold.
+const isGeminiImageResponse = (value: unknown): value is GeminiImageResponse => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const gen = (value as { generatedImages?: unknown }).generatedImages;
+  return gen === undefined || Array.isArray(gen);
+};
 
 // Gemini has no `fetch` hook, so the conformance harness replays at the transport level: a recorded
 // SDK-output JSON (single response or an array of streamed responses) is parsed and served through a

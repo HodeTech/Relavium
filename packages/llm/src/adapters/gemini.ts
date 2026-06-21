@@ -80,12 +80,13 @@ function isPromptBlocked(promptFeedback: { blockReason?: string } | undefined): 
   return reason !== undefined && reason !== 'BLOCKED_REASON_UNSPECIFIED';
 }
 
-/** Remove transport-level keys that the SDK exposes for URL/header override — SSRF guard. */
+/** Remove transport-level keys the SDK exposes for URL/header/cancellation override — SSRF + signal guard.
+ *  `httpOptions.baseUrl`/`headers` would redirect egress (and the API key) to an arbitrary host; an
+ *  author-supplied `abortSignal` is the engine's to set (from `req.signal`), never `providerOptions`. */
 function stripTransportKeys(opts: Record<string, unknown>): Record<string, unknown> {
   const rest: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(opts)) {
-    // `httpOptions.baseUrl`/`headers` would redirect egress (and the API key) to an arbitrary host.
-    if (k !== 'httpOptions') {
+    if (k !== 'httpOptions' && k !== 'abortSignal') {
       rest[k] = v;
     }
   }
@@ -681,10 +682,12 @@ async function geminiGenerateImage(
       {
         model: req.model,
         prompt: req.prompt,
-        // numberOfImages pinned AFTER the providerOptions spread (the single-artifact seam); abortSignal
-        // threaded so a run cancel reaches the in-flight Imagen call (parity with the generate() path).
+        // stripTransportKeys: a caller-supplied httpOptions.baseUrl would redirect egress + the API key to
+        // an arbitrary host (SSRF) — strip it before the spread, exactly as the generate() path does.
+        // numberOfImages pinned AFTER the spread (the single-artifact seam); abortSignal threaded so a run
+        // cancel reaches the in-flight Imagen call (parity with the generate() path).
         config: {
-          ...(req.providerOptions ?? {}),
+          ...stripTransportKeys(req.providerOptions ?? {}),
           numberOfImages: 1,
           ...(isAbortSignal(req.signal) ? { abortSignal: req.signal } : {}),
         },
@@ -716,10 +719,13 @@ async function geminiGenerateImage(
       }),
     );
   }
-  // The vendor reports the ACTUAL bytes' MIME; default to png (Imagen's default) when absent. The bare
-  // MIME is validated downstream by MediaPartSchema before anything durable is written. (`first?.` only
-  // narrows the type — the non-empty-b64 guard above already proves `first` exists at runtime.)
-  const mimeType = first?.image?.mimeType ?? 'image/png';
+  // The vendor reports the ACTUAL bytes' MIME; default to png (Imagen's default) when absent. Strip any
+  // `;`-parameters (e.g. `image/png; q=1.0`) to the canonical bare MIME — the production de-inline path
+  // (MediaStore.put / media_objects.mimeType) has no parameter-stripping CHECK, and the generate() arm
+  // (mapContent) strips identically. (`first?.` only narrows the type — the non-empty-b64 guard above
+  // already proves `first` exists at runtime.)
+  const rawMime = first?.image?.mimeType ?? '';
+  const mimeType = rawMime.split(';')[0]?.trim() || 'image/png';
   return {
     media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
     raw: response,
