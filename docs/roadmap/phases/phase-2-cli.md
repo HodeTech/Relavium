@@ -467,6 +467,117 @@ is deliberately not in this slot.
 reach the server only via its spawn-time `env`; a private-range MCP `url` is rejected without the
 explicit opt-in; the import-zone check confirms no SDK type leaks past the integration layer.
 
+### 2.S — Media host-wiring (1.AH / Phase-2)
+
+The surface half of the multimodal sub-spine. The engine-pure media **policy** landed
+in Phase 1 (1.AF/1.AG: the `MediaStore`/`deInlineMedia` choke point, `read_media` +
+scope-set authz, the byte-delivery `Range` gate, the `output_modalities` load-check,
+the per-modality cost governor, the `save_to` write port, the inline media-out path,
+and the engine-owned async media-job LRO); 1.AH then landed the four generative
+media-output adapters behind the `@relavium/llm` seam. None of it is reachable
+end-to-end until a **host** wires it. The CLI is the first surface to do so, so this
+is the canonical home for the host-wiring task list — desktop ([phase-3-desktop.md](phase-3-desktop.md))
+and VS Code ([phase-4-vscode.md](phase-4-vscode.md)) point here for the shared
+obligations and add only their surface-specific deltas (the desktop Rust de-inline +
+Rust CAS per [ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)).
+Each task is the deferred **mechanism/wiring** half of a 1.AF/1.AG decision-point;
+the canonical pointers are the media ADRs ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md))
+and the D-series entries in [../deferred-tasks.md](../deferred-tasks.md) (§1.AF P4 +
+Multimodal forward-obligations).
+
+**Off the M3 critical path** — built *with* the CLI but **designed to fit
+desktop/VS Code**: each port lives behind an injectable seam (`AgentRunnerDeps`,
+`MediaReadAccess`, the write port) so the desktop's Rust CAS and the VS Code host can
+reuse it. The warning: do not let a CLI-shaped shortcut leak into a port the other
+surfaces inherit (treat any such friction as a Phase-1 amendment, per Risks). Media
+runs at **0 cost** until verified generative pricing rows land (never fabricate a
+rate); multi-image `count > 1` and the OpenAI Responses-API image-gen surface stay
+deferred (each needs a future seam amendment — see
+[deferred-tasks.md](../deferred-tasks.md)).
+
+**Tasks:**
+
+- **`resolveMediaSurface` (`AgentRunnerDeps`) — the top routing gate.** Wire the host
+  lookup that reads `model_catalog.media_surface` and supplies
+  `resolveMediaSurface?(model) → MediaSurface`, the discriminator that routes a
+  generative-surface model to `generateMedia` / `pollMediaJob` (default `'chat'`).
+  Until wired, every model routes inline and no generative model is runtime-reachable.
+  *([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §1; deferred-tasks.md 1.AG Section C → 1.AH.)*
+- **The `read_media` host `MediaReadAccess` factory.** Build the host factory that
+  bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` into the
+  `MediaReadAccess` the tool needs; it must return a **handle-bearing** result (durable
+  form, resolved on egress by the seam), not inline base64, so the next LLM call's
+  `containsInlineMediaBytes` refine does not reject the turn — and **narrow**
+  `readRange` to that chosen form (not the wide `MediaSource`) and **thread**
+  `AbortSignalLike` into `describe`/`readRange`.
+  *([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1; deferred-tasks.md D12.)*
+- **Session-kind `media_references` population (D12 authz data).** Write
+  `session` (and, when a shared-asset consumer lands, `workspace`) `media_references`
+  rows at the node/session input-transfer boundary so `describe().allowedScopes` is
+  non-empty; today the only writer emits `run` refs and every read denies.
+  *([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1; deferred-tasks.md D12.)*
+- **Thread `ctx.mediaRead` + `requestingScope` into `ToolDispatchContext`.** The
+  AgentRunner + AgentSession build the dispatch context without these, so `read_media`
+  currently throws `ToolUnavailableError` (fail-closed). Inject the `MediaReadAccess`
+  impl and the requesting scope so the tool resolves in the engine path.
+  *([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1; deferred-tasks.md D12.)*
+- **`validateWorkflowWithCatalog` post-parse (the D15 load-check).** Call the exported,
+  tested load-check from the CLI load path with the DB `model_catalog` so authored
+  `output_modalities` are validated at parse time, not only by the runtime
+  FallbackChain pre-skip.
+  *([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md); deferred-tasks.md D15.)*
+- **`[defaults].media_cost_estimate` → `mediaCostEstimate` (the D17 cost governor).**
+  Read the config key and thread it into `createAgentNodeExecutor` so the pre-egress
+  governor uses the configured per-modality estimate instead of the built-in
+  `DEFAULT_MEDIA_UNIT_ESTIMATE`.
+  *([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §3; deferred-tasks.md D17.)*
+- **`resolveForEgress` (the D8 FallbackChain resolve-before-egress).** Inject the
+  re-materialization hook on the AgentRunner so a durable handle in a transcript
+  message is resolved before egress; without it the D7/D8 failover re-materialization
+  is inert (a handle is sent unchanged).
+  *([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md); deferred-tasks.md D8.)*
+- **`createFilesystemMediaWrite` — the `save_to` write port.** Implement the host
+  filesystem write port with `realpath` + `commonpath` **fail-closed** containment
+  (no symlink escape) so an output node's `save_to` lands bytes in the workspace.
+  *([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §2.)*
+- **`save_to` `run.id` namespace.** Scope the written artifact path under the run id
+  namespace (so concurrent/repeat runs do not collide), and surface the load-time
+  `run.id`-only restriction so a non-`run.id` `save_to` ref errors at load, not runtime.
+  *([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §2; deferred-tasks.md §1.AF-P4 save_to.)*
+- **The `EgressCapability.fetch` SSRF mechanism (DNS-resolve + connect-by-IP +
+  redirect re-validate) — SECURITY-CRITICAL.** Implement the host-side runtime half of
+  the SSRF defense: resolve the hostname, validate the IP against the shared range
+  block, pin the connection to that validated IP, and re-validate on every redirect
+  hop. The shared 1.AE primitive covers only construction-time **policy**; this is the
+  mechanism that catches DNS rebinding / a public hostname resolving to a private IP.
+  **Flag for explicit security review.**
+  *([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md); deferred-tasks.md §Multimodal — host-side SSRF enforcement in `EgressCapability.fetch`.)*
+- **Render a produced media handle on `node:completed` (CLI surface).** Render the
+  produced media **handle** (never inline bytes) in the TUI and `--json` paths when a
+  node emits media output — the CLI's leaf of the cross-surface
+  "each surface renders a produced media handle" acceptance.
+  *([ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md); deferred-tasks.md 1.AG.)*
+- **`[chat].max_turns` → `SessionDeps.maxTurns`.** Read the config turn cap and thread
+  it into the `AgentSession` deps so a media (or any) chat turn budget is
+  host-configurable. *(config-spec.md; 2.M–2.Q.)*
+- **Host media GC + durable fail-cost.** Run the host media garbage collection — the
+  CAS-orphan sweep (row-less `save_to` bytes from a crash window) + the
+  clean-terminal reclaim retry keyed on terminal run events — and snapshot durable
+  realized cost onto `node:failed` / `run:cancelled` for a billed-but-failed paid media
+  job (the live `cost:updated` stream is the only carrier today).
+  *([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §4, [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §5; deferred-tasks.md §1.AF-P4 GC + review M1.)*
+
+**Acceptance:** a fixture workflow with a generative media-output node runs end-to-end
+via `relavium run`, routed by a host `resolveMediaSurface` to `generateMedia` /
+`pollMediaJob`; `read_media` resolves a scoped handle (and denies an out-of-scope one)
+with no inline bytes crossing into the next turn; `save_to` writes a containment-checked
+artifact under the `run.id` namespace and rejects an escape attempt; the SSRF
+mechanism rejects a hostname that resolves to a private IP (and re-validates on
+redirect) — covered by a dedicated security review; the load-check rejects an
+unsupported authored `output_modalities`; media cost folds at **0** until a verified
+rate lands; and the CLI renders the produced media handle in both the TUI and `--json`
+streams. Built behind injectable ports so desktop (§3.B) and VS Code (§4.N) reuse them.
+
 ## Milestones
 
 | In-phase milestone | Completed by | Global milestone |
@@ -481,6 +592,7 @@ explicit opt-in; the import-zone check confirms no SDK type leaks past the integ
 | Published, installable binary verified on all OSes | 2.L | — |
 | **Agent-first CLI** — `relavium chat` + session commands (resume / list / export / `agent run` / `gate list`): the **first user-facing `AgentSession` surface**, a committed build-phase-2 deliverable (off the M3 critical path, but a phase exit item — the agent-first headline is demonstrable here) | 2.M, 2.N, 2.O, 2.P, 2.Q | — |
 | **MCP client live** — a fixture agent completes a real stdio MCP tool round-trip behind the `ToolRegistry`, per [ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md) (off the M3 critical path) | 2.R | — |
+| **Media host-wiring** — a generative media-output fixture runs end-to-end on the CLI (host `resolveMediaSurface` routing, scoped `read_media`, containment-checked `save_to`, the `EgressCapability.fetch` SSRF mechanism), the shared ports designed to fit desktop/VS Code, per the media ADRs ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)) (off the M3 critical path) | 2.S | — |
 
 ## Dependencies
 
@@ -500,6 +612,12 @@ explicit opt-in; the import-zone check confirms no SDK type leaks past the integ
   [`RunEvent` schema](../../reference/contracts/sse-event-schema.md), the
   [config spec](../../reference/contracts/config-spec.md), and the
   [keychain/secret model](../../reference/desktop/keychain-and-secrets.md).
+- **Media engine policy (1.AF/1.AG)** complete behind the `@relavium/llm` seam — the
+  `MediaStore`/`deInlineMedia` choke point, `read_media` authz, the `save_to` write
+  port, the load-check, the cost governor, and the async media-job LRO — per
+  [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md);
+  the host-wiring tasks (2.S) discharge the deferred mechanism half tracked in
+  [deferred-tasks.md](../deferred-tasks.md) (§1.AF P4 + Multimodal forward-obligations).
 - **`@relavium/shared`** Zod schemas for workflow/agent/config validation (Phase 0).
 
 ## Exit criteria (go / no-go)

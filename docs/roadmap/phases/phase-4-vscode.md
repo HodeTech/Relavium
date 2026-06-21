@@ -2,7 +2,7 @@
 
 > Status: Not started (Product Phase 1, final build phase). Blocked on Phase 3.
 
-- **Related**: [../README.md](../README.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-5-managed-inference.md](phase-5-managed-inference.md) (next phase, first Phase-2 deliverable), [phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../reference/vscode/extension-api.md](../../reference/vscode/extension-api.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0006-os-keychain-for-api-keys.md](../../decisions/0006-os-keychain-for-api-keys.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
+- **Related**: [../README.md](../README.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-5-managed-inference.md](phase-5-managed-inference.md) (next phase, first Phase-2 deliverable), [phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../reference/vscode/extension-api.md](../../reference/vscode/extension-api.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/ipc-contract.md](../../reference/contracts/ipc-contract.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md), [../../decisions/0006-os-keychain-for-api-keys.md](../../decisions/0006-os-keychain-for-api-keys.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md), [../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md), [../../decisions/0043-media-egress-failover-rematerialization-ssrf.md](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md), [../../decisions/0044-media-access-governance-read-media-save-to-cost.md](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), [../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)
 
 ## Goal
 
@@ -377,6 +377,50 @@ Upgrade the existing trigger-only chat panel into a full conversational AI codin
 
 **Acceptance:** a chat session started in the CLI/desktop resumes in the editor (same `history.db`) and exports to a reviewable workflow; the extension host opens the DB with no native module.
 
+### 4.N — Media host-wiring and rendering
+
+Wire the deferred 1.AF/1.AG media host-wiring on the VS Code Node host (a
+filesystem CAS, exactly like the CLI) so workflows that read or produce media run
+end-to-end in the extension, then render media in the webview through the
+VS-Code-resource scheme. The engine media **policy** all landed in 1.AF/1.AG; this
+workstream supplies only the **host/surface half** the engine never owns, per the
+open items in [deferred-tasks.md §1.AF P4 forward-obligations](../deferred-tasks.md)
+and the Multimodal forward-obligations. The shared host-wiring is the CLI
+[§2.S](phase-2-cli.md) — point there for the cross-surface ports rather than restating them.
+
+**Tasks:**
+
+- Inject `ExecutionHost.mediaStore` with the `@relavium/db` filesystem CAS — the
+  same FS-CAS the CLI uses; [ADR-0042 §2](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
+  names VS Code as an FS-CAS host (`@relavium/db`, never a Rust CAS).
+- Wire the deferred host-wiring obligations **identically to the CLI §2.S** — the
+  `read_media` `MediaReadAccess` impl + session-scope `media_references`
+  population (D12), `validateWorkflowWithCatalog` on the post-parse load path
+  (D15), `[defaults].media_cost_estimate` → `AgentRunnerDeps.mediaCostEstimate`
+  (D17), and `resolveForEgress` injection (D8). Point to the CLI media workstream
+  rather than restating the wiring; they share `@relavium/db` and the engine ports.
+- Return `read_media` results as a **handle** (durable form, resolved on egress),
+  never inline base64 — the next-turn `LlmMessageSchema` rejects inline media
+  bytes ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).
+- Render media in the webview via `Webview.asWebviewUri` (the VS-Code-resource
+  scheme) over the existing host↔webview message path — respect the strict CSP /
+  nonce and the resource-root restriction; **no** second raw byte mount or local
+  HTTP server.
+- Apply the host-side SSRF **mechanism** on the `workspace.fs`/`fetch` media
+  egress hook (DNS-resolve + connect-by-validated-IP + per-hop redirect
+  re-validation), per [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)
+  (the `EgressCapability.fetch` obligation) — security-critical, flag for security review.
+- **Reserved (record only):** `media_delta.partialRef` / the streaming media triad
+  stay host-deferred for the progressive-preview surface ([ADR-0046 §4](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md));
+  the async media-job LRO ([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md))
+  runs unchanged on the bundled engine.
+
+**Acceptance:** a workflow that produces media writes bytes through the FS-CAS and
+`save_to` lands a file in the workspace; `read_media` returns a handle and a
+follow-up turn is accepted; media renders in the webview over the
+VS-Code-resource scheme under the existing CSP (no second raw mount); the
+host-side SSRF mechanism blocks a private-IP / DNS-rebind media fetch.
+
 ## Milestones
 
 | In-phase milestone | Completed by | Maps to global |
@@ -387,6 +431,7 @@ Upgrade the existing trigger-only chat panel into a full conversational AI codin
 | P4.M4 — Human gate blocks and resumes in a webview | 4.H | **M5** (gate webview) |
 | P4.M5 — Published to the marketplace | 4.K | **M5** (marketplace publish) |
 | P4.M6 — Full chat-assistant panel + chat export (agent-first parity) | 4.L + 4.M | — (non-critical to M5) |
+| P4.M7 — Media runs end-to-end + renders in the webview (host-wiring) | 4.N | — (non-critical to M5) |
 
 > Milestone **M5 — Product Phase 1 complete: standalone VS Code extension
 > shipped** is achieved by **4.E + 4.H + 4.K**.

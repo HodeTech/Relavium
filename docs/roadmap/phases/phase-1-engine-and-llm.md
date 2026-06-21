@@ -1062,16 +1062,44 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   dual-reviewed (0 blocker/high), then a final Opus-consolidated pre-merge review that caught + fixed two HIGH
   cross-fix defects (the orphaned-vertex cost addend + the crash-in-window `run:paused`). All four acceptance
   criteria are tested. The genuinely-remaining vendor-adapter + host-wiring work is **1.AH** (deferred-tasks.md).
-- **1.AH — Surfaces & managed mode (Phase E, spans Phases 2–6).** Desktop:
-  **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media
-  de-inline on egress + session-scoped `read_media` command + the Rust CAS — **must land before any
-  desktop media-output** (phase-3-desktop). CLI/VS Code media rendering (phase-2-cli / phase-4-vscode).
-  Managed-mode gateway media materialization-to-user-store + `mediaUnits` metering, reconciled with
-  [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md) counts-not-content
-  (phase-5-managed-inference). *Acceptance:* on desktop, media bytes never transit the WebView↔Rust
-  channel (only handles do); **`read_media` is the only byte path out — no second raw static mount,
-  `follow_symlink` off, `realpath`+`commonpath` fail-closed**; each surface renders a produced media
-  handle; managed mode meters counts and stores no artifact.
+- **1.AH — Generative media-output adapters + surfaces & managed mode (Phase E, spans Phases 2–6).** The
+  Phase-1-doable half landed (unmerged): the **four generative media-output adapters** behind the
+  `@relavium/llm` seam — OpenAI-TTS (audio), Gemini-Imagen (image), OpenAI/Sora (async video), Gemini/Veo
+  (async video) — plus the shared **opaque-`jobId` encode/decode** (ADR-0045 §7) and the shared **bare-MIME
+  validator**, all proven with stubs + the generative conformance suite. They are **not yet runtime-reachable**:
+  each needs the host per-model `media_surface` lookup (the deferred wiring below). Adapter pieces, behind the
+  seam ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) §4,
+  [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md),
+  [ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)):
+  - **A1 — OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME map, no new dep).
+  - **A2 — Gemini-Imagen image** (`generateImages` → `generatedImages[].image.imageBytes`, via a vendor-free
+    `GeminiTransport.generateImages` extension).
+  - **A3 — OpenAI/Sora async video** (`generateMedia`→`{ jobId }` + `pollMediaJob`, the engine LRO loop, 1.AG D).
+  - **A4 — Gemini/Veo async video** (`generateMedia`→`{ jobId }` + `pollMediaJob`, same LRO loop).
+  - **A5 — `save_to` url double-fetch** stays **DEFERRED** (rare-case perf; correctness fine) — deferred-tasks.md §1.AF.
+  - **A6 — bare-MIME validator + gpt-image-1 `size`/`quality` knobs** (the per-knob `MediaGenRequest.providerOptions` passthrough).
+  - *Deferred decisions (each needs its own future record — do NOT pre-empt here):* **multi-artifact `count > 1`**
+    needs a future media-array ADR amending [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
+    (the SYNC `MediaGenResult.media` carries a SINGLE part — never bill-N-deliver-1); **verified generative
+    pricing rows** are deferred (adapters ship at **0-cost**, gated/folded correctly — never fabricate a rate);
+    **OpenAI agentic image-gen via the Responses API** is deferred ([ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §3). All three are recorded in deferred-tasks.md §Multimodal / §1.AF.
+  - **Surfaces & managed mode — the HOST-WIRING half spans Phases 2–6** (the deferred mechanism for D5/D8/D12/D15/D17
+    + the per-model `media_surface` lookup + verified rates; deferred-tasks.md §1.AF-P4 / §Multimodal). Desktop:
+    **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media de-inline on
+    egress + session-scoped `read_media` command + the Rust CAS — **must land before any desktop media-output**
+    ([phase-3-desktop.md §3.B](phase-3-desktop.md)). CLI media rendering + the host `media_surface` resolver +
+    `EgressCapability.fetch` SSRF mechanism ([phase-2-cli.md §2.S](phase-2-cli.md)); VS Code media rendering
+    ([phase-4-vscode.md §4.N](phase-4-vscode.md)). Managed-mode gateway media materialization-to-user-store +
+    `mediaUnits` metering, reconciled with [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)
+    counts-not-content ([phase-5-managed-inference.md](phase-5-managed-inference.md) media bullets); cloud-execution
+    media handling ([phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md) media tasks).
+  - **⚠ Sequencing warning (deferred-tasks.md):** do **NOT** build the host media-surface resolver (or the
+    D12 `MediaReadAccess`/scope-population) **in isolation** — build them **WITH the first surface (CLI, §2.S)**,
+    designed to fit desktop/VS Code, so the inert `read_media` result-shape + base64-vs-handle contract is
+    resolved coherently once (fixing it standalone risks conflicting with the 1.AH host design).
+  *Acceptance:* on desktop, media bytes never transit the WebView↔Rust channel (only handles do); **`read_media`
+  is the only byte path out — no second raw static mount, `follow_symlink` off, `realpath`+`commonpath`
+  fail-closed**; each surface renders a produced media handle; managed mode meters counts and stores no artifact.
 
 ## Milestones
 

@@ -218,6 +218,7 @@ local, only egress is proxied" behind the seam.
   string or a URL that may carry credentials — and multi-provider health checks run
   under a deadline hierarchy (per-probe, per-provider, overall ceiling) so one hung
   upstream cannot stall the health surface.
+- Run **media egress poll-through** for managed mode: the gateway is a **pass-through, not a media store** — it materializes nothing; the engine de-inlines the `done` `MediaPart` to the **user's local store**, so the async media-job poll (`pollMediaJob`) swaps to a gateway poll-through body with **no engine change** ([ADR-0045 §7](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md), [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)). Add **per-modality capability caps** on the `ManagedGatewayProvider` (the `media.input`/`outputCombinations` matrix it advertises), and call **`validateWorkflowWithCatalog`** against the managed catalog on managed load so an authored `output_modalities` the managed lane can't serve fails at load, not mid-run ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md); the D15 loader is the 1.AH host-wiring half — [deferred-tasks.md §1.AF P4](../deferred-tasks.md)).
 
 **Acceptance:** a workflow runs end-to-end in `managed` mode with the engine still
 local and only LLM egress proxied; the `ManagedGatewayProvider` returns the
@@ -273,6 +274,8 @@ against the truth ([ADR-0014](../../decisions/0014-managed-metering-quota-and-bi
   each provider's invoice/usage export and flag drift for review.
 - Price every managed request from **Relavium's own pricing table**, never a provider
   response field (consistent with the Phase-1 cost model and `CostTracker`).
+- Meter **`Usage.mediaUnits`** into each `usage_event` (image per-count, audio/video per-second; a token-based provider's audio as `unit:'count'`) and fold it into the **nightly reconciliation** vs provider invoices, with **reserve→settle keyed on the per-modality media cost estimate** (the pre-egress media estimate reserved, the realized media addend settled) ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md), [ADR-0044 §3](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).
+- **Durably settle a FAILED / CANCELLED paid async media job**: a Sora/Veo job the provider already billed must settle a `usage_event` even though it never returned `done`, so a billed-but-failed/cancelled job is not lost from COGS/metering ([ADR-0045 §5](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
 
 **Acceptance:** a streamed managed request records a `usage_event` with both
 `provider_cost` and `billed_cost`; replaying the same `request_id` does not
@@ -388,9 +391,11 @@ portal ([ADR-0015](../../decisions/0015-managed-mode-data-handling-and-complianc
   `usage_event`s (5.E) and the billing balance (5.G).
 - Show **dollar-denominated, learnable** usage (never an opaque quota), with the model
   routing decisions (5.H) and remaining included usage visible.
+- Show a **per-modality `mediaUnits` dollar axis** on the dashboard (image / audio / video spend, dollar-denominated) alongside the token axis — **counts-not-content** (per-unit counts and cost, never the produced bytes) ([ADR-0044 §3](../../decisions/0044-media-access-governance-read-media-save-to-cost.md), [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)).
 - Enforce and surface **no prompt logging by default**: the dashboard shows token
   counts and cost, **never** prompt/completion content; document the meter-not-content
   posture ([ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)).
+- Extend the **no-logging guarantee to generated media bytes**: the meter-not-content posture covers produced image/audio/video bytes exactly as it covers prompt/completion text — bytes are never logged or stored by the gateway (counts-not-content) ([ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)).
 - Reuse `packages/ui` where it is a thin usage view; this is **not** a second canvas
   and **not** the Phase-6 portal.
 - Surface the BYOK pressure-valve affordance ("switch to your own key — unlimited")
@@ -462,6 +467,7 @@ local, BYOK unchanged*, achieved by `5.C + 5.E + 5.K`.
   key vault/pools ([0013](../../decisions/0013-managed-key-vault-and-pools.md)),
   metering/quota/billing ([0014](../../decisions/0014-managed-metering-quota-and-billing.md)),
   data-handling/compliance ([0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)).
+- The **multimodal I/O design ADRs** the managed media-wiring bullets bind to: the seam shape ([0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), the `MediaStore`/`deInlineMedia`/retention substrate ([0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)), media-egress failover + SSRF + re-materialization ([0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md)), media access & spend governance ([0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)), and the async media-job LRO ([0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)); the host-wiring half is owned by **1.AH** ([deferred-tasks.md](../deferred-tasks.md) §1.AF P4).
 - The **device-flow auth** and tier model from the
   [portal API reference](../../reference/portal/api-reference.md) (the auth and
   licensing sections), reconciled in 5.A.
