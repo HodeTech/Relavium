@@ -78,6 +78,11 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
         ? Promise.resolve(parsed)
         : Promise.reject(new Error('replay fixture is not a GeminiImageResponse object'));
     },
+    // The Veo async arm (1.AH A4) has no recorded-fixture conformance scenario yet; the seam contract is
+    // covered by generative-seam.conformance.test.ts (stub) + the gemini.test.ts unit tests.
+    generateVideos: () =>
+      Promise.reject(new Error('veo not exercised by the chat conformance replay')),
+    pollVideo: () => Promise.reject(new Error('veo not exercised by the chat conformance replay')),
   };
   return createGeminiAdapter({ transport });
 };

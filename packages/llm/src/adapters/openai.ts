@@ -41,6 +41,8 @@ import {
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
+  decodeMediaJobId,
+  encodeMediaJobId,
   isAbortSignal,
 } from './shared.js';
 
@@ -1090,49 +1092,8 @@ async function openAiGenerateSpeech(
 }
 
 // --- Generative media: Sora video (ASYNC LRO, 1.AH A3, ADR-0045) -----------------------------
-
-/**
- * The opaque media-job id namespace+version. The engine persists this token in the durable
- * `media_job:submitted` event and re-delivers it to `pollMediaJob` on resume (ADR-0045 §3 re-attach, never
- * re-submit). The adapter has NO durable store and is rebuilt each process, so the vendor video id is
- * reversibly ENCODED into the token (base64url so any vendor id is `:`-split-safe) rather than held in an
- * in-memory `Map` — this IS the "vendor↔opaque map internal" of ADR-0045 §7, realized as a STATELESS
- * bijection. The token is adapter-minted + Relavium-namespaced (NOT the bare vendor op-name / poll-URL),
- * the engine never parses it (I1/[ADR-0011]), and the (non-secret) resource id is safe to persist. A future
- * format change bumps the version slot (`:2:`) without an engine or schema change. Managed mode (ADR-0015)
- * swaps the `pollMediaJob` body and keeps this prefix as the decode convention.
- */
-const SORA_JOB_PREFIX = 'rlv-mediajob:1:';
-
-/** Mint the opaque jobId from Sora's `Video.id` (base64url-encoded). Exported for the N4 opacity test. */
-export function encodeVideoJobId(vendorId: string): string {
-  return SORA_JOB_PREFIX + Buffer.from(vendorId, 'utf8').toString('base64url');
-}
-
-/**
- * Recover the vendor `Video.id` from an opaque jobId; `undefined` on any foreign/malformed token (never
- * throws — a throw from `pollMediaJob` is engine-classified as retryable and would loop forever on a
- * structurally-dead token). Exported for the opacity/round-trip test.
- */
-export function decodeVideoJobId(jobId: string): string | undefined {
-  if (!jobId.startsWith(SORA_JOB_PREFIX)) {
-    return undefined; // a non-Relavium id or a future rlv-mediajob:2: token
-  }
-  const payload = jobId.slice(SORA_JOB_PREFIX.length);
-  if (payload.length === 0) {
-    return undefined;
-  }
-  const decoded = Buffer.from(payload, 'base64url').toString('utf8');
-  // Round-trip validation: ONLY a canonically-minted token decodes back to itself. base64url decoding is
-  // lenient (it silently drops invalid chars), so a corrupted/non-canonical payload would otherwise decode
-  // to a wrong-but-non-empty vendor id and be forwarded to videos.retrieve. Re-encoding and comparing
-  // rejects every such token here, so pollMediaJob never polls a junk vendor id. Every real minted token
-  // round-trips exactly (encode is the inverse of decode).
-  if (decoded.length === 0 || encodeVideoJobId(decoded) !== jobId) {
-    return undefined;
-  }
-  return decoded;
-}
+// The opaque-jobId encode/decode bijection (ADR-0045 §7) is provider-agnostic and lives in ./shared.ts
+// (encodeMediaJobId/decodeMediaJobId), shared with the Gemini/Veo adapter (1.AH A4).
 
 /** Sora accepts only 4/8/12s clips — reject anything else loud (never round; cost-integrity, ADR-0045 §5). */
 const SORA_SECONDS: Readonly<Record<number, OpenAI.VideoSeconds>> = { 4: '4', 8: '8', 12: '12' };
@@ -1203,7 +1164,7 @@ async function openAiGenerateVideo(
       }),
     );
   }
-  return { jobId: encodeVideoJobId(video.id), raw: { id: video.id, status: video.status } };
+  return { jobId: encodeMediaJobId(video.id), raw: { id: video.id, status: video.status } };
 }
 
 /** Map a Sora `VideoCreateError` VALUE object (not a thrown `APIError`) to a normalized `LlmError`; a
@@ -1238,7 +1199,7 @@ async function pollMediaJobSora(
   providerId: ProviderId,
   signal: AbortSignalLike | undefined,
 ): Promise<MediaJobStatus> {
-  const vendorId = decodeVideoJobId(jobId);
+  const vendorId = decodeMediaJobId(jobId);
   if (vendorId === undefined) {
     return {
       state: 'failed',

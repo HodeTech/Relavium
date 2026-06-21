@@ -4,7 +4,12 @@ import { describe, expect, it } from 'vitest';
 
 import { UnsupportedCapabilityError } from '../errors.js';
 import type { CapabilityFlags, LlmRequest } from '../types.js';
-import { assertMediaCapabilities, isAbortSignal } from './shared.js';
+import {
+  assertMediaCapabilities,
+  decodeMediaJobId,
+  encodeMediaJobId,
+  isAbortSignal,
+} from './shared.js';
 
 const textOnly: LlmRequest = {
   model: 'm',
@@ -410,5 +415,31 @@ describe('isAbortSignal', () => {
         removeEventListener: () => undefined,
       }),
     ).toBe(false);
+  });
+});
+
+describe('encodeMediaJobId / decodeMediaJobId (opaque async-media-job bijection, ADR-0045 §7)', () => {
+  it('mints a Relavium-opaque token that is NOT the raw vendor id (round-trips via decode)', () => {
+    const jobId = encodeMediaJobId('video_abc123');
+    expect(jobId.startsWith('rlv-mediajob:1:')).toBe(true);
+    expect(jobId).not.toContain('video_abc123'); // base64url-encoded — the raw id never appears verbatim
+    expect(decodeMediaJobId(jobId)).toBe('video_abc123');
+  });
+
+  it('round-trips an operation-name-style vendor id (Veo) with no information loss', () => {
+    const opName = 'operations/abc-123_xyz';
+    expect(decodeMediaJobId(encodeMediaJobId(opName))).toBe(opName);
+  });
+
+  it('returns undefined for foreign/malformed tokens (never throws)', () => {
+    expect(
+      decodeMediaJobId('rlv-mediajob:2:' + Buffer.from('x').toString('base64url')),
+    ).toBeUndefined(); // future version
+    expect(decodeMediaJobId('vendor-op-7f3a')).toBeUndefined(); // non-Relavium
+    expect(decodeMediaJobId('')).toBeUndefined();
+    expect(decodeMediaJobId('rlv-mediajob:1:')).toBeUndefined(); // empty payload
+    // Round-trip validation: a right-prefix but NON-CANONICAL payload (trailing junk base64url drops) is
+    // rejected — it would otherwise decode to a wrong-but-non-empty vendor id and be polled.
+    expect(decodeMediaJobId(encodeMediaJobId('video_x') + '!')).toBeUndefined();
   });
 });

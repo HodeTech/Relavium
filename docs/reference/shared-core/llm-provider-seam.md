@@ -390,11 +390,14 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   (the engine resolves the per-model surface). The ASYNC `pollMediaJob` poll/checkpoint/resume/cancel
   loop is WIRED in the engine (Section D — `media_job:submitted` park, the derived `pendingMediaJobs`
   slot, re-attach-on-resume, a host-timer poll cadence, deadline→retryable-timeout,
-  cancel→abort→terminal sweep; failed→`content_filter`), and the **OpenAI/Sora** async adapter
-  implements it (`videos.create` → an opaque `jobId`, `pollMediaJob` → `videos.retrieve`/`downloadContent`,
-  1.AH A3) — the opaque jobId reversibly encodes the vendor id (`rlv-mediajob:1:<base64url(id)>`) so a
-  cold-process re-attach resolves it statelessly (ADR-0045 §7). The remaining work is **1.AH**: the
-  **Veo** async adapter (A4), the per-model `media_surface` host lookup, and verified generative pricing rows.
+  cancel→abort→terminal sweep; failed→`content_filter`), and the async adapters implement it — **OpenAI/Sora**
+  (`videos.create` → an opaque `jobId`, `pollMediaJob` → `videos.retrieve`/`downloadContent` → base64, 1.AH A3)
+  and **Gemini/Veo** (`models.generateVideos` → an operation, `pollMediaJob` → `operations.getVideosOperation`
+  → inline `videoBytes` base64 OR a re-hostable `url` source the engine de-inlines via `fetchMediaBytes`,
+  1.AH A4). The opaque jobId reversibly encodes the vendor id/op-name (`rlv-mediajob:1:<base64url(id)>`, the
+  shared `encodeMediaJobId`/`decodeMediaJobId`) so a cold-process re-attach resolves it statelessly (ADR-0045
+  §7). The remaining work is **1.AH host-wiring**: the per-model `media_surface` lookup, the `MediaUrlFetch`
+  re-host hook (a Veo `url` result needs it end-to-end), and verified generative pricing rows.
 
   ```ts
   // Seam shape (A5; ADR-0045) — behavior WIRED at 1.AG (sync generateMedia Section C, async poll loop Section D).

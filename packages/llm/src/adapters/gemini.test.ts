@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
+import type { AbortSignalLike } from '@relavium/shared';
+
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import { GeminiToolCallIds } from '../tool-normalizer.js';
+import { MediaGenResultSchema, MediaJobStatusSchema } from '../types.js';
 import type {
   LlmProvider,
   LlmRequest,
   MediaGenRequest,
   MediaGenResult,
+  MediaJobStatus,
   StreamChunk,
 } from '../types.js';
+import { encodeMediaJobId } from './shared.js';
 import {
   buildGeminiRequest,
   createGeminiAdapter,
@@ -23,6 +28,9 @@ import {
   type GeminiRequest,
   type GeminiResponse,
   type GeminiTransport,
+  type GeminiVideoOperation,
+  type GeminiVideoPoll,
+  type GeminiVideoRequest,
 } from './gemini.js';
 
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
@@ -33,12 +41,21 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return chunks;
 }
 
+/** The generative-endpoint transport methods stubbed to reject — spread into a text/image fake that never
+ *  calls the OTHER generative arms. A new transport method needs adding only here, not at every fake. */
+const unusedGenerative: Pick<GeminiTransport, 'generateImages' | 'generateVideos' | 'pollVideo'> = {
+  generateImages: () => Promise.reject(new Error('unused')),
+  generateVideos: () => Promise.reject(new Error('unused')),
+  pollVideo: () => Promise.reject(new Error('unused')),
+};
+
 /** A transport that returns a fixed response and captures the request it was handed. */
 function fakeTransport(
   response: GeminiResponse,
   stream: readonly GeminiResponse[] = [response],
 ): GeminiTransport & { lastRequest?: GeminiRequest } {
   const holder: GeminiTransport & { lastRequest?: GeminiRequest } = {
+    ...unusedGenerative, // text-fold tests never call the generative endpoints
     generate: (request) => {
       holder.lastRequest = request;
       return Promise.resolve(response);
@@ -54,9 +71,6 @@ function fakeTransport(
         })(),
       );
     },
-    // The text-fold tests never call generateImages; the dedicated generateMedia tests build their own
-    // image transport (fakeImageTransport). Reject loud if a text test ever reaches it.
-    generateImages: () => Promise.reject(new Error('fakeTransport.generateImages not configured')),
   };
   return holder;
 }
@@ -66,11 +80,46 @@ function fakeImageTransport(
   response: GeminiImageResponse,
 ): GeminiTransport & { lastImageRequest?: GeminiImageRequest } {
   const holder: GeminiTransport & { lastImageRequest?: GeminiImageRequest } = {
+    ...unusedGenerative,
     generate: () => Promise.reject(new Error('unused')),
     stream: () => Promise.reject(new Error('unused')),
     generateImages: (request) => {
       holder.lastImageRequest = request;
       return Promise.resolve(response);
+    },
+  };
+  return holder;
+}
+
+/** A transport whose `generateVideos`/`pollVideo` drive a Veo flow; other methods reject. `poll` may be a
+ *  single status or a sequence served by call index (pending → done). */
+function fakeVideoTransport(opts: {
+  operation?: GeminiVideoOperation;
+  poll?: GeminiVideoPoll | readonly GeminiVideoPoll[];
+}): GeminiTransport & {
+  lastVideoRequest?: GeminiVideoRequest;
+  lastPollSignal?: AbortSignalLike | undefined;
+} {
+  const polls = opts.poll === undefined ? [] : 'done' in opts.poll ? [opts.poll] : opts.poll;
+  let call = 0;
+  const holder: GeminiTransport & {
+    lastVideoRequest?: GeminiVideoRequest;
+    lastPollSignal?: AbortSignalLike | undefined;
+  } = {
+    ...unusedGenerative,
+    generate: () => Promise.reject(new Error('unused')),
+    stream: () => Promise.reject(new Error('unused')),
+    generateVideos: (request) => {
+      holder.lastVideoRequest = request;
+      return Promise.resolve(opts.operation ?? { name: 'operations/veo-1' });
+    },
+    pollVideo: (_operationName, _key, signal) => {
+      holder.lastPollSignal = signal;
+      const status = polls[Math.min(call, polls.length - 1)];
+      call += 1;
+      return status === undefined
+        ? Promise.reject(new Error('no poll status scripted'))
+        : Promise.resolve(status);
     },
   };
   return holder;
@@ -86,6 +135,19 @@ function genMedia(
   return (
     adapter.generateMedia?.(req, key) ??
     Promise.reject(new Error('adapter implements no generateMedia'))
+  );
+}
+
+/** Call the adapter's optional `pollMediaJob` via `?.()` (same unbound-method-safe pattern as genMedia). */
+function pollMedia(
+  adapter: LlmProvider,
+  jobId: string,
+  key: string,
+  signal?: AbortSignalLike,
+): Promise<MediaJobStatus> {
+  return (
+    adapter.pollMediaJob?.(jobId, key, signal) ??
+    Promise.reject(new Error('adapter implements no pollMediaJob'))
   );
 }
 
@@ -539,7 +601,7 @@ describe('Gemini adapter — generate / stream via injected transport', () => {
     const transport: GeminiTransport = {
       generate: () => Promise.reject(Object.assign(new Error(`rl: ${SECRET}`), { status: 429 })),
       stream: () => Promise.reject(new Error('unused')),
-      generateImages: () => Promise.reject(new Error('unused')),
+      ...unusedGenerative,
     };
     const adapter = createGeminiAdapter({ transport });
     let caught: unknown;
@@ -583,7 +645,7 @@ describe('Gemini adapter — generate / stream via injected transport', () => {
     const transport: GeminiTransport = {
       generate: () => Promise.reject(new Error('unused')),
       stream: () => Promise.reject(Object.assign(new Error('overloaded'), { status: 503 })),
-      generateImages: () => Promise.reject(new Error('unused')),
+      ...unusedGenerative,
     };
     const adapter = createGeminiAdapter({ transport });
     const chunks = await collect(adapter.stream(REQ, 'k'));
@@ -610,7 +672,7 @@ describe('Gemini adapter — remaining branches', () => {
             candidates: [{ content: { parts: [{ text: 'hi' }] }, finishReason: 'STOP' }],
           }),
         stream: () => Promise.reject(new Error('unused')),
-        generateImages: () => Promise.reject(new Error('unused')),
+        ...unusedGenerative,
       },
     });
     const result = await adapter.generate(REQ, 'k');
@@ -629,7 +691,7 @@ describe('Gemini adapter — remaining branches', () => {
               throw Object.assign(new Error('mid-stream'), { status: 500 });
             })(),
           ),
-        generateImages: () => Promise.reject(new Error('unused')),
+        ...unusedGenerative,
       },
     });
     const chunks = await collect(adapter.stream(REQ, 'k'));
@@ -920,6 +982,7 @@ describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
 
   it('surfaces a transport rejection as a classified LlmProviderError', async () => {
     const transport: GeminiTransport = {
+      ...unusedGenerative,
       generate: () => Promise.reject(new Error('unused')),
       stream: () => Promise.reject(new Error('unused')),
       generateImages: () => Promise.reject(Object.assign(new Error('overloaded'), { status: 503 })),
@@ -929,14 +992,151 @@ describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
     });
   });
 
-  it('rejects audio + video modalities with a typed capability error (image is the only sync surface)', async () => {
+  it('rejects audio modality with a typed capability error (image is Imagen; video is the async Veo arm)', async () => {
     const transport = fakeImageTransport({ generatedImages: [] });
     const adapter = createGeminiAdapter({ transport });
     await expect(genMedia(adapter, { ...IMG_REQ, modality: 'audio' }, 'k')).rejects.toBeInstanceOf(
       UnsupportedCapabilityError,
     );
-    await expect(genMedia(adapter, { ...IMG_REQ, modality: 'video' }, 'k')).rejects.toBeInstanceOf(
-      UnsupportedCapabilityError,
+  });
+});
+
+describe('Gemini adapter — generateMedia/pollMediaJob (Veo video, async LRO, 1.AH A4)', () => {
+  const VIDEO_REQ: MediaGenRequest = {
+    model: 'veo-3.0-generate-001',
+    prompt: 'a wave breaking on a beach',
+    modality: 'video',
+    durationSeconds: 6,
+  };
+  const B64 = 'dmVvLWJ5dGVz'; // "veo-bytes"
+
+  it('generateMedia (video) ALWAYS returns an opaque jobId from the operation name (no media, raw byte-free)', async () => {
+    const transport = fakeVideoTransport({ operation: { name: 'operations/veo-42' } });
+    const result = await genMedia(createGeminiAdapter({ transport }), VIDEO_REQ, 'k');
+    expect(result.media).toBeUndefined(); // ASYNC arm
+    expect(result.jobId).toBe(encodeMediaJobId('operations/veo-42'));
+    expect(result.jobId).not.toContain('operations/veo-42'); // base64url-opaque
+    expect(MediaGenResultSchema.safeParse(result).success).toBe(true);
+    expect(result.raw).toEqual({ name: 'operations/veo-42' }); // no bytes in raw (I3)
+    // Single-artifact pin + durationSeconds threaded into the typed config.
+    expect(transport.lastVideoRequest?.config['numberOfVideos']).toBe(1);
+    expect(transport.lastVideoRequest?.config['durationSeconds']).toBe(6);
+    expect(transport.lastVideoRequest?.prompt).toBe(VIDEO_REQ.prompt);
+  });
+
+  it('generateMedia (video) strips a caller-supplied httpOptions from the Veo config (SSRF guard)', async () => {
+    const transport = fakeVideoTransport({ operation: { name: 'operations/veo-42' } });
+    await genMedia(
+      createGeminiAdapter({ transport }),
+      {
+        ...VIDEO_REQ,
+        providerOptions: {
+          httpOptions: { baseUrl: 'https://attacker.example' },
+          aspectRatio: '16:9',
+        },
+      },
+      'k',
     );
+    expect(transport.lastVideoRequest?.config['httpOptions']).toBeUndefined();
+    expect(transport.lastVideoRequest?.config['aspectRatio']).toBe('16:9'); // benign knob survives
+  });
+
+  it('generateMedia (video) maps a missing operation name to a typed bad_request', async () => {
+    const transport = fakeVideoTransport({ operation: { name: '' } });
+    await expect(
+      genMedia(createGeminiAdapter({ transport }), VIDEO_REQ, 'k'),
+    ).rejects.toMatchObject({
+      llmError: { kind: 'bad_request' },
+    });
+  });
+
+  it('pollMediaJob maps an in-progress operation (done:false) to pending', async () => {
+    const transport = fakeVideoTransport({ poll: { done: false } });
+    expect(
+      await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k'),
+    ).toEqual({
+      state: 'pending',
+    });
+  });
+
+  it('pollMediaJob delivers inline videoBytes as a base64 video/mp4 media part (done)', async () => {
+    const transport = fakeVideoTransport({
+      poll: { done: true, video: { videoBytes: B64, mimeType: 'video/mp4' } },
+    });
+    const status = await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k');
+    expect(MediaJobStatusSchema.safeParse(status).success).toBe(true);
+    expect(status).toEqual({
+      state: 'done',
+      media: { type: 'media', mimeType: 'video/mp4', source: { kind: 'base64', data: B64 } },
+    });
+  });
+
+  it('pollMediaJob delivers a uri-only result as a re-hostable url media source (engine de-inlines it)', async () => {
+    const transport = fakeVideoTransport({
+      poll: { done: true, video: { uri: 'https://generativelanguage.googleapis.com/v1/files/x' } },
+    });
+    const status = await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k');
+    expect(status).toEqual({
+      state: 'done',
+      media: {
+        type: 'media',
+        mimeType: 'video/mp4',
+        source: { kind: 'url', url: 'https://generativelanguage.googleapis.com/v1/files/x' },
+      },
+    });
+  });
+
+  it('pollMediaJob maps a safety-filtered completion (raiFilteredCount > 0, no video) to content_filter', async () => {
+    const transport = fakeVideoTransport({ poll: { done: true, raiFilteredCount: 1 } });
+    expect(
+      await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k'),
+    ).toMatchObject({ state: 'failed', error: { kind: 'content_filter' } });
+  });
+
+  it('pollMediaJob maps an operation error to a fatal unknown failed', async () => {
+    const transport = fakeVideoTransport({ poll: { done: true, error: { message: 'quota' } } });
+    expect(
+      await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k'),
+    ).toMatchObject({ state: 'failed', error: { kind: 'unknown' } });
+  });
+
+  it('pollMediaJob maps a completion with no video/error/rai to bad_request', async () => {
+    const transport = fakeVideoTransport({ poll: { done: true } });
+    expect(
+      await pollMedia(createGeminiAdapter({ transport }), encodeMediaJobId('op'), 'k'),
+    ).toMatchObject({ state: 'failed', error: { kind: 'bad_request' } });
+  });
+
+  it('pollMediaJob returns a FATAL failed (not a throw) for an unrecognized jobId token', async () => {
+    const transport = fakeVideoTransport({ poll: { done: false } });
+    const status = await pollMedia(createGeminiAdapter({ transport }), 'not-a-relavium-token', 'k');
+    expect(status).toMatchObject({ state: 'failed', error: { kind: 'bad_request' } });
+    expect(transport.lastPollSignal).toBeUndefined(); // never reached the transport — decode failed first
+  });
+
+  it('pollMediaJob threads the AbortSignal into the Veo poll', async () => {
+    const transport = fakeVideoTransport({ poll: { done: false } });
+    const controller = new AbortController();
+    await pollMedia(
+      createGeminiAdapter({ transport }),
+      encodeMediaJobId('op'),
+      'k',
+      controller.signal,
+    );
+    expect(transport.lastPollSignal).toBe(controller.signal);
+  });
+
+  it('surfaces a generateVideos transport rejection as a classified LlmProviderError', async () => {
+    const transport: GeminiTransport = {
+      ...unusedGenerative,
+      generate: () => Promise.reject(new Error('unused')),
+      stream: () => Promise.reject(new Error('unused')),
+      generateVideos: () => Promise.reject(Object.assign(new Error('overloaded'), { status: 503 })),
+    };
+    await expect(
+      genMedia(createGeminiAdapter({ transport }), VIDEO_REQ, 'k'),
+    ).rejects.toMatchObject({
+      llmError: { kind: 'overloaded' },
+    });
   });
 });
