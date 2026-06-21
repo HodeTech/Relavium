@@ -164,6 +164,13 @@ forking the local SQLite model ([ADR-0005](../../decisions/0005-sqlite-drizzle-l
   `quotas`/`budgets`, `audit_events`, and `triggers` (webhook/schedule registry).
 - Add `org_id` to every multi-tenant row and enforce **Postgres Row-Level Security**
   so tenancy isolation lives at the data layer, not in app code alone.
+- Bring the `media_objects` / `media_references` tables (canonical DDL in
+  [database-schema.md](../../reference/desktop/database-schema.md), [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md))
+  under tenancy: add `org_id`, enforce RLS on both, and scope the object-storage
+  retention sweep per `org_id`. Decide the **cross-org CAS dedup** boundary — content-addressed
+  bytes may be physically shared, but a `media_reference` (and any count/byte usage signal) is
+  never visible across `org_id`, consistent with managed-mode counts-not-content
+  ([ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)).
 - Build the migration toolchain validated against **both** SQLite and Postgres in
   CI; document which dialect each migration targets.
 - Define the opt-in local→cloud sync mapping (metadata only — `runId`,
@@ -215,6 +222,7 @@ The Hono-on-Bun API that enqueues — never re-implements — execution.
   worker pools; add the **lint rule that bans serializing any provider key into a
   job payload**.
 - Add a Redis sliding-window rate limiter and per-org concurrency caps.
+- Add the media byte-delivery endpoint `GET /media/{handle}` (with `?range` / HTTP `Range`): stream stored media from the object-store `MediaStore`, gated by the same `org_id`-scoped scope-set authz and byte-range bound as the engine's `read_media` gate ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1 — the cloud host of the deferred `MediaReadAccess` impl + session-scope population). The browser consumer (a portal preview) is wired in 6.J; no media bytes ever reach a job payload or an SSE frame.
 - Enforce auth + `org_id` scoping on every route (full auth lands in 6.G; stub the
   identity middleware here so routes are tenancy-scoped from day one).
 
@@ -259,6 +267,7 @@ Worker processes that run the unmodified engine in isolation with cloud key hand
 - Wire checkpoint/resume to Postgres so a paused (human-gate) run survives worker
   recycling and resumes on any worker.
 - Add per-worker resource limits and graceful drain for deploys.
+- Implement the **object-storage `MediaStore`** variant (the cloud twin of the local CAS): content-addressed `put`/`readRange` over the object store provisioned in 6.A, plus a **BullMQ periodic sweep** that runs the engine's terminal-state + grace-window reclaim against `media_references`/`media_objects` (the cloud owner of the host GC obligation — the CAS-orphan and clean-terminal-reclaim sweeps deferred from 1.AF), per [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md). The byte-egress failover + re-materialization (`resolveForEgress`) wired in the worker is the cloud `resolveForEgress` host of [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md).
 
 **Acceptance:** a multi-node workflow completes on the worker pool using the
 encrypted key store with no key in any payload/log; a run paused at a human gate
@@ -316,6 +325,7 @@ Org-level cost governance built on usage telemetry — the commercial spine of P
 **Tasks:**
 - Aggregate per-node cost (`cost:updated`) into org-level usage rolled up by model /
   workflow / agent over date ranges; expose query + CSV export.
+- Persist **durable realized cost for a failed/cancelled paid media job**: snapshot the cumulative spend onto the terminal event so a billed-but-failed/cancelled async media-job LRO is reconstructable from the durable log, not only the live `cost:updated` stream (the deferred [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §5 durability obligation). Pricing stays from Relavium's own table; a generative model with no verified rate folds at 0 cost (never a fabricated rate).
 - Implement budgets with **80% / 100% alert thresholds** and enforcement actions —
   **warn / pause / hard-stop** — per the
   [quota area](../../reference/portal/api-reference.md#intended-api-surface) (Pro+).
@@ -346,6 +356,7 @@ The browser control plane — **not** a second execution engine or a new canvas.
 - Implement **run-replay URLs**: open a run by id, stream live `RunEvent`s over SSE
   (6.E), or replay a finished run from durable state — the same per-node status map
   and cost waterfall the desktop renders.
+- *(lower priority · record-only)* Progressive media-preview over portal SSE — the reserved streaming triad (`media_start`/`media_delta`/`media_end`) + `partialRef` partial-write semantics ([ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4; the reserved `partialRef` in [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)). Deferred: it touches the frozen `StreamChunk` seam and needs an output-side de-inline hook, so it lands only if a portal progressive-preview surface is genuinely demanded; a media-output turn is typically terminal/single-shot.
 - Wire usage/quota dashboards, the gate inbox (decide from the browser), and
   org-level cost aggregation + CSV export to the 6.I/6.D APIs.
 - Keep the browser out of the data path: it **never** calls LLM providers directly —
@@ -364,6 +375,7 @@ The Enterprise tier on top of the MVP — gated by tier, additive to the portal.
   email+password); device flow routes through the corporate IdP.
 - Team workspaces + **RBAC** (viewer / runner / editor / admin), invites, and a
   shared agent/template library scoped per org.
+- Implement the reserved **`{ kind: 'workspace', id }` `read_media` authz scope** — the additive scope kind that lets a shared-asset / team-workspace consumer read media across sessions within an org (its first real consumer is the workspace feature above; no handle-model migration), per [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) (which shipped the `session` kind at 1.AF and reserved `workspace`).
 - **SOC 2-style immutable audit log** (`audit_events`): who ran what, who fulfilled
   which gate, membership/role changes; filter + CSV/JSON export for SIEM.
 - Enforced quota and retention policies at the Enterprise tier; design hooks (not

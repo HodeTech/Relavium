@@ -382,16 +382,22 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   `MediaGenRequest` / `MediaGenResult` / `MediaJobStatus`: a sync generator resolves `{ media }`;
   an async one (Sora, Veo) resolves a **Relavium-opaque** `jobId` (no vendor operation name
   crosses the seam); `failed` carries the existing classified `LlmError` (content-policy →
-  `content_filter`). **Wired (1.AG Sections C/D):** `generateMedia` SYNC — the OpenAI adapter
-  implements gpt-image-1 image generation (`images.generate` → base64 `media`); a `media_surface:
-  'generative'` agent node routes here instead of the inline `generate()`/`stream()` (the engine
-  resolves the per-model surface). The ASYNC `pollMediaJob` poll/checkpoint/resume/cancel loop is
-  WIRED in the engine (Section D — `media_job:submitted` park, the derived `pendingMediaJobs` slot,
-  re-attach-on-resume, a host-timer poll cadence, deadline→retryable-timeout, cancel→abort→terminal
-  sweep; failed→`content_filter`), proven against a conforming stub async provider. The remaining
-  work is **1.AH host-wiring**: the Sora/Veo `generateMedia(→jobId)`/`pollMediaJob` adapters,
-  OpenAI-TTS + Gemini-Imagen sync adapters, the per-model `media_surface` host lookup, and verified
-  generative pricing rows.
+  `content_filter`). **Wired (1.AG Sections C/D + 1.AH adapters):** `generateMedia` SYNC — the OpenAI
+  adapter implements gpt-image-1 image generation (`images.generate` → base64 `media`) and
+  **OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME, 1.AH A1), and the
+  **Gemini-Imagen** adapter implements image generation (`generateImages` → base64 `media`, 1.AH A2); a
+  `media_surface: 'generative'` agent node routes here instead of the inline `generate()`/`stream()`
+  (the engine resolves the per-model surface). The ASYNC `pollMediaJob` poll/checkpoint/resume/cancel
+  loop is WIRED in the engine (Section D — `media_job:submitted` park, the derived `pendingMediaJobs`
+  slot, re-attach-on-resume, a host-timer poll cadence, deadline→retryable-timeout,
+  cancel→abort→terminal sweep; failed→`content_filter`), and the async adapters implement it — **OpenAI/Sora**
+  (`videos.create` → an opaque `jobId`, `pollMediaJob` → `videos.retrieve`/`downloadContent` → base64, 1.AH A3)
+  and **Gemini/Veo** (`models.generateVideos` → an operation, `pollMediaJob` → `operations.getVideosOperation`
+  → inline `videoBytes` base64 OR a re-hostable `url` source the engine de-inlines via `fetchMediaBytes`,
+  1.AH A4). The opaque jobId reversibly encodes the vendor id/op-name (`rlv-mediajob:1:<base64url(id)>`, the
+  shared `encodeMediaJobId`/`decodeMediaJobId`) so a cold-process re-attach resolves it statelessly (ADR-0045
+  §7). The remaining work is **1.AH host-wiring**: the per-model `media_surface` lookup, the `MediaUrlFetch`
+  re-host hook (a Veo `url` result needs it end-to-end), and verified generative pricing rows.
 
   ```ts
   // Seam shape (A5; ADR-0045) — behavior WIRED at 1.AG (sync generateMedia Section C, async poll loop Section D).
@@ -499,8 +505,10 @@ discriminated union:
 Tool-argument JSON deltas are concatenated into `argsJsonDelta` across
 `tool_call_delta` chunks and **parsed once at `tool_call_end`**. The final
 `stop` chunk always carries `stopReason` + `usage`. The `media_start/delta/end`
-triad is part of the frozen union but **emitted by no adapter at 1.AD** — media
-output wiring is 1.AG/1.AH, consistent with the all-false `media` matrices.
+triad is part of the frozen union but **emitted by no adapter** — non-streaming
+media output landed at **1.AG** (inline via `generate()` + the generative
+endpoint, [ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)); the
+**streaming triad is deferred to 1.AH** (ADR-0046 §4).
 
 ### 5. Stop reasons
 

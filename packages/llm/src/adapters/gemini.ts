@@ -1,11 +1,12 @@
-import { GoogleGenAI } from '@google/genai';
+import { GenerateVideosOperation, GoogleGenAI } from '@google/genai';
 
-import { mediaModalityOf } from '@relavium/shared';
-import type { ContentPart, OutputModality, StopReason } from '@relavium/shared';
+import { MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
+import type { AbortSignalLike, ContentPart, OutputModality, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer.js';
+import { UnsupportedCapabilityError } from '../errors.js';
 import type {
   CapabilityFlags,
   LlmError,
@@ -13,6 +14,9 @@ import type {
   LlmProvider,
   LlmRequest,
   LlmResult,
+  MediaGenRequest,
+  MediaGenResult,
+  MediaJobStatus,
   StreamChunk,
   ToolChoice,
   ToolDef,
@@ -23,6 +27,8 @@ import {
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
+  decodeMediaJobId,
+  encodeMediaJobId,
   isAbortSignal,
 } from './shared.js';
 
@@ -68,6 +74,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
+ * The canonical BARE media MIME (no RFC-2045 parameters) from a vendor-reported type, validated against the
+ * shared {@link MediaMimeTypeSchema}; returns `''` when the value is absent, parameter-only, or illegal —
+ * including a CR/LF-injected MIME that a `split(';')` alone would pass through (the chars fail the regex).
+ * The vendor MIME is the de-facto guard: the production de-inline path (`MediaStore.put` /
+ * `media_objects.mimeType`) runs NO MIME regex, so callers MUST fall back (`'' → default`) or skip the part
+ * rather than persist an unvalidated MIME. Shared by all three Gemini media-MIME sites (inline media-out,
+ * Imagen image-out, Veo video-out).
+ */
+function bareMimeType(raw: string | undefined): string {
+  const bare = (raw ?? '').split(';')[0]?.trim() ?? '';
+  return MediaMimeTypeSchema.safeParse(bare).success ? bare : '';
+}
+
+/**
  * True when the prompt was actually blocked. Gemini's `blockReason` enum includes the
  * `BLOCKED_REASON_UNSPECIFIED` sentinel that does **not** mean "blocked" — treat only a real,
  * specified reason as a content-filter block.
@@ -77,12 +97,13 @@ function isPromptBlocked(promptFeedback: { blockReason?: string } | undefined): 
   return reason !== undefined && reason !== 'BLOCKED_REASON_UNSPECIFIED';
 }
 
-/** Remove transport-level keys that the SDK exposes for URL/header override — SSRF guard. */
+/** Remove transport-level keys the SDK exposes for URL/header/cancellation override — SSRF + signal guard.
+ *  `httpOptions.baseUrl`/`headers` would redirect egress (and the API key) to an arbitrary host; an
+ *  author-supplied `abortSignal` is the engine's to set (from `req.signal`), never `providerOptions`. */
 function stripTransportKeys(opts: Record<string, unknown>): Record<string, unknown> {
   const rest: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(opts)) {
-    // `httpOptions.baseUrl`/`headers` would redirect egress (and the API key) to an arbitrary host.
-    if (k !== 'httpOptions') {
+    if (k !== 'httpOptions' && k !== 'abortSignal') {
       rest[k] = v;
     }
   }
@@ -129,6 +150,55 @@ export interface GeminiRequest {
   config: Record<string, unknown>;
 }
 
+/** The lowered Imagen request the transport sends (1.AH A2; a plain object the SDK accepts). */
+export interface GeminiImageRequest {
+  model: string;
+  prompt: string;
+  config: Record<string, unknown>;
+}
+
+/**
+ * The minimal slice of the Gemini Imagen response the fold consumes — a hand-rolled structural subset so
+ * no vendor type crosses the seam (parity with {@link GeminiResponse}). `imageBytes` is base64;
+ * `raiFilteredReason` is set (with no `image`) when a candidate is dropped by the safety filter.
+ */
+export interface GeminiImageResponse {
+  generatedImages?: Array<{
+    image?: { imageBytes?: string; mimeType?: string };
+    raiFilteredReason?: string;
+  }>;
+}
+
+/** The lowered Veo request the transport sends (1.AH A4; a plain object the SDK accepts). */
+export interface GeminiVideoRequest {
+  model: string;
+  prompt: string;
+  config: Record<string, unknown>;
+}
+
+/** The minimal slice of a Veo `generateVideos` operation the adapter mints a jobId from (1.AH A4): just
+ *  the server-assigned operation name. No vendor type crosses the seam. */
+export interface GeminiVideoOperation {
+  name?: string | undefined;
+}
+
+/**
+ * One poll of a Veo operation, normalized to a vendor-type-free subset (1.AH A4). `videoBytes` is base64
+ * (inline); `uri` is a re-hostable provider URL the engine de-inlines via the one SSRF-validated
+ * `fetchMediaBytes` (ADR-0045 §7 — never a second fetch site); `raiFilteredCount > 0` signals a safety
+ * block (no video, no error). `error` is the Google operation error, normalized to a message.
+ */
+export interface GeminiVideoPoll {
+  done: boolean;
+  error?: { message?: string | undefined };
+  video?: {
+    videoBytes?: string | undefined;
+    uri?: string | undefined;
+    mimeType?: string | undefined;
+  };
+  raiFilteredCount?: number | undefined;
+}
+
 /**
  * The injected network seam. The default wraps `@google/genai`; the conformance harness injects a
  * replay implementation. Keeping it here lets the one adapter run on every host (ADR-0018) and lets
@@ -137,6 +207,19 @@ export interface GeminiRequest {
 export interface GeminiTransport {
   generate(request: GeminiRequest, key: string): Promise<GeminiResponse>;
   stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>>;
+  /**
+   * Imagen generative image endpoint (1.AH A2). The default wraps `ai.models.generateImages`; the
+   * conformance harness injects a replay. Required so a transport honestly declares the generative
+   * surface it services (sync image is Gemini's only Phase-1 generative arm; Veo video is 1.AH A4).
+   */
+  generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse>;
+  /**
+   * Veo async video LRO (1.AH A4): `generateVideos` mints an operation, `pollVideo` re-polls it by name
+   * (the engine re-delivers the persisted opaque jobId on resume — re-attach, ADR-0045 §3). The default
+   * wraps `ai.models.generateVideos` / `ai.operations.getVideosOperation`; the harness injects a replay.
+   */
+  generateVideos(request: GeminiVideoRequest, key: string): Promise<GeminiVideoOperation>;
+  pollVideo(operationName: string, key: string, signal?: AbortSignalLike): Promise<GeminiVideoPoll>;
 }
 
 // --- Normalization: Gemini wire → canonical --------------------------------------------------
@@ -241,11 +324,11 @@ function mapGeminiPart(part: GeminiPart, ids: GeminiToolCallIds): ContentPart | 
     // (1.AG/ADR-0046). Emit an IN-FLIGHT media part; the engine de-inlines it to a handle at #emitDurable
     // (1.AF). No vendor shape escapes (I1) — only the normalized media ContentPart. Gemini AUDIO output carries
     // a PARAMETERIZED mime (e.g. `audio/L16;codec=pcm;rate=24000`), but the seam's MediaMimeTypeSchema admits
-    // only a BARE type/subtype — strip parameters to the bare prefix (the modality derives from it; the durable
-    // media part cannot carry parameters anyway). A pathological `;…`-only value strips to empty and is SKIPPED
-    // (returns undefined — still consumed, never re-interpreted as text), symmetric with the empty-data skip,
-    // never emitted as a doomed `application/octet-stream` that would HARD-FAIL the de-inline.
-    const bareMime = inline.mimeType.split(';')[0]?.trim() ?? '';
+    // only a BARE type/subtype — bareMimeType strips parameters + validates (the modality derives from it; the
+    // durable part cannot carry parameters). A pathological `;…`-only OR illegal (CR/LF) value strips/validates
+    // to empty and is SKIPPED (returns undefined — still consumed, never re-interpreted as text), symmetric with
+    // the empty-data skip, never emitted as a doomed part that would HARD-FAIL the de-inline.
+    const bareMime = bareMimeType(inline.mimeType);
     return bareMime.length > 0
       ? { type: 'media', mimeType: bareMime, source: { kind: 'base64', data: inline.data } }
       : undefined;
@@ -466,6 +549,53 @@ const sdkTransport: GeminiTransport = {
     const client = new GoogleGenAI({ apiKey: key });
     return client.models.generateContentStream(request);
   },
+  async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
+    const client = new GoogleGenAI({ apiKey: key });
+    return client.models.generateImages(request);
+  },
+  async generateVideos(request: GeminiVideoRequest, key: string): Promise<GeminiVideoOperation> {
+    const client = new GoogleGenAI({ apiKey: key });
+    const op = await client.models.generateVideos(request);
+    return { name: op.name };
+  },
+  async pollVideo(
+    operationName: string,
+    key: string,
+    signal?: AbortSignalLike,
+  ): Promise<GeminiVideoPoll> {
+    const client = new GoogleGenAI({ apiKey: key });
+    // getVideosOperation reads ONLY operation.name (verified in the SDK), so a fresh operation carrying
+    // just the persisted name re-attaches across a process restart with no in-memory handle (ADR-0045 §3).
+    const operation = new GenerateVideosOperation();
+    operation.name = operationName;
+    const op = await client.operations.getVideosOperation({
+      operation,
+      ...(isAbortSignal(signal) ? { config: { abortSignal: signal } } : {}),
+    });
+    if (op.done !== true) {
+      return { done: false };
+    }
+    if (op.error !== undefined && op.error !== null) {
+      const message = op.error['message'];
+      return { done: true, error: { message: typeof message === 'string' ? message : undefined } };
+    }
+    const video = op.response?.generatedVideos?.[0]?.video;
+    return {
+      done: true,
+      ...(video === undefined
+        ? {}
+        : {
+            video: {
+              videoBytes: video.videoBytes,
+              uri: video.uri,
+              mimeType: video.mimeType,
+            },
+          }),
+      ...(op.response?.raiMediaFilteredCount === undefined
+        ? {}
+        : { raiFilteredCount: op.response.raiMediaFilteredCount }),
+    };
+  },
 };
 /* v8 ignore stop */
 
@@ -612,6 +742,217 @@ async function* streamChunks(
   yield { type: 'stop', stopReason, usage: state.usage };
 }
 
+// --- Generative media (Imagen, sync) ---------------------------------------------------------
+
+/**
+ * Imagen sync image generation (1.AH A2) — mirrors the OpenAI image arm: ONE artifact per call, base64
+ * in flight (the engine de-inlines it to a `media://` handle at the durable boundary — I3). `count > 1`
+ * is rejected loud rather than billing N and dropping N-1 (a multi-image `MediaGenResult` is a deferred
+ * seam amend). A safety-filtered candidate (`raiFilteredReason`, no `image`) maps to `content_filter`,
+ * reusing the one failure vocabulary instead of a generic empty-bytes error. `numberOfImages` is pinned
+ * to 1 AFTER any `providerOptions` spread so an author-supplied count can't smuggle past the guard.
+ *
+ * Taxonomy note: only the IN-BODY safety channel (`raiFilteredReason` on a 200) maps to `content_filter`.
+ * An HTTP-level Imagen safety rejection (a moderation 4xx) routes through `geminiErrorToLlmError` →
+ * `kindFromHttpStatus` and normalizes to `bad_request` — Gemini's `ApiError` carries no structured
+ * content-policy code (unlike OpenAI's `isContentPolicyCode`), so a status-only block has no reliable
+ * content-policy signal to key on; message-sniffing would be fragile. The OpenAI sibling can map both
+ * paths; this is a documented, behaviorally-inert divergence (both kinds are fatal/non-retryable).
+ */
+async function geminiGenerateImage(
+  transport: GeminiTransport,
+  req: MediaGenRequest,
+  key: string,
+): Promise<MediaGenResult> {
+  if (req.count !== undefined && req.count > 1) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: `Gemini image generateMedia delivers a single image; count ${String(req.count)} > 1 is not supported on the SYNC seam`,
+      }),
+    );
+  }
+  let response: GeminiImageResponse;
+  try {
+    response = await transport.generateImages(
+      {
+        model: req.model,
+        prompt: req.prompt,
+        // stripTransportKeys: a caller-supplied httpOptions.baseUrl would redirect egress + the API key to
+        // an arbitrary host (SSRF) — strip it before the spread, exactly as the generate() path does.
+        // numberOfImages pinned AFTER the spread (the single-artifact seam); abortSignal threaded so a run
+        // cancel reaches the in-flight Imagen call (parity with the generate() path).
+        config: {
+          ...stripTransportKeys(req.providerOptions ?? {}),
+          numberOfImages: 1,
+          ...(isAbortSignal(req.signal) ? { abortSignal: req.signal } : {}),
+        },
+      },
+      key,
+    );
+  } catch (err) {
+    throw new LlmProviderError(geminiErrorToLlmError(err));
+  }
+  const first = response.generatedImages?.[0];
+  const b64 = first?.image?.imageBytes;
+  if (b64 === undefined || b64.length === 0) {
+    // A dropped candidate carries the RAI reason but no bytes — surface it as content_filter, not the
+    // generic no-data path below (which is a genuine provider-contract violation).
+    if (first?.raiFilteredReason !== undefined && first.raiFilteredReason.length > 0) {
+      throw new LlmProviderError(
+        makeLlmError({
+          provider: PROVIDER,
+          kind: 'content_filter',
+          message: `Gemini image generation was filtered: ${first.raiFilteredReason}`,
+        }),
+      );
+    }
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: 'Gemini image generation returned no base64 image data',
+      }),
+    );
+  }
+  // The vendor reports the ACTUAL bytes' MIME; bareMimeType strips `;`-parameters + validates (the
+  // production de-inline path runs no MIME regex), defaulting to png (Imagen's default) on an absent/illegal
+  // value. (`first?.` only narrows the type — the non-empty-b64 guard above already proves `first` exists.)
+  const mimeType = bareMimeType(first?.image?.mimeType) || 'image/png';
+  return {
+    media: { type: 'media', mimeType, source: { kind: 'base64', data: b64 } },
+    raw: response,
+  };
+}
+
+// --- Generative media: Veo video (ASYNC LRO, 1.AH A4, ADR-0045) ------------------------------
+
+/**
+ * Veo async video generation (1.AH A4) — `generateVideos` mints an operation; the adapter ALWAYS returns
+ * an opaque `{ jobId }` (encoding the operation name) the engine polls, never `{ media }` (even if Veo
+ * somehow completed instantly — completion is the poll loop's job, ADR-0045 §3). `numberOfVideos` is
+ * pinned to 1 AFTER the stripTransportKeys spread (single-artifact seam + SSRF guard, the A2 lesson);
+ * `durationSeconds` rides the typed config. `raw` carries only the non-byte operation name.
+ */
+async function geminiGenerateVideo(
+  transport: GeminiTransport,
+  req: MediaGenRequest,
+  key: string,
+): Promise<MediaGenResult> {
+  let op: GeminiVideoOperation;
+  try {
+    op = await transport.generateVideos(
+      {
+        model: req.model,
+        prompt: req.prompt,
+        config: {
+          ...stripTransportKeys(req.providerOptions ?? {}),
+          numberOfVideos: 1,
+          ...(req.durationSeconds === undefined ? {} : { durationSeconds: req.durationSeconds }),
+          ...(isAbortSignal(req.signal) ? { abortSignal: req.signal } : {}),
+        },
+      },
+      key,
+    );
+  } catch (err) {
+    throw new LlmProviderError(geminiErrorToLlmError(err));
+  }
+  if (!op.name) {
+    // `!op.name` covers undefined, a runtime null (the API may null an operation name), and an empty string.
+    throw new LlmProviderError(
+      makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: 'Veo generateVideos returned no operation name',
+      }),
+    );
+  }
+  return { jobId: encodeMediaJobId(op.name), raw: { name: op.name } };
+}
+
+/**
+ * Poll one Veo job by its opaque jobId (ADR-0045 §3). Decode → `pollVideo`; on completion deliver the
+ * video as base64 (if Veo returned inline `videoBytes`) or as a re-hostable `url` source the engine
+ * de-inlines via the single SSRF-validated `fetchMediaBytes` (ADR-0045 §7 — never a second fetch site). A
+ * safety block (`raiFilteredCount > 0`, no video) maps to `content_filter`; an operation error to the
+ * fatal `unknown`. A malformed jobId returns a FATAL `failed` (not a throw — a throw is engine-classified
+ * retryable and would loop on a structurally-dead token).
+ */
+async function geminiPollVideo(
+  transport: GeminiTransport,
+  jobId: string,
+  key: string,
+  signal: AbortSignalLike | undefined,
+): Promise<MediaJobStatus> {
+  const operationName = decodeMediaJobId(jobId);
+  if (operationName === undefined) {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: PROVIDER,
+        kind: 'bad_request',
+        message: 'unrecognized Veo media job token',
+      }),
+    };
+  }
+  let poll: GeminiVideoPoll;
+  try {
+    poll = await transport.pollVideo(operationName, key, signal);
+  } catch (err) {
+    throw new LlmProviderError(geminiErrorToLlmError(err));
+  }
+  if (!poll.done) {
+    return { state: 'pending' };
+  }
+  if (poll.error) {
+    // Truthy guard (not `!== undefined`): defends against a null error from a deviating transport before
+    // the `poll.error.message` read below.
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: PROVIDER,
+        kind: 'unknown',
+        message: poll.error.message ?? 'Veo video job failed',
+      }),
+    };
+  }
+  const video = poll.video;
+  // bareMimeType strips `;`-parameters + validates the vendor MIME, defaulting to video/mp4 — same shared
+  // helper as the inline + Imagen arms.
+  const mimeType = bareMimeType(video?.mimeType) || 'video/mp4';
+  if (video?.videoBytes !== undefined && video.videoBytes.length > 0) {
+    return {
+      state: 'done',
+      media: { type: 'media', mimeType, source: { kind: 'base64', data: video.videoBytes } },
+    };
+  }
+  if (video?.uri !== undefined && video.uri.length > 0) {
+    return {
+      state: 'done',
+      media: { type: 'media', mimeType, source: { kind: 'url', url: video.uri } },
+    };
+  }
+  if ((poll.raiFilteredCount ?? 0) > 0) {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: PROVIDER,
+        kind: 'content_filter',
+        message: `Veo filtered ${String(poll.raiFilteredCount)} video(s) by safety policy`,
+      }),
+    };
+  }
+  return {
+    state: 'failed',
+    error: makeLlmError({
+      provider: PROVIDER,
+      kind: 'bad_request',
+      message: 'Veo completed with no video output',
+    }),
+  };
+}
+
 // --- The adapter -----------------------------------------------------------------------------
 
 /** Dependencies the conformance replayer / tests inject (the network transport). */
@@ -656,6 +997,35 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(transport, buildGeminiRequest(req), key);
+    },
+    async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
+      // Separate-endpoint generation, dispatched by modality (ADR-0045 §1): image → Imagen (generateImages,
+      // SYNC); video → Veo (generateVideos, ASYNC LRO — returns an opaque jobId the engine polls via
+      // pollMediaJob below). Audio is not a Gemini generative surface — fail loud, never a silent drop.
+      if (req.modality === 'image') {
+        return geminiGenerateImage(transport, req, key);
+      }
+      if (req.modality === 'video') {
+        return geminiGenerateVideo(transport, req, key);
+      }
+      throw new UnsupportedCapabilityError(
+        PROVIDER,
+        'media',
+        `Gemini generateMedia has no surface for '${req.modality}' (image is Imagen; video is Veo; audio is unsupported)`,
+      );
+    },
+    /**
+     * Poll one async media job (Veo video LRO, 1.AH A4, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
+     * The engine re-delivers the persisted opaque jobId on resume (re-attach, §3); the adapter recovers the
+     * Veo operation name by DECODING the token (stateless bijection — no instance Map — so a cold-process
+     * restart resolves it). `signal` aborts the in-flight poll so a run cancel reaches the open request.
+     */
+    async pollMediaJob(
+      jobId: string,
+      key: string,
+      signal?: AbortSignalLike,
+    ): Promise<MediaJobStatus> {
+      return geminiPollVideo(transport, jobId, key, signal);
     },
   };
 }

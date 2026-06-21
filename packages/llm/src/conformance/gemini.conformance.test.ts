@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createGeminiAdapter,
   geminiAdapter,
+  type GeminiImageResponse,
   type GeminiResponse,
   type GeminiTransport,
 } from '../adapters/gemini.js';
@@ -24,6 +25,19 @@ const isGeminiResponse = (value: unknown): value is GeminiResponse =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isGeminiResponseArray = (value: unknown): value is GeminiResponse[] =>
   Array.isArray(value) && value.every(isGeminiResponse);
+// GeminiImageResponse's only field (generatedImages) is optional; reject non-objects, arrays, and a
+// present-but-non-array generatedImages so a malformed fixture fails the guard rather than the fold.
+const isGeminiImageResponse = (value: unknown): value is GeminiImageResponse => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  if (!('generatedImages' in value)) {
+    return true; // the only field is optional — an object without it is structurally valid
+  }
+  // `in`-narrowing reads the property with NO unsafe `as` cast and NO `any` (Reflect.get would return any).
+  const gen: unknown = value.generatedImages;
+  return gen === undefined || Array.isArray(gen);
+};
 
 // Gemini has no `fetch` hook, so the conformance harness replays at the transport level: a recorded
 // SDK-output JSON (single response or an array of streamed responses) is parsed and served through a
@@ -60,6 +74,19 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
         ? Promise.resolve(toAsyncIterable(parsed))
         : Promise.reject(new Error('replay fixture is not a GeminiResponse[] array'));
     },
+    generateImages: () => {
+      const current = nextRecording();
+      if (current.status >= 400) return rejection(current.status);
+      const parsed: unknown = JSON.parse(current.body);
+      return isGeminiImageResponse(parsed)
+        ? Promise.resolve(parsed)
+        : Promise.reject(new Error('replay fixture is not a GeminiImageResponse object'));
+    },
+    // The Veo async arm (1.AH A4) has no recorded-fixture conformance scenario yet; the seam contract is
+    // covered by generative-seam.conformance.test.ts (stub) + the gemini.test.ts unit tests.
+    generateVideos: () =>
+      Promise.reject(new Error('veo not exercised by the chat conformance replay')),
+    pollVideo: () => Promise.reject(new Error('veo not exercised by the chat conformance replay')),
   };
   return createGeminiAdapter({ transport });
 };

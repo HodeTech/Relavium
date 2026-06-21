@@ -1,15 +1,21 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import { describe, expect, it } from 'vitest';
 
+import type { AbortSignalLike } from '@relavium/shared';
+
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
-import type {
-  LlmProvider,
-  LlmRequest,
-  MediaGenRequest,
-  MediaGenResult,
-  StreamChunk,
+import {
+  MediaGenResultSchema,
+  MediaJobStatusSchema,
+  type LlmProvider,
+  type LlmRequest,
+  type MediaGenRequest,
+  type MediaGenResult,
+  type MediaJobStatus,
+  type StreamChunk,
 } from '../types.js';
+import { encodeMediaJobId } from './shared.js';
 import {
   createOpenAiAdapter,
   deepseekAdapter,
@@ -31,6 +37,19 @@ function genMedia(
   return (
     adapter.generateMedia?.(req, key) ??
     Promise.reject(new Error('adapter implements no generateMedia'))
+  );
+}
+
+/** Call the adapter's optional `pollMediaJob` via `?.()` (same unbound-method-safe pattern as genMedia). */
+function pollMedia(
+  adapter: LlmProvider,
+  jobId: string,
+  key: string,
+  signal?: AbortSignalLike,
+): Promise<MediaJobStatus> {
+  return (
+    adapter.pollMediaJob?.(jobId, key, signal) ??
+    Promise.reject(new Error('adapter implements no pollMediaJob'))
   );
 }
 
@@ -315,19 +334,92 @@ describe('OpenAI-compatible adapter', () => {
     });
   });
 
-  it('generateMedia rejects a non-image modality + DeepSeek with a typed capability error', async () => {
-    const oai = createOpenAiAdapter({
-      fetch: () => Promise.reject(new Error('must fail fast before any egress')),
+  it('generateMedia (audio/TTS) base64-encodes audio.speech bytes into a media part + maps the format MIME (1.AH)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        // audio.speech returns BINARY audio bytes; the replay string stands in for them.
+        return Promise.resolve(
+          new Response('FAKE-AUDIO-BYTES', {
+            status: 200,
+            headers: { 'content-type': 'audio/mpeg' },
+          }),
+        );
+      },
+    });
+    const result = await genMedia(
+      adapter,
+      {
+        model: 'gpt-4o-mini-tts',
+        prompt: 'hello world',
+        modality: 'audio',
+        providerOptions: { audio: { voice: 'verse' } },
+      },
+      'k',
+    );
+    expect(result.jobId).toBeUndefined(); // SYNC arm
+    expect(sent['input']).toBe('hello world');
+    expect(sent['voice']).toBe('verse'); // from providerOptions.audio.voice
+    expect(sent['response_format']).toBe('mp3'); // default when no req.mimeType
+    expect(result.media?.mimeType).toBe('audio/mpeg');
+    expect(result.media?.source).toEqual({
+      kind: 'base64',
+      data: Buffer.from('FAKE-AUDIO-BYTES').toString('base64'),
+    });
+    // I3 structural guard: `raw` carries ONLY a non-byte diagnostic — never the audio bytes.
+    expect(result.raw).toEqual({ responseFormat: 'mp3' });
+  });
+
+  it('generateMedia (audio) routes a TTS-call failure through the classifier (the catch is wired, not raw)', async () => {
+    // Prove the try/catch around `audio.speech.create` + the body read routes ANY thrown provider
+    // error through `openaiErrorToLlmError` — a rejected request surfaces as a typed `LlmProviderError`,
+    // never a raw SDK error. A connection failure classifies as `transport` (retryable).
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: () => Promise.reject(new APIConnectionError({ message: 'socket hang up' })),
     });
     await expect(
-      genMedia(oai, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
-    ).rejects.toThrowError(UnsupportedCapabilityError);
+      genMedia(adapter, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'transport', retryable: true } });
+  });
+
+  it('generateMedia (audio) maps req.mimeType → response_format + result MIME (audio/opus → opus)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(new Response('x', { status: 200 }));
+      },
+    });
+    const result = await genMedia(
+      adapter,
+      { model: 'gpt-4o-mini-tts', prompt: 'hi', modality: 'audio', mimeType: 'audio/opus' },
+      'k',
+    );
+    expect(sent['response_format']).toBe('opus');
+    expect(result.media?.mimeType).toBe('audio/opus');
+  });
+
+  it('generateMedia (audio) maps an empty audio body to a typed bad_request LlmProviderError', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: () => Promise.resolve(new Response('', { status: 200 })),
+    });
+    await expect(
+      genMedia(adapter, { model: 'gpt-4o-mini-tts', prompt: 'x', modality: 'audio' }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'bad_request', retryable: false } });
+  });
+
+  it('generateMedia rejects DeepSeek any modality with a typed capability error (OpenAI video is the async Sora arm — tested separately)', async () => {
     const ds = createOpenAiAdapter({
       providerId: 'deepseek',
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
     await expect(
       genMedia(ds, { model: 'm', prompt: 'x', modality: 'image' }, 'k'),
+    ).rejects.toThrowError(UnsupportedCapabilityError);
+    await expect(
+      genMedia(ds, { model: 'm', prompt: 'x', modality: 'video' }, 'k'),
     ).rejects.toThrowError(UnsupportedCapabilityError);
   });
 
@@ -375,6 +467,61 @@ describe('OpenAI-compatible adapter', () => {
     );
     expect(sent['output_format']).toBe('webp');
     expect(result.media?.mimeType).toBe('image/webp');
+  });
+
+  it('generateMedia (image) forwards valid size/quality knobs from providerOptions.image; drops invalid (1.AH A6)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'aW1n' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    await genMedia(
+      adapter,
+      {
+        model: 'gpt-image-1',
+        prompt: 'x',
+        modality: 'image',
+        providerOptions: { image: { size: '1536x1024', quality: 'high', bogus: 'x' } },
+      },
+      'k',
+    );
+    expect(sent['size']).toBe('1536x1024');
+    expect(sent['quality']).toBe('high');
+    expect(sent['bogus']).toBeUndefined(); // only the recognized knobs are forwarded (no spread)
+  });
+
+  it('generateMedia (image) drops an unrecognized size/quality (no 400-inducing passthrough)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ created: 0, data: [{ b64_json: 'aW1n' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    await genMedia(
+      adapter,
+      {
+        model: 'gpt-image-1',
+        prompt: 'x',
+        modality: 'image',
+        providerOptions: { image: { size: '99x99', quality: 'ultra' } },
+      },
+      'k',
+    );
+    expect(sent['size']).toBeUndefined();
+    expect(sent['quality']).toBeUndefined();
   });
 
   it('generateMedia maps an image content-policy refusal to content_filter (the documented taxonomy)', async () => {
@@ -667,6 +814,11 @@ describe('openaiErrorToLlmError — classification', () => {
     expect(
       openaiErrorToLlmError(new APIConnectionError({ message: 'down' }), 'deepseek'),
     ).toMatchObject({ kind: 'transport', retryable: true, provider: 'deepseek' });
+    // A NATIVE abort (DOMException/Error named 'AbortError') from a binary body read (TTS/Sora
+    // arrayBuffer) bypasses APIUserAbortError → must still classify as cancelled, not unknown.
+    expect(
+      openaiErrorToLlmError(Object.assign(new Error('aborted'), { name: 'AbortError' }), 'openai'),
+    ).toMatchObject({ kind: 'cancelled', retryable: false });
   });
 
   it('classifies an APIError by HTTP status; status-less → unknown', () => {
@@ -1395,5 +1547,304 @@ describe('OpenAI-compatible adapter — truncation + refusal normalization', () 
     const result = await adapter.generate(REQ, 'k');
     expect(result.content).toEqual([]);
     expect(result.stopReason).toBe('content_filter');
+  });
+});
+
+describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMediaJob, 1.AH A3)', () => {
+  const VIDEO_REQ: MediaGenRequest = {
+    model: 'sora-2',
+    prompt: 'a wave breaking on a beach',
+    modality: 'video',
+    durationSeconds: 4,
+  };
+
+  interface SoraCapture {
+    createBody?: Record<string, unknown>;
+    readonly signalByCall: Record<'create' | 'retrieve' | 'content', boolean>;
+  }
+  type SoraFetch = ((input: string | URL | Request, init?: RequestInit) => Promise<Response>) & {
+    capture: SoraCapture;
+  };
+
+  /** Route the SDK's videos.* HTTP calls: GET …/content → the MP4 bytes; create(POST)/retrieve(GET) → a
+   *  Video JSON. Records the create POST body + per-call AbortSignal presence on `.capture`. */
+  function soraFetch(video: Record<string, unknown>, bytes = 'FAKE-MP4-BYTES'): SoraFetch {
+    const capture: SoraCapture = {
+      signalByCall: { create: false, retrieve: false, content: false },
+    };
+    const fn = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      let url: string;
+      if (typeof input === 'string') {
+        url = input;
+      } else if (input instanceof URL) {
+        url = input.href;
+      } else {
+        url = input.url;
+      }
+      let call: 'content' | 'create' | 'retrieve';
+      if (url.endsWith('/content')) {
+        call = 'content';
+      } else if (init?.method === 'POST') {
+        call = 'create';
+      } else {
+        call = 'retrieve';
+      }
+      capture.signalByCall[call] = init?.signal instanceof AbortSignal;
+      if (call === 'create') {
+        // videos.create sends multipart/form-data (it supports file uploads), so the body is a FormData,
+        // not a JSON string — read its text fields.
+        const body = init?.body;
+        capture.createBody =
+          body instanceof FormData
+            ? Object.fromEntries(
+                [...body.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : '<file>']),
+              )
+            : parseJsonBody(init);
+      }
+      if (call === 'content') {
+        return Promise.resolve(
+          new Response(bytes, { status: 200, headers: { 'content-type': 'video/mp4' } }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(video), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    };
+    return Object.assign(fn, { capture });
+  }
+
+  it('generateMedia (video) ALWAYS returns an opaque jobId (no media), schema-valid, even on instant completion', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    const result = await genMedia(adapter, VIDEO_REQ, 'k');
+    expect(result.media).toBeUndefined(); // ASYNC arm — completion is the engine poll loop's job
+    expect(result.jobId).toBe(encodeMediaJobId('video_xyz'));
+    expect(MediaGenResultSchema.safeParse(result).success).toBe(true);
+    expect(result.raw).toEqual({ id: 'video_xyz', status: 'completed' }); // no bytes in raw (I3)
+    // The create body forwards model/prompt/seconds (NOT a spread of providerOptions).
+    expect(fetch.capture.createBody).toMatchObject({
+      model: 'sora-2',
+      prompt: VIDEO_REQ.prompt,
+      seconds: '4',
+    });
+  });
+
+  it('generateMedia (video) defaults seconds to 4 (no durationSeconds) and forwards a valid size knob', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    await genMedia(
+      adapter,
+      {
+        ...VIDEO_REQ,
+        durationSeconds: undefined,
+        providerOptions: { video: { size: '1280x720' } },
+      },
+      'k',
+    );
+    expect(fetch.capture.createBody).toMatchObject({ seconds: '4', size: '1280x720' });
+  });
+
+  it('generateMedia (video) drops an unrecognized size from the create body (input filter)', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    await genMedia(adapter, { ...VIDEO_REQ, providerOptions: { video: { size: '99x99' } } }, 'k');
+    expect(fetch.capture.createBody?.['size']).toBeUndefined();
+  });
+
+  it('generateMedia (video) forwards each valid durationSeconds (8, 12) to the create body', async () => {
+    for (const n of [8, 12] as const) {
+      const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+      const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+      await genMedia(adapter, { ...VIDEO_REQ, durationSeconds: n }, 'k');
+      expect(fetch.capture.createBody?.['seconds']).toBe(String(n));
+    }
+  });
+
+  it('generateMedia (video) threads the AbortSignal into videos.create', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    const controller = new AbortController();
+    await genMedia(adapter, { ...VIDEO_REQ, signal: controller.signal }, 'k');
+    expect(fetch.capture.signalByCall.create).toBe(true);
+  });
+
+  it('generateMedia (video) rejects a non-{4,8,12} durationSeconds with a typed bad_request before egress', async () => {
+    let called = false;
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: (input, init) => {
+        called = true;
+        return soraFetch({ id: 'v', status: 'queued' })(input, init);
+      },
+    });
+    await expect(
+      genMedia(adapter, { ...VIDEO_REQ, durationSeconds: 5 }, 'k'),
+    ).rejects.toMatchObject({ llmError: { kind: 'bad_request' } });
+    expect(called).toBe(false); // rejected before any SDK call
+  });
+
+  it('pollMediaJob maps queued → pending and in_progress → pending with clamped 0-1 progress', async () => {
+    const jobId = encodeMediaJobId('video_xyz');
+    const queued = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 }),
+    });
+    expect(await pollMedia(queued, jobId, 'k')).toEqual({ state: 'pending' });
+
+    const inProgress = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'in_progress', progress: 50 }),
+    });
+    expect(await pollMedia(inProgress, jobId, 'k')).toEqual({ state: 'pending', progress: 0.5 });
+
+    // Clamp an out-of-range progress to [0,1] (defends the engine's z.number().min(0).max(1) boundary).
+    const over = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'in_progress', progress: 150 }),
+    });
+    expect(await pollMedia(over, jobId, 'k')).toEqual({ state: 'pending', progress: 1 });
+  });
+
+  it('pollMediaJob completed-but-empty-bytes → a typed bad_request failed (defensive)', async () => {
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 }, ''),
+    });
+    expect(await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'bad_request' },
+    });
+  });
+
+  it('pollMediaJob completed → downloads the MP4 and returns a base64 video/mp4 media part (done)', async () => {
+    const jobId = encodeMediaJobId('video_xyz');
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 }, 'MP4-BYTES'),
+    });
+    const status = await pollMedia(adapter, jobId, 'k');
+    expect(MediaJobStatusSchema.safeParse(status).success).toBe(true);
+    expect(status).toEqual({
+      state: 'done',
+      media: {
+        type: 'media',
+        mimeType: 'video/mp4',
+        source: { kind: 'base64', data: Buffer.from('MP4-BYTES').toString('base64') },
+      },
+    });
+  });
+
+  it('pollMediaJob failed → content_filter for a content-policy code, unknown for a null error', async () => {
+    const jobId = encodeMediaJobId('video_xyz');
+    const blocked = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({
+        id: 'video_xyz',
+        status: 'failed',
+        progress: 0,
+        error: { code: 'content_policy_violation', message: 'blocked' },
+      }),
+    });
+    expect(await pollMedia(blocked, jobId, 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'content_filter', retryable: false },
+    });
+
+    const nullErr = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'failed', progress: 0, error: null }),
+    });
+    expect(await pollMedia(nullErr, jobId, 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'unknown' },
+    });
+  });
+
+  it('pollMediaJob failed with a runtime-ABSENT error field → unknown (no TypeError)', async () => {
+    // The SDK types Video.error required-nullable, but a deviating response may omit it on a failed
+    // status — mapVideoCreateError must treat undefined like null, not crash on err.code.
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'failed', progress: 0 }), // no error field
+    });
+    expect(await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'unknown' },
+    });
+  });
+
+  it('pollMediaJob in_progress with a runtime-ABSENT progress → pending progress 0 (no NaN)', async () => {
+    // A missing progress would make undefined/100 NaN, failing the engine z.number().min(0).max(1).
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'in_progress' }), // no progress field
+    });
+    expect(await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k')).toEqual({
+      state: 'pending',
+      progress: 0,
+    });
+  });
+
+  it('pollMediaJob failed with an empty error code → unknown kind, omits the empty code field', async () => {
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({
+        id: 'video_xyz',
+        status: 'failed',
+        progress: 0,
+        error: { code: '', message: 'x' },
+      }),
+    });
+    const status = await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k');
+    expect(status).toMatchObject({ state: 'failed', error: { kind: 'unknown' } });
+    if (status.state === 'failed') {
+      expect(status.error.code).toBeUndefined(); // empty code is omitted, not surfaced as ''
+    }
+  });
+
+  it('pollMediaJob maps an unrecognized SDK status to a FATAL unknown failed (the default arm)', async () => {
+    // The SDK types status as a closed union; a future/unknown status must not fall through to undefined.
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'rendering', progress: 0 }),
+    });
+    expect(await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'unknown' },
+    });
+  });
+
+  it('pollMediaJob returns a FATAL failed (not a throw) for an unrecognized jobId token', async () => {
+    let called = false;
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: (input, init) => {
+        called = true;
+        return soraFetch({ id: 'v', status: 'queued' })(input, init);
+      },
+    });
+    const status = await pollMedia(adapter, 'not-a-relavium-token', 'k');
+    expect(status).toMatchObject({ state: 'failed', error: { kind: 'bad_request' } });
+    expect(called).toBe(false); // never reached the SDK — decode failed first
+  });
+
+  it('pollMediaJob threads the AbortSignal into BOTH retrieve and downloadContent (completed path)', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'completed', progress: 100 }, 'MP4');
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    const controller = new AbortController();
+    await pollMedia(adapter, encodeMediaJobId('video_xyz'), 'k', controller.signal);
+    expect(fetch.capture.signalByCall.retrieve).toBe(true);
+    expect(fetch.capture.signalByCall.content).toBe(true); // the download honors the run cancel too
+  });
+
+  it('DeepSeek has no async video: generateMedia(video) → capability error, pollMediaJob → failed', async () => {
+    await expect(genMedia(deepseekAdapter, VIDEO_REQ, 'k')).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError,
+    );
+    const status = await pollMedia(deepseekAdapter, encodeMediaJobId('video_xyz'), 'k');
+    expect(status).toMatchObject({ state: 'failed' });
   });
 });

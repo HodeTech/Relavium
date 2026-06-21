@@ -95,6 +95,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
+- [ ] **⚠ OpenAI Sora 2 + Videos API DEPRECATED — provider shutdown 2026-09-24 (affects 1.AH A3).** OpenAI
+  announced the Sora 2 video models (`sora-2`, `sora-2-pro`, `sora-2-2025-10-06`, `sora-2-2025-12-08`,
+  `sora-2-pro-2025-10-06`) + the `videos.*` API shut down **2026-09-24**. The 1.AH A3 OpenAI/Sora async-video
+  adapter targets exactly these (`videos.create`/`retrieve`/`downloadContent` + `pollMediaJobSora`). **Impact is
+  narrow:** only the Sora adapter arm + its tests; the engine async-job LRO ([ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)),
+  the shared `encode/decodeMediaJobId` codec, the generative-seam conformance, and the **Gemini/Veo (A4)** adapter
+  are provider-agnostic and **unaffected**. No live exposure today — A3 is not runtime-reachable until the
+  Phase-2 host `media_surface` wiring. **Action (maintainer call, before 2026-09-24):** when OpenAI announces a
+  replacement video model/API, retarget the A3 arm; otherwise **disable/remove** the Sora arm (the `generateMedia`
+  `video` dispatch + `pollMediaJobSora` + their tests) leaving the seam + Veo intact. Low priority until a
+  replacement lands or the date nears. *(packages/llm/src/adapters/openai.ts; 1.AH/Phase-2)*
 - [x] **Media-arm integrity metadata (Y3) — DECIDED 2026-06-09 (ADR-0031 amended), land at 1.AD.** The
   durable form (`DurableMediaPart`) carries an optional **`byteLength?`** + audio/video **`durationMs?`**,
   host-populated at the `deInlineMedia` boundary; **no `checksum`** (the `media://sha256-<hex>` handle IS
@@ -123,7 +134,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **general tool/MCP** `EgressCapability.fetch` enforcement still lands when the desktop/CLI surface implements that fetch hook. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; tool/MCP → surface fetch hook)*
-- [ ] **Async media-job ADR + engine loop (`generateMedia`/`pollMediaJob` behavior, A5) — landed on `development`, pending PR merge (1.AG Sections A–E; the A5 obligation itself discharged in A/C/D).**
+- [x] **Async media-job ADR + engine loop (`generateMedia`/`pollMediaJob` behavior, A5) — ✅ DONE (1.AG, PR #37, 2026-06-21; the A5 obligation discharged in Sections A/C/D).**
   [ADR-0045](../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) is written + Accepted, and
   the engine-owned **poll / checkpoint / resume / cancel loop** for minute-scale LROs (Sora/Veo) landed in 1.AG
   Section D (the run loop 1.N + checkpointer 1.R, reusing `LlmError` classification): `media_job:submitted` park,
@@ -134,8 +145,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   model dispatches to `generateMedia` BEFORE the turn loop), so the `requestsMediaOutput` guard in
   [`agent-turn.ts`](../../packages/core/src/engine/agent-turn.ts) only ever sees `'chat'` models — ADR-0046 §1's
   `media_surface: 'chat'` conjunct holds STRUCTURALLY (the guard's JSDoc `NOTE` points at the fork). The remaining
-  VENDOR-adapter + host-wiring work is tracked in the 1.AH entries below. **Tick `[x]` with the merged PR number
-  when the 1.AG PR lands** (this file's rule: check off in the PR that resolves it). *(1.AG Sections A–E — on development, pending merge)*
+  VENDOR-adapter + host-wiring work is tracked in the 1.AH entries below. *(1.AG Sections A–E — ✅ merged, PR #37)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
   1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
   `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node
@@ -167,18 +177,23 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (no mis-bill). **Test follow-up:** the realized-cost vertical (`realizedMediaCost` → a non-zero `cost:updated`)
   cannot be exercised end-to-end until a generative model carries a rate; the cost MATH is unit-tested via
   `mediaCost` against a constructed rate, and a non-zero dispatch assertion lands with these rows. *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
-- [ ] **`generateMedia` for OpenAI-TTS audio + Gemini-Imagen — adapter wires deferred (1.AG Section C → 1.AH).**
-  Section C wires `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64), proving the
-  full engine→adapter→de-inline vertical. The remaining generators are bounded follow-ups: **OpenAI-TTS audio**
-  (`audio.speech` returns raw bytes → the adapter must base64-encode them + map the requested `response_format` →
-  MIME) and **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which needs a
-  `GeminiTransport.generateImages` extension to keep conformance vendor-free). Neither is runtime-reachable until the
-  per-model surface lookup is host-wired (above), so they land with that 1.AH wiring. Two bounded image follow-ups
+- [ ] **`generateMedia` for Gemini-Imagen — adapter wire deferred (1.AG Section C → 1.AH A2).**
+  Section C wired `generateMedia` SYNC for **OpenAI image** (gpt-image-1 `images.generate` → base64); **1.AH A1
+  wired OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME map, no new dep). The
+  remaining sync generator is **Gemini-Imagen** (`generateImages` → `generatedImages[].image.imageBytes`, which
+  needs a `GeminiTransport.generateImages` extension to keep conformance vendor-free). Not runtime-reachable until the
+  per-model surface lookup is host-wired (above), so it lands written-now/E2E-at-1.AH-host-wiring. Two bounded image follow-ups
   ride along: (a) **multi-image `count > 1`** — the SYNC `MediaGenResult.media` carries a SINGLE part, so the OpenAI
   adapter currently rejects `count > 1` (never bill-N-deliver-1); delivering N needs an additive `media: MediaPart[]`
   seam amendment (ADR-0031). (b) **image-gen knobs** (`size`/`quality` via `MediaGenRequest.providerOptions`) — the
   engine does not yet populate `providerOptions` for a generative call, so the adapter threads only the output format
   (`req.mimeType`); a typed per-knob passthrough lands when the engine wires image knobs. *(packages/llm/src/adapters/{openai,gemini}.ts; types.ts MediaGenResult; 1.AH)*
+- [ ] **Rate-carrying media representation for raw PCM (1.AH A1 known-limitation).** OpenAI TTS `pcm` is headerless
+  16-bit LE PCM at 24 kHz, but the seam's `MediaMimeTypeSchema` forbids MIME parameters, so the bare `audio/L16`
+  cannot carry `;rate=24000` (RFC 2586's default is 8 kHz) — a consumer of an `audio/L16` part must assume 24 kHz.
+  Mirrors the pre-existing chat-audio `pcm16 → audio/L16` convention; the self-describing containers (mp3/opus/aac/
+  flac/wav) are unaffected. A rate-carrying media representation (or dropping bare-PCM from the offered set) is the
+  fix. Low priority — opt-in niche format only. *(packages/shared/src/content.ts MediaMimeTypeSchema; packages/llm/src/adapters/openai.ts; low · 1.AH/Phase-2)*
 - [ ] **Sora/Veo async-media ADAPTERS (`generateMedia`→`{ jobId }` + `pollMediaJob`) — deferred (1.AG Section D → 1.AH).**
   1.AG Section D landed the ENGINE-owned async-job loop (park on `media_job:submitted`, the `host.setTimer` poll
   cadence, exp-backoff to `pollMaxMs`, deadline→retryable timeout, cross-process re-attach (MJ-1), gate-vs-media

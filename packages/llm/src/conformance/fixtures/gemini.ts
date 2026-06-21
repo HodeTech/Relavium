@@ -85,6 +85,16 @@ const structuredOutput = JSON.stringify({
   usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 4, totalTokenCount: 12 },
 });
 
+// A recorded Imagen (generateImages) reply — a single base64 image, the SYNC generative seam path
+// (1.AH A2). The Gemini conformance harness replays it through the fake transport's generateImages, so
+// it drives the real fold/normalization (generatedImages[].image.imageBytes → a base64 `media` part)
+// with no vendor import. The base64 matches the OpenAI fixture for cross-adapter parity.
+const imageGenerate = JSON.stringify({
+  generatedImages: [
+    { image: { imageBytes: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=', mimeType: 'image/png' } },
+  ],
+});
+
 export const GEMINI_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textResponse },
   toolGenerate: { status: 200, body: toolResponse },
@@ -94,6 +104,7 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
   streamError: { status: 503, body: overloadedError },
   reasoningStream: { status: 200, body: reasoningStream },
   structuredOutput: { status: 200, body: structuredOutput },
+  mediaGenerate: { status: 200, body: imageGenerate },
   toolLoop: {
     turn1: { status: 200, body: toolResponse },
     turn2: { status: 200, body: textResponse },
@@ -107,5 +118,6 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
     streamErrorKind: 'overloaded',
     reasoningStream: { text: 'let me think', reasoningTokens: 2 },
     structuredOutput: { text: '{"ok":true}' },
+    mediaGenerate: { mimeType: 'image/png', data: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=' },
   },
 };

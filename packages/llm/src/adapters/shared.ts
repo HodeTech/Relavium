@@ -67,3 +67,50 @@ export function assertNoStreamingMediaOutput(provider: ProviderId, req: LlmReque
  * multiple reasoning streams must move to an index-keyed id like the Anthropic adapter (`reasoning-${index}`).
  */
 export const REASONING_ID = 'reasoning-0';
+
+/**
+ * The Relavium-opaque async media-job id namespace+version, shared by every async generative adapter
+ * (Sora `Video.id`, Veo operation `name`, …). The engine persists this token in the durable
+ * `media_job:submitted` event and re-delivers it to `pollMediaJob` on resume (ADR-0045 §3 re-attach,
+ * never re-submit). An adapter has NO durable store and is rebuilt each process, so the vendor id is
+ * reversibly ENCODED into the token (base64url so any vendor id is `:`-split-safe) rather than held in an
+ * in-memory `Map` — this IS the "vendor↔opaque map internal" of ADR-0045 §7, realized as a STATELESS
+ * bijection. The token is adapter-minted + Relavium-namespaced (NOT the bare vendor op-name / poll-URL),
+ * the engine never parses it (I1/ADR-0011), and the (non-secret) resource id is safe to persist. A future
+ * format change bumps the version slot (`:2:`). The engine routes `pollMediaJob` by the BOUND provider, so
+ * each adapter only ever decodes its own jobs — the shared prefix is collision-safe across providers.
+ */
+const MEDIA_JOB_PREFIX = 'rlv-mediajob:1:';
+
+/** Mint the opaque media-job id from a vendor job/operation id (base64url-encoded). An empty `vendorId`
+ *  is rejected at mint time — it would produce a prefix-only token that {@link decodeMediaJobId} rejects,
+ *  breaking the bijection (the adapter call sites already guard, so this is a fail-fast contract assertion). */
+export function encodeMediaJobId(vendorId: string): string {
+  if (vendorId.length === 0) {
+    throw new Error('encodeMediaJobId: vendorId must be non-empty');
+  }
+  return MEDIA_JOB_PREFIX + Buffer.from(vendorId, 'utf8').toString('base64url');
+}
+
+/**
+ * Recover the vendor id from an opaque media-job id; `undefined` on any foreign/malformed token (never
+ * throws — a throw from `pollMediaJob` is engine-classified as retryable and would loop forever on a
+ * structurally-dead token). Round-trip-validated: base64url decoding is lenient (it silently drops invalid
+ * chars), so a corrupted/non-canonical payload would otherwise decode to a wrong-but-non-empty vendor id;
+ * re-encoding and comparing rejects every such token, so a caller never polls a junk vendor id. Every real
+ * minted token round-trips exactly.
+ */
+export function decodeMediaJobId(jobId: string): string | undefined {
+  if (!jobId.startsWith(MEDIA_JOB_PREFIX)) {
+    return undefined; // a non-Relavium id or a future rlv-mediajob:2: token
+  }
+  const payload = jobId.slice(MEDIA_JOB_PREFIX.length);
+  if (payload.length === 0) {
+    return undefined;
+  }
+  const decoded = Buffer.from(payload, 'base64url').toString('utf8');
+  if (decoded.length === 0 || encodeMediaJobId(decoded) !== jobId) {
+    return undefined;
+  }
+  return decoded;
+}

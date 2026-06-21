@@ -1056,21 +1056,50 @@ phases (2–6). Each phase below maps to the design doc's Phase A–E.
   node produces a handle; an async video job checkpoints, survives a simulated restart, and resumes to
   completion; **a CANCEL aborts the in-flight `pollMediaJob` (via `AbortSignal`), emits `run:cancelled`,
   and triggers the terminal-state media sweep**; a content-policy job failure maps to `content_filter`.
-  *Status (pending merge):* **Sections A–E landed on `development`** — ADR-0045 (async media-job LRO) +
-  ADR-0046 (inline media-out via `generate()`), the five engine/seam slices (contracts, inline media-out,
-  sync `generateMedia` + routing, the async poll/checkpoint/resume/cancel loop, acceptance + generative
-  conformance), each dual-reviewed (0 blocker/high). Flips to ✅ Done on PR merge; the genuinely-remaining
-  vendor-adapter + host-wiring work is **1.AH** (deferred-tasks.md). All four acceptance criteria are tested.
-- **1.AH — Surfaces & managed mode (Phase E, spans Phases 2–6).** Desktop:
-  **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media
-  de-inline on egress + session-scoped `read_media` command + the Rust CAS — **must land before any
-  desktop media-output** (phase-3-desktop). CLI/VS Code media rendering (phase-2-cli / phase-4-vscode).
-  Managed-mode gateway media materialization-to-user-store + `mediaUnits` metering, reconciled with
-  [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md) counts-not-content
-  (phase-5-managed-inference). *Acceptance:* on desktop, media bytes never transit the WebView↔Rust
-  channel (only handles do); **`read_media` is the only byte path out — no second raw static mount,
-  `follow_symlink` off, `realpath`+`commonpath` fail-closed**; each surface renders a produced media
-  handle; managed mode meters counts and stores no artifact.
+  *Status:* ✅ **Done (PR #37, 2026-06-21).** Sections A–E — ADR-0045 (async media-job LRO) + ADR-0046 (inline
+  media-out via `generate()`), the five engine/seam slices (contracts, inline media-out, sync `generateMedia`
+  + routing, the async poll/checkpoint/resume/cancel loop, acceptance + generative conformance) — each
+  dual-reviewed (0 blocker/high), then a final Opus-consolidated pre-merge review that caught + fixed two HIGH
+  cross-fix defects (the orphaned-vertex cost addend + the crash-in-window `run:paused`). All four acceptance
+  criteria are tested. The genuinely-remaining vendor-adapter + host-wiring work is **1.AH** (deferred-tasks.md).
+- **1.AH — Generative media-output adapters + surfaces & managed mode (Phase E, spans Phases 2–6).** The
+  Phase-1-doable half is implemented behind the seam: the **four generative media-output adapters** behind the
+  `@relavium/llm` seam — OpenAI-TTS (audio), Gemini-Imagen (image), OpenAI/Sora (async video), Gemini/Veo
+  (async video) — plus the shared **opaque-`jobId` encode/decode** (ADR-0045 §7) and the shared **bare-MIME
+  validator**, all proven with stubs + the generative conformance suite. They are **not yet runtime-reachable**:
+  each needs the host per-model `media_surface` lookup (the deferred wiring below). Adapter pieces, behind the
+  seam ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) §4,
+  [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md),
+  [ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)):
+  - **A1 — OpenAI-TTS audio** (`audio.speech` binary → base64 + `response_format`↔MIME map, no new dep).
+  - **A2 — Gemini-Imagen image** (`generateImages` → `generatedImages[].image.imageBytes`, via a vendor-free
+    `GeminiTransport.generateImages` extension).
+  - **A3 — OpenAI/Sora async video** (`generateMedia`→`{ jobId }` + `pollMediaJob`, the engine LRO loop, 1.AG D).
+  - **A4 — Gemini/Veo async video** (`generateMedia`→`{ jobId }` + `pollMediaJob`, same LRO loop).
+  - **A5 — `save_to` url double-fetch** stays **DEFERRED** (rare-case perf; correctness fine) — deferred-tasks.md §1.AF.
+  - **A6 — bare-MIME validator + gpt-image-1 `size`/`quality` knobs** (the per-knob `MediaGenRequest.providerOptions` passthrough).
+  - *Deferred decisions (each needs its own future record — do NOT pre-empt here):* **multi-artifact `count > 1`**
+    needs a future media-array ADR amending [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)
+    (the SYNC `MediaGenResult.media` carries a SINGLE part — never bill-N-deliver-1); **verified generative
+    pricing rows** are deferred (adapters ship at **0-cost**, gated/folded correctly — never fabricate a rate);
+    **OpenAI agentic image-gen via the Responses API** is deferred ([ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §3). All three are recorded in deferred-tasks.md §Multimodal / §1.AF.
+  - **Surfaces & managed mode — the HOST-WIRING half spans Phases 2–6** (the deferred mechanism for D5/D8/D12/D15/D17
+    + the per-model `media_surface` lookup + verified rates; deferred-tasks.md §1.AF-P4 / §Multimodal). Desktop:
+    **[ADR-0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)** Rust-side media de-inline on
+    egress + session-scoped `read_media` command + the Rust CAS — **must land before any desktop media-output**
+    ([phase-3-desktop.md §3.B](phase-3-desktop.md)). CLI media rendering + the host `media_surface` resolver +
+    `EgressCapability.fetch` SSRF mechanism ([phase-2-cli.md §2.S](phase-2-cli.md)); VS Code media rendering
+    ([phase-4-vscode.md §4.N](phase-4-vscode.md)). Managed-mode gateway media materialization-to-user-store +
+    `mediaUnits` metering, reconciled with [ADR-0015](../../decisions/0015-managed-mode-data-handling-and-compliance.md)
+    counts-not-content ([phase-5-managed-inference.md](phase-5-managed-inference.md) media bullets); cloud-execution
+    media handling ([phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md) media tasks).
+  - **⚠ Sequencing warning (deferred-tasks.md):** do **NOT** build the host media-surface resolver (or the
+    D12 `MediaReadAccess`/scope-population) **in isolation** — build them **WITH the first surface (CLI, §2.S)**,
+    designed to fit desktop/VS Code, so the inert `read_media` result-shape + base64-vs-handle contract is
+    resolved coherently once (fixing it standalone risks conflicting with the 1.AH host design).
+  *Acceptance:* on desktop, media bytes never transit the WebView↔Rust channel (only handles do); **`read_media`
+  is the only byte path out — no second raw static mount, `follow_symlink` off, `realpath`+`commonpath`
+  fail-closed**; each surface renders a produced media handle; managed mode meters counts and stores no artifact.
 
 ## Milestones
 
@@ -1087,7 +1116,7 @@ the latter being the critical-path milestone for the whole product.
 | 1.m4 ✅ | Agent + non-agent node handlers, gate, checkpoint/resume, retry, tools, **expression sandbox** + pre-egress budget (**all components landed — 1.AC closed it, PR #26, 2026-06-16**) | 1.O, 1.P, 1.Q, 1.R, 1.S, 1.T, **1.AB**, **1.AC** |
 | **M2 ✅** | **Engine end-to-end from a Node harness (stream + checkpoint + retry + fallback) — CRITICAL-PATH MILESTONE** (**reached — 1.U landed, PR #27, 2026-06-16**) | **1.U** |
 | **1.m5 ✅** | Agent-first sub-spine: `AgentSession` + session events + persistence + checkpoint/resume + export, proven by its own harness (**additive, parallel — does NOT gate M2**) | 1.V, 1.W, 1.X, 1.Y, 1.Z, **1.AA** |
-| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅**, 1.AG (Sections A–E landed on development, pending merge), 1.AH |
+| 1.m6 | Multimodal I/O: seam amendment (**1.AD ✅ Done, PR #11 — landed before 1.K/1.O so the union members are non-breaking**), then media input/engine/output behavior (**additive — does NOT gate M2**) + surfaces threaded into Phases 2–6 ([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)/[0032](../../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) | **1.AD ✅, 1.AE ✅, 1.AF ✅, 1.AG ✅**, 1.AH |
 
 ## Sequencing & parallelization
 
@@ -1249,7 +1278,7 @@ flowchart LR
 | 1.AD | D | 1.A (seam types) | **must precede 1.K, 1.O** (non-breaking union members); 1.AE | ⬤ shape-only — ✅ **Done (PR #11)** |
 | 1.AE | D | 1.AD, 1.G/1.H (adapters) | 1.AF | ✅ — **Done (PR #32, 2026-06-18)** |
 | 1.AF | D | 1.AE, 1.K, 1.N, 1.R | 1.AG | ✅ — **Done (PR #33/#34/#35/#36, 2026-06-20)** |
-| 1.AG | D | 1.AF | 1.AH | ◇ — Sections A–E landed on `development` (pending PR merge) |
+| 1.AG | D | 1.AF | 1.AH | ✅ — **Done (PR #37, 2026-06-21)** |
 | 1.AH | D | 1.AG | Phases 2–6 surfaces | ◇ (spans phases) |
 
 > The matrix `Depends on` column is **authoritative** for cross-lane feeder edges (e.g. `1.N → 1.W`
