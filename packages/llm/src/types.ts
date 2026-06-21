@@ -485,8 +485,8 @@ export interface LlmProvider {
   /**
    * Poll an async media job by its Relavium-opaque id (A5, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
    * `signal` aborts the IN-FLIGHT poll so a run cancel reaches the open provider request, not just the
-   * next schedule. The engine drives this loop (1.AG Section D); no Phase-1 vendor adapter implements it
-   * yet (the async Sora/Veo adapters are 1.AH).
+   * next schedule. The engine drives this loop (1.AG Section D); the OpenAI/Sora adapter implements it at
+   * 1.AH A3 (`pollMediaJobSora`), the Gemini/Veo adapter at 1.AH A4.
    */
   pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>;
 }

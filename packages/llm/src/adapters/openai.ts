@@ -331,6 +331,13 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId): LlmEr
   if (err instanceof APIError) {
     return mapOpenAiApiError(err, provider);
   }
+  // A NATIVE abort — a `DOMException`/`Error` named 'AbortError' thrown by `fetch`/`Response.arrayBuffer()`
+  // when the signal fires DURING a binary body read (TTS `audio.speech`, Sora `downloadContent`). These
+  // bypass the SDK's `APIUserAbortError` wrapper (the read is outside the SDK request), so classify by name
+  // → `cancelled`, not the catch-all `unknown`.
+  if (err instanceof Error && err.name === 'AbortError') {
+    return makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' });
+  }
   return makeLlmError({
     provider,
     kind: 'unknown',
@@ -1129,13 +1136,16 @@ export function decodeVideoJobId(jobId: string): string | undefined {
 
 /** Sora accepts only 4/8/12s clips — reject anything else loud (never round; cost-integrity, ADR-0045 §5). */
 const SORA_SECONDS: Readonly<Record<number, OpenAI.VideoSeconds>> = { 4: '4', 8: '8', 12: '12' };
-function soraSeconds(durationSeconds: number | undefined): OpenAI.VideoSeconds {
+function soraSeconds(
+  durationSeconds: number | undefined,
+  providerId: ProviderId,
+): OpenAI.VideoSeconds {
   const n = durationSeconds ?? 4; // Sora's default clip length
   const seconds = SORA_SECONDS[n];
   if (seconds === undefined) {
     throw new LlmProviderError(
       makeLlmError({
-        provider: 'openai',
+        provider: providerId,
         kind: 'bad_request',
         message: `Sora durationSeconds must be 4, 8, or 12; got ${String(n)}`,
       }),
@@ -1168,7 +1178,7 @@ async function openAiGenerateVideo(
   req: MediaGenRequest,
   providerId: ProviderId,
 ): Promise<MediaGenResult> {
-  const seconds = soraSeconds(req.durationSeconds); // throws bad_request if not 4/8/12
+  const seconds = soraSeconds(req.durationSeconds, providerId); // throws bad_request if not 4/8/12
   const size = soraSize(req.providerOptions);
   let video: OpenAI.Video;
   try {
@@ -1264,6 +1274,10 @@ async function pollMediaJobSora(
       // fail the engine's z.number().min(0).max(1) boundary.
       return { state: 'pending', progress: Math.min(1, Math.max(0, video.progress / 100)) };
     case 'completed': {
+      // `bytes` is assigned in the SAME `if (status === 'completed')` block above, so at runtime it is
+      // always set here; the `=== undefined` half is the TS narrowing guard (bytes is typed
+      // `Uint8Array | undefined` because the assignment is control-flow-conditional) — `length === 0` is
+      // the live defensive check for an empty download.
       if (bytes === undefined || bytes.length === 0) {
         return {
           state: 'failed',

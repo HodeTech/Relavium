@@ -760,6 +760,11 @@ describe('openaiErrorToLlmError — classification', () => {
     expect(
       openaiErrorToLlmError(new APIConnectionError({ message: 'down' }), 'deepseek'),
     ).toMatchObject({ kind: 'transport', retryable: true, provider: 'deepseek' });
+    // A NATIVE abort (DOMException/Error named 'AbortError') from a binary body read (TTS/Sora
+    // arrayBuffer) bypasses APIUserAbortError → must still classify as cancelled, not unknown.
+    expect(
+      openaiErrorToLlmError(Object.assign(new Error('aborted'), { name: 'AbortError' }), 'openai'),
+    ).toMatchObject({ kind: 'cancelled', retryable: false });
   });
 
   it('classifies an APIError by HTTP status; status-less → unknown', () => {
@@ -1604,6 +1609,23 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     expect(fetch.capture.createBody?.['size']).toBeUndefined();
   });
 
+  it('generateMedia (video) forwards each valid durationSeconds (8, 12) to the create body', async () => {
+    for (const n of [8, 12] as const) {
+      const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+      const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+      await genMedia(adapter, { ...VIDEO_REQ, durationSeconds: n }, 'k');
+      expect(fetch.capture.createBody?.['seconds']).toBe(String(n));
+    }
+  });
+
+  it('generateMedia (video) threads the AbortSignal into videos.create', async () => {
+    const fetch = soraFetch({ id: 'video_xyz', status: 'queued', progress: 0 });
+    const adapter = createOpenAiAdapter({ maxRetries: 0, fetch });
+    const controller = new AbortController();
+    await genMedia(adapter, { ...VIDEO_REQ, signal: controller.signal }, 'k');
+    expect(fetch.capture.signalByCall.create).toBe(true);
+  });
+
   it('generateMedia (video) rejects a non-{4,8,12} durationSeconds with a typed bad_request before egress', async () => {
     let called = false;
     const adapter = createOpenAiAdapter({
@@ -1711,6 +1733,18 @@ describe('OpenAI-compatible adapter — Sora async video (generateMedia + pollMe
     if (status.state === 'failed') {
       expect(status.error.code).toBeUndefined(); // empty code is omitted, not surfaced as ''
     }
+  });
+
+  it('pollMediaJob maps an unrecognized SDK status to a FATAL unknown failed (the default arm)', async () => {
+    // The SDK types status as a closed union; a future/unknown status must not fall through to undefined.
+    const adapter = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: soraFetch({ id: 'video_xyz', status: 'rendering', progress: 0 }),
+    });
+    expect(await pollMedia(adapter, encodeVideoJobId('video_xyz'), 'k')).toMatchObject({
+      state: 'failed',
+      error: { kind: 'unknown' },
+    });
   });
 
   it('pollMediaJob returns a FATAL failed (not a throw) for an unrecognized jobId token', async () => {
