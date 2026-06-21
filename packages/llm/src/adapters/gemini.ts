@@ -653,6 +653,13 @@ async function* streamChunks(
  * seam amend). A safety-filtered candidate (`raiFilteredReason`, no `image`) maps to `content_filter`,
  * reusing the one failure vocabulary instead of a generic empty-bytes error. `numberOfImages` is pinned
  * to 1 AFTER any `providerOptions` spread so an author-supplied count can't smuggle past the guard.
+ *
+ * Taxonomy note: only the IN-BODY safety channel (`raiFilteredReason` on a 200) maps to `content_filter`.
+ * An HTTP-level Imagen safety rejection (a moderation 4xx) routes through `geminiErrorToLlmError` →
+ * `kindFromHttpStatus` and normalizes to `bad_request` — Gemini's `ApiError` carries no structured
+ * content-policy code (unlike OpenAI's `isContentPolicyCode`), so a status-only block has no reliable
+ * content-policy signal to key on; message-sniffing would be fragile. The OpenAI sibling can map both
+ * paths; this is a documented, behaviorally-inert divergence (both kinds are fatal/non-retryable).
  */
 async function geminiGenerateImage(
   transport: GeminiTransport,

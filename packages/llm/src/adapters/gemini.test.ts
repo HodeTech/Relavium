@@ -870,6 +870,15 @@ describe('Gemini adapter — generateMedia (Imagen, sync, 1.AH A2)', () => {
     });
   });
 
+  it('does NOT mistake a present-but-empty raiFilteredReason for content_filter (→ bad_request)', async () => {
+    // The content_filter guard requires a NON-empty reason; an empty one is a contract violation, not a
+    // safety block, so it must fall through to the generic no-data bad_request.
+    const transport = fakeImageTransport({ generatedImages: [{ raiFilteredReason: '' }] });
+    await expect(genMedia(createGeminiAdapter({ transport }), IMG_REQ, 'k')).rejects.toMatchObject({
+      llmError: { kind: 'bad_request' },
+    });
+  });
+
   it('surfaces a transport rejection as a classified LlmProviderError', async () => {
     const transport: GeminiTransport = {
       generate: () => Promise.reject(new Error('unused')),
