@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: Not started — **unblocked and next** (Phase 1 complete, 2026-06-21). Build phase 2 of Product Phase 1; the global milestone in play is **M3**.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md). The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.D** (`run` → engine).
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -108,7 +108,7 @@ flowchart LR
   C --> R
 ```
 
-### 2.A — CLI skeleton (`commander.js`) and process contract
+### 2.A — CLI skeleton (`commander.js`) and process contract — ✅ **Done (PR #40)**
 
 Stand up `apps/cli` with the `commander.js` program, the binary entry point, and
 the cross-cutting process contract (output-mode detection, exit codes, global
@@ -146,7 +146,7 @@ documented surface; `relavium <bogus>` exits `2`; output mode is correctly
 selected across a TTY, a piped stdout, and `CI=true`; the exit-code helper is unit
 tested for codes 0–3 here (the chat `/exit` code 4 is exercised in 2.M).
 
-### 2.B — Config resolution (`~/.relavium` + project `.relavium`)
+### 2.B — Config resolution (`~/.relavium` + project `.relavium`) — ✅ **Done (PR #40)**
 
 Implement the two-level configuration loader the rest of the CLI depends on, with
 the exact precedence in [config-spec.md](../../reference/contracts/config-spec.md).
