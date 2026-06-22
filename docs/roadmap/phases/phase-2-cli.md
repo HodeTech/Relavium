@@ -270,12 +270,18 @@ envelope, and deterministic exit codes — the contract CI jobs assert on.
 - Implement a JSON renderer that serializes each `RunEvent` from the bus to a
   single line on stdout (NDJSON), preserving `type`, `runId`, `timestamp`, and
   `sequenceNumber` exactly per [sse-event-schema.md](../../reference/contracts/sse-event-schema.md).
-- Auto-engage this mode under no-TTY / `--json` / `CI=true`; guarantee it shares
-  the **same** event bus as the TUI (renderer, not a fork).
-- Emit a final structured result line (outputs + totals) and set the exit code
-  from the terminal event; in non-interactive mode a `human_gate:paused` exits
-  with code `3` (the gate-paused code; canonical home
-  [commands.md](../../reference/cli/commands.md)) rather than blocking.
+- Engage NDJSON only under `--json` (the explicit machine opt-in, per
+  [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)); no-TTY / `CI=true`
+  disable the interactive TUI but do **not** by themselves switch stdout to NDJSON (a
+  non-interactive run without `--json` uses the plain line-per-event renderer). The JSON
+  renderer shares the **same** event bus as the TUI (renderer, not a fork).
+- Use the terminal `run:completed` event as the final structured result line — it already
+  carries outputs + totals, so do **not** emit a separate summary line (it would break the
+  every-line-is-a-RunEvent invariant; [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)
+  §2). Set the exit code from the terminal event; in non-interactive mode a `run:paused`
+  (the aggregate suspension event — a human/approval/budget gate) exits with code `3` (the
+  gate-paused code; canonical home [commands.md](../../reference/cli/commands.md)) rather
+  than blocking.
 - Keep stdout pure NDJSON (events/result only); send human-oriented diagnostics to
   stderr so a pipe consumer never has to filter noise.
 - Document the stable envelope and exit-code table additions in
