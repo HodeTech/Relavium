@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md). The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.D** (`run` → engine).
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**. The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.F** (`--json` CI mode), and the **2.E** (ink TUI) + **2.H** (durable run history) run-surface feeders now open.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -202,7 +202,7 @@ and fails cleanly with a bad one; on a host with no keychain, an env var or
 `secrets.enc` resolves the key and absence yields a clear error; no command path
 ever prints a full key.
 
-### 2.D — `run` command wired to `@relavium/core`
+### 2.D — `run` command wired to `@relavium/core` — ✅ **Done (PR #41)**
 
 Wire `relavium run` to the engine: resolve the workflow, validate inputs, call
 `WorkflowEngine.start(...)`, and consume the `RunHandle.events` stream. This is
