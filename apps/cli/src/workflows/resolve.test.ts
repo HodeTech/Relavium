@@ -78,4 +78,37 @@ describe('resolveWorkflowSource', () => {
     expect(isCliError(caught)).toBe(true);
     if (isCliError(caught)) expect(caught.message).toContain('no project');
   });
+
+  it('rejects an existing path that is not a regular file (a directory) rather than reporting "not found"', () => {
+    const dir = join(root, 'flow.relavium.yaml');
+    mkdirSync(dir); // a directory where a workflow file was named
+    let caught: unknown;
+    try {
+      resolveWorkflowSource(dir, { cwd: root, projectConfigDir: undefined });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('not a regular file');
+      expect(caught.message).not.toContain('not found'); // the EACCES/EISDIR-as-miss bug regression guard
+    }
+  });
+
+  it('rejects a workflow file over the size cap before reading it', () => {
+    const path = join(root, 'huge.relavium.yaml');
+    writeFileSync(path, 'a'.repeat(2 * 1024 * 1024 + 1)); // 2 MiB + 1 byte
+    let caught: unknown;
+    try {
+      resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('size limit');
+    }
+  });
 });

@@ -13,6 +13,11 @@ import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
+import {
+  createProviderResolver,
+  neededProviderIds,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -31,6 +36,8 @@ export interface RunCommandDeps {
   readonly global: GlobalOptions;
   /** Injectable so tests (and the 2.K harness) drive a stub provider + the in-memory host. */
   readonly buildEngine?: (options?: BuildEngineOptions) => Promise<WorkflowEngine>;
+  /** Injectable provider seam (key pre-flight + the engine's resolver). Defaults to the env resolver. */
+  readonly providers?: ProviderResolver;
 }
 
 type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -45,6 +52,8 @@ type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
  */
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
   const build = deps.buildEngine ?? defaultBuildEngine;
+  // One resolver shared by the key pre-flight and the engine, reading the CLI's env seam (io.env).
+  const providers = deps.providers ?? createProviderResolver(deps.io.env);
 
   // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery.
   const { projectConfigDir } = loadResolvedConfig({
@@ -66,16 +75,27 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   const inputs = resolveInputs(def, parseInputArgs(args.input));
 
-  const engine = await build();
+  // Pre-flight provider keys: surface a missing key for an inline agent's PRIMARY provider as a clean
+  // exit-2 invocation error (with the RELAVIUM_<PROVIDER>_API_KEY hint) BEFORE the engine starts, rather
+  // than letting it surface mid-run as run:failed (exit 1) with the hint possibly lost. Scoped to keys
+  // that are guaranteed needed (see neededProviderIds): a fallback-chain or `$ref` agent's key is
+  // conditional and still surfaces at runtime, so the pre-flight never false-fails a valid run. The key
+  // is read only to confirm presence here — never logged, stored, or rendered.
+  for (const id of neededProviderIds(def)) {
+    providers.keyFor(id);
+  }
+
+  const engine = await build({ providers });
   const handle = engine.start({ workflow: def, inputs });
 
+  const renderer = deps.global.json ? createJsonRenderer(deps.io) : createPlainRenderer(deps.io);
+  let outcome: RunOutcome | undefined;
+  // Register the cancel handler immediately before the consume loop — no statement between it and the
+  // `try` whose `finally` removes it, so the listener can never leak on an intervening throw.
   const onSigint = (): void => {
     handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
   };
   process.once('SIGINT', onSigint);
-
-  const renderer = deps.global.json ? createJsonRenderer(deps.io) : createPlainRenderer(deps.io);
-  let outcome: RunOutcome | undefined;
   try {
     for await (const event of handle.events) {
       renderer.onEvent(event);

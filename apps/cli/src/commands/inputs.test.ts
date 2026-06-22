@@ -82,6 +82,21 @@ describe('resolveInputs', () => {
     }
   });
 
+  it('rejects an empty number value (Number("") would silently be 0)', () => {
+    try {
+      resolveInputs(TYPED_INPUTS, { count: '', needed: 'x' });
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect(isCliError(err)).toBe(true);
+      if (isCliError(err)) expect(err.code).toBe('invalid_invocation');
+    }
+    expect(() => resolveInputs(TYPED_INPUTS, { count: '   ', needed: 'x' })).toThrow();
+  });
+
+  it('accepts a literal zero for a number input', () => {
+    expect(resolveInputs(TYPED_INPUTS, { count: '0', needed: 'x' })).toMatchObject({ count: 0 });
+  });
+
   it('rejects a non-boolean boolean input', () => {
     expect(() => resolveInputs(TYPED_INPUTS, { flag: 'yes', needed: 'x' })).toThrow();
   });

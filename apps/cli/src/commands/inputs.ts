@@ -53,6 +53,14 @@ export function resolveInputs(
 function coerce(name: string, type: InputDecl['type'], value: string): unknown {
   switch (type) {
     case 'number': {
+      // `Number('') === 0` (and `Number('  ') === 0`), so reject an empty/whitespace value before the
+      // coercion — otherwise `--input n=` would silently yield 0. A literal `n=0` still trims to '0'.
+      if (value.trim() === '') {
+        throw new CliError(
+          'invalid_invocation',
+          `input '${name}' must be a number (got an empty value).`,
+        );
+      }
       const parsed = Number(value);
       if (!Number.isFinite(parsed)) {
         throw new CliError(

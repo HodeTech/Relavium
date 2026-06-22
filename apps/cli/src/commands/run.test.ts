@@ -2,10 +2,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createInMemoryHost } from '@relavium/core';
+import {
+  WorkflowEngine,
+  createInMemoryHost,
+  type NodeExecutor,
+  type NodeOutcome,
+} from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildEngine } from '../engine/build-engine.js';
+import { createProviderResolver } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -40,6 +46,48 @@ workflow:
   edges:
     - { from: start, to: boom }
     - { from: boom, to: out }
+`;
+
+// A human_gate node pauses under the fail-closed `humanGate: {}` wiring → run:paused → exit 3.
+const GATED = `schema_version: '1.0'
+workflow:
+  id: cli-run-gated
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }
+`;
+
+// A node that stalls until the run's AbortSignal fires — lets the SIGINT test cancel mid-run.
+const STALL = `schema_version: '1.0'
+workflow:
+  id: cli-run-stall
+  nodes:
+    - { id: start, type: input }
+    - { id: slow, type: transform, transform: 's' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: slow }
+    - { from: slow, to: done }
+`;
+
+// An agent node referencing an inline agent whose provider (anthropic) needs a key → drives the
+// missing-key pre-flight. Parses fine; the pre-flight throws before the engine is ever built.
+const AGENT_WF = `schema_version: '1.0'
+workflow:
+  id: cli-run-agent
+  agents:
+    - { id: scanner, model: claude-opus-4-8, provider: anthropic, system_prompt: inspect }
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: scanner, prompt_template: 'go' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
 `;
 
 let root: string;
@@ -180,5 +228,111 @@ describe('runCommand', () => {
     }
     expect(isCliError(caught)).toBe(true);
     if (isCliError(caught)) expect(caught.code).toBe('invalid_invocation');
+  });
+
+  it('pauses at a human_gate node and exits 3 (gate-paused)', async () => {
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const { io, out } = captureIo();
+    const code = await runCommand({ workflow: path, input: [] }, deps(io, globalOptions()));
+    expect(code).toBe(EXIT_CODES.gatePaused);
+    // The rendered gateId is the engine-generated id (not the node id); assert the gate type instead.
+    expect(out()).toContain('paused at gate');
+    expect(out()).toContain('(approval)');
+  });
+
+  it('forwards SIGINT as a cooperative cancel → run:cancelled → exit 1, leaking no SIGINT listener', async () => {
+    const path = writeWorkflow('stall.relavium.yaml', STALL);
+    const { io, out } = captureIo();
+    const baseline = process.listeners('SIGINT').length;
+
+    // Resolve the moment the `slow` node begins executing. By then run.ts has already registered its
+    // SIGINT handler (registration is synchronous, immediately before the consume loop and before any
+    // node runs), so firing the handler is race-free and deterministic — no real-timer polling.
+    let signalReached: (() => void) | undefined;
+    const reachedSlow = new Promise<void>((resolve) => {
+      signalReached = resolve;
+    });
+
+    // The `slow` node hangs until the run's AbortSignal fires (the engine's own cancellation-test
+    // pattern), so the run is provably in-flight when we fire the captured SIGINT handler.
+    const stalling: NodeExecutor = {
+      execute: (ctx) => {
+        if (ctx.vertex.id === 'slow') {
+          signalReached?.();
+          return new Promise<NodeOutcome>((resolve) => {
+            const onAbort = (): void => {
+              ctx.signal.removeEventListener('abort', onAbort); // symmetry — no listener left on the signal
+              resolve({ kind: 'completed', output: null });
+            };
+            if (ctx.signal.aborted) {
+              onAbort();
+            } else {
+              ctx.signal.addEventListener('abort', onAbort);
+            }
+          });
+        }
+        return Promise.resolve({ kind: 'completed', output: ctx.vertex.id });
+      },
+    };
+    const buildStalling = (): Promise<WorkflowEngine> =>
+      Promise.resolve(new WorkflowEngine({ host: createInMemoryHost(), executor: stalling }));
+
+    const pending = runCommand(
+      { workflow: path, input: [] },
+      deps(io, globalOptions(), { buildEngine: buildStalling }),
+    );
+
+    await reachedSlow; // the run is parked at `slow`; run.ts's SIGINT handler is registered
+    const onSigint = process.listeners('SIGINT').at(-1);
+    if (typeof onSigint !== 'function') {
+      throw new Error('expected run.ts to register a SIGINT handler');
+    }
+    onSigint('SIGINT'); // === handle.cancel(); the loop is parked at `slow`, so this lands pre-terminal
+
+    const code = await pending;
+    expect(code).toBe(EXIT_CODES.workflowFailed); // run:cancelled → default branch → 1
+    expect(out()).toContain('cancelled');
+    // process.once auto-removed on fire + the finally removeListener (safe no-op) → back to baseline.
+    expect(process.listeners('SIGINT').length).toBe(baseline);
+  }, 15_000); // generous ceiling: the coordination is deterministic, but a cold/starved CI worker is slow
+
+  it('does not leak SIGINT listeners across many sequential runs (2.K harness hygiene)', async () => {
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const baseline = process.listeners('SIGINT').length;
+    for (let i = 0; i < 25; i += 1) {
+      const { io } = captureIo();
+      await runCommand({ workflow: path, input: ['n=1'] }, deps(io, globalOptions()));
+    }
+    expect(process.listeners('SIGINT').length).toBe(baseline);
+  });
+
+  it('rejects a missing provider key for an inline agent before building the engine (exit 2)', async () => {
+    const path = writeWorkflow('agent.relavium.yaml', AGENT_WF);
+    const { io } = captureIo(); // io.env = {} → no RELAVIUM_ANTHROPIC_API_KEY
+    let engineBuilt = false;
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          // The resolver reads io.env ({}), so anthropic's key is absent; the engine must never build.
+          providers: createProviderResolver(io.env),
+          buildEngine: () => {
+            engineBuilt = true;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('RELAVIUM_ANTHROPIC_API_KEY');
+    }
+    expect(engineBuilt).toBe(false);
   });
 });

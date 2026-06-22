@@ -1,7 +1,15 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync, type Stats } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import { CliError } from '../process/errors.js';
+
+/**
+ * Pre-read byte cap for a workflow source, mirroring the core parser's `MAX_SOURCE_CHARS` (2 MiB).
+ * Bytes ≥ chars, so this is a conservative guard that rejects an oversize file from `stat` BEFORE it
+ * is slurped into memory — the parser re-applies the exact char cap. (A multibyte file slightly under
+ * this byte cap may still trip the parser's char cap; that's the authoritative check.)
+ */
+const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 
 export interface WorkflowSource {
   /** The absolute path the YAML was read from (also the parse-error label, made cwd-relative). */
@@ -53,11 +61,48 @@ function workflowCandidatePaths(
   return [join(dir, `${workflowArg}.relavium.yaml`), join(dir, `${workflowArg}.yaml`)];
 }
 
+/**
+ * Read one candidate, mirroring the 2.B config loader's `statSync`-first discipline (load.ts): a
+ * genuine miss (`ENOENT`) returns `undefined` so the next candidate is tried (and the caller reports a
+ * clean "not found"), but an existing-but-unreadable file (`EACCES`, a non-regular file, or one over
+ * the size cap) is a real fault and throws an exit-2 error — never silently mis-reported as "not
+ * found". The size cap is enforced from `stat` before the file is read into memory.
+ */
 function tryRead(path: string): string | undefined {
+  let stats: Stats;
+  try {
+    stats = statSync(path);
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') {
+      return undefined; // this candidate does not exist — try the next
+    }
+    throw new CliError('invalid_invocation', `workflow file '${path}' could not be read.`, {
+      cause: err,
+    });
+  }
+  if (!stats.isFile()) {
+    throw new CliError('invalid_invocation', `workflow path '${path}' is not a regular file.`);
+  }
+  if (stats.size > MAX_WORKFLOW_BYTES) {
+    throw new CliError(
+      'invalid_invocation',
+      `workflow file '${path}' exceeds the ${MAX_WORKFLOW_BYTES}-byte size limit.`,
+    );
+  }
   try {
     return readFileSync(path, 'utf8');
-  } catch {
-    // Not found / unreadable → this candidate does not exist; try the next (a real miss is reported above).
-    return undefined;
+  } catch (err) {
+    throw new CliError('invalid_invocation', `workflow file '${path}' could not be read.`, {
+      cause: err,
+    });
   }
+}
+
+/** Narrow an unknown thrown value to its `errno` string code (e.g. `'ENOENT'`), if present. */
+function errnoCode(err: unknown): string | undefined {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    const code: unknown = err.code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
 }
