@@ -24,7 +24,10 @@ export function renderError(
   } else {
     io.writeErr(`relavium: ${userFacing.message}\n`);
   }
-  if (opts.verbose && value instanceof Error && value.stack !== undefined) {
+  // The raw stack is a human-mode debugging affordance only — never under `--json`, where it would
+  // mix non-JSON text into the structured stderr diagnostic (error-handling.md: a stack is not machine
+  // output). Under `--json` the `{ type: 'error', … }` envelope is the whole stderr diagnostic.
+  if (opts.verbose && !opts.json && value instanceof Error && value.stack !== undefined) {
     io.writeErr(value.stack + '\n');
   }
 }

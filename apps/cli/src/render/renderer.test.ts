@@ -178,9 +178,10 @@ describe('createJsonRenderer', () => {
       const raw: unknown = JSON.parse(line);
       // Each line is EXACTLY a RunEvent: round-trip equality (not just parse-success) catches a stray
       // field, since RunEventSchema is non-strict and would otherwise silently strip it.
-      expect(RunEventSchema.parse(raw)).toEqual(raw);
+      const event = RunEventSchema.parse(raw);
+      expect(event).toEqual(raw);
       expect(raw).toEqual(events[i]); // ...and is verbatim the event it was handed (no reorder/mutation)
-      return RunEventSchema.parse(raw);
+      return event;
     });
     expect(parsed.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 3, 4]); // in monotonic order
     expect(parsed.at(-1)?.type).toBe('run:completed'); // the terminal event IS the result line

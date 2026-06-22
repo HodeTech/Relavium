@@ -212,8 +212,9 @@ describe('runCommand', () => {
       .split('\n')
       .map((line) => {
         const raw: unknown = JSON.parse(line);
-        expect(RunEventSchema.parse(raw)).toEqual(raw);
-        return RunEventSchema.parse(raw);
+        const event = RunEventSchema.parse(raw);
+        expect(event).toEqual(raw); // round-trip equality: each line is EXACTLY a RunEvent (no stray field)
+        return event;
       });
     expect(events[0]?.type).toBe('run:started');
     expect(events.at(-1)?.type).toBe('run:completed'); // the terminal run:completed is the result line
@@ -235,8 +236,9 @@ describe('runCommand', () => {
       .split('\n')
       .map((line) => {
         const raw: unknown = JSON.parse(line);
-        expect(RunEventSchema.parse(raw)).toEqual(raw);
-        return RunEventSchema.parse(raw);
+        const event = RunEventSchema.parse(raw);
+        expect(event).toEqual(raw); // round-trip equality: each line is EXACTLY a RunEvent (no stray field)
+        return event;
       });
     expect(events.at(-1)?.type).toBe('run:failed'); // a run failure is a RunEvent on stdout...
     expect(err()).toBe(''); // ...NOT a {type:error} fault envelope on stderr (that's for CLI faults only)
@@ -342,7 +344,7 @@ describe('runCommand', () => {
     expect(out()).toContain('cancelled');
     // Direct invocation does not auto-remove a `once` listener (only emit() does), so the finally's
     // removeListener is what returns the count to baseline.
-    expect(process.listeners('SIGINT').length).toBe(before.length);
+    expect(process.listeners('SIGINT')).toHaveLength(before.length);
   }, 15_000); // generous ceiling: the coordination is deterministic, but a cold/starved CI worker is slow
 
   it('keeps stdout a pure NDJSON stream ending in run:cancelled under --json', async () => {
@@ -372,8 +374,9 @@ describe('runCommand', () => {
       .split('\n')
       .map((line) => {
         const raw: unknown = JSON.parse(line);
-        expect(RunEventSchema.parse(raw)).toEqual(raw);
-        return RunEventSchema.parse(raw);
+        const event = RunEventSchema.parse(raw);
+        expect(event).toEqual(raw); // round-trip equality: each line is EXACTLY a RunEvent (no stray field)
+        return event;
       });
     expect(events.at(-1)?.type).toBe('run:cancelled'); // the cancelled terminal stays a RunEvent on stdout
     expect(err()).toBe(''); // ...not a {type:error} fault envelope on stderr
@@ -386,7 +389,7 @@ describe('runCommand', () => {
       const { io } = captureIo();
       await runCommand({ workflow: path, input: ['n=1'] }, deps(io, globalOptions()));
     }
-    expect(process.listeners('SIGINT').length).toBe(baseline);
+    expect(process.listeners('SIGINT')).toHaveLength(baseline);
   });
 
   it('rejects a missing provider key for an inline agent before building the engine (exit 2)', async () => {

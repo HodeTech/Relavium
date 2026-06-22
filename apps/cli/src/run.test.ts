@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CliIo } from './process/io.js';
+import { CLI_VERSION } from './program.js';
 import { run } from './run.js';
 
 function makeIo(): { io: CliIo; out: () => string; err: () => string } {
@@ -53,23 +54,37 @@ describe('run', () => {
   it('prints the version and exits 0 for --version', async () => {
     const { io, out } = makeIo();
     expect(await run(argv('--version'), io)).toBe(0);
-    expect(out()).toContain('0.0.0');
+    expect(out()).toContain(CLI_VERSION);
   });
 
   // The `--json` machine-output contract (ADR-0049) is scoped to a workflow RUN. --help / --version /
-  // a bare invocation are exit-0 meta-operations that still print human text to stdout under --json.
+  // a bare invocation are exit-0 meta-operations that still print human text to stdout under --json —
+  // and nothing to stderr.
   it('keeps --help / --version / bare as human-on-stdout exit-0 meta-ops even under --json', async () => {
     const help = makeIo();
     expect(await run(argv('--json', '--help'), help.io)).toBe(0);
     expect(help.out()).toContain('Usage: relavium');
+    expect(help.err()).toBe('');
 
     const version = makeIo();
     expect(await run(argv('--json', '--version'), version.io)).toBe(0);
-    expect(version.out()).toContain('0.0.0');
+    expect(version.out()).toContain(CLI_VERSION);
+    expect(version.err()).toBe('');
 
     const bare = makeIo();
     expect(await run(argv('--json'), bare.io)).toBe(0);
     expect(bare.out()).toContain('Usage: relavium');
+    expect(bare.err()).toBe('');
+  });
+
+  it('keeps stderr a single JSON envelope under --json even with --verbose (no raw stack)', async () => {
+    const { io, out, err } = makeIo();
+    expect(await run(argv('create', '--json', '--verbose'), io)).toBe(2); // `create` is a stub (2.J)
+    expect(out()).toBe('');
+    // stderr is exactly one parseable JSON line — --verbose adds no raw stack text under --json.
+    const lines = err().trimEnd().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(isErrorEnvelope(JSON.parse(lines[0] ?? ''))).toBe(true);
   });
 
   it('exits 2 for an unknown command', async () => {
