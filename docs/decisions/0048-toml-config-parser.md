@@ -39,6 +39,15 @@ are committed, shared, versioned formats.
 
 ## Decision
 
+> **Amended 2026-06-22 (2.B implementation):** the implemented error type is named
+> **`ConfigError`** (not `ConfigSyntaxError`), because it covers the whole load surface —
+> unreadable file, over-size, TOML-syntax, **and** schema-invalid — not syntax alone; it
+> carries `filePath` and maps to exit `2`. Additionally, the schema-invalid detail is derived
+> from the Zod issue's **code + schema-side data** (expected type, allowed options, unknown key
+> names), never `issue.message`/`issue.received` (which can embed the received value) — so the
+> "never the source text/value" guarantee below holds for the schema path too, not just TOML
+> syntax. The hardening guarantees are otherwise unchanged.
+
 **We will parse config TOML with [`smol-toml`](https://github.com/squirrelchat/smol-toml), a
 runtime dependency of `apps/cli` only, pinned through the pnpm `catalog:` — see
 [tech-stack.md](../tech-stack.md) for the version (added under the §9a cooling window).**

@@ -54,6 +54,53 @@ describe('loadConfigFile', () => {
     writeFileSync(file, 'api_key = "should-never-be-here"\n');
     expect(() => loadConfigFile(file, GlobalConfigSchema)).toThrowError(ConfigError);
   });
+
+  it('never echoes a config value in a schema-error message (hygiene)', () => {
+    const file = join(dir, 'config.toml');
+    writeFileSync(file, 'update_channel = "super-secret-leak-me"\n');
+    let thrown: unknown;
+    try {
+      loadConfigFile(file, GlobalConfigSchema);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    if (thrown instanceof ConfigError) {
+      expect(thrown.message).not.toContain('super-secret-leak-me');
+      expect(thrown.message).toContain('update_channel'); // the field path is named
+    }
+  });
+
+  it('rejects a config file over the size limit before parsing', () => {
+    const file = join(dir, 'big.toml');
+    writeFileSync(file, `x = "${'a'.repeat(256 * 1024)}"\n`);
+    let thrown: unknown;
+    try {
+      loadConfigFile(file, GlobalConfigSchema);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    if (thrown instanceof ConfigError) {
+      expect(thrown.exitCode).toBe(2);
+      expect(thrown.message.toLowerCase()).toContain('size limit');
+    }
+  });
+
+  it('throws a ConfigError when the path is present but unreadable (a directory)', () => {
+    const subdir = join(dir, 'a-directory');
+    mkdirSync(subdir);
+    let thrown: unknown;
+    try {
+      loadConfigFile(subdir, GlobalConfigSchema);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    if (thrown instanceof ConfigError) {
+      expect(thrown.message).toContain('could not be read');
+    }
+  });
 });
 
 describe('loadResolvedConfig', () => {

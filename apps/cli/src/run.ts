@@ -3,11 +3,7 @@ import { CommanderError } from 'commander';
 import { toUserFacing } from './process/errors.js';
 import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
 import type { CliIo } from './process/io.js';
-import {
-  assertNoGlobalOptionConflicts,
-  extractGlobalOptions,
-  type RawGlobalOptions,
-} from './process/options.js';
+import { assertNoGlobalOptionConflicts, extractGlobalOptions } from './process/options.js';
 import { renderError } from './process/render-error.js';
 import { buildProgram } from './program.js';
 
@@ -19,23 +15,27 @@ import { buildProgram } from './program.js';
  * reject** — a thrown error becomes a rendered error plus an exit code.
  */
 export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode> {
-  let raw: RawGlobalOptions = {};
-  let rest: readonly string[];
+  const { raw, rest, error: extractError } = extractGlobalOptions(argv);
+  // `raw` is fully populated by extraction (it never throws), so the render honors any
+  // `--json`/`--verbose` even when a later global flag is the thing that failed.
+  const renderCtx = { json: raw.json === true, verbose: raw.verbose === true };
+
+  if (extractError !== undefined) {
+    renderError(extractError, renderCtx, io);
+    return extractError.exitCode;
+  }
   try {
-    const extracted = extractGlobalOptions(argv);
-    raw = extracted.raw;
-    rest = extracted.rest;
     assertNoGlobalOptionConflicts(raw);
   } catch (err) {
-    renderError(err, { json: raw.json === true, verbose: raw.verbose === true }, io);
+    renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;
   }
 
   const program = buildProgram(io); // `exitOverride` is set inside, before subcommands.
 
-  // Bare invocation (no subcommand, only `[node, script]` after global extraction): print
-  // help and exit 0, rather than letting commander succeed silently.
-  if (rest.length <= 2) {
+  // Bare invocation — no subcommand after global extraction (only the `[node, script]` prefix,
+  // optionally a lone `--`): print help and exit 0 rather than letting commander error.
+  if (!rest.slice(2).some((token) => token !== '--')) {
     io.writeOut(program.helpInformation());
     return EXIT_CODES.success;
   }
@@ -50,7 +50,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode>
       return err.exitCode === 0 ? EXIT_CODES.success : EXIT_CODES.invalidInvocation;
     }
     // A CliError thrown by a command action, or an unexpected throw.
-    renderError(err, { json: raw.json === true, verbose: raw.verbose === true }, io);
+    renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;
   }
 }

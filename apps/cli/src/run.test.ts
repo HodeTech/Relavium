@@ -75,4 +75,18 @@ describe('run', () => {
     expect(await run(argv('--verbose', '--quiet', 'list'), io)).toBe(2);
     expect(err()).toContain('cannot be combined');
   });
+
+  it('renders the JSON error envelope when --json precedes a failing global flag', async () => {
+    const { io, out } = makeIo();
+    expect(await run(argv('--json', '--cwd'), io)).toBe(2);
+    const parsed = JSON.parse(out().trim()) as { type: string; code: string };
+    expect(parsed.type).toBe('error');
+    expect(parsed.code).toBe('invalid_invocation');
+  });
+
+  it('treats a lone -- as a bare invocation (prints help, exits 0)', async () => {
+    const { io, out } = makeIo();
+    expect(await run(argv('--'), io)).toBe(0);
+    expect(out()).toContain('Usage: relavium');
+  });
 });

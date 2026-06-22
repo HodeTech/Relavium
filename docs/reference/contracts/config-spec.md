@@ -105,6 +105,11 @@ max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress 
 on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
 ```
 
+> **Project-scoped MCP servers.** `project.toml` / `workspace.toml` may also declare
+> `[[mcp_servers]]` entries (the same shape as the global block above); they merge with the
+> global registrations per the [resolution order](#resolution-order) — a project server
+> overrides a global one with the same `name`. (Schema: `ProjectConfigSchema.mcp_servers`.)
+
 > The `[chat]` block sets defaults for the **agent-first** chat entry point
 > ([agent-session-spec.md](agent-session-spec.md), [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),
 > distinct from `[defaults]` (which governs **workflow** runs). It does **not** define its own command

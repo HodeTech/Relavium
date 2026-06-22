@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { findProjectConfigDir, globalConfigDir } from './paths.js';
+import { ensureGlobalConfigDir, findProjectConfigDir, globalConfigDir } from './paths.js';
 
 describe('globalConfigDir', () => {
   it('is <home>/.relavium', () => {
@@ -40,5 +40,22 @@ describe('findProjectConfigDir', () => {
     const nested = join(root, 'y');
     mkdirSync(nested);
     expect(findProjectConfigDir(nested)).toBeUndefined();
+  });
+});
+
+describe('ensureGlobalConfigDir', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'relavium-home-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('creates ~/.relavium and its tmp/ idempotently', () => {
+    const dir = ensureGlobalConfigDir(home);
+    expect(dir).toBe(join(home, '.relavium'));
+    expect(existsSync(join(home, '.relavium', 'tmp'))).toBe(true);
+    expect(() => ensureGlobalConfigDir(home)).not.toThrow();
   });
 });

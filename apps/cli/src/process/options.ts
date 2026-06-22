@@ -31,13 +31,20 @@ export interface ExtractedArgv {
   readonly raw: RawGlobalOptions;
   /** argv with the global flags removed — `[node, script, ...command tokens]`. */
   readonly rest: string[];
+  /**
+   * A malformed-global-flag error (e.g. `--cwd` with no value). **Returned, not thrown**, so the
+   * caller can render it honoring any `--json`/`--verbose` already parsed into `raw` before it.
+   */
+  readonly error?: CliError;
 }
 
 /**
  * Pull the position-independent global flags out of argv so they may appear anywhere on the
  * command line. `commander` then parses only the remaining commands and their own options
  * (which is why the globals are documented via `addHelpText`, not `.option`, on the program).
- * `--help` / `--version` are deliberately left for `commander`.
+ * `--help` / `--version` are deliberately left for `commander`. A POSIX `--` terminator stops
+ * extraction: `--` and everything after are passed to `commander` verbatim, so a literal
+ * `--json` can be a command argument.
  */
 export function extractGlobalOptions(argv: readonly string[]): ExtractedArgv {
   const prefix = argv.slice(0, 2);
@@ -50,6 +57,11 @@ export function extractGlobalOptions(argv: readonly string[]): ExtractedArgv {
     if (token === undefined) {
       continue;
     }
+    if (token === '--') {
+      // End-of-options: keep `--` and everything after as command tokens, verbatim.
+      rest.push(...tokens.slice(i));
+      break;
+    }
     if (token === '--json') {
       raw.json = true;
     } else if (token === '--no-color') {
@@ -61,24 +73,36 @@ export function extractGlobalOptions(argv: readonly string[]): ExtractedArgv {
     } else if (token === '--cwd' || token === '--config') {
       const value = tokens[i + 1];
       if (value === undefined || value.startsWith('-')) {
-        throw new CliError('invalid_invocation', `\`${token}\` requires an argument.`);
+        return { raw, rest: [...prefix, ...rest], error: requiresArgument(token) };
       }
-      if (token === '--cwd') {
-        raw.cwd = value;
-      } else {
-        raw.config = value;
-      }
+      assignValueFlag(raw, token, value);
       i += 1;
-    } else if (token.startsWith('--cwd=')) {
-      raw.cwd = token.slice('--cwd='.length);
-    } else if (token.startsWith('--config=')) {
-      raw.config = token.slice('--config='.length);
+    } else if (token.startsWith('--cwd=') || token.startsWith('--config=')) {
+      const eq = token.indexOf('=');
+      const flag = token.slice(0, eq);
+      const value = token.slice(eq + 1);
+      if (value === '') {
+        return { raw, rest: [...prefix, ...rest], error: requiresArgument(flag) };
+      }
+      assignValueFlag(raw, flag, value);
     } else {
       rest.push(token);
     }
   }
 
   return { raw, rest: [...prefix, ...rest] };
+}
+
+function assignValueFlag(raw: RawGlobalOptions, flag: string, value: string): void {
+  if (flag === '--cwd') {
+    raw.cwd = value;
+  } else {
+    raw.config = value;
+  }
+}
+
+function requiresArgument(flag: string): CliError {
+  return new CliError('invalid_invocation', `\`${flag}\` requires a non-empty argument.`);
 }
 
 /** The one cross-flag rule: `--verbose` and `--quiet` are mutually exclusive. */

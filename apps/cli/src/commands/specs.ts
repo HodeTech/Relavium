@@ -5,9 +5,12 @@ import { CliError } from '../process/errors.js';
 /**
  * The documented command surface (canonical home:
  * [commands.md](../../../../docs/reference/cli/commands.md)). Workstream 2.A registers the
- * whole surface so `--help` is complete and every command errors **cleanly**; each command's
- * real, framework-free core lands in its own workstream (`run` at 2.D, the read commands at
- * 2.I, the authoring commands at 2.J, the gate at 2.G, keys at 2.C, chat/agent at 2.M–2.Q).
+ * **confirmed pre-chat surface** below so `--help` is complete for it and every command errors
+ * **cleanly**; each command's real, framework-free core lands in its own workstream (`run` at
+ * 2.D, the read commands at 2.I, the authoring commands at 2.J, the gate at 2.G, keys at 2.C).
+ * The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`) and the
+ * `gate list` / `budget resume` subcommands are **registered with their own workstreams**
+ * (2.M–2.Q, 2.G), not here.
  */
 interface CommandOption {
   readonly flags: string;

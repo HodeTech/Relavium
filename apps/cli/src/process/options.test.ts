@@ -33,11 +33,35 @@ describe('extractGlobalOptions', () => {
     expect(extractGlobalOptions(argv('--no-color')).raw.color).toBe(false);
   });
 
-  it('throws invalid_invocation when --cwd has no argument', () => {
-    expect(() => extractGlobalOptions(argv('--cwd'))).toThrowError(/requires an argument/);
-    expect(() => extractGlobalOptions(argv('--config', '--json'))).toThrowError(
-      /requires an argument/,
-    );
+  it('reports (not throws) invalid_invocation when --cwd / --config has no argument', () => {
+    const missingCwd = extractGlobalOptions(argv('--cwd'));
+    expect(missingCwd.error?.code).toBe('invalid_invocation');
+    expect(missingCwd.error?.message).toMatch(/requires a non-empty argument/);
+    expect(extractGlobalOptions(argv('--config', '--json')).error?.code).toBe('invalid_invocation');
+  });
+
+  it('reports invalid_invocation for an empty =-form value', () => {
+    expect(extractGlobalOptions(argv('--cwd=')).error?.code).toBe('invalid_invocation');
+    expect(extractGlobalOptions(argv('--config=')).error?.code).toBe('invalid_invocation');
+  });
+
+  it('keeps globals parsed before a failing flag (so --json is honored on the error)', () => {
+    const { raw, error } = extractGlobalOptions(argv('--json', '--cwd'));
+    expect(raw.json).toBe(true);
+    expect(error?.code).toBe('invalid_invocation');
+  });
+
+  it('honors -- as end-of-options: stops extracting and passes the rest verbatim', () => {
+    const { raw, rest } = extractGlobalOptions(argv('run', '--', '--json'));
+    expect(raw.json).toBeUndefined();
+    expect(rest).toEqual(['node', 'relavium', 'run', '--', '--json']);
+  });
+
+  it('keeps globals before -- but not after it', () => {
+    const { raw, rest } = extractGlobalOptions(argv('--json', 'run', '--', '--cwd', 'x'));
+    expect(raw.json).toBe(true);
+    expect(raw.cwd).toBeUndefined();
+    expect(rest).toEqual(['node', 'relavium', 'run', '--', '--cwd', 'x']);
   });
 });
 

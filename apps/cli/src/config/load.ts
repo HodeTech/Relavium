@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { GlobalConfigSchema, ProjectConfigSchema } from '@relavium/shared';
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 import { parse as parseToml } from 'smol-toml';
-import type { ZodError, ZodType } from 'zod';
+import type { ZodError, ZodIssue, ZodType } from 'zod';
 
 import { ConfigError } from './errors.js';
 import { findProjectConfigDir, globalConfigDir } from './paths.js';
@@ -114,12 +114,39 @@ function tomlPosition(err: unknown): string {
   return '';
 }
 
-/** First Zod issue as a field-attributed message (the path + constraint, never a value). */
+/** First Zod issue as a field-attributed, **value-free** message (path + a code-derived reason). */
 function formatZodError(error: ZodError): string {
   const issue = error.issues[0];
   if (issue === undefined) {
     return 'failed schema validation';
   }
   const path = issue.path.join('.');
-  return path.length > 0 ? `${path}: ${issue.message}` : issue.message;
+  const reason = safeIssueReason(issue);
+  return path.length > 0 ? `${path}: ${reason}` : reason;
+}
+
+/**
+ * A safe, value-free reason derived from the issue's CODE and schema-side data (the expected
+ * type, the allowed enum options, the unknown key names) — **never** `issue.message`, which
+ * embeds the received value for several Zod codes (e.g. `invalid_enum_value` →
+ * "received 'x'"), and never `issue.received`. Config files hold no secrets (config-spec.md),
+ * but the loader is the enforcement point and must not rely on that policy holding.
+ */
+function safeIssueReason(issue: ZodIssue): string {
+  switch (issue.code) {
+    case 'unrecognized_keys':
+      return `unknown key(s): ${issue.keys.join(', ')}`;
+    case 'invalid_type':
+      return `expected ${issue.expected}`;
+    case 'invalid_enum_value':
+      return `must be one of: ${issue.options.map(String).join(', ')}`;
+    case 'too_small':
+      return 'value is too small';
+    case 'too_big':
+      return 'value is too large';
+    case 'invalid_string':
+      return 'value is not a valid string';
+    default:
+      return 'value is invalid';
+  }
 }
