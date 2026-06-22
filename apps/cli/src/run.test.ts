@@ -22,14 +22,16 @@ function makeIo(): { io: CliIo; out: () => string; err: () => string } {
 const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
 
 /** Runtime-validate the parsed `--json` error envelope rather than asserting its type. */
-function isErrorEnvelope(value: unknown): value is { type: string; code: string } {
+function isErrorEnvelope(value: unknown): value is { type: string; code: string; message: string } {
   return (
     typeof value === 'object' &&
     value !== null &&
     'type' in value &&
     typeof value.type === 'string' &&
     'code' in value &&
-    typeof value.code === 'string'
+    typeof value.code === 'string' &&
+    'message' in value &&
+    typeof value.message === 'string'
   );
 }
 
@@ -57,7 +59,7 @@ describe('run', () => {
   it('exits 2 for an unknown command', async () => {
     const { io, err } = makeIo();
     expect(await run(argv('bogus'), io)).toBe(2);
-    expect(err()).toMatch(/unknown command/i);
+    expect(err().toLowerCase()).toContain('unknown command');
   });
 
   it('exits 2 when a required argument is missing', async () => {
@@ -69,7 +71,11 @@ describe('run', () => {
     const { io, out, err } = makeIo();
     expect(await run(argv('run', './wf.relavium.yaml'), io)).toBe(2);
     expect(err()).toContain('not available yet');
-    expect(err()).not.toMatch(/\n\s+at /); // no stack frame line as primary output
+    // No stack frame as primary output — a Node frame line is `    at …` (string check, no regex).
+    const hasStackFrame = err()
+      .split('\n')
+      .some((line) => line.trimStart().startsWith('at '));
+    expect(hasStackFrame).toBe(false);
     expect(out()).toBe(''); // human errors go to stderr, stdout stays clean
   });
 
@@ -99,6 +105,19 @@ describe('run', () => {
     if (isErrorEnvelope(parsed)) {
       expect(parsed.type).toBe('error');
       expect(parsed.code).toBe('invalid_invocation');
+    }
+  });
+
+  it('renders a commander parse error as a JSON envelope (stdout) under --json, stderr clean', async () => {
+    const { io, out, err } = makeIo();
+    expect(await run(argv('--json', 'bogus'), io)).toBe(2);
+    expect(err()).toBe(''); // commander's human message suppressed under --json
+    const parsed: unknown = JSON.parse(out().trim());
+    expect(isErrorEnvelope(parsed)).toBe(true);
+    if (isErrorEnvelope(parsed)) {
+      expect(parsed.type).toBe('error');
+      expect(parsed.code).toBe('invalid_invocation');
+      expect(parsed.message.startsWith('error:')).toBe(false); // commander's prefix stripped
     }
   });
 

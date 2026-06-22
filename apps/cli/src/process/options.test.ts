@@ -36,7 +36,7 @@ describe('extractGlobalOptions', () => {
   it('reports (not throws) invalid_invocation when --cwd / --config has no argument', () => {
     const missingCwd = extractGlobalOptions(argv('--cwd'));
     expect(missingCwd.error?.code).toBe('invalid_invocation');
-    expect(missingCwd.error?.message).toMatch(/requires a non-empty argument/);
+    expect(missingCwd.error?.message).toContain('requires a non-empty argument');
     expect(extractGlobalOptions(argv('--config', '--json')).error?.code).toBe('invalid_invocation');
   });
 
@@ -89,7 +89,7 @@ describe('resolveGlobalOptions', () => {
 
   it('rejects --verbose combined with --quiet', () => {
     expect(() => resolveGlobalOptions({ verbose: true, quiet: true }, '/w')).toThrowError(
-      /cannot be combined/,
+      'cannot be combined',
     );
   });
 });

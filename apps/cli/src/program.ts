@@ -24,7 +24,10 @@ Global options (usable anywhere on the command line):
  * action. All output is routed through the injected `CliIo` so the program is testable with
  * no real stdout/TTY. Global flags are extracted upstream (run.ts) and never reach here.
  */
-export function buildProgram(io: CliIo): Command {
+export function buildProgram(
+  io: CliIo,
+  options?: { readonly suppressErrorOutput?: boolean },
+): Command {
   const program = new Command();
   program
     .name('relavium')
@@ -35,7 +38,11 @@ export function buildProgram(io: CliIo): Command {
         io.writeOut(str);
       },
       writeErr: (str) => {
-        io.writeErr(str);
+        // Under --json the caller re-renders commander's parse errors as a JSON envelope on
+        // stdout, so commander's own human stderr message is suppressed to avoid a double.
+        if (options?.suppressErrorOutput !== true) {
+          io.writeErr(str);
+        }
       },
     })
     .addHelpText('after', GLOBAL_OPTIONS_HELP);
