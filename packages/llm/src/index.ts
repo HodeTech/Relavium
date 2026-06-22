@@ -151,3 +151,7 @@ export type {
   AnthropicToolWire,
   GeminiToolWire,
 } from './tool-normalizer.js';
+
+// Default keyless provider registry — the provider→adapter mapping a host wires into
+// `resolveProvider` (ADR-0038); the key is injected per call via `keyFor`, never here (ADR-0011).
+export { defaultProviders } from './providers.js';
