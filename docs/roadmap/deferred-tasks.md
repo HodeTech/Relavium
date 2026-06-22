@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-21
+> Last updated: 2026-06-22
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -359,7 +359,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `AbortSignal` cannot cancel one branch without cancelling the run, and a handler cannot cancel sibling
   vertices. The engine authors already flagged this as a "1.P refinement" (engine.ts:26-28). Promote to a
   scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
-- [ ] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
+- [x] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
   resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**
   the author opted into (not an event-payload leak, so it does not violate the events rule the 1.P fix
@@ -367,9 +367,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   rejected at parse — is a policy call. **Decided (2026-06-21, maintainer): REJECT AT PARSE** — a
   `{{ inputs.<secret_name> }}` reference inside a `prompt_template` is a parse-time error with a clear
   message (secure-by-default; surfaces author intent explicitly rather than silently egressing or silently
-  masking). **Implement in Phase-2 workstream 2.D** (the first live consumer of `prompt_template` via
-  `relavium run`), not before — no live `prompt_template` consumer exists yet. *(low → 2.D ·
-  packages/core/src/engine/agent-runner.ts + the parse/validation layer; security-review.md)*
+  masking). **Resolved — verified already-satisfied during 2.D (2026-06-22).** The decided policy was
+  already enforced by the 1.L2 parse-layer taint analysis: `collectReferences` covers the agent node's
+  `prompt_template` (`collect.ts`), `analyzeSecretTaint` flags any tainted reference reaching model-visible
+  text, and `parseWorkflow` turns a non-empty result into a `WorkflowSecretLeakError` (`secret_interpolation`)
+  before a `WorkflowDefinition` is ever produced — so a run never starts on such a file. Covered by tests for
+  the direct case (`analyze.test.ts` "rejects a secret-typed input interpolated directly into a prompt"), the
+  transitive-via-`context` case, and `$ref`/registry agents (`analyzeResolvedAgentTaint`). 2.D made
+  `relavium run` the first live `prompt_template` consumer and confirmed the guard holds end-to-end; no new
+  code was required. *(low → 2.D · packages/core/src/interpolation/analyze.ts + collect.ts + parser.ts;
+  security-review.md)*
 
 ## Node retry (1.S) follow-ups
 
@@ -445,6 +452,27 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
   structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
   validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
+
+## Phase-2 CLI (2.D) follow-ups
+
+> **2026-06-22 2.D (`relavium run`) implementation.** The CLI was wired to `@relavium/core` — the first
+> real engine consumer. The planned scope-splits it leans on (rich `ink` TUI → 2.E; finalized `--json`
+> envelope → 2.F; interactive gate prompt + `relavium gate` resume → 2.G; durable run history → 2.H;
+> provider keys from the OS keychain → 2.C) are tracked as their own workstreams in
+> [phases/phase-2-cli.md](phases/phase-2-cli.md) and summarized in the `### relavium run` *Implementation
+> status* note in [../reference/cli/commands.md](../reference/cli/commands.md), so they are **not**
+> duplicated here. The one item below is an unscheduled security follow-up with no numbered workstream yet.
+
+- [ ] **CLI `ToolHost` is fail-closed — built-in tool host capabilities (filesystem / process / egress)
+  are not wired.** 2.D builds the engine's tool registry with an empty `ToolHost` (`createToolRegistry({
+  tools: BUILTIN_TOOLS, host: {} })`), so every built-in tool that needs a host capability is cleanly
+  *unavailable* rather than backed by an insecure stub. Wiring these capabilities is deliberately deferred
+  to a dedicated, **security-reviewed** workstream: the egress half is the existing host-side SSRF item
+  above (DNS-resolve + connect-by-validated-IP + per-hop redirect re-validation in `EgressCapability.fetch`),
+  and the filesystem/process halves need their own scope/permission model ([security-review.md](../standards/security-review.md)).
+  Until then, a workflow whose agent calls a capability-backed built-in tool surfaces a clean "tool
+  unavailable" failure, never a half-implemented or unsafe execution. *(medium · apps/cli/src/engine/build-engine.ts;
+  security-review.md; egress → the SSRF item above)*
 
 ## Schema / validation hardening
 

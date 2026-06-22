@@ -96,9 +96,12 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts
 relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts --json
 ```
 
-- `--input k=v` (repeatable) supplies typed workflow inputs (see the `inputs` block in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)).
+- `--input k=v` (repeatable) supplies typed workflow inputs (see the `inputs` block in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)). Each value is coerced to the input's declared type; an unknown key, a missing required input, or a value that does not coerce is an invalid invocation (exit `2`).
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
+- `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` it is on the NDJSON event line, otherwise read it from `relavium status`/`relavium logs`.
+
+> **Implementation status (as of workstream 2.D).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, and SIGINT→cancel are live. Still landing in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer), the finalized `--json` envelope (2.F — until then a raw one-RunEvent-per-line NDJSON dump), the interactive inline gate prompt and `relavium gate` resume (2.G/2.H — until then a `human_gate` node exits `3`), provider keys from the OS keychain (2.C — until then the `RELAVIUM_<PROVIDER>_API_KEY` env fallback per [config-spec.md](../contracts/config-spec.md)), and durable run history (2.H — until then runs are in-memory). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
 
 ### `relavium list`
 

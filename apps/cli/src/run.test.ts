@@ -69,7 +69,7 @@ describe('run', () => {
 
   it('exits 2 with a clean not-implemented message for a stub command (no stack leak)', async () => {
     const { io, out, err } = makeIo();
-    expect(await run(argv('run', './wf.relavium.yaml'), io)).toBe(2);
+    expect(await run(argv('create'), io)).toBe(2); // `create` is still a stub (2.J)
     expect(err()).toContain('not available yet');
     // No stack frame as primary output — a Node frame line is `    at …` (string check, no regex).
     const hasStackFrame = err()
@@ -81,7 +81,7 @@ describe('run', () => {
 
   it('emits a structured JSON error envelope on stdout under --json (flag after the subcommand)', async () => {
     const { io, out } = makeIo();
-    const code = await run(argv('run', './wf.relavium.yaml', '--json'), io);
+    const code = await run(argv('create', '--json'), io); // `create` is still a stub (2.J)
     expect(code).toBe(2);
     const parsed: unknown = JSON.parse(out().trim());
     expect(isErrorEnvelope(parsed)).toBe(true);
