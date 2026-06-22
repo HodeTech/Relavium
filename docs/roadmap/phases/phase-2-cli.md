@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**. The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.F** (`--json` CI mode), and the **2.E** (ink TUI) + **2.H** (durable run history) run-surface feeders now open.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md). The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.K** (the engine regression harness), with the **2.E** (ink TUI) + **2.H** (durable run history) run-surface feeders open.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -260,7 +260,7 @@ status transitions, streaming tokens on the active node, and a running cost that
 matches the final summary; `--no-color` produces plain output; no event is dropped
 under a high token rate (verified against the JSON stream's event count).
 
-### 2.F — CI / non-interactive `--json` mode + exit codes
+### 2.F — CI / non-interactive `--json` mode + exit codes — ✅ **Done (PR #42)**
 
 Implement the machine-readable path: one `RunEvent` per line (NDJSON), a stable
 envelope, and deterministic exit codes — the contract CI jobs assert on.
