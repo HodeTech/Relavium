@@ -41,8 +41,12 @@ export interface ParseWorkflowOptions {
   readonly source?: string;
 }
 
-/** A pre-parse character cap (≈ bytes for authored ASCII) — workflow files are small; a DoS guard. */
-const MAX_SOURCE_CHARS = 2 * 1024 * 1024; // 2 MiB
+/**
+ * The pre-parse character cap (≈ bytes for authored ASCII) — workflow files are small; a DoS guard.
+ * Exported so a host (e.g. the CLI) can apply the SAME limit as a pre-read byte guard before slurping a
+ * file, instead of hard-coding a copy that could silently desync from this authoritative cap.
+ */
+export const MAX_SOURCE_CHARS = 2 * 1024 * 1024; // 2 MiB
 
 /**
  * Parse + validate a workflow YAML string. Throws {@link WorkflowSyntaxError} on a YAML fault or
