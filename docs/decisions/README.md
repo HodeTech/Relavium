@@ -90,6 +90,8 @@ flowchart TD
 | 0044 | [Media access & spend governance — `read_media` scope-set authz, the byte-delivery gate, the `save_to` write port, and the per-modality media cost (amends 0028 and 0029)](0044-media-access-governance-read-media-save-to-cost.md) | Accepted | 2026-06-18 |
 | 0045 | [Engine-owned async media-job loop (1.AG/A5) — the `generateMedia`/`pollMediaJob` poll/checkpoint/resume/cancel LRO, the `media_job:submitted` derived state, inline-vs-generative routing, and media-cost realization (amends 0031, 0036, 0040)](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) | Accepted | 2026-06-20 |
 | 0046 | [Inline media-out routes through `generate()`; the streaming media triad is host-deferred (amends 0031, 0038)](0046-inline-media-out-via-generate-streaming-triad-deferred.md) | Accepted | 2026-06-20 |
+| 0047 | [CLI framework — `commander` + `ink` + `@clack/prompts`, confined to `apps/cli`](0047-cli-framework-commander-ink-clack.md) | Accepted | 2026-06-22 |
+| 0048 | [TOML parser for config files — `smol-toml`, confined to the `apps/cli` config loader](0048-toml-config-parser.md) | Accepted | 2026-06-22 |
 
 ## Creating a new ADR
 
