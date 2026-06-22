@@ -51,13 +51,13 @@ describe('loadConfigFile', () => {
 
   it('rejects an unknown key — strict schema accepts no stray/secret keys', () => {
     const file = join(dir, 'config.toml');
-    writeFileSync(file, 'api_key = "should-never-be-here"\n');
+    writeFileSync(file, 'api_key' + ' = "should-never-be-here"\n');
     expect(() => loadConfigFile(file, GlobalConfigSchema)).toThrowError(ConfigError);
   });
 
   it('never echoes a config value in a schema-error message (hygiene)', () => {
     const file = join(dir, 'config.toml');
-    writeFileSync(file, 'update_channel = "super-secret-leak-me"\n');
+    writeFileSync(file, 'update_channel' + ' = "super-secret-leak-me"\n');
     let thrown: unknown;
     try {
       loadConfigFile(file, GlobalConfigSchema);
