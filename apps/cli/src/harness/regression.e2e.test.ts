@@ -225,29 +225,47 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
   }
 
   // The per-fixture loop above enters at the `runCommand` boundary (the engine-fidelity entry point).
-  // This scenario instead drives the SAME fixture through the full `run(argv)` CLI shell —
+  // This scenario instead drives a fixture through the full `run(argv)` CLI shell —
   // argv → extractGlobalOptions → commander → the `run <workflow>` subcommand action → runCommand →
   // terminal exit code — and asserts it yields the IDENTICAL NDJSON + exit code the harness pins. It
-  // proves the argv-parsing shell wires a real workflow run faithfully (positional workflow, repeatable
-  // `--input`, the position-independent `--json` global), closing the gap that `run.test.ts` leaves: that
-  // suite exercises the shell only for meta-ops (`--help`/`--version`) and faults (exit 2), never a real
-  // run reaching a terminal exit (0/1/3). One representative deterministic fixture suffices — the shell
-  // is workflow-agnostic, so this validates the harness's `runCommand` entry point for every fixture.
+  // proves the argv-parsing shell wires a real workflow run faithfully (the positional `<workflow>`, the
+  // repeatable `--input`, the position-independent `--json` global), closing the gap that `run.test.ts`
+  // leaves: that suite exercises the shell only for meta-ops (`--help`/`--version`) and faults (exit 2),
+  // never a real run reaching a terminal exit (0/1/3).
+  //
+  // It uses the conditional fixture at n=15 ON PURPOSE — that is the only arm whose topology proves
+  // `--input` actually threaded. A missing/mis-parsed `--input` makes `inputs.n >= 10` false, routing to
+  // `lo` (the no-input default), which flips `node:skipped:hi`↔`node:skipped:lo` and fails the
+  // assertion. A topology-flat fixture (e.g. sequential, whose `inputs.n * 2` yields NaN — not an error —
+  // when n is absent) would pass even if the shell dropped `--input`; and n=3 also routes to `lo`, so it
+  // could not distinguish a dropped flag from a threaded one. n=15 (→ `hi`) is the one that gives the
+  // `--input` assertion real teeth.
   it('drives a real run through the full `run(argv)` CLI shell with the identical result', async () => {
-    const sequential = SCENARIOS.find((s) => s.file === 'sequential.relavium.yaml');
-    if (sequential === undefined)
-      throw new Error('the sequential fixture is missing from SCENARIOS');
+    const inputDependent = SCENARIOS.find(
+      (s) => s.file === 'conditional.relavium.yaml' && s.input.includes('n=15'),
+    );
+    if (inputDependent === undefined) {
+      throw new Error('the conditional n=15 fixture is missing from SCENARIOS');
+    }
 
     const { io, out, err } = captureIo();
     const code = await run(
-      argv('run', `${FIXTURES_DIR}${sequential.file}`, '--input', ...sequential.input, '--json'),
+      argv(
+        'run',
+        `${FIXTURES_DIR}${inputDependent.file}`,
+        '--input',
+        ...inputDependent.input,
+        '--json',
+      ),
       io,
     );
 
-    expect(code).toBe(sequential.exit); // exit code propagates argv → run subcommand → runCommand → run()
+    expect(code).toBe(inputDependent.exit); // exit code propagates argv → run subcommand → runCommand → run()
     expect(err()).toBe(''); // the stdout-pure contract holds through the full shell too (ADR-0049)
     const events = parseEvents(out());
     assertGapFreeSeq(events);
-    expect(events.map(signature)).toEqual([...sequential.events]); // byte-for-byte the runCommand path's stream
+    // The `hi` arm (node:skipped:lo, node:started:hi) is reachable only if `--input n=15` threaded; a
+    // dropped flag would route to `lo` and mismatch here — that is what makes this an `--input` test.
+    expect(events.map(signature)).toEqual([...inputDependent.events]);
   });
 });
