@@ -1,0 +1,11 @@
+{
+  // apps/cli is a Node app (NOT an engine package): it legitimately uses node:* APIs, so
+  // `types: ["node"]` here and no platform-purity gate (that guard is the engine's, ADR-0003).
+  // tsup owns the build; this config is typecheck-only (`tsc --noEmit`).
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

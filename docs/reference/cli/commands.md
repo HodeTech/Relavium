@@ -42,6 +42,23 @@ Exit codes are CI-friendly (see [Exit codes](#exit-codes)).
 > destructive commands behind approval the same way workflow tools are gated. If adopted, the
 > shapes are locked here.
 
+## Global options
+
+These flags are **position-independent** — they may appear anywhere on the command line, so
+`relavium run wf --json` and `relavium --json run wf` are equivalent (the CLI extracts them
+before parsing the subcommand).
+
+| Flag | Effect |
+|------|--------|
+| `--json` | Emit machine-readable NDJSON output (disables the TUI) — see [Output modes](#output-modes). |
+| `--no-color` | Disable colored output. |
+| `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). |
+| `--config <path>` | Use an explicit config file instead of the discovered layers ([config-spec.md](../contracts/config-spec.md)). |
+| `-v, --verbose` | Print verbose diagnostics to stderr. |
+| `-q, --quiet` | Suppress non-essential output. (`--verbose` and `--quiet` cannot be combined → exit `2`.) |
+| `-V, --version` | Print the version and exit `0`. |
+| `-h, --help` | Print help for the program or a subcommand and exit `0`. |
+
 ## Commands
 
 The command set below is the confirmed surface. Subcommands marked _(planned)_ are intended but not yet locked.
