@@ -415,8 +415,10 @@ gate-**resume** half is deferred to 2.G.)_
 
 **First cut + deferred (scope-split, maintainer-approved 2026-06-22).** The harness lands as an
 in-process vitest e2e suite (`apps/cli/src/harness/`) that drives the real `relavium run … --json`
-path over four committed **non-agent** fixtures (sequential, fan-out/aggregate, conditional,
-human-gate) — fully deterministic + offline, run inside the required CI `test` gate on every PR;
+path over five committed **non-agent** fixtures (sequential, fan-out/aggregate, conditional,
+human-gate, and a failure case → `run:failed`) — together covering every authorable non-agent node
+type and all three run exit codes (`0`/`1`/`3`), fully deterministic + offline, run inside the
+required CI `test` gate on every PR;
 its fixture + scenario format is documented in
 [reference/cli/regression-harness.md](../../reference/cli/regression-harness.md). Two parts are
 **deferred** because they depend on not-yet-built workstreams:
