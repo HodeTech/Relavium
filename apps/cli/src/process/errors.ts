@@ -9,6 +9,8 @@ import { EXIT_CODES, type ExitCode } from './exit-codes.js';
 export type CliErrorCode =
   /** Bad args / unknown command|option / missing arg / not found / schema error → exit 2. */
   | 'invalid_invocation'
+  /** A malformed/invalid configuration layer (TOML syntax or schema) → exit 2. */
+  | 'config_error'
   /** A documented command whose implementing workstream has not landed yet → exit 2. */
   | 'not_implemented'
   /** An unexpected CLI fault → exit 1 (the user-facing message stays generic). */
@@ -16,6 +18,7 @@ export type CliErrorCode =
 
 const EXIT_CODE_BY_ERROR: Readonly<Record<CliErrorCode, ExitCode>> = {
   invalid_invocation: EXIT_CODES.invalidInvocation,
+  config_error: EXIT_CODES.invalidInvocation,
   not_implemented: EXIT_CODES.invalidInvocation,
   internal: EXIT_CODES.workflowFailed,
 };

@@ -53,7 +53,7 @@ before parsing the subcommand).
 | `--json` | Emit machine-readable NDJSON output (disables the TUI) — see [Output modes](#output-modes). |
 | `--no-color` | Disable colored output. |
 | `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). |
-| `--config <path>` | Use an explicit config file instead of the discovered layers ([config-spec.md](../contracts/config-spec.md)). |
+| `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). |
 | `-v, --verbose` | Print verbose diagnostics to stderr. |
 | `-q, --quiet` | Suppress non-essential output. (`--verbose` and `--quiet` cannot be combined → exit `2`.) |
 | `-V, --version` | Print the version and exit `0`. |

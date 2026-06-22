@@ -17,7 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "commander": "catalog:"
+    "@relavium/shared": "workspace:*",
+    "commander": "catalog:",
+    "smol-toml": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
