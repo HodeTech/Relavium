@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync, type Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,18 +22,29 @@ const MAX_CONFIG_BYTES = 256 * 1024;
  * contents (config files hold no secrets — config-spec.md).
  */
 export function loadConfigFile<T>(filePath: string, schema: ZodType<T>): T | undefined {
+  let stats: Stats;
+  try {
+    stats = statSync(filePath);
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') {
+      return undefined; // an absent layer is not an error
+    }
+    throw new ConfigError(filePath, 'could not be read.', { cause: err });
+  }
+  if (!stats.isFile()) {
+    throw new ConfigError(filePath, 'is not a regular file.');
+  }
+  // Enforce the size cap BEFORE reading into memory (ADR-0048 hardened loader) — an oversize
+  // file is rejected without ever being loaded.
+  if (stats.size > MAX_CONFIG_BYTES) {
+    throw new ConfigError(filePath, `exceeds the ${MAX_CONFIG_BYTES}-byte config size limit.`);
+  }
+
   let text: string;
   try {
     text = readFileSync(filePath, 'utf8');
   } catch (err) {
-    if (errnoCode(err) === 'ENOENT') {
-      return undefined;
-    }
     throw new ConfigError(filePath, 'could not be read.', { cause: err });
-  }
-
-  if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
-    throw new ConfigError(filePath, `exceeds the ${MAX_CONFIG_BYTES}-byte config size limit.`);
   }
 
   let data: unknown;

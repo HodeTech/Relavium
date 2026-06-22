@@ -38,6 +38,33 @@ export interface ExtractedArgv {
   readonly error?: CliError;
 }
 
+/** Boolean global flags (no value) → the mutation each applies to the raw options. */
+const BOOLEAN_FLAGS: Readonly<Record<string, (raw: RawGlobalOptions) => void>> = {
+  '--json': (raw) => {
+    raw.json = true;
+  },
+  '--no-color': (raw) => {
+    raw.color = false;
+  },
+  '--verbose': (raw) => {
+    raw.verbose = true;
+  },
+  '-v': (raw) => {
+    raw.verbose = true;
+  },
+  '--quiet': (raw) => {
+    raw.quiet = true;
+  },
+  '-q': (raw) => {
+    raw.quiet = true;
+  },
+};
+
+type ValueFlagResult =
+  | { readonly kind: 'consumed'; readonly advance: number }
+  | { readonly kind: 'error'; readonly error: CliError }
+  | { readonly kind: 'skip' };
+
 /**
  * Pull the position-independent global flags out of argv so they may appear anywhere on the
  * command line. `commander` then parses only the remaining commands and their own options
@@ -62,35 +89,49 @@ export function extractGlobalOptions(argv: readonly string[]): ExtractedArgv {
       rest.push(...tokens.slice(i));
       break;
     }
-    if (token === '--json') {
-      raw.json = true;
-    } else if (token === '--no-color') {
-      raw.color = false;
-    } else if (token === '--verbose' || token === '-v') {
-      raw.verbose = true;
-    } else if (token === '--quiet' || token === '-q') {
-      raw.quiet = true;
-    } else if (token === '--cwd' || token === '--config') {
-      const value = tokens[i + 1];
-      if (value === undefined || value.startsWith('-')) {
-        return { raw, rest: [...prefix, ...rest], error: requiresArgument(token) };
-      }
-      assignValueFlag(raw, token, value);
-      i += 1;
-    } else if (token.startsWith('--cwd=') || token.startsWith('--config=')) {
-      const eq = token.indexOf('=');
-      const flag = token.slice(0, eq);
-      const value = token.slice(eq + 1);
-      if (value === '') {
-        return { raw, rest: [...prefix, ...rest], error: requiresArgument(flag) };
-      }
-      assignValueFlag(raw, flag, value);
-    } else {
-      rest.push(token);
+    const applyBoolean = BOOLEAN_FLAGS[token];
+    if (applyBoolean !== undefined) {
+      applyBoolean(raw);
+      continue;
     }
+    const valued = takeValueFlag(raw, token, tokens[i + 1]);
+    if (valued.kind === 'error') {
+      return { raw, rest: [...prefix, ...rest], error: valued.error };
+    }
+    if (valued.kind === 'consumed') {
+      i += valued.advance;
+      continue;
+    }
+    rest.push(token);
   }
 
   return { raw, rest: [...prefix, ...rest] };
+}
+
+/** Handle the value-bearing flags (`--cwd` / `--config`), spaced or `=`-form. */
+function takeValueFlag(
+  raw: RawGlobalOptions,
+  token: string,
+  next: string | undefined,
+): ValueFlagResult {
+  if (token.startsWith('--cwd=') || token.startsWith('--config=')) {
+    const eq = token.indexOf('=');
+    const flag = token.slice(0, eq);
+    const value = token.slice(eq + 1);
+    if (value.trim() === '') {
+      return { kind: 'error', error: requiresArgument(flag) };
+    }
+    assignValueFlag(raw, flag, value);
+    return { kind: 'consumed', advance: 0 };
+  }
+  if (token === '--cwd' || token === '--config') {
+    if (next === undefined || next.startsWith('-') || next.trim() === '') {
+      return { kind: 'error', error: requiresArgument(token) };
+    }
+    assignValueFlag(raw, token, next);
+    return { kind: 'consumed', advance: 1 };
+  }
+  return { kind: 'skip' };
 }
 
 function assignValueFlag(raw: RawGlobalOptions, flag: string, value: string): void {
@@ -112,15 +153,23 @@ export function assertNoGlobalOptionConflicts(raw: RawGlobalOptions): void {
   }
 }
 
+function resolveVerbosity(raw: RawGlobalOptions): Verbosity {
+  if (raw.quiet === true) {
+    return 'quiet';
+  }
+  if (raw.verbose === true) {
+    return 'verbose';
+  }
+  return 'normal';
+}
+
 export function resolveGlobalOptions(raw: RawGlobalOptions, defaultCwd: string): GlobalOptions {
   assertNoGlobalOptionConflicts(raw);
-  const verbosity: Verbosity =
-    raw.quiet === true ? 'quiet' : raw.verbose === true ? 'verbose' : 'normal';
   return {
     json: raw.json === true,
     color: raw.color !== false,
     cwd: raw.cwd ?? defaultCwd,
     configPath: raw.config,
-    verbosity,
+    verbosity: resolveVerbosity(raw),
   };
 }

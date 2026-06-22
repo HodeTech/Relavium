@@ -87,7 +87,7 @@ describe('loadConfigFile', () => {
     }
   });
 
-  it('throws a ConfigError when the path is present but unreadable (a directory)', () => {
+  it('rejects a path that is present but not a regular file (a directory)', () => {
     const subdir = join(dir, 'a-directory');
     mkdirSync(subdir);
     let thrown: unknown;
@@ -98,7 +98,8 @@ describe('loadConfigFile', () => {
     }
     expect(thrown).toBeInstanceOf(ConfigError);
     if (thrown instanceof ConfigError) {
-      expect(thrown.message).toContain('could not be read');
+      expect(thrown.exitCode).toBe(2);
+      expect(thrown.message).toContain('is not a regular file');
     }
   });
 });

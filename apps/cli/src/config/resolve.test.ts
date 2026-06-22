@@ -53,6 +53,9 @@ describe('resolveConfig', () => {
     const merged = resolveConfig({ global, project }).mcpServers;
     expect(merged).toHaveLength(2);
     expect(merged.find((server) => server.name === 'fs')?.command).toBe('project-cmd');
-    expect([...merged.map((server) => server.name)].sort()).toEqual(['fs', 'gh']);
+    expect([...merged.map((server) => server.name)].sort((a, b) => a.localeCompare(b))).toEqual([
+      'fs',
+      'gh',
+    ]);
   });
 });

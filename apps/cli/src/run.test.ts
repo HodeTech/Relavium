@@ -21,6 +21,18 @@ function makeIo(): { io: CliIo; out: () => string; err: () => string } {
 
 const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
 
+/** Runtime-validate the parsed `--json` error envelope rather than asserting its type. */
+function isErrorEnvelope(value: unknown): value is { type: string; code: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    typeof value.type === 'string' &&
+    'code' in value &&
+    typeof value.code === 'string'
+  );
+}
+
 describe('run', () => {
   it('prints help and exits 0 for --help', async () => {
     const { io, out } = makeIo();
@@ -57,7 +69,7 @@ describe('run', () => {
     const { io, out, err } = makeIo();
     expect(await run(argv('run', './wf.relavium.yaml'), io)).toBe(2);
     expect(err()).toContain('not available yet');
-    expect(err()).not.toMatch(/\s+at\s+.+:\d+:\d+/); // no stack frame as primary output
+    expect(err()).not.toMatch(/\n\s+at /); // no stack frame line as primary output
     expect(out()).toBe(''); // human errors go to stderr, stdout stays clean
   });
 
@@ -65,9 +77,12 @@ describe('run', () => {
     const { io, out } = makeIo();
     const code = await run(argv('run', './wf.relavium.yaml', '--json'), io);
     expect(code).toBe(2);
-    const parsed = JSON.parse(out().trim()) as { type: string; code: string };
-    expect(parsed.type).toBe('error');
-    expect(parsed.code).toBe('not_implemented');
+    const parsed: unknown = JSON.parse(out().trim());
+    expect(isErrorEnvelope(parsed)).toBe(true);
+    if (isErrorEnvelope(parsed)) {
+      expect(parsed.type).toBe('error');
+      expect(parsed.code).toBe('not_implemented');
+    }
   });
 
   it('exits 2 when --verbose and --quiet are combined', async () => {
@@ -79,9 +94,12 @@ describe('run', () => {
   it('renders the JSON error envelope when --json precedes a failing global flag', async () => {
     const { io, out } = makeIo();
     expect(await run(argv('--json', '--cwd'), io)).toBe(2);
-    const parsed = JSON.parse(out().trim()) as { type: string; code: string };
-    expect(parsed.type).toBe('error');
-    expect(parsed.code).toBe('invalid_invocation');
+    const parsed: unknown = JSON.parse(out().trim());
+    expect(isErrorEnvelope(parsed)).toBe(true);
+    if (isErrorEnvelope(parsed)) {
+      expect(parsed.type).toBe('error');
+      expect(parsed.code).toBe('invalid_invocation');
+    }
   });
 
   it('treats a lone -- as a bare invocation (prints help, exits 0)', async () => {

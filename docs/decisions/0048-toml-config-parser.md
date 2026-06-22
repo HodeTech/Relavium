@@ -52,15 +52,16 @@ are committed, shared, versioned formats.
 runtime dependency of `apps/cli` only, pinned through the pnpm `catalog:` — see
 [tech-stack.md](../tech-stack.md) for the version (added under the §9a cooling window).**
 
-- The parser is wrapped in a **hardened, defensive loader**, not called raw: a pre-parse
-  source-size cap, and **every** parse throw normalized to a typed, secret-free
-  `ConfigSyntaxError` carrying the file path and the library's line/column when present (never
-  the source text). The strict Zod config schemas ([ADR-0033](0033-strict-config-files-amends-0023.md))
+- The parser is wrapped in a **hardened, defensive loader**, not called raw: a size cap
+  checked via `statSync` **before** the file is read into memory, and **every** load fault —
+  unreadable, oversize, malformed TOML, or schema-invalid — normalized to a typed, secret-free
+  **`ConfigError`** carrying the file path (and the TOML line/column when present), never the
+  source text or a config value. The strict Zod config schemas ([ADR-0033](0033-strict-config-files-amends-0023.md))
   remain the **single source of validation truth** on the parsed object; the parser's only job
   is string → plain data. Relavium config files are **TOML 1.0**
-  ([config-spec.md](../reference/contracts/config-spec.md)); `ConfigSyntaxError` is a CLI-local
-  typed error (the loader is CLI-local) and would be promoted to a shared error only if the
-  loader is later extracted.
+  ([config-spec.md](../reference/contracts/config-spec.md)); `ConfigError` is a CLI-local typed
+  error (the loader is CLI-local) and would be promoted to a shared error only if the loader is
+  later extracted.
 - **Confinement.** The dependency lives in `apps/cli`'s config loader. It is **not** added to
   `@relavium/shared` (which stays Zod-only) and needs **no** `onlyBuiltDependencies` entry
   (pure-JS). Adding `smol-toml` to an engine package's manifest would in addition trip the
