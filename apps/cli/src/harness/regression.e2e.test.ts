@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
@@ -45,6 +46,12 @@ interface Scenario {
   readonly events: readonly string[];
   /** A `parallel` node interleaves its branch events by async timing → assert the multiset, not the order. */
   readonly parallel?: boolean;
+  /**
+   * For a `parallel` fixture: happens-before pairs `[earlier, later]` that must hold *despite* the
+   * legitimate branch interleave — the causal spine a pure multiset cannot see (most importantly the
+   * fan-in barrier: the merge starts only after every branch completes).
+   */
+  readonly causalOrder?: readonly (readonly [string, string])[];
 }
 
 const SCENARIOS: readonly Scenario[] = [
@@ -83,6 +90,19 @@ const SCENARIOS: readonly Scenario[] = [
       'node:started:out',
       'node:completed:out',
       'run:completed',
+    ],
+    causalOrder: [
+      // fan-out: the parallel node dispatches both branches.
+      ['node:started:fan', 'node:started:double'],
+      ['node:started:fan', 'node:started:triple'],
+      // each branch completes after it starts (only double↔triple may interleave).
+      ['node:started:double', 'node:completed:double'],
+      ['node:started:triple', 'node:completed:triple'],
+      // fan-in barrier: the merge starts only after BOTH branches complete (a multiset can't catch this).
+      ['node:completed:double', 'node:started:combine'],
+      ['node:completed:triple', 'node:started:combine'],
+      // the merged result feeds the output.
+      ['node:completed:combine', 'node:started:out'],
     ],
   },
   {
@@ -172,15 +192,16 @@ function globalOptions(): GlobalOptions {
  * caught) — round-trip equality, not mere parse-success.
  */
 function parseEvents(stdout: string): RunEvent[] {
-  return stdout
-    .trimEnd()
-    .split('\n')
-    .map((line) => {
-      const raw: unknown = JSON.parse(line);
-      const event = RunEventSchema.parse(raw);
-      expect(event).toEqual(raw);
-      return event;
-    });
+  const trimmed = stdout.trimEnd();
+  // An empty stream → []: a missing-output regression then fails the signature diff (empty vs expected)
+  // rather than crashing in `JSON.parse('')` with a cryptic "Unexpected end of JSON input".
+  if (trimmed === '') return [];
+  return trimmed.split('\n').map((line) => {
+    const raw: unknown = JSON.parse(line);
+    const event = RunEventSchema.parse(raw);
+    expect(event).toEqual(raw);
+    return event;
+  });
 }
 
 /** Run one fixture through `relavium run … --json`, returning per-node signatures + raw events + exit. */
@@ -189,7 +210,7 @@ async function runFixture(
 ): Promise<{ sigs: string[]; events: RunEvent[]; code: ExitCode }> {
   const { io, out, err } = captureIo();
   const code = await runCommand(
-    { workflow: `${FIXTURES_DIR}${scenario.file}`, input: [...scenario.input] },
+    { workflow: join(FIXTURES_DIR, scenario.file), input: [...scenario.input] },
     { io, global: globalOptions() },
   );
   expect(err()).toBe(''); // a clean offline run writes nothing to stderr (stdout-pure contract, ADR-0049)
@@ -217,6 +238,12 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
         expect(sigs[0]).toBe('run:started');
         expect(sigs.at(-1)).toBe(scenario.events.at(-1));
         expect([...sigs].sort()).toEqual([...scenario.events].sort());
+        // Beyond the multiset: the causal (happens-before) spine must still hold despite the interleave —
+        // notably the fan-in barrier. (`indexOf` is safe here: the multiset check above already proved
+        // every signature is present, so each lookup is ≥ 0.)
+        for (const [earlier, later] of scenario.causalOrder ?? []) {
+          expect(sigs.indexOf(earlier)).toBeLessThan(sigs.indexOf(later));
+        }
       } else {
         // Fully deterministic → assert the exact ordered per-node signature sequence.
         expect(sigs).toEqual([...scenario.events]);
@@ -252,7 +279,7 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
     const code = await run(
       argv(
         'run',
-        `${FIXTURES_DIR}${inputDependent.file}`,
+        join(FIXTURES_DIR, inputDependent.file),
         '--input',
         ...inputDependent.input,
         '--json',
