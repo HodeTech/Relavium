@@ -1,0 +1,12 @@
+schema_version: '1.0'
+workflow:
+  id: harness-failure
+  name: Failing transform
+  description: A transform throws at runtime → node:failed → run:failed → exit 1 (the failure terminal).
+  nodes:
+    - { id: start, type: input }
+    - { id: boom, type: transform, transform: 'null.boom' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: boom }
+    - { from: boom, to: out }

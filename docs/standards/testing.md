@@ -22,7 +22,13 @@ test effort first.
 
 The CLI (`apps/cli`) doubles as an integration harness: it exercises the engine under
 real conditions with no UI, so a regression in `WorkflowEngine` / `AgentRunner` surfaces
-in CLI tests before it ever reaches the desktop.
+in CLI tests before it ever reaches the desktop. The **engine regression harness** (2.K) is
+the workflow-level extension of the per-provider conformance discipline below: it runs committed
+example workflows through `relavium run … --json` and asserts on the NDJSON event stream + exit
+code, offline and deterministic on every PR. Its fixture + scenario format is the one canonical
+home — [reference/cli/regression-harness.md](../reference/cli/regression-harness.md) — and the
+recorded-LLM agent fixtures it grows into follow the same regenerate-not-hand-edit rule as the
+conformance fixtures.
 
 ## Unit tests — Vitest
 

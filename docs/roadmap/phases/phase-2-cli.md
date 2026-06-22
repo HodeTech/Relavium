@@ -409,7 +409,25 @@ change is exercised end-to-end. Completes M3 with `2.D` + `2.F`.
 **Acceptance:** a green CI run executes every fixture workflow with no TTY,
 asserting the NDJSON event stream and exit codes, including a gate-pause-then-resume
 scenario; the job is triggered by engine-package changes and is the agreed
-regression gate for Phases 3–6.
+regression gate for Phases 3–6. _(See **First cut + deferred** below for what the first
+cut realizes — the harness rides the required `test` task rather than a new job, and the
+gate-**resume** half is deferred to 2.G.)_
+
+**First cut + deferred (scope-split, maintainer-approved 2026-06-22).** The harness lands as an
+in-process vitest e2e suite (`apps/cli/src/harness/`) that drives the real `relavium run … --json`
+path over four committed **non-agent** fixtures (sequential, fan-out/aggregate, conditional,
+human-gate) — fully deterministic + offline, run inside the required CI `test` gate on every PR;
+its fixture + scenario format is documented in
+[reference/cli/regression-harness.md](../../reference/cli/regression-harness.md). Two parts are
+**deferred** because they depend on not-yet-built workstreams:
+
+- _Gate-**resume** scenario_ (`relavium gate --approve` → completion) → lands with **2.G** (the
+  `gate` command, itself blocked on **2.H** durable run history to reload a paused run cross-process).
+  The run-to-gate → exit `3` half ships now (the engine's resume is already proven in `m2-e2e-harness`).
+- _Agent fixtures via recorded-LLM replay + the nightly live-provider lane_ → the offline first cut is
+  non-agent; an agent fixture drives a recorded `fetch` cassette (`@relavium/llm`
+  `conformance/replay.ts`) through the injectable `ProviderResolver`, and the reserved `live-api`
+  (`on: schedule`) job in `.github/workflows/ci.yml` is the nightly variant that re-records + diffs them.
 
 ### 2.L — Packaging, distribution, and install verification
 

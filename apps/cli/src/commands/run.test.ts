@@ -17,6 +17,7 @@ import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { captureIo } from '../test-support.js';
 import { runCommand, type RunCommandDeps } from './run.js';
 
 // A minimal real workflow: input → transform → output. Runs end-to-end through the standard node
@@ -104,22 +105,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
-
-function captureIo(): { io: CliIo; out: () => string; err: () => string } {
-  const outChunks: string[] = [];
-  const errChunks: string[] = [];
-  const io: CliIo = {
-    writeOut: (text) => {
-      outChunks.push(text);
-    },
-    writeErr: (text) => {
-      errChunks.push(text);
-    },
-    env: {},
-    stdoutIsTty: false,
-  };
-  return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
-}
 
 function globalOptions(over: Partial<GlobalOptions> = {}): GlobalOptions {
   return {

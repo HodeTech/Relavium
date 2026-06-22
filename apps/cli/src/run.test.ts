@@ -1,24 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CliIo } from './process/io.js';
 import { CLI_VERSION } from './program.js';
 import { run } from './run.js';
-
-function makeIo(): { io: CliIo; out: () => string; err: () => string } {
-  const outChunks: string[] = [];
-  const errChunks: string[] = [];
-  const io: CliIo = {
-    writeOut: (text) => {
-      outChunks.push(text);
-    },
-    writeErr: (text) => {
-      errChunks.push(text);
-    },
-    env: {},
-    stdoutIsTty: false,
-  };
-  return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
-}
+import { captureIo } from './test-support.js';
 
 const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
 
@@ -38,7 +22,7 @@ function isErrorEnvelope(value: unknown): value is { type: string; code: string;
 
 describe('run', () => {
   it('prints help and exits 0 for --help', async () => {
-    const { io, out } = makeIo();
+    const { io, out } = captureIo();
     expect(await run(argv('--help'), io)).toBe(0);
     expect(out()).toContain('Usage: relavium');
     expect(out()).toContain('run');
@@ -46,13 +30,13 @@ describe('run', () => {
   });
 
   it('prints help and exits 0 for a bare invocation', async () => {
-    const { io, out } = makeIo();
+    const { io, out } = captureIo();
     expect(await run(argv(), io)).toBe(0);
     expect(out()).toContain('Usage: relavium');
   });
 
   it('prints the version and exits 0 for --version', async () => {
-    const { io, out } = makeIo();
+    const { io, out } = captureIo();
     expect(await run(argv('--version'), io)).toBe(0);
     expect(out()).toContain(CLI_VERSION);
   });
@@ -61,24 +45,24 @@ describe('run', () => {
   // a bare invocation are exit-0 meta-operations that still print human text to stdout under --json —
   // and nothing to stderr.
   it('keeps --help / --version / bare as human-on-stdout exit-0 meta-ops even under --json', async () => {
-    const help = makeIo();
+    const help = captureIo();
     expect(await run(argv('--json', '--help'), help.io)).toBe(0);
     expect(help.out()).toContain('Usage: relavium');
     expect(help.err()).toBe('');
 
-    const version = makeIo();
+    const version = captureIo();
     expect(await run(argv('--json', '--version'), version.io)).toBe(0);
     expect(version.out()).toContain(CLI_VERSION);
     expect(version.err()).toBe('');
 
-    const bare = makeIo();
+    const bare = captureIo();
     expect(await run(argv('--json'), bare.io)).toBe(0);
     expect(bare.out()).toContain('Usage: relavium');
     expect(bare.err()).toBe('');
   });
 
   it('keeps stderr a single JSON envelope under --json even with --verbose (no raw stack)', async () => {
-    const { io, out, err } = makeIo();
+    const { io, out, err } = captureIo();
     expect(await run(argv('create', '--json', '--verbose'), io)).toBe(2); // `create` is a stub (2.J)
     expect(out()).toBe('');
     // stderr is exactly one parseable JSON line — --verbose adds no raw stack text under --json.
@@ -88,18 +72,18 @@ describe('run', () => {
   });
 
   it('exits 2 for an unknown command', async () => {
-    const { io, err } = makeIo();
+    const { io, err } = captureIo();
     expect(await run(argv('bogus'), io)).toBe(2);
     expect(err().toLowerCase()).toContain('unknown command');
   });
 
   it('exits 2 when a required argument is missing', async () => {
-    const { io } = makeIo();
+    const { io } = captureIo();
     expect(await run(argv('run'), io)).toBe(2);
   });
 
   it('exits 2 with a clean not-implemented message for a stub command (no stack leak)', async () => {
-    const { io, out, err } = makeIo();
+    const { io, out, err } = captureIo();
     expect(await run(argv('create'), io)).toBe(2); // `create` is still a stub (2.J)
     expect(err()).toContain('not available yet');
     // No stack frame as primary output — a Node frame line is `    at …` (string check, no regex).
@@ -111,7 +95,7 @@ describe('run', () => {
   });
 
   it('emits the structured JSON error envelope on stderr under --json, stdout empty (ADR-0049)', async () => {
-    const { io, out, err } = makeIo();
+    const { io, out, err } = captureIo();
     const code = await run(argv('create', '--json'), io); // `create` is still a stub (2.J)
     expect(code).toBe(2);
     expect(out()).toBe(''); // stdout stays pure: a CLI fault is a stderr diagnostic
@@ -124,13 +108,13 @@ describe('run', () => {
   });
 
   it('exits 2 when --verbose and --quiet are combined', async () => {
-    const { io, err } = makeIo();
+    const { io, err } = captureIo();
     expect(await run(argv('--verbose', '--quiet', 'list'), io)).toBe(2);
     expect(err()).toContain('cannot be combined');
   });
 
   it('renders the JSON error envelope on stderr when --json precedes a failing global flag', async () => {
-    const { io, out, err } = makeIo();
+    const { io, out, err } = captureIo();
     expect(await run(argv('--json', '--cwd'), io)).toBe(2);
     expect(out()).toBe('');
     const parsed: unknown = JSON.parse(err().trim());
@@ -142,7 +126,7 @@ describe('run', () => {
   });
 
   it('renders a commander parse error as a JSON envelope on stderr under --json, stdout empty', async () => {
-    const { io, out, err } = makeIo();
+    const { io, out, err } = captureIo();
     expect(await run(argv('--json', 'bogus'), io)).toBe(2);
     expect(out()).toBe(''); // stdout stays pure NDJSON territory — never a fault envelope
     const parsed: unknown = JSON.parse(err().trim()); // commander's own human message is suppressed
@@ -155,7 +139,7 @@ describe('run', () => {
   });
 
   it('treats a lone -- as a bare invocation (prints help, exits 0)', async () => {
-    const { io, out } = makeIo();
+    const { io, out } = captureIo();
     expect(await run(argv('--'), io)).toBe(0);
     expect(out()).toContain('Usage: relavium');
   });

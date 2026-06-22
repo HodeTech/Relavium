@@ -1,0 +1,12 @@
+schema_version: '1.0'
+workflow:
+  id: harness-human-gate
+  name: Human gate (pause)
+  description: A human_gate node parks the run; non-interactively it exits gate-paused (3) without resuming.
+  nodes:
+    - { id: start, type: input }
+    - { id: gate, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: gate }
+    - { from: gate, to: out }
