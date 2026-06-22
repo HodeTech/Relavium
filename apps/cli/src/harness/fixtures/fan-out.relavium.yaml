@@ -1,0 +1,19 @@
+schema_version: '1.0'
+workflow:
+  id: harness-fan-out
+  name: Fan-out / aggregate
+  description: A parallel split (double + triple) merged back with object_merge — fan_out/fan_in coverage.
+  inputs:
+    - { name: n, type: number }
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [double, triple] }
+    - { id: double, type: transform, transform: '({ d: inputs.n * 2 })' }
+    - { id: triple, type: transform, transform: '({ t: inputs.n * 3 })' }
+    - { id: combine, type: merge, merge_strategy: object_merge }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: double, to: combine }
+    - { from: triple, to: combine }
+    - { from: combine, to: out }

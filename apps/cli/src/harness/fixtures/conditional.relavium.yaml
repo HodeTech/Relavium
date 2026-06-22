@@ -1,0 +1,22 @@
+schema_version: '1.0'
+workflow:
+  id: harness-conditional
+  name: Conditional branch
+  description: A condition routes to one of two branches; the other is skip-propagated (node:skipped).
+  inputs:
+    - { name: n, type: number }
+  nodes:
+    - { id: start, type: input }
+    - id: check
+      type: condition
+      expression: 'inputs.n >= 10'
+      branches:
+        - { when: true, target_node: hi }
+        - { when: false, target_node: lo }
+    - { id: hi, type: transform, transform: '({ label: "high" })' }
+    - { id: lo, type: transform, transform: '({ label: "low" })' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: check }
+    - { from: hi, to: out }
+    - { from: lo, to: out }

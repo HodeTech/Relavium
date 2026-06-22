@@ -39,9 +39,11 @@ process contract (**2.A**) and the two-level config-resolution loader (**2.B**),
 (PR #40, 2026-06-22) behind [ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md)
 (commander/ink/@clack) and [ADR-0048](../decisions/0048-toml-config-parser.md) (smol-toml); and
 **2.D** (`relavium run` wired to `@relavium/core` — the M3 keystone and first real engine
-consumer), ✅ Done (PR #41, 2026-06-22), which also adds the `defaultProviders()` seam registry.
-**Next on the spine:** **2.F** (`--json` CI mode) then **2.K** (regression harness) to reach
-**M3**, with the **2.E** (ink TUI) and **2.H** (durable run history) run-surface feeders now open. The CLI also lands the inbound MCP client (2.R,
+consumer), ✅ Done (PR #41, 2026-06-22), which also adds the `defaultProviders()` seam registry;
+and **2.F** (the `--json` CI machine-output contract — pure-NDJSON stdout, diagnostics → stderr),
+✅ Done (PR #42, 2026-06-22) behind [ADR-0049](../decisions/0049-cli-machine-output-contract.md).
+**Next on the spine:** **2.K** (the engine regression harness) to reach **M3**, with the **2.E**
+(ink TUI) and **2.H** (durable run history) run-surface feeders open. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
 [sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).

@@ -1,24 +1,8 @@
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
-import type { CliIo } from '../process/io.js';
+import { captureIo } from '../test-support.js';
 import { createJsonRenderer, createPlainRenderer } from './renderer.js';
-
-function captureIo(): { io: CliIo; out: () => string; err: () => string } {
-  const outChunks: string[] = [];
-  const errChunks: string[] = [];
-  const io: CliIo = {
-    writeOut: (text) => {
-      outChunks.push(text);
-    },
-    writeErr: (text) => {
-      errChunks.push(text);
-    },
-    env: {},
-    stdoutIsTty: false,
-  };
-  return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
-}
 
 const ENVELOPE = { runId: 'id-1', sequenceNumber: 0, timestamp: '2026-01-01T00:00:00.000Z' };
 

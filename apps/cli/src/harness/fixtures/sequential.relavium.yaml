@@ -1,0 +1,14 @@
+schema_version: '1.0'
+workflow:
+  id: harness-sequential
+  name: Sequential pipeline
+  description: A linear input → transform → output chain — the simplest engine run.
+  inputs:
+    - { name: n, type: number }
+  nodes:
+    - { id: start, type: input }
+    - { id: double, type: transform, transform: '({ doubled: inputs.n * 2 })' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: double }
+    - { from: double, to: out }

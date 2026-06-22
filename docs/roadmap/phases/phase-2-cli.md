@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**. The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.F** (`--json` CI mode), and the **2.E** (ink TUI) + **2.H** (durable run history) run-surface feeders now open.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md). The global milestone in play is **M3** (reached at 2.F + 2.K); **2.K** (the engine regression harness) is 🔄 **in review (PR #43)** — M3 lands when it merges. The status-aware order for everything still open (next pickup: **2.H**) is the [Remaining build order](#remaining-build-order) queue.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -260,7 +260,7 @@ status transitions, streaming tokens on the active node, and a running cost that
 matches the final summary; `--no-color` produces plain output; no event is dropped
 under a high token rate (verified against the JSON stream's event count).
 
-### 2.F — CI / non-interactive `--json` mode + exit codes
+### 2.F — CI / non-interactive `--json` mode + exit codes — ✅ **Done (PR #42)**
 
 Implement the machine-readable path: one `RunEvent` per line (NDJSON), a stable
 envelope, and deterministic exit codes — the contract CI jobs assert on.
@@ -409,7 +409,27 @@ change is exercised end-to-end. Completes M3 with `2.D` + `2.F`.
 **Acceptance:** a green CI run executes every fixture workflow with no TTY,
 asserting the NDJSON event stream and exit codes, including a gate-pause-then-resume
 scenario; the job is triggered by engine-package changes and is the agreed
-regression gate for Phases 3–6.
+regression gate for Phases 3–6. _(See **First cut + deferred** below for what the first
+cut realizes — the harness rides the required `test` task rather than a new job, and the
+gate-**resume** half is deferred to 2.G.)_
+
+**First cut + deferred (scope-split, maintainer-approved 2026-06-22).** The harness lands as an
+in-process vitest e2e suite (`apps/cli/src/harness/`) that drives the real `relavium run … --json`
+path over five committed **non-agent** fixtures (sequential, fan-out/aggregate, conditional,
+human-gate, and a failure case → `run:failed`) — together covering every authorable non-agent node
+type and all three run exit codes (`0`/`1`/`3`), fully deterministic + offline, run inside the
+required CI `test` gate on every PR;
+its fixture + scenario format is documented in
+[reference/cli/regression-harness.md](../../reference/cli/regression-harness.md). Two parts are
+**deferred** because they depend on not-yet-built workstreams:
+
+- _Gate-**resume** scenario_ (`relavium gate --approve` → completion) → lands with **2.G** (the
+  `gate` command, itself blocked on **2.H** durable run history to reload a paused run cross-process).
+  The run-to-gate → exit `3` half ships now (the engine's resume is already proven in `m2-e2e-harness`).
+- _Agent fixtures via recorded-LLM replay + the nightly live-provider lane_ → the offline first cut is
+  non-agent; an agent fixture drives a recorded `fetch` cassette (`@relavium/llm`
+  `conformance/replay.ts`) through the injectable `ProviderResolver`, and the reserved `live-api`
+  (`on: schedule`) job in `.github/workflows/ci.yml` is the nightly variant that re-records + diffs them.
 
 ### 2.L — Packaging, distribution, and install verification
 
@@ -611,6 +631,45 @@ home for the execution plan; the work-breakdown DAG and the [Milestones](#milest
 table are its inputs, not duplicates. Unlike Phase 1 (three packages behind one shared
 gate), Phase 2 is one app: a short linear **spine** that reaches the global milestone
 **M3**, with run-surface feeders and three additive lanes running concurrently around it.
+
+### Remaining build order
+
+The **status-aware pickup queue** — given what's already merged, the order to build
+everything still open, top-to-bottom, one workstream per PR. Each row's blockers are
+satisfied by the time you reach it, so there is no need to re-derive "what next" each time.
+This is the status × plan view; the dependency rationale for every row lives in the
+[Dependency matrix](#dependency-matrix) and the from-scratch wave plan in
+[Ordered waves](#ordered-waves-each-wave-is-internally-parallel-waves-gate-left-to-right) —
+this table does not restate them, it only sequences what remains.
+
+> **Status (2026-06-22):** ✅ **2.A · 2.B · 2.D · 2.F** done · 🔄 **2.K** first cut in review
+> (PR #43; its gate-resume + agent-replay halves deferred).
+
+| Next | Lane | Why now | Blockers (all met on arrival) |
+|---|---|---|---|
+| **1. 2.H** durable history | feeder | highest leverage — unblocks 2.I, 2.G, 2.M **and** 2.S; go/no-go #2 | 2.D ✓ |
+| **2. 2.C** provider / keys | feeder | independent; unblocks 2.R + 2.M; go/no-go #5 | 2.B ✓ |
+| **3. 2.E** ink TUI | feeder | go/no-go #1; the shared ink infra 2.G + 2.M reuse | 2.D ✓ |
+| **4. 2.G** human gate + resume | feeder | go/no-go #3 **and closes 2.K's deferred gate-resume half** | 2.E · 2.H · 2.F ✓ |
+| **5. 2.I** list / logs / status | feeder | go/no-go #2 (read side); blocks nothing | 2.H |
+| **6. 2.L** package & publish | ◆ spine | go/no-go #7 — **all 7 [exit criteria](#exit-criteria-go--no-go) hold here → Phase 3 may start** | 2.K whole (via 2.G) |
+| **7. 2.S** media host-wiring | additive | biggest lane + the lone SSRF security review; **first** among the additive lanes — never tailed | 2.D · 2.H |
+| **8. 2.R** MCP client | additive | inbound MCP tools | 2.B · 2.C |
+| **9. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C · 2.H · 2.E |
+| **10. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
+
+- **Gate-closing backbone — `2.H → 2.C → 2.E → 2.G → 2.I → 2.L`:** these six PRs flip all
+  seven exit criteria (2.K is already merging). The remaining four (**2.S, 2.R, chat, 2.J**)
+  complete in-phase but do **not** block starting Phase 3.
+- **2.K fully closes at step 4 (2.G).** Its deferred gate-resume scenario can only be
+  exercised once the gate pause/resume surface exists, so 2.L (step 6) must follow 2.G even
+  though 2.L's nominal dependency is just "2.K".
+- **The one judgement call — 2.S timing.** Front-load it as the *first* additive lane
+  (step 7); never tail it behind chat / MCP / filler. It is the long pole, carries the only
+  dedicated security review (the `EgressCapability.fetch` SSRF mechanism), and its injectable
+  ports are inherited by desktop ([§3.B](phase-3-desktop.md)) + VS Code ([§4.N](phase-4-vscode.md)).
+  Pull it even earlier (right after 2.H) if de-risking that security review outweighs reaching
+  the Phase-3 gate fastest.
 
 ### One spine, parallel feeders, three additive lanes
 
