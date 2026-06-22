@@ -1,10 +1,10 @@
-import { parseWorkflow } from '@relavium/core';
+import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import { neededProviderIds, providerKeyEnvVar } from './providers.js';
 
 /** Assemble a parsed workflow from an `agents:` block and the `nodes:` that reference them. */
-function parse(agentsYaml: string, nodesYaml: string, edgesYaml: string) {
+function parse(agentsYaml: string, nodesYaml: string, edgesYaml: string): WorkflowDefinition {
   return parseWorkflow(
     `schema_version: '1.0'
 workflow:

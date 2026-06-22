@@ -90,6 +90,12 @@ workflow:
     - { from: a, to: out }
 `;
 
+// Same shape with a non-anthropic primary — exercises the env-var derivation for a second provider id.
+const AGENT_WF_GEMINI = AGENT_WF.replace('id: cli-run-agent', 'id: cli-run-agent-gemini').replace(
+  'model: claude-opus-4-8, provider: anthropic',
+  'model: gemini-2.5-flash, provider: gemini',
+);
+
 let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'relavium-run-'));
@@ -243,7 +249,7 @@ describe('runCommand', () => {
   it('forwards SIGINT as a cooperative cancel → run:cancelled → exit 1, leaking no SIGINT listener', async () => {
     const path = writeWorkflow('stall.relavium.yaml', STALL);
     const { io, out } = captureIo();
-    const baseline = process.listeners('SIGINT').length;
+    const before = process.listeners('SIGINT');
 
     // Resolve the moment the `slow` node begins executing. By then run.ts has already registered its
     // SIGINT handler (registration is synchronous, immediately before the consume loop and before any
@@ -283,7 +289,11 @@ describe('runCommand', () => {
     );
 
     await reachedSlow; // the run is parked at `slow`; run.ts's SIGINT handler is registered
-    const onSigint = process.listeners('SIGINT').at(-1);
+    // Identify run.ts's handler by set-delta (not `.at(-1)`), so the test is robust to any other
+    // SIGINT listener the runner/host might register before or after it.
+    const added = process.listeners('SIGINT').filter((listener) => !before.includes(listener));
+    expect(added).toHaveLength(1);
+    const onSigint = added[0];
     if (typeof onSigint !== 'function') {
       throw new TypeError('expected run.ts to register a SIGINT handler');
     }
@@ -292,8 +302,9 @@ describe('runCommand', () => {
     const code = await pending;
     expect(code).toBe(EXIT_CODES.workflowFailed); // run:cancelled → default branch → 1
     expect(out()).toContain('cancelled');
-    // process.once auto-removed on fire + the finally removeListener (safe no-op) → back to baseline.
-    expect(process.listeners('SIGINT').length).toBe(baseline);
+    // Direct invocation does not auto-remove a `once` listener (only emit() does), so the finally's
+    // removeListener is what returns the count to baseline.
+    expect(process.listeners('SIGINT').length).toBe(before.length);
   }, 15_000); // generous ceiling: the coordination is deterministic, but a cold/starved CI worker is slow
 
   it('does not leak SIGINT listeners across many sequential runs (2.K harness hygiene)', async () => {
@@ -334,5 +345,64 @@ describe('runCommand', () => {
       expect(caught.message).toContain('RELAVIUM_ANTHROPIC_API_KEY');
     }
     expect(engineBuilt).toBe(false);
+  });
+
+  it('names the matching env var for a non-anthropic primary provider (gemini)', async () => {
+    const path = writeWorkflow('agent-gemini.relavium.yaml', AGENT_WF_GEMINI);
+    const { io } = captureIo(); // io.env = {} → no RELAVIUM_GEMINI_API_KEY
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        { io, global: globalOptions(), providers: createProviderResolver(io.env) },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) expect(caught.message).toContain('RELAVIUM_GEMINI_API_KEY');
+  });
+
+  it('passes the pre-flight and builds the engine when the inline agent key IS present', async () => {
+    const path = writeWorkflow('agent.relavium.yaml', AGENT_WF);
+    const { io } = captureIo();
+    let engineBuilt = false;
+    // A stub executor completes every node (incl. the agent) so the run finishes without a real call;
+    // the point is that a PRESENT key lets the pre-flight pass and the engine gets built (no false-fail).
+    const completeAll: NodeExecutor = {
+      execute: (ctx) => Promise.resolve({ kind: 'completed', output: ctx.vertex.id }),
+    };
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      {
+        io,
+        global: globalOptions(),
+        // A non-empty value is all the pre-flight checks for (presence); kept deliberately un-key-like.
+        providers: createProviderResolver({ RELAVIUM_ANTHROPIC_API_KEY: 'present' }),
+        buildEngine: () => {
+          engineBuilt = true;
+          return Promise.resolve(
+            new WorkflowEngine({ host: createInMemoryHost(), executor: completeAll }),
+          );
+        },
+      },
+    );
+    expect(engineBuilt).toBe(true); // the present key did NOT false-fail the pre-flight
+    expect(code).toBe(EXIT_CODES.success);
+  });
+
+  it('renders the gate terminal as run:paused on the last NDJSON line under --json', async () => {
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const { io, out } = captureIo();
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      deps(io, globalOptions({ json: true })),
+    );
+    expect(code).toBe(EXIT_CODES.gatePaused);
+    const lines = out().trimEnd().split('\n');
+    const last: unknown = JSON.parse(lines.at(-1) ?? '');
+    const lastType =
+      typeof last === 'object' && last !== null && 'type' in last ? last.type : undefined;
+    expect(lastType).toBe('run:paused');
   });
 });

@@ -473,6 +473,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   Until then, a workflow whose agent calls a capability-backed built-in tool surfaces a clean "tool
   unavailable" failure, never a half-implemented or unsafe execution. *(medium · apps/cli/src/engine/build-engine.ts;
   security-review.md; egress → the SSRF item above)*
+- [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
+  `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
+  human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only
+  park — a valid `run:paused` carrying `pendingMediaJobNodeIds` and no gates, per `RunPausedEventSchema` /
+  1.AG §D — can never be emitted). When the media host capability lands (the same surface as the deferred
+  media-egress work, ~2.S), a media-only park would be reported as "gate-paused" with no gate; at that point
+  decide whether exit 3 (and the rendered message) should distinguish a gate park from a media park.
+  *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
 
 ## Schema / validation hardening
 

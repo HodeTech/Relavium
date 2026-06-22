@@ -53,6 +53,19 @@ describe('parseInputArgs', () => {
   it('rejects a token with an empty key (`=value`)', () => {
     expect(() => parseInputArgs(['=v'])).toThrow();
   });
+
+  it('rejects a repeated key rather than silently last-wins', () => {
+    try {
+      parseInputArgs(['k=a', 'k=b']);
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect(isCliError(err)).toBe(true);
+      if (isCliError(err)) {
+        expect(err.code).toBe('invalid_invocation');
+        expect(err.message).toContain('more than once');
+      }
+    }
+  });
 });
 
 describe('resolveInputs', () => {
@@ -95,6 +108,22 @@ describe('resolveInputs', () => {
 
   it('accepts a literal zero for a number input', () => {
     expect(resolveInputs(TYPED_INPUTS, { count: '0', needed: 'x' })).toMatchObject({ count: 0 });
+  });
+
+  it('accepts decimal, negative, and scientific number forms', () => {
+    expect(resolveInputs(TYPED_INPUTS, { count: '3.14', needed: 'x' })).toMatchObject({
+      count: 3.14,
+    });
+    expect(resolveInputs(TYPED_INPUTS, { count: '-5', needed: 'x' })).toMatchObject({ count: -5 });
+    expect(resolveInputs(TYPED_INPUTS, { count: '1e3', needed: 'x' })).toMatchObject({
+      count: 1000,
+    });
+  });
+
+  it('rejects radix/hex number literals (0x10 would silently be 16)', () => {
+    for (const radix of ['0x10', '0o17', '0b11']) {
+      expect(() => resolveInputs(TYPED_INPUTS, { count: radix, needed: 'x' })).toThrow();
+    }
   });
 
   it('rejects a non-boolean boolean input', () => {

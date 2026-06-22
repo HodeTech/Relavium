@@ -101,8 +101,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       renderer.onEvent(event);
       outcome = nextOutcome(outcome, event);
       if (event.type === 'run:paused') {
-        // Parked at a gate (or budget/media). The interactive prompt + `relavium gate` resume are
-        // 2.G (and need 2.H persistence); for 2.D the run exits with the gate-paused code.
+        // A human gate — the only `run:paused` source in 2.D (no media-job host is wired; build-engine.ts).
+        // The interactive prompt + `relavium gate` resume are 2.G (and need 2.H persistence); for 2.D the
+        // run exits with the gate-paused code. When media host-wiring lands (2.S) a media-only park is also
+        // a `run:paused`, so revisit whether exit 3 should distinguish it then (deferred-tasks).
         break;
       }
     }

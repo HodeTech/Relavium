@@ -12,7 +12,13 @@ export function parseInputArgs(rawInputs: readonly string[]): Record<string, str
     if (eq <= 0) {
       throw new CliError('invalid_invocation', `--input must be key=value (got '${entry}').`);
     }
-    out[entry.slice(0, eq)] = entry.slice(eq + 1);
+    const key = entry.slice(0, eq);
+    // Reject a repeated key rather than silently last-wins — a duplicate `--input k=…` is a mistake
+    // (each input is distinct), and the surface's posture is fail-fast on malformed invocation.
+    if (Object.prototype.hasOwnProperty.call(out, key)) {
+      throw new CliError('invalid_invocation', `--input '${key}' was given more than once.`);
+    }
+    out[key] = entry.slice(eq + 1);
   }
   return out;
 }
@@ -53,19 +59,24 @@ export function resolveInputs(
 function coerce(name: string, type: InputDecl['type'], value: string): unknown {
   switch (type) {
     case 'number': {
-      // `Number('') === 0` (and `Number('  ') === 0`), so reject an empty/whitespace value before the
-      // coercion — otherwise `--input n=` would silently yield 0. A literal `n=0` still trims to '0'.
-      if (value.trim() === '') {
+      const trimmed = value.trim();
+      // `Number('') === 0` (and `Number('  ') === 0`), so reject an empty/whitespace value — otherwise
+      // `--input n=` would silently yield 0. A literal `n=0` still trims to '0'.
+      if (trimmed === '') {
         throw new CliError(
           'invalid_invocation',
           `input '${name}' must be a number (got an empty value).`,
         );
       }
-      const parsed = Number(value);
+      // `Number('0x10') === 16`, `Number('0o17') === 15`, `Number('0b11') === 3` — JS radix literals
+      // parse to a surprising finite value, so a `--input n=0x10` typo would become 16. Restrict to a
+      // plain decimal/scientific shape; `Number.isFinite` then rejects a malformed remainder (`1.2.3`).
+      const isDecimalShape = [...trimmed].every((ch) => '0123456789.eE+-'.includes(ch));
+      const parsed = isDecimalShape ? Number(trimmed) : Number.NaN;
       if (!Number.isFinite(parsed)) {
         throw new CliError(
           'invalid_invocation',
-          `input '${name}' must be a number (got '${value}').`,
+          `input '${name}' must be a decimal number (got '${value}').`,
         );
       }
       return parsed;

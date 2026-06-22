@@ -7,7 +7,7 @@ import { CliError } from '../process/errors.js';
 /**
  * The CLI's provider seam (ADR-0038 host-injected resolution). `resolveProvider` returns the keyless
  * `@relavium/llm` adapter for an authored provider id; `keyFor` resolves that provider's API key from
- * the environment (`RELAVIUM_<PROVIDER>_API_KEY`, the config-spec headless fallback). The OS keychain
+ * the environment (`RELAVIUM_<PROVIDER>_API_KEY`, the headless per-invocation key source). The OS keychain
  * source lands in **2.C** behind this same seam. A key is read only when `keyFor` is invoked (per
  * attempt) and is never logged, stored, or returned to the caller.
  *
@@ -18,7 +18,7 @@ export interface ProviderResolver {
   readonly keyFor: (id: ProviderId) => string;
 }
 
-/** The env var holding a provider's API key (the config-spec headless fallback). */
+/** The env var holding a provider's API key — the headless per-invocation key source. */
 export function providerKeyEnvVar(id: ProviderId): string {
   return `RELAVIUM_${id.toUpperCase()}_API_KEY`;
 }
