@@ -4,19 +4,20 @@ import { describe, expect, it } from 'vitest';
 import type { CliIo } from '../process/io.js';
 import { createJsonRenderer, createPlainRenderer } from './renderer.js';
 
-function captureIo(): { io: CliIo; out: () => string } {
-  const chunks: string[] = [];
+function captureIo(): { io: CliIo; out: () => string; err: () => string } {
+  const outChunks: string[] = [];
+  const errChunks: string[] = [];
   const io: CliIo = {
     writeOut: (text) => {
-      chunks.push(text);
+      outChunks.push(text);
     },
-    writeErr: () => {
-      /* unused */
+    writeErr: (text) => {
+      errChunks.push(text);
     },
     env: {},
     stdoutIsTty: false,
   };
-  return { io, out: () => chunks.join('') };
+  return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
 }
 
 const ENVELOPE = { runId: 'id-1', sequenceNumber: 0, timestamp: '2026-01-01T00:00:00.000Z' };
@@ -125,21 +126,101 @@ describe('createPlainRenderer', () => {
 });
 
 describe('createJsonRenderer', () => {
-  it('emits exactly one JSON object per line, round-trippable', () => {
-    const { io, out } = captureIo();
-    const r = createJsonRenderer(io);
-    r.onEvent(
+  /** A representative ordered run: lifecycle + a streamed cost event + the run:completed result line. */
+  function sequentialRun(): RunEvent[] {
+    return [
       ev({
         type: 'run:started',
+        sequenceNumber: 0,
         workflowId: '11111111-1111-4111-8111-111111111111',
         inputs: {},
         executionMode: 'local',
       }),
-    );
-    r.onEvent(ev({ type: 'run:cancelled' }));
+      ev({ type: 'node:started', sequenceNumber: 1, nodeId: 'a', nodeType: 'transform' }),
+      ev({
+        type: 'cost:updated',
+        sequenceNumber: 2,
+        nodeId: 'a',
+        model: 'm',
+        inputTokens: 1,
+        outputTokens: 1,
+        costMicrocents: 1,
+        cumulativeCostMicrocents: 1,
+      }),
+      ev({
+        type: 'node:completed',
+        sequenceNumber: 3,
+        nodeId: 'a',
+        output: 1,
+        tokensUsed: { input: 1, output: 1 },
+        durationMs: 0,
+      }),
+      ev({
+        type: 'run:completed',
+        sequenceNumber: 4,
+        outputs: { a: 1 },
+        totalTokensUsed: { input: 1, output: 1 },
+        totalCostMicrocents: 1,
+        durationMs: 0,
+      }),
+    ];
+  }
+
+  it('emits every event as one schema-valid RunEvent per line, in sequenceNumber order, ending in run:completed', () => {
+    const { io, out, err } = captureIo();
+    const r = createJsonRenderer(io);
+    const events = sequentialRun();
+    for (const event of events) r.onEvent(event);
+
     const lines = out().trimEnd().split('\n');
-    expect(lines).toHaveLength(2);
-    const first: unknown = JSON.parse(lines[0] ?? '');
-    expect(first).toMatchObject({ type: 'run:started', runId: 'id-1', sequenceNumber: 0 });
+    expect(lines).toHaveLength(events.length); // one line per event, no filtering
+    const parsed = lines.map((line, i) => {
+      const raw: unknown = JSON.parse(line);
+      // Each line is EXACTLY a RunEvent: round-trip equality (not just parse-success) catches a stray
+      // field, since RunEventSchema is non-strict and would otherwise silently strip it.
+      const event = RunEventSchema.parse(raw);
+      expect(event).toEqual(raw);
+      expect(raw).toEqual(events[i]); // ...and is verbatim the event it was handed (no reorder/mutation)
+      return event;
+    });
+    expect(parsed.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 3, 4]); // in monotonic order
+    expect(parsed.at(-1)?.type).toBe('run:completed'); // the terminal event IS the result line
+    expect(err()).toBe(''); // stdout-only: the JSON renderer never writes to stderr
+  });
+
+  it('emits the run:completed result line carrying outputs + totals (no separate summary line)', () => {
+    const { io, out } = captureIo();
+    createJsonRenderer(io).onEvent(
+      ev({
+        type: 'run:completed',
+        outputs: { report: 'ok' },
+        totalTokensUsed: { input: 10, output: 5 },
+        totalCostMicrocents: 42,
+        durationMs: 7,
+      }),
+    );
+    const lines = out().trimEnd().split('\n');
+    expect(lines).toHaveLength(1); // the terminal event is the result line — no extra summary
+    expect(JSON.parse(lines[0] ?? '')).toMatchObject({
+      type: 'run:completed',
+      outputs: { report: 'ok' },
+      totalTokensUsed: { input: 10, output: 5 },
+      totalCostMicrocents: 42,
+    });
+  });
+
+  it('serializes an event verbatim, so an engine-masked secret survives unchanged and is never unwrapped', () => {
+    const { io, out } = captureIo();
+    // A secret-typed input is masked by the engine as { secret: true, ref } before it reaches a renderer.
+    const event = ev({
+      type: 'run:started',
+      workflowId: '11111111-1111-4111-8111-111111111111',
+      inputs: { token: { secret: true, ref: 'keychain://x' } },
+      executionMode: 'local',
+    });
+    createJsonRenderer(io).onEvent(event);
+    // The emitted line round-trips to EXACTLY the event it was handed — the renderer adds nothing, drops
+    // nothing, and has no path to unwrap the { secret: true, ref } masked shape into a raw value.
+    expect(JSON.parse(out().trim())).toEqual(event);
   });
 });

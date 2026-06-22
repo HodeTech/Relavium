@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md). The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.D** (`run` → engine).
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**. The global milestone in play is **M3** (reached at 2.F + 2.K); next on the spine is **2.F** (`--json` CI mode), and the **2.E** (ink TUI) + **2.H** (durable run history) run-surface feeders now open.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -202,7 +202,7 @@ and fails cleanly with a bad one; on a host with no keychain, an env var or
 `secrets.enc` resolves the key and absence yields a clear error; no command path
 ever prints a full key.
 
-### 2.D — `run` command wired to `@relavium/core`
+### 2.D — `run` command wired to `@relavium/core` — ✅ **Done (PR #41)**
 
 Wire `relavium run` to the engine: resolve the workflow, validate inputs, call
 `WorkflowEngine.start(...)`, and consume the `RunHandle.events` stream. This is
@@ -270,12 +270,18 @@ envelope, and deterministic exit codes — the contract CI jobs assert on.
 - Implement a JSON renderer that serializes each `RunEvent` from the bus to a
   single line on stdout (NDJSON), preserving `type`, `runId`, `timestamp`, and
   `sequenceNumber` exactly per [sse-event-schema.md](../../reference/contracts/sse-event-schema.md).
-- Auto-engage this mode under no-TTY / `--json` / `CI=true`; guarantee it shares
-  the **same** event bus as the TUI (renderer, not a fork).
-- Emit a final structured result line (outputs + totals) and set the exit code
-  from the terminal event; in non-interactive mode a `human_gate:paused` exits
-  with code `3` (the gate-paused code; canonical home
-  [commands.md](../../reference/cli/commands.md)) rather than blocking.
+- Engage NDJSON only under `--json` (the explicit machine opt-in, per
+  [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)); no-TTY / `CI=true`
+  disable the interactive TUI but do **not** by themselves switch stdout to NDJSON (a
+  non-interactive run without `--json` uses the plain line-per-event renderer). The JSON
+  renderer shares the **same** event bus as the TUI (renderer, not a fork).
+- Use the terminal `run:completed` event as the final structured result line — it already
+  carries outputs + totals, so do **not** emit a separate summary line (it would break the
+  every-line-is-a-RunEvent invariant; [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)
+  §2). Set the exit code from the terminal event; in non-interactive mode a `run:paused`
+  (the aggregate suspension event — a human/approval/budget gate) exits with code `3` (the
+  gate-paused code; canonical home [commands.md](../../reference/cli/commands.md)) rather
+  than blocking.
 - Keep stdout pure NDJSON (events/result only); send human-oriented diagnostics to
   stderr so a pipe consumer never has to filter noise.
 - Document the stable envelope and exit-code table additions in

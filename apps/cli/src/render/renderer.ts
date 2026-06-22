@@ -3,15 +3,24 @@ import type { RunEvent } from '@relavium/shared';
 import type { CliIo } from '../process/io.js';
 
 /**
- * A renderer consumes the run's canonical {@link RunEvent} stream. 2.D ships minimal implementations
- * behind this seam; the rich `ink` TUI (**2.E**) and the full `--json` NDJSON contract (**2.F**)
- * provide richer implementations of the SAME seam, so the run core never forks per output mode.
+ * A renderer consumes the run's canonical {@link RunEvent} stream. Both renderers below sit behind
+ * this one seam, so the run core never forks per output mode (the rich `ink` TUI lands at **2.E** as
+ * a third implementation of the SAME seam) — this is the "renderer, not a fork" guarantee 2.K relies on.
  */
 export interface RunRenderer {
   onEvent: (event: RunEvent) => void;
 }
 
-/** Minimal NDJSON renderer — one canonical RunEvent per stdout line. 2.F formalizes the envelope. */
+/**
+ * The `--json` NDJSON renderer (2.F, [ADR-0049](../../../../docs/decisions/0049-cli-machine-output-contract.md)):
+ * one canonical {@link RunEvent} serialized verbatim per **stdout** line, preserving the envelope
+ * (`type`/`runId`/`timestamp`/`sequenceNumber`) exactly per
+ * [sse-event-schema.md](../../../../docs/reference/contracts/sse-event-schema.md). No wrapper, no stream
+ * header — the per-line RunEvent IS the stable envelope, and the terminal `run:completed` event is
+ * itself the final result line (it carries `outputs` + totals). Secret-typed values are already masked
+ * by the engine (`MaskedSecret`); `JSON.stringify` emits that masked shape verbatim and never unwraps
+ * it. Only stdout is touched here — all diagnostics (incl. the CLI-fault envelope) go to stderr.
+ */
 export function createJsonRenderer(io: CliIo): RunRenderer {
   return {
     onEvent: (event) => {

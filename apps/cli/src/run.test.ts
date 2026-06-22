@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CliIo } from './process/io.js';
+import { CLI_VERSION } from './program.js';
 import { run } from './run.js';
 
 function makeIo(): { io: CliIo; out: () => string; err: () => string } {
@@ -53,7 +54,37 @@ describe('run', () => {
   it('prints the version and exits 0 for --version', async () => {
     const { io, out } = makeIo();
     expect(await run(argv('--version'), io)).toBe(0);
-    expect(out()).toContain('0.0.0');
+    expect(out()).toContain(CLI_VERSION);
+  });
+
+  // The `--json` machine-output contract (ADR-0049) is scoped to a workflow RUN. --help / --version /
+  // a bare invocation are exit-0 meta-operations that still print human text to stdout under --json —
+  // and nothing to stderr.
+  it('keeps --help / --version / bare as human-on-stdout exit-0 meta-ops even under --json', async () => {
+    const help = makeIo();
+    expect(await run(argv('--json', '--help'), help.io)).toBe(0);
+    expect(help.out()).toContain('Usage: relavium');
+    expect(help.err()).toBe('');
+
+    const version = makeIo();
+    expect(await run(argv('--json', '--version'), version.io)).toBe(0);
+    expect(version.out()).toContain(CLI_VERSION);
+    expect(version.err()).toBe('');
+
+    const bare = makeIo();
+    expect(await run(argv('--json'), bare.io)).toBe(0);
+    expect(bare.out()).toContain('Usage: relavium');
+    expect(bare.err()).toBe('');
+  });
+
+  it('keeps stderr a single JSON envelope under --json even with --verbose (no raw stack)', async () => {
+    const { io, out, err } = makeIo();
+    expect(await run(argv('create', '--json', '--verbose'), io)).toBe(2); // `create` is a stub (2.J)
+    expect(out()).toBe('');
+    // stderr is exactly one parseable JSON line — --verbose adds no raw stack text under --json.
+    const lines = err().trimEnd().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(isErrorEnvelope(JSON.parse(lines[0] ?? ''))).toBe(true);
   });
 
   it('exits 2 for an unknown command', async () => {
@@ -79,11 +110,12 @@ describe('run', () => {
     expect(out()).toBe(''); // human errors go to stderr, stdout stays clean
   });
 
-  it('emits a structured JSON error envelope on stdout under --json (flag after the subcommand)', async () => {
-    const { io, out } = makeIo();
+  it('emits the structured JSON error envelope on stderr under --json, stdout empty (ADR-0049)', async () => {
+    const { io, out, err } = makeIo();
     const code = await run(argv('create', '--json'), io); // `create` is still a stub (2.J)
     expect(code).toBe(2);
-    const parsed: unknown = JSON.parse(out().trim());
+    expect(out()).toBe(''); // stdout stays pure: a CLI fault is a stderr diagnostic
+    const parsed: unknown = JSON.parse(err().trim());
     expect(isErrorEnvelope(parsed)).toBe(true);
     if (isErrorEnvelope(parsed)) {
       expect(parsed.type).toBe('error');
@@ -97,10 +129,11 @@ describe('run', () => {
     expect(err()).toContain('cannot be combined');
   });
 
-  it('renders the JSON error envelope when --json precedes a failing global flag', async () => {
-    const { io, out } = makeIo();
+  it('renders the JSON error envelope on stderr when --json precedes a failing global flag', async () => {
+    const { io, out, err } = makeIo();
     expect(await run(argv('--json', '--cwd'), io)).toBe(2);
-    const parsed: unknown = JSON.parse(out().trim());
+    expect(out()).toBe('');
+    const parsed: unknown = JSON.parse(err().trim());
     expect(isErrorEnvelope(parsed)).toBe(true);
     if (isErrorEnvelope(parsed)) {
       expect(parsed.type).toBe('error');
@@ -108,11 +141,11 @@ describe('run', () => {
     }
   });
 
-  it('renders a commander parse error as a JSON envelope (stdout) under --json, stderr clean', async () => {
+  it('renders a commander parse error as a JSON envelope on stderr under --json, stdout empty', async () => {
     const { io, out, err } = makeIo();
     expect(await run(argv('--json', 'bogus'), io)).toBe(2);
-    expect(err()).toBe(''); // commander's human message suppressed under --json
-    const parsed: unknown = JSON.parse(out().trim());
+    expect(out()).toBe(''); // stdout stays pure NDJSON territory — never a fault envelope
+    const parsed: unknown = JSON.parse(err().trim()); // commander's own human message is suppressed
     expect(isErrorEnvelope(parsed)).toBe(true);
     if (isErrorEnvelope(parsed)) {
       expect(parsed.type).toBe('error');

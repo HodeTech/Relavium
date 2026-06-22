@@ -92,6 +92,7 @@ flowchart TD
 | 0046 | [Inline media-out routes through `generate()`; the streaming media triad is host-deferred (amends 0031, 0038)](0046-inline-media-out-via-generate-streaming-triad-deferred.md) | Accepted | 2026-06-20 |
 | 0047 | [CLI framework — `commander` + `ink` + `@clack/prompts`, confined to `apps/cli`](0047-cli-framework-commander-ink-clack.md) | Accepted | 2026-06-22 |
 | 0048 | [TOML parser for config files — `smol-toml`, confined to the `apps/cli` config loader](0048-toml-config-parser.md) | Accepted | 2026-06-22 |
+| 0049 | [CLI machine-output contract (`--json` NDJSON stream + stderr diagnostics)](0049-cli-machine-output-contract.md) | Accepted | 2026-06-22 |
 
 ## Creating a new ADR
 
