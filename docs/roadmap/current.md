@@ -41,9 +41,12 @@ process contract (**2.A**) and the two-level config-resolution loader (**2.B**),
 **2.D** (`relavium run` wired to `@relavium/core` — the M3 keystone and first real engine
 consumer), ✅ Done (PR #41, 2026-06-22), which also adds the `defaultProviders()` seam registry;
 and **2.F** (the `--json` CI machine-output contract — pure-NDJSON stdout, diagnostics → stderr),
-✅ Done (PR #42, 2026-06-22) behind [ADR-0049](../decisions/0049-cli-machine-output-contract.md).
-**Next on the spine:** **2.K** (the engine regression harness) to reach **M3**, with the **2.E**
-(ink TUI) and **2.H** (durable run history) run-surface feeders open. The CLI also lands the inbound MCP client (2.R,
+✅ Done (PR #42, 2026-06-22) behind [ADR-0049](../decisions/0049-cli-machine-output-contract.md);
+and **2.K** (the engine regression harness, now the engine's CI regression gate), ✅ Done
+(PR #43, 2026-06-23) — **reaching global milestone M3**.
+**Next pickup:** **2.H** (durable run history — the highest-leverage feeder, unblocking
+2.I / 2.G / 2.M / 2.S), with the **2.E** (ink TUI) feeder also open; the full status-aware order
+is the [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
 [sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).
