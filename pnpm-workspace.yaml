@@ -49,3 +49,11 @@ catalog:
   '@anthropic-ai/sdk': ^0.101.0
   openai: ^6.42.0
   '@google/genai': ^2.8.0
+  # apps/cli surface deps — the CLI command framework (ADR-0047) and the TOML config
+  # parser (ADR-0048). Confined to apps/cli; the engine-deps guard excludes apps/, so these
+  # never enter an engine package. `tsup` is the build tool (toolchain), catalogued like turbo.
+  # Each declared in apps/cli's manifest at the workstream that first needs it (commander/tsup
+  # at 2.A; smol-toml at 2.B). Versions taken under the §9a cooling window.
+  commander: ^12.1.0
+  smol-toml: ^1.3.4
+  tsup: ^8.5.0

@@ -6,6 +6,8 @@
 
 Relavium uses a two-level configuration model that mirrors VS Code's **user vs. workspace** split: a **global** config in the user's home directory, and a **per-project** config committed alongside the code. The per-project layer overrides the global layer. A directory the user opens *is* the workspace — there is no separate "project" concept; the filesystem directory is the unit of organization, which makes git integration trivial.
 
+Config files are **TOML 1.0**. They are decoded to plain objects by the surface that reads them (the CLI in build phase 2 — [ADR-0048](../../decisions/0048-toml-config-parser.md)), then validated against the strict `@relavium/shared` config schemas ([ADR-0033](../../decisions/0033-strict-config-files-amends-0023.md)); the engine never reads config files itself.
+
 ## Locations
 
 ### Global — `~/.relavium/`
@@ -102,6 +104,11 @@ max_messages = 200                 # session-history cap before older turns are 
 max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress cost cap (the same governor as a workflow budget — ADR-0028)
 on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
 ```
+
+> **Project-scoped MCP servers.** `project.toml` / `workspace.toml` may also declare
+> `[[mcp_servers]]` entries (the same shape as the global block above); they merge with the
+> global registrations per the [resolution order](#resolution-order) — a project server
+> overrides a global one with the same `name`. (Schema: `ProjectConfigSchema.mcp_servers`.)
 
 > The `[chat]` block sets defaults for the **agent-first** chat entry point
 > ([agent-session-spec.md](agent-session-spec.md), [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),

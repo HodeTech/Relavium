@@ -1,0 +1,32 @@
+{
+  "name": "relavium",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Relavium CLI (`relavium`) — the terminal surface and the engine's regression harness (build phase 2).",
+  "bin": {
+    "relavium": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@relavium/shared": "workspace:*",
+    "commander": "catalog:",
+    "smol-toml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
