@@ -15,7 +15,7 @@ export function parseInputArgs(rawInputs: readonly string[]): Record<string, str
     const key = entry.slice(0, eq);
     // Reject a repeated key rather than silently last-wins — a duplicate `--input k=…` is a mistake
     // (each input is distinct), and the surface's posture is fail-fast on malformed invocation.
-    if (Object.prototype.hasOwnProperty.call(out, key)) {
+    if (Object.hasOwn(out, key)) {
       throw new CliError('invalid_invocation', `--input '${key}' was given more than once.`);
     }
     out[key] = entry.slice(eq + 1);
