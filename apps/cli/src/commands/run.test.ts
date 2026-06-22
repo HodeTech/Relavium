@@ -147,6 +147,45 @@ function writeWorkflow(name: string, yaml: string): string {
   return path;
 }
 
+/**
+ * A `buildEngine` whose `slow` node hangs until the run's AbortSignal fires (the engine's own
+ * cancellation pattern). `reachedSlow` resolves the moment `slow` starts executing — by then run.ts
+ * has synchronously registered its SIGINT handler — so a test can fire that handler race-free.
+ */
+function makeStallingCancelEngine(): {
+  buildEngine: () => Promise<WorkflowEngine>;
+  reachedSlow: Promise<void>;
+} {
+  let signalReached: (() => void) | undefined;
+  const reachedSlow = new Promise<void>((resolve) => {
+    signalReached = resolve;
+  });
+  const stalling: NodeExecutor = {
+    execute: (ctx) => {
+      if (ctx.vertex.id === 'slow') {
+        signalReached?.();
+        return new Promise<NodeOutcome>((resolve) => {
+          const onAbort = (): void => {
+            ctx.signal.removeEventListener('abort', onAbort); // symmetry — no listener left on the signal
+            resolve({ kind: 'completed', output: null });
+          };
+          if (ctx.signal.aborted) {
+            onAbort();
+          } else {
+            ctx.signal.addEventListener('abort', onAbort);
+          }
+        });
+      }
+      return Promise.resolve({ kind: 'completed', output: ctx.vertex.id });
+    },
+  };
+  return {
+    buildEngine: () =>
+      Promise.resolve(new WorkflowEngine({ host: createInMemoryHost(), executor: stalling })),
+    reachedSlow,
+  };
+}
+
 describe('runCommand', () => {
   it('runs a workflow to completion and exits 0, rendering the lifecycle (plain)', async () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
@@ -280,38 +319,7 @@ describe('runCommand', () => {
     const path = writeWorkflow('stall.relavium.yaml', STALL);
     const { io, out } = captureIo();
     const before = process.listeners('SIGINT');
-
-    // Resolve the moment the `slow` node begins executing. By then run.ts has already registered its
-    // SIGINT handler (registration is synchronous, immediately before the consume loop and before any
-    // node runs), so firing the handler is race-free and deterministic — no real-timer polling.
-    let signalReached: (() => void) | undefined;
-    const reachedSlow = new Promise<void>((resolve) => {
-      signalReached = resolve;
-    });
-
-    // The `slow` node hangs until the run's AbortSignal fires (the engine's own cancellation-test
-    // pattern), so the run is provably in-flight when we fire the captured SIGINT handler.
-    const stalling: NodeExecutor = {
-      execute: (ctx) => {
-        if (ctx.vertex.id === 'slow') {
-          signalReached?.();
-          return new Promise<NodeOutcome>((resolve) => {
-            const onAbort = (): void => {
-              ctx.signal.removeEventListener('abort', onAbort); // symmetry — no listener left on the signal
-              resolve({ kind: 'completed', output: null });
-            };
-            if (ctx.signal.aborted) {
-              onAbort();
-            } else {
-              ctx.signal.addEventListener('abort', onAbort);
-            }
-          });
-        }
-        return Promise.resolve({ kind: 'completed', output: ctx.vertex.id });
-      },
-    };
-    const buildStalling = (): Promise<WorkflowEngine> =>
-      Promise.resolve(new WorkflowEngine({ host: createInMemoryHost(), executor: stalling }));
+    const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
 
     const pending = runCommand(
       { workflow: path, input: [] },
@@ -336,6 +344,40 @@ describe('runCommand', () => {
     // removeListener is what returns the count to baseline.
     expect(process.listeners('SIGINT').length).toBe(before.length);
   }, 15_000); // generous ceiling: the coordination is deterministic, but a cold/starved CI worker is slow
+
+  it('keeps stdout a pure NDJSON stream ending in run:cancelled under --json', async () => {
+    const path = writeWorkflow('stall.relavium.yaml', STALL);
+    const { io, out, err } = captureIo();
+    const before = process.listeners('SIGINT');
+    const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
+
+    const pending = runCommand(
+      { workflow: path, input: [] },
+      deps(io, globalOptions({ json: true }), { buildEngine: buildStalling }),
+    );
+
+    await reachedSlow;
+    const onSigint = process
+      .listeners('SIGINT')
+      .filter((listener) => !before.includes(listener))[0];
+    if (typeof onSigint !== 'function') {
+      throw new TypeError('expected run.ts to register a SIGINT handler');
+    }
+    onSigint('SIGINT');
+
+    const code = await pending;
+    expect(code).toBe(EXIT_CODES.workflowFailed); // run:cancelled → exit 1
+    const events = out()
+      .trimEnd()
+      .split('\n')
+      .map((line) => {
+        const raw: unknown = JSON.parse(line);
+        expect(RunEventSchema.parse(raw)).toEqual(raw);
+        return RunEventSchema.parse(raw);
+      });
+    expect(events.at(-1)?.type).toBe('run:cancelled'); // the cancelled terminal stays a RunEvent on stdout
+    expect(err()).toBe(''); // ...not a {type:error} fault envelope on stderr
+  }, 15_000);
 
   it('does not leak SIGINT listeners across many sequential runs (2.K harness hygiene)', async () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);

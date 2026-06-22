@@ -43,7 +43,7 @@ export function buildProgram(io: CliIo, options?: BuildProgramOptions): Command 
       },
       writeErr: (str) => {
         // Under --json the caller re-renders commander's parse errors as a JSON envelope on
-        // stdout, so commander's own human stderr message is suppressed to avoid a double.
+        // stderr (ADR-0049), so commander's own human stderr message is suppressed to avoid a double.
         if (options?.suppressErrorOutput !== true) {
           io.writeErr(str);
         }
