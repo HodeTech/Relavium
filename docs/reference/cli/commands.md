@@ -28,8 +28,36 @@ The CLI auto-detects its environment and switches presentation accordingly:
 
 | Mode | When | Behavior |
 |------|------|----------|
-| **Interactive TUI** | TTY attached (developer terminal) | `ink`-rendered live view: animated per-node status, streaming token output for the active node, final cost/duration summary |
-| **CI / non-interactive** | No TTY, `--json`, or `CI=true` | Line-buffered, machine-readable output; `--json` emits one [RunEvent](../contracts/sse-event-schema.md) JSON object per line (NDJSON) for piping into other tools |
+| **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, streaming token output for the active node, final cost/duration summary |
+| **Plain** | No TTY or `CI=true` (and no `--json`) | The TUI is disabled; a terse line-per-lifecycle-event human renderer writes to stdout |
+| **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure [RunEvent](../contracts/sse-event-schema.md) NDJSON stream; all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
+
+NDJSON is engaged **only** by `--json` (the explicit machine opt-in); a non-TTY or `CI=true`
+environment disables the interactive TUI but does not by itself switch stdout to NDJSON
+([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Exit codes are CI-friendly
+(see [Exit codes](#exit-codes)).
+
+### The `--json` machine-output contract
+
+Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert
+on ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). The contract covers a workflow
+**run**; `--help`, `--version`, and a bare no-command invocation are exit-`0` meta-operations that
+print their human text (usage / version) to stdout as usual, `--json` notwithstanding.
+
+- **stdout is a pure NDJSON stream of [RunEvent](../contracts/sse-event-schema.md)s** — one event
+  serialized verbatim per line, in `sequenceNumber` order. The line *is* the stable envelope
+  (`type` / `runId` / `timestamp` / `sequenceNumber` per the schema); there is no wrapper, stream
+  header, or version line. Every event the run emits appears, unfiltered.
+- **The terminal `run:completed` event is the final result line** — it already carries `outputs` +
+  `totalTokensUsed` + `totalCostMicrocents` + `durationMs`, so there is no separate summary line. A
+  `run:failed` terminal carries `error` + `partialOutputs`; a `run:cancelled` carries only the
+  envelope (read run totals for those from the last `cost:updated.cumulativeCostMicrocents`).
+- **All diagnostics go to stderr, never stdout.** A pre-run CLI fault (bad arguments, workflow not
+  found, missing key) is written to stderr as a structured `{ "type": "error", "code", "message" }`
+  envelope (distinct from the run stream's `run:failed`/`node:failed`) and exits `2`; stdout stays
+  empty. A pipe consumer reads stdout for events and uses the exit code + stderr for faults.
+- **Secret-typed values stay masked** — the engine masks them as `{ "secret": true, "ref": … }`
+  before any renderer sees them; the NDJSON carries that masked shape, never a raw secret.
 
 Exit codes are CI-friendly (see [Exit codes](#exit-codes)).
 
@@ -102,7 +130,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` it is on the NDJSON event line, otherwise read it from `relavium status`/`relavium logs`.
 
-> **Implementation status (as of workstream 2.D).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, and SIGINT→cancel are live. Still landing in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer), the finalized `--json` envelope (2.F — until then a raw one-RunEvent-per-line NDJSON dump), the interactive inline gate prompt and `relavium gate` resume (2.G/2.H — until then a `human_gate` node exits `3`), provider keys from the OS keychain (2.C — until then the `RELAVIUM_<PROVIDER>_API_KEY` environment fallback, the per-invocation key source in the [config-spec.md](../contracts/config-spec.md) precedence), and durable run history (2.H — until then runs are in-memory). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
+> **Implementation status (as of workstream 2.F).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. Still landing in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer), the interactive inline gate prompt and `relavium gate` resume (2.G/2.H — until then a `human_gate` node exits `3`), provider keys from the OS keychain (2.C — until then the `RELAVIUM_<PROVIDER>_API_KEY` environment fallback, the per-invocation key source in the [config-spec.md](../contracts/config-spec.md) precedence), and durable run history (2.H — until then runs are in-memory). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
 
 ### `relavium list`
 
@@ -150,7 +178,9 @@ CI relies on deterministic exit codes:
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended via `/exit` (a clean, user-initiated end of an interactive `relavium chat` REPL) — see [chat-session.md](chat-session.md) |
 
-> Exit code `3` lets CI distinguish a pause-for-approval (a `human_gate:paused` event in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
+> Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
+>
+> Under `--json`, a pre-run fault (exit `2`) writes its structured `{ "type": "error", … }` detail to **stderr** while stdout stays empty ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) — the exit code is the primary fault signal; read stderr for the detail.
 >
 > Exit code `4` is the canonical **chat-session-ended** code: it marks a deliberate `/exit` (or its `--json` equivalent, a final `session:cancelled`/end event) from the `relavium chat` REPL, kept distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user quit the chat" apart from either. Other docs reference it as `4`.
 

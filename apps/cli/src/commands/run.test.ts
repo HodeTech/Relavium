@@ -8,6 +8,7 @@ import {
   type NodeExecutor,
   type NodeOutcome,
 } from '@relavium/core';
+import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildEngine } from '../engine/build-engine.js';
@@ -104,19 +105,20 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function captureIo(): { io: CliIo; out: () => string } {
-  const chunks: string[] = [];
+function captureIo(): { io: CliIo; out: () => string; err: () => string } {
+  const outChunks: string[] = [];
+  const errChunks: string[] = [];
   const io: CliIo = {
     writeOut: (text) => {
-      chunks.push(text);
+      outChunks.push(text);
     },
-    writeErr: () => {
-      /* unused */
+    writeErr: (text) => {
+      errChunks.push(text);
     },
     env: {},
     stdoutIsTty: false,
   };
-  return { io, out: () => chunks.join('') };
+  return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
 }
 
 function globalOptions(over: Partial<GlobalOptions> = {}): GlobalOptions {
@@ -156,21 +158,49 @@ describe('runCommand', () => {
     expect(out()).toContain('run completed');
   });
 
-  it('renders NDJSON ending in run:completed under --json', async () => {
+  it('renders --json stdout as a schema-valid RunEvent NDJSON stream in sequenceNumber order, ending in run:completed', async () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     const { io, out } = captureIo();
     const global = globalOptions({ json: true });
     const code = await runCommand({ workflow: path, input: ['n=3'] }, deps(io, global));
     expect(code).toBe(EXIT_CODES.success);
-    const lines = out().trimEnd().split('\n');
-    const types = lines.map((line) => {
-      const parsed: unknown = JSON.parse(line);
-      return typeof parsed === 'object' && parsed !== null && 'type' in parsed
-        ? parsed.type
-        : undefined;
-    });
-    expect(types[0]).toBe('run:started');
-    expect(types.at(-1)).toBe('run:completed');
+
+    // Every stdout line is EXACTLY one RunEvent (the 2.F/ADR-0049 acceptance bar). Round-trip
+    // equality (parse === raw) — not just parse-success — proves no non-JSON bytes AND no extra
+    // fields, since RunEventSchema is non-strict and would otherwise silently strip a stray key.
+    const events = out()
+      .trimEnd()
+      .split('\n')
+      .map((line) => {
+        const raw: unknown = JSON.parse(line);
+        expect(RunEventSchema.parse(raw)).toEqual(raw);
+        return RunEventSchema.parse(raw);
+      });
+    expect(events[0]?.type).toBe('run:started');
+    expect(events.at(-1)?.type).toBe('run:completed'); // the terminal run:completed is the result line
+    // sequenceNumber is monotonically non-decreasing across the stream.
+    const seqs = events.map((e) => e.sequenceNumber);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+  });
+
+  it('keeps stdout a pure NDJSON stream ending in run:failed (the failure stays a RunEvent, not a stderr fault)', async () => {
+    const path = writeWorkflow('fail.relavium.yaml', FAILING);
+    const { io, out, err } = captureIo();
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      deps(io, globalOptions({ json: true })),
+    );
+    expect(code).toBe(EXIT_CODES.workflowFailed);
+    const events = out()
+      .trimEnd()
+      .split('\n')
+      .map((line) => {
+        const raw: unknown = JSON.parse(line);
+        expect(RunEventSchema.parse(raw)).toEqual(raw);
+        return RunEventSchema.parse(raw);
+      });
+    expect(events.at(-1)?.type).toBe('run:failed'); // a run failure is a RunEvent on stdout...
+    expect(err()).toBe(''); // ...NOT a {type:error} fault envelope on stderr (that's for CLI faults only)
   });
 
   it('maps a failed run to exit 1', async () => {

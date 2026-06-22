@@ -55,8 +55,11 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode>
     return result.exitCode ?? EXIT_CODES.success;
   } catch (err) {
     if (err instanceof CommanderError) {
-      // commander wrote help/version to stdout; under --json its stderr was suppressed, so emit the
-      // structured envelope ourselves. `exitCode` is 0 for help/version, non-zero for a parse fault → 2.
+      // commander wrote help/version to stdout; under --json its own stderr was suppressed, so we emit
+      // the structured fault envelope ourselves — to stderr, keeping stdout a pure event stream
+      // (ADR-0049). `exitCode` is 0 for help/version, non-zero for a parse fault → 2.
+      // Only re-render under --json (commander's own stderr was suppressed). Without --json, commander
+      // already wrote its human message to stderr (writeErr un-suppressed), so we deliberately add nothing.
       if (err.exitCode !== 0 && renderCtx.json) {
         renderError(
           new CliError('invalid_invocation', stripErrorPrefix(err.message)),

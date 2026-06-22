@@ -1,6 +1,6 @@
 # Run a Workflow in CI (CLI)
 
-> Status: draft — to be expanded
+> Status: Living
 
 This tutorial takes a workflow you already built — for example the Research Pipeline from
 [Build your first workflow](../desktop/build-your-first-workflow.md) — commits it to git,
@@ -29,7 +29,7 @@ rather than restating it.
 - A `.relavium.yaml` workflow committed under `.relavium/` in your repo. Its schema's one
   home is [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md).
 
-## Steps (to be expanded)
+## Steps
 
 1. **Commit the workflow.** Move (or export) your workflow into `.relavium/` and commit
    it. Because it is plain YAML, teammates review it in a PR like any other code change.
@@ -48,20 +48,27 @@ rather than restating it.
    In a TTY you get the `ink` interactive view: per-node status, live token streaming for
    the active node, and a final cost/duration summary line.
 
-3. **Switch to machine-readable output.** CI has no TTY, so use `--json` to emit one
-   [RunEvent](../../reference/contracts/sse-event-schema.md) per line (NDJSON) for
-   parsing or archiving:
+3. **Switch to machine-readable output.** Pass `--json` to emit the stable machine contract:
+   **stdout** becomes a pure NDJSON stream — one
+   [RunEvent](../../reference/contracts/sse-event-schema.md) per line, in `sequenceNumber`
+   order, with the terminal `run:completed` line carrying the run's `outputs` + totals — while
+   **all diagnostics go to stderr**. Pipe stdout straight into a parser; nothing else lands there.
 
    ```bash
-   relavium run .relavium/research-pipeline.relavium.yaml --input topic="quantum computing" --json
+   relavium run .relavium/research-pipeline.relavium.yaml --input topic="quantum computing" --json \
+     | jq -c 'select(.type == "run:completed") | .outputs'
    ```
 
-4. **Provide the API key as a CI secret.** CI has no OS keychain. Store the provider key
-   as an encrypted CI secret and expose it as an environment variable to the run step.
-   (The exact env-var name the engine reads is finalized in the
-   [CLI reference](../../reference/cli/commands.md) and
-   [config spec](../../reference/contracts/config-spec.md); the key is never written to
-   disk and never appears in run output.)
+   `--json` is the explicit opt-in: a non-TTY or `CI=true` shell alone only disables the
+   interactive view, it does not switch stdout to NDJSON. See
+   [the `--json` machine-output contract](../../reference/cli/commands.md#the---json-machine-output-contract).
+
+4. **Provide the API key as a CI secret.** CI has no OS keychain, so the CLI reads the key from
+   `RELAVIUM_<PROVIDER>_API_KEY` (e.g. `RELAVIUM_ANTHROPIC_API_KEY`) — the headless per-invocation
+   key source. Store it as an encrypted CI secret and expose it as that environment variable on the
+   run step; the key is never written to disk and never appears in run output. (A missing key for a
+   referenced agent's provider fails the invocation up front with exit `2` and names the variable to
+   set.)
 
 5. **Add the CI step.** Install the CLI and run the committed workflow on every push:
 
@@ -70,7 +77,7 @@ rather than restating it.
    - run: npm install -g relavium
    - env:
        # provider key injected from CI secrets, never committed
-       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+       RELAVIUM_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
      run: relavium run .relavium/research-pipeline.relavium.yaml --input topic="quantum computing" --json
    ```
 
@@ -78,16 +85,30 @@ rather than restating it.
    can branch on the outcome: `0` = success, `1` = workflow failed (a node errored and
    exhausted retries/fallbacks), `2` = invalid invocation, `3` = paused at a human gate
    (non-interactive). The full table is in the
-   [CLI reference](../../reference/cli/commands.md#exit-codes).
+   [CLI reference](../../reference/cli/commands.md#exit-codes). Under `--json`, a `2`
+   invocation fault writes its structured `{ "type": "error", … }` detail to **stderr** and
+   leaves stdout empty — so check the exit code first, then read stderr for the detail:
+
+   ```bash
+   # Read $? on the command itself (not after `! cmd`, where it would always be 0).
+   if relavium run .relavium/research-pipeline.relavium.yaml --input topic="…" --json > run.ndjson 2> run.err; then
+     jq -c 'select(.type == "run:completed") | .outputs' run.ndjson
+   else
+     code=$?; echo "run did not succeed (exit $code)" >&2; cat run.err >&2; exit "$code"
+   fi
+   ```
 
 ## What just happened
 
-To be expanded. This section will connect the CI run to the engine model: `relavium run`
-parsed and validated the committed YAML, the same `@relavium/core` engine built and
-executed the DAG, streamed [RunEvents](../../reference/contracts/sse-event-schema.md) as
-NDJSON instead of to a canvas, checkpointed each node, and exited with a code your
-pipeline can act on — identical engine behavior to the desktop run, just a different
-surface (see [shared-core-engine.md](../../architecture/shared-core-engine.md)).
+`relavium run` parsed and validated the committed YAML, then the **same** `@relavium/core`
+engine that powers the desktop canvas built and executed the DAG, checkpointing each node.
+Because the CLI is a renderer over the engine's event bus (not a fork), the run emitted the
+identical [RunEvent](../../reference/contracts/sse-event-schema.md) stream it would on any
+surface — `--json` just serialized each event verbatim to stdout as NDJSON instead of
+painting a canvas, kept all diagnostics on stderr, and derived the exit code from the
+terminal event. That is the whole git-native promise: one committed `.relavium.yaml`, one
+engine, identical behavior across the desktop, your terminal, and CI
+(see [shared-core-engine.md](../../architecture/shared-core-engine.md)).
 
 ## A note on human gates in CI
 
