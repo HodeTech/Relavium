@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { MAX_SOURCE_CHARS } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -98,7 +99,7 @@ describe('resolveWorkflowSource', () => {
 
   it('rejects a workflow file over the size cap before reading it', () => {
     const path = join(root, 'huge.relavium.yaml');
-    writeFileSync(path, 'a'.repeat(2 * 1024 * 1024 + 1)); // 2 MiB + 1 byte
+    writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS + 1)); // one byte over the shared cap
     let caught: unknown;
     try {
       resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });

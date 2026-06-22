@@ -285,7 +285,7 @@ describe('runCommand', () => {
     await reachedSlow; // the run is parked at `slow`; run.ts's SIGINT handler is registered
     const onSigint = process.listeners('SIGINT').at(-1);
     if (typeof onSigint !== 'function') {
-      throw new Error('expected run.ts to register a SIGINT handler');
+      throw new TypeError('expected run.ts to register a SIGINT handler');
     }
     onSigint('SIGINT'); // === handle.cancel(); the loop is parked at `slow`, so this lands pre-terminal
 

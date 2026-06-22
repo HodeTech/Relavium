@@ -40,10 +40,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     keyFor: providers.keyFor,
     registry,
     tools: BUILTIN_TOOLS,
-    sleep: (ms) =>
-      new Promise((resolveSleep) => {
-        setTimeout(resolveSleep, ms);
-      }),
+    sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
     now: () => Date.now(),
   };
 

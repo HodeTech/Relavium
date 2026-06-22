@@ -77,7 +77,10 @@ function coerce(name: string, type: InputDecl['type'], value: string): unknown {
       if (value === 'false' || value === '0') {
         return false;
       }
-      throw new CliError('invalid_invocation', `input '${name}' must be a boolean (true/false).`);
+      throw new CliError(
+        'invalid_invocation',
+        `input '${name}' must be a boolean (true/false or 1/0).`,
+      );
     }
     default:
       return value; // string / file_path / code_diff / secret stay as strings

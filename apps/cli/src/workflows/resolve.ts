@@ -1,15 +1,18 @@
 import { readFileSync, statSync, type Stats } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
+import { MAX_SOURCE_CHARS } from '@relavium/core';
+
 import { CliError } from '../process/errors.js';
 
 /**
- * Pre-read byte cap for a workflow source, mirroring the core parser's `MAX_SOURCE_CHARS` (2 MiB).
- * Bytes ≥ chars, so this is a conservative guard that rejects an oversize file from `stat` BEFORE it
- * is slurped into memory — the parser re-applies the exact char cap. (A multibyte file slightly under
- * this byte cap may still trip the parser's char cap; that's the authoritative check.)
+ * Pre-read byte ceiling for a workflow source — the core parser's authoritative char cap
+ * ({@link MAX_SOURCE_CHARS}), reused (not re-declared) so this guard never desyncs from it. UTF-8
+ * bytes ≥ chars, so rejecting a file whose `stat` size exceeds the char cap is conservative and lets
+ * us bail BEFORE slurping it into memory; the parser then re-applies the exact char cap (a multibyte
+ * file slightly under this byte ceiling may still trip there — the authoritative check).
  */
-const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
+const MAX_WORKFLOW_BYTES = MAX_SOURCE_CHARS;
 
 export interface WorkflowSource {
   /** The absolute path the YAML was read from (also the parse-error label, made cwd-relative). */
