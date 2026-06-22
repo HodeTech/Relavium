@@ -37,6 +37,15 @@ would add a build dependency and process flakiness for no fidelity gain. It runs
 `pnpm turbo run test` task, so it is part of the required CI gate on every push/PR
 (`.github/workflows/ci.yml`).
 
+The per-fixture cases enter at the `runCommand` boundary (the engine-fidelity entry point). One
+additional case re-runs a fixture through the **full `run(argv)` CLI shell** — `argv` →
+`extractGlobalOptions` → `commander` → the `run <workflow>` subcommand action → `runCommand` → the
+terminal exit code — and asserts the **identical** NDJSON stream + exit code. That proves the
+argv-parsing glue wires a real workflow run faithfully (the positional workflow, repeatable `--input`,
+the position-independent `--json` global), so the shell is covered end-to-end for a real run — not only
+for the meta-op (`--help`/`--version`) and fault (exit 2) paths that [`run.test.ts`](../../../apps/cli/src/run.test.ts)
+already covers.
+
 ## What is asserted (and what is not)
 
 For each fixture the harness runs `relavium run <fixture> --json` and reduces each event to a

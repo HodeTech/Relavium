@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { runCommand } from '../commands/run.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
+import { run } from '../run.js';
 import { captureIo } from '../test-support.js';
 
 /**
@@ -23,6 +24,11 @@ import { captureIo } from '../test-support.js';
  * branch events legitimately interleave by async (sandbox) completion timing, so it asserts the signature
  * MULTISET + the stable anchors (`run:started` first, the last-emitted event last, gap-free
  * `sequenceNumber`) instead. `runId`/`timestamp`/cost/duration are per-run and never asserted.
+ *
+ * The per-fixture cases enter at the `runCommand` boundary (the engine-fidelity entry point); a final
+ * case re-runs one fixture through the full `run(argv)` CLI shell (argv → commander → terminal exit code)
+ * and asserts the IDENTICAL stream + exit code, proving the argv-parsing glue wires a real workflow run
+ * faithfully — coverage `run.test.ts` leaves out (it drives the shell only for meta-ops + faults).
  *
  * Deferred (scope-split in phase-2-cli.md §2.K): the gate-RESUME scenario (`relavium gate --approve` →
  * completion) needs 2.G + 2.H; agent fixtures via recorded-LLM replay and the nightly live-provider lane
@@ -160,6 +166,23 @@ function globalOptions(): GlobalOptions {
   };
 }
 
+/**
+ * Parse captured stdout as the `--json` NDJSON stream: every line round-trips to EXACTLY one
+ * canonical `RunEvent` (`RunEventSchema.parse(line)` deep-equals the raw line, so a stray field is
+ * caught) — round-trip equality, not mere parse-success.
+ */
+function parseEvents(stdout: string): RunEvent[] {
+  return stdout
+    .trimEnd()
+    .split('\n')
+    .map((line) => {
+      const raw: unknown = JSON.parse(line);
+      const event = RunEventSchema.parse(raw);
+      expect(event).toEqual(raw);
+      return event;
+    });
+}
+
 /** Run one fixture through `relavium run … --json`, returning per-node signatures + raw events + exit. */
 async function runFixture(
   scenario: Scenario,
@@ -170,16 +193,7 @@ async function runFixture(
     { io, global: globalOptions() },
   );
   expect(err()).toBe(''); // a clean offline run writes nothing to stderr (stdout-pure contract, ADR-0049)
-  // Every stdout line is EXACTLY one canonical RunEvent — round-trip equality, not just parse-success.
-  const events = out()
-    .trimEnd()
-    .split('\n')
-    .map((line) => {
-      const raw: unknown = JSON.parse(line);
-      const event = RunEventSchema.parse(raw);
-      expect(event).toEqual(raw);
-      return event;
-    });
+  const events = parseEvents(out());
   return { sigs: events.map(signature), events, code };
 }
 
@@ -187,6 +201,9 @@ async function runFixture(
 function assertGapFreeSeq(events: readonly RunEvent[]): void {
   expect(events.map((e) => e.sequenceNumber)).toEqual(events.map((_, index) => index));
 }
+
+/** Build a full process-style argv (`node relavium …`) exactly as `run()` is entered in production. */
+const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
 
 describe('engine regression harness (2.K) — offline fixtures over `relavium run … --json`', () => {
   for (const scenario of SCENARIOS) {
@@ -206,4 +223,31 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
       }
     });
   }
+
+  // The per-fixture loop above enters at the `runCommand` boundary (the engine-fidelity entry point).
+  // This scenario instead drives the SAME fixture through the full `run(argv)` CLI shell —
+  // argv → extractGlobalOptions → commander → the `run <workflow>` subcommand action → runCommand →
+  // terminal exit code — and asserts it yields the IDENTICAL NDJSON + exit code the harness pins. It
+  // proves the argv-parsing shell wires a real workflow run faithfully (positional workflow, repeatable
+  // `--input`, the position-independent `--json` global), closing the gap that `run.test.ts` leaves: that
+  // suite exercises the shell only for meta-ops (`--help`/`--version`) and faults (exit 2), never a real
+  // run reaching a terminal exit (0/1/3). One representative deterministic fixture suffices — the shell
+  // is workflow-agnostic, so this validates the harness's `runCommand` entry point for every fixture.
+  it('drives a real run through the full `run(argv)` CLI shell with the identical result', async () => {
+    const sequential = SCENARIOS.find((s) => s.file === 'sequential.relavium.yaml');
+    if (sequential === undefined)
+      throw new Error('the sequential fixture is missing from SCENARIOS');
+
+    const { io, out, err } = captureIo();
+    const code = await run(
+      argv('run', `${FIXTURES_DIR}${sequential.file}`, '--input', ...sequential.input, '--json'),
+      io,
+    );
+
+    expect(code).toBe(sequential.exit); // exit code propagates argv → run subcommand → runCommand → run()
+    expect(err()).toBe(''); // the stdout-pure contract holds through the full shell too (ADR-0049)
+    const events = parseEvents(out());
+    assertGapFreeSeq(events);
+    expect(events.map(signature)).toEqual([...sequential.events]); // byte-for-byte the runCommand path's stream
+  });
 });
