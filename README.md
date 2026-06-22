@@ -91,8 +91,8 @@ One engine, three modes behind the one `LLMProvider` seam:
 
 **Phase 1 — Engine and LLM is complete** (2026-06-21): the engine runs end-to-end on
 local-first BYOK — workflow parsing, DAG execution, live streaming, checkpoint/resume,
-multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (CLI) is
-next.** For live status and the full roadmap, see
+multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (the CLI) is
+underway** — the CLI skeleton and config resolution have landed. For live status and the full roadmap, see
 [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 

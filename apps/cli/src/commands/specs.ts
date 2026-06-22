@@ -1,38 +1,34 @@
 import type { Command } from 'commander';
 
 import { CliError } from '../process/errors.js';
+import type { ExitCode } from '../process/exit-codes.js';
+import type { CliIo } from '../process/io.js';
+import type { GlobalOptions } from '../process/options.js';
+import { runCommand } from './run.js';
 
 /**
  * The documented command surface (canonical home:
- * [commands.md](../../../../docs/reference/cli/commands.md)). Workstream 2.A registers the
- * **confirmed pre-chat surface** below so `--help` is complete for it and every command errors
- * **cleanly**; each command's real, framework-free core lands in its own workstream (`run` at
- * 2.D, the read commands at 2.I, the authoring commands at 2.J, the gate at 2.G, keys at 2.C).
- * The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`) and the
- * `gate list` / `budget resume` subcommands are **registered with their own workstreams**
- * (2.M–2.Q, 2.G), not here.
+ * [commands.md](../../../../docs/reference/cli/commands.md)). `run` is the real command (2.D); the
+ * remaining confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their
+ * own workstreams (the read commands at 2.I, the authoring commands at 2.J, the gate at 2.G, keys at
+ * 2.C). The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`) and the
+ * `gate list` / `budget resume` subcommands land with their workstreams (2.M–2.Q, 2.G), not here.
  */
-interface CommandOption {
-  readonly flags: string;
-  readonly description: string;
+
+/** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
+export interface CommandContext {
+  readonly io: CliIo;
+  readonly global: GlobalOptions;
+  readonly result: { exitCode?: ExitCode };
 }
 
-interface CommandSpec {
-  /** The `commander` command name with its argument grammar, e.g. `run <workflow>`. */
+interface StubSpec {
   readonly name: string;
   readonly summary: string;
-  /** Where the real implementation lands — shown in the clean not-yet-available message. */
   readonly landsIn: string;
-  readonly options?: readonly CommandOption[];
 }
 
-const COMMANDS: readonly CommandSpec[] = [
-  {
-    name: 'run <workflow>',
-    summary: 'Execute a workflow (path or id), streaming progress.',
-    landsIn: 'workstream 2.D',
-    options: [{ flags: '--input <key=value...>', description: 'a workflow input (repeatable)' }],
-  },
+const STUB_COMMANDS: readonly StubSpec[] = [
   {
     name: 'list',
     summary: 'List discovered workflows in the current project.',
@@ -81,22 +77,44 @@ const COMMANDS: readonly CommandSpec[] = [
   },
 ];
 
-/** First whitespace-delimited token of a command name — `run <workflow>` → `run`. */
-function commandWord(name: string): string {
-  return name.split(' ', 1)[0] ?? name;
+export function registerCommands(program: Command, ctx?: CommandContext): void {
+  registerRun(program, ctx);
+  for (const spec of STUB_COMMANDS) {
+    program
+      .command(spec.name)
+      .description(spec.summary)
+      .action(() => {
+        throw new CliError(
+          'not_implemented',
+          `\`relavium ${commandWord(spec.name)}\` is not available yet (lands in ${spec.landsIn}).`,
+        );
+      });
+  }
 }
 
-export function registerCommands(program: Command): void {
-  for (const spec of COMMANDS) {
-    const command = program.command(spec.name).description(spec.summary);
-    for (const option of spec.options ?? []) {
-      command.option(option.flags, option.description);
-    }
-    command.action(() => {
-      throw new CliError(
-        'not_implemented',
-        `\`relavium ${commandWord(spec.name)}\` is not available yet (lands in ${spec.landsIn}).`,
-      );
+function registerRun(program: Command, ctx?: CommandContext): void {
+  const run = program
+    .command('run <workflow>')
+    .description('Execute a workflow (path or id), streaming progress.')
+    .option('--input <key=value...>', 'a workflow input (repeatable)');
+
+  if (ctx === undefined) {
+    // No runtime context (e.g. a bare buildProgram for help rendering) — keep it a clean stub.
+    run.action(() => {
+      throw new CliError('not_implemented', '`relavium run` requires the CLI runtime context.');
     });
+    return;
   }
+
+  run.action(async (workflow: string, opts: { input?: readonly string[] }) => {
+    ctx.result.exitCode = await runCommand(
+      { workflow, input: opts.input ?? [] },
+      { io: ctx.io, global: ctx.global },
+    );
+  });
+}
+
+/** First whitespace-delimited token of a command name — `logs <runId>` → `logs`. */
+function commandWord(name: string): string {
+  return name.split(' ', 1)[0] ?? name;
 }

@@ -45,7 +45,8 @@ non-agent node handlers) with live streaming, per-node-boundary checkpoint/resum
 multimodal media I/O (input, inline output, and the async generation job loop). All
 three adapters (Anthropic, OpenAI/DeepSeek, Gemini) and the agent-first `AgentSession`
 entry point (multi-turn sessions, persistence, export-to-workflow) are shipped.
-**Phase 2 (CLI, milestone M3) is unblocked.** For live status, per-PR history,
+**Phase 2 (CLI, milestone M3) is in progress** — the CLI skeleton (2.A) and config
+resolution (2.B) have landed (PR #40). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.

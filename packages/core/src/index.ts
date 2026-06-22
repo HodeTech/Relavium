@@ -7,7 +7,7 @@
  */
 
 // WorkflowYAMLParser (1.L / 1.L2) — parse + validate + static interpolation gates into a typed def.
-export { parseWorkflow } from './parser.js';
+export { parseWorkflow, MAX_SOURCE_CHARS } from './parser.js';
 export type { WorkflowDefinition, ParseWorkflowOptions } from './parser.js';
 
 // Catalog-aware load-check (1.AF/D15) — validates each agent node's `output_modalities` against its

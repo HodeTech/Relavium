@@ -1,7 +1,14 @@
 import { Command } from 'commander';
 
-import { registerCommands } from './commands/specs.js';
+import { registerCommands, type CommandContext } from './commands/specs.js';
 import type { CliIo } from './process/io.js';
+
+export interface BuildProgramOptions {
+  /** Suppress commander's human stderr so the boundary can re-render parse errors as JSON (--json). */
+  readonly suppressErrorOutput?: boolean;
+  /** The runtime context the real commands need; absent ⇒ commands stay help-only stubs. */
+  readonly context?: CommandContext;
+}
 
 /** CLI version — a constant for now; wired to `package.json` during packaging (workstream 2.L). */
 export const CLI_VERSION = '0.0.0';
@@ -24,10 +31,7 @@ Global options (usable anywhere on the command line):
  * action. All output is routed through the injected `CliIo` so the program is testable with
  * no real stdout/TTY. Global flags are extracted upstream (run.ts) and never reach here.
  */
-export function buildProgram(
-  io: CliIo,
-  options?: { readonly suppressErrorOutput?: boolean },
-): Command {
+export function buildProgram(io: CliIo, options?: BuildProgramOptions): Command {
   const program = new Command();
   program
     .name('relavium')
@@ -56,6 +60,6 @@ export function buildProgram(
   // NB: no `program.action()` — a default action would make `commander` treat an unknown
   // subcommand as a positional argument (swallowing the unknown-command error). The bare
   // invocation (no subcommand) is handled in run.ts, which prints help and exits 0.
-  registerCommands(program);
+  registerCommands(program, options?.context);
   return program;
 }

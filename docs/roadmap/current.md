@@ -32,11 +32,18 @@ and the [reference specs](../reference/).
 
 ## What is active now
 
-**Phase 2 — CLI (milestone M3) is unblocked and next.** The CLI is the first real
+**Phase 2 — CLI (milestone M3) is in progress.** The CLI is the first real
 `@relavium/core` consumer and doubles as the engine's regression harness — validating the
-engine API ergonomics before the desktop and VS Code surfaces. It also lands the inbound
-MCP client (2.R, [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3
-critical path. See the [Phase 2 workstreams](phases/phase-2-cli.md).
+engine API ergonomics before the desktop and VS Code surfaces. **Landed:** the CLI skeleton +
+process contract (**2.A**) and the two-level config-resolution loader (**2.B**), both ✅ Done
+(PR #40, 2026-06-22) behind [ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md)
+(commander/ink/@clack) and [ADR-0048](../decisions/0048-toml-config-parser.md) (smol-toml).
+**Next on the spine:** **2.D** (`run` → `@relavium/core`, the M3 keystone — where the config
+loader and engine are first consumed), then **2.F** (`--json` CI mode) + **2.K** (regression
+harness) to reach **M3**. The CLI also lands the inbound MCP client (2.R,
+[ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
+[Phase 2 workstreams](phases/phase-2-cli.md) and the
+[sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half

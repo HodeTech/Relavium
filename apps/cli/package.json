@@ -17,6 +17,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@relavium/core": "workspace:*",
+    "@relavium/llm": "workspace:*",
     "@relavium/shared": "workspace:*",
     "commander": "catalog:",
     "smol-toml": "catalog:",
