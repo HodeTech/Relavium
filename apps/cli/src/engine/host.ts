@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 
 import {
   InMemoryRunStore,
-  createAbortController,
   createInMemoryCheckpointer,
   type ExecutionHost,
   type RunStore,
@@ -23,7 +22,11 @@ export function createCliHost(store: RunStore = new InMemoryRunStore()): Executi
     ids: { newId: () => randomUUID() },
     store,
     checkpointer: createInMemoryCheckpointer(store),
-    newAbortController: createAbortController,
+    // A NATIVE AbortController — its `signal` is a real `AbortSignal` that the provider SDKs thread into
+    // `fetch`, so a run cancel actually aborts an in-flight LLM stream (→ prompt `run:cancelled`). The
+    // engine's in-house `createAbortController` is for TESTS ONLY (its signal is not `instanceof
+    // AbortSignal`, so adapters drop it and a Ctrl-C can't interrupt a live stream). See execution-host.ts.
+    newAbortController: () => new AbortController(),
     setTimer: (ms, onFire) => {
       const timer = setTimeout(onFire, ms);
       return () => {
