@@ -160,7 +160,6 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         }
       }
     } finally {
-      process.removeListener('SIGINT', onSigint);
       // No terminal/paused outcome means we're unwinding abnormally (renderer construction threw, or the
       // event stream rejected) — cancel the still-live engine run so it doesn't keep executing unsupervised
       // in the background while the error propagates (cancel is idempotent + safe post-terminal).
@@ -178,6 +177,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,
         );
       }
+      // Remove our SIGINT handler LAST — keep it registered across ink's unmount (renderer.finalize), so a
+      // Ctrl-C during unmount still hits us (forcing a clean exit 1) and ink's `signal-exit` never becomes the
+      // sole SIGINT listener (which would re-raise → 130). After finalize, ink has unsubscribed its own
+      // listener, so removing ours here leaves the SIGINT set clean.
+      process.removeListener('SIGINT', onSigint);
     }
 
     switch (outcome) {
