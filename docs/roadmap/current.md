@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-21
+> Last updated: 2026-06-23
 
 - **Related**: [README.md](README.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -45,9 +45,13 @@ and **2.F** (the `--json` CI machine-output contract — pure-NDJSON stdout, dia
 and **2.K** (the engine regression harness, now the engine's CI regression gate), ✅ Done
 (PR #43, 2026-06-23) — **reaching global milestone M3**; and **2.H** (durable local run history via
 `@relavium/db` — the `RunStore` writer + read API the gate-resume/list/logs/status surfaces consume),
-✅ Done (PR #44, 2026-06-23) behind [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md).
-**Next pickup:** **2.C** (provider/keys — independent, unblocks 2.R + 2.M + live runs), with the
-**2.E** (ink TUI) feeder also open; the full status-aware order is the
+✅ Done (PR #44, 2026-06-23) behind [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md);
+and **2.C** (the `relavium provider` commands — a provider registry + API keys in the OS keychain via
+`@napi-rs/keyring`, resolved keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error), ✅ Done
+(PR #45, 2026-06-23) behind [ADR-0019](../decisions/0019-cli-node-keychain-library.md) +
+[ADR-0006](../decisions/0006-os-keychain-for-api-keys.md) (no new ADR — `secrets.enc` deferred past v1.0).
+**Next pickup:** **2.E** (ink TUI — go/no-go #1; the shared `ink` infra `2.G` + `2.M` reuse); the full
+status-aware order is the
 [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
