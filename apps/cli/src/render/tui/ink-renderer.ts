@@ -3,7 +3,7 @@ import { createElement } from 'react';
 
 import type { RunRenderer } from '../renderer.js';
 import { RunApp } from './RunApp.js';
-import { createRunStore } from './run-store.js';
+import { createRunStore, type RunStore } from './run-store.js';
 
 /**
  * The `ink` streaming-TUI renderer (workstream **2.E**) — the third {@link RunRenderer} over the one event
@@ -14,11 +14,18 @@ import { createRunStore } from './run-store.js';
  *
  * This module is the ONLY place `ink`/React are imported on the run path, and `createInkRenderer` is built
  * solely in the `tui` output mode (a real TTY — never `--json`/CI/no-TTY, per `detectOutputMode`), so unit
- * tests, which run without a TTY, never mount it.
+ * tests, which run without a TTY, never mount it via the production path.
  */
 
 /** The frame cadence — ~12.5 fps: smooth spinner + token flow without flooding React on a fast stream. */
 export const FRAME_MS = 80;
+
+/** The subset of `ink`'s render instance this renderer drives — also the shape a test's `mount` returns. */
+export interface InkMountInstance {
+  unmount: () => void;
+  // ink's `waitUntilExit()` resolves `Promise<unknown>`; we only await it, never read the value.
+  waitUntilExit: () => Promise<unknown>;
+}
 
 export interface InkRendererOptions {
   /** Whether to render with color (`false` under `--no-color`). */
@@ -27,6 +34,8 @@ export interface InkRendererOptions {
   readonly stdout?: NodeJS.WriteStream;
   /** Where the persistent final summary is written after unmount — defaults to `stdout`. Injectable for tests. */
   readonly writeSummary?: (text: string) => void;
+  /** Mounts the `ink` app — defaults to `ink`'s `render`. Injectable so finalize is tested without a real mount. */
+  readonly mount?: (store: RunStore) => InkMountInstance;
 }
 
 /**
@@ -44,11 +53,17 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
   }, FRAME_MS);
   frame.unref();
 
-  const instance = render(createElement(RunApp, { store }), {
-    stdout,
-    exitOnCtrlC: false, // OUR SIGINT handler (run.ts) drives the cooperative cancel — not ink's process.exit
-    patchConsole: false, // don't intercept other stdout/console writes
-  });
+  const mount =
+    options.mount ??
+    ((s: RunStore): InkMountInstance =>
+      render(createElement(RunApp, { store: s }), {
+        stdout,
+        exitOnCtrlC: false, // OUR SIGINT handler (run.ts) drives the cooperative cancel — not ink's process.exit
+        patchConsole: false, // don't intercept other stdout/console writes
+        // Pin ink's internal render throttle to the store's frame cadence so the two can't drift.
+        maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+      }));
+  const instance = mount(store);
 
   let finalized = false;
 

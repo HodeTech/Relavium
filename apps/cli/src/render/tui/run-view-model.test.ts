@@ -5,6 +5,7 @@ import {
   initialRunViewState,
   MAX_TOKEN_CHARS,
   MAX_TOOL_LINES,
+  MAX_WARNINGS,
   reduceRunEvent,
   type RunViewState,
 } from './run-view-model.js';
@@ -369,5 +370,266 @@ describe('reduceRunEvent', () => {
     expect(s0.nodeOrder).toEqual([]); // original untouched
     expect(s1.nodeOrder).toEqual(['a']);
     expect(s1).not.toBe(s0);
+  });
+});
+
+describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
+  it('node:skipped sets the node status to skipped', () => {
+    const s = reduceAll([
+      {
+        type: 'node:skipped',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        reason: 'branch_not_taken',
+      },
+    ]);
+    expect(s.nodes['a']?.status).toBe('skipped');
+  });
+
+  it('run:timeout sets a failed summary AND a warning (the engine refines it with a terminal run:failed)', () => {
+    const s = reduceAll([
+      {
+        type: 'run:timeout',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        elapsedMs: 30_000,
+        timeoutMs: 25_000,
+      },
+    ]);
+    expect(s.summary).toMatchObject({ outcome: 'failed' });
+    expect(s.summary?.errorMessage).toContain('timed out');
+    expect(s.warnings.some((w) => w.includes('timed out'))).toBe(true);
+  });
+
+  it('budget:warning and budget:paused each push a user-facing warning', () => {
+    const warned = reduceAll([
+      {
+        type: 'budget:warning',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        spentMicrocents: 9,
+        limitMicrocents: 10,
+        thresholdPct: 90,
+      },
+    ]);
+    expect(warned.warnings.some((w) => w.includes('90%'))).toBe(true);
+
+    const paused = reduceAll([
+      {
+        type: 'budget:paused',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        spentMicrocents: 11,
+        limitMicrocents: 10,
+        gateId: 'budget-1',
+      },
+    ]);
+    expect(paused.warnings.some((w) => w.includes('budget cap reached'))).toBe(true);
+  });
+
+  it('human_gate:paused and human_gate:resumed each push a warning', () => {
+    const paused = reduceAll([
+      {
+        type: 'human_gate:paused',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'approve?',
+      },
+    ]);
+    expect(paused.warnings.some((w) => w.includes('"g1"') && w.includes('awaiting input'))).toBe(
+      true,
+    );
+
+    const resumed = reduceAll([
+      {
+        type: 'human_gate:resumed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        decision: 'approved',
+        decidedBy: 'user-1',
+      },
+    ]);
+    expect(resumed.warnings.some((w) => w.includes('gate resumed: approved'))).toBe(true);
+  });
+
+  it('media_job:submitted appends a tool line with the modality', () => {
+    const s = reduceAll([
+      {
+        type: 'media_job:submitted',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        jobId: 'job-1',
+        provider: 'openai',
+        model: 'sora',
+        modality: 'video',
+        startedAt: TS,
+        deadlineAt: '2026-06-23T12:30:00.000Z',
+      },
+    ]);
+    expect(s.toolLines.some((l) => l.includes('media job (video)'))).toBe(true);
+  });
+
+  it('agent:file_patch_proposed appends a tool line with singular/plural file count', () => {
+    const one = reduceAll([
+      {
+        type: 'agent:file_patch_proposed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        patches: [{ uri: 'a.ts', unifiedDiff: '@@' }],
+      },
+    ]);
+    expect(one.toolLines.at(-1)).toBe('✎ patch proposed (1 file)');
+
+    const two = reduceAll([
+      {
+        type: 'agent:file_patch_proposed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        patches: [
+          { uri: 'a.ts', unifiedDiff: '@@' },
+          { uri: 'b.ts', unifiedDiff: '@@' },
+        ],
+      },
+    ]);
+    expect(two.toolLines.at(-1)).toBe('✎ patch proposed (2 files)');
+  });
+
+  it('switches the active region when a token arrives for a different node (parallel branch)', () => {
+    const s = reduceAll([
+      {
+        type: 'node:started',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        nodeType: 'agent',
+      },
+      {
+        type: 'agent:token',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        nodeId: 'a',
+        token: 'x',
+        model: 'm1',
+      },
+      // a token for node 'b' (now active) WITHOUT an intervening node:started — exercises the `switching` reset
+      {
+        type: 'agent:token',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 3,
+        nodeId: 'b',
+        token: 'y',
+        model: 'm2',
+      },
+    ]);
+    expect(s.activeNodeId).toBe('b');
+    expect(s.activeModel).toBe('m2');
+    expect(s.activeTokens).toBe('y'); // buffer reset on switch, not 'xy'
+    expect(s.nodes['b']?.status).toBe('running'); // a token before node:started still surfaces the node
+  });
+
+  it('omits the summary suffix for an empty tool_result outputSummary (no dangling "✓ id: ")', () => {
+    const s = reduceAll([
+      {
+        type: 'agent:tool_result',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        toolId: 'noop',
+        success: true,
+        outputSummary: '',
+      },
+    ]);
+    expect(s.toolLines).toEqual(['✓ noop']);
+  });
+
+  it('carries cumulativeCostMicrocents from a node:completed snapshot', () => {
+    const s = reduceAll([
+      {
+        type: 'node:started',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        nodeType: 'agent',
+      },
+      {
+        type: 'node:completed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        nodeId: 'a',
+        output: null,
+        tokensUsed: { input: 1, output: 1 },
+        durationMs: 5,
+        cumulativeCostMicrocents: 7_500_000,
+      },
+    ]);
+    expect(s.cumulativeCostMicrocents).toBe(7_500_000);
+  });
+
+  it('bounds the warnings window to the trailing MAX_WARNINGS', () => {
+    const events: RunEvent[] = [];
+    for (let i = 0; i < MAX_WARNINGS + 4; i += 1) {
+      events.push({
+        type: 'budget:warning',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: i + 1,
+        spentMicrocents: i,
+        limitMicrocents: 100,
+        thresholdPct: i,
+      });
+    }
+    const s = reduceAll(events);
+    expect(s.warnings.length).toBe(MAX_WARNINGS);
+  });
+
+  it('flags a backward / duplicate sequence number and keeps the high-water mark', () => {
+    const s = reduceAll([
+      {
+        type: 'node:started',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 5,
+        nodeId: 'a',
+        nodeType: 'agent',
+      },
+      // seq goes backwards 5 -> 3: out of order on a monotonic stream
+      {
+        type: 'node:completed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 3,
+        nodeId: 'a',
+        output: null,
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 1,
+      },
+    ]);
+    expect(s.gapDetected).toBe(true);
+    expect(s.warnings.some((w) => w.includes('out of order'))).toBe(true);
+    expect(s.lastSequenceNumber).toBe(5); // high-water mark retained, not lowered to 3
   });
 });

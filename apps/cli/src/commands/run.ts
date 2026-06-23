@@ -24,6 +24,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
@@ -45,6 +46,11 @@ export interface RunCommandDeps {
    * 2.K harness omit it, keeping the in-memory `RunStore` so they never open `~/.relavium/history.db`.
    */
   readonly openRunStore?: (workflow: WorkflowDefinition, homeDir: string) => OpenedHistory;
+  /**
+   * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
+   * inject a fake renderer (onEvent + finalize spies) to assert the finalize wiring without a TTY.
+   */
+  readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
 }
 
 type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -118,7 +124,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
     // Output mode (commands.md "Output modes"): the ink TUI on an interactive TTY, NDJSON under --json,
     // the plain line renderer otherwise — all the same `onEvent` seam over one bus (2.F / 2.K).
-    const renderer = selectRenderer(deps.io, deps.global);
+    const renderer = (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global);
     let outcome: RunOutcome | undefined;
     // Register the cancel handler immediately before the consume loop — no statement between it and the
     // `try` whose `finally` removes it, so the listener can never leak on an intervening throw.
@@ -142,7 +148,14 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       process.removeListener('SIGINT', onSigint);
       // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write
       // its persistent final summary. The line/NDJSON renderers have no `finalize` (the `?.` is a no-op).
-      await renderer.finalize?.();
+      // A teardown error must NOT mask the run's real outcome/error — surface it to stderr and move on.
+      try {
+        await renderer.finalize?.();
+      } catch (teardownErr) {
+        deps.io.writeErr(
+          `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,
+        );
+      }
     }
 
     switch (outcome) {

@@ -40,6 +40,19 @@ export interface RunStoreController extends RunStore {
   summaryText: () => string;
 }
 
+/**
+ * The high-frequency, append-only events whose repaints are coalesced to the next frame (a tool-heavy or
+ * fast-streaming agent emits these in bursts). Lifecycle/terminal events (`node:*`, `run:*`, `human_gate:*`,
+ * `budget:*`, `media_job:submitted`) are NOT here — they repaint immediately so a status change feels instant.
+ */
+const HIGH_FREQUENCY_EVENTS: ReadonlySet<RunEvent['type']> = new Set([
+  'agent:token',
+  'agent:tool_call',
+  'agent:tool_result',
+  'agent:file_patch_proposed',
+  'cost:updated',
+]);
+
 export function createRunStore(color: boolean): RunStoreController {
   const listeners = new Set<() => void>();
   let state = initialRunViewState();
@@ -68,7 +81,7 @@ export function createRunStore(color: boolean): RunStoreController {
     getSnapshot: () => snapshot,
     apply: (event) => {
       state = reduceRunEvent(state, event);
-      if (event.type === 'agent:token' || event.type === 'cost:updated') {
+      if (HIGH_FREQUENCY_EVENTS.has(event.type)) {
         dirty = true; // coalesced to the next frame — no flood, no drop
       } else {
         flush(); // status / terminal transitions repaint immediately

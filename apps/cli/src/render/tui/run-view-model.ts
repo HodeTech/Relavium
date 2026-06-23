@@ -113,22 +113,37 @@ function withNode(
 }
 
 /**
- * Track the monotonic `sequenceNumber` and flag a forward gap. The in-process live stream is a no-drop
- * bounded queue, so a gap indicates a defect (not normal flow) — we detect + warn (a durable-state resync
- * is deferred; the read side lands with 2.I).
+ * Track the monotonic `sequenceNumber` and flag an anomaly. The in-process live stream is a no-drop bounded
+ * queue with a strictly increasing `sequenceNumber`, so EITHER a forward gap (`seq > last + 1`, missing
+ * events) OR a backward/duplicate step (`seq <= last`, a replay / out-of-order delivery) indicates a defect
+ * — both detect + warn (a durable-state resync is deferred; the read side lands with 2.I).
  */
 function trackSeq(
   state: RunViewState,
   event: RunEvent,
 ): Pick<RunViewState, 'lastSequenceNumber' | 'gapDetected' | 'warnings'> {
   const seq = event.sequenceNumber;
-  if (state.lastSequenceNumber !== undefined && seq > state.lastSequenceNumber + 1) {
+  const last = state.lastSequenceNumber;
+  if (last !== undefined && seq > last + 1) {
     return {
       lastSequenceNumber: seq,
       gapDetected: true,
       warnings: pushBounded(
         state.warnings,
-        `event gap: #${state.lastSequenceNumber} → #${seq} (some events were not observed)`,
+        `event gap: #${last} → #${seq} (some events were not observed)`,
+        MAX_WARNINGS,
+      ),
+    };
+  }
+  if (last !== undefined && seq <= last) {
+    // Backward / duplicate: keep the high-water mark as `lastSequenceNumber` so a later genuine forward gap
+    // is still measured against it (advancing to the lower `seq` would mask the missing range).
+    return {
+      lastSequenceNumber: last,
+      gapDetected: true,
+      warnings: pushBounded(
+        state.warnings,
+        `event out of order: #${seq} after #${last}`,
         MAX_WARNINGS,
       ),
     };
@@ -174,8 +189,16 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'agent:token': {
       // Tokens for a node other than the active one (e.g. a parallel branch) switch the active region.
       const switching = event.nodeId !== base.activeNodeId;
+      // Defensively ensure the streaming node exists in the list even if a token somehow precedes its
+      // `node:started` — otherwise RunApp's `nodes[activeNodeId]` is undefined and the live region hides the
+      // tokens. Only upsert when absent, so a real status (running/completed) is never clobbered by a token.
+      const ensureNode =
+        base.nodes[event.nodeId] === undefined
+          ? withNode(base, event.nodeId, { status: 'running' })
+          : {};
       return {
         ...base,
+        ...ensureNode,
         activeNodeId: event.nodeId,
         activeModel: event.model,
         activeTokens: appendTokens(switching ? '' : base.activeTokens, event.token),
@@ -188,15 +211,14 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         toolLines: pushBounded(base.toolLines, `→ ${event.toolId}`, MAX_TOOL_LINES),
       };
 
-    case 'agent:tool_result':
-      return {
-        ...base,
-        toolLines: pushBounded(
-          base.toolLines,
-          `${event.success ? '✓' : '✗'} ${event.toolId}: ${clip(event.outputSummary)}`,
-          MAX_TOOL_LINES,
-        ),
-      };
+    case 'agent:tool_result': {
+      const mark = event.success ? '✓' : '✗';
+      const summary = clip(event.outputSummary);
+      // Omit the `: <summary>` suffix for an empty summary (no dangling "✓ toolId: ").
+      const line =
+        summary === '' ? `${mark} ${event.toolId}` : `${mark} ${event.toolId}: ${summary}`;
+      return { ...base, toolLines: pushBounded(base.toolLines, line, MAX_TOOL_LINES) };
+    }
 
     case 'agent:file_patch_proposed':
       return {
@@ -236,6 +258,8 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'node:retrying':
       return {
         ...base,
+        // `attemptNumber` is required on node:retrying (positiveInt, not optional) — no guard needed, unlike
+        // node:started / node:failed where it is optional.
         ...withNode(base, event.nodeId, { status: 'retrying', attempt: event.attemptNumber }),
         warnings: pushBounded(
           base.warnings,
@@ -315,6 +339,9 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };
 
     case 'run:timeout':
+      // The engine emits run:timeout then settles the run with a terminal run:failed (run_timeout), which
+      // refines this summary with the closed error code. This descriptive summary is the FALLBACK that stands
+      // if (only) the timeout event is observed; the warning persists regardless of which arrives.
       return {
         ...base,
         summary: {

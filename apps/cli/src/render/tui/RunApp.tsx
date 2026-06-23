@@ -1,47 +1,18 @@
 import { Box, Text } from 'ink';
 import { useSyncExternalStore, type ReactElement } from 'react';
 
-import {
-  formatCostUsd,
-  formatDuration,
-  formatTokens,
-  spinnerFrame,
-  statusColor,
-  statusGlyph,
-  type StatusColor,
-} from './format.js';
+import { formatCostUsd, formatTokens, spinnerFrame, statusColor, statusGlyph } from './format.js';
+import { colorProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import type { NodeView } from './run-view-model.js';
 
 /**
  * The thin `ink` projection of the {@link RunStore}'s snapshot (workstream **2.E**). It holds NO logic of
- * its own — every value comes from the pure reducer (`run-view-model.ts`) and the pure formatters
- * (`format.ts`), both unit-tested without a TTY. It re-renders on the store's (throttled) frame ticks via
- * `useSyncExternalStore`, so a high token rate never floods React. Color is applied only when enabled
- * (`--no-color` passes `color: false` through the snapshot).
+ * its own — every value comes from the pure reducer (`run-view-model.ts`), the pure formatters
+ * (`format.ts`), and the pure projection helpers (`projection.ts`), all unit-tested without a TTY. It
+ * re-renders on the store's (throttled) frame ticks via `useSyncExternalStore`, so a high token rate never
+ * floods React. Color is applied only when enabled (`--no-color` passes `color: false` through the snapshot).
  */
-
-/**
- * The `color` prop for an `ink` `<Text>` — present only when color output is enabled (else omitted, so no
- * ANSI). Returned as a spreadable object rather than `color={undefined}` to satisfy
- * `exactOptionalPropertyTypes` (an optional prop may be absent, never explicitly `undefined`).
- */
-function colorProps(enabled: boolean, c: StatusColor): { color?: StatusColor } {
-  return enabled ? { color: c } : {};
-}
-
-function nodeSuffix(node: NodeView): string {
-  if (node.status === 'completed' && node.durationMs !== undefined) {
-    return ` (${formatDuration(node.durationMs)})`;
-  }
-  if (node.status === 'failed' && node.errorCode !== undefined) {
-    return ` — ${node.errorCode}`;
-  }
-  if (node.status === 'retrying' && node.attempt !== undefined) {
-    return ` (retry ${node.attempt})`;
-  }
-  return '';
-}
 
 function NodeLine(props: { node: NodeView; tick: number; useColor: boolean }): ReactElement {
   const { node, tick, useColor } = props;

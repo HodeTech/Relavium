@@ -17,6 +17,7 @@ import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { RunRenderer } from '../render/renderer.js';
 import { captureIo } from '../test-support.js';
 import { runCommand, type RunCommandDeps } from './run.js';
 
@@ -180,6 +181,40 @@ describe('runCommand', () => {
     expect(code).toBe(EXIT_CODES.success);
     expect(out()).toContain('started');
     expect(out()).toContain('run completed');
+  });
+
+  it('awaits the renderer finalize() once after the run loop (the TUI teardown wire)', async () => {
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const { io } = captureIo();
+    let finalizeCalls = 0;
+    const renderer: RunRenderer = {
+      onEvent: () => {},
+      finalize: () => {
+        finalizeCalls += 1;
+      },
+    };
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'] },
+      deps(io, globalOptions(), { selectRenderer: () => renderer }),
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(finalizeCalls).toBe(1);
+  });
+
+  it('does not let a renderer finalize() error mask the run outcome (logs to stderr instead)', async () => {
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const { io, err } = captureIo();
+    const renderer: RunRenderer = {
+      onEvent: () => {},
+      finalize: () => Promise.reject(new Error('unmount blew up')),
+    };
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'] },
+      deps(io, globalOptions(), { selectRenderer: () => renderer }),
+    );
+    expect(code).toBe(EXIT_CODES.success); // the run outcome is preserved
+    expect(err()).toContain('renderer teardown failed');
+    expect(err()).toContain('unmount blew up');
   });
 
   it('renders --json stdout as a schema-valid RunEvent NDJSON stream in sequenceNumber order, ending in run:completed', async () => {

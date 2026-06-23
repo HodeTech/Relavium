@@ -105,4 +105,10 @@ describe('renderFinalSummary', () => {
     ]);
     expect(renderFinalSummary(state).includes(String.fromCharCode(27))).toBe(false);
   });
+
+  it('produces a meaningful summary when no terminal event was received (SIGINT / early exit)', () => {
+    const out = renderFinalSummary(initialRunViewState()); // summary undefined → default headline
+    expect(out).toContain('run ended');
+    expect(out.endsWith('\n')).toBe(true);
+  });
 });

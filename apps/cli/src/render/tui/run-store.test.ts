@@ -49,6 +49,35 @@ describe('createRunStore', () => {
     expect(store.getSnapshot().state.activeTokens).toBe('abc');
   });
 
+  it('coalesces the whole high-frequency family (tool_call / tool_result), not just tokens', () => {
+    const store = createRunStore(true);
+    store.apply(nodeStarted);
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.apply({
+      type: 'agent:tool_call',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 2,
+      nodeId: 'a',
+      model: 'm',
+      toolId: 't',
+    });
+    store.apply({
+      type: 'agent:tool_result',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 3,
+      nodeId: 'a',
+      toolId: 't',
+      success: true,
+      outputSummary: 'ok',
+    });
+    expect(notified).toBe(0); // coalesced — no immediate repaint per tool event
+    store.tick();
+    expect(notified).toBe(1); // one repaint for the whole burst
+  });
+
   it('keeps animating the spinner while a node is running (tick repaints even when not dirty)', () => {
     const store = createRunStore(true);
     store.apply(nodeStarted); // 'a' is running
