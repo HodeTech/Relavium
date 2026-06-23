@@ -7,14 +7,14 @@
 - **Scope**: Phase 1, local-first. SQLite via `tauri-plugin-sql`, schema managed by Drizzle ORM in `packages/db` (see [project-structure.md](../../project-structure.md)).
 - **Related**: [keychain-and-secrets.md](keychain-and-secrets.md), [tauri-plugins.md](tauri-plugins.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
 
-This is the canonical reference for the **local** run-history and catalog database that the desktop app persists on the user's machine. There is no cloud, no account, and no server in Phase 1 — every table below lives in a single encrypted SQLite file. The Phase-2 PostgreSQL divergences are described at the end and detailed in [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md).
+This is the canonical reference for the **local** run-history and catalog database that the desktop app (and the Phase-2 CLI) persists on the user's machine. There is no cloud, no account, and no server in Phase 1 — every table below lives in a single local SQLite file. **At-rest encryption is per-surface:** the desktop opens `history.db` with SQLCipher, while the Phase-2 **CLI** opens the same file with `better-sqlite3` **unencrypted, guarded by `0600`/`0700` OS permissions** ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)) — see [Encryption at rest](#encryption-at-rest). The Phase-2 PostgreSQL divergences are described at the end and detailed in [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md).
 
 ## Storage layout
 
 ```mermaid
 flowchart TB
   subgraph Global["~/.relavium/ (global, cross-project)"]
-    H["history.db<br/>(SQLCipher-encrypted)<br/>full run + event + cost history"]
+    H["history.db<br/>(desktop: SQLCipher · CLI: 0600/0700 OS perms)<br/>full run + event + cost history"]
   end
   subgraph Project["{projectRoot}/.relavium/ (per-project, git-committed)"]
     R["runs.db<br/>(run metadata only,<br/>no event payloads)"]
@@ -30,7 +30,7 @@ Two SQLite databases exist:
 
 | Database | Path | Encryption | Contents | Git |
 |----------|------|-----------|----------|-----|
-| Global history | `~/.relavium/history.db` | SQLCipher (key from OS keychain) | Full runs, every event, every cost row, the catalog tables | Never committed |
+| Global history | `~/.relavium/history.db` | Desktop: SQLCipher (key from OS keychain) · CLI: none — `0600`/`0700` OS perms ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)) | Full runs, every event, every cost row, the catalog tables | Never committed |
 | Project history | `{projectRoot}/.relavium/runs.db` | None | Run **metadata only** (no event payloads) so teammates see historical run summaries after a `git pull` | Committed |
 
 The database is opened with `PRAGMA journal_mode = WAL` (readers never block the writer and vice-versa — but SQLite still allows **only one writer at a time**, so engine authors must funnel `run_events` and other hot-path writes through a single serialized writer, never concurrent writers) and `PRAGMA foreign_keys = ON` per connection (SQLite does **not** enforce foreign keys by default). Run events in `history.db` are pruned after 90 days by a background job that runs on app launch.
@@ -319,7 +319,8 @@ CREATE INDEX idx_run_costs_run ON run_costs (run_id);
 These two tables persist **agent sessions** (the agent-first chat entry point —
 [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md),
 [agent-session-spec.md](../contracts/agent-session-spec.md)). They live in the **same
-`~/.relavium/history.db`** (SQLCipher-encrypted) as run history — there is **no** separate
+`~/.relavium/history.db`** (desktop: SQLCipher-encrypted; CLI: unencrypted + `0600`/`0700` OS perms,
+[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)) as run history — there is **no** separate
 `sessions.db`. They are **bound to a session**, deliberately **distinct** from the per-step run
 [`messages`](#messages) table (which is bound to `step_executions` within a workflow run); the two
 share a shape family but must not be merged, because a session and a run have different lifecycles.
@@ -400,16 +401,24 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 > A `secret`-typed value is never persisted into `session_messages` — per
 > [ADR-0029](../../decisions/0029-tool-policy-hardening.md) secrets are rejected from prompt/tool text
 > at parse, so they never reach a message body. The user's own conversational content is stored here
-> and is protected by `history.db`'s SQLCipher encryption at rest.
+> and is protected at rest by `history.db`'s SQLCipher encryption on the desktop, and by `0600`/`0700`
+> OS file permissions on the CLI ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)).
 
-> **Cross-host access (CLI / VS Code) — how a session resumes across surfaces.** The same encrypted
-> `history.db` is opened by the non-Tauri hosts: the **CLI** uses the `better-sqlite3` path
+> **Cross-host access (CLI / VS Code) and the at-rest divergence.** The same `history.db` path is
+> opened by the non-Tauri hosts: the **CLI** uses the `better-sqlite3` path
 > ([ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)); the **VS Code extension host**
 > uses a **wasm SQLite** build (no native module — respects
 > [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)'s no-arbitrary-native-modules
-> constraint). Both derive the SQLCipher key the same way as the desktop
-> ([keychain-and-secrets.md](keychain-and-secrets.md)), so a session written on one surface opens on
-> another — there is no per-surface session store.
+> constraint). **At-rest encryption is per-surface and not yet unified:** the desktop opens the file with
+> SQLCipher, but the **CLI opens it unencrypted** (no passphrase), guarded by `0600`/`0700` OS permissions
+> ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). A standard `better-sqlite3` build
+> cannot open a SQLCipher file (nor vice-versa), so the desktop (SQLCipher) and the CLI (unencrypted)
+> **cannot share one file at `~/.relavium/history.db`**. In Phase 2 there is **no live collision** — the
+> desktop does not exist yet (Phase 3) and the CLI is the sole writer. **Cross-surface session/run resume
+> across the desktop and CLI is therefore a named Phase-3 follow-on**
+> ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)): the desktop phase reconciles the
+> shared-path posture (a uniformly-unencrypted shared store, per-surface separate files, or a CLI/Node
+> SQLCipher-capable build). Until then there is **no** cross-surface shared session/run store.
 
 ### Media tables (1.AF)
 
@@ -471,7 +480,16 @@ CREATE INDEX idx_media_references_handle ON media_references (handle);
 
 ## Encryption at rest
 
-`history.db` is opened with SQLCipher. The passphrase is derived from a stable machine secret (combined with the OS keychain entry) so the database opens on restart without prompting the user; see [keychain-and-secrets.md](keychain-and-secrets.md). The per-project `runs.db` is **not** encrypted because it is intentionally git-committed and contains only non-sensitive run metadata (no prompts, completions, or tokens).
+At-rest encryption of `history.db` is **per-surface**:
+
+- **Desktop:** opened with SQLCipher. The passphrase is derived from a stable machine secret (combined with the OS keychain entry) so the database opens on restart without prompting the user; see [keychain-and-secrets.md](keychain-and-secrets.md).
+- **CLI (Phase 2):** opened with `better-sqlite3` **unencrypted**, guarded by owner-only OS file permissions — `~/.relavium/` at `0700` and `history.db` (with its `-wal`/`-shm` sidecars) at `0600`, set with an explicit `chmod` (umask-independent, applied even to a pre-existing directory). On Windows, POSIX mode bits do not apply (`chmod` is a no-op); protection falls to the per-user `%USERPROFILE%` NTFS ACL. The file holds **no credentials** — keys stay in the OS keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)) and the engine masks secrets at the bus before persistence ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — so the unencrypted-at-rest content is run data (prompts, outputs, costs), not secrets. Rationale and the cross-surface Phase-3 follow-on: [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md).
+
+The per-project `runs.db` is **not** encrypted on any surface because it is intentionally git-committed and contains only non-sensitive run metadata (no prompts, completions, or tokens).
+
+### Secrets at the write boundary
+
+The history writer is **pass-through** for secrets — it never re-masks (the engine already masked at the `RunEventBus`, [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — but **asserts at the write boundary** that the unsafe columns carry no raw secret, as defense in depth against an upstream regression: `run_events.payload_json`, the `step_executions` `input_json` / `output_json` / `error_json`, `run_costs`, and `runs.workflow_definition_snapshot`. A raw API key, `Authorization` header, or `secret`-typed value must never appear in these columns; a `secret`-typed input persists only as its `{ secret: true, ref }` placeholder.
 
 ## Phase 2 (PostgreSQL) divergences
 

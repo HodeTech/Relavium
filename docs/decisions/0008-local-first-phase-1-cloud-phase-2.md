@@ -4,6 +4,13 @@
 - **Date**: 2026-06-03
 - **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0012-managed-inference-dual-mode.md](0012-managed-inference-dual-mode.md) (amends framing: local-first Phase 1 reaffirmed), [product-constraints.md](../product-constraints.md), [tech-stack.md](../tech-stack.md)
 
+> Amended 2026-06-23: "run history and cost data live in a local **encrypted** SQLite file"
+> (below) is the **desktop** SQLCipher mechanism. For the **CLI/Node** surface,
+> [ADR-0050](0050-cli-history-db-at-rest-posture.md) settles the at-rest posture:
+> `~/.relavium/history.db` is **unencrypted, guarded by `0600`/`0700` OS permissions** (it
+> carries no credentials — the keychain holds keys and the engine masks secrets at the bus).
+> Local-first is unchanged.
+
 ## Context
 
 Relavium has to decide *where workflows run* and *what the product depends on to function* — and it has to decide this before any storage, secrets, or engine-hosting choice is locked, because those choices all cascade from it. An execution model is the hardest thing to change later: build for the cloud first and you bake a server, an account system, and a network round-trip into the core; build for local first and you risk a second, painful re-architecture if cloud execution is ever needed.

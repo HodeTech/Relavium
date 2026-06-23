@@ -93,6 +93,7 @@ flowchart TD
 | 0047 | [CLI framework — `commander` + `ink` + `@clack/prompts`, confined to `apps/cli`](0047-cli-framework-commander-ink-clack.md) | Accepted | 2026-06-22 |
 | 0048 | [TOML parser for config files — `smol-toml`, confined to the `apps/cli` config loader](0048-toml-config-parser.md) | Accepted | 2026-06-22 |
 | 0049 | [CLI machine-output contract (`--json` NDJSON stream + stderr diagnostics)](0049-cli-machine-output-contract.md) | Accepted | 2026-06-22 |
+| 0050 | [CLI run-history `history.db` is unencrypted at rest, guarded by OS file permissions (refines 0005/0008 for the Node/CLI surface)](0050-cli-history-db-at-rest-posture.md) | Accepted | 2026-06-23 |
 
 ## Creating a new ADR
 

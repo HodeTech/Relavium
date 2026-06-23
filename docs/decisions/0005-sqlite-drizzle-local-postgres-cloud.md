@@ -9,6 +9,13 @@
 > closed by [ADR-0021](0021-node-sqlite-driver-better-sqlite3.md): `@relavium/db` uses
 > `better-sqlite3` for its Node consumers (the migration runner, tests, and the Phase-2
 > CLI). The decision here is unchanged.
+>
+> Amended 2026-06-23: the "encrypted with SQLCipher" at-rest framing below is the
+> **desktop** (`tauri-plugin-sql`) mechanism. The **CLI/Node** surface uses `better-sqlite3`,
+> which has no SQLCipher; [ADR-0050](0050-cli-history-db-at-rest-posture.md) settles its
+> at-rest posture — `~/.relavium/history.db` is **unencrypted, guarded by `0600`/`0700` OS
+> permissions** (the file carries no credentials: keys stay in the keychain and the bus masks
+> secrets). The desktop SQLCipher path here is unchanged.
 
 ## Context
 
