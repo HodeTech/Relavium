@@ -80,6 +80,16 @@ export {
   type RunRecord,
 } from './run-history-store.js';
 
+// Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`
+// commands manage. The key VALUE never lives here — only the OS-keychain `account` ref (ADR-0006/0019).
+export {
+  createProviderStore,
+  type ProviderStore,
+  type ProviderStoreDeps,
+  type ProviderRecord,
+  type ProviderUpsert,
+} from './provider-store.js';
+
 // Media store (1.AF, ADR-0042) — the host-side content-addressed blob store the engine references by
 // handle. Node-side (node:crypto + node:fs); a host wires one into ExecutionHost.mediaStore. The pure
 // engine never imports this — it depends only on the @relavium/shared `MediaStore` interface.

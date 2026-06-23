@@ -43,10 +43,12 @@ consumer), ✅ Done (PR #41, 2026-06-22), which also adds the `defaultProviders(
 and **2.F** (the `--json` CI machine-output contract — pure-NDJSON stdout, diagnostics → stderr),
 ✅ Done (PR #42, 2026-06-22) behind [ADR-0049](../decisions/0049-cli-machine-output-contract.md);
 and **2.K** (the engine regression harness, now the engine's CI regression gate), ✅ Done
-(PR #43, 2026-06-23) — **reaching global milestone M3**.
-**Next pickup:** **2.H** (durable run history — the highest-leverage feeder, unblocking
-2.I / 2.G / 2.M / 2.S), with the **2.E** (ink TUI) feeder also open; the full status-aware order
-is the [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
+(PR #43, 2026-06-23) — **reaching global milestone M3**; and **2.H** (durable local run history via
+`@relavium/db` — the `RunStore` writer + read API the gate-resume/list/logs/status surfaces consume),
+✅ Done (PR #44, 2026-06-23) behind [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md).
+**Next pickup:** **2.C** (provider/keys — independent, unblocks 2.R + 2.M + live runs), with the
+**2.E** (ink TUI) feeder also open; the full status-aware order is the
+[Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
 [sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).

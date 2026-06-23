@@ -3,24 +3,36 @@ import { defaultProviders, type LlmProvider, type ProviderId } from '@relavium/l
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import {
+  KeychainUnavailableError,
+  keychainAccount,
+  type KeychainStore,
+} from '../secrets/keychain.js';
 
 /**
  * The CLI's provider seam (ADR-0038 host-injected resolution). `resolveProvider` returns the keyless
- * `@relavium/llm` adapter for an authored provider id; `keyFor` resolves that provider's API key from
- * the environment (`RELAVIUM_<PROVIDER>_API_KEY`, the headless per-invocation key source). The OS keychain
- * source lands in **2.C** behind this same seam. A key is read only when `keyFor` is invoked (per
- * attempt) and is never logged, stored, or returned to the caller.
+ * `@relavium/llm` adapter for an authored provider id; `keyFor` resolves that provider's API key through the
+ * documented chain: **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; the `secrets.enc`
+ * encrypted-file fallback is deferred past v1.0 per keychain-and-secrets.md). A key is read only when
+ * `keyFor` is invoked (per attempt) and is never logged, stored, or returned to a renderer.
  *
- * Injectable so a test (and the 2.K regression harness) drives a stub provider with a dummy key.
+ * Injectable so a test (and the 2.K regression harness) drives a stub provider + dummy key; the keychain is
+ * an **optional** source so tests / the harness stay keychain-free (env-only) while production injects the
+ * real `@napi-rs/keyring` store.
  */
 export interface ProviderResolver {
   readonly resolveProvider: (id: ProviderId) => LlmProvider | undefined;
   readonly keyFor: (id: ProviderId) => string;
 }
 
-/** The env var holding a provider's API key — the headless per-invocation key source. */
+/** The env var holding a provider's API key — the headless per-invocation key source (CI / no-keychain). */
 export function providerKeyEnvVar(id: ProviderId): string {
   return `RELAVIUM_${id.toUpperCase()}_API_KEY`;
+}
+
+/** A non-secret display hint for a key — masked, with the last 4 chars (or fully masked when too short). NEVER the full key. */
+export function keyHint(key: string): string {
+  return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
 }
 
 /**
@@ -60,6 +72,7 @@ export function neededProviderIds(def: WorkflowDefinition): ProviderId[] {
 
 export function createProviderResolver(
   env: Readonly<Record<string, string | undefined>> = process.env,
+  keychain?: KeychainStore,
 ): ProviderResolver {
   // Keyless adapters built once and reused; the key is injected per call via `keyFor`. The
   // provider→adapter mapping lives in the seam package (`@relavium/llm`), not here.
@@ -67,14 +80,32 @@ export function createProviderResolver(
   return {
     resolveProvider: (id) => adapters[id],
     keyFor: (id) => {
-      const key = env[providerKeyEnvVar(id)];
-      if (key === undefined || key === '') {
-        throw new CliError(
-          'invalid_invocation',
-          `no API key for provider '${id}' — set ${providerKeyEnvVar(id)} (OS keychain support lands in 2.C).`,
-        );
+      // 1. OS keychain (the primary store, 2.C). Absent (`null`) → fall through to env; an *unavailable*
+      //    backend (locked / no Secret Service) also falls through — the env var is the CLI's documented
+      //    no-keychain path. We never read/write a plaintext fallback.
+      if (keychain !== undefined) {
+        let fromKeychain: string | null = null;
+        try {
+          fromKeychain = keychain.get(keychainAccount(id));
+        } catch (err) {
+          if (!(err instanceof KeychainUnavailableError)) {
+            throw err;
+          }
+        }
+        if (fromKeychain !== null && fromKeychain !== '') {
+          return fromKeychain;
+        }
       }
-      return key;
+      // 2. Env var — the headless / CI per-invocation source.
+      const fromEnv = env[providerKeyEnvVar(id)];
+      if (fromEnv !== undefined && fromEnv !== '') {
+        return fromEnv;
+      }
+      // 3. No source — a clean invocation error naming both ways to provide the key (never the key itself).
+      throw new CliError(
+        'invalid_invocation',
+        `no API key for provider '${id}' — store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`,
+      );
     },
   };
 }
