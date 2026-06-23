@@ -40,8 +40,13 @@ export function openHistoryStore(workflow: WorkflowDefinition, homeDir: string):
   for (const suffix of ['-wal', '-shm']) {
     try {
       chmodSync(`${path}${suffix}`, 0o600);
-    } catch {
-      // No WAL checkpoint yet → the sidecar is absent; nothing to permission.
+    } catch (err) {
+      // Tolerate ONLY the sidecar's absence (no WAL checkpoint has happened yet). A real chmod failure
+      // (EPERM, EIO) on an existing sidecar must surface — it holds the same run data as the db, so the
+      // same 0600 guarantee applies; swallowing it would leave it world-readable (ADR-0050).
+      if (errnoCode(err) !== 'ENOENT') {
+        throw err;
+      }
     }
   }
   const store = createRunHistoryStore(client.db, {
@@ -59,4 +64,13 @@ export function openHistoryStore(workflow: WorkflowDefinition, homeDir: string):
       client.sqlite.close();
     },
   };
+}
+
+/** The `errno` code of a Node fs error (`ENOENT`, `EPERM`, …), or `undefined` if it is not one. */
+function errnoCode(err: unknown): string | undefined {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    const code: unknown = err.code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
 }

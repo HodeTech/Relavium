@@ -149,6 +149,55 @@ describe('createRunHistoryStore', () => {
     expect(run?.status).toBe('completed');
   });
 
+  it('keeps sum(run_costs) == runs.total under a fan-out (interleaved node:completed)', async () => {
+    // Both branches start, then complete out of start-order — the cumulative snapshot on the SECOND
+    // node:completed already includes the first's cost. Per-node attribution is interleave-dependent, but
+    // the deltas must still telescope to the run total (the 2.H acceptance invariant under parallel).
+    await startRun();
+    await store.persistEvent(ev('node:started', 1, { nodeId: 'a', nodeType: 'transform' }));
+    await store.persistEvent(ev('node:started', 2, { nodeId: 'b', nodeType: 'transform' }));
+    await store.persistEvent(
+      ev('node:completed', 3, {
+        nodeId: 'b',
+        output: {},
+        tokensUsed: { input: 1, output: 1 },
+        durationMs: 1,
+        cumulativeCostMicrocents: 500, // b finishes first; cumulative = b's cost
+      }),
+    );
+    await store.persistEvent(
+      ev('node:completed', 4, {
+        nodeId: 'a',
+        output: {},
+        tokensUsed: { input: 1, output: 1 },
+        durationMs: 1,
+        cumulativeCostMicrocents: 900, // a finishes second; cumulative = b(500) + a(400)
+      }),
+    );
+    const costs = client.db.select().from(runCosts).all();
+    const run = client.db.select().from(runs).where(eq(runs.id, 'run-1')).get();
+    expect(costs.reduce((s, c) => s + c.costMicrocents, 0)).toBe(900);
+    expect(run?.totalCostMicrocents).toBe(900); // sum == total regardless of completion interleave
+  });
+
+  it('records zero cost for a node:completed without cumulativeCostMicrocents (backward-compat)', async () => {
+    await startRun();
+    await store.persistEvent(ev('node:started', 1, { nodeId: 'x', nodeType: 'transform' }));
+    await store.persistEvent(
+      ev('node:completed', 2, {
+        nodeId: 'x',
+        output: {},
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 1,
+        // cumulativeCostMicrocents absent — a pre-field replayed log; the delta path must yield 0.
+      }),
+    );
+    expect(client.db.select().from(runCosts).get()?.costMicrocents).toBe(0);
+    expect(
+      client.db.select().from(runs).where(eq(runs.id, 'run-1')).get()?.totalCostMicrocents,
+    ).toBe(0);
+  });
+
   it('persists a gap-free seq stream and rejects a duplicate (run_id, seq)', async () => {
     await startRun();
     await store.persistEvent(ev('node:started', 1, { nodeId: 'x', nodeType: 'input' }));
@@ -304,7 +353,9 @@ describe('createRunHistoryStore', () => {
 
     expect(runRow?.inputJson).toContain('"secret":true');
     expect(stepRow?.outputJson).toContain('"secret":true');
-    // No unsafe column contains the raw value.
+    // No unsafe column contains the raw value. `stepRow.inputJson` is always '{}' (node:started carries no
+    // runtime input payload by design — the store never writes it), so its check is vacuous-but-complete:
+    // it documents that the column is covered and stays empty, not that node inputs are captured here.
     for (const value of [
       runRow?.inputJson,
       runRow?.workflowDefinitionSnapshot,

@@ -163,6 +163,13 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'node:completed': {
+        // Per-node cost = the delta of the run-wide cumulative snapshot since the last boundary. The
+        // run-level SUM is exact (the deltas telescope to the final cumulative; events arrive serially in
+        // sequenceNumber order even for parallel branches). The per-node ATTRIBUTION is approximate under a
+        // fan-out: a sibling that accrued cost before this node:completed inflates this delta and shrinks the
+        // sibling's — so `relavium status`/`logs` per-node cost is exact only for serial execution. Absent
+        // cumulative (backward-compat for pre-field logs) ⇒ delta 0; `Math.max(0, …)` guards a non-monotonic
+        // cumulative (a deeper engine bug).
         const prev = currentRunCost(runId);
         const cumulative = event.cumulativeCostMicrocents ?? prev;
         const nodeCost = Math.max(0, cumulative - prev);
@@ -239,6 +246,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'run:failed': {
+        // Known limitation: run:failed / run:cancelled carry no total-cost field in the run-event schema,
+        // and the failing node's cost is unrecoverable here (node:failed has no cost; cost:updated is not
+        // persisted). So a failed run's runs.total_cost_microcents is the last node:completed cumulative —
+        // it may undercount spend incurred after it. `sum(run_costs) == total` still holds (both undercount).
+        // A true failed-run total needs a shared-schema change (a total on run:failed) — out of 2.H scope.
         db.update(runs)
           .set({
             status: 'failed',

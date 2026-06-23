@@ -92,13 +92,14 @@ is updated to say so. (The per-project `runs.db` is unaffected — it is already
 git-committed, holding only non-sensitive metadata.)
 
 **Companion obligation (no new decision).** The 2.H history writer is **pass-through** for
-secrets: it never re-masks (the engine already masked at the bus) but **asserts at the write
-boundary** that the unsafe columns — `run_events.payload_json`, the `step_executions`
-input/output/error JSON, `run_costs`, and `runs.workflow_definition_snapshot` — carry no raw
-secret, as defense in depth against an upstream regression. This pass-through-plus-assert
-contract is recorded in [database-schema.md](../reference/desktop/database-schema.md); it is
-the engine's existing guarantee ([ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md),
-[ADR-0006](0006-os-keychain-for-api-keys.md)), not a new decision.
+secrets: it never re-masks (the engine already masked at the bus) and adds no runtime
+secret-detection (infeasible on opaque JSON). The no-raw-secret invariant on the unsafe columns
+— `run_events.payload_json`, the `step_executions` input/output/error JSON, `run_costs`, and
+`runs.workflow_definition_snapshot` — is the engine's upstream masking guarantee
+([ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md),
+[ADR-0006](0006-os-keychain-for-api-keys.md)), regression-guarded by the package's secrets
+fixture; it is recorded in [database-schema.md](../reference/desktop/database-schema.md), and
+is not a new decision.
 
 ## Consequences
 
