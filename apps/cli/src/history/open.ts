@@ -1,0 +1,59 @@
+import { randomUUID } from 'node:crypto';
+import { chmodSync } from 'node:fs';
+import { join } from 'node:path';
+
+import type { WorkflowDefinition } from '@relavium/core';
+import {
+  createClient,
+  createRunHistoryStore,
+  runMigrations,
+  type RunHistoryStore,
+} from '@relavium/db';
+
+import { ensureGlobalConfigDir, globalConfigDir } from '../config/paths.js';
+
+/** An opened history store plus the handle to close its SQLite connection at run end. */
+export interface OpenedHistory {
+  readonly store: RunHistoryStore;
+  readonly close: () => void;
+}
+
+/**
+ * Open `~/.relavium/history.db` for one CLI run (workstream **2.H**): lazy-create + `0700` the home dir,
+ * open it via `better-sqlite3`, apply migrations, then `0600` the db + its `-wal`/`-shm` sidecars — the
+ * unencrypted-at-rest CLI posture guarded by OS permissions
+ * ([ADR-0050](../../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)).
+ *
+ * The store records THIS workflow: its frozen snapshot feeds `runs.workflow_definition_snapshot` (the
+ * events the engine emits don't carry the graph). Production (`commands/specs.ts`) wires this; the unit
+ * tests and the 2.K harness omit it and keep the in-memory store, so they never touch the user's home.
+ */
+export function openHistoryStore(workflow: WorkflowDefinition, homeDir: string): OpenedHistory {
+  ensureGlobalConfigDir(homeDir); // creates ~/.relavium/ at 0700 (ADR-0050)
+  const path = join(globalConfigDir(homeDir), 'history.db');
+  const client = createClient(path);
+  runMigrations(client.db);
+  // Owner-only on the db + its WAL/SHM sidecars (a sidecar may not exist yet — tolerate its absence).
+  for (const suffix of ['', '-wal', '-shm']) {
+    try {
+      chmodSync(`${path}${suffix}`, 0o600);
+    } catch {
+      // No WAL checkpoint yet → the sidecar is absent; nothing to permission.
+    }
+  }
+  const store = createRunHistoryStore(client.db, {
+    uuid: () => randomUUID(),
+    now: () => Date.now(),
+    workflow: {
+      slug: workflow.workflow.id,
+      name: workflow.workflow.name ?? workflow.workflow.id, // `name` is optional in the schema; fall back to the slug
+      definitionJson: JSON.stringify(workflow),
+    },
+  });
+  return {
+    store,
+    close: () => {
+      client.sqlite.close();
+    },
+  };
+}

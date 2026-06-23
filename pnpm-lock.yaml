@@ -119,6 +119,9 @@ importers:
       '@relavium/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@relavium/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@relavium/llm':
         specifier: workspace:*
         version: link:../../packages/llm

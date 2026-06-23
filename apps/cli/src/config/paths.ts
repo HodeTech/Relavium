@@ -1,4 +1,4 @@
-import { mkdirSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -13,10 +13,19 @@ export function globalConfigDir(home: string = homedir()): string {
   return join(home, '.relavium');
 }
 
-/** Lazily create `~/.relavium/` (and its `tmp/`) on first run. Idempotent. */
+/**
+ * Lazily create `~/.relavium/` (and its `tmp/`) on first run, owner-only (`0700`). Idempotent.
+ *
+ * The `0700` is the at-rest control for the unencrypted CLI `history.db` it will hold
+ * ([ADR-0050](../../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)). The explicit
+ * `chmod` is deliberate: `mkdir`'s mode is umask-masked AND would not re-permission an already-existing
+ * directory, so a dir created earlier (e.g. by 2.B) is corrected here. On Windows POSIX mode bits do not
+ * apply (`chmod` is effectively a no-op) — protection there falls to the `%USERPROFILE%` NTFS ACL.
+ */
 export function ensureGlobalConfigDir(home: string = homedir()): string {
   const dir = globalConfigDir(home);
   mkdirSync(join(dir, 'tmp'), { recursive: true });
+  chmodSync(dir, 0o700);
   return dir;
 }
 

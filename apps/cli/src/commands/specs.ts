@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 
+import { openHistoryStore } from '../history/open.js';
 import { CliError } from '../process/errors.js';
 import type { ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -109,7 +110,8 @@ function registerRun(program: Command, ctx?: CommandContext): void {
   run.action(async (workflow: string, opts: { input?: readonly string[] }) => {
     ctx.result.exitCode = await runCommand(
       { workflow, input: opts.input ?? [] },
-      { io: ctx.io, global: ctx.global },
+      // Production wires durable run history (2.H) — the real CLI persists to ~/.relavium/history.db.
+      { io: ctx.io, global: ctx.global, openRunStore: openHistoryStore },
     );
   });
 }

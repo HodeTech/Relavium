@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@relavium/core": "workspace:*",
+    "@relavium/db": "workspace:*",
     "@relavium/llm": "workspace:*",
     "@relavium/shared": "workspace:*",
     "commander": "catalog:",
