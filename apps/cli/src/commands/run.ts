@@ -123,14 +123,26 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     const handle = engine.start({ workflow: def, inputs });
 
     let outcome: RunOutcome | undefined;
+    let cancelRequested = false;
     // Register the cancel handler the instant the engine is live — BEFORE constructing the renderer — so a
     // failure building the renderer (e.g. ink's `render()` throwing) can never leave a running engine with no
     // cooperative-cancel handler; a Ctrl-C in that window still routes to handle.cancel(). The `finally`
     // removes it, so the listener can't leak on a throw.
     const onSigint = (): void => {
+      if (cancelRequested) {
+        // A second Ctrl-C while the cooperative cancel is still draining — force a clean, deterministic exit
+        // rather than hang (e.g. if a provider ignores the abort), and never the bare-signal 130.
+        process.exit(EXIT_CODES.workflowFailed);
+      }
+      cancelRequested = true;
       handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
     };
-    process.once('SIGINT', onSigint);
+    // `process.on`, NOT `process.once`: an interactive run mounts ink, which registers a `signal-exit` SIGINT
+    // listener that RE-RAISES SIGINT (→ 128+2 = exit 130) BUT ONLY when it is the sole remaining SIGINT
+    // listener. A `once` handler removes itself the instant it fires, so signal-exit then sees only itself and
+    // re-raises — killing the run at 130 before the cooperative cancel completes. Staying registered keeps
+    // signal-exit from re-raising, so cancel → run:cancelled → exit 1 wins. Removed in the `finally`.
+    process.on('SIGINT', onSigint);
     let renderer: RunRenderer | undefined;
     try {
       // Output mode (commands.md "Output modes"): the ink TUI on an interactive TTY, NDJSON under --json,
