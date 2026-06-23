@@ -33,8 +33,11 @@ export function openHistoryStore(workflow: WorkflowDefinition, homeDir: string):
   const path = join(globalConfigDir(homeDir), 'history.db');
   const client = createClient(path);
   runMigrations(client.db);
-  // Owner-only on the db + its WAL/SHM sidecars (a sidecar may not exist yet — tolerate its absence).
-  for (const suffix of ['', '-wal', '-shm']) {
+  // The db file is guaranteed to exist here (better-sqlite3 created it; runMigrations wrote it), so a chmod
+  // failure on IT must be LOUD — ADR-0050's whole at-rest guarantee is this 0600. Its WAL/SHM sidecars may
+  // not exist yet (no checkpoint), so those alone are best-effort.
+  chmodSync(path, 0o600);
+  for (const suffix of ['-wal', '-shm']) {
     try {
       chmodSync(`${path}${suffix}`, 0o600);
     } catch {

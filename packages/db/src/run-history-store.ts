@@ -258,10 +258,26 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .run();
         return;
       }
+      case 'node:retrying': {
+        // The attempt that just failed gets a terminal `failed` status; the next `node:started(attempt+1)`
+        // inserts a fresh row. Without this, the intermediate attempt's row would linger as `running` forever
+        // and surface as a ghost step in `relavium status` (2.I). The terminal `node:failed` (budget
+        // exhausted) closes the LAST attempt's row via the same `stepMatch`.
+        db.update(stepExecutions)
+          .set({
+            status: 'failed',
+            errorJson: JSON.stringify(event.error),
+            completedAt: ts,
+            updatedAt: ts,
+          })
+          .where(stepMatch(runId, event.nodeId, event.attemptNumber))
+          .run();
+        return;
+      }
       default:
-        // node:skipped / node:retrying / media_job:submitted / run:timeout (+ any future durable event):
-        // captured in run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node has
-        // no nodeType on its event, so it gets no step_executions row — the run_events log records the skip.)
+        // node:skipped / media_job:submitted / run:timeout (+ any future durable event): captured in
+        // run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node has no nodeType
+        // on its event, so it gets no step_executions row — the run_events log records the skip.)
         return;
     }
   };
@@ -340,20 +356,33 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         .from(runs)
         .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
         .all();
-      const interrupted = rows.map((row): InterruptedRunInfo => {
-        const last =
-          db
-            .select({ m: sql<number>`max(${runEvents.seq})` })
-            .from(runEvents)
-            .where(eq(runEvents.runId, row.id))
-            .get()?.m ?? 0;
-        return {
+      if (rows.length === 0) {
+        return Promise.resolve([]);
+      }
+      // One aggregating query for the per-run last seq (a single GROUP BY, not N+1) — this is a RunStore
+      // port method the desktop/cloud surfaces also implement, so it must scale past a single-user CLI.
+      const lastByRun = new Map(
+        db
+          .select({ runId: runEvents.runId, m: sql<number>`max(${runEvents.seq})` })
+          .from(runEvents)
+          .where(
+            inArray(
+              runEvents.runId,
+              rows.map((r) => r.id),
+            ),
+          )
+          .groupBy(runEvents.runId)
+          .all()
+          .map((r) => [r.runId, r.m]),
+      );
+      const interrupted = rows.map(
+        (row): InterruptedRunInfo => ({
           runId: row.id,
           workflowId: row.workflowId,
           resumable: row.status === 'paused',
-          lastSequenceNumber: last,
-        };
-      });
+          lastSequenceNumber: lastByRun.get(row.id) ?? 0,
+        }),
+      );
       return Promise.resolve(interrupted);
     },
 

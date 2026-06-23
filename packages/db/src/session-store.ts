@@ -34,8 +34,9 @@ import { epochMsToIso, isoToEpochMs } from './time.js';
  * {@link SessionMessageMeta} — NULL/0 when the durable parts array is the sole source of a row.
  *
  * This package is host-facing (it uses `better-sqlite3`); the platform-free engine never imports it. The
- * desktop / CLI open the encrypted `history.db` and wire this store; the per-turn `AgentSession`→store
- * wiring + cross-restart resume are the later sub-spine (1.Y / 1.AA).
+ * desktop / CLI open `history.db` and wire this store — the desktop with SQLCipher (ADR-0005), the CLI
+ * unencrypted, guarded by `0600`/`0700` OS permissions (ADR-0050); the per-turn `AgentSession`→store wiring
+ * + cross-restart resume are the later sub-spine (1.Y / 1.AA).
  */
 
 /**

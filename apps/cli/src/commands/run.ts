@@ -97,7 +97,19 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // SQLite `RunStore`, so every node-boundary/terminal event is persisted before delivery (ADR-0036). Tests
   // and the 2.K harness omit `openRunStore` → the in-memory default host, no DB touched. `close()` releases
   // the connection at run end. A persist failure rejects out of the engine (ADR-0050 fatal posture).
-  const opened = deps.openRunStore?.(def, homeDir);
+  let opened: OpenedHistory | undefined;
+  try {
+    opened = deps.openRunStore?.(def, homeDir);
+  } catch (err) {
+    // A pre-run history fault (cannot create / open / migrate ~/.relavium/history.db) is an INVOCATION
+    // fault (exit 2), not a workflow failure (exit 1) — surface it as such, before the engine starts, so a
+    // `--json`/CI consumer can tell "the history db couldn't open" from "a node failed mid-run".
+    throw new CliError(
+      'invalid_invocation',
+      `could not open the run history database: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
   try {
     const engine = await build(
       opened === undefined ? { providers } : { providers, host: createCliHost(opened.store) },

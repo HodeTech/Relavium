@@ -237,26 +237,83 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-m')?.resumable).toBe(false);
   });
 
-  // Security fixture — the engine masks a secret-typed input at the bus as { secret: true, ref }; the store
-  // is pass-through. Assert the masked placeholder is what lands, and the raw secret value never appears in
-  // any unsafe column (run_events.payload_json, runs.input_json). Defense in depth — ADR-0050.
-  it('never persists a raw secret — the masked placeholder is stored verbatim', async () => {
+  it('marks a retried attempt failed so no step row lingers in `running`', async () => {
+    await startRun();
+    await store.persistEvent(ev('node:started', 1, { nodeId: 'flaky', nodeType: 'agent' }));
+    await store.persistEvent(
+      ev('node:retrying', 2, {
+        nodeId: 'flaky',
+        attemptNumber: 1,
+        error: { code: 'provider_unavailable', message: '503', retryable: true },
+        delayMs: 10,
+      }),
+    );
+    await store.persistEvent(
+      ev('node:started', 3, { nodeId: 'flaky', nodeType: 'agent', attemptNumber: 2 }),
+    );
+    await store.persistEvent(
+      ev('node:completed', 4, {
+        nodeId: 'flaky',
+        output: {},
+        tokensUsed: { input: 1, output: 1 },
+        durationMs: 1,
+        attemptNumber: 2,
+      }),
+    );
+    const steps = client.db.select().from(stepExecutions).all();
+    expect(steps.map((s) => [s.attemptNumber, s.status]).sort()).toEqual([
+      [1, 'failed'], // the retried attempt is terminal, not a ghost `running`
+      [2, 'completed'],
+    ]);
+  });
+
+  // Security fixture — the engine masks a secret-typed value at the bus as { secret: true, ref }; the store is
+  // pass-through. Assert the masked placeholder lands and the RAW value never appears in ANY unsafe column
+  // (database-schema.md §"Secrets at the write boundary"): run_events.payload_json, runs.input_json,
+  // runs.workflow_definition_snapshot, and the step_executions input/output/error JSON. Defense in depth, ADR-0050.
+  it('never persists a raw secret — the masked placeholder only, across every unsafe column', async () => {
     const RAW = ['sk', 'live', 'DEADBEEF'].join('-'); // a fake key, built so no contiguous literal exists
+    const masked = { secret: true, ref: 'keychain://relavium/anthropic' } as const;
     const workflowId = await store.resolveWorkflowId('secret-wf');
     await store.persistEvent({
-      ...ev('run:started', 0, {
-        workflowId,
-        inputs: { api_key: { secret: true, ref: 'keychain://relavium/anthropic' } },
-        executionMode: 'local',
+      ...ev('run:started', 0, { workflowId, inputs: { api_key: masked }, executionMode: 'local' }),
+      runId: 'run-s',
+    });
+    await store.persistEvent({
+      ...ev('node:started', 1, { nodeId: 'n', nodeType: 'agent' }),
+      runId: 'run-s',
+    });
+    // A masked value can ride a node output too — assert step_executions.output_json stays masked.
+    await store.persistEvent({
+      ...ev('node:completed', 2, {
+        nodeId: 'n',
+        output: { echoed: masked },
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 1,
       }),
       runId: 'run-s',
     });
 
     const runRow = client.db.select().from(runs).where(eq(runs.id, 'run-s')).get();
-    const eventRow = client.db.select().from(runEvents).where(eq(runEvents.runId, 'run-s')).get();
+    const stepRow = client.db
+      .select()
+      .from(stepExecutions)
+      .where(eq(stepExecutions.runId, 'run-s'))
+      .get();
+    const eventRows = client.db.select().from(runEvents).where(eq(runEvents.runId, 'run-s')).all();
+
     expect(runRow?.inputJson).toContain('"secret":true');
-    expect(runRow?.inputJson).not.toContain(RAW);
-    expect(eventRow?.payloadJson).toContain('"secret":true');
-    expect(eventRow?.payloadJson).not.toContain(RAW);
+    expect(stepRow?.outputJson).toContain('"secret":true');
+    // No unsafe column contains the raw value.
+    for (const value of [
+      runRow?.inputJson,
+      runRow?.workflowDefinitionSnapshot,
+      stepRow?.inputJson,
+      stepRow?.outputJson,
+      stepRow?.errorJson,
+      ...eventRows.map((e) => e.payloadJson),
+    ]) {
+      expect(value ?? '').not.toContain(RAW);
+    }
   });
 });
