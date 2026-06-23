@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**. The status-aware order for everything still open (next pickup: **2.H**) is the [Remaining build order](#remaining-build-order) queue.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**; **2.H** (durable run history) is ✅ **Done (PR #44, 2026-06-23)**, behind [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md). The status-aware order for everything still open (next pickup: **2.C**) is the [Remaining build order](#remaining-build-order) queue.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -320,7 +320,7 @@ approval to completion; a non-interactive run exits with the gate-paused code `3
 and is later resumed by `relavium gate <runId> --approve`; a doubled decision does not
 double-advance; reject and `--input` paths both work end-to-end.
 
-### 2.H — Local run history via `@relavium/db`
+### 2.H — Local run history via `@relavium/db` — ✅ **Done (PR #44)**
 
 Wire durable SQLite history so runs persist their events, steps, and costs for
 later inspection — the same tables the desktop replays.
@@ -642,24 +642,24 @@ This is the status × plan view; the dependency rationale for every row lives in
 [Ordered waves](#ordered-waves-each-wave-is-internally-parallel-waves-gate-left-to-right) —
 this table does not restate them, it only sequences what remains.
 
-> **Status (2026-06-23):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K** done — **M3 reached** · next pickup: **2.H**.
-> (2.K's gate-resume + agent-replay halves remain deferred — they land with 2.G / later.)
+> **Status (2026-06-23):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H** done — **M3 reached** · next pickup: **2.C**.
+> (2.K's gate-resume + agent-replay halves remain deferred — they land with 2.G / later. 2.H shipped the
+> durable history substrate + read API; the consuming commands `list`/`logs`/`status` are 2.I.)
 
 | Next | Lane | Why now | Blockers (all met on arrival) |
 |---|---|---|---|
-| **1. 2.H** durable history | feeder | highest leverage — unblocks 2.I, 2.G, 2.M **and** 2.S; go/no-go #2 | 2.D ✓ |
-| **2. 2.C** provider / keys | feeder | independent; unblocks 2.R + 2.M; go/no-go #5 | 2.B ✓ |
-| **3. 2.E** ink TUI | feeder | go/no-go #1; the shared ink infra 2.G + 2.M reuse | 2.D ✓ |
-| **4. 2.G** human gate + resume | feeder | go/no-go #3 **and closes 2.K's deferred gate-resume half** | 2.E · 2.H · 2.F ✓ |
-| **5. 2.I** list / logs / status | feeder | go/no-go #2 (read side); blocks nothing | 2.H |
-| **6. 2.L** package & publish | ◆ spine | go/no-go #7 — **all 7 [exit criteria](#exit-criteria-go--no-go) hold here → Phase 3 may start** | 2.K whole (via 2.G) |
-| **7. 2.S** media host-wiring | additive | biggest lane + the lone SSRF security review; **first** among the additive lanes — never tailed | 2.D · 2.H |
-| **8. 2.R** MCP client | additive | inbound MCP tools | 2.B · 2.C |
-| **9. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C · 2.H · 2.E |
-| **10. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
+| **1. 2.C** provider / keys | feeder | independent; unblocks 2.R + 2.M; go/no-go #5 | 2.B ✓ |
+| **2. 2.E** ink TUI | feeder | go/no-go #1; the shared ink infra 2.G + 2.M reuse | 2.D ✓ |
+| **3. 2.G** human gate + resume | feeder | go/no-go #3 **and closes 2.K's deferred gate-resume half** | 2.E · 2.H ✓ · 2.F ✓ |
+| **4. 2.I** list / logs / status | feeder | go/no-go #2 (read side); blocks nothing | 2.H ✓ |
+| **5. 2.L** package & publish | ◆ spine | go/no-go #7 — **all 7 [exit criteria](#exit-criteria-go--no-go) hold here → Phase 3 may start** | 2.K whole (via 2.G) |
+| **6. 2.S** media host-wiring | additive | biggest lane + the lone SSRF security review; **first** among the additive lanes — never tailed | 2.D · 2.H ✓ |
+| **7. 2.R** MCP client | additive | inbound MCP tools | 2.B · 2.C |
+| **8. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C · 2.H ✓ · 2.E |
+| **9. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
 
-- **Gate-closing backbone — `2.H → 2.C → 2.E → 2.G → 2.I → 2.L`:** these six PRs flip all
-  seven exit criteria (2.K is done). The remaining four (**2.S, 2.R, chat, 2.J**)
+- **Gate-closing backbone — `2.C → 2.E → 2.G → 2.I → 2.L`:** these five PRs flip the remaining
+  exit criteria (2.K + 2.H are done). The remaining four (**2.S, 2.R, chat, 2.J**)
   complete in-phase but do **not** block starting Phase 3.
 - **2.K fully closes at step 4 (2.G).** Its deferred gate-resume scenario can only be
   exercised once the gate pause/resume surface exists, so 2.L (step 6) must follow 2.G even
