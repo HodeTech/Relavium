@@ -122,7 +122,10 @@ async function providerSetKey(args: ProviderCommandArgs, deps: ProviderCommandDe
   const key = await deps.readSecret(); // from stdin — never an argv flag
   const account = keychainAccount(id);
   deps.keychain.set(account, key); // KeychainUnavailableError surfaces (no silent plaintext fallback)
-  deps.store.upsert({ name: id, displayName: meta.displayName, baseUrl: meta.baseUrl });
+  // Register the row only if it's new — never overwrite a base URL the user set via `provider add --base-url`.
+  if (deps.store.get(id) === undefined) {
+    deps.store.upsert({ name: id, displayName: meta.displayName, baseUrl: meta.baseUrl });
+  }
   deps.store.setKeychainRef(id, account); // the ref, NEVER the key value
   deps.io.writeOut(`Stored ${id} key ${keyHint(key)} in the OS keychain.\n`);
 }

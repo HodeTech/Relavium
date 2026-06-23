@@ -19,9 +19,12 @@ export function keychainAccount(providerId: string, keyId: string = DEFAULT_KEY_
 
 /**
  * A platform-keychain backend failure — the store is **present but unusable** (locked keychain, no Linux
- * Secret Service, a denied prompt). Deliberately **distinct** from a key simply being absent (`get` → `null`):
- * absence falls through to the env-var source, but an unavailable backend must surface (no silent fallback,
- * keychain-and-secrets.md §Operational notes).
+ * Secret Service, a denied prompt). Deliberately **distinct** from a key simply being absent (`get` → `null`).
+ * The two paths treat it differently: a **write** (`provider set-key`) **surfaces** it (you cannot silently
+ * fail to store a key), while the run-time **key resolver** (`keyFor`) treats it like absence and falls
+ * through to the env-var source — the CLI's documented no-keychain path. (An env var is not an on-disk
+ * plaintext store, so this does not violate the no-silent-plaintext-fallback rule —
+ * keychain-and-secrets.md §Operational notes.)
  */
 export class KeychainUnavailableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {

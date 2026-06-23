@@ -170,19 +170,29 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
   const dispatch = async (args: ProviderCommandArgs): Promise<void> => {
     ctx.result.exitCode = await withProviderDeps(ctx, (deps) => runProviderCommand(args, deps));
   };
-  list.action(async () => dispatch({ action: 'list' }));
-  add.action(async (name: string, opts: { baseUrl?: string }) =>
-    dispatch({
+  list.action(async () => {
+    await dispatch({ action: 'list' });
+  });
+  add.action(async (name: string, opts: { baseUrl?: string }) => {
+    await dispatch({
       action: 'add',
       name,
       ...(opts.baseUrl === undefined ? {} : { baseUrl: opts.baseUrl }),
-    }),
-  );
-  setKey.action(async (name: string) => dispatch({ action: 'set-key', name }));
-  removeKey.action(async (name: string) => dispatch({ action: 'remove-key', name }));
-  test.action(async (name: string, opts: { model?: string }) =>
-    dispatch({ action: 'test', name, ...(opts.model === undefined ? {} : { model: opts.model }) }),
-  );
+    });
+  });
+  setKey.action(async (name: string) => {
+    await dispatch({ action: 'set-key', name });
+  });
+  removeKey.action(async (name: string) => {
+    await dispatch({ action: 'remove-key', name });
+  });
+  test.action(async (name: string, opts: { model?: string }) => {
+    await dispatch({
+      action: 'test',
+      name,
+      ...(opts.model === undefined ? {} : { model: opts.model }),
+    });
+  });
 }
 
 /** Open the local db + OS keychain for one `provider` invocation, run the core, and always close the db. */
@@ -201,7 +211,7 @@ async function withProviderDeps(
       store: createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
       keychain: createOsKeychainStore(),
       resolver: createProviderResolver(ctx.io.env, createOsKeychainStore()),
-      readSecret: () => readSecretFromStdin(ctx.io),
+      readSecret: () => readSecretFromStdin(),
     };
     return await fn(deps);
   } finally {

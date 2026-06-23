@@ -9,6 +9,7 @@ import {
   type ProviderResolver,
 } from '../engine/providers.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
+import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { captureIo } from '../test-support.js';
 import { runProviderCommand, type ProviderCommandDeps } from './provider.js';
 
@@ -123,15 +124,30 @@ describe('relavium provider commands (2.C)', () => {
     expect(io.out()).toContain('key works');
   });
 
-  it('test fails cleanly (exit 2) when the provider rejects — no key in the message', async () => {
+  it('test fails cleanly (exit 2) and never puts the key in the error message', async () => {
+    // The provider error even mentions the key text — the CLI must not re-emit it (it builds the message
+    // from the provider error, never from the resolved key).
     const d = deps({
       resolver: stubResolver(() => Promise.reject(new Error('401 invalid api key'))),
     });
-    await expect(
-      runProviderCommand({ action: 'test', name: 'anthropic' }, d),
-    ).rejects.toMatchObject({
-      exitCode: 2,
-    });
+    let caught: unknown;
+    try {
+      await runProviderCommand({ action: 'test', name: 'anthropic' }, d);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toMatchObject({ exitCode: 2 });
+    expect((caught as Error).message).not.toContain(RAW_KEY);
+  });
+
+  it('set-key preserves a base URL set by a prior `add` (never clobbers it)', async () => {
+    const d = deps({});
+    await runProviderCommand(
+      { action: 'add', name: 'openai', baseUrl: 'https://proxy.example/v1' },
+      d,
+    );
+    await runProviderCommand({ action: 'set-key', name: 'openai' }, d);
+    expect(d.store.get('openai')?.baseUrl).toBe('https://proxy.example/v1'); // not the SDK default
   });
 
   it('rejects an unknown provider name (exit 2)', async () => {
@@ -200,5 +216,19 @@ describe('keyHint', () => {
   });
   it('fully masks a too-short value', () => {
     expect(keyHint('abc')).toBe('••••');
+  });
+});
+
+describe('readSecretFromStdin', () => {
+  it('refuses to read a typed key from an interactive TTY (errors with a pipe hint, exit 2)', async () => {
+    const original = process.stdin.isTTY;
+    // A typed secret on an echoing terminal is the failure mode the stdin guard prevents — even if stdout
+    // is redirected (the guard keys on stdin, not stdout).
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    try {
+      await expect(readSecretFromStdin()).rejects.toMatchObject({ exitCode: 2 });
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+    }
   });
 });

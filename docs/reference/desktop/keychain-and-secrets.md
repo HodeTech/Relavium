@@ -73,7 +73,7 @@ The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with 
 - **SQLCipher passphrase must be set before plugin init.** Derive it from a stable machine secret (not hardcoded) so restarts do not require a user prompt.
 - **Capability gating.** Every keychain plugin call the frontend can trigger must be declared in the Tauri v2 capabilities manifest (`src-tauri/capabilities/`); a missing capability surfaces as a silent "not allowed" runtime error.
 - **Linux dependency.** libsecret requires a Secret Service provider to be running; if none is present in v1.0, key storage is unavailable and the app surfaces an error (the KDF-based file fallback is deferred — see [Encrypted-file fallback — deferred past v1.0](#encrypted-file-fallback--deferred-past-v10)).
-- **No silent plaintext fallback.** If the OS keychain cannot be used, the app surfaces an error rather than writing a key in the clear; it never hand-rolls an alternative key store.
+- **No silent plaintext fallback.** If the OS keychain cannot be used, the app surfaces an error rather than writing a key in the clear; it never hand-rolls an alternative key store. _(The CLI's run-time key resolver additionally falls through to the `RELAVIUM_<PROVIDER>_API_KEY` env var when the keychain is absent or unavailable — an env var is not an on-disk plaintext store, so this is not a plaintext fallback; the `provider set-key` **write** path still surfaces an unavailable keychain as a clean error.)_
 
 ## Phase 2 divergence
 
