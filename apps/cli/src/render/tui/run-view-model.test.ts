@@ -606,6 +606,34 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
     expect(s.warnings.length).toBe(MAX_WARNINGS);
   });
 
+  it('a terminal run:failed refines the transient run:timeout summary (engine ordering)', () => {
+    const s = reduceAll([
+      {
+        type: 'run:timeout',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        elapsedMs: 30_000,
+        timeoutMs: 25_000,
+      },
+      {
+        type: 'run:failed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        error: {
+          code: 'run_timeout',
+          message: 'the run exceeded its time budget',
+          retryable: false,
+        },
+        partialOutputs: {},
+      },
+    ]);
+    expect(s.summary?.outcome).toBe('failed');
+    expect(s.summary?.errorCode).toBe('run_timeout'); // the terminal event's closed code wins
+    expect(s.summary?.errorMessage).not.toContain('timed out'); // the timeout fallback message is replaced
+  });
+
   it('flags a backward / duplicate sequence number and keeps the high-water mark', () => {
     const s = reduceAll([
       {

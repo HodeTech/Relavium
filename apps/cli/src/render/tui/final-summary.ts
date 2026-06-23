@@ -1,4 +1,5 @@
 import { formatCostUsd, formatDuration, formatTokens, statusGlyph } from './format.js';
+import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
 
 /**
@@ -51,13 +52,8 @@ export function renderFinalSummary(state: RunViewState): string {
     if (node === undefined) {
       continue;
     }
-    const suffix =
-      node.status === 'completed' && node.durationMs !== undefined
-        ? ` (${formatDuration(node.durationMs)})`
-        : node.status === 'failed' && node.errorCode !== undefined
-          ? ` — ${node.errorCode}`
-          : '';
-    lines.push(`  ${statusGlyph(node.status)} ${id}${suffix}`);
+    // Reuse the live view's suffix logic (one source of truth) — completed→duration, failed→error code, etc.
+    lines.push(`  ${statusGlyph(node.status)} ${id}${nodeSuffix(node)}`);
   }
 
   return `${lines.join('\n')}\n`;

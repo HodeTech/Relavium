@@ -58,7 +58,10 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     ((s: RunStore): InkMountInstance =>
       render(createElement(RunApp, { store: s }), {
         stdout,
-        exitOnCtrlC: false, // OUR SIGINT handler (run.ts) drives the cooperative cancel — not ink's process.exit
+        // OUR SIGINT handler (run.ts) drives the cooperative cancel — not ink's process.exit. RunApp uses no
+        // `useInput`/`useFocus`, so ink stays in COOKED mode (never raw): the kernel keeps translating Ctrl-C
+        // → SIGINT, which reaches run.ts. (If a future RunApp adds input, re-verify cancel on a real TTY.)
+        exitOnCtrlC: false,
         patchConsole: false, // don't intercept other stdout/console writes
         // Pin ink's internal render throttle to the store's frame cadence so the two can't drift.
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),

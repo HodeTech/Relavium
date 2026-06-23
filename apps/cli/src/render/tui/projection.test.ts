@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { colorProps, nodeSuffix } from './projection.js';
+import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { NodeView } from './run-view-model.js';
 
 const node = (over: Partial<NodeView> & Pick<NodeView, 'status'>): NodeView => ({
@@ -13,6 +13,14 @@ describe('colorProps', () => {
     expect(colorProps(true, 'green')).toEqual({ color: 'green' });
     expect(colorProps(false, 'green')).toEqual({}); // no `color` key at all
     expect('color' in colorProps(false, 'green')).toBe(false);
+  });
+});
+
+describe('dimProps', () => {
+  it('omits dimColor under --no-color (dim is an ANSI SGR code, gated like color)', () => {
+    expect(dimProps(true)).toEqual({ dimColor: true });
+    expect(dimProps(false)).toEqual({}); // no dimColor → no ESC[2m emitted under --no-color
+    expect('dimColor' in dimProps(false)).toBe(false);
   });
 });
 

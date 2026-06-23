@@ -16,6 +16,15 @@ export function colorProps(enabled: boolean, c: StatusColor): { color?: StatusCo
   return enabled ? { color: c } : {};
 }
 
+/**
+ * The `dimColor` prop for an `ink` `<Text>` — `dimColor` is itself an ANSI SGR code (`ESC[2m`), so it is
+ * gated on the same `color` flag: under `--no-color` it is omitted, so NO color/dim ANSI is emitted (the
+ * documented contract). Spreadable (never explicit `undefined`) for `exactOptionalPropertyTypes`.
+ */
+export function dimProps(enabled: boolean): { dimColor?: true } {
+  return enabled ? { dimColor: true } : {};
+}
+
 /** The trailing detail shown after a node's id: duration when completed, the error code when failed, etc. */
 export function nodeSuffix(node: NodeView): string {
   if (node.status === 'completed' && node.durationMs !== undefined) {

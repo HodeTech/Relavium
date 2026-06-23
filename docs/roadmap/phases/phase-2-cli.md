@@ -263,6 +263,16 @@ status transitions, streaming tokens on the active node, and a running cost that
 matches the final summary; `--no-color` produces plain output; no event is dropped
 under a high token rate (verified against the JSON stream's event count).
 
+> **As-built reconcile (PR for 2.E).** Two task items were narrowed, both deliberately:
+> (1) **`sequenceNumber` gap handling is detect-and-warn, not resync.** The CLI consumes the in-process
+> no-drop `RunEventBus`, so a gap (or a backward/duplicate seq) signals a *defect* and surfaces a TUI
+> warning; a true "resync from durable state" needs the history read API and lands with **2.I** (same
+> reconcile-the-spec discipline as 2.F/ADR-0049). (2) **`--no-color` keeps the TUI and suppresses ANSI
+> color/dim** (it does not swap to the plain renderer — that is the no-TTY/`CI=true` fallback), which
+> satisfies "plain output". **Known limitation:** the live token region shows the *single* active node's
+> stream; concurrent agent nodes in a fan-out share that one region (no data loss — the node list and final
+> summary stay correct), so per-node token buffers are a possible later enhancement.
+
 ### 2.F — CI / non-interactive `--json` mode + exit codes — ✅ **Done (PR #42)**
 
 Implement the machine-readable path: one `RunEvent` per line (NDJSON), a stable

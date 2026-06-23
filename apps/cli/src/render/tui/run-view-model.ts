@@ -72,6 +72,8 @@ export const MAX_TOKEN_CHARS = 4000;
 export const MAX_TOOL_LINES = 8;
 /** Recent warnings kept for display. */
 export const MAX_WARNINGS = 6;
+/** Trailing logical lines of the active node's token stream shown in the live region (RunApp). */
+export const MAX_ACTIVE_TOKEN_LINES = 6;
 
 export function initialRunViewState(): RunViewState {
   return {
@@ -155,10 +157,11 @@ function trackSeq(
   };
 }
 
-/** Truncate a single-line summary to keep tool lines compact. */
+/** Truncate a single-line summary to keep tool lines compact. Unicode-safe (splits on code points). */
 function clip(text: string, max = 80): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+  const chars = [...oneLine]; // code-point array — never split a surrogate pair mid-character
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : oneLine;
 }
 
 /**

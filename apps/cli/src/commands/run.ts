@@ -122,17 +122,20 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
     const handle = engine.start({ workflow: def, inputs });
 
-    // Output mode (commands.md "Output modes"): the ink TUI on an interactive TTY, NDJSON under --json,
-    // the plain line renderer otherwise — all the same `onEvent` seam over one bus (2.F / 2.K).
-    const renderer = (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global);
     let outcome: RunOutcome | undefined;
-    // Register the cancel handler immediately before the consume loop — no statement between it and the
-    // `try` whose `finally` removes it, so the listener can never leak on an intervening throw.
+    // Register the cancel handler the instant the engine is live — BEFORE constructing the renderer — so a
+    // failure building the renderer (e.g. ink's `render()` throwing) can never leave a running engine with no
+    // cooperative-cancel handler; a Ctrl-C in that window still routes to handle.cancel(). The `finally`
+    // removes it, so the listener can't leak on a throw.
     const onSigint = (): void => {
       handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
     };
     process.once('SIGINT', onSigint);
+    let renderer: RunRenderer | undefined;
     try {
+      // Output mode (commands.md "Output modes"): the ink TUI on an interactive TTY, NDJSON under --json,
+      // the plain line renderer otherwise — all the same `onEvent` seam over one bus (2.F / 2.K).
+      renderer = (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global);
       for await (const event of handle.events) {
         renderer.onEvent(event);
         outcome = nextOutcome(outcome, event);
@@ -147,10 +150,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     } finally {
       process.removeListener('SIGINT', onSigint);
       // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write
-      // its persistent final summary. The line/NDJSON renderers have no `finalize` (the `?.` is a no-op).
-      // A teardown error must NOT mask the run's real outcome/error — surface it to stderr and move on.
+      // its persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer`
+      // is still undefined (construction threw). A teardown error must NOT mask the run's real
+      // outcome/error — surface it to stderr and move on.
       try {
-        await renderer.finalize?.();
+        await renderer?.finalize?.();
       } catch (teardownErr) {
         deps.io.writeErr(
           `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,

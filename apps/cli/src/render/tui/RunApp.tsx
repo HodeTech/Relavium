@@ -2,9 +2,9 @@ import { Box, Text } from 'ink';
 import { useSyncExternalStore, type ReactElement } from 'react';
 
 import { formatCostUsd, formatTokens, spinnerFrame, statusColor, statusGlyph } from './format.js';
-import { colorProps, nodeSuffix } from './projection.js';
+import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
-import type { NodeView } from './run-view-model.js';
+import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
 
 /**
  * The thin `ink` projection of the {@link RunStore}'s snapshot (workstream **2.E**). It holds NO logic of
@@ -32,7 +32,8 @@ export function RunApp(props: { store: RunStore }): ReactElement {
   );
 
   const activeNode = state.activeNodeId === undefined ? undefined : state.nodes[state.activeNodeId];
-  const activeLines = state.activeTokens === '' ? [] : state.activeTokens.split('\n').slice(-6);
+  const activeLines =
+    state.activeTokens === '' ? [] : state.activeTokens.split('\n').slice(-MAX_ACTIVE_TOKEN_LINES);
 
   return (
     <Box flexDirection="column">
@@ -53,8 +54,10 @@ export function RunApp(props: { store: RunStore }): ReactElement {
             ▌ {activeNode.nodeId}
             {state.activeModel === undefined ? '' : ` · ${state.activeModel}`}
           </Text>
+          {/* `truncate-end` bounds each logical line to one terminal row — a newline-free token blast or a
+              narrow terminal can't blow the live region up to dozens of wrapped rows (§2.E narrow-terminal). */}
           {activeLines.map((line, i) => (
-            <Text key={i} dimColor>
+            <Text key={i} {...dimProps(color)} wrap="truncate-end">
               {line}
             </Text>
           ))}
@@ -65,7 +68,7 @@ export function RunApp(props: { store: RunStore }): ReactElement {
       {state.toolLines.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           {state.toolLines.map((line, i) => (
-            <Text key={i} dimColor>
+            <Text key={i} {...dimProps(color)} wrap="truncate-end">
               {line}
             </Text>
           ))}
@@ -76,7 +79,7 @@ export function RunApp(props: { store: RunStore }): ReactElement {
       {state.warnings.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           {state.warnings.map((w, i) => (
-            <Text key={i} {...colorProps(color, 'yellow')}>
+            <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
               ⚠ {w}
             </Text>
           ))}
