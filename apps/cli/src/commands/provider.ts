@@ -109,7 +109,7 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
   const record = deps.store.upsert({
     name: id,
     displayName: meta.displayName,
-    baseUrl: args.baseUrl === undefined ? meta.baseUrl : requireHttpUrl(args.baseUrl),
+    baseUrl: args.baseUrl === undefined ? meta.baseUrl : requireHttpsUrl(args.baseUrl),
   });
   deps.io.writeOut(
     `Registered provider '${id}' (${record.baseUrl}). Store a key with \`relavium provider set-key ${id}\`.\n`,
@@ -167,16 +167,21 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
   deps.io.writeOut(`${id}: key works (${model}).\n`);
 }
 
-/** Validate a user-supplied provider base URL: a parseable `http(s)` URL (fail-fast at `add`). */
-function requireHttpUrl(raw: string): string {
+/**
+ * Validate a user-supplied provider base URL: a parseable **HTTPS** URL (fail-fast at `add`). HTTPS-only
+ * matches the at-routing-time gate (`@relavium/llm`'s `assertHttpsBaseUrl`, security-review.md §Network) and
+ * keeps a plaintext `http:` endpoint from ever being persisted; the private/loopback/metadata range-block
+ * stays at the routing-time gate (it needs host resolution this fail-fast deliberately does not do).
+ */
+function requireHttpsUrl(raw: string): string {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     throw new CliError('invalid_invocation', `invalid base URL: '${raw}'.`);
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new CliError('invalid_invocation', `base URL must be http(s), got '${raw}'.`);
+  if (url.protocol !== 'https:') {
+    throw new CliError('invalid_invocation', `base URL must be HTTPS, got '${raw}'.`);
   }
   return raw;
 }

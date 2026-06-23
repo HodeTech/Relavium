@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-06-03
+> Last updated: 2026-06-23
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -130,7 +130,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` it is on the NDJSON event line, otherwise read it from `relavium status`/`relavium logs`.
 
-> **Implementation status (as of workstream 2.F).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). Two pieces still land in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer) and the interactive inline gate prompt + `relavium gate` resume (2.G — until then a `human_gate` node exits `3`). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
+> **Implementation status (as of workstream 2.C).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). Two pieces still land in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer) and the interactive inline gate prompt + `relavium gate` resume (2.G — until then a `human_gate` node exits `3`). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
 
 ### `relavium list`
 
@@ -182,8 +182,9 @@ relavium provider remove-key anthropic                  # delete the key from th
 ```
 
 - **`set-key` reads the key from stdin**, never a CLI argument (argv leaks into `ps`, shell history, and CI
-  logs); pipe it or use a heredoc. The key is stored under `service=relavium`, `account={providerId}:default`.
-- **`add` / `set-key`** auto-register the provider row. `--base-url <url>` on `add` records a custom endpoint (validated as an `http(s)` URL); it is **not yet honored by request routing** — adapters use their built-in endpoints today. Wiring a custom base URL to outbound requests lands later **with** the full SSRF base-URL gate (HTTPS-only; private/loopback/metadata ranges blocked) per [security-review.md](../../standards/security-review.md), before any key is attached to it.
+  logs); pipe it or use a heredoc. The key is stored in the OS keychain under the canonical entry-naming
+  scheme ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md#entry-naming)).
+- **`add` / `set-key`** auto-register the provider row. `--base-url <url>` on `add` records a custom endpoint (validated as an **HTTPS** URL); it is **not yet honored by request routing** — adapters use their built-in endpoints today. Wiring a custom base URL to outbound requests lands later **with** the full SSRF base-URL gate (HTTPS-only; private/loopback/metadata ranges blocked) per [security-review.md](../../standards/security-review.md), before any key is attached to it.
 - **`test`** does a 1-token `generate` through `@relavium/llm`; `--model <id>` overrides the cheap default. A bad
   key fails cleanly (exit `2`) without echoing the key.
 - **Key resolution** (used by `run` + `test`): **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error**.

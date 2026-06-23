@@ -55,6 +55,52 @@ describe('createProviderStore', () => {
     expect(store.list()).toHaveLength(1);
   });
 
+  it('preserves non-empty defaultHeaders verbatim across an update that omits them', () => {
+    store.upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+      defaultHeaders: { 'x-org': 'acme', 'x-beta': 'on' },
+    });
+    // An update that omits defaultHeaders must keep the stored object — never drop it, never re-encode
+    // the already-JSON string into a `"{...}"` string (the regression fixed in 8ae794c).
+    const b = store.upsert({
+      name: 'openai',
+      displayName: 'OpenAI (proxied)',
+      baseUrl: 'https://proxy.example/v1',
+    });
+    expect(b.defaultHeaders).toEqual({ 'x-org': 'acme', 'x-beta': 'on' });
+    expect(typeof b.defaultHeaders).toBe('object'); // a parsed object, not a double-encoded string
+  });
+
+  it('preserves createdAt and advances updatedAt on update', () => {
+    let clock = 1_000;
+    const timed = createProviderStore(client.db, {
+      uuid: () => '00000000-0000-4000-8000-000000000abc',
+      now: () => clock,
+    });
+    const a = timed.upsert({ name: 'gemini', displayName: 'Gemini', baseUrl: 'https://g.example' });
+    clock = 2_000;
+    const b = timed.upsert({
+      name: 'gemini',
+      displayName: 'Gemini 2',
+      baseUrl: 'https://g.example',
+    });
+    expect(b.createdAt).toBe(a.createdAt); // createdAt is never clobbered on update
+    expect(new Date(b.updatedAt).getTime()).toBeGreaterThan(new Date(a.updatedAt).getTime());
+  });
+
+  it('rejects a corrupt default_headers value at the read boundary (loud, not silent)', () => {
+    store.upsert({ name: 'openai', displayName: 'OpenAI', baseUrl: 'https://api.openai.com/v1' });
+    // Simulate a corrupt/foreign-shaped column (a direct edit / bad migration) — the read must abort.
+    client.db
+      .update(llmProviders)
+      .set({ defaultHeaders: '["not","an","object"]' })
+      .where(eq(llmProviders.name, 'openai'))
+      .run();
+    expect(() => store.get('openai')).toThrowError(/not a JSON object/);
+  });
+
   it('records and clears the keychain ref — and NEVER stores a key value', () => {
     store.upsert({
       name: 'anthropic',

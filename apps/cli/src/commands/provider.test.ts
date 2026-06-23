@@ -142,13 +142,14 @@ describe('relavium provider commands (2.C)', () => {
     expect((caught as Error).message).toContain('••••9999'); // ...to the hint
   });
 
-  it('rejects an invalid --base-url (exit 2)', async () => {
-    await expect(
-      runProviderCommand(
-        { action: 'add', name: 'openai', baseUrl: 'file:///etc/passwd' },
-        deps({}),
-      ),
-    ).rejects.toMatchObject({ exitCode: 2 });
+  it('rejects a non-HTTPS or malformed --base-url (exit 2)', async () => {
+    // HTTPS-only at store time — a plaintext `http:` endpoint must never be persisted, and a
+    // non-`http(s)` scheme is rejected outright (matches the routing-time `assertHttpsBaseUrl` gate).
+    for (const baseUrl of ['http://proxy.example/v1', 'file:///etc/passwd', 'not-a-url']) {
+      await expect(
+        runProviderCommand({ action: 'add', name: 'openai', baseUrl }, deps({})),
+      ).rejects.toMatchObject({ exitCode: 2 });
+    }
   });
 
   it('set-key preserves a base URL set by a prior `add` (never clobbers it)', async () => {

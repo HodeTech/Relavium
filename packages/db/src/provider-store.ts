@@ -42,7 +42,7 @@ export interface ProviderStoreDeps {
 }
 
 export interface ProviderStore {
-  /** All registered providers (active, not soft-deleted), by name. */
+  /** All registered (not soft-deleted) providers, by name. */
   list: () => ProviderRecord[];
   /** One provider by its unique `name`, or `undefined`. */
   get: (name: string) => ProviderRecord | undefined;
@@ -54,6 +54,27 @@ export interface ProviderStore {
   clearKeychainRef: (name: string) => void;
 }
 
+/**
+ * Parse a stored `default_headers` JSON-text column into a validated `Record<string, string>` — `unknown`
+ * + a runtime shape check at the DB read boundary (code-style-typescript.md §Boundaries; no unsafe `as`).
+ * A corrupt/foreign-shaped value (malformed JSON, a non-object, or a non-string member) aborts the read
+ * loudly rather than propagating a wrongly-typed value, mirroring the sibling stores' `JSON.parse` posture.
+ */
+function parseStringRecord(json: string): Record<string, string> {
+  const parsed: unknown = JSON.parse(json);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('llm_providers.default_headers is not a JSON object');
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== 'string') {
+      throw new Error(`llm_providers.default_headers['${key}'] is not a string`);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
 function fromRow(row: LlmProviderRow): ProviderRecord {
   return {
     id: row.id,
@@ -61,7 +82,7 @@ function fromRow(row: LlmProviderRow): ProviderRecord {
     displayName: row.displayName,
     baseUrl: row.baseUrl,
     ...(row.apiKeyKeychainRef === null ? {} : { apiKeyKeychainRef: row.apiKeyKeychainRef }),
-    defaultHeaders: JSON.parse(row.defaultHeaders) as Record<string, string>,
+    defaultHeaders: parseStringRecord(row.defaultHeaders),
     isActive: row.isActive,
     createdAt: epochMsToIso(row.createdAt),
     updatedAt: epochMsToIso(row.updatedAt),
