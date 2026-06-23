@@ -201,14 +201,21 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .set({
             totalInputTokens: sql`${runs.totalInputTokens} + ${event.tokensUsed.input}`,
             totalOutputTokens: sql`${runs.totalOutputTokens} + ${event.tokensUsed.output}`,
-            totalCostMicrocents: cumulative,
+            // `prev + nodeCost` (= max(prev, cumulative)), NOT the raw `cumulative` — so the run total stays
+            // monotonic + always equals sum(run_costs) even if a snapshot regressed (a deeper engine bug).
+            totalCostMicrocents: prev + nodeCost,
             updatedAt: ts,
           })
           .where(eq(runs.id, runId))
           .run();
         return;
       }
-      case 'node:failed': {
+      case 'node:failed':
+      case 'node:retrying': {
+        // Mark the attempt's step row `failed`. For `node:failed` this is the node's TERMINAL failure
+        // (node-retry budget exhausted); for `node:retrying` it is the intermediate attempt that will
+        // re-dispatch as a fresh row on the next `node:started`. Either way the attempt's row must not
+        // linger as `running` (a ghost in `relavium status`, 2.I). Both carry `error` + `attemptNumber`.
         db.update(stepExecutions)
           .set({
             status: 'failed',
@@ -270,22 +277,6 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .run();
         return;
       }
-      case 'node:retrying': {
-        // The attempt that just failed gets a terminal `failed` status; the next `node:started(attempt+1)`
-        // inserts a fresh row. Without this, the intermediate attempt's row would linger as `running` forever
-        // and surface as a ghost step in `relavium status` (2.I). The terminal `node:failed` (budget
-        // exhausted) closes the LAST attempt's row via the same `stepMatch`.
-        db.update(stepExecutions)
-          .set({
-            status: 'failed',
-            errorJson: JSON.stringify(event.error),
-            completedAt: ts,
-            updatedAt: ts,
-          })
-          .where(stepMatch(runId, event.nodeId, event.attemptNumber))
-          .run();
-        return;
-      }
       default:
         // node:skipped / media_job:submitted / run:timeout (+ any future durable event): captured in
         // run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node has no nodeType
@@ -316,14 +307,19 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
 
   return {
     resolveWorkflowId: (slug) => {
-      const existing = db
-        .select({ id: workflows.id })
-        .from(workflows)
-        .where(and(eq(workflows.slug, slug), isNull(workflows.deletedAt)))
-        .get();
+      const find = (): string | undefined =>
+        db
+          .select({ id: workflows.id })
+          .from(workflows)
+          .where(and(eq(workflows.slug, slug), isNull(workflows.deletedAt)))
+          .get()?.id;
+      const existing = find();
       if (existing !== undefined) {
-        return Promise.resolve(existing.id);
+        return Promise.resolve(existing);
       }
+      // Insert-or-ignore, then read back the winning id. Atomic against a concurrent `relavium run` on the
+      // same slug: a plain SELECT-then-INSERT could let two processes both read empty and both insert, with
+      // the second hitting the active-slug UNIQUE index — ON CONFLICT DO NOTHING makes the loser a no-op.
       const id = deps.uuid();
       const t = deps.now();
       db.insert(workflows)
@@ -335,8 +331,9 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           createdAt: t,
           updatedAt: t,
         })
+        .onConflictDoNothing()
         .run();
-      return Promise.resolve(id);
+      return Promise.resolve(find() ?? id);
     },
 
     persistEvent: (event) => {
@@ -363,39 +360,31 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     },
 
     listInterruptedRuns: () => {
+      // One pass: a LEFT JOIN + coalesce(max(seq),0), grouped by the run PK. No second round-trip and no
+      // `inArray(ids)` (which would hit SQLite's host-parameter limit when many runs are interrupted) — this
+      // is a RunStore port method the desktop/cloud surfaces also implement, so it must scale.
       const rows = db
-        .select()
+        .select({
+          id: runs.id,
+          workflowId: runs.workflowId,
+          status: runs.status,
+          lastSeq: sql<number>`coalesce(max(${runEvents.seq}), 0)`,
+        })
         .from(runs)
+        .leftJoin(runEvents, eq(runEvents.runId, runs.id))
         .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
+        .groupBy(runs.id)
         .all();
-      if (rows.length === 0) {
-        return Promise.resolve([]);
-      }
-      // One aggregating query for the per-run last seq (a single GROUP BY, not N+1) — this is a RunStore
-      // port method the desktop/cloud surfaces also implement, so it must scale past a single-user CLI.
-      const lastByRun = new Map(
-        db
-          .select({ runId: runEvents.runId, m: sql<number>`max(${runEvents.seq})` })
-          .from(runEvents)
-          .where(
-            inArray(
-              runEvents.runId,
-              rows.map((r) => r.id),
-            ),
-          )
-          .groupBy(runEvents.runId)
-          .all()
-          .map((r) => [r.runId, r.m]),
+      return Promise.resolve(
+        rows.map(
+          (row): InterruptedRunInfo => ({
+            runId: row.id,
+            workflowId: row.workflowId,
+            resumable: row.status === 'paused',
+            lastSequenceNumber: row.lastSeq,
+          }),
+        ),
       );
-      const interrupted = rows.map(
-        (row): InterruptedRunInfo => ({
-          runId: row.id,
-          workflowId: row.workflowId,
-          resumable: row.status === 'paused',
-          lastSequenceNumber: lastByRun.get(row.id) ?? 0,
-        }),
-      );
-      return Promise.resolve(interrupted);
     },
 
     listRuns: () =>

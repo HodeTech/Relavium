@@ -24,13 +24,27 @@ const WORKFLOW: RunHistoryWorkflow = {
   definitionJson: JSON.stringify({ workflow: { id: 'demo', name: 'Demo', nodes: [], edges: [] } }),
 };
 
-/** Build a valid RunEvent — `RunEventSchema.parse` (inside persistEvent) is the real validation. */
+/** The variant-specific fields of a RunEvent (everything but the envelope) — so call sites are type-checked. */
+type EventBody<T extends RunEvent['type']> = Omit<
+  Extract<RunEvent, { type: T }>,
+  'type' | 'runId' | 'timestamp' | 'sequenceNumber'
+>;
+
+/**
+ * Build a RunEvent for the fixtures: `rest` is strongly typed PER VARIANT (a wrong/missing field is a
+ * compile error). The final assembly assertion is unavoidable — TS can't prove a generic spread reconstructs
+ * the exact union member — but it widens nothing: every field is already type-checked, and `RunEventSchema`
+ * .parse (inside persistEvent) is the authoritative runtime validation.
+ */
 function ev<T extends RunEvent['type']>(
   type: T,
   seq: number,
-  rest: Record<string, unknown>,
-): RunEvent {
-  return { type, runId: 'run-1', timestamp: TS, sequenceNumber: seq, ...rest } as RunEvent;
+  rest: EventBody<T>,
+): Extract<RunEvent, { type: T }> {
+  return { type, runId: 'run-1', timestamp: TS, sequenceNumber: seq, ...rest } as Extract<
+    RunEvent,
+    { type: T }
+  >;
 }
 
 describe('createRunHistoryStore', () => {
@@ -142,7 +156,8 @@ describe('createRunHistoryStore', () => {
     );
 
     const costs = client.db.select().from(runCosts).all();
-    expect(costs.map((c) => c.costMicrocents)).toEqual([300, 700]); // deltas
+    // Order-independent (SQLite gives no row order without ORDER BY) — assert the multiset of deltas.
+    expect(costs.map((c) => c.costMicrocents).sort((a, b) => a - b)).toEqual([300, 700]);
     const total = costs.reduce((s, c) => s + c.costMicrocents, 0);
     const run = client.db.select().from(runs).where(eq(runs.id, 'run-1')).get();
     expect(total).toBe(run?.totalCostMicrocents); // acceptance: sum(run_costs) == runs.total_cost_microcents
