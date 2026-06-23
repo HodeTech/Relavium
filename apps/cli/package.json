@@ -17,6 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@napi-rs/keyring": "catalog:",
     "@relavium/core": "workspace:*",
     "@relavium/db": "workspace:*",
     "@relavium/llm": "workspace:*",

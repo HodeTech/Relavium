@@ -19,11 +19,11 @@ Created on first launch. Holds user-wide preferences and the registry of MCP ser
   config.toml        # global preferences, MCP server registrations, update channel
   ipc.json           # desktop loopback server discovery (port, authToken, pid) — see ipc-contract.md
   history.db         # cross-project run history (SQLite; desktop: SQLCipher, CLI: unencrypted + 0600/0700 OS perms — ADR-0050) — see desktop/database-schema.md
-  secrets.enc        # OPTIONAL encrypted-file key fallback (headless/CI) — see keychain-and-secrets.md
+  secrets.enc        # RESERVED encrypted-file key fallback (deferred past v1.0; Argon2id KDF) — see keychain-and-secrets.md
   tmp/               # scratch space agents may write to under the sandbox tier
 ```
 
-> API keys are **not** stored in `config.toml`. By default they live in the OS keychain; `secrets.enc` is an opt-in fallback only. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+> API keys are **not** stored in `config.toml`. They live in the OS keychain; the CLI's headless/CI fallback is the env var `RELAVIUM_<PROVIDER>_API_KEY`. The `secrets.enc` encrypted-file fallback is **deferred past v1.0** (it needs a proper Argon2id KDF). See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
 ### Per-project — `<projectRoot>/.relavium/`
 

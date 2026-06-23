@@ -189,8 +189,11 @@ keychain and VS Code `SecretStorage`.
   `api_key_keychain_ref`, …) to `@relavium/db`'s `llm_providers` table — never the
   key value.
 - Implement the headless fallback chain for CI / no-keychain hosts: env var
-  (e.g. `RELAVIUM_<PROVIDER>_API_KEY`) → opt-in `~/.relavium/secrets.enc`
-  (AES-256-GCM) → hard error. No silent plaintext fallback.
+  (e.g. `RELAVIUM_<PROVIDER>_API_KEY`) → hard error. No silent plaintext fallback.
+  _(The opt-in `~/.relavium/secrets.enc` encrypted-file fallback is **deferred past v1.0** — it
+  requires a proper KDF, e.g. Argon2id over a user passphrase, not a hand-rolled scheme; the
+  canonical [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md) §Encrypted-file
+  fallback governs. v1.0 is keychain + env var only.)_
 - On display, show only a **key hint** (last 4 chars); never echo a full key to
   stdout, logs, or `--json` output.
 - Resolve keys **at LLM-call time** through the engine's provider seam so a key is

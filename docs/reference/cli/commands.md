@@ -110,7 +110,7 @@ The command set below is the confirmed surface. Subcommands marked _(planned)_ a
 | `relavium budget resume <runId> [--approve\|--abort]` | Resume a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval`) — approve to continue or abort. The non-interactive operator path for [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
 | `relavium init` _(planned)_ | Initialize a `.relavium/` directory in the current project. |
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
-| `relavium provider <subcommand>` _(planned)_ | Manage providers and API keys in the OS keychain. |
+| `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
 
 ### `relavium run`
 
@@ -130,7 +130,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` it is on the NDJSON event line, otherwise read it from `relavium status`/`relavium logs`.
 
-> **Implementation status (as of workstream 2.F).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. Still landing in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer), the interactive inline gate prompt and `relavium gate` resume (2.G/2.H — until then a `human_gate` node exits `3`), provider keys from the OS keychain (2.C — until then the `RELAVIUM_<PROVIDER>_API_KEY` environment fallback, the per-invocation key source in the [config-spec.md](../contracts/config-spec.md) precedence), and durable run history (2.H — until then runs are in-memory). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
+> **Implementation status (as of workstream 2.F).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). Still landing in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer) and the interactive inline gate prompt + `relavium gate` resume (2.G — until then a `human_gate` node exits `3`). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
 
 ### `relavium list`
 
@@ -165,6 +165,31 @@ relavium gate <runId> --gate <gateId> --approve            # disambiguate when >
 
 - `--gate <gateId>` selects **which** pending gate to resolve. The resume contract is `engine.resume(runId, gateId, decision)` — `gateId` is mandatory on the resume path (it is carried on the `human_gate:paused` event; see [sse-event-schema.md](../contracts/sse-event-schema.md) and `resume_run` in [ipc-contract.md](../contracts/ipc-contract.md)). `--gate` is **optional on the CLI**: when exactly one gate is pending the CLI fills it in automatically; when **more than one** gate is pending it is **required**, and omitting it is an invalid invocation (exit `2`) listing the pending `gateId`s.
 - Get the pending `gateId`(s) from `relavium status` or `relavium logs <runId>` (both print them — see below).
+
+### `relavium provider`
+
+Registers LLM providers and manages their API keys in the **OS keychain** (workstream 2.C; `@napi-rs/keyring`,
+[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)). The **key value never leaves the keychain**:
+the `llm_providers` row stores only the keychain `account` ref, display shows only a hint (last 4 chars), and a
+key is read solely at LLM-call time. Known providers: `anthropic`, `openai`, `gemini`, `deepseek`.
+
+```bash
+relavium provider list                                  # registered providers + whether a key is set
+relavium provider add anthropic                         # register a provider (its default base URL)
+echo "$ANTHROPIC_API_KEY" | relavium provider set-key anthropic   # store a key (read from STDIN, never argv)
+relavium provider test anthropic                        # verify the key with a minimal live request
+relavium provider remove-key anthropic                  # delete the key from the keychain
+```
+
+- **`set-key` reads the key from stdin**, never a CLI argument (argv leaks into `ps`, shell history, and CI
+  logs); pipe it or use a heredoc. The key is stored under `service=relavium`, `account={providerId}:default`.
+- **`add` / `set-key`** auto-register the provider row; `--base-url <url>` on `add` overrides the default endpoint.
+- **`test`** does a 1-token `generate` through `@relavium/llm`; `--model <id>` overrides the cheap default. A bad
+  key fails cleanly (exit `2`) without echoing the key.
+- **Key resolution** (used by `run` + `test`): **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error**.
+  The env var is the headless/CI source; the `secrets.enc` encrypted-file fallback is deferred past v1.0
+  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). An unavailable keychain (locked / no Linux
+  Secret Service) surfaces a clean error — never a silent plaintext fallback.
 
 ## Exit codes
 
