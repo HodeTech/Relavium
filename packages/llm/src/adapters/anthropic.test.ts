@@ -391,6 +391,16 @@ describe('anthropicErrorToLlmError — classification', () => {
     ).toMatchObject({ kind: 'transport', retryable: true });
   });
 
+  it('classifies a native AbortError (name-based, outside the SDK wrapper) as cancelled', () => {
+    // A mid-stream/body-read abort can surface as a raw Error named 'AbortError' (not an APIUserAbortError) —
+    // classify by name → cancelled, mirroring the OpenAI adapter, not the catch-all `unknown`.
+    const aborted = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+    expect(anthropicErrorToLlmError(aborted)).toMatchObject({
+      kind: 'cancelled',
+      retryable: false,
+    });
+  });
+
   it('classifies an APIError by HTTP status (rate limit retryable, auth fatal)', () => {
     expect(
       anthropicErrorToLlmError(new Anthropic.APIError(429, undefined, 'rate limited', undefined)),

@@ -37,6 +37,10 @@ environment disables the interactive TUI but does not by itself switch stdout to
 ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Exit codes are CI-friendly
 (see [Exit codes](#exit-codes)).
 
+`--no-color` does **not** change the mode — the interactive TUI stays active and only ANSI color/dim
+are suppressed (plain output without a renderer swap). A swap to the Plain renderer happens only on
+no-TTY / `CI=true`, and to NDJSON only on `--json`.
+
 ### The `--json` machine-output contract
 
 Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert
@@ -130,7 +134,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` it is on the NDJSON event line, otherwise read it from `relavium status`/`relavium logs`.
 
-> **Implementation status (as of workstream 2.C).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). Two pieces still land in later workstreams: the rich `ink` TUI (2.E — until then a minimal one-line-per-event human renderer) and the interactive inline gate prompt + `relavium gate` resume (2.G — until then a `human_gate` node exits `3`). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
+> **Implementation status (as of workstream 2.E).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. The interactive **`ink` TUI** (2.E) renders the live run on a TTY — per-node status + spinners, the active node's streaming tokens, a running cost/duration footer, and a persistent final summary. Under `--no-color` it keeps the TUI but suppresses ANSI color; it falls back to the plain line renderer when no TTY is attached or `CI=true`, and to NDJSON under `--json` (the three renderers are one `onEvent` seam over one bus). Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). One piece still lands in a later workstream: the interactive inline gate prompt + `relavium gate` resume (2.G — until then a `human_gate` node exits `3`). Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
 
 ### `relavium list`
 

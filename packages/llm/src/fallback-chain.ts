@@ -450,7 +450,11 @@ export class FallbackChain {
       this.#emitSuccess(record, entry.model, result.usage);
       return { status: 'success', result };
     } catch (err) {
-      const error = this.#errorOf(err, entry.provider.id);
+      const error = this.#abortAware(
+        this.#errorOf(err, entry.provider.id),
+        entryReq,
+        entry.provider.id,
+      );
       this.#emit({ ...record, outcome: 'failed', error });
       return { status: 'error', error };
     }
@@ -478,12 +482,13 @@ export class FallbackChain {
       const key = await this.#resolveKey(entry.provider.id);
       for await (const chunk of entry.provider.stream(entryReq, key)) {
         if (chunk.type === 'error') {
-          this.#emit({ ...record, outcome: 'failed', error: chunk.error });
+          const error = this.#abortAware(chunk.error, entryReq, entry.provider.id);
+          this.#emit({ ...record, outcome: 'failed', error });
           if (state.committed) {
-            yield chunk; // surface a mid-stream failure; the node-retry layer (1.S) owns it
+            yield { type: 'error', error }; // surface a mid-stream failure; the node-retry layer (1.S) owns it
             return undefined;
           }
-          return chunk.error; // pre-content failure → caller decides failover
+          return error; // pre-content failure → caller decides failover
         }
         if (chunk.type === 'stop') {
           usage = chunk.usage;
@@ -492,7 +497,11 @@ export class FallbackChain {
         yield chunk;
       }
     } catch (err) {
-      const error = this.#errorOf(err, entry.provider.id);
+      const error = this.#abortAware(
+        this.#errorOf(err, entry.provider.id),
+        entryReq,
+        entry.provider.id,
+      );
       this.#emit({ ...record, outcome: 'failed', error });
       if (state.committed) {
         yield { type: 'error', error };
@@ -652,6 +661,17 @@ export class FallbackChain {
 
   #cancelledError(provider: ProviderId): LlmError {
     return makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' });
+  }
+
+  /**
+   * If the request was aborted (a run cancel), a surfaced provider error is a CANCELLATION regardless of how
+   * the SDK classified it. A mid-stream abort can reach an adapter as a wrapped connection/transport error
+   * (not the SDK's user-abort type), which would otherwise mis-classify as `transport` → `provider_unavailable`
+   * — so the cancelled node would read as a provider outage. Reclassifying here (provider-agnostic) keeps a
+   * cancel showing as `cancelled` end-to-end.
+   */
+  #abortAware(error: LlmError, req: LlmRequest, provider: ProviderId): LlmError {
+    return this.#aborted(req) ? this.#cancelledError(provider) : error;
   }
 
   #exhaustedError(): LlmError {

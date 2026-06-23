@@ -24,7 +24,8 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { createJsonRenderer, createPlainRenderer } from '../render/renderer.js';
+import type { RunRenderer } from '../render/renderer.js';
+import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
 
@@ -45,6 +46,11 @@ export interface RunCommandDeps {
    * 2.K harness omit it, keeping the in-memory `RunStore` so they never open `~/.relavium/history.db`.
    */
   readonly openRunStore?: (workflow: WorkflowDefinition, homeDir: string) => OpenedHistory;
+  /**
+   * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
+   * inject a fake renderer (onEvent + finalize spies) to assert the finalize wiring without a TTY.
+   */
+  readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
 }
 
 type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -116,15 +122,32 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
     const handle = engine.start({ workflow: def, inputs });
 
-    const renderer = deps.global.json ? createJsonRenderer(deps.io) : createPlainRenderer(deps.io);
     let outcome: RunOutcome | undefined;
-    // Register the cancel handler immediately before the consume loop — no statement between it and the
-    // `try` whose `finally` removes it, so the listener can never leak on an intervening throw.
+    let cancelRequested = false;
+    // Register the cancel handler the instant the engine is live — BEFORE constructing the renderer — so a
+    // failure building the renderer (e.g. ink's `render()` throwing) can never leave a running engine with no
+    // cooperative-cancel handler; a Ctrl-C in that window still routes to handle.cancel(). The `finally`
+    // removes it, so the listener can't leak on a throw.
     const onSigint = (): void => {
+      if (cancelRequested) {
+        // A second Ctrl-C while the cooperative cancel is still draining — force a clean, deterministic exit
+        // rather than hang (e.g. if a provider ignores the abort), and never the bare-signal 130.
+        process.exit(EXIT_CODES.workflowFailed);
+      }
+      cancelRequested = true;
       handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
     };
-    process.once('SIGINT', onSigint);
+    // `process.on`, NOT `process.once`: an interactive run mounts ink, which registers a `signal-exit` SIGINT
+    // listener that RE-RAISES SIGINT (→ 128+2 = exit 130) BUT ONLY when it is the sole remaining SIGINT
+    // listener. A `once` handler removes itself the instant it fires, so signal-exit then sees only itself and
+    // re-raises — killing the run at 130 before the cooperative cancel completes. Staying registered keeps
+    // signal-exit from re-raising, so cancel → run:cancelled → exit 1 wins. Removed in the `finally`.
+    process.on('SIGINT', onSigint);
+    let renderer: RunRenderer | undefined;
     try {
+      // Output mode (commands.md "Output modes"): the ink TUI on an interactive TTY, NDJSON under --json,
+      // the plain line renderer otherwise — all the same `onEvent` seam over one bus (2.F / 2.K).
+      renderer = (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global);
       for await (const event of handle.events) {
         renderer.onEvent(event);
         outcome = nextOutcome(outcome, event);
@@ -137,6 +160,27 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         }
       }
     } finally {
+      // No terminal/paused outcome means we're unwinding abnormally (renderer construction threw, or the
+      // event stream rejected) — cancel the still-live engine run so it doesn't keep executing unsupervised
+      // in the background while the error propagates (cancel is idempotent + safe post-terminal).
+      if (outcome === undefined) {
+        handle.cancel();
+      }
+      // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write
+      // its persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer`
+      // is still undefined (construction threw). A teardown error must NOT mask the run's real
+      // outcome/error — surface it to stderr and move on.
+      try {
+        await renderer?.finalize?.();
+      } catch (teardownErr) {
+        deps.io.writeErr(
+          `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,
+        );
+      }
+      // Remove our SIGINT handler LAST — keep it registered across ink's unmount (renderer.finalize), so a
+      // Ctrl-C during unmount still hits us (forcing a clean exit 1) and ink's `signal-exit` never becomes the
+      // sole SIGINT listener (which would re-raise → 130). After finalize, ink has unsubscribed its own
+      // listener, so removing ours here leaves the SIGINT set clean.
       process.removeListener('SIGINT', onSigint);
     }
 
