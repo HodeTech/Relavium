@@ -183,7 +183,7 @@ relavium provider remove-key anthropic                  # delete the key from th
 
 - **`set-key` reads the key from stdin**, never a CLI argument (argv leaks into `ps`, shell history, and CI
   logs); pipe it or use a heredoc. The key is stored under `service=relavium`, `account={providerId}:default`.
-- **`add` / `set-key`** auto-register the provider row; `--base-url <url>` on `add` overrides the default endpoint.
+- **`add` / `set-key`** auto-register the provider row. `--base-url <url>` on `add` records a custom endpoint (validated as an `http(s)` URL); it is **not yet honored by request routing** — adapters use their built-in endpoints today. Wiring a custom base URL to outbound requests lands later **with** the full SSRF base-URL gate (HTTPS-only; private/loopback/metadata ranges blocked) per [security-review.md](../../standards/security-review.md), before any key is attached to it.
 - **`test`** does a 1-token `generate` through `@relavium/llm`; `--model <id>` overrides the cheap default. A bad
   key fails cleanly (exit `2`) without echoing the key.
 - **Key resolution** (used by `run` + `test`): **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error**.

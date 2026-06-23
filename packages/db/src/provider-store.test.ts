@@ -51,6 +51,7 @@ describe('createProviderStore', () => {
     });
     expect(b.id).toBe(a.id); // same row
     expect(b.baseUrl).toBe('https://proxy.example/v1'); // updated
+    expect(b.defaultHeaders).toEqual({}); // not double-encoded into a "{}" string on update
     expect(store.list()).toHaveLength(1);
   });
 

@@ -111,7 +111,12 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
           .set({
             displayName: input.displayName,
             baseUrl: input.baseUrl,
-            defaultHeaders: JSON.stringify(input.defaultHeaders ?? existing.defaultHeaders),
+            // `existing.defaultHeaders` is already the stored JSON STRING — keep it verbatim when the caller
+            // supplies none; stringify only a fresh value. (Re-stringifying the string would double-encode it.)
+            defaultHeaders:
+              input.defaultHeaders === undefined
+                ? existing.defaultHeaders
+                : JSON.stringify(input.defaultHeaders),
             updatedAt: t,
           })
           .where(eq(llmProviders.id, existing.id))

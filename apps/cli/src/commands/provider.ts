@@ -109,7 +109,7 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
   const record = deps.store.upsert({
     name: id,
     displayName: meta.displayName,
-    baseUrl: args.baseUrl ?? meta.baseUrl,
+    baseUrl: args.baseUrl === undefined ? meta.baseUrl : requireHttpUrl(args.baseUrl),
   });
   deps.io.writeOut(
     `Registered provider '${id}' (${record.baseUrl}). Store a key with \`relavium provider set-key ${id}\`.\n`,
@@ -157,14 +157,28 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
       key,
     );
   } catch (err) {
-    // A clean failure — surface the provider/Relavium error WITHOUT the key.
-    throw new CliError(
-      'invalid_invocation',
-      `${id}: key test failed — ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
-    );
+    // A clean failure. @relavium/llm already scrubs secrets from its error messages, but the key is in
+    // scope HERE, so defensively redact any occurrence before surfacing — and do NOT attach `err` as the
+    // cause (it could carry the key in a nested field that `--verbose` might render).
+    const raw = err instanceof Error ? err.message : String(err);
+    const scrubbed = raw.split(key).join(keyHint(key));
+    throw new CliError('invalid_invocation', `${id}: key test failed — ${scrubbed}`);
   }
   deps.io.writeOut(`${id}: key works (${model}).\n`);
+}
+
+/** Validate a user-supplied provider base URL: a parseable `http(s)` URL (fail-fast at `add`). */
+function requireHttpUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new CliError('invalid_invocation', `invalid base URL: '${raw}'.`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new CliError('invalid_invocation', `base URL must be http(s), got '${raw}'.`);
+  }
+  return raw;
 }
 
 /** Dispatch a `relavium provider <action>` to its core, mapping a keychain-unavailable backend to exit 2. */

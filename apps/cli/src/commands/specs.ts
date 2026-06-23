@@ -206,11 +206,12 @@ async function withProviderDeps(
   });
   const { db, close } = openLocalDb(homeDir);
   try {
+    const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver
     const deps: ProviderCommandDeps = {
       io: ctx.io,
       store: createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
-      keychain: createOsKeychainStore(),
-      resolver: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+      keychain,
+      resolver: createProviderResolver(ctx.io.env, keychain),
       readSecret: () => readSecretFromStdin(),
     };
     return await fn(deps);

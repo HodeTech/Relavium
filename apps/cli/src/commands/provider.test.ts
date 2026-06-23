@@ -124,11 +124,12 @@ describe('relavium provider commands (2.C)', () => {
     expect(io.out()).toContain('key works');
   });
 
-  it('test fails cleanly (exit 2) and never puts the key in the error message', async () => {
-    // The provider error even mentions the key text — the CLI must not re-emit it (it builds the message
-    // from the provider error, never from the resolved key).
+  it('test fails cleanly (exit 2) and redacts the key even if the provider error contains it', async () => {
+    // The provider error embeds the raw key — the CLI must redact it (the key is in scope at the catch).
     const d = deps({
-      resolver: stubResolver(() => Promise.reject(new Error('401 invalid api key'))),
+      resolver: stubResolver(() =>
+        Promise.reject(new Error(`401 unauthorized: ${RAW_KEY} rejected`)),
+      ),
     });
     let caught: unknown;
     try {
@@ -137,7 +138,17 @@ describe('relavium provider commands (2.C)', () => {
       caught = err;
     }
     expect(caught).toMatchObject({ exitCode: 2 });
-    expect((caught as Error).message).not.toContain(RAW_KEY);
+    expect((caught as Error).message).not.toContain(RAW_KEY); // redacted...
+    expect((caught as Error).message).toContain('••••9999'); // ...to the hint
+  });
+
+  it('rejects an invalid --base-url (exit 2)', async () => {
+    await expect(
+      runProviderCommand(
+        { action: 'add', name: 'openai', baseUrl: 'file:///etc/passwd' },
+        deps({}),
+      ),
+    ).rejects.toMatchObject({ exitCode: 2 });
   });
 
   it('set-key preserves a base URL set by a prior `add` (never clobbers it)', async () => {
