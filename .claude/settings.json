@@ -31,8 +31,7 @@
       "Bash(head:*)",
       "Bash(tail:*)",
       "Bash(wc:*)",
-      "Bash(tree:*)",
-      "Read(//Users/dev/Documents/Projects/Agent-Organizer/**)"
+      "Bash(tree:*)"
     ],
     "deny": [
       "Bash(sudo:*)",
