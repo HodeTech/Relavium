@@ -1221,6 +1221,32 @@ describe('FallbackChain.stream', () => {
     }
   });
 
+  it('reclassifies a committed-stream error as cancelled when the signal aborted mid-stream', async () => {
+    const signal = { aborted: false, addEventListener() {}, removeEventListener() {} };
+    // The provider commits (a content delta), then a run cancel lands and the adapter surfaces the wrapped
+    // mid-stream abort MIS-classified as `transport` (→ provider_unavailable downstream). The chain must
+    // re-show it as `cancelled` because the request signal is aborted (the exact real-TTY Ctrl-C scenario).
+    const provider = makeProvider({
+      id: 'anthropic',
+      stream: () =>
+        (async function* () {
+          yield { type: 'text_delta', text: 'partial' }; // commits the stream
+          await Promise.resolve(); // a tick — the run cancel lands here, mid-stream
+          signal.aborted = true;
+          yield errChunk('anthropic', 'transport'); // the adapter's mis-classification of the abort
+        })(),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(provider, 'claude-haiku-4-5')], options);
+
+    const chunks = await collect(chain.stream({ ...userReq, signal }));
+    const errors = chunks.filter((c) => c.type === 'error');
+    expect(errors).toHaveLength(1);
+    if (errors[0]?.type === 'error') {
+      expect(errors[0].error.kind).toBe('cancelled'); // NOT 'transport' → won't show as provider_unavailable
+    }
+  });
+
   it('applies backoff and exhausts the budget on the streaming path too', async () => {
     const provider = makeProvider({
       id: 'anthropic',

@@ -202,6 +202,12 @@ export function anthropicErrorToLlmError(err: unknown): LlmError {
   if (err instanceof Anthropic.APIError) {
     return mapAnthropicApiError(err);
   }
+  // A NATIVE abort — an `Error`/`DOMException` named 'AbortError' thrown when the signal fires during a body
+  // read OUTSIDE the SDK's request wrapper (so not an `APIUserAbortError`). Classify by name → `cancelled`,
+  // mirroring the OpenAI adapter, not the catch-all `unknown`.
+  if (err instanceof Error && err.name === 'AbortError') {
+    return makeLlmError({ provider: PROVIDER, kind: 'cancelled', message: 'request aborted' });
+  }
   return makeLlmError({
     provider: PROVIDER,
     kind: 'unknown',
