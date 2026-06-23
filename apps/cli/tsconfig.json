@@ -5,7 +5,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    // The `ink` TUI renderer (2.E, ADR-0047) is the surface's only React/JSX consumer — confined to
+    // src/render/tui/. The automatic runtime needs no per-file `import React` (tsc injects react/jsx-runtime).
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

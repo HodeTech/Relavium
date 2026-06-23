@@ -1,0 +1,64 @@
+import { formatCostUsd, formatDuration, formatTokens, statusGlyph } from './format.js';
+import type { RunViewState } from './run-view-model.js';
+
+/**
+ * Render the **persistent** final summary the `ink` renderer writes after it unmounts (workstream **2.E**).
+ * The live `ink` frames are ephemeral (re-painted in place); this plain-text block is written once to
+ * stdout after unmount so it survives in the terminal scrollback. Pure (no `ink`/React) so it is unit-tested
+ * directly. Plain text by design — no ANSI — so it reads correctly under `--no-color` and in a captured log.
+ */
+export function renderFinalSummary(state: RunViewState): string {
+  const summary = state.summary;
+  const lines: string[] = [];
+
+  const headline = ((): string => {
+    switch (summary?.outcome) {
+      case 'completed':
+        return 'run completed';
+      case 'failed':
+        return `run failed${summary.errorCode === undefined ? '' : ` (${summary.errorCode})`}`;
+      case 'cancelled':
+        return 'run cancelled';
+      case 'paused':
+        return `run paused${
+          summary.pausedGateIds === undefined || summary.pausedGateIds.length === 0
+            ? ''
+            : ` at gate ${summary.pausedGateIds.join(', ')}`
+        }`;
+      default:
+        return 'run ended';
+    }
+  })();
+
+  const meta = [headline];
+  if (summary?.durationMs !== undefined) {
+    meta.push(formatDuration(summary.durationMs));
+  }
+  meta.push(
+    `cost ${formatCostUsd(summary?.totalCostMicrocents ?? state.cumulativeCostMicrocents)}`,
+  );
+  if (summary?.totalTokens !== undefined) {
+    meta.push(formatTokens(summary.totalTokens));
+  }
+  lines.push(meta.join(' · '));
+
+  if (summary?.errorMessage !== undefined) {
+    lines.push(`  ${summary.errorMessage}`);
+  }
+
+  for (const id of state.nodeOrder) {
+    const node = state.nodes[id];
+    if (node === undefined) {
+      continue;
+    }
+    const suffix =
+      node.status === 'completed' && node.durationMs !== undefined
+        ? ` (${formatDuration(node.durationMs)})`
+        : node.status === 'failed' && node.errorCode !== undefined
+          ? ` — ${node.errorCode}`
+          : '';
+    lines.push(`  ${statusGlyph(node.status)} ${id}${suffix}`);
+  }
+
+  return `${lines.join('\n')}\n`;
+}

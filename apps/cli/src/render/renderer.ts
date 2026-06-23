@@ -9,6 +9,12 @@ import type { CliIo } from '../process/io.js';
  */
 export interface RunRenderer {
   onEvent: (event: RunEvent) => void;
+  /**
+   * Optional teardown, awaited by the run core after the event loop ends (even on a throw). The `ink` TUI
+   * (2.E) uses it to unmount the live view — restoring the terminal — and write its persistent final
+   * summary; the line and NDJSON renderers need no teardown and omit it. Shared by 2.G / 2.M.
+   */
+  finalize?: () => Promise<void> | void;
 }
 
 /**
