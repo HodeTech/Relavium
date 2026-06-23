@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import type { AgentTokenEvent, RunEvent } from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -100,6 +100,11 @@ function appendTokens(buffer: string, token: string): string {
   return next.length > MAX_TOKEN_CHARS ? next.slice(next.length - MAX_TOKEN_CHARS) : next;
 }
 
+/** The optional `attempt` field patch — present only when a (1-based) attempt number is known. */
+function attemptPatch(attemptNumber: number | undefined): { attempt?: number } {
+  return attemptNumber === undefined ? {} : { attempt: attemptNumber };
+}
+
 /** Upsert a node (append to `nodeOrder` on first sight), merging `patch` over any existing fields. */
 function withNode(
   state: RunViewState,
@@ -165,6 +170,27 @@ function clip(text: string, max = 80): string {
 }
 
 /**
+ * Reduce an `agent:token` event: append to the active node's buffer (resetting it when the active node
+ * switches, e.g. a parallel branch), and defensively ensure the streaming node exists in the list even if a
+ * token somehow precedes its `node:started` — otherwise RunApp's `nodes[activeNodeId]` is undefined and the
+ * live region hides the tokens. Only upserts when the node is absent, so a real status is never clobbered.
+ */
+function reduceAgentToken(base: RunViewState, event: AgentTokenEvent): RunViewState {
+  const switching = event.nodeId !== base.activeNodeId;
+  const ensureNode =
+    base.nodes[event.nodeId] === undefined
+      ? withNode(base, event.nodeId, { status: 'running' })
+      : {};
+  return {
+    ...base,
+    ...ensureNode,
+    activeNodeId: event.nodeId,
+    activeModel: event.model,
+    activeTokens: appendTokens(switching ? '' : base.activeTokens, event.token),
+  };
+}
+
+/**
  * Reduce one canonical {@link RunEvent} into the next immutable {@link RunViewState}. Pure: no I/O, no
  * mutation of `state`. A token reduce is shallow (only the active buffer changes) so a high token rate
  * stays cheap. Unknown/forward event types fall through (the run-event union is intentionally lenient).
@@ -182,31 +208,15 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         ...withNode(base, event.nodeId, {
           status: 'running',
           nodeType: event.nodeType,
-          ...(event.attemptNumber === undefined ? {} : { attempt: event.attemptNumber }),
+          ...attemptPatch(event.attemptNumber),
         }),
         activeNodeId: event.nodeId,
         activeModel: undefined,
         activeTokens: '', // a new node's output region starts clean
       };
 
-    case 'agent:token': {
-      // Tokens for a node other than the active one (e.g. a parallel branch) switch the active region.
-      const switching = event.nodeId !== base.activeNodeId;
-      // Defensively ensure the streaming node exists in the list even if a token somehow precedes its
-      // `node:started` — otherwise RunApp's `nodes[activeNodeId]` is undefined and the live region hides the
-      // tokens. Only upsert when absent, so a real status (running/completed) is never clobbered by a token.
-      const ensureNode =
-        base.nodes[event.nodeId] === undefined
-          ? withNode(base, event.nodeId, { status: 'running' })
-          : {};
-      return {
-        ...base,
-        ...ensureNode,
-        activeNodeId: event.nodeId,
-        activeModel: event.model,
-        activeTokens: appendTokens(switching ? '' : base.activeTokens, event.token),
-      };
-    }
+    case 'agent:token':
+      return reduceAgentToken(base, event);
 
     case 'agent:tool_call':
       return {
@@ -251,7 +261,7 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         ...withNode(base, event.nodeId, {
           status: 'failed',
           errorCode: event.error.code,
-          ...(event.attemptNumber === undefined ? {} : { attempt: event.attemptNumber }),
+          ...attemptPatch(event.attemptNumber),
         }),
       };
 

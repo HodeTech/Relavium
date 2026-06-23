@@ -153,7 +153,7 @@ describe('reduceRunEvent', () => {
         model: 'm',
       },
     ]);
-    expect(s.activeTokens.length).toBe(MAX_TOKEN_CHARS);
+    expect(s.activeTokens).toHaveLength(MAX_TOKEN_CHARS);
   });
 
   it('accumulates cost from cost:updated and snapshots the run total at completion', () => {
@@ -226,7 +226,7 @@ describe('reduceRunEvent', () => {
       });
     }
     const s = reduceAll(events);
-    expect(s.toolLines.length).toBe(MAX_TOOL_LINES); // bounded to the trailing window
+    expect(s.toolLines).toHaveLength(MAX_TOOL_LINES); // bounded to the trailing window
     expect(s.toolLines.at(-1)).toBe(`→ tool-${MAX_TOOL_LINES + 2}`);
   });
 
@@ -603,7 +603,7 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
       });
     }
     const s = reduceAll(events);
-    expect(s.warnings.length).toBe(MAX_WARNINGS);
+    expect(s.warnings).toHaveLength(MAX_WARNINGS);
   });
 
   it('a terminal run:failed refines the transient run:timeout summary (engine ordering)', () => {

@@ -149,6 +149,12 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       }
     } finally {
       process.removeListener('SIGINT', onSigint);
+      // No terminal/paused outcome means we're unwinding abnormally (renderer construction threw, or the
+      // event stream rejected) — cancel the still-live engine run so it doesn't keep executing unsupervised
+      // in the background while the error propagates (cancel is idempotent + safe post-terminal).
+      if (outcome === undefined) {
+        handle.cancel();
+      }
       // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write
       // its persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer`
       // is still undefined (construction threw). A teardown error must NOT mask the run's real

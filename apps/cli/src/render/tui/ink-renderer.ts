@@ -66,7 +66,14 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
         // Pin ink's internal render throttle to the store's frame cadence so the two can't drift.
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
       }));
-  const instance = mount(store);
+
+  let instance: InkMountInstance;
+  try {
+    instance = mount(store);
+  } catch (err) {
+    clearInterval(frame); // mount threw — don't leak the frame loop (finalize won't run)
+    throw err;
+  }
 
   let finalized = false;
 
@@ -84,7 +91,11 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
       instance.unmount();
       await instance.waitUntilExit();
       // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
-      const write = options.writeSummary ?? ((text: string): void => void stdout.write(text));
+      const write =
+        options.writeSummary ??
+        ((text: string): void => {
+          stdout.write(text);
+        });
       write(store.summaryText());
     },
   };

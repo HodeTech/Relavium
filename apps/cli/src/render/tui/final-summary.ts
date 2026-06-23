@@ -16,16 +16,19 @@ export function renderFinalSummary(state: RunViewState): string {
     switch (summary?.outcome) {
       case 'completed':
         return 'run completed';
-      case 'failed':
-        return `run failed${summary.errorCode === undefined ? '' : ` (${summary.errorCode})`}`;
+      case 'failed': {
+        const code = summary.errorCode === undefined ? '' : ` (${summary.errorCode})`;
+        return `run failed${code}`;
+      }
       case 'cancelled':
         return 'run cancelled';
-      case 'paused':
-        return `run paused${
+      case 'paused': {
+        const gates =
           summary.pausedGateIds === undefined || summary.pausedGateIds.length === 0
             ? ''
-            : ` at gate ${summary.pausedGateIds.join(', ')}`
-        }`;
+            : ` at gate ${summary.pausedGateIds.join(', ')}`;
+        return `run paused${gates}`;
+      }
       default:
         return 'run ended';
     }

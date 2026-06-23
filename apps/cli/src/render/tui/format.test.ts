@@ -26,6 +26,14 @@ describe('formatDuration', () => {
     expect(formatDuration(3200)).toBe('3.2s');
     expect(formatDuration(64_000)).toBe('1m04s');
   });
+
+  it('carries a rounded-up 60s into the next minute (never "1m60s")', () => {
+    expect(formatDuration(119_600)).toBe('2m00s'); // 119.6s → round(59.6)=60 → carry to 2m00s
+  });
+
+  it('clamps a negative duration (clock skew) to zero', () => {
+    expect(formatDuration(-5)).toBe('0ms');
+  });
 });
 
 describe('formatTokens', () => {

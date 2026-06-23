@@ -14,7 +14,9 @@ import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
  * floods React. Color is applied only when enabled (`--no-color` passes `color: false` through the snapshot).
  */
 
-function NodeLine(props: { node: NodeView; tick: number; useColor: boolean }): ReactElement {
+function NodeLine(
+  props: Readonly<{ node: NodeView; tick: number; useColor: boolean }>,
+): ReactElement {
   const { node, tick, useColor } = props;
   const glyph = node.status === 'running' ? spinnerFrame(tick) : statusGlyph(node.status);
   return (
@@ -25,7 +27,7 @@ function NodeLine(props: { node: NodeView; tick: number; useColor: boolean }): R
   );
 }
 
-export function RunApp(props: { store: RunStore }): ReactElement {
+export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
   const { state, tick, color } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
@@ -86,7 +88,7 @@ export function RunApp(props: { store: RunStore }): ReactElement {
         </Box>
       ) : null}
 
-      {/* Running cost / duration footer */}
+      {/* Running cost footer (and total tokens once the run completes) */}
       <Box marginTop={1}>
         <Text {...colorProps(color, 'gray')}>
           cost {formatCostUsd(state.cumulativeCostMicrocents)}

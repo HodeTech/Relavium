@@ -67,17 +67,23 @@ export function formatCostUsd(microcents: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
-/** Format a millisecond duration compactly: `420ms`, `3.2s`, `1m04s`. */
+/** Format a millisecond duration compactly: `420ms`, `3.2s`, `1m04s`. Negatives (clock skew) clamp to 0. */
 export function formatDuration(ms: number): string {
-  if (ms < 1000) {
-    return `${Math.round(ms)}ms`;
+  const safeMs = Math.max(0, ms);
+  if (safeMs < 1000) {
+    return `${Math.round(safeMs)}ms`;
   }
-  const totalSeconds = ms / 1000;
+  const totalSeconds = safeMs / 1000;
   if (totalSeconds < 60) {
     return `${totalSeconds.toFixed(1)}s`;
   }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
+  let minutes = Math.floor(totalSeconds / 60);
+  let seconds = Math.round(totalSeconds % 60);
+  if (seconds === 60) {
+    // Rounding 59.5–59.999s up carries into the next minute — never emit "1m60s".
+    minutes += 1;
+    seconds = 0;
+  }
   return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 }
 
