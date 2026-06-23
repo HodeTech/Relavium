@@ -9,7 +9,7 @@ import {
   type NodeOutcome,
 } from '@relavium/core';
 import { RunEventSchema } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
@@ -366,6 +366,57 @@ describe('runCommand', () => {
     // removeListener is what returns the count to baseline.
     expect(process.listeners('SIGINT')).toHaveLength(before.length);
   }, 15_000); // generous ceiling: the coordination is deterministic, but a cold/starved CI worker is slow
+
+  it('forces a clean exit-1 on a SECOND SIGINT while the cancel drains (never the bare-signal 130)', async () => {
+    // Stub process.exit to THROW (like a real exit halting the handler), so onSigint cannot fall through to a
+    // second handle.cancel() — mirroring production where process.exit never returns.
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number): never => {
+      throw new Error(`process.exit:${String(code)}`);
+    }) as typeof process.exit);
+    try {
+      const path = writeWorkflow('stall.relavium.yaml', STALL);
+      const { io } = captureIo();
+      const before = process.listeners('SIGINT');
+      const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
+      const pending = runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), { buildEngine: buildStalling }),
+      );
+      await reachedSlow;
+      const onSigint = process.listeners('SIGINT').filter((l) => !before.includes(l))[0];
+      if (typeof onSigint !== 'function') {
+        throw new TypeError('expected run.ts to register a SIGINT handler');
+      }
+      onSigint('SIGINT'); // first press → cooperative cancel (cancelRequested = true)
+      expect(() => onSigint('SIGINT')).toThrow('process.exit:1'); // second press → forced exit
+      expect(exitSpy).toHaveBeenCalledWith(EXIT_CODES.workflowFailed);
+      const code = await pending; // the run still drains to run:cancelled from the first press
+      expect(code).toBe(EXIT_CODES.workflowFailed);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  }, 15_000);
+
+  it('cancels the still-live engine and propagates when renderer construction throws (abnormal unwind)', async () => {
+    const path = writeWorkflow('stall.relavium.yaml', STALL);
+    const { io } = captureIo();
+    const before = process.listeners('SIGINT');
+    const { buildEngine: buildStalling } = makeStallingCancelEngine();
+    // selectRenderer throws AFTER engine.start(): the finally must cancel the still-live engine (outcome
+    // undefined → handle.cancel()) and remove the SIGINT listener, then the error propagates.
+    await expect(
+      runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          buildEngine: buildStalling,
+          selectRenderer: () => {
+            throw new Error('render boom');
+          },
+        }),
+      ),
+    ).rejects.toThrow('render boom');
+    expect(process.listeners('SIGINT')).toHaveLength(before.length); // listener removed in the finally
+  }, 15_000);
 
   it('keeps stdout a pure NDJSON stream ending in run:cancelled under --json', async () => {
     const path = writeWorkflow('stall.relavium.yaml', STALL);

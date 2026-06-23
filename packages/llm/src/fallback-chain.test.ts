@@ -1247,6 +1247,50 @@ describe('FallbackChain.stream', () => {
     }
   });
 
+  it('reclassifies a generate failure as cancelled when the signal aborts during the call (no failover)', async () => {
+    const signal = { aborted: false, addEventListener() {}, removeEventListener() {} };
+    // The signal is false at the loop-top guard, then aborts DURING the in-flight call which rejects with a
+    // (retryable) transport error — #abortAware must surface it as fatal `cancelled`, and never fail over.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: () => {
+        signal.aborted = true;
+        return rejects('anthropic', 'transport')();
+      },
+    });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('should-not-run') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(primary, 'claude'), entry(fallback, 'gpt')], options);
+
+    const err = await rejectedError(chain.generate({ ...userReq, signal }));
+    expect(err.kind).toBe('cancelled'); // not 'transport'
+    expect(fallback.calls).toHaveLength(0); // cancelled is fatal → no failover to a second (paid) provider
+  });
+
+  it('reclassifies a PRE-content stream failure as cancelled when aborted (no failover)', async () => {
+    const signal = { aborted: false, addEventListener() {}, removeEventListener() {} };
+    const primary = makeProvider({
+      id: 'anthropic',
+      stream: () =>
+        (async function* () {
+          await Promise.resolve(); // a tick
+          signal.aborted = true; // abort lands BEFORE any content chunk
+          yield errChunk('anthropic', 'transport'); // pre-content error
+        })(),
+    });
+    const fallback = makeProvider({ id: 'openai', stream: () => streamFrom([STOP_CHUNK]) });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(primary, 'claude'), entry(fallback, 'gpt')], options);
+
+    const chunks = await collect(chain.stream({ ...userReq, signal }));
+    const errors = chunks.filter((c) => c.type === 'error');
+    expect(errors).toHaveLength(1);
+    if (errors[0]?.type === 'error') {
+      expect(errors[0].error.kind).toBe('cancelled');
+    }
+    expect(fallback.calls).toHaveLength(0); // cancelled is fatal → the pre-content failure does NOT fail over
+  });
+
   it('applies backoff and exhausts the budget on the streaming path too', async () => {
     const provider = makeProvider({
       id: 'anthropic',

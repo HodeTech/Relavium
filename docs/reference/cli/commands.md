@@ -37,6 +37,10 @@ environment disables the interactive TUI but does not by itself switch stdout to
 ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Exit codes are CI-friendly
 (see [Exit codes](#exit-codes)).
 
+`--no-color` does **not** change the mode — the interactive TUI stays active and only ANSI color/dim
+are suppressed (plain output without a renderer swap). A swap to the Plain renderer happens only on
+no-TTY / `CI=true`, and to NDJSON only on `--json`.
+
 ### The `--json` machine-output contract
 
 Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert

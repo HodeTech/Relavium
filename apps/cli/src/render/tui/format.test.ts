@@ -28,7 +28,14 @@ describe('formatDuration', () => {
   });
 
   it('carries a rounded-up 60s into the next minute (never "1m60s")', () => {
-    expect(formatDuration(119_600)).toBe('2m00s'); // 119.6s → round(59.6)=60 → carry to 2m00s
+    expect(formatDuration(119_600)).toBe('2m00s'); // 119.6s → 120 whole seconds → 2m00s
+  });
+
+  it('carries the seconds→minute boundary (never "60.0s")', () => {
+    expect(formatDuration(59_900)).toBe('59.9s'); // below the boundary — one-decimal seconds
+    expect(formatDuration(59_950)).toBe('1m00s'); // 59.95s would read "60.0s" → carry to 1m00s
+    expect(formatDuration(59_999)).toBe('1m00s');
+    expect(formatDuration(60_000)).toBe('1m00s');
   });
 
   it('clamps a negative duration (clock skew) to zero', () => {

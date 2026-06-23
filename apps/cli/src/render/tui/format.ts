@@ -74,16 +74,15 @@ export function formatDuration(ms: number): string {
     return `${Math.round(safeMs)}ms`;
   }
   const totalSeconds = safeMs / 1000;
-  if (totalSeconds < 60) {
+  // Below the boundary where one-decimal rounding would read "60.0s" — show one-decimal seconds.
+  if (totalSeconds < 59.95) {
     return `${totalSeconds.toFixed(1)}s`;
   }
-  let minutes = Math.floor(totalSeconds / 60);
-  let seconds = Math.round(totalSeconds % 60);
-  if (seconds === 60) {
-    // Rounding 59.5–59.999s up carries into the next minute — never emit "1m60s".
-    minutes += 1;
-    seconds = 0;
-  }
+  // Round to whole seconds, then carry into minutes — so 59.95–59.999s → "1m00s" and 119.6s → "2m00s",
+  // never the invalid "60.0s" or "1m60s". The whole-second modulo subsumes the old carry special-case.
+  const wholeSeconds = Math.round(totalSeconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const seconds = wholeSeconds % 60;
   return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 }
 

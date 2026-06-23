@@ -68,7 +68,11 @@ export function createRunStore(color: boolean): RunStoreController {
     dirty = false;
   };
 
+  // A node still animating the spinner — but only while the run is live. Once a terminal/parked summary is
+  // set, an abandoned `running` node (e.g. a parallel sibling dropped when the run failed/cancelled) must NOT
+  // keep the frame loop repainting; the live view is about to be torn down by finalize.
   const hasRunningNode = (): boolean =>
+    state.summary === undefined &&
     state.nodeOrder.some((id) => state.nodes[id]?.status === 'running');
 
   return {

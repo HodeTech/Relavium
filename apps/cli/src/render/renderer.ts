@@ -3,9 +3,9 @@ import type { RunEvent } from '@relavium/shared';
 import type { CliIo } from '../process/io.js';
 
 /**
- * A renderer consumes the run's canonical {@link RunEvent} stream. Both renderers below sit behind
- * this one seam, so the run core never forks per output mode (the rich `ink` TUI lands at **2.E** as
- * a third implementation of the SAME seam) — this is the "renderer, not a fork" guarantee 2.K relies on.
+ * A renderer consumes the run's canonical {@link RunEvent} stream. The renderers below sit behind this one
+ * seam, so the run core never forks per output mode — the rich `ink` TUI (2.E, `render/tui/`) is a third
+ * implementation of the SAME seam. This is the "renderer, not a fork" guarantee 2.K relies on.
  */
 export interface RunRenderer {
   onEvent: (event: RunEvent) => void;
@@ -35,7 +35,7 @@ export function createJsonRenderer(io: CliIo): RunRenderer {
   };
 }
 
-/** Minimal human renderer — a terse line per lifecycle event. 2.E replaces this with the ink TUI. */
+/** Minimal human renderer — a terse line per lifecycle event; the no-TTY / CI fallback beside the ink TUI (2.E). */
 export function createPlainRenderer(io: CliIo): RunRenderer {
   return {
     onEvent: (event) => {

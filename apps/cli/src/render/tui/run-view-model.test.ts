@@ -203,6 +203,35 @@ describe('reduceRunEvent', () => {
     });
   });
 
+  it('snapshots the run:completed total even when it differs from the last cost:updated running total', () => {
+    const s = reduceAll([
+      {
+        type: 'cost:updated',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        model: 'm',
+        inputTokens: 1,
+        outputTokens: 1,
+        costMicrocents: 3_000_000,
+        cumulativeCostMicrocents: 3_000_000,
+      },
+      {
+        type: 'run:completed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        outputs: {},
+        totalTokensUsed: { input: 1, output: 1 },
+        totalCostMicrocents: 4_000_000,
+        durationMs: 5,
+      },
+    ]);
+    expect(s.cumulativeCostMicrocents).toBe(4_000_000); // the closing total wins over the live running total
+    expect(s.summary?.totalCostMicrocents).toBe(4_000_000);
+  });
+
   it('captures compact, bounded tool lines', () => {
     const events: RunEvent[] = [
       {

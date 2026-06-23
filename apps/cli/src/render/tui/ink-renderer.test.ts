@@ -77,4 +77,18 @@ describe('createInkRenderer', () => {
     expect(writeSummary).toHaveBeenCalledTimes(1);
     expect(writeSummary.mock.calls[0]?.[0]).toContain('run cancelled');
   });
+
+  it('clears the frame loop and re-throws if mount() throws during construction', () => {
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
+    expect(() =>
+      createInkRenderer({
+        color: false,
+        mount: () => {
+          throw new Error('mount failed');
+        },
+      }),
+    ).toThrow('mount failed');
+    expect(clearSpy).toHaveBeenCalled(); // the setInterval frame loop was cleared, not leaked (finalize never runs)
+    clearSpy.mockRestore();
+  });
 });

@@ -88,6 +88,35 @@ describe('createRunStore', () => {
     expect(store.getSnapshot().tick).toBe(1);
   });
 
+  it('does NOT flush on an idle tick — no dirty, no running node (the no-needless-repaint guarantee)', () => {
+    const store = createRunStore(true);
+    store.apply(nodeStarted);
+    store.apply({
+      type: 'node:completed',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 2,
+      nodeId: 'a',
+      output: null,
+      tokensUsed: { input: 0, output: 0 },
+      durationMs: 1,
+    }); // 'a' no longer running, flush cleared dirty
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.tick();
+    expect(notified).toBe(0); // idle → no repaint (CPU/flicker guard)
+  });
+
+  it('stops animating once a terminal summary is set (an abandoned running node does not keep ticking)', () => {
+    const store = createRunStore(true);
+    store.apply(nodeStarted); // 'a' is running and never reaches a node terminal...
+    store.apply({ type: 'run:cancelled', runId: RUN, timestamp: TS, sequenceNumber: 2 }); // ...but the run terminates
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.tick();
+    expect(notified).toBe(0); // summary set → no spinner repaint despite 'a' still 'running'
+  });
+
   it('returns a stable snapshot reference between flushes (useSyncExternalStore contract)', () => {
     const store = createRunStore(true);
     store.apply(nodeStarted);
