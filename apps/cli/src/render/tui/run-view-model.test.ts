@@ -634,7 +634,7 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
     expect(s.summary?.errorMessage).not.toContain('timed out'); // the timeout fallback message is replaced
   });
 
-  it('flags a backward / duplicate sequence number and keeps the high-water mark', () => {
+  it('warns on a backward / duplicate seq, keeps the high-water mark, and does NOT apply the stale event', () => {
     const s = reduceAll([
       {
         type: 'node:started',
@@ -644,7 +644,7 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
         nodeId: 'a',
         nodeType: 'agent',
       },
-      // seq goes backwards 5 -> 3: out of order on a monotonic stream
+      // seq goes backwards 5 -> 3: out of order on a monotonic stream — the stale node:completed is ignored
       {
         type: 'node:completed',
         runId: RUN,
@@ -659,5 +659,40 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
     expect(s.gapDetected).toBe(true);
     expect(s.warnings.some((w) => w.includes('out of order'))).toBe(true);
     expect(s.lastSequenceNumber).toBe(5); // high-water mark retained, not lowered to 3
+    expect(s.nodes['a']?.status).toBe('running'); // the stale node:completed was NOT applied
+  });
+
+  it('ignores a duplicate agent:token (no double append)', () => {
+    const s = reduceAll([
+      {
+        type: 'node:started',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        nodeType: 'agent',
+      },
+      {
+        type: 'agent:token',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        nodeId: 'a',
+        token: 'hi',
+        model: 'm',
+      },
+      // a replay of seq 2 — must not append 'hi' a second time
+      {
+        type: 'agent:token',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        nodeId: 'a',
+        token: 'hi',
+        model: 'm',
+      },
+    ]);
+    expect(s.activeTokens).toBe('hi'); // not 'hihi'
+    expect(s.warnings.some((w) => w.includes('out of order'))).toBe(true);
   });
 });

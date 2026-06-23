@@ -125,40 +125,51 @@ function withNode(
  * events) OR a backward/duplicate step (`seq <= last`, a replay / out-of-order delivery) indicates a defect
  * — both detect + warn (a durable-state resync is deferred; the read side lands with 2.I).
  */
-function trackSeq(
-  state: RunViewState,
-  event: RunEvent,
-): Pick<RunViewState, 'lastSequenceNumber' | 'gapDetected' | 'warnings'> {
+interface SeqTracking {
+  /** The seq/gap/warning fields to fold into the next state regardless of whether the event is applied. */
+  readonly patch: Pick<RunViewState, 'lastSequenceNumber' | 'gapDetected' | 'warnings'>;
+  /** `false` for a backward/duplicate event — record the warning but do NOT apply the (stale) event. */
+  readonly apply: boolean;
+}
+
+function trackSeq(state: RunViewState, event: RunEvent): SeqTracking {
   const seq = event.sequenceNumber;
   const last = state.lastSequenceNumber;
   if (last !== undefined && seq > last + 1) {
+    // A forward gap: events were missed before this one, but THIS event is genuine — apply it.
     return {
-      lastSequenceNumber: seq,
-      gapDetected: true,
-      warnings: pushBounded(
-        state.warnings,
-        `event gap: #${last} → #${seq} (some events were not observed)`,
-        MAX_WARNINGS,
-      ),
+      apply: true,
+      patch: {
+        lastSequenceNumber: seq,
+        gapDetected: true,
+        warnings: pushBounded(
+          state.warnings,
+          `event gap: #${last} → #${seq} (some events were not observed)`,
+          MAX_WARNINGS,
+        ),
+      },
     };
   }
   if (last !== undefined && seq <= last) {
-    // Backward / duplicate: keep the high-water mark as `lastSequenceNumber` so a later genuine forward gap
-    // is still measured against it (advancing to the lower `seq` would mask the missing range).
+    // Backward / duplicate on a monotonic stream — a defect. Keep the high-water mark as `lastSequenceNumber`
+    // (advancing to the lower `seq` would mask a later genuine gap), and DON'T apply: re-applying would
+    // double a token or let a stale terminal event overwrite the summary.
     return {
-      lastSequenceNumber: last,
-      gapDetected: true,
-      warnings: pushBounded(
-        state.warnings,
-        `event out of order: #${seq} after #${last}`,
-        MAX_WARNINGS,
-      ),
+      apply: false,
+      patch: {
+        lastSequenceNumber: last,
+        gapDetected: true,
+        warnings: pushBounded(
+          state.warnings,
+          `event out of order: #${seq} after #${last} (ignored)`,
+          MAX_WARNINGS,
+        ),
+      },
     };
   }
   return {
-    lastSequenceNumber: seq,
-    gapDetected: state.gapDetected,
-    warnings: state.warnings,
+    apply: true,
+    patch: { lastSequenceNumber: seq, gapDetected: state.gapDetected, warnings: state.warnings },
   };
 }
 
@@ -196,7 +207,13 @@ function reduceAgentToken(base: RunViewState, event: AgentTokenEvent): RunViewSt
  * stays cheap. Unknown/forward event types fall through (the run-event union is intentionally lenient).
  */
 export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewState {
-  const base: RunViewState = { ...state, ...trackSeq(state, event) };
+  const seq = trackSeq(state, event);
+  const base: RunViewState = { ...state, ...seq.patch };
+  // An out-of-order / duplicate event recorded a warning above but is NOT applied — re-applying a stale
+  // event would double a token or let it overwrite a fresher summary.
+  if (!seq.apply) {
+    return base;
+  }
 
   switch (event.type) {
     case 'run:started':
