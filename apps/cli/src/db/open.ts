@@ -21,18 +21,25 @@ export function openLocalDb(homeDir: string): OpenedDb {
   ensureGlobalConfigDir(homeDir); // creates ~/.relavium/ at 0700 (ADR-0050)
   const path = join(globalConfigDir(homeDir), 'history.db');
   const client = createClient(path);
-  runMigrations(client.db);
-  // The db file is guaranteed to exist here — a chmod failure on IT must be LOUD (ADR-0050's at-rest
-  // guarantee rests on this 0600). Its WAL/SHM sidecars may not exist yet (no checkpoint) — best-effort.
-  chmodSync(path, 0o600);
-  for (const suffix of ['-wal', '-shm']) {
-    try {
-      chmodSync(`${path}${suffix}`, 0o600);
-    } catch (err) {
-      if (errnoCode(err) !== 'ENOENT') {
-        throw err;
+  // If setup (migrations / the at-rest chmod) throws, close the just-opened handle before propagating —
+  // otherwise the SQLite connection leaks for the lifetime of the failing process.
+  try {
+    runMigrations(client.db);
+    // The db file is guaranteed to exist here — a chmod failure on IT must be LOUD (ADR-0050's at-rest
+    // guarantee rests on this 0600). Its WAL/SHM sidecars may not exist yet (no checkpoint) — best-effort.
+    chmodSync(path, 0o600);
+    for (const suffix of ['-wal', '-shm']) {
+      try {
+        chmodSync(`${path}${suffix}`, 0o600);
+      } catch (err) {
+        if (errnoCode(err) !== 'ENOENT') {
+          throw err;
+        }
       }
     }
+  } catch (err) {
+    client.sqlite.close();
+    throw err;
   }
   return {
     db: client.db,

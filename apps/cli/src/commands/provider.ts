@@ -171,7 +171,9 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
  * Validate a user-supplied provider base URL: a parseable **HTTPS** URL (fail-fast at `add`). HTTPS-only
  * matches the at-routing-time gate (`@relavium/llm`'s `assertHttpsBaseUrl`, security-review.md §Network) and
  * keeps a plaintext `http:` endpoint from ever being persisted; the private/loopback/metadata range-block
- * stays at the routing-time gate (it needs host resolution this fail-fast deliberately does not do).
+ * stays at the routing-time gate (it needs host resolution this fail-fast deliberately does not do). The
+ * value is stored **verbatim** (not `url.href`-normalized) to preserve the user's exact endpoint/trailing
+ * slash; the routing-time gate re-parses it via `new URL()` anyway.
  */
 function requireHttpsUrl(raw: string): string {
   let url: URL;

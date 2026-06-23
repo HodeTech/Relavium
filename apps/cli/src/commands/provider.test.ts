@@ -40,6 +40,9 @@ function stubResolver(generate: LlmProvider['generate']): ProviderResolver {
     stream: () => {
       throw new Error('stream not used in provider test');
     },
+    // `provider test` only calls `generate`; `supports` is never read here. A real CapabilityFlags fixture
+    // would have to satisfy the schema's `vision === media.input.image` refine (+ the nested media shape) and
+    // would couple this test to that evolving seam schema for zero assertion value — hence a bare stub cast.
     supports: {} as LlmProvider['supports'],
   };
   return { resolveProvider: () => provider, keyFor: () => RAW_KEY };
@@ -138,8 +141,10 @@ describe('relavium provider commands (2.C)', () => {
       caught = err;
     }
     expect(caught).toMatchObject({ exitCode: 2 });
-    expect((caught as Error).message).not.toContain(RAW_KEY); // redacted...
-    expect((caught as Error).message).toContain('••••9999'); // ...to the hint
+    expect(caught).toBeInstanceOf(Error);
+    const message = caught instanceof Error ? caught.message : String(caught);
+    expect(message).not.toContain(RAW_KEY); // redacted...
+    expect(message).toContain('••••9999'); // ...to the hint
   });
 
   it('rejects a non-HTTPS or malformed --base-url (exit 2)', async () => {
@@ -233,14 +238,20 @@ describe('keyHint', () => {
 
 describe('readSecretFromStdin', () => {
   it('refuses to read a typed key from an interactive TTY (errors with a pipe hint, exit 2)', async () => {
-    const original = process.stdin.isTTY;
+    // Capture the FULL original descriptor so the restore reinstates it exactly (a value-only restore would
+    // leave a synthetic data property where there may have been an accessor / a different configurability).
+    const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
     // A typed secret on an echoing terminal is the failure mode the stdin guard prevents — even if stdout
     // is redirected (the guard keys on stdin, not stdout).
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
     try {
       await expect(readSecretFromStdin()).rejects.toMatchObject({ exitCode: 2 });
     } finally {
-      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+      if (original === undefined) {
+        delete (process.stdin as { isTTY?: boolean }).isTTY;
+      } else {
+        Object.defineProperty(process.stdin, 'isTTY', original);
+      }
     }
   });
 });

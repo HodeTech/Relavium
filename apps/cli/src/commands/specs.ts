@@ -212,7 +212,7 @@ async function withProviderDeps(
       store: createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
       keychain,
       resolver: createProviderResolver(ctx.io.env, keychain),
-      readSecret: () => readSecretFromStdin(),
+      readSecret: readSecretFromStdin,
     };
     return await fn(deps);
   } finally {

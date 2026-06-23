@@ -63,12 +63,12 @@ export interface ProviderStore {
 function parseStringRecord(json: string): Record<string, string> {
   const parsed: unknown = JSON.parse(json);
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('llm_providers.default_headers is not a JSON object');
+    throw new TypeError('llm_providers.default_headers is not a JSON object');
   }
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (typeof value !== 'string') {
-      throw new Error(`llm_providers.default_headers['${key}'] is not a string`);
+      throw new TypeError(`llm_providers.default_headers['${key}'] is not a string`);
     }
     out[key] = value;
   }
