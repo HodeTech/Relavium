@@ -58,5 +58,7 @@ catalog:
   smol-toml: ^1.3.4
   tsup: ^8.5.0
   # CLI OS-keychain accessor (2.C) — a maintained N-API credential lib, NOT the archived
-  # keytar (ADR-0019); confined to apps/cli behind a `KeychainStore` interface.
-  '@napi-rs/keyring': ^1.1.6
+  # keytar (ADR-0019); confined to apps/cli behind a `KeychainStore` interface. Floor pinned to the
+  # resolved/audited 1.3.x so the audited version is the shipped version (the most security-sensitive
+  # native dep — a re-pin, not a silent caret drift).
+  '@napi-rs/keyring': ^1.3.0

@@ -19,7 +19,13 @@ export async function readSecretFromStdin(): Promise<string> {
   }
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+    // Narrow without an unsafe cast: an un-encoded stdin stream yields Buffer chunks; a string only if an
+    // encoding was set (it never is here). Any other shape is ignored rather than coerced.
+    if (Buffer.isBuffer(chunk)) {
+      chunks.push(chunk);
+    } else if (typeof chunk === 'string') {
+      chunks.push(Buffer.from(chunk, 'utf8'));
+    }
   }
   const key = Buffer.concat(chunks).toString('utf8').trim();
   if (key === '') {
