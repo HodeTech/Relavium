@@ -36,8 +36,12 @@ export function openLocalDb(homeDir: string): OpenedDb {
   }
   return {
     db: client.db,
+    // Idempotent: better-sqlite3's close() throws on an already-closed handle, so guard on `.open`
+    // — a double close (e.g. an error-recovery path that also closes in a finally) is then a no-op.
     close: () => {
-      client.sqlite.close();
+      if (client.sqlite.open) {
+        client.sqlite.close();
+      }
     },
   };
 }
