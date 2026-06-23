@@ -93,8 +93,8 @@ One engine, three modes behind the one `LLMProvider` seam:
 local-first BYOK — workflow parsing, DAG execution, live streaming, checkpoint/resume,
 multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (the CLI) is
 underway** — the CLI skeleton, config resolution, `relavium run` (wired to the engine), its
-`--json` CI machine-output contract, the engine regression harness, durable local run history, and the
-provider/key commands (API keys in the OS keychain) have landed (milestone **M3** reached). For live status and the full roadmap, see
+`--json` CI machine-output contract, the engine regression harness, durable local run history, the
+provider/key commands (API keys in the OS keychain), and the live `ink` streaming TUI have landed (milestone **M3** reached). For live status and the full roadmap, see
 [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 

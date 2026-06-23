@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**; **2.H** (durable run history) is ✅ **Done (PR #44, 2026-06-23)**, behind [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md); and **2.C** (provider/key commands — OS keychain via `@napi-rs/keyring`) is ✅ **Done (PR #45, 2026-06-23)**, behind [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) + [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md). The status-aware order for everything still open (next pickup: **2.E**) is the [Remaining build order](#remaining-build-order) queue.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**; **2.H** (durable run history) is ✅ **Done (PR #44, 2026-06-23)**, behind [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md); and **2.C** (provider/key commands — OS keychain via `@napi-rs/keyring`) is ✅ **Done (PR #45, 2026-06-23)**, behind [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) + [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md); and **2.E** (the `ink` streaming TUI) is ✅ **Done (PR #46, 2026-06-24)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md). The status-aware order for everything still open (next pickup: **2.G**) is the [Remaining build order](#remaining-build-order) queue.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -237,7 +237,7 @@ the workflow; Ctrl-C cancels with `run:cancelled` and a non-zero exit; the
 terminal-event→exit-code mapping holds for success (`0`), failure (`1`), and
 gate-paused (`3`).
 
-### 2.E — `ink` streaming TUI (live node status + token stream + cost)
+### 2.E — `ink` streaming TUI (live node status + token stream + cost) — ✅ **Done (PR #46)**
 
 Render the live run in the terminal with `ink`, consuming the same event bus as
 the JSON path so the two never diverge.
@@ -655,23 +655,22 @@ This is the status × plan view; the dependency rationale for every row lives in
 [Ordered waves](#ordered-waves-each-wave-is-internally-parallel-waves-gate-left-to-right) —
 this table does not restate them, it only sequences what remains.
 
-> **Status (2026-06-23):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H · 2.C** done — **M3 reached** · next pickup: **2.E**.
+> **Status (2026-06-24):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H · 2.C · 2.E** done — **M3 reached** · next pickup: **2.G**.
 > (2.K's gate-resume + agent-replay halves remain deferred — they land with 2.G / later. 2.H shipped the
 > durable history substrate + read API; the consuming commands `list`/`logs`/`status` are 2.I.)
 
 | Next | Lane | Why now | Blockers (all met on arrival) |
 |---|---|---|---|
-| **1. 2.E** ink TUI | feeder | go/no-go #1; the shared ink infra 2.G + 2.M reuse | 2.D ✓ |
-| **2. 2.G** human gate + resume | feeder | go/no-go #3 **and closes 2.K's deferred gate-resume half** | 2.E · 2.H ✓ · 2.F ✓ |
-| **3. 2.I** list / logs / status | feeder | go/no-go #2 (read side); blocks nothing | 2.H ✓ |
-| **4. 2.L** package & publish | ◆ spine | go/no-go #7 — **all 7 [exit criteria](#exit-criteria-go--no-go) hold here → Phase 3 may start** | 2.K whole (via 2.G) |
-| **5. 2.S** media host-wiring | additive | biggest lane + the lone SSRF security review; **first** among the additive lanes — never tailed | 2.D · 2.H ✓ |
-| **6. 2.R** MCP client | additive | inbound MCP tools | 2.B ✓ · 2.C ✓ |
-| **7. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C ✓ · 2.H ✓ · 2.E |
-| **8. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
+| **1. 2.G** human gate + resume | feeder | go/no-go #3 **and closes 2.K's deferred gate-resume half** | 2.E ✓ · 2.H ✓ · 2.F ✓ |
+| **2. 2.I** list / logs / status | feeder | go/no-go #2 (read side); blocks nothing | 2.H ✓ |
+| **3. 2.L** package & publish | ◆ spine | go/no-go #7 — **all 7 [exit criteria](#exit-criteria-go--no-go) hold here → Phase 3 may start** | 2.K whole (via 2.G) |
+| **4. 2.S** media host-wiring | additive | biggest lane + the lone SSRF security review; **first** among the additive lanes — never tailed | 2.D · 2.H ✓ |
+| **5. 2.R** MCP client | additive | inbound MCP tools | 2.B ✓ · 2.C ✓ |
+| **6. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C ✓ · 2.H ✓ · 2.E ✓ |
+| **7. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
 
-- **Gate-closing backbone — `2.E → 2.G → 2.I → 2.L`:** these four PRs flip the remaining
-  exit criteria (2.K + 2.H + 2.C are done). The remaining four (**2.S, 2.R, chat, 2.J**)
+- **Gate-closing backbone — `2.G → 2.I → 2.L`:** these three PRs flip the remaining
+  exit criteria (2.K + 2.H + 2.C + 2.E are done). The remaining four (**2.S, 2.R, chat, 2.J**)
   complete in-phase but do **not** block starting Phase 3.
 - **2.K fully closes at step 4 (2.G).** Its deferred gate-resume scenario can only be
   exercised once the gate pause/resume surface exists, so 2.L (step 6) must follow 2.G even

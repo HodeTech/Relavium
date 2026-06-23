@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-23
+> Last updated: 2026-06-24
 
 - **Related**: [README.md](README.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -49,9 +49,14 @@ and **2.K** (the engine regression harness, now the engine's CI regression gate)
 and **2.C** (the `relavium provider` commands — a provider registry + API keys in the OS keychain via
 `@napi-rs/keyring`, resolved keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error), ✅ Done
 (PR #45, 2026-06-23) behind [ADR-0019](../decisions/0019-cli-node-keychain-library.md) +
-[ADR-0006](../decisions/0006-os-keychain-for-api-keys.md) (no new ADR — `secrets.enc` deferred past v1.0).
-**Next pickup:** **2.E** (ink TUI — go/no-go #1; the shared `ink` infra `2.G` + `2.M` reuse); the full
-status-aware order is the
+[ADR-0006](../decisions/0006-os-keychain-for-api-keys.md) (no new ADR — `secrets.enc` deferred past v1.0);
+and **2.E** (the `ink` streaming TUI — the third `RunRenderer` over the one event bus: live per-node status
++ spinners, the active node's streaming tokens, a running cost footer, a persistent final summary; cooperative
+Ctrl-C cancel), ✅ Done (PR #46, 2026-06-24) behind [ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md)
+(ink + React 19, confined to `apps/cli`; no new ADR).
+**Next pickup:** **2.G** (interactive human-gate prompt + `relavium gate` resume — go/no-go #3; reuses 2.E's
+`ink` infra + the `finalize?()` seam, and closes 2.K's deferred gate-resume half); the full status-aware
+order is the
 [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
