@@ -54,7 +54,9 @@ There is **no** encrypted-file key store in v1.0. A headless/CI fallback for env
 
 ## Database passphrase (SQLCipher)
 
-The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher (see [database-schema.md](database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
+The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher **on the desktop** (see [database-schema.md](database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
+
+The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). This is safe because the file holds **no credentials** — provider keys stay here in the OS keychain, and the engine masks `secret`-typed inputs and tool I/O before they are persisted. The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
 
 ## What never holds a secret
 

@@ -15,6 +15,7 @@ import {
   type NewSessionMessageRow,
   type SessionMessageRow,
 } from './schema.js';
+import { epochMsToIso, isoToEpochMs } from './time.js';
 
 /**
  * Session persistence (workstream **1.X**) — the directly-stored, append-only transcript layer over the
@@ -33,25 +34,10 @@ import {
  * {@link SessionMessageMeta} — NULL/0 when the durable parts array is the sole source of a row.
  *
  * This package is host-facing (it uses `better-sqlite3`); the platform-free engine never imports it. The
- * desktop / CLI open the encrypted `history.db` and wire this store; the per-turn `AgentSession`→store
- * wiring + cross-restart resume are the later sub-spine (1.Y / 1.AA).
+ * desktop / CLI open `history.db` and wire this store — the desktop with SQLCipher (ADR-0005), the CLI
+ * unencrypted, guarded by `0600`/`0700` OS permissions (ADR-0050); the per-turn `AgentSession`→store wiring
+ * + cross-restart resume are the later sub-spine (1.Y / 1.AA).
  */
-
-/**
- * ISO-8601 (domain) → epoch-ms (storage). Input is an already-validated ISO string. The round-trip through
- * epoch-ms preserves the **instant** but normalizes to UTC at millisecond precision: a sub-millisecond or
- * non-UTC-offset input (which `isoTimestamp` permits, matching the run-event envelope) reads back as the
- * same instant in canonical `…Z` form, not byte-identical. Epoch-ms storage is by design
- * (database-schema.md §conventions — "timezone handled in app code").
- */
-function isoToEpochMs(iso: string): number {
-  return new Date(iso).getTime();
-}
-
-/** epoch-ms (storage) → ISO-8601 (domain), canonical UTC millisecond form. Deterministic — no wall-clock read. */
-function epochMsToIso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 /**
  * Optional denormalized metadata for a `session_messages` row that is **not** part of the canonical

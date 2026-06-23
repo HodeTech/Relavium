@@ -92,8 +92,9 @@ One engine, three modes behind the one `LLMProvider` seam:
 **Phase 1 — Engine and LLM is complete** (2026-06-21): the engine runs end-to-end on
 local-first BYOK — workflow parsing, DAG execution, live streaming, checkpoint/resume,
 multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (the CLI) is
-underway** — the CLI skeleton, config resolution, `relavium run` (wired to the engine), and its
-`--json` CI machine-output contract have landed. For live status and the full roadmap, see
+underway** — the CLI skeleton, config resolution, `relavium run` (wired to the engine), its
+`--json` CI machine-output contract, and the engine regression harness have landed (milestone
+**M3** reached). For live status and the full roadmap, see
 [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 

@@ -13,11 +13,13 @@ import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
+import { createCliHost } from '../engine/host.js';
 import {
   createProviderResolver,
   neededProviderIds,
   type ProviderResolver,
 } from '../engine/providers.js';
+import type { OpenedHistory } from '../history/open.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -38,6 +40,11 @@ export interface RunCommandDeps {
   readonly buildEngine?: (options?: BuildEngineOptions) => Promise<WorkflowEngine>;
   /** Injectable provider seam (key pre-flight + the engine's resolver). Defaults to the env resolver. */
   readonly providers?: ProviderResolver;
+  /**
+   * Production wires the durable SQLite run-history store (2.H) here, per workflow; the unit tests and the
+   * 2.K harness omit it, keeping the in-memory `RunStore` so they never open `~/.relavium/history.db`.
+   */
+  readonly openRunStore?: (workflow: WorkflowDefinition, homeDir: string) => OpenedHistory;
 }
 
 type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -55,8 +62,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // One resolver shared by the key pre-flight and the engine, reading the CLI's env seam (io.env).
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
 
-  // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery.
-  const { projectConfigDir } = loadResolvedConfig({
+  // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery,
+  // homeDir locates `~/.relavium/history.db` (2.H).
+  const { projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -85,41 +93,64 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     providers.keyFor(id);
   }
 
-  const engine = await build({ providers });
-  const handle = engine.start({ workflow: def, inputs });
-
-  const renderer = deps.global.json ? createJsonRenderer(deps.io) : createPlainRenderer(deps.io);
-  let outcome: RunOutcome | undefined;
-  // Register the cancel handler immediately before the consume loop — no statement between it and the
-  // `try` whose `finally` removes it, so the listener can never leak on an intervening throw.
-  const onSigint = (): void => {
-    handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
-  };
-  process.once('SIGINT', onSigint);
+  // Durable history (2.H): open `~/.relavium/history.db` and run THIS workflow on a host backed by the
+  // SQLite `RunStore`, so every node-boundary/terminal event is persisted before delivery (ADR-0036). Tests
+  // and the 2.K harness omit `openRunStore` → the in-memory default host, no DB touched. `close()` releases
+  // the connection at run end. A persist failure rejects out of the engine (ADR-0050 fatal posture).
+  let opened: OpenedHistory | undefined;
   try {
-    for await (const event of handle.events) {
-      renderer.onEvent(event);
-      outcome = nextOutcome(outcome, event);
-      if (event.type === 'run:paused') {
-        // A human gate — the only `run:paused` source in 2.D (no media-job host is wired; build-engine.ts).
-        // The interactive prompt + `relavium gate` resume are 2.G (and need 2.H persistence); for 2.D the
-        // run exits with the gate-paused code. When media host-wiring lands (2.S) a media-only park is also
-        // a `run:paused`, so revisit whether exit 3 should distinguish it then (deferred-tasks).
-        break;
+    opened = deps.openRunStore?.(def, homeDir);
+  } catch (err) {
+    // A pre-run history fault (cannot create / open / migrate ~/.relavium/history.db) is an INVOCATION
+    // fault (exit 2), not a workflow failure (exit 1) — surface it as such, before the engine starts, so a
+    // `--json`/CI consumer can tell "the history db couldn't open" from "a node failed mid-run".
+    throw new CliError(
+      'invalid_invocation',
+      `could not open the run history database: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  try {
+    const engine = await build(
+      opened === undefined ? { providers } : { providers, host: createCliHost(opened.store) },
+    );
+    const handle = engine.start({ workflow: def, inputs });
+
+    const renderer = deps.global.json ? createJsonRenderer(deps.io) : createPlainRenderer(deps.io);
+    let outcome: RunOutcome | undefined;
+    // Register the cancel handler immediately before the consume loop — no statement between it and the
+    // `try` whose `finally` removes it, so the listener can never leak on an intervening throw.
+    const onSigint = (): void => {
+      handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
+    };
+    process.once('SIGINT', onSigint);
+    try {
+      for await (const event of handle.events) {
+        renderer.onEvent(event);
+        outcome = nextOutcome(outcome, event);
+        if (event.type === 'run:paused') {
+          // A human gate — the only `run:paused` source in 2.D (no media-job host is wired; build-engine.ts).
+          // The interactive prompt + `relavium gate` resume are 2.G (the persisted gate state is now durable,
+          // 2.H); for now the run exits with the gate-paused code. When media host-wiring lands (2.S) a
+          // media-only park is also a `run:paused`, so revisit whether exit 3 should distinguish it then.
+          break;
+        }
       }
+    } finally {
+      process.removeListener('SIGINT', onSigint);
+    }
+
+    switch (outcome) {
+      case 'completed':
+        return EXIT_CODES.success;
+      case 'paused':
+        return EXIT_CODES.gatePaused;
+      default:
+        // failed / cancelled / (an unreachable no-terminal) → non-zero workflow failure.
+        return EXIT_CODES.workflowFailed;
     }
   } finally {
-    process.removeListener('SIGINT', onSigint);
-  }
-
-  switch (outcome) {
-    case 'completed':
-      return EXIT_CODES.success;
-    case 'paused':
-      return EXIT_CODES.gatePaused;
-    default:
-      // failed / cancelled / (an unreachable no-terminal) → non-zero workflow failure.
-      return EXIT_CODES.workflowFailed;
+    opened?.close();
   }
 }
 

@@ -76,6 +76,8 @@ export interface LoadedConfig {
   readonly config: ResolvedConfig;
   /** The discovered project `.relavium/` directory, or `undefined` when outside a project. */
   readonly projectConfigDir: string | undefined;
+  /** The resolved home directory — the root of `~/.relavium/` (where `history.db` lives, 2.H/ADR-0050). */
+  readonly homeDir: string;
 }
 
 /**
@@ -102,7 +104,7 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
     );
   }
 
-  return { config: resolveConfig({ global, workspace, project }), projectConfigDir };
+  return { config: resolveConfig({ global, workspace, project }), projectConfigDir, homeDir: home };
 }
 
 function errnoCode(err: unknown): string | undefined {

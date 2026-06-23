@@ -68,6 +68,18 @@ export {
   type SessionMessageMeta,
 } from './session-store.js';
 
+// Run history (2.H) — the SQLite-backed RunStore the CLI host injects (durable persist-before-deliver,
+// ADR-0036) plus the list/logs/status read API (2.I) and the cross-process resume substrate (2.G). The
+// platform-free engine never imports this — a host wires it over history.db (unencrypted on the CLI, ADR-0050).
+export {
+  createRunHistoryStore,
+  type RunHistoryStore,
+  type RunHistoryStoreDeps,
+  type RunHistoryWorkflow,
+  type InterruptedRunInfo,
+  type RunRecord,
+} from './run-history-store.js';
+
 // Media store (1.AF, ADR-0042) — the host-side content-addressed blob store the engine references by
 // handle. Node-side (node:crypto + node:fs); a host wires one into ExecutionHost.mediaStore. The pure
 // engine never imports this — it depends only on the @relavium/shared `MediaStore` interface.

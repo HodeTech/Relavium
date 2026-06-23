@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md). The global milestone in play is **M3** (reached at 2.F + 2.K); **2.K** (the engine regression harness) is 🔄 **in review (PR #43)** — M3 lands when it merges. The status-aware order for everything still open (next pickup: **2.H**) is the [Remaining build order](#remaining-build-order) queue.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**. The status-aware order for everything still open (next pickup: **2.H**) is the [Remaining build order](#remaining-build-order) queue.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -388,7 +388,7 @@ in and out of a project — the "workflow file is the invite" distribution path.
 `run`s; `import` rejects a malformed or slug-colliding file with exit `2`; `export`
 output contains no secret material and re-imports cleanly elsewhere.
 
-### 2.K — Engine regression harness in CI
+### 2.K — Engine regression harness in CI — ✅ **Done (PR #43)**
 
 Adopt the CLI as the engine's canonical integration-test harness so every engine
 change is exercised end-to-end. Completes M3 with `2.D` + `2.F`.
@@ -642,8 +642,8 @@ This is the status × plan view; the dependency rationale for every row lives in
 [Ordered waves](#ordered-waves-each-wave-is-internally-parallel-waves-gate-left-to-right) —
 this table does not restate them, it only sequences what remains.
 
-> **Status (2026-06-22):** ✅ **2.A · 2.B · 2.D · 2.F** done · 🔄 **2.K** first cut in review
-> (PR #43; its gate-resume + agent-replay halves deferred).
+> **Status (2026-06-23):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K** done — **M3 reached** · next pickup: **2.H**.
+> (2.K's gate-resume + agent-replay halves remain deferred — they land with 2.G / later.)
 
 | Next | Lane | Why now | Blockers (all met on arrival) |
 |---|---|---|---|
@@ -659,7 +659,7 @@ this table does not restate them, it only sequences what remains.
 | **10. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
 
 - **Gate-closing backbone — `2.H → 2.C → 2.E → 2.G → 2.I → 2.L`:** these six PRs flip all
-  seven exit criteria (2.K is already merging). The remaining four (**2.S, 2.R, chat, 2.J**)
+  seven exit criteria (2.K is done). The remaining four (**2.S, 2.R, chat, 2.J**)
   complete in-phase but do **not** block starting Phase 3.
 - **2.K fully closes at step 4 (2.G).** Its deferred gate-resume scenario can only be
   exercised once the gate pause/resume surface exists, so 2.L (step 6) must follow 2.G even

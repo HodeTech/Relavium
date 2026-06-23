@@ -45,10 +45,11 @@ non-agent node handlers) with live streaming, per-node-boundary checkpoint/resum
 multimodal media I/O (input, inline output, and the async generation job loop). All
 three adapters (Anthropic, OpenAI/DeepSeek, Gemini) and the agent-first `AgentSession`
 entry point (multi-turn sessions, persistence, export-to-workflow) are shipped.
-**Phase 2 (CLI, milestone M3) is in progress** — the CLI skeleton (2.A) and config
-resolution (2.B) have landed (PR #40), `relavium run` is wired to the engine
-(2.D, the M3 keystone — PR #41), and the `--json` CI machine-output contract has
-landed (2.F — PR #42, ADR-0049). For live status, per-PR history,
+**Phase 2 (CLI) is underway and milestone M3 is reached** — the CLI skeleton (2.A) and config
+resolution (2.B) landed (PR #40), `relavium run` is wired to the engine
+(2.D, the M3 keystone — PR #41), the `--json` CI machine-output contract
+landed (2.F — PR #42, ADR-0049), and the engine regression harness (2.K — PR #43)
+completes M3. The next pickup is 2.H (durable run history). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.
