@@ -49,9 +49,10 @@ entry point (multi-turn sessions, persistence, export-to-workflow) are shipped.
 resolution (2.B) landed (PR #40), `relavium run` is wired to the engine
 (2.D, the M3 keystone — PR #41), the `--json` CI machine-output contract
 landed (2.F — PR #42, ADR-0049), the engine regression harness (2.K — PR #43)
-completes M3, and durable run history landed (2.H — PR #44, ADR-0050); and the provider/key
-commands with OS-keychain storage landed (2.C — PR #45, behind ADR-0019 + ADR-0006). The next
-pickup is 2.E (ink TUI). For live status, per-PR history,
+completes M3, and durable run history landed (2.H — PR #44, ADR-0050); the provider/key
+commands with OS-keychain storage landed (2.C — PR #45, behind ADR-0019 + ADR-0006); and the `ink`
+streaming TUI landed (2.E — PR #46, behind ADR-0047). The next pickup is 2.G (interactive human-gate
+prompt + `relavium gate` resume). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.

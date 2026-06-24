@@ -80,7 +80,7 @@ run exit codes (`0` / `1` / `3`).
 | `sequential.relavium.yaml` | input → transform → output (the simplest chain) | `0` |
 | `fan-out.relavium.yaml` | `parallel` split + `merge` (`object_merge`) — fan_out/fan_in | `0` |
 | `conditional.relavium.yaml` | `condition` branch + `node:skipped` skip-propagation (run **both** arms: `n=3`→`lo`, `n=15`→`hi`) | `0` |
-| `human-gate.relavium.yaml` | `human_gate` pause → `run:paused` → gate-paused exit | `3` |
+| `human-gate.relavium.yaml` | `human_gate` pause → `run:paused` → gate-paused exit; **and** (2.G) the cross-process **resume**: run to exit `3` against a durable db, then `relavium gate --approve` → `run:completed` | `3` → `0` |
 | `failure.relavium.yaml` | a transform throws → `node:failed` → `run:failed` (downstream skipped) | `1` |
 
 ## Adding a fixture
@@ -93,10 +93,10 @@ run exit codes (`0` / `1` / `3`).
 
 ## Deferred (scope-split in [phase-2-cli.md §2.K](../../roadmap/phases/phase-2-cli.md))
 
-- **Gate-*resume* scenario** (`relavium gate --approve` → completion) — needs the `relavium gate`
-  command (**2.G**) and durable run history (**2.H**); neither exists yet, so the CLI cannot reload and
-  resume a paused run across processes. The run-to-gate → exit `3` half ships now; the approve →
-  complete half lands with 2.G/2.H. (The engine's resume is already proven in `m2-e2e-harness`.)
+- ~~**Gate-*resume* scenario** (`relavium gate --approve` → completion)~~ — **landed with 2.G**: the
+  harness runs the `human-gate` fixture to exit `3` against a durable (in-memory) history db, then resumes
+  it from a fresh-process `relavium gate --approve` (reload snapshot + reconstruct checkpoint +
+  `resumeFromCheckpoint`) and asserts `run:completed`. This closed 2.K's deferred half.
 - **Agent fixtures via recorded-LLM replay** — the `@relavium/llm` `conformance/replay.ts` substrate
   (a recorded-`fetch` override that refuses secret bodies) can drive an agent workflow offline through
   the injectable `ProviderResolver`; deferred so the first cut stays non-agent. Agent dispatch is

@@ -6,6 +6,7 @@ import { createClient, runMigrations, type DbClient } from './client.js';
 import { runCosts, runEvents, runs, stepExecutions } from './schema.js';
 import {
   createRunHistoryStore,
+  loadRunSnapshot,
   type RunHistoryStore,
   type RunHistoryWorkflow,
 } from './run-history-store.js';
@@ -381,5 +382,37 @@ describe('createRunHistoryStore', () => {
     ]) {
       expect(value ?? '').not.toContain(RAW);
     }
+  });
+
+  describe('loadRunSnapshot', () => {
+    it('returns the frozen workflow snapshot + inputs for a paused run (the 2.G resume substrate)', async () => {
+      const wf = await store.resolveWorkflowId('demo');
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId: wf, inputs: { n: 3 }, executionMode: 'local' }),
+        runId: 'run-snap',
+      });
+      await store.persistEvent({
+        ...ev('human_gate:paused', 1, {
+          nodeId: 'gate',
+          gateId: 'g1',
+          gateType: 'approval',
+          message: 'ok?',
+        }),
+        runId: 'run-snap',
+      });
+
+      const snap = loadRunSnapshot(client.db, 'run-snap');
+      // The exact `JSON.stringify(WorkflowDefinition)` written at run:started — round-trips to the parsed graph.
+      expect(snap?.workflowDefinitionSnapshot).toBe(WORKFLOW.definitionJson);
+      expect(JSON.parse(snap?.workflowDefinitionSnapshot ?? '{}')).toMatchObject({
+        workflow: { id: 'demo' },
+      });
+      // The run's inputs are restored too (a post-gate node may read `{{ inputs.x }}` on resume).
+      expect(JSON.parse(snap?.inputJson ?? '{}')).toEqual({ n: 3 });
+    });
+
+    it('returns undefined for an unknown runId', () => {
+      expect(loadRunSnapshot(client.db, 'nope')).toBeUndefined();
+    });
   });
 });

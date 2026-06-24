@@ -73,11 +73,13 @@ export {
 // platform-free engine never imports this — a host wires it over history.db (unencrypted on the CLI, ADR-0050).
 export {
   createRunHistoryStore,
+  loadRunSnapshot,
   type RunHistoryStore,
   type RunHistoryStoreDeps,
   type RunHistoryWorkflow,
   type InterruptedRunInfo,
   type RunRecord,
+  type RunResumeSnapshot,
 } from './run-history-store.js';
 
 // Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`

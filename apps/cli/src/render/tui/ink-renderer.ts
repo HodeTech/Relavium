@@ -46,13 +46,6 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
   const stdout = options.stdout ?? process.stdout;
   const store = createRunStore(options.color);
 
-  // The frame loop drives the throttle (coalesced repaints) + the spinner animation. unref() so a pending
-  // tick never holds the process open past the run's end.
-  const frame = setInterval(() => {
-    store.tick();
-  }, FRAME_MS);
-  frame.unref();
-
   const mount =
     options.mount ??
     ((s: RunStore): InkMountInstance =>
@@ -67,13 +60,42 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
       }));
 
-  let instance: InkMountInstance;
-  try {
-    instance = mount(store);
-  } catch (err) {
-    clearInterval(frame); // mount threw — don't leak the frame loop (finalize won't run)
-    throw err;
-  }
+  // The live view is a (frame loop + ink mount) pair that can be torn down and re-created: `start` after
+  // construction and on `resume`, `stop` on `suspend` and `finalize`. The store outlives every cycle, so a
+  // re-mount re-projects the exact same state (2.E: ink is a thin projection of an ink-free store).
+  let frame: ReturnType<typeof setInterval> | undefined;
+  let instance: InkMountInstance | undefined;
+
+  const start = (): void => {
+    // The frame loop drives the throttle (coalesced repaints) + the spinner animation. unref() so a pending
+    // tick never holds the process open past the run's end.
+    const f = setInterval(() => {
+      store.tick();
+    }, FRAME_MS);
+    f.unref();
+    try {
+      instance = mount(store);
+    } catch (err) {
+      clearInterval(f); // mount threw — don't leak the frame loop (finalize won't run)
+      throw err;
+    }
+    frame = f; // only after a successful mount, so a mount throw leaves no dangling timer
+  };
+
+  const stop = async (): Promise<void> => {
+    if (frame !== undefined) {
+      clearInterval(frame);
+      frame = undefined;
+    }
+    if (instance !== undefined) {
+      const live = instance;
+      instance = undefined;
+      live.unmount();
+      await live.waitUntilExit();
+    }
+  };
+
+  start(); // initial mount (a construction throw propagates, leaving no timer — see `start`)
 
   let finalized = false;
 
@@ -81,22 +103,39 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     onEvent: (event) => {
       store.apply(event);
     },
+    suspend: async () => {
+      // Release the terminal so a `@clack/prompts` gate card (2.G) can render. Paint the latest live frame
+      // first, then unmount WITHOUT writing the summary (that is finalize's job — the run is not over).
+      store.flush();
+      await stop();
+    },
+    resume: () => {
+      // Re-mount the live view from the SAME store after the gate prompt. A no-op once finalized (a late
+      // resume after teardown must never re-open the TUI) or while already mounted (idempotent).
+      if (!finalized && instance === undefined) {
+        start();
+      }
+    },
     finalize: async () => {
       if (finalized) {
         return;
       }
       finalized = true;
-      clearInterval(frame);
       store.flush(); // paint the final live frame
-      instance.unmount();
-      await instance.waitUntilExit();
-      // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
-      const write =
-        options.writeSummary ??
-        ((text: string): void => {
-          stdout.write(text);
-        });
-      write(store.summaryText());
+      // The persistent summary MUST be written even if stop() rejects (ink can reject waitUntilExit() on an
+      // internal React error during unmount) — otherwise the run's scrollback summary is silently lost and a
+      // second finalize() is a no-op. The `finally` guarantees the write survives a stop() rejection.
+      try {
+        await stop();
+      } finally {
+        // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
+        const write =
+          options.writeSummary ??
+          ((text: string): void => {
+            stdout.write(text);
+          });
+        write(store.summaryText());
+      }
     },
   };
 }

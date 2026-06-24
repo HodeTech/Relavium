@@ -1,10 +1,17 @@
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { WorkflowDefinition } from '@relavium/core';
+import { createClient, createRunHistoryStore, runMigrations } from '@relavium/db';
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { gateCommand } from '../commands/gate.js';
 import { runCommand } from '../commands/run.js';
+import type { OpenedHistory } from '../history/open.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { run } from '../run.js';
@@ -31,9 +38,11 @@ import { captureIo } from '../test-support.js';
  * and asserts the IDENTICAL stream + exit code, proving the argv-parsing glue wires a real workflow run
  * faithfully — coverage `run.test.ts` leaves out (it drives the shell only for meta-ops + faults).
  *
- * Deferred (scope-split in phase-2-cli.md §2.K): the gate-RESUME scenario (`relavium gate --approve` →
- * completion) needs 2.G + 2.H; agent fixtures via recorded-LLM replay and the nightly live-provider lane
- * need the replay-provider wiring. This first cut covers the non-agent scenarios + run-to-gate.
+ * The gate-RESUME scenario (`relavium gate --approve` → completion) — deferred in the §2.K first cut because
+ * it needs 2.G + 2.H — lands HERE now (the final `it` below): the `human-gate` fixture runs to exit `3`
+ * against a durable (in-memory) history db, then a fresh-process `gate` reloads + resumes it to `run:completed`.
+ * Still deferred: agent fixtures via recorded-LLM replay and the nightly live-provider lane (need the
+ * replay-provider wiring).
  */
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures/', import.meta.url));
@@ -294,5 +303,82 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
     // The `hi` arm (node:skipped:lo, node:started:hi) is reachable only if `--input n=15` threaded; a
     // dropped flag would route to `lo` and mismatch here — that is what makes this an `--input` test.
     expect(events.map(signature)).toEqual([...inputDependent.events]);
+  });
+
+  // The gate-RESUME scenario (deferred in the §2.K first cut; lands with 2.G): run the human-gate fixture to
+  // the gate-paused exit `3` against a DURABLE history db, then resume it from a FRESH process via the `gate`
+  // command — the cross-process path (reload snapshot + reconstruct checkpoint + resumeFromCheckpoint) — and
+  // assert it drives to `run:completed`. This closes 2.K's deferred half over the same offline fixtures.
+  it('resumes a gate-paused run via `relavium gate --approve` to completion (closes 2.K’s deferred half)', async () => {
+    // A real FILE db (not `:memory:`) so the gate leg opens a genuinely SEPARATE connection — exercising the
+    // reopen/reload a fresh-process `relavium gate` does, not a shared in-memory handle.
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-harness-'));
+    const dbPath = join(dir, 'history.db');
+    const runClient = createClient(dbPath);
+    runMigrations(runClient.db);
+    try {
+      // Persist the run so a fresh connection's `gate` can reload it (the durable substrate 2.H gives 2.G).
+      const openRunStore = (workflow: WorkflowDefinition): OpenedHistory => ({
+        store: createRunHistoryStore(runClient.db, {
+          uuid: () => randomUUID(),
+          now: () => Date.now(),
+          workflow: {
+            slug: workflow.workflow.id,
+            name: workflow.workflow.name ?? workflow.workflow.id,
+            definitionJson: JSON.stringify(workflow),
+          },
+        }),
+        close: () => {},
+      });
+
+      // 1. Run to the gate → exit 3, persisted to the FILE.
+      const runIo = captureIo();
+      const runCode = await runCommand(
+        { workflow: join(FIXTURES_DIR, 'human-gate.relavium.yaml'), input: [] },
+        { io: runIo.io, global: globalOptions(), openRunStore },
+      );
+      expect(runCode).toBe(EXIT_CODES.gatePaused);
+      const preEvents = parseEvents(runIo.out());
+      const runId = preEvents.find((e) => e.type === 'run:started')?.runId;
+      if (runId === undefined) {
+        throw new Error('expected a run:started event carrying the runId');
+      }
+      // Close the run's connection — the resume runs against a brand-new connection to the same file.
+      runClient.sqlite.close();
+
+      // 2. Resume over a FRESH connection (a separate `gate` process reopening the file) → exit 0, to completion.
+      const gateClient = createClient(dbPath);
+      runMigrations(gateClient.db); // idempotent — mirrors openLocalDb's migrate-on-open
+      const gateIo = captureIo();
+      try {
+        const gateCode = await gateCommand(
+          { runId, approve: true },
+          {
+            io: gateIo.io,
+            global: globalOptions(),
+            openDb: () => ({ db: gateClient.db, close: () => {} }),
+          },
+        );
+        expect(gateCode).toBe(EXIT_CODES.success);
+        expect(gateIo.err()).toBe(''); // the resume stream is stdout-pure NDJSON too (ADR-0049)
+        const resumed = parseEvents(gateIo.out());
+        // The resume emits exactly the continuation: the gate resolves, then the downstream output, then done.
+        expect(resumed.map(signature)).toEqual([
+          'human_gate:resumed:gate',
+          'node:started:out',
+          'node:completed:out',
+          'run:completed',
+        ]);
+        // 2.G's headline invariant: the resumed stream continues the seq counter GAP-FREE from the pre-resume
+        // max (lastSequenceNumber + 1), proving the cross-process counter was reseeded — not restarted at 0.
+        const lastPreSeq = Math.max(...preEvents.map((e) => e.sequenceNumber));
+        const resumedSeqs = resumed.map((e) => e.sequenceNumber);
+        expect(resumedSeqs).toEqual(resumedSeqs.map((_, i) => lastPreSeq + 1 + i));
+      } finally {
+        gateClient.sqlite.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

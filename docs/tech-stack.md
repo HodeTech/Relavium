@@ -68,7 +68,7 @@ adversarially reviewed by a 10-agent workflow before being locked.
 
 ## Supporting Tooling
 
-- **Node.js runtime**: **Node 22** for dev + CI (pinned in [`.nvmrc`](../.nvmrc)); the supported floor is **20.11.0** per the root `package.json` `engines.node` (`>=20.11.0`). The TypeScript engine and every Node surface (CLI, the `@relavium/db`/`@relavium/llm` test runs, Phase-2 Bun parity) target this range.
+- **Node.js runtime**: **Node 22** for dev + CI (pinned in [`.nvmrc`](../.nvmrc)); the supported floor is **20.12.0** per the root `package.json` `engines.node` (`>=20.12.0`). The TypeScript engine and every Node surface (CLI, the `@relavium/db`/`@relavium/llm` test runs, Phase-2 Bun parity) target this range. _(The floor moved 20.11→20.12 at workstream 2.G: the current `@clack/prompts` — the CLI wizard/prompt layer, [ADR-0047](decisions/0047-cli-framework-commander-ink-clack.md) — declares `engines.node >= 20.12.0`. A patch-level forward bump within the same Node 20 LTS line; dev/CI already run Node 22.)_
 - **Monorepo**: Turborepo + pnpm workspaces (see [project-structure.md](project-structure.md))
 - **UI**: shadcn/ui + Radix on Tailwind, shared via `packages/ui`
 - **Canvas**: ReactFlow (custom node types in `packages/ui`)

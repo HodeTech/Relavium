@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
+import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -335,6 +336,21 @@ describe('runCommand', () => {
     // The rendered gateId is the engine-generated id (not the node id); assert the gate type instead.
     expect(out()).toContain('paused at gate');
     expect(out()).toContain('(approval)');
+  });
+
+  it('threads an interactive gate prompter through to driveRun: an approved inline gate completes (exit 0)', async () => {
+    // When a prompter is present (the interactive TTY path), `run` resolves the gate INLINE rather than
+    // exiting 3 — proving run.ts wires selectGatePrompter into the shared driveRun core (2.G).
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const { io } = captureIo();
+    const prompter: GatePrompter = {
+      prompt: () => Promise.resolve({ decision: 'approved', decidedBy: 'cli' }),
+    };
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      deps(io, globalOptions(), { selectGatePrompter: () => prompter }),
+    );
+    expect(code).toBe(EXIT_CODES.success); // the inline prompt resolved the gate; the run continued to completion
   });
 
   it('forwards SIGINT as a cooperative cancel → run:cancelled → exit 1, leaking no SIGINT listener', async () => {
