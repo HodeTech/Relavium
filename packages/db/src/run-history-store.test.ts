@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import { RunEventSchema, type RunEvent } from '@relavium/shared';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -461,18 +461,19 @@ describe('createRunHistoryReader', () => {
     });
   }
 
-  /** Build a RunEvent for an arbitrary runId + timestamp (the file-level `ev` hard-codes both). */
+  /**
+   * Build a RunEvent for an arbitrary runId + timestamp (the file-level `ev` hard-codes both). Constructed
+   * through `RunEventSchema.parse` (no `as` cast) — `rest: EventBody<T>` keeps the input per-variant
+   * type-checked, and the schema validates the assembled event, so a bad fixture fails loudly here.
+   */
   function evRun<T extends RunEvent['type']>(
     runId: string,
     type: T,
     seq: number,
     rest: EventBody<T>,
     ts: string,
-  ): Extract<RunEvent, { type: T }> {
-    return { type, runId, timestamp: ts, sequenceNumber: seq, ...rest } as Extract<
-      RunEvent,
-      { type: T }
-    >;
+  ): RunEvent {
+    return RunEventSchema.parse({ type, runId, timestamp: ts, sequenceNumber: seq, ...rest });
   }
 
   /**

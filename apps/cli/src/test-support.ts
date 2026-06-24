@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createRunHistoryStore, type Db } from '@relavium/db';
-import type { RunEvent } from '@relavium/shared';
+import { RunEventSchema, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from './process/io.js';
 
@@ -97,16 +97,16 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   const workflowId = await store.resolveWorkflowId(opts.slug);
   let seq = 0;
   const emit = async <T extends RunEvent['type']>(type: T, rest: EventBody<T>): Promise<void> => {
-    // The envelope + the per-variant `rest` reconstruct the exact union member; TS can't prove a generic
-    // spread does so, hence the assertion (same pattern as the `ev` builder in run-history-store.test.ts).
-    // `persistEvent` runs `RunEventSchema.parse`, so a wrong/missing field fails loudly at seed time.
-    const event = {
+    // Build through the schema (no `as` cast): the envelope + the per-variant `rest` are validated into a
+    // `RunEvent`, so a wrong/missing field fails loudly HERE at seed time. `rest: EventBody<T>` keeps the input
+    // per-variant type-checked at compile time.
+    const event = RunEventSchema.parse({
       type,
       runId: opts.runId,
       timestamp: ts,
       sequenceNumber: seq,
       ...rest,
-    } as Extract<RunEvent, { type: T }>;
+    });
     seq += 1;
     await store.persistEvent(event);
   };
@@ -121,29 +121,28 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     cumulativeCostMicrocents: 100,
   });
   if (opts.state === 'paused') {
-    await emit('node:started', { nodeId: 'g', nodeType: 'human_in_the_loop' });
-    let parked = false;
-    if (opts.budgetGateId !== undefined) {
-      await emit('budget:paused', {
-        nodeId: 'g',
-        gateId: opts.budgetGateId,
-        spentMicrocents: 100,
-        limitMicrocents: 50,
-      });
-      parked = true;
-    }
-    if (opts.gate !== undefined) {
-      await emit('human_gate:paused', {
-        nodeId: 'g',
-        gateId: opts.gate.gateId,
-        gateType: opts.gate.gateType,
-        message: opts.gate.message ?? 'ok?',
-      });
-      parked = true;
-    }
-    if (!parked) {
-      // No specific gate supplied — still GUARANTEE the run parks (a media-job-style park), so `state: 'paused'`
-      // is never silently a 'running' run. run:paused folds to status 'paused' with no pending human gate.
+    if (opts.budgetGateId !== undefined || opts.gate !== undefined) {
+      // A real gate parks AT node `g`, so emit its start (the step row a `status` listing shows).
+      await emit('node:started', { nodeId: 'g', nodeType: 'human_in_the_loop' });
+      if (opts.budgetGateId !== undefined) {
+        await emit('budget:paused', {
+          nodeId: 'g',
+          gateId: opts.budgetGateId,
+          spentMicrocents: 100,
+          limitMicrocents: 50,
+        });
+      }
+      if (opts.gate !== undefined) {
+        await emit('human_gate:paused', {
+          nodeId: 'g',
+          gateId: opts.gate.gateId,
+          gateType: opts.gate.gateType,
+          message: opts.gate.message ?? 'ok?',
+        });
+      }
+    } else {
+      // No specific gate — a media-job-style park: just `run:paused` (no human-gate node started), so
+      // `state: 'paused'` is never silently a 'running' run yet doesn't seed a phantom gate step.
       await emit('run:paused', { pendingGateCount: 0, gateIds: [] });
     }
   } else if (opts.state === 'completed') {

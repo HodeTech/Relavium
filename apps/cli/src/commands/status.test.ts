@@ -71,7 +71,7 @@ describe('statusCommand', () => {
       slug: 'demo',
       runId: 'paused-1',
       state: 'paused',
-      gate: { gateId: 'gate-1', gateType: 'approval' },
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
     });
 
     statusCommand(deps(io, true));
@@ -79,12 +79,14 @@ describe('statusCommand', () => {
       runId: string;
       status: string;
       steps: { nodeId: string }[];
-      pendingGates: { gateId: string }[];
+      pendingGates: { gateId: string; message: string }[];
     }>(out());
     expect(records).toHaveLength(1);
     expect(records[0]?.runId).toBe('paused-1');
     expect(records[0]?.status).toBe('paused');
     expect(records[0]?.pendingGates[0]?.gateId).toBe('gate-1');
+    // Pin `message` in the NDJSON contract (a future drop of PendingGate.message would fail here).
+    expect(records[0]?.pendingGates[0]?.message).toBe('ship it?');
     expect(records[0]?.steps.some((s) => s.nodeId === 'n1')).toBe(true);
   });
 });

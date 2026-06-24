@@ -56,10 +56,12 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
     kind,
   });
 
-  // Last-run overlay (workflows only — agents have no runs). Open the read seam only when there is something
-  // to overlay, so listing agents (or an empty workflow catalog) never touches the history db.
+  // Last-run overlay (workflows only — agents have no runs). Open the read seam only when there is at least one
+  // VALID workflow to overlay: an invalid entry's slug is a filename-stem FALLBACK, not a real workflow id, so
+  // matching it against history could borrow an unrelated workflow's last run — and an all-invalid catalog
+  // would open the db for nothing. So overlay history only for valid entries (lookupHistory below).
   const lastBySlug = new Map<string, RunRecord>();
-  if (kind === 'workflows' && entries.length > 0) {
+  if (kind === 'workflows' && entries.some((entry) => entry.valid)) {
     const { reader, close } = openHistoryReader(homeDir, deps.openDb);
     try {
       for (const summary of reader.loadLatestRunPerWorkflow()) {
@@ -69,16 +71,19 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
       close();
     }
   }
+  // A valid workflow entry's trusted last run, or `undefined` (an invalid entry never picks up an overlay).
+  const lookupHistory = (entry: CatalogEntry): RunRecord | undefined =>
+    entry.valid ? lastBySlug.get(entry.slug) : undefined;
 
   if (json) {
     writeRecordLines(
       deps.io,
-      entries.map((entry) => toJson(entry, kind, lastBySlug.get(entry.slug))),
+      entries.map((entry) => toJson(entry, kind, lookupHistory(entry))),
     );
     return EXIT_CODES.success;
   }
 
-  renderHuman(deps.io, entries, kind, lastBySlug);
+  renderHuman(deps.io, entries, kind, lookupHistory);
   return EXIT_CODES.success;
 }
 
@@ -112,7 +117,7 @@ function renderHuman(
   io: CliIo,
   entries: readonly CatalogEntry[],
   kind: CatalogKind,
-  lastBySlug: ReadonlyMap<string, RunRecord>,
+  lookupHistory: (entry: CatalogEntry) => RunRecord | undefined,
 ): void {
   const heading = kind === 'workflows' ? 'Workflows' : 'Agents';
   if (entries.length === 0) {
@@ -148,8 +153,9 @@ function renderHuman(
     const header = tag === UNTAGGED ? UNTAGGED : `#${tag}`;
     io.writeOut(`  ${header}\n`);
     for (const entry of byTag.get(tag) ?? []) {
-      // `?? null` so a never-run workflow shows `[last: —]` (undefined would omit the label — agents only).
-      io.writeOut(`    ${entryLine(entry, lastBySlug.get(entry.slug) ?? null)}\n`);
+      // `?? null` so a valid never-run workflow (and any invalid entry, which never gets an overlay) shows
+      // `[last: —]`; `undefined` would omit the label entirely (that is the agents-only case).
+      io.writeOut(`    ${entryLine(entry, lookupHistory(entry) ?? null)}\n`);
     }
   }
 }

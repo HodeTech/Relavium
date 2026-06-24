@@ -11,6 +11,7 @@
  */
 
 import { LineCounter } from 'yaml';
+import type { ZodIssue } from 'zod';
 
 import { AgentSchema, type Agent } from '@relavium/shared';
 
@@ -77,7 +78,7 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
     // context isn't lost, and bare at the root (empty path) — mirroring parser.ts's field locator.
     const fields = [
       ...new Set(
-        result.error.issues.flatMap((issue) => {
+        result.error.issues.flatMap((issue: ZodIssue) => {
           if (issue.code === 'unrecognized_keys') {
             const prefix = issue.path.length > 0 ? `${issue.path.map(String).join('.')}.` : '';
             return issue.keys.map((key) => `${prefix}${key}`);

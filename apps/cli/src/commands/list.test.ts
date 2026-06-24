@@ -132,6 +132,37 @@ describe('listCommand', () => {
     expect(out()).toContain('(invalid');
   });
 
+  it('does not borrow a real workflow last-run for an invalid entry sharing its slug', async () => {
+    const { io, out } = captureIo();
+    // Seed a completed run for the real 'code-review' workflow. The catalog has a VALID entry ('hello', so the
+    // history db IS opened) PLUS an INVALID file whose filename-stem fallback slug collides with 'code-review'
+    // — the invalid entry must NOT inherit that run's status (its slug is not a trusted workflow id).
+    await seedRun(db, { slug: 'code-review', runId: 'r1', state: 'completed' });
+    const catalog: CatalogEntry[] = [
+      {
+        slug: 'hello',
+        name: 'Hello',
+        tags: [],
+        path: '.relavium/workflows/hello.relavium.yaml',
+        valid: true,
+      },
+      {
+        slug: 'code-review',
+        name: undefined,
+        tags: [],
+        path: '.relavium/workflows/code-review.relavium.yaml',
+        valid: false,
+        error: 'invalid',
+      },
+    ];
+    listCommand({ agents: false }, deps(io, { catalog }));
+    const lines = out().split('\n');
+    const brokenLine = lines.find((l) => l.includes('code-review'));
+    expect(brokenLine).toContain('(invalid');
+    expect(brokenLine).not.toContain('[last: completed]'); // must NOT borrow the real workflow's run
+    expect(brokenLine).toContain('[last: —]'); // shows no trusted history instead
+  });
+
   it('reports an empty catalog clearly', () => {
     const { io, out } = captureIo();
     expect(listCommand({ agents: false }, deps(io, { catalog: [] }))).toBe(EXIT_CODES.success);
