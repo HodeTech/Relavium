@@ -6,7 +6,7 @@ import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
 import { createClient, createMediaReferenceStore, runMigrations } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
-import { createCliHost } from './host.js';
+import { createCliHost, type CliMediaOptions } from './host.js';
 
 /** A stand-in DURABLE store (not the in-memory reference) — what the gate path injects alongside a checkpointer. */
 const durableStore: RunStore = {
@@ -107,7 +107,7 @@ describe('createCliHost', () => {
         // was written above the root. (The deeper realpath+commonpath symlink jail is covered by @relavium/db's
         // media-write tests; here we only verify the CLI wired the port under the right scope root.)
         await expect(mediaWrite('../escape.bin', new Uint8Array([9]))).rejects.toThrow(
-          /\.\.|escapes/,
+          /must not contain a "\.\." segment/,
         );
         expect(existsSync(join(root, '..', 'escape.bin'))).toBe(false);
       } finally {
@@ -123,22 +123,28 @@ describe('createCliHost', () => {
       expect(host.mediaReferences).toBeUndefined();
     });
 
-    it('wires the two ports independently from their own config fields (not coupled)', () => {
+    it('wires each of the three media ports independently from its own config field', () => {
       const casRoot = mkdtempSync(join(tmpdir(), 'relavium-cas-'));
+      const saveToRoot = mkdtempSync(join(tmpdir(), 'relavium-saveto-'));
       const client = createClient(':memory:');
+      // [mediaStore, mediaReferences, mediaWrite] presence for a given media config.
+      const wired = (media: CliMediaOptions): boolean[] => {
+        const host = createCliHost(undefined, { media });
+        return [host.mediaStore, host.mediaReferences, host.mediaWrite].map(Boolean);
+      };
       try {
         runMigrations(client.db);
-        // casRoot only ⇒ mediaStore wired, mediaReferences absent.
-        const storeOnly = createCliHost(undefined, { media: { casRoot } });
-        expect(storeOnly.mediaStore).toBeDefined();
-        expect(storeOnly.mediaReferences).toBeUndefined();
-        // referenceDb only ⇒ mediaReferences wired, mediaStore absent (a coupling regression would fail here).
-        const refsOnly = createCliHost(undefined, { media: { referenceDb: client.db } });
-        expect(refsOnly.mediaReferences).toBeDefined();
-        expect(refsOnly.mediaStore).toBeUndefined();
+        // Each single field wires ONLY its own port (a coupling regression — gating one port on another's
+        // field — fails here): mediaStore ⇐ casRoot, mediaReferences ⇐ referenceDb, mediaWrite ⇐ saveToRoot.
+        expect(wired({ casRoot })).toEqual([true, false, false]);
+        expect(wired({ referenceDb: client.db })).toEqual([false, true, false]);
+        expect(wired({ saveToRoot })).toEqual([false, false, true]);
+        // The realistic run-path config — all three fields — exposes all three ports.
+        expect(wired({ casRoot, referenceDb: client.db, saveToRoot })).toEqual([true, true, true]);
       } finally {
         client.sqlite.close();
         rmSync(casRoot, { recursive: true, force: true });
+        rmSync(saveToRoot, { recursive: true, force: true });
       }
     });
 
@@ -153,14 +159,17 @@ describe('createCliHost', () => {
         const handle = await store.put(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
         expect(handle).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
         expect(Array.from(await store.get(handle))).toEqual([1, 2, 3, 4]);
-        // Fail-closed: an unknown handle (not in the CAS) rejects rather than serving stray bytes.
-        await expect(store.get(`media://sha256-${'0'.repeat(64)}`)).rejects.toThrow();
+        // Fail-closed: an unknown handle (no CAS file) rejects with the file-not-found CAUSE (a content-address
+        // miss), never serving stray bytes — the CAUSE is asserted, mirroring the mediaWrite traversal rigor.
+        await expect(store.get(`media://sha256-${'0'.repeat(64)}`)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
       } finally {
         rmSync(casRoot, { recursive: true, force: true });
       }
     });
 
-    it('wires a mediaReferences port actually backed by the passed referenceDb', async () => {
+    it('wires a mediaReferences port whose record + reclaim are both backed by the passed referenceDb', async () => {
       const client = createClient(':memory:');
       try {
         runMigrations(client.db);
@@ -170,19 +179,21 @@ describe('createCliHost', () => {
         if (refs === undefined) {
           throw new Error('createCliHost must wire mediaReferences when a referenceDb is given');
         }
-        await refs.recordRunMedia(
-          {
-            handle: `media://sha256-${'a'.repeat(64)}`,
-            mimeType: 'image/png',
-            modality: 'image',
-            byteLength: 4,
-          },
-          'run-1',
-        );
-        // Proof it wrote to the SAME db (not merely non-undefined): an observer store over `client.db` sees
-        // and reclaims the run reference the host's port just recorded.
+        // `as const` (a const assertion, not an unsafe cast) pins `modality` to the literal so the object
+        // satisfies `DurableMediaMeta` without importing the type.
+        const meta = {
+          handle: `media://sha256-${'a'.repeat(64)}`,
+          mimeType: 'image/png',
+          modality: 'image',
+          byteLength: 4,
+        } as const;
+        // BOTH host-port methods route through the SAME referenceDb — prove each via an observer store over it.
         const observer = createMediaReferenceStore(client.db);
-        expect(observer.removeRunReferences('run-1')).toBe(1);
+        await refs.recordRunMedia(meta, 'run-1');
+        await refs.reclaimRun('run-1');
+        expect(observer.removeRunReferences('run-1')).toBe(0); // reclaimRun cleared the ref from the db
+        await refs.recordRunMedia(meta, 'run-2');
+        expect(observer.removeRunReferences('run-2')).toBe(1); // recordRunMedia wrote the ref to the db
       } finally {
         client.sqlite.close();
       }
