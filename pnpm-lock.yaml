@@ -131,12 +131,52 @@ importers:
 
   apps/cli:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: 'catalog:'
+        version: 0.101.0(zod@3.25.76)
       '@clack/prompts':
         specifier: 'catalog:'
         version: 1.6.0
+      '@google/genai':
+        specifier: 'catalog:'
+        version: 2.8.0
+      '@jitl/quickjs-singlefile-mjs-release-sync':
+        specifier: 'catalog:'
+        version: 0.32.0
       '@napi-rs/keyring':
         specifier: 'catalog:'
         version: 1.3.0
+      better-sqlite3:
+        specifier: 'catalog:'
+        version: 12.10.0
+      commander:
+        specifier: 'catalog:'
+        version: 12.1.0
+      drizzle-orm:
+        specifier: 'catalog:'
+        version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)
+      ink:
+        specifier: 'catalog:'
+        version: 6.8.0(@types/react@19.2.17)(react@19.2.7)
+      openai:
+        specifier: 'catalog:'
+        version: 6.42.0(ws@8.21.0)(zod@3.25.76)
+      quickjs-emscripten-core:
+        specifier: 'catalog:'
+        version: 0.32.0
+      react:
+        specifier: 'catalog:'
+        version: 19.2.7
+      smol-toml:
+        specifier: 'catalog:'
+        version: 1.7.0
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
+      zod:
+        specifier: 'catalog:'
+        version: 3.25.76
+    devDependencies:
       '@relavium/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -149,22 +189,6 @@ importers:
       '@relavium/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      commander:
-        specifier: 'catalog:'
-        version: 12.1.0
-      ink:
-        specifier: 'catalog:'
-        version: 6.8.0(@types/react@19.2.17)(react@19.2.7)
-      react:
-        specifier: 'catalog:'
-        version: 19.2.7
-      smol-toml:
-        specifier: 'catalog:'
-        version: 1.7.0
-      zod:
-        specifier: 'catalog:'
-        version: 3.25.76
-    devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 20.19.41

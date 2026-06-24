@@ -11,8 +11,8 @@ The `relavium` CLI is the terminal surface of the platform and the fastest way t
 
 ## Install & distribution
 
-- **Package**: published to npm as `relavium`, installed globally.
-- **Build**: TypeScript bundled with `tsup` to a single ESM bundle.
+- **Package**: published to npm as `relavium`, installed globally. The artifact is an **engine-inlined ESM bundle** — the proprietary `@relavium/*` engine is bundled in; every third-party dependency (including the prebuilt native addons) installs normally ([ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md)). A global install needs no compiler toolchain.
+- **Build**: TypeScript bundled with `tsup` to a single ESM `bin`; released via the `Release CLI` workflow (pack → cross-OS install-smoke on macOS/Linux/Windows → npm publish with provenance), see [release-a-surface.md](../../runbooks/release-a-surface.md).
 - **Stack**: `commander.js` for argument parsing, `ink` (React for terminals) for the interactive TUI, `@clack/prompts` for setup wizards.
 - **API keys**: stored in the OS keychain via `@napi-rs/keyring` (macOS Keychain / Windows Credential Manager / Linux libsecret) — never plaintext, and never the archived `keytar` (see [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) and [add-a-provider-key.md](../../runbooks/add-a-provider-key.md)).
 - **Workflow discovery**: reads workflows from the `.relavium/` directory in the project root, or from an explicit path argument.

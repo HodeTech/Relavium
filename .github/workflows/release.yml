@@ -1,0 +1,147 @@
+# Relavium CLI release — pack once, smoke the exact artifact on every OS, then publish it (2.L · ADR-0051).
+#
+# Flow: `pack` builds the engine-inlined bundle and `pnpm pack`s it (resolving catalog:/workspace: to
+# concrete versions) into a tarball artifact → `smoke` installs THAT SAME tarball globally on ubuntu /
+# macOS / Windows and asserts the binary works (prebuilt native addons load, the bundled engine runs) →
+# `publish` (only on a `v*` tag, gated on green smoke) publishes the very artifact that was smoked, with
+# npm provenance. The actual publish needs the maintainer's `NPM_TOKEN` secret — it is maintainer-gated,
+# like branch protection. Verifying cross-OS BEFORE publish is the Phase-3 go/no-go #7 gate.
+#
+# Third-party actions are pinned to a commit SHA (the `# vX.Y.Z` comment tracks the release), matching ci.yml.
+name: Release CLI
+
+on:
+  push:
+    tags: ['v*']
+  # Manual dry-run: build + smoke cross-OS without publishing (publish is gated on a tag below).
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Permissions are declared per job (least privilege) rather than workflow-wide.
+
+jobs:
+  pack:
+    name: build + pack the tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # On a release tag, the tag must equal the CLI's package version — else we'd publish a mismatched
+      # version. Fail fast (before build + the cross-OS smoke). Skipped on a manual dry-run (no tag).
+      - name: Tag matches the CLI package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./apps/cli/package.json').version")"
+          test "$TAG" = "$PKG" || { echo "::error::release tag v$TAG != apps/cli/package.json version $PKG"; exit 1; }
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # Build the engine packages first (turbo resolves the dependency order) so `pnpm pack`'s prepack can
+      # inline them into the bundle.
+      - name: Build
+        run: pnpm turbo run build --filter=relavium...
+      # `pnpm pack` (not `npm pack`) resolves catalog:/workspace: in the published manifest; its `prepack`
+      # rebuilds the bundle, copies the drizzle migrations beside it, AND runs the bundle-closure guard — so
+      # the guard validates exactly the dist that gets tarballed. The tarball is platform-independent (native
+      # addons resolve per-OS at install), so one tarball is smoked on, and published to, every target.
+      - name: Pack
+        working-directory: apps/cli
+        run: pnpm pack --pack-destination "${{ runner.temp }}/artifact"
+      - name: Upload tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relavium-tarball
+          path: ${{ runner.temp }}/artifact/*.tgz
+          if-no-files-found: error
+
+  smoke:
+    name: install-smoke (${{ matrix.os }})
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # Checkout only for the fixture workflows the smoke runs; no build here — we install the published tarball.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Download tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: relavium-tarball
+          path: artifact
+      # One bash script across all three OSes (GitHub provides Git Bash on Windows) so the asserts are uniform.
+      # These commands exercise the bundle + BOTH prebuilt native addons (better-sqlite3 opens history.db with
+      # the shipped migrations; @napi-rs/keyring's accessor loads) WITHOUT touching the OS credential store, so
+      # the Windows leg is headless-safe.
+      - name: Install globally + smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          TGZ=$(ls artifact/*.tgz)
+          npm install -g "$TGZ"
+          echo "## relavium --help" && relavium --help >/dev/null
+          echo "## relavium provider list" && relavium provider list
+          echo "## relavium run (sequential) --json (exit 0)"
+          relavium run apps/cli/src/harness/fixtures/sequential.relavium.yaml --input n=21 --json
+          echo "## relavium run (human-gate) --json (exit 3 = gate-paused)"
+          set +e; relavium run apps/cli/src/harness/fixtures/human-gate.relavium.yaml --json >/dev/null; ec=$?; set -e
+          test "$ec" -eq 3 || { echo "expected exit 3, got $ec"; exit 1; }
+          echo "## relavium gate list" && relavium gate list
+          echo "## unknown runId → exit 2"
+          set +e; relavium logs nope >/dev/null 2>&1; ec=$?; set -e
+          test "$ec" -eq 2 || { echo "expected exit 2, got $ec"; exit 1; }
+          echo "✓ smoke passed on ${{ matrix.os }}"
+
+  publish:
+    name: publish to npm (provenance)
+    needs: smoke
+    # Only a real release tag publishes; a manual workflow_dispatch run stops after the cross-OS smoke.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # npm provenance attestation
+    steps:
+      - name: Set up Node (npm registry)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+      - name: Download the smoked tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: relavium-tarball
+          path: artifact
+      # Publish the EXACT artifact the smoke matrix proved — not a fresh build. catalog:/workspace: are already
+      # resolved in the packed manifest, so `npm publish <tarball>` is correct here (pnpm-pack did the resolving).
+      - name: Publish
+        shell: bash
+        run: npm publish "$(ls artifact/*.tgz)" --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

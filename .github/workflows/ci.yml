@@ -85,6 +85,12 @@ jobs:
       - name: Build
         run: pnpm turbo run build
 
+      # Drift gate (2.L · ADR-0051): the published CLI bundle inlines the @relavium/* engine and externalizes
+      # every third-party dep — its external import closure must equal the declared `dependencies`, or a global
+      # `npm i -g relavium` would fail to resolve a missing dep. Needs the build above.
+      - name: CLI bundle closure matches its declared dependencies
+        run: pnpm lint:bundle-closure
+
       # Drift gate: the committed migration must match src/schema.ts. If a schema change
       # (or an upstream @relavium/shared enum change the CHECKs derive from) wasn't
       # regenerated via `pnpm --filter @relavium/db db:generate`, regenerating here produces

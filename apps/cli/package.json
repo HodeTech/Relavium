@@ -1,35 +1,61 @@
 {
   "name": "relavium",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Relavium CLI (`relavium`) — run agent workflows from the terminal; the engine's first real consumer.",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
-  "description": "Relavium CLI (`relavium`) — the terminal surface and the engine's regression harness (build phase 2).",
   "bin": {
     "relavium": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "drizzle"
   ],
+  "keywords": [
+    "relavium",
+    "ai",
+    "agent",
+    "workflow",
+    "cli",
+    "llm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HodeTech/Relavium.git",
+    "directory": "apps/cli"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "scripts": {
     "build": "tsup",
+    "prepack": "tsup && pnpm -w run lint:bundle-closure",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "catalog:",
     "@clack/prompts": "catalog:",
+    "@google/genai": "catalog:",
+    "@jitl/quickjs-singlefile-mjs-release-sync": "catalog:",
     "@napi-rs/keyring": "catalog:",
+    "better-sqlite3": "catalog:",
+    "commander": "catalog:",
+    "drizzle-orm": "catalog:",
+    "ink": "catalog:",
+    "openai": "catalog:",
+    "quickjs-emscripten-core": "catalog:",
+    "react": "catalog:",
+    "smol-toml": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
     "@relavium/core": "workspace:*",
     "@relavium/db": "workspace:*",
     "@relavium/llm": "workspace:*",
     "@relavium/shared": "workspace:*",
-    "commander": "catalog:",
-    "ink": "catalog:",
-    "react": "catalog:",
-    "smol-toml": "catalog:",
-    "zod": "catalog:"
-  },
-  "devDependencies": {
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "eslint": "catalog:",

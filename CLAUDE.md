@@ -51,10 +51,11 @@ resolution (2.B) landed (PR #40), `relavium run` is wired to the engine
 landed (2.F — PR #42, ADR-0049), the engine regression harness (2.K — PR #43)
 completes M3, and durable run history landed (2.H — PR #44, ADR-0050); the provider/key
 commands with OS-keychain storage landed (2.C — PR #45, behind ADR-0019 + ADR-0006); the `ink`
-streaming TUI landed (2.E — PR #46, behind ADR-0047); and the interactive human-gate prompt + the
+streaming TUI landed (2.E — PR #46, behind ADR-0047); the interactive human-gate prompt + the
 out-of-band `relavium gate` cross-process resume landed (2.G — PR #47, behind ADR-0047), **fully closing
-2.K's deferred gate-resume half**. The next pickup is 2.I (`list` / `logs` / `status` / `gate list` over
-durable history). For live status, per-PR history,
+2.K's deferred gate-resume half**; and the read commands `list` / `logs` / `status` / `gate list` over durable
+history landed (2.I — PR #48, no new ADR). The next pickup is 2.L (packaging & install verification — the last
+gate-closing spine PR). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.
