@@ -433,6 +433,18 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     );
     expect(seen.describe).toBe(signal);
     expect(seen.readRange).toBe(signal);
+
+    // Absent-signal branch — the optional, non-breaking forward: a ctx with no signal hands the delegate
+    // `undefined` (the path most likely to silently regress if the optional param were dropped).
+    seen.describe = 'unset';
+    seen.readRange = 'unset';
+    await t.dispatch(
+      t.parseArgs({ handle: HANDLE }),
+      {},
+      { ...mediaCtx(SESSION, capturing), signal: undefined },
+    );
+    expect(seen.describe).toBeUndefined();
+    expect(seen.readRange).toBeUndefined();
   });
 
   it('returns a HANDLE source (schema-valid, not empty base64) for a whole-handle read of a zero-byte handle', async () => {

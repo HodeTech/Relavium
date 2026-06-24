@@ -110,9 +110,9 @@ function fromRow(row: ModelCatalogRow): ModelCatalogRecord {
 /** Wire a {@link ModelCatalogStore} over a `@relavium/db` connection. */
 export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): ModelCatalogStore {
   // The earliest active, non-deleted row for a (non-unique-alone) model id — `model_catalog` is unique on
-  // (provider, model), so a model offered by two providers resolves to a deterministic single row.
-  // The earliest active, non-deleted row for a (non-unique-alone) model id — `model_catalog` is unique on
-  // (provider, model), so a model offered by two providers resolves to a deterministic single row.
+  // (provider, model), so a model offered by two providers yields more than one active row. `asc(createdAt)`
+  // with a stable `asc(id)` tiebreaker (the `run-history-store.ts` convention) keeps the resolved row — hence
+  // the routing surface + capability record — deterministic across reads even when two rows share a createdAt.
   const activeRow = (modelId: string): ModelCatalogRow | undefined =>
     db
       .select()
@@ -124,7 +124,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
           isNull(modelCatalog.deletedAt),
         ),
       )
-      .orderBy(asc(modelCatalog.createdAt))
+      .orderBy(asc(modelCatalog.createdAt), asc(modelCatalog.id))
       .get();
 
   const rowById = (id: string): ModelCatalogRow | undefined =>
@@ -167,6 +167,10 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         mediaImageCostMicrocents: input.mediaImageCostMicrocents ?? null,
         mediaAudioCostMicrocents: input.mediaAudioCostMicrocents ?? null,
         mediaVideoCostMicrocents: input.mediaVideoCostMicrocents ?? null,
+        // An upsert (re)activates the row: keep `isActive` in lockstep with `activeRow`'s `isActive = true`
+        // filter so a re-upserted, previously-deactivated row is reachable again and the returned record never
+        // disagrees with a subsequent `getByModelId` (which filters inactive rows out).
+        isActive: true,
         updatedAt: t,
       } satisfies Partial<NewModelCatalogRow>;
       if (existing === undefined) {
@@ -185,7 +189,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
       // offered by multiple providers, not necessarily the one just upserted).
       const row = rowById(id);
       if (row === undefined) {
-        throw new Error(`model_catalog '${input.modelId}' not found after upsert`); // unreachable
+        throw new Error(`model_catalog '${input.modelId}' not found after upsert`); // unreachable — just inserted/updated
       }
       return fromRow(row);
     },
