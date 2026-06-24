@@ -17,7 +17,8 @@ import { createFilesystemMediaWrite, fetchMediaBytes } from '@relavium/db';
  */
 export interface CliMediaOptions {
   /**
-   * The `save_to` write-port scope root — the CLI resolves `.relavium/runs/` (project-relative) and the port
+   * The `save_to` write-port scope root the CALLER resolves and passes (the `run` path will pass
+   * `.relavium/runs/`, project-relative — that caller wiring lands in a later 2.S step). The port
    * `realpath`+`commonpath`-jails every write under it (symlinks off, ADR-0044 §2). Absent ⇒ no `mediaWrite`,
    * so an `output` node's `save_to` fails the run with a clear configuration error (never a silent skip).
    */
@@ -97,7 +98,8 @@ export function createCliHost(
         ...(signal === undefined ? {} : { signal }),
       }),
     // The host `save_to` write port (1.AF/D16, ADR-0044 §2) — wired only when a scope root is supplied (the
-    // run path resolves `.relavium/runs/`). The port `realpath`+`commonpath`-jails every write under the root
+    // caller passes one; the `run` path's `.relavium/runs/` wiring lands in a later 2.S step). The port
+    // `realpath`+`commonpath`-jails every write under the root
     // (symlinks off); the engine resolves the `{{ run.id }}`-only template + the produced handle's bytes and
     // hands `(relativePath, bytes)` here. Absent root ⇒ no port, and a `save_to` fails the run with a clear
     // configuration error (never a silent skip — `save_to` is a real deliverable).

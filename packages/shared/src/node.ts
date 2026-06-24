@@ -62,17 +62,17 @@ export const SaveToSchema = nonEmptyString
   .refine((p) => !p.split(/[\\/]/).includes('..'), {
     message: 'save_to must not contain a ".." path segment',
   })
-  .refine(
-    (p) => [...p.matchAll(/\{\{([^}]*)\}\}/g)].every((m) => (m[1] ?? '').trim() === 'run.id'),
-    {
-      // The run.id-only reference restriction (1.AF, ADR-0044 §2; workflow-yaml-spec.md): a save_to path
-      // template may interpolate ONLY `{{ run.id }}`. The engine resolves it with only `run.id` in scope, so a
-      // non-`run.id` reference (or a filtered `{{ run.id | … }}`) otherwise fails only at RUNTIME — this surfaces
-      // it at LOAD (CLI exit 2), never a mid-run surprise. A literal (no-interpolation) save_to is allowed.
-      message:
-        'save_to may interpolate only `{{ run.id }}` (no inputs/ctx/run.outputs in a filesystem path)',
-    },
-  );
+  .refine((p) => !p.replace(/\{\{\s*run\.id\s*\}\}/g, '').includes('{{'), {
+    // The run.id-only reference restriction (1.AF, ADR-0044 §2; workflow-yaml-spec.md): a save_to path
+    // template may interpolate ONLY `{{ run.id }}`. Strip every well-formed `{{ run.id }}` (whitespace-
+    // tolerant) and reject if any `{{` remains — so a non-`run.id` reference (`{{ inputs.x }}`), a filtered
+    // `{{ run.id | … }}`, a trailing-path `{{ run.id.x }}`, a degenerate `{{}}`, or a brace-in-string
+    // `{{ run.outputs["a}b"] }}` is caught at LOAD (CLI exit 2), never a mid-run surprise. This is a check,
+    // NOT a second interpolation parser: it shares no grammar with the engine lexer, so it cannot diverge into
+    // accepting a reference the engine resolves to nothing at runtime. A literal (no `{{`) save_to is allowed.
+    message:
+      'save_to may interpolate only `{{ run.id }}` (no inputs/ctx/run.outputs in a filesystem path)',
+  });
 
 /** Human-gate kind. */
 export const GateTypeSchema = z.enum(['approval', 'input', 'review']);

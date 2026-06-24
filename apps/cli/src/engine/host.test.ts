@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -101,11 +101,14 @@ describe('createCliHost', () => {
         }
         await mediaWrite('sub/out.bin', new Uint8Array([1, 2, 3]));
         expect(Array.from(readFileSync(join(root, 'sub', 'out.bin')))).toEqual([1, 2, 3]);
-        // The port's realpath+commonpath jail rejects an escape above the root (the binding control), so a
-        // `..`-resolved path that slipped past the authoring guard still cannot write outside the scope root.
-        await expect(mediaWrite('../escape.bin', new Uint8Array([9]))).rejects.toBeInstanceOf(
-          Error,
+        // The wired port rejects a `..` traversal via its lexical relative-path guard — assert the CAUSE (not
+        // just "an error") so a wiring bug that rejected for the wrong reason wouldn't pass, and confirm nothing
+        // was written above the root. (The deeper realpath+commonpath symlink jail is covered by @relavium/db's
+        // media-write tests; here we only verify the CLI wired the port under the right scope root.)
+        await expect(mediaWrite('../escape.bin', new Uint8Array([9]))).rejects.toThrow(
+          /\.\.|escapes/,
         );
+        expect(existsSync(join(root, '..', 'escape.bin'))).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

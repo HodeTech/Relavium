@@ -156,13 +156,20 @@ describe('NodeSchema', () => {
     expect(parse('output.png')).toBe(true);
     expect(parse('out/{{run.id}}/image.png')).toBe(true);
     expect(parse('{{ run.id }}/image.png')).toBe(true);
-    // A non-run.id reference — or a filtered run.id — is rejected at parse, not only at runtime.
+    // A non-run.id reference — or a filtered / trailing-path run.id — is rejected at parse, not only at runtime.
     expect(parse('{{ inputs.name }}/x.png')).toBe(false);
     expect(parse('out/{{ ctx.dir }}/x.png')).toBe(false);
     expect(parse('{{ run.outputs.node.path }}')).toBe(false);
     expect(parse('{{ run.id | upper }}/x.png')).toBe(false);
+    expect(parse('{{ run.id.x }}/x.png')).toBe(false);
     // A mix that includes one disallowed reference alongside run.id is still rejected.
     expect(parse('{{ run.id }}/{{ inputs.x }}.png')).toBe(false);
+    // The strip-and-check shares no grammar with the engine lexer, so a brace-in-string reference (which a
+    // naive `{{[^}]*}}` regex would wrongly accept) is still rejected — closing the load-vs-runtime gap.
+    expect(parse('{{ run.outputs["a}b"] }}/x.png')).toBe(false);
+    // A degenerate / empty interpolation is rejected too (only `{{ run.id }}` survives the strip).
+    expect(parse('{{}}/x.png')).toBe(false);
+    expect(parse('{{   }}/x.png')).toBe(false);
   });
 
   it('rejects a retry_on listing a non-retryable error code (ADR-0040 A.4)', () => {
