@@ -122,14 +122,20 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
       }
       finalized = true;
       store.flush(); // paint the final live frame
-      await stop();
-      // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
-      const write =
-        options.writeSummary ??
-        ((text: string): void => {
-          stdout.write(text);
-        });
-      write(store.summaryText());
+      // The persistent summary MUST be written even if stop() rejects (ink can reject waitUntilExit() on an
+      // internal React error during unmount) — otherwise the run's scrollback summary is silently lost and a
+      // second finalize() is a no-op. The `finally` guarantees the write survives a stop() rejection.
+      try {
+        await stop();
+      } finally {
+        // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
+        const write =
+          options.writeSummary ??
+          ((text: string): void => {
+            stdout.write(text);
+          });
+        write(store.summaryText());
+      }
     },
   };
 }

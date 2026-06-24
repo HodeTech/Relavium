@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -308,12 +310,16 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
   // command — the cross-process path (reload snapshot + reconstruct checkpoint + resumeFromCheckpoint) — and
   // assert it drives to `run:completed`. This closes 2.K's deferred half over the same offline fixtures.
   it('resumes a gate-paused run via `relavium gate --approve` to completion (closes 2.K’s deferred half)', async () => {
-    const client = createClient(':memory:');
-    runMigrations(client.db);
+    // A real FILE db (not `:memory:`) so the gate leg opens a genuinely SEPARATE connection — exercising the
+    // reopen/reload a fresh-process `relavium gate` does, not a shared in-memory handle.
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-harness-'));
+    const dbPath = join(dir, 'history.db');
+    const runClient = createClient(dbPath);
+    runMigrations(runClient.db);
     try {
-      // Persist the run so a fresh-process `gate` can reload it (the durable substrate 2.H gives 2.G).
+      // Persist the run so a fresh connection's `gate` can reload it (the durable substrate 2.H gives 2.G).
       const openRunStore = (workflow: WorkflowDefinition): OpenedHistory => ({
-        store: createRunHistoryStore(client.db, {
+        store: createRunHistoryStore(runClient.db, {
           uuid: () => randomUUID(),
           now: () => Date.now(),
           workflow: {
@@ -325,39 +331,54 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
         close: () => {},
       });
 
-      // 1. Run to the gate → exit 3, persisted to the db.
+      // 1. Run to the gate → exit 3, persisted to the FILE.
       const runIo = captureIo();
       const runCode = await runCommand(
         { workflow: join(FIXTURES_DIR, 'human-gate.relavium.yaml'), input: [] },
         { io: runIo.io, global: globalOptions(), openRunStore },
       );
       expect(runCode).toBe(EXIT_CODES.gatePaused);
-      const runId = parseEvents(runIo.out()).find((e) => e.type === 'run:started')?.runId;
+      const preEvents = parseEvents(runIo.out());
+      const runId = preEvents.find((e) => e.type === 'run:started')?.runId;
       if (runId === undefined) {
         throw new Error('expected a run:started event carrying the runId');
       }
+      // Close the run's connection — the resume runs against a brand-new connection to the same file.
+      runClient.sqlite.close();
 
-      // 2. Resume from a FRESH process (the `gate` command) over the same db → exit 0, driven to completion.
+      // 2. Resume over a FRESH connection (a separate `gate` process reopening the file) → exit 0, to completion.
+      const gateClient = createClient(dbPath);
+      runMigrations(gateClient.db); // idempotent — mirrors openLocalDb's migrate-on-open
       const gateIo = captureIo();
-      const gateCode = await gateCommand(
-        { runId, approve: true },
-        {
-          io: gateIo.io,
-          global: globalOptions(),
-          openDb: () => ({ db: client.db, close: () => {} }),
-        },
-      );
-      expect(gateCode).toBe(EXIT_CODES.success);
-      expect(gateIo.err()).toBe(''); // the resume stream is stdout-pure NDJSON too (ADR-0049)
-      // The resume emits exactly the continuation: the gate resolves, then the downstream output, then done.
-      expect(parseEvents(gateIo.out()).map(signature)).toEqual([
-        'human_gate:resumed:gate',
-        'node:started:out',
-        'node:completed:out',
-        'run:completed',
-      ]);
+      try {
+        const gateCode = await gateCommand(
+          { runId, approve: true },
+          {
+            io: gateIo.io,
+            global: globalOptions(),
+            openDb: () => ({ db: gateClient.db, close: () => {} }),
+          },
+        );
+        expect(gateCode).toBe(EXIT_CODES.success);
+        expect(gateIo.err()).toBe(''); // the resume stream is stdout-pure NDJSON too (ADR-0049)
+        const resumed = parseEvents(gateIo.out());
+        // The resume emits exactly the continuation: the gate resolves, then the downstream output, then done.
+        expect(resumed.map(signature)).toEqual([
+          'human_gate:resumed:gate',
+          'node:started:out',
+          'node:completed:out',
+          'run:completed',
+        ]);
+        // 2.G's headline invariant: the resumed stream continues the seq counter GAP-FREE from the pre-resume
+        // max (lastSequenceNumber + 1), proving the cross-process counter was reseeded — not restarted at 0.
+        const lastPreSeq = Math.max(...preEvents.map((e) => e.sequenceNumber));
+        const resumedSeqs = resumed.map((e) => e.sequenceNumber);
+        expect(resumedSeqs).toEqual(resumedSeqs.map((_, i) => lastPreSeq + 1 + i));
+      } finally {
+        gateClient.sqlite.close();
+      }
     } finally {
-      client.sqlite.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

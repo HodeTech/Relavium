@@ -2,7 +2,7 @@ import { EngineStateError, type RunHandle, type WorkflowEngine } from '@relavium
 import type { HumanGatePausedEvent, RunEvent, RunPausedEvent } from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
-import { EXIT_CODES } from '../process/exit-codes.js';
+import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { RunRenderer } from '../render/renderer.js';
 
@@ -70,7 +70,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
 
       if (event.type === 'human_gate:paused' && gatePrompter !== undefined) {
         handledGates.add(event.gateId);
-        await resolveGateInline(engine, handle, renderer, gatePrompter, event);
+        await resolveGateInline(engine, handle, renderer, gatePrompter, event, io);
         continue; // a resolve continues the run; a cancel drains it to run:cancelled — keep consuming either way
       }
       // A non-breaking run:paused (a prompter handled every gate inline, no media park) is informational —
@@ -120,13 +120,23 @@ async function resolveGateInline(
   renderer: RunRenderer,
   prompter: GatePrompter,
   event: HumanGatePausedEvent,
+  io: CliIo,
 ): Promise<void> {
   let decision: Awaited<ReturnType<GatePrompter['prompt']>>;
   await renderer.suspend?.();
   try {
     decision = await prompter.prompt(event);
   } finally {
-    await renderer.resume?.();
+    // Re-mount best-effort: a re-mount failure (ink's render() throwing) must NOT mask the prompt's decision
+    // or its error — a throwing `finally` would replace the try's outcome. Surface it to stderr and move on,
+    // exactly like driveRun's teardown (finalize) guard above.
+    try {
+      await renderer.resume?.();
+    } catch (resumeErr) {
+      io.writeErr(
+        `failed to restore the live view after the gate prompt: ${resumeErr instanceof Error ? resumeErr.message : String(resumeErr)}\n`,
+      );
+    }
   }
   if (decision === null) {
     handle.cancel();
@@ -164,6 +174,25 @@ export function shouldBreakOnPause(
   const mediaPark = (event.pendingMediaJobNodeIds?.length ?? 0) > 0;
   const unhandledGate = event.gateIds.some((gateId) => !handledGates.has(gateId));
   return mediaPark || unhandledGate;
+}
+
+/**
+ * Map a {@link RunOutcome} (or `undefined` — the stream ended with no terminal/paused, an abnormal unwind) to
+ * its CLI exit code. The single owner of the outcome→exit contract, shared by `run` and `gate` so the two can
+ * never drift and a new `RunOutcome` variant has exactly one place to update. (`gate` handles its own
+ * `undefined` case — an idempotent closed-handle resume → exit 0 — BEFORE calling this; here `undefined` is the
+ * generic abnormal-unwind → failure, which is what `run` wants.)
+ */
+export function outcomeToExitCode(outcome: RunOutcome | undefined): ExitCode {
+  switch (outcome) {
+    case 'completed':
+      return EXIT_CODES.success;
+    case 'paused':
+      return EXIT_CODES.gatePaused;
+    default:
+      // failed / cancelled / (an abnormal no-terminal `undefined`) → non-zero workflow failure.
+      return EXIT_CODES.workflowFailed;
+  }
 }
 
 function nextOutcome(current: RunOutcome | undefined, event: RunEvent): RunOutcome | undefined {

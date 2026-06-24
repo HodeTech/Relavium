@@ -371,7 +371,11 @@ catalog and inspect past and active runs.
   desktop run-detail drawer replays).
 - `relavium status`: show currently active/paused runs and their per-node status
   from `runs` + `step_executions`.
-- Make all three honor `--json` for scriptable output and the documented exit
+- `relavium gate list [<runId>]`: list the pending human gates (all active runs, or
+  one run) with their gate type + node id, so an operator can pick the `gateId` to
+  pass to `relavium gate <runId> --gate <gateId>` — the multi-gate discovery surface
+  the 2.G `gate` command's `--gate` requirement points at (canonical: [commands.md](../../reference/cli/commands.md)).
+- Make these honor `--json` for scriptable output and the documented exit
   codes (`2` for an unknown `runId`).
 
 **Acceptance:** `list` shows discovered workflows with correct last-run status;
@@ -470,7 +474,7 @@ The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-ag
 - **2.N — `relavium chat-resume <sessionId>`.** Reload + continue a persisted session from `history.db`.
 - **2.O — `relavium chat-list`.** List session history (id, agent, title, last activity).
 - **2.P — `relavium chat-export <sessionId>`.** Export a session to a `.relavium.yaml` scaffold ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)).
-- **2.Q — `relavium chat --json` + `relavium agent run` + `relavium gate list`.** A deterministic `--json` `session:*` stream (CI-friendly); a one-shot `relavium agent run <agent> --input … [--json] [--fixture …]` on the same `AgentSession` infra; and `relavium gate list` / `gate <id>` to resolve one of possibly-several pending gates.
+- **2.Q — `relavium chat --json` + `relavium agent run`.** A deterministic `--json` `session:*` stream (CI-friendly); and a one-shot `relavium agent run <agent> --input … [--json] [--fixture …]` on the same `AgentSession` infra. _(The `relavium gate list` multi-gate discovery command lands with the read commands in **2.I**, per [commands.md](../../reference/cli/commands.md).)_
 
 **Acceptance:** an interactive `relavium chat` streams a multi-turn conversation with a tool call, persists, and resumes; `chat --json` emits a deterministic `session:*` stream; `agent run` invokes a single agent headlessly; chat `/exit` returns exit code 4.
 
@@ -672,11 +676,11 @@ this table does not restate them, it only sequences what remains.
 - **Gate-closing backbone — `2.G → 2.I → 2.L`:** these three PRs flip the remaining
   exit criteria (2.K + 2.H + 2.C + 2.E are done). The remaining four (**2.S, 2.R, chat, 2.J**)
   complete in-phase but do **not** block starting Phase 3.
-- **2.K fully closes at step 4 (2.G).** Its deferred gate-resume scenario can only be
-  exercised once the gate pause/resume surface exists, so 2.L (step 6) must follow 2.G even
+- **2.K fully closes at step 1 (2.G).** Its deferred gate-resume scenario can only be
+  exercised once the gate pause/resume surface exists, so 2.L (step 3) must follow 2.G even
   though 2.L's nominal dependency is just "2.K".
 - **The one judgement call — 2.S timing.** Front-load it as the *first* additive lane
-  (step 7); never tail it behind chat / MCP / filler. It is the long pole, carries the only
+  (step 4); never tail it behind chat / MCP / filler. It is the long pole, carries the only
   dedicated security review (the `EgressCapability.fetch` SSRF mechanism), and its injectable
   ports are inherited by desktop ([§3.B](phase-3-desktop.md)) + VS Code ([§4.N](phase-4-vscode.md)).
   Pull it even earlier (right after 2.H) if de-risking that security review outweighs reaching

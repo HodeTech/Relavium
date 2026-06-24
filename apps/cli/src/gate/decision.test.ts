@@ -56,6 +56,9 @@ describe('decisionFromFlags', () => {
     expect(decisionFromFlags({ approve: true, reject: true })).toMatchObject({ ok: false });
     expect(decisionFromFlags({ approve: true, input: 'x' })).toMatchObject({ ok: false });
     expect(decisionFromFlags({ reject: true, input: 'x' })).toMatchObject({ ok: false });
+    expect(decisionFromFlags({ approve: true, reject: true, input: 'x' })).toMatchObject({
+      ok: false,
+    });
   });
 
   it('builds an approval (with optional comment)', () => {

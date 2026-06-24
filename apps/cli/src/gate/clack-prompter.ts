@@ -59,10 +59,10 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
 
       if (event.gateType === 'input') {
         // A human types a value: kept as the raw string (predictable). The structured/JSON path is the
-        // scripted `relavium gate --input <json>` flag (see decision.ts `parseGateInput`).
-        const value = await deps.text({
-          message: event.message.trim() === '' ? 'Provide input' : event.message,
-        });
+        // scripted `relavium gate --input <json>` flag (see decision.ts `parseGateInput`). The prompt label is
+        // a generic 'Enter value' — the gate's message is already shown in the card above, so repeating it on
+        // the prompt line would just echo the same text twice.
+        const value = await deps.text({ message: 'Enter value', placeholder: '' });
         return deps.isCancel(value) ? null : inputDecision(value);
       }
 

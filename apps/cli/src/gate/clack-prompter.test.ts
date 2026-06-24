@@ -100,6 +100,26 @@ describe('createClackGatePrompter', () => {
     expect(text).not.toHaveBeenCalled(); // approved → no comment prompt
   });
 
+  it('review gate → reject collects a comment, and → cancel returns null', async () => {
+    const rejected = await createClackGatePrompter(
+      deps({ confirm: () => Promise.resolve(false), text: () => Promise.resolve('looks off') }),
+    ).prompt(gate({ gateType: 'review' }));
+    expect(rejected).toEqual({ decision: 'rejected', decidedBy: 'cli', comment: 'looks off' });
+
+    const cancelled = await createClackGatePrompter(
+      deps({ confirm: () => Promise.resolve(CANCEL) }),
+    ).prompt(gate({ gateType: 'review' }));
+    expect(cancelled).toBeNull();
+  });
+
+  it('the card defaults to auto-reject when the gate has a deadline but no timeoutAction', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note })).prompt(
+      gate({ expiresAt: '2026-06-24T11:00:00.000Z' }), // timeoutAction omitted → `?? 'reject'`
+    );
+    expect(note.mock.calls[0]?.[0]).toContain('auto-reject');
+  });
+
   it('shows the deadline in the card when the gate has one', async () => {
     const note = vi.fn<(message: string, title: string) => void>();
     await createClackGatePrompter(deps({ note })).prompt(

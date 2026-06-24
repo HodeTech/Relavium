@@ -1,22 +1,49 @@
 import { randomUUID } from 'node:crypto';
 
-import { parseWorkflow, type CheckpointState } from '@relavium/core';
+import {
+  EngineStateError,
+  parseWorkflow,
+  type CheckpointState,
+  type RunHandle,
+  type WorkflowEngine,
+} from '@relavium/core';
 import {
   createClient,
   createRunHistoryStore,
   runMigrations,
   type Db,
   type DbClient,
+  type RunHistoryStore,
 } from '@relavium/db';
+import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildEngine } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
+import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
 import { gateCommand, selectGate, type GateCommandDeps } from './gate.js';
+
+/** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
+ *  that the real engine can't be driven into deterministically (they need a concurrent-settle race). */
+function stubEngine(resumeFromCheckpoint: WorkflowEngine['resumeFromCheckpoint']): WorkflowEngine {
+  return { resumeFromCheckpoint } as unknown as WorkflowEngine;
+}
+
+/** A closed RunHandle: its event stream completes immediately with zero events (what createClosedRunHandle yields). */
+function emptyHandle(runId: string): RunHandle {
+  return {
+    runId,
+    // eslint-disable-next-line @typescript-eslint/require-await
+    events: (async function* (): AsyncGenerator<RunEvent> {})(),
+    subscribe: () => () => {},
+    cancel: () => {},
+    whenConsumersReady: () => Promise.resolve(),
+  };
+}
 
 // gate → double (reads inputs.n, restored on resume) → out. The in-memory host pauses at the fail-closed gate.
 const GATED = `schema_version: '1.0'
@@ -51,6 +78,49 @@ workflow:
     - { from: g2, to: out }
 `;
 
+// SEQUENTIAL gates (g1 → g2): only g1 pends initially; resolving it re-pauses the run at g2.
+const SEQ_GATES = `schema_version: '1.0'
+workflow:
+  id: gate-seq
+  nodes:
+    - { id: start, type: input }
+    - { id: g1, type: human_gate, gate_type: approval }
+    - { id: g2, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g1 }
+    - { from: g1, to: g2 }
+    - { from: g2, to: out }
+`;
+
+// A gate_type=input gate, for the --input resume path.
+const INPUT_GATED = `schema_version: '1.0'
+workflow:
+  id: gate-input
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }
+`;
+
+// A run with a SECRET-typed input — masked at persist time, so a cross-process resume cannot restore it.
+const SECRET_GATED = `schema_version: '1.0'
+workflow:
+  id: gate-secret
+  inputs:
+    - { name: token, type: secret }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }
+`;
+
 function globalOptions(): GlobalOptions {
   return {
     json: false,
@@ -77,6 +147,15 @@ describe('gateCommand', () => {
   /** The injected deps for a resume over the SHARED in-memory db (no-op close — the db spans the whole test). */
   function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
     return { io, global: globalOptions(), openDb: () => ({ db, close: () => {} }) };
+  }
+
+  /** A read-only history store over the shared db (for asserting persisted events post-resume). */
+  function reader(): RunHistoryStore {
+    return createRunHistoryStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+      workflow: { slug: 'x', name: 'x', definitionJson: '{}' },
+    });
   }
 
   /** Drive a gated workflow to its pause against the db store (persisting run:started → run:paused). */
@@ -150,6 +229,130 @@ describe('gateCommand', () => {
     await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
       code: 'invalid_invocation',
     });
+  });
+
+  it('surfaces a valid-JSON-but-non-object inputs blob (array) as exit-2', async () => {
+    const { runId } = await setupPausedRun();
+    client.sqlite.prepare('UPDATE runs SET input_json = ? WHERE id = ?').run('[]', runId);
+    const { io } = captureIo();
+    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+      code: 'invalid_invocation',
+    });
+  });
+
+  it('surfaces a corrupt workflow snapshot (bad JSON) as exit-2', async () => {
+    const { runId } = await setupPausedRun();
+    client.sqlite
+      .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
+      .run('{not json', runId);
+    const { io } = captureIo();
+    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+      code: 'invalid_invocation',
+    });
+  });
+
+  it('surfaces a schema-invalid workflow snapshot as exit-2', async () => {
+    const { runId } = await setupPausedRun();
+    client.sqlite
+      .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
+      .run('{"workflow":{}}', runId);
+    const { io } = captureIo();
+    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+      code: 'invalid_invocation',
+    });
+  });
+
+  it('surfaces a run with a snapshot but no event log as exit-2 (no resumable state)', async () => {
+    const { runId } = await setupPausedRun();
+    client.sqlite.prepare('DELETE FROM run_events WHERE run_id = ?').run(runId);
+    const { io } = captureIo();
+    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+      code: 'invalid_invocation',
+    });
+  });
+
+  it('fails closed (exit-2) on a run with a SECRET input — a masked value can never be restored on resume', async () => {
+    const { runId } = await setupPausedRun(SECRET_GATED, { token: ['s', 'k', '-secret'].join('') });
+    const { io } = captureIo();
+    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+      code: 'invalid_invocation',
+    });
+    // And the masked placeholder is what was persisted — never the plaintext (defence-in-depth check).
+    const started = reader()
+      .loadRunEvents(runId)
+      .find((e) => e.type === 'run:started');
+    expect(JSON.stringify(started)).not.toContain('sk-secret');
+  });
+
+  it('resolves an input gate via --input end-to-end, persisting the input_provided payload', async () => {
+    const { runId } = await setupPausedRun(INPUT_GATED, {});
+    const { io } = captureIo();
+    const code = await gateCommand({ runId, input: 'us-east-1' }, deps(io));
+    expect(code).toBe(EXIT_CODES.success);
+    expect(
+      reader()
+        .loadRunEvents(runId)
+        .find((e) => e.type === 'human_gate:resumed'),
+    ).toMatchObject({
+      decision: 'input_provided',
+      payload: 'us-east-1',
+    });
+  });
+
+  it('maps a closed-handle resume (a concurrent-settle race) to an idempotent exit 0', async () => {
+    const { runId } = await setupPausedRun();
+    const { io, out } = captureIo();
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        buildEngine: () => Promise.resolve(stubEngine(() => Promise.resolve(emptyHandle(runId)))),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success); // a closed handle (already terminal) is an idempotent no-op, not a failure
+    expect(out()).toContain('already settled');
+  });
+
+  it('maps a workflow_mismatch EngineStateError from resumeFromCheckpoint to exit-2', async () => {
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    await expect(
+      gateCommand(
+        { runId, approve: true },
+        {
+          ...deps(io),
+          buildEngine: () =>
+            Promise.resolve(
+              stubEngine(() =>
+                Promise.reject(new EngineStateError('workflow_mismatch', 'mismatch')),
+              ),
+            ),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+  });
+
+  it('a sequential multi-gate: blind --approve resolves g1 (re-pause → exit 3), a second resolves g2 (exit 0)', async () => {
+    // The documented per-gate idempotency footgun: without --gate, a repeat auto-fills the NOW-pending next gate.
+    const { runId, gateIds } = await setupPausedRun(SEQ_GATES, {});
+    expect(gateIds).toHaveLength(1); // only g1 pends initially (sequential, not parallel)
+    const { io } = captureIo();
+    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.gatePaused); // g1 → re-pause at g2
+    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success); // blind repeat resolves g2
+  });
+
+  it('wires selectGatePrompter through to driveRun: a re-pause at a later gate is resolved inline (exit 0)', async () => {
+    const { runId } = await setupPausedRun(SEQ_GATES, {});
+    const { io } = captureIo();
+    const prompter: GatePrompter = {
+      prompt: () => Promise.resolve({ decision: 'approved', decidedBy: 'cli' }),
+    };
+    // Resume g1 via the flag; the run re-pauses at g2, which the INJECTED prompter resolves inline → completes.
+    const code = await gateCommand(
+      { runId, approve: true },
+      { ...deps(io), selectGatePrompter: () => prompter },
+    );
+    expect(code).toBe(EXIT_CODES.success);
   });
 
   it('resumes on --reject, persisting the rejection + comment', async () => {

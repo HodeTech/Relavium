@@ -150,4 +150,39 @@ describe('createInkRenderer', () => {
     expect(clearSpy).toHaveBeenCalled(); // the setInterval frame loop was cleared, not leaked (finalize never runs)
     clearSpy.mockRestore();
   });
+
+  it('writes the persistent summary even if stop() rejects (a waitUntilExit throw must not lose it)', async () => {
+    const unmount = vi.fn();
+    const waitUntilExit = vi.fn(() => Promise.reject(new Error('exit boom')));
+    const summaries: string[] = [];
+    const renderer = createInkRenderer({
+      color: false,
+      mount: () => ({ unmount, waitUntilExit }),
+      writeSummary: (text) => summaries.push(text),
+    });
+    renderer.onEvent({ type: 'run:cancelled', runId: RUN, timestamp: TS, sequenceNumber: 1 });
+    // The stop() rejection still propagates (driveRun's outer catch logs it), but the summary is written first.
+    await expect(renderer.finalize?.()).rejects.toThrow('exit boom');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain('run cancelled');
+  });
+
+  it('a mount() failure during resume() re-throws (the re-mount path), and the frame loop is not leaked', async () => {
+    let mounts = 0;
+    const unmount = vi.fn();
+    const waitUntilExit = vi.fn(() => Promise.resolve());
+    const mount = (): InkMountInstance => {
+      mounts += 1;
+      if (mounts === 2) {
+        throw new Error('re-mount failed'); // construction mount ok; the resume re-mount throws
+      }
+      return { unmount, waitUntilExit };
+    };
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
+    const renderer = createInkRenderer({ color: false, mount, writeSummary: () => {} });
+    await renderer.suspend?.();
+    expect(() => renderer.resume?.()).toThrow('re-mount failed');
+    expect(clearSpy).toHaveBeenCalled(); // start() cleared the new frame loop on the mount throw — not leaked
+    clearSpy.mockRestore();
+  });
 });

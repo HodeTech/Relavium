@@ -3,11 +3,12 @@ import { randomUUID } from 'node:crypto';
 import {
   EngineStateError,
   type CheckpointState,
+  type RunHandle,
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
 import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
-import { WorkflowSchema, type RunStatus } from '@relavium/shared';
+import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
@@ -27,7 +28,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
-import { driveRun } from './drive.js';
+import { driveRun, outcomeToExitCode } from './drive.js';
 
 export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
@@ -94,6 +95,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
 
     const workflow = parseSnapshot(snapshot.workflowDefinitionSnapshot, args.runId);
     const inputs = parseInputs(snapshot.inputJson, args.runId);
+    assertNoMaskedSecretInputs(inputs, args.runId);
 
     // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
     // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
@@ -143,7 +145,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       providers,
       host: createCliHost(store, { checkpointer }),
     });
-    let handle;
+    let handle: RunHandle;
     try {
       handle = await engine.resumeFromCheckpoint({
         runId: args.runId,
@@ -175,15 +177,15 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       io: deps.io,
     });
 
-    switch (outcome) {
-      case 'completed':
-        return EXIT_CODES.success;
-      case 'paused':
-        // The resumed run paused again at a LATER gate — resume that one next (exit 3, like a fresh CI pause).
-        return EXIT_CODES.gatePaused;
-      default:
-        return EXIT_CODES.workflowFailed;
+    if (outcome === undefined) {
+      // The resumed handle closed with NO events. The engine returns a closed handle when its own internal
+      // checkpoint re-read already found the run terminal — i.e. a concurrent `relavium gate` settled it in the
+      // window between our selectGate pre-check and the engine's re-read. That is an idempotent no-op (the run
+      // already completed), not a failure: exit 0, mirroring the selectGate terminal path.
+      deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
+      return EXIT_CODES.success;
     }
+    return outcomeToExitCode(outcome);
   } finally {
     opened.close();
   }
@@ -255,16 +257,16 @@ function parseSnapshot(snapshotJson: string, runId: string): WorkflowDefinition 
   }
 }
 
-/**
- * Restore the run's inputs from the frozen `input_json`. A corrupt / non-object value is an exit-2 fault
- * (matching {@link parseSnapshot}) — never a silent `{}`, which would resume with every `{{ inputs.x }}`
- * evaluating to `undefined` and fail confusingly at a downstream node instead of cleanly up front.
- */
 /** A non-null, non-array object — the shape a run's restored inputs must have (a guard, so no `as` cast). */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Restore the run's inputs from the frozen `input_json`. A corrupt / non-object value is an exit-2 fault
+ * (matching {@link parseSnapshot}) — never a silent `{}`, which would resume with every `{{ inputs.x }}`
+ * evaluating to `undefined` and fail confusingly at a downstream node instead of cleanly up front.
+ */
 function parseInputs(inputJson: string, runId: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -283,4 +285,26 @@ function parseInputs(inputJson: string, runId: string): Record<string, unknown> 
     );
   }
   return parsed; // narrowed by isPlainObject — no cast
+}
+
+/**
+ * Fail closed if any restored input is a {@link MaskedSecret} placeholder. The durable `run:started.inputs`
+ * the engine persists are **masked** — a `secret`-typed input is stored as `{ secret: true, ref }`, never its
+ * plaintext (ADR-0006/0036). So a cross-process resume genuinely cannot restore the real value: resuming with
+ * the masked placeholder would let a post-gate `{{ inputs.<secret> }}` silently evaluate to the placeholder
+ * object, diverging from the in-process run. We refuse (exit 2) with an actionable message rather than resume
+ * a secret-bearing run incorrectly. (Re-providing secret inputs on resume is a tracked follow-up — see
+ * [deferred-tasks](../../../../docs/roadmap/deferred-tasks.md).)
+ */
+function assertNoMaskedSecretInputs(inputs: Record<string, unknown>, runId: string): void {
+  const masked = Object.keys(inputs).filter(
+    (key) => MaskedSecretSchema.safeParse(inputs[key]).success,
+  );
+  if (masked.length > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `run ${runId} has secret input(s) [${masked.join(', ')}] that are not persisted in plaintext, so a ` +
+        `cross-process resume cannot restore them — re-run the workflow instead of resuming.`,
+    );
+  }
 }

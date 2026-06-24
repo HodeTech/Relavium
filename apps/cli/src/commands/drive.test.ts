@@ -114,19 +114,42 @@ describe('driveRun — interactive gate', () => {
     expect(events.at(-1)?.type).toBe('run:cancelled');
   });
 
-  it('re-mounts the TUI even if the prompt throws (finally), then the error unwinds', async () => {
+  it('re-mounts the TUI even if the prompt throws (finally), cancels the live run, then the error unwinds', async () => {
     const { engine, handle } = await startGatedRun();
     const { renderer } = recordingRenderer();
     const prompter: GatePrompter = {
       prompt: () => Promise.reject(new Error('prompt boom')),
     };
     const { io } = captureIo();
+    const cancelSpy = vi.spyOn(handle, 'cancel');
 
     await expect(
       driveRun({ engine, handle, makeRenderer: () => renderer, gatePrompter: prompter, io }),
     ).rejects.toThrow('prompt boom');
     expect(renderer.resume).toHaveBeenCalledTimes(1); // the suspend/prompt/resume finally restored the view
     expect(renderer.finalize).toHaveBeenCalledTimes(1); // driveRun's finally still finalized
+    expect(cancelSpy).toHaveBeenCalledTimes(1); // ...and cancelled the still-live run (abnormal-unwind guard)
+  });
+
+  it('a renderer.resume() throw does NOT mask the prompt error (logs the resume failure to stderr)', async () => {
+    const { engine, handle } = await startGatedRun();
+    const renderer: RunRenderer = {
+      onEvent: () => {},
+      suspend: vi.fn(),
+      resume: vi.fn(() => {
+        throw new Error('resume boom');
+      }),
+      finalize: vi.fn(),
+    };
+    const prompter: GatePrompter = {
+      prompt: () => Promise.reject(new Error('prompt boom')),
+    };
+    const { io, err } = captureIo();
+
+    await expect(
+      driveRun({ engine, handle, makeRenderer: () => renderer, gatePrompter: prompter, io }),
+    ).rejects.toThrow('prompt boom'); // the PROMPT error survives — the resume throw did not replace it
+    expect(err()).toContain('failed to restore the live view'); // the resume failure went to stderr instead
   });
 
   it('without a prompter, a gate pause stops the loop (→ paused, exit 3)', async () => {

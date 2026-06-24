@@ -22,13 +22,13 @@ import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { CliError } from '../process/errors.js';
-import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
+import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
-import { driveRun } from './drive.js';
+import { driveRun, outcomeToExitCode } from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
 
 export interface RunCommandArgs {
@@ -142,15 +142,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       io: deps.io,
     });
 
-    switch (outcome) {
-      case 'completed':
-        return EXIT_CODES.success;
-      case 'paused':
-        return EXIT_CODES.gatePaused;
-      default:
-        // failed / cancelled / (an unreachable no-terminal) → non-zero workflow failure.
-        return EXIT_CODES.workflowFailed;
-    }
+    return outcomeToExitCode(outcome);
   } finally {
     opened?.close();
   }

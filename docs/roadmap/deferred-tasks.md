@@ -489,6 +489,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   + resume path as a human gate, behind a budget-specific command + flags), so it is a small follow-up once
   2.G lands — candidate home: alongside 2.I, or its own short workstream. **Deliberately out of 2.G** (a
   distinct ADR-0028 surface, not in 2.G's acceptance). *(low · apps/cli/src/commands/; ADR-0028)*
+- [ ] **Re-provide `secret`-typed inputs on cross-process resume.** The durable `run:started.inputs` are
+  **masked** (a `secret` input is persisted as `{ secret: true, ref }`, never plaintext — ADR-0006/0036), so a
+  fresh-process `relavium gate` resume cannot restore the real value. 2.G **fails closed (exit 2)** when a
+  restored input is a `MaskedSecret` (`assertNoMaskedSecretInputs`, gate.ts) rather than resume with a broken
+  value. The proper fix lets the operator re-supply the secret on resume (e.g. `relavium gate <runId> --secret
+  token=…` read from stdin like `provider set-key`, or a keychain/env re-resolution keyed by the input
+  `ref`) so a secret-bearing run becomes resumable. Until then the fail-closed + the
+  [commands.md](../reference/cli/commands.md) note stand. *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
 
 ## Schema / validation hardening
 
