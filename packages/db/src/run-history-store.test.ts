@@ -626,6 +626,6 @@ describe('createRunHistoryReader', () => {
     const store = storeFor('alpha');
     // The store's listRuns/loadRun/loadRunEvents are the reader's — same rows, same order.
     expect(store.listRuns().map((r) => r.id)).toEqual(reader.listRuns().map((r) => r.id));
-    expect(store.loadRunEvents('run-1').length).toBe(reader.loadRunEvents('run-1').length);
+    expect(store.loadRunEvents('run-1')).toHaveLength(reader.loadRunEvents('run-1').length);
   });
 });

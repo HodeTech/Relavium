@@ -26,6 +26,27 @@ export function captureIo(): { io: CliIo; out: () => string; err: () => string }
   return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
 }
 
+/**
+ * Parse an NDJSON stdout capture into typed records for assertions: split on newlines, `JSON.parse` each
+ * non-empty line to `unknown`, and REJECT a line that is not a JSON object — so a malformed or non-object
+ * fixture fails loudly here rather than being silently accepted by an inline cast. The element type `T` is the
+ * caller's asserted contract (the runtime guard catches structural garbage; the per-test assertions verify the
+ * fields), centralizing the one narrowing the read-command tests share.
+ */
+export function parseNdjson<T = Record<string, unknown>>(text: string): T[] {
+  return text
+    .trimEnd()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line): T => {
+      const parsed: unknown = JSON.parse(line);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error(`expected one JSON object per NDJSON line, got: ${line}`);
+      }
+      return parsed as T;
+    });
+}
+
 /** The variant body of a RunEvent (envelope stripped) — so {@link seedRun}'s emits are type-checked per variant. */
 type EventBody<T extends RunEvent['type']> = Omit<
   Extract<RunEvent, { type: T }>,
@@ -96,6 +117,7 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   });
   if (opts.state === 'paused') {
     await emit('node:started', { nodeId: 'g', nodeType: 'human_in_the_loop' });
+    let parked = false;
     if (opts.budgetGateId !== undefined) {
       await emit('budget:paused', {
         nodeId: 'g',
@@ -103,6 +125,7 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
         spentMicrocents: 100,
         limitMicrocents: 50,
       });
+      parked = true;
     }
     if (opts.gate !== undefined) {
       await emit('human_gate:paused', {
@@ -111,6 +134,12 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
         gateType: opts.gate.gateType,
         message: opts.gate.message ?? 'ok?',
       });
+      parked = true;
+    }
+    if (!parked) {
+      // No specific gate supplied — still GUARANTEE the run parks (a media-job-style park), so `state: 'paused'`
+      // is never silently a 'running' run. run:paused folds to status 'paused' with no pending human gate.
+      await emit('run:paused', { pendingGateCount: 0, gateIds: [] });
     }
   } else if (opts.state === 'completed') {
     await emit('run:completed', {

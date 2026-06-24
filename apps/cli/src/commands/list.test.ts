@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, seedRun } from '../test-support.js';
+import { captureIo, parseNdjson, seedRun } from '../test-support.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { listCommand, type ListCommandDeps } from './list.js';
 
@@ -85,17 +85,11 @@ describe('listCommand', () => {
     await seedRun(db, { slug: 'code-review', runId: 'r1', state: 'completed' });
 
     listCommand({ agents: false }, deps(io, { catalog: WORKFLOWS, json: true }));
-    const records = out()
-      .trimEnd()
-      .split('\n')
-      .map(
-        (line) =>
-          JSON.parse(line) as {
-            kind: string;
-            slug: string;
-            lastRun: { status: string } | null;
-          },
-      );
+    const records = parseNdjson<{
+      kind: string;
+      slug: string;
+      lastRun: { status: string } | null;
+    }>(out());
     expect(records).toHaveLength(2);
     expect(records.every((r) => r.kind === 'workflows')).toBe(true);
     expect(records.find((r) => r.slug === 'code-review')?.lastRun?.status).toBe('completed');

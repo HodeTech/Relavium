@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { isCliError } from '../process/errors.js';
+import { EXIT_CODES } from '../process/exit-codes.js';
 import { discoverCatalog } from './catalog.js';
 
 const VALID_WORKFLOW = `schema_version: '1.0'
@@ -119,9 +121,17 @@ describe('discoverCatalog', () => {
     // which is a real fault, not an empty catalog. Cross-platform (no chmod/perms needed).
     writeFileSync(join(configDir, 'workflows'), 'not a directory', 'utf8');
 
-    expect(() =>
-      discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }),
-    ).toThrow(/could not read the workflows catalog/);
+    try {
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect(isCliError(err)).toBe(true);
+      if (isCliError(err)) {
+        expect(err.code).toBe('invalid_invocation');
+        expect(err.exitCode).toBe(EXIT_CODES.invalidInvocation);
+        expect(err.message).toMatch(/could not read the workflows catalog/);
+      }
+    }
   });
 
   it('flags a secret-taint workflow as invalid, surfacing only the taint path (no value)', () => {

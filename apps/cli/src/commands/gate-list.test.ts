@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, seedRun } from '../test-support.js';
+import { captureIo, parseNdjson, seedRun } from '../test-support.js';
 import { gateListCommand, type GateListCommandDeps } from './gate-list.js';
 
 function globalOptions(json = false): GlobalOptions {
@@ -102,10 +102,7 @@ describe('gateListCommand', () => {
     });
 
     gateListCommand({}, deps(io, true));
-    const rows = out()
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const rows = parseNdjson(out());
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       runId: 'r1',

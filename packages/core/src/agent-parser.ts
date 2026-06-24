@@ -71,9 +71,15 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
 
   const result = AgentSchema.safeParse(raw);
   if (!result.success) {
-    // Field PATHS only (key names / indices) — never an authored value, so the message stays secret-free.
+    // Field PATHS only (key names / indices) — never an authored value, so the message stays secret-free. A
+    // root-level `unrecognized_keys` issue has an EMPTY path, so name the offending keys (`issue.keys`)
+    // rather than collapsing to `agent` — mirroring parser.ts, so a top-level unknown key is reported.
     const fields = [
-      ...new Set(result.error.issues.map((issue) => issue.path.map(String).join('.') || 'agent')),
+      ...new Set(
+        result.error.issues.flatMap((issue) =>
+          issue.code === 'unrecognized_keys' ? issue.keys : [issue.path.map(String).join('.') || 'agent'],
+        ),
+      ),
     ];
     throw new AgentParseError(
       'agent_validation',

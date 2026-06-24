@@ -145,7 +145,8 @@ function renderHuman(
     return a.localeCompare(b);
   });
   for (const tag of tags) {
-    io.writeOut(`  ${tag === UNTAGGED ? UNTAGGED : `#${tag}`}\n`);
+    const header = tag === UNTAGGED ? UNTAGGED : `#${tag}`;
+    io.writeOut(`  ${header}\n`);
     for (const entry of byTag.get(tag) ?? []) {
       // `?? null` so a never-run workflow shows `[last: —]` (undefined would omit the label — agents only).
       io.writeOut(`    ${entryLine(entry, lastBySlug.get(entry.slug) ?? null)}\n`);
@@ -163,7 +164,8 @@ function entryLine(entry: CatalogEntry, last: RunRecord | undefined | null): str
     parts.push(`[last: ${last === null ? '—' : last.status}]`);
   }
   if (!entry.valid) {
-    parts.push(`(invalid${entry.error === undefined ? '' : `: ${entry.error}`})`);
+    const reason = entry.error === undefined ? '' : `: ${entry.error}`;
+    parts.push(`(invalid${reason})`);
   }
   return parts.join('  ');
 }

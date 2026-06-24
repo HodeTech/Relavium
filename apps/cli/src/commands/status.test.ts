@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, seedRun } from '../test-support.js';
+import { captureIo, parseNdjson, seedRun } from '../test-support.js';
 import { statusCommand, type StatusCommandDeps } from './status.js';
 
 function globalOptions(json = false): GlobalOptions {
@@ -64,18 +64,12 @@ describe('statusCommand', () => {
     });
 
     statusCommand(deps(io, true));
-    const records = out()
-      .trimEnd()
-      .split('\n')
-      .map(
-        (line) =>
-          JSON.parse(line) as {
-            runId: string;
-            status: string;
-            steps: { nodeId: string }[];
-            pendingGates: { gateId: string }[];
-          },
-      );
+    const records = parseNdjson<{
+      runId: string;
+      status: string;
+      steps: { nodeId: string }[];
+      pendingGates: { gateId: string }[];
+    }>(out());
     expect(records).toHaveLength(1);
     expect(records[0]?.runId).toBe('paused-1');
     expect(records[0]?.status).toBe('paused');

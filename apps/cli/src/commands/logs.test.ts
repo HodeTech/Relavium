@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, seedRun } from '../test-support.js';
+import { captureIo, parseNdjson, seedRun } from '../test-support.js';
 import { logsCommand, type LogsCommandDeps } from './logs.js';
 
 function globalOptions(json = false): GlobalOptions {
@@ -71,10 +71,7 @@ describe('logsCommand', () => {
     await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });
 
     expect(logsCommand({ runId: 'run-1' }, deps(io, true))).toBe(EXIT_CODES.success);
-    const events = out()
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as { type: string; runId: string; sequenceNumber: number });
+    const events = parseNdjson<{ type: string; runId: string; sequenceNumber: number }>(out());
     expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 3]);
     expect(events[0]?.type).toBe('run:started');
     expect(events.every((e) => e.runId === 'run-1')).toBe(true);

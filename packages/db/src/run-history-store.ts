@@ -453,7 +453,9 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .select()
         .from(runs)
         .where(isNull(runs.deletedAt))
-        .orderBy(desc(runs.createdAt))
+        // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs
+        // (same tiebreak as loadLatestRunPerWorkflow) — keeps `status`/`list` output deterministic.
+        .orderBy(desc(runs.createdAt), desc(runs.id))
         .all()
         .map(fromRunRow),
 
@@ -482,7 +484,7 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .select()
         .from(runs)
         .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
-        .orderBy(desc(runs.createdAt))
+        .orderBy(desc(runs.createdAt), desc(runs.id)) // stable secondary key — see listRuns
         .all()
         .map(fromRunRow),
 

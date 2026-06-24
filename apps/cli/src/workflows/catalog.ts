@@ -37,7 +37,15 @@ export interface CatalogEntry {
   readonly error?: string;
 }
 
-const YAML_SUFFIXES = ['.relavium.yaml', '.agent.yaml', '.yaml', '.yml'] as const;
+// Longest-first, so `foo.relavium.yml` strips the compound suffix to `foo` (not `foo.relavium`).
+const YAML_SUFFIXES = [
+  '.relavium.yaml',
+  '.relavium.yml',
+  '.agent.yaml',
+  '.agent.yml',
+  '.yaml',
+  '.yml',
+] as const;
 
 /** Strip the longest known YAML suffix to get the catalog id fallback (`code-review.relavium.yaml` → `code-review`). */
 function fileStem(name: string): string {

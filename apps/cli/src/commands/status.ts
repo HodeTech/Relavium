@@ -81,6 +81,7 @@ function toJson(status: RunStatus): unknown {
       gateId: gate.gateId,
       nodeId: gate.nodeId,
       gateType: gate.gateType,
+      message: gate.message,
       ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
     })),
   };
@@ -97,6 +98,7 @@ function renderRun(io: CliIo, status: RunStatus): void {
     io.writeOut(`  ${step.status.padEnd(9)} ${step.nodeId} [${step.nodeType}]${attempt}\n`);
   }
   for (const gate of status.pendingGates) {
-    io.writeOut(`  ⏸ pending gate ${gate.gateId} (${gate.gateType}) at ${gate.nodeId}\n`);
+    const message = gate.message === '' ? '' : ` — "${gate.message}"`;
+    io.writeOut(`  ⏸ pending gate ${gate.gateId} (${gate.gateType}) at ${gate.nodeId}${message}\n`);
   }
 }

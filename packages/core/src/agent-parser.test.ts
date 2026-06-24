@@ -31,12 +31,14 @@ describe('parseAgent', () => {
     expect(() => parseAgent(VALID)).toThrow(AgentParseError);
     try {
       parseAgent(VALID, { source: 'agents/summarizer.agent.yaml' });
+      expect.unreachable('should have thrown');
     } catch (err) {
-      expect(err).toBeInstanceOf(AgentParseError);
-      const e = err as AgentParseError;
-      expect(e.code).toBe('agent_validation');
-      // The source label is echoed; the unknown key is named; no authored value leaks.
-      expect(e.message).toContain('agents/summarizer.agent.yaml');
+      if (!(err instanceof AgentParseError)) throw err; // narrows + fails the test on a wrong type
+      expect(err.code).toBe('agent_validation');
+      // The unknown key is named via issue.keys (a root-level unrecognized_keys), not collapsed to `agent`.
+      expect(err.fields).toContain('tags');
+      // The source label is echoed; no authored value leaks.
+      expect(err.message).toContain('agents/summarizer.agent.yaml');
     }
   });
 
@@ -45,8 +47,8 @@ describe('parseAgent', () => {
       parseAgent('id: x\n  : : :');
       expect.unreachable('should have thrown');
     } catch (err) {
-      expect(err).toBeInstanceOf(AgentParseError);
-      expect((err as AgentParseError).code).toBe('agent_syntax');
+      if (!(err instanceof AgentParseError)) throw err;
+      expect(err.code).toBe('agent_syntax');
     }
   });
 
@@ -56,11 +58,10 @@ describe('parseAgent', () => {
       parseAgent('id: Not_Kebab\nmodel: m\nprovider: anthropic');
       expect.unreachable('should have thrown');
     } catch (err) {
-      expect(err).toBeInstanceOf(AgentParseError);
-      const e = err as AgentParseError;
-      expect(e.code).toBe('agent_validation');
-      expect(e.fields).toContain('system_prompt'); // missing required field is named
-      expect(e.message).not.toContain('Not_Kebab'); // an invalid authored value is not echoed
+      if (!(err instanceof AgentParseError)) throw err;
+      expect(err.code).toBe('agent_validation');
+      expect(err.fields).toContain('system_prompt'); // missing required field is named
+      expect(err.message).not.toContain('Not_Kebab'); // an invalid authored value is not echoed
     }
   });
 });
