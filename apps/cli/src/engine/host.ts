@@ -65,14 +65,18 @@ export function createCliHost(
         clearTimeout(timer);
       };
     },
-    // The host media-egress mechanism (1.AF/D9, ADR-0043): fetch a public-HTTPS `url`'s bytes with the
-    // SSRF-validated, size-bounded connect (HTTPS-only + no credentials-in-url → DNS-resolve → validate EVERY
-    // resolved IP → connect by the pinned validated IP → per-hop redirect re-validation). `allowPrivate: false`
-    // is the default-deny posture — the BYOK local-endpoint opt-in is deferred (security-review.md). The engine
-    // owns the `maxBytes` policy + the run `AbortSignal`; this is always wired (a text-only run never invokes
-    // it). `signal` is spread conditionally so an absent one is omitted, not set to `undefined`
-    // (exactOptionalPropertyTypes); the mechanism + its 23 tests live in `@relavium/db`'s `fetchMediaBytes`.
+    // The host media-egress mechanism (1.AF/D9, ADR-0043): re-host a public-HTTPS `url` media source to a
+    // handle via `@relavium/db`'s `fetchMediaBytes` — the SSRF-validated, size-bounded connect (the mechanism
+    // + its 23 tests are the canonical home; see ADR-0043 §2-3 / the `media-egress.ts` header). The wiring
+    // rationale: `allowPrivate: false` is the default-deny posture (the BYOK local-endpoint opt-in is deferred,
+    // security-review.md); the engine owns the `maxBytes` policy + the run `AbortSignal`; always wired (a
+    // text-only run never invokes it); `signal` is spread conditionally so an absent one is OMITTED, not
+    // assigned `undefined` (which `exactOptionalPropertyTypes` rejects).
     fetchMedia: (url, maxBytes, signal) =>
-      fetchMediaBytes(url, { maxBytes, allowPrivate: false, ...(signal ? { signal } : {}) }),
+      fetchMediaBytes(url, {
+        maxBytes,
+        allowPrivate: false,
+        ...(signal === undefined ? {} : { signal }),
+      }),
   };
 }

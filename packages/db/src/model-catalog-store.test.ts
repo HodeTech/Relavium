@@ -48,13 +48,23 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
       mediaSurface: 'generative',
       supportsVision: true,
       capabilities: { media: { outputCombinations: [['image']] } },
+      // Distinct per-modality rates so a swapped image/audio/video column in `fromRow` fails the test.
       mediaImageCostMicrocents: 1_900_000,
+      mediaAudioCostMicrocents: 100,
+      mediaVideoCostMicrocents: 200,
     });
     expect(rec.modelId).toBe('gpt-image-1');
     expect(rec.mediaSurface).toBe('generative');
     expect(rec.supportsVision).toBe(true);
     expect(rec.capabilities).toEqual({ media: { outputCombinations: [['image']] } });
     expect(rec.mediaImageCostMicrocents).toBe(1_900_000);
+    expect(rec.mediaAudioCostMicrocents).toBe(100);
+    expect(rec.mediaVideoCostMicrocents).toBe(200);
+    // The capability flags the D15 CapabilityFlags projection consumes — pin the `fromRow` column mapping
+    // (defaults false / true / false, since only `supportsVision` was set on the upsert).
+    expect(rec.supportsToolCalling).toBe(false);
+    expect(rec.supportsStreaming).toBe(true);
+    expect(rec.supportsJsonMode).toBe(false);
     expect(store.getByModelId('gpt-image-1')).toEqual(rec);
   });
 
