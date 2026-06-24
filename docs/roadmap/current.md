@@ -58,9 +58,12 @@ and **2.G** (the interactive human-gate prompt — a `@clack/prompts` card durin
 `relavium gate <runId>` cross-process resume: reload snapshot → reconstruct checkpoint → `resumeFromCheckpoint`,
 idempotent, secret-input fail-closed), ✅ Done (PR #47, 2026-06-24) behind
 [ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md) (`@clack/prompts`; Node floor 20.11→20.12;
-no new ADR) — **fully closing 2.K's deferred gate-resume half**.
-**Next pickup:** **2.I** (`list` / `logs` / `status` / `gate list` over durable history — go/no-go #2, the read
-side; surfaces the pending `gateId`s the 2.G `gate` command points at); the full status-aware
+no new ADR) — **fully closing 2.K's deferred gate-resume half**;
+and **2.I** (the read commands `list` / `logs` / `status` / `gate list` over durable history — go/no-go #2, the
+read side; surfaces the pending `gateId`s the 2.G `gate` command points at), ✅ Done (PR #48, 2026-06-24)
+(no new ADR — an additive workflow-agnostic `@relavium/db` read seam + a `@relavium/core` `parseAgent`).
+**Next pickup:** **2.L** (packaging, distribution & install verification — go/no-go #7, the last gate-closing
+spine PR; once it lands all seven Phase-3 exit criteria hold); the full status-aware
 order is the
 [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
