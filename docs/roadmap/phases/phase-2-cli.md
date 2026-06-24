@@ -453,7 +453,9 @@ its fixture + scenario format is documented in
 
 ### 2.L — Packaging, distribution, and install verification
 
-Make the CLI installable and verify the published artifact behaves like local dev.
+Make the CLI installable and verify the published artifact behaves like local dev. Behind
+[ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md) (the bundle boundary —
+an engine-inlined ESM bundle that externalizes every third-party dependency).
 
 **Tasks:**
 

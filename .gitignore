@@ -8,6 +8,9 @@ build/
 out/
 *.tsbuildinfo
 .turbo/
+# The CLI bundle ships @relavium/db's migrations beside its bundle; the copy is a build artifact
+# (2.L / ADR-0051). The source of truth stays tracked at packages/db/drizzle.
+/apps/cli/drizzle/
 
 # Tauri / Rust
 target/

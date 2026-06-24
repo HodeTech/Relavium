@@ -26,9 +26,12 @@ plumbing + inline & async output generation + generative adapters, 1.m6, 1.AD–
 [Phase 1 detail](phases/phase-1-engine-and-llm.md), the [decision index](../decisions/),
 and the [reference specs](../reference/).
 
-> **One live maintainer obligation (carried from Phase 0):** mark the CI `ci` job a
-> **required check** in GitHub branch protection (optionally add `TURBO_TOKEN`/
-> `TURBO_TEAM` secrets for the cross-runner remote cache).
+> **Live maintainer obligations:** (1) mark the CI `ci` job a **required check** in GitHub branch
+> protection (carried from Phase 0; optionally add `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
+> cross-runner remote cache); (2) once **2.L** lands, add the **`NPM_TOKEN`** repo secret + npm 2FA so the
+> tag-triggered `Release CLI` workflow can publish (the actual `npm publish` is maintainer-gated,
+> [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
+> [release-a-surface.md](runbooks/release-a-surface.md)).
 
 ## What is active now
 

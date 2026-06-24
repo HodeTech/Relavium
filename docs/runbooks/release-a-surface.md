@@ -40,8 +40,55 @@ artifacts referenced in the day-one DX.
 
 ## CLI (npm)
 
-To be expanded. Will cover: building `apps/cli`, the npm publish flow, and verifying the
-`relavium` binary post-publish.
+The CLI publishes to public npm as **`relavium`** (`npm install -g relavium`). The artifact is an
+**engine-inlined ESM bundle** — `tsup` inlines only the proprietary `@relavium/*` engine and externalizes
+every third-party dependency, which install normally (prebuilt native addons included). The full rationale
+and the bundle boundary are [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md).
+
+**This is the first release flow; desktop and VS Code inherit its shape (pack → cross-OS smoke → publish).**
+
+### What the build produces
+
+- `apps/cli/dist/index.js` — the single ESM bin (shebang, minified, **no** source map: a map would ship the
+  inlined engine's TypeScript, [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md)).
+- `apps/cli/drizzle/` — `@relavium/db`'s migration set, copied beside the bundle by the `tsup` build because
+  the inlined db code resolves migrations relative to the bundle (`new URL('../drizzle', import.meta.url)`).
+- The published `package.json` declares the third-party runtime closure only; `@relavium/*` are
+  `devDependencies` (build-time inputs, inlined — never published). `tools/bundle-closure/check.mjs` fails the
+  build if that closure and the declared `dependencies` ever drift.
+
+### Release steps
+
+1. **Pre-release gate.** A green `pnpm turbo run lint typecheck test build` on `main`; bump
+   `apps/cli/package.json` `version` (semver; pre-1.0 today); update the CHANGELOG.
+2. **Tag.** Push a `v<version>` tag (e.g. `v0.1.0`). This triggers the **`Release CLI`** workflow
+   (`.github/workflows/release.yml`):
+   - **`pack`** (ubuntu) — builds the engine + bundle, runs the bundle-closure guard, and `pnpm pack`s the
+     tarball (resolving `catalog:`/`workspace:` to concrete versions). **Use `pnpm pack`, never `npm pack`** —
+     only pnpm resolves those protocol strings; an `npm pack`ed manifest would keep literal `catalog:` and
+     break every install.
+   - **`smoke`** (ubuntu / macOS / Windows) — installs that exact tarball globally and asserts
+     `relavium --help`, `provider list`, a fixture `run … --json` (exit 0), the human-gate fixture (exit 3),
+     `gate list`, and an unknown `runId` (exit 2). This exercises both prebuilt native addons (better-sqlite3
+     opens `history.db` against the shipped migrations; `@napi-rs/keyring`'s accessor loads) **without touching
+     the OS credential store**, so the Windows leg is headless-safe.
+   - **`publish`** (on the tag, gated on green smoke) — `npm publish <tarball> --provenance --access public`
+     publishes the very artifact the matrix proved.
+
+### Maintainer obligations (not in code)
+
+- Add the **`NPM_TOKEN`** repo secret (an npm automation token for the `relavium` package); enable **2FA** on
+  the npm account. The publish job is otherwise maintainer-gated by design — like the `ci` branch-protection
+  obligation.
+- A `workflow_dispatch` run executes `pack` + the cross-OS `smoke` **without** publishing — use it to verify a
+  release candidate before tagging.
+
+### Post-publish verification & rollback
+
+- Verify: `npm install -g relavium@<version>` on a clean machine → `relavium --help` + a fixture
+  `run … --json`. (The cross-OS smoke matrix is the gate; this is a final manual sanity check.)
+- Rollback: npm disallows un-publishing a version that others may depend on after 72h. Prefer **`npm deprecate
+  relavium@<bad> "use <good>"`** and publish a fixed patch; reserve `npm unpublish` for a same-day mistake.
 
 ## VS Code extension (Marketplace)
 
