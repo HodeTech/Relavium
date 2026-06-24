@@ -164,12 +164,17 @@ describe('NodeSchema', () => {
     expect(parse('{{ run.id.x }}/x.png')).toBe(false);
     // A mix that includes one disallowed reference alongside run.id is still rejected.
     expect(parse('{{ run.id }}/{{ inputs.x }}.png')).toBe(false);
-    // The strip-and-check shares no grammar with the engine lexer, so a brace-in-string reference (which a
-    // naive `{{[^}]*}}` regex would wrongly accept) is still rejected — closing the load-vs-runtime gap.
+    // The strip-and-check shares no grammar with the engine lexer, so a brace-in-string reference (which the
+    // prior naive `{{[^}]*}}` regex wrongly ACCEPTED, since the inner `}` stopped it from matching the ref) is
+    // still rejected — the exact load-vs-runtime gap this guards. The adjacency case is the sharpest: the old
+    // regex matched the leading `{{ run.id }}`, failed to match the brace-in-string ref, and so passed.
     expect(parse('{{ run.outputs["a}b"] }}/x.png')).toBe(false);
-    // A degenerate / empty interpolation is rejected too (only `{{ run.id }}` survives the strip).
+    expect(parse('{{ run.id }}{{ run.outputs["x}y"] }}.png')).toBe(false);
+    // A degenerate / empty interpolation is rejected (it is not `{{ run.id }}`, so it survives the strip).
     expect(parse('{{}}/x.png')).toBe(false);
     expect(parse('{{   }}/x.png')).toBe(false);
+    // A bare `}}` with no opening `{{` is literal text to BOTH the schema strip and the engine lexer — accepted.
+    expect(parse('out/}} literal.png')).toBe(true);
   });
 
   it('rejects a retry_on listing a non-retryable error code (ADR-0040 A.4)', () => {
