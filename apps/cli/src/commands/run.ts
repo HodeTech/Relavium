@@ -1,4 +1,5 @@
-import { relative } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { join, relative } from 'node:path';
 
 import {
   WorkflowParseError,
@@ -6,8 +7,10 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
+import { createModelCatalogStore } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
+import { globalConfigDir } from '../config/paths.js';
 import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
@@ -77,7 +80,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery,
   // homeDir locates `~/.relavium/history.db` (2.H).
-  const { projectConfigDir, homeDir } = loadResolvedConfig({
+  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -124,9 +127,33 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
   }
   try {
-    const engine = await build(
-      opened === undefined ? { providers } : { providers, host: createCliHost(opened.store) },
-    );
+    // Media host-wiring (2.S): when durable history is open, the SAME `~/.relavium/history.db` connection
+    // backs the `model_catalog` reader (→ `resolveMediaSurface` routing) + the `media_references` retention
+    // junction, and the host gets the global CAS root (`~/.relavium/media/`) + the project-relative `save_to`
+    // root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
+    // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
+    let engineOptions: BuildEngineOptions = { providers };
+    if (opened !== undefined) {
+      const catalog = createModelCatalogStore(opened.db, {
+        uuid: () => randomUUID(),
+        now: () => Date.now(),
+      });
+      engineOptions = {
+        providers,
+        host: createCliHost(opened.store, {
+          media: {
+            casRoot: join(globalConfigDir(homeDir), 'media'),
+            saveToRoot: join(deps.global.cwd, '.relavium', 'runs'),
+            referenceDb: opened.db,
+          },
+        }),
+        resolveMediaSurface: catalog.resolveMediaSurface,
+        ...(config.mediaCostEstimate === undefined
+          ? {}
+          : { mediaCostEstimate: config.mediaCostEstimate }),
+      };
+    }
+    const engine = await build(engineOptions);
     const handle = engine.start({ workflow: def, inputs });
 
     // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import {
   EngineStateError,
@@ -7,10 +8,16 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
-import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
+import {
+  createModelCatalogStore,
+  createRunHistoryStore,
+  loadRunSnapshot,
+  type Db,
+} from '@relavium/db';
 import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
+import { globalConfigDir } from '../config/paths.js';
 import { openLocalDb } from '../db/open.js';
 import {
   buildEngine as defaultBuildEngine,
@@ -72,7 +79,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
   }
   const decision = flags.decision;
 
-  const { homeDir } = loadResolvedConfig({
+  const { config, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -141,9 +148,27 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const providers = deps.providers ?? createProviderResolver(deps.io.env);
+    // Media host-wiring (2.S), mirrored from `run`: a gate-resumed run that produces media must wire the same
+    // CAS + retention + catalog as the original run (else it would be silently text-only). Same `opened.db`,
+    // same CAS root (`~/.relavium/media/`) + `save_to` root (`.relavium/runs/`) — the checkpointer stays.
+    const catalog = createModelCatalogStore(opened.db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+    });
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
-      host: createCliHost(store, { checkpointer }),
+      host: createCliHost(store, {
+        checkpointer,
+        media: {
+          casRoot: join(globalConfigDir(homeDir), 'media'),
+          saveToRoot: join(deps.global.cwd, '.relavium', 'runs'),
+          referenceDb: opened.db,
+        },
+      }),
+      resolveMediaSurface: catalog.resolveMediaSurface,
+      ...(config.mediaCostEstimate === undefined
+        ? {}
+        : { mediaCostEstimate: config.mediaCostEstimate }),
     });
     let handle: RunHandle;
     try {

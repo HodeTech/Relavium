@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,10 +9,17 @@ import {
   type NodeExecutor,
   type NodeOutcome,
 } from '@relavium/core';
+import {
+  createClient,
+  createModelCatalogStore,
+  createProviderStore,
+  createRunHistoryStore,
+  runMigrations,
+} from '@relavium/db';
 import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildEngine } from '../engine/build-engine.js';
+import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
@@ -182,6 +190,65 @@ describe('runCommand', () => {
     expect(code).toBe(EXIT_CODES.success);
     expect(out()).toContain('started');
     expect(out()).toContain('run completed');
+  });
+
+  it('wires the media host + catalog resolveMediaSurface + the media ports when durable history is open (2.S)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(client.db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(client.db, dbDeps).upsert({
+      providerId,
+      modelId: 'gpt-image-1',
+      displayName: 'GPT Image 1',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    let captured: BuildEngineOptions | undefined;
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          // Durable history open ⇒ run.ts wires the media host + the catalog reader over this same db.
+          openRunStore: (workflow) => ({
+            store: createRunHistoryStore(client.db, {
+              uuid: () => randomUUID(),
+              now: () => Date.now(),
+              workflow: {
+                slug: workflow.workflow.id,
+                name: workflow.workflow.id,
+                definitionJson: JSON.stringify(workflow),
+              },
+            }),
+            db: client.db,
+            close: () => {},
+          }),
+          // Capture what run.ts assembled, then run a real in-memory engine so the HAPPY workflow completes.
+          buildEngine: (opts) => {
+            captured = opts;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The media host carries all three ports (CAS + retention + save_to), backed by the run-path roots + db.
+      expect(captured?.host?.mediaStore).toBeDefined();
+      expect(captured?.host?.mediaReferences).toBeDefined();
+      expect(captured?.host?.mediaWrite).toBeDefined();
+      // resolveMediaSurface is the catalog projection over the SAME db: the seeded generative model routes;
+      // an unknown one is undefined (the host then defaults to the safe inline 'chat').
+      expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
+      expect(captured?.resolveMediaSurface?.('unknown-model')).toBeUndefined();
+    } finally {
+      client.sqlite.close();
+    }
   });
 
   it('awaits the renderer finalize() once after the run loop (the TUI teardown wire)', async () => {
