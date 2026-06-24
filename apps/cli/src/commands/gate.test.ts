@@ -4,7 +4,6 @@ import { parseWorkflow, type CheckpointState } from '@relavium/core';
 import {
   createClient,
   createRunHistoryStore,
-  loadRunSnapshot,
   runMigrations,
   type Db,
   type DbClient,
@@ -114,12 +113,12 @@ describe('gateCommand', () => {
     const code = await gateCommand({ runId, approve: true }, deps(io));
 
     expect(code).toBe(EXIT_CODES.success);
-    expect(loadRunSnapshot(db, runId)?.status).toBe('completed'); // the cross-process resume reached the terminal
     const store = createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
       workflow: { slug: 'gate-resume', name: 'gate-resume', definitionJson: '{}' },
     });
+    expect(store.loadRun(runId)?.status).toBe('completed'); // the cross-process resume reached the terminal
     const events = store.loadRunEvents(runId);
     expect(events.find((e) => e.type === 'human_gate:resumed')).toMatchObject({
       decision: 'approved',

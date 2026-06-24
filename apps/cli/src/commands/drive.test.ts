@@ -1,4 +1,9 @@
-import { createInMemoryHost, parseWorkflow, type WorkflowEngine } from '@relavium/core';
+import {
+  EngineStateError,
+  createInMemoryHost,
+  parseWorkflow,
+  type WorkflowEngine,
+} from '@relavium/core';
 import type { GateDecision, RunEvent, RunPausedEvent } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -130,6 +135,37 @@ describe('driveRun — interactive gate', () => {
     const { io } = captureIo();
     const outcome = await driveRun({ engine, handle, makeRenderer: () => renderer, io });
     expect(outcome).toBe('paused');
+  });
+
+  it('swallows a run_already_terminal from a cancel-during-prompt race, draining to cancelled (no opaque error)', async () => {
+    const { engine, handle } = await startGatedRun();
+    const { renderer } = recordingRenderer();
+    const { io } = captureIo();
+    // The SIGINT-during-prompt race: the prompt cooperatively cancels the run (→ run:cancelled), then returns
+    // a decision the engine now refuses with run_already_terminal. driveRun must swallow that and drain to the
+    // cancelled terminal — never surface it as a generic "unexpected internal error".
+    const resumeSpy = vi
+      .spyOn(engine, 'resume')
+      .mockRejectedValue(
+        new EngineStateError('run_already_terminal', 'the run has already terminated'),
+      );
+    const prompter: GatePrompter = {
+      prompt: () => {
+        handle.cancel(); // cooperative cancel → the run drains to run:cancelled
+        return Promise.resolve({ decision: 'approved', decidedBy: 'cli' });
+      },
+    };
+
+    const outcome = await driveRun({
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompter,
+      io,
+    });
+
+    expect(resumeSpy).toHaveBeenCalledTimes(1); // the race path WAS taken...
+    expect(outcome).toBe('cancelled'); // ...and resolved cleanly to the cancelled terminal, no throw
   });
 });
 

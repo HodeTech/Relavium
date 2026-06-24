@@ -1,4 +1,4 @@
-import type { RunHandle, WorkflowEngine } from '@relavium/core';
+import { EngineStateError, type RunHandle, type WorkflowEngine } from '@relavium/core';
 import type { HumanGatePausedEvent, RunEvent, RunPausedEvent } from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
@@ -130,7 +130,19 @@ async function resolveGateInline(
     handle.cancel();
     return;
   }
-  await engine.resume(event.runId, event.gateId, decision);
+  try {
+    await engine.resume(event.runId, event.gateId, decision);
+  } catch (err) {
+    // A Ctrl-C during the prompt cooperatively cancels the run (the SIGINT handler calls handle.cancel());
+    // if that settles the run in the window between the prompt returning and this await, the engine refuses
+    // the now-moot decision with `run_already_terminal`. That is a clean cancellation, not a fault — return
+    // and let the loop drain the buffered run:cancelled (→ outcome 'cancelled'), never a generic "internal
+    // error". Any other engine refusal is a real bug and re-throws.
+    if (err instanceof EngineStateError && err.code === 'run_already_terminal') {
+      return;
+    }
+    throw err;
+  }
 }
 
 /**

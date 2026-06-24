@@ -421,9 +421,8 @@ function stepMatch(runId: string, nodeId: string, attemptNumber: number | undefi
   );
 }
 
-/** A paused run's frozen workflow snapshot + inputs + current status, read by id. */
+/** A paused run's frozen workflow snapshot + inputs, read by id (just the bits a cross-process resume rebuilds from). */
 export interface RunResumeSnapshot {
-  readonly status: RunStatus;
   /** `JSON.stringify(WorkflowDefinition)` — the frozen `runs.workflow_definition_snapshot` (the events don't
    * carry the graph). The caller re-validates it with the shared `WorkflowSchema` before resuming. */
   readonly workflowDefinitionSnapshot: string;
@@ -433,19 +432,19 @@ export interface RunResumeSnapshot {
 }
 
 /**
- * Read one run's `status` + frozen `workflow_definition_snapshot` + `input_json` by id — the substrate
- * `relavium gate` (2.G) needs to rebuild the `WorkflowDefinition` + inputs for a cross-process
- * `resumeFromCheckpoint` **before** it knows which workflow the paused run used. Standalone (a plain `runs`-row
- * read) rather than a {@link RunHistoryStore} method, because the store is workflow-scoped at construction
- * (`deps.workflow`) and the gate command only learns the workflow *from* this snapshot — a chicken-and-egg the
- * standalone read resolves. Returns `undefined` for an unknown `runId`. The snapshot/inputs are unsafe-column
- * data (no raw secrets — the engine masks at the write boundary, ADR-0050); this read is pass-through and
- * never logs them.
+ * Read one run's frozen `workflow_definition_snapshot` + `input_json` by id — the substrate `relavium gate`
+ * (2.G) needs to rebuild the `WorkflowDefinition` + inputs for a cross-process `resumeFromCheckpoint` **before**
+ * it knows which workflow the paused run used. Standalone (a plain `runs`-row read) rather than a
+ * {@link RunHistoryStore} method, because the store is workflow-scoped at construction (`deps.workflow`) and
+ * the gate command only learns the workflow *from* this snapshot — a chicken-and-egg the standalone read
+ * resolves. (Run *status* is not returned — the gate command uses the authoritative `checkpoint.runStatus`
+ * folded fresh from the event log, and `loadRun(runId).status` covers any status-by-id need.) Returns
+ * `undefined` for an unknown `runId`. The snapshot/inputs are unsafe-column data (no raw secrets — the engine
+ * masks at the write boundary, ADR-0050); this read is pass-through and never logs them.
  */
 export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | undefined {
   const row = db
     .select({
-      status: runs.status,
       snapshot: runs.workflowDefinitionSnapshot,
       inputJson: runs.inputJson,
     })
@@ -455,7 +454,6 @@ export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | unde
   return row === undefined
     ? undefined
     : {
-        status: row.status,
         workflowDefinitionSnapshot: row.snapshot,
         inputJson: row.inputJson,
       };
