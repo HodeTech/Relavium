@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
+import { createClient, runMigrations } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { createCliHost } from './host.js';
@@ -111,6 +112,36 @@ describe('createCliHost', () => {
         expect(existsSync(join(root, '..', 'escape.bin'))).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('mediaStore + mediaReferences (the CAS + retention ports, 2.S / ADR-0042)', () => {
+    it('are unwired without their config (a media-producing run then fails loud)', () => {
+      const host = createCliHost();
+      expect(host.mediaStore).toBeUndefined();
+      expect(host.mediaReferences).toBeUndefined();
+    });
+
+    it('wire a single content-addressed mediaStore (put/get round-trip) + the reference port', async () => {
+      const casRoot = mkdtempSync(join(tmpdir(), 'relavium-cas-'));
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        const host = createCliHost(undefined, { media: { casRoot, referenceDb: client.db } });
+        expect(host.mediaReferences).toBeDefined();
+        const store = host.mediaStore;
+        if (store === undefined) {
+          throw new Error('createCliHost must wire mediaStore when a casRoot is given');
+        }
+        // A content-addressed round-trip proves it is a real FilesystemMediaStore over the CAS root: put →
+        // a `media://sha256-…` handle → get returns the same bytes (the deep store behavior is db-covered).
+        const handle = await store.put(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
+        expect(handle).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+        expect(Array.from(await store.get(handle))).toEqual([1, 2, 3, 4]);
+      } finally {
+        client.sqlite.close();
+        rmSync(casRoot, { recursive: true, force: true });
       }
     });
   });

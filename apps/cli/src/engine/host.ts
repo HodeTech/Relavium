@@ -7,7 +7,14 @@ import {
   type ExecutionHost,
   type RunStore,
 } from '@relavium/core';
-import { createFilesystemMediaWrite, fetchMediaBytes } from '@relavium/db';
+import {
+  FilesystemMediaStore,
+  createFilesystemMediaWrite,
+  createMediaReferencePort,
+  createMediaReferenceStore,
+  fetchMediaBytes,
+  type Db,
+} from '@relavium/db';
 
 /**
  * Host media-port roots the CLI resolves per-invocation and injects into {@link createCliHost} (2.S). Each is
@@ -23,6 +30,21 @@ export interface CliMediaOptions {
    * so an `output` node's `save_to` fails the run with a clear configuration error (never a silent skip).
    */
   readonly saveToRoot?: string;
+  /**
+   * The content-addressed media-store (CAS) root the CALLER resolves and passes (the `run` path will pass
+   * `~/.relavium/media/` — global, sha256-addressed, deduped across runs; caller wiring lands later in 2.S).
+   * Backs `ExecutionHost.mediaStore` — the de-inline/persist choke point the engine writes produced media to,
+   * and the same instance the `AgentRunnerDeps.resolveForEgress` re-materialization reads (a handle written by
+   * one resolves in the other). Absent ⇒ no `mediaStore`, so a media-PRODUCING run fails `media_store_unavailable`.
+   */
+  readonly casRoot?: string;
+  /**
+   * The SQLite connection backing the `media_objects`/`media_references` retention + authz junction (2.S reuses
+   * the 2.H `history.db`). Wires `ExecutionHost.mediaReferences` so the engine records a produced handle's run
+   * reference at the de-inline choke point and reclaims them at the run's terminal event. Absent ⇒ no port
+   * (best-effort retention only; never a run-correctness break).
+   */
+  readonly referenceDb?: Db;
 }
 
 /** Options for {@link createCliHost}. */
@@ -46,11 +68,12 @@ export interface CliHostOptions {
  * A real, node-backed {@link ExecutionHost} for the CLI — wall-clock ISO timestamps, UUID ids
  * (ADR-0022), `setTimeout` one-shot timers, and the global AbortController. `run` injects the durable
  * SQLite `RunStore` (2.H); `gate` additionally injects the durable {@link Checkpointer} (2.G) so a fresh
- * process can rehydrate a paused run from its persisted events. The host media-egress port (`fetchMedia`,
- * SSRF-validated, ADR-0043) is always wired, and the `save_to` write port (`mediaWrite`) is wired when a
- * `media.saveToRoot` is given (**2.S**); the remaining media ports — `mediaStore` / `mediaReferences` — land
- * later in 2.S, so a run that PRODUCES media still fails loud (`media_store_unavailable`, never a silent byte
- * leak) until the store is wired.
+ * process can rehydrate a paused run from its persisted events. The media ports (**2.S**) wire when their
+ * config is given: `fetchMedia` (SSRF-validated egress, ADR-0043) is always on; `mediaStore` (the CAS
+ * de-inline/persist choke point), `mediaReferences` (the retention/authz junction), and `mediaWrite` (the
+ * `save_to` write port) wire from `media.casRoot` / `media.referenceDb` / `media.saveToRoot`. A media-PRODUCING
+ * run with no `mediaStore` fails loud (`media_store_unavailable`), never a silent byte leak. (`read_media`
+ * input access is a session feature — deferred to 2.M, so it stays fail-closed unavailable on the `run` path.)
  *
  * The clock/ids/abort/timer + the media ports are generic Node primitives (no CLI specifics), so this is
  * positioned for later extraction to a shared node-host helper the VS Code host can reuse.
@@ -68,6 +91,18 @@ export function createCliHost(
       'createCliHost: a checkpointer requires an explicit durable RunStore (the checkpointer must reconstruct from the same store the run persists to)',
     );
   }
+  // Construct each media port ONCE from its root/handle (a port is absent when its config is). The single
+  // `FilesystemMediaStore` instance is THE store `host.mediaStore` exposes and `resolveForEgress` reads — a
+  // handle put by the de-inline choke point must resolve in the failover re-materialization (one CAS, ADR-0042).
+  const media = options?.media;
+  const mediaStore =
+    media?.casRoot === undefined ? undefined : new FilesystemMediaStore(media.casRoot);
+  const mediaReferences =
+    media?.referenceDb === undefined
+      ? undefined
+      : createMediaReferencePort(createMediaReferenceStore(media.referenceDb));
+  const mediaWrite =
+    media?.saveToRoot === undefined ? undefined : createFilesystemMediaWrite(media.saveToRoot);
   return {
     clock: { now: () => new Date().toISOString() },
     ids: { newId: () => randomUUID() },
@@ -97,14 +132,15 @@ export function createCliHost(
         allowPrivate: false,
         ...(signal === undefined ? {} : { signal }),
       }),
-    // The host `save_to` write port (1.AF/D16, ADR-0044 §2) — wired only when a scope root is supplied (the
-    // caller passes one; the `run` path's `.relavium/runs/` wiring lands in a later 2.S step). The port
-    // `realpath`+`commonpath`-jails every write under the root
-    // (symlinks off); the engine resolves the `{{ run.id }}`-only template + the produced handle's bytes and
-    // hands `(relativePath, bytes)` here. Absent root ⇒ no port, and a `save_to` fails the run with a clear
-    // configuration error (never a silent skip — `save_to` is a real deliverable).
-    ...(options?.media?.saveToRoot === undefined
-      ? {}
-      : { mediaWrite: createFilesystemMediaWrite(options.media.saveToRoot) }),
+    // The media ports (2.S), each spread in only when its config (above) was supplied — `undefined` is OMITTED,
+    // not assigned (the host fields are `?:`, exactOptionalPropertyTypes). `mediaStore` (CAS de-inline/persist,
+    // ADR-0042) + `mediaReferences` (retention/authz junction) + `mediaWrite` (`save_to` write port, ADR-0044
+    // §2; realpath+commonpath jail, symlinks off — the engine resolves the `{{ run.id }}`-only template + the
+    // produced handle's bytes and hands `(relativePath, bytes)` here). Absent `mediaStore` ⇒ a media-PRODUCING
+    // run fails `media_store_unavailable` (never a silent byte leak); absent `mediaWrite` ⇒ a `save_to` fails
+    // the run (never a silent skip — it is a real deliverable).
+    ...(mediaStore === undefined ? {} : { mediaStore }),
+    ...(mediaReferences === undefined ? {} : { mediaReferences }),
+    ...(mediaWrite === undefined ? {} : { mediaWrite }),
   };
 }
