@@ -126,31 +126,44 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(b.modelId).toBe(a.modelId);
   });
 
-  it('is deterministic for a model id offered by two providers (stable asc(createdAt), asc(id) pick)', () => {
+  it('the asc(id) tiebreaker — not insertion order — picks between two providers with equal createdAt', () => {
     const secondProviderId = providerStore.upsert({
       name: 'azure-openai',
       displayName: 'Azure OpenAI',
       baseUrl: 'https://example.openai.azure.com',
     }).id;
-    // Same modelId under both providers, distinct surfaces. The first-inserted catalog row (lower minted id)
-    // wins the `asc(createdAt), asc(id)` tiebreaker even though both share the fixed `createdAt`.
-    store.upsert({
+    // Mint ids in DESCENDING order so insertion order and id order DIVERGE: the row inserted FIRST gets the
+    // HIGHER id, the row inserted SECOND gets the LOWER id. Only the `asc(id)` tiebreaker (NOT rowid/insertion
+    // order) then yields the asserted winner — so this test fails if the tiebreaker is dropped (a bare
+    // `asc(createdAt)` returns the first-inserted 'chat' row on the tie).
+    const descendingIds = [
+      'ffffffff-0000-4000-8000-000000000001',
+      'aaaaaaaa-0000-4000-8000-000000000002',
+    ];
+    const descStore = createModelCatalogStore(client.db, {
+      uuid: () => descendingIds.shift() ?? 'unexpected-extra-id',
+      now: () => TS_MS,
+    });
+    // Inserted FIRST → higher id (ffff…) → 'chat'.
+    descStore.upsert({
       providerId,
       modelId: 'gpt-image-1',
-      displayName: 'GPT Image 1 (openai)',
-      contextWindowTokens: 4096,
-      maxOutputTokens: 4096,
-      mediaSurface: 'generative',
-    });
-    store.upsert({
-      providerId: secondProviderId,
-      modelId: 'gpt-image-1',
-      displayName: 'GPT Image 1 (azure)',
+      displayName: 'high-id, inserted first',
       contextWindowTokens: 4096,
       maxOutputTokens: 4096,
       mediaSurface: 'chat',
     });
-    // Two co-existing active rows for the model id, but the resolved surface is stable across repeated reads.
+    // Inserted SECOND → lower id (aaaa…) → 'generative'. This row must win under asc(id).
+    descStore.upsert({
+      providerId: secondProviderId,
+      modelId: 'gpt-image-1',
+      displayName: 'low-id, inserted second',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    // Two co-existing active rows; the lower-sorting minted id wins, stably across repeated reads — i.e. the
+    // second-inserted row, NOT the first-inserted one a missing tiebreaker (rowid order) would return.
     const both = client.db
       .select()
       .from(modelCatalog)
@@ -158,8 +171,35 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
       .all();
     expect(both.length).toBe(2);
     const surfaces = [0, 1, 2].map(() => store.resolveMediaSurface('gpt-image-1'));
-    expect(surfaces).toEqual(['generative', 'generative', 'generative']); // first-inserted (lower id) wins, stably
-    expect(store.getByModelId('gpt-image-1')?.providerId).toBe(providerId);
+    expect(surfaces).toEqual(['generative', 'generative', 'generative']);
+    expect(store.getByModelId('gpt-image-1')?.providerId).toBe(secondProviderId);
+  });
+
+  it('an upsert re-activates a previously-deactivated row (the isActive:true reactivation branch)', () => {
+    store.upsert({
+      providerId,
+      modelId: 'gpt-image-1',
+      displayName: 'GPT Image 1',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'chat',
+    });
+    client.sqlite
+      .prepare('UPDATE model_catalog SET is_active = 0 WHERE model_id = ?')
+      .run('gpt-image-1');
+    expect(store.getByModelId('gpt-image-1')).toBeUndefined(); // deactivated ⇒ unreachable
+    // Re-upsert through the store: `upsert` sets is_active = true, so the row becomes reachable again.
+    const re = store.upsert({
+      providerId,
+      modelId: 'gpt-image-1',
+      displayName: 'GPT Image 1 (re-synced)',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    expect(re.mediaSurface).toBe('generative');
+    expect(store.getByModelId('gpt-image-1')?.mediaSurface).toBe('generative');
+    expect(store.resolveMediaSurface('gpt-image-1')).toBe('generative');
   });
 
   it('fail-closed read-scoping: a deactivated (is_active=0) or soft-deleted row is unreachable', () => {
@@ -217,5 +257,11 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(() => store.getByModelId('gpt-image-1')).toThrow(TypeError);
     // resolveMediaSurface does not parse capabilities, so it stays usable for routing.
     expect(store.resolveMediaSurface('gpt-image-1')).toBe('chat');
+    // A genuinely malformed (non-JSON) value takes the distinct JSON.parse-throws branch (SyntaxError) — also
+    // fail-closed, so a refactor that swallowed the parse error would be caught here too.
+    client.sqlite
+      .prepare("UPDATE model_catalog SET capabilities = '{' WHERE model_id = ?")
+      .run('gpt-image-1');
+    expect(() => store.getByModelId('gpt-image-1')).toThrow(SyntaxError);
   });
 });

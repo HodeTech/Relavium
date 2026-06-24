@@ -17,7 +17,13 @@ import { modelCatalog, type ModelCatalogRow, type NewModelCatalogRow } from './s
  * single row↔domain + validation boundary; ids/timestamps are store-minted via injected deps).
  */
 
-/** One active `model_catalog` row, validated at the read boundary; the host projects it → `CapabilityFlags`. */
+/**
+ * One active `model_catalog` row, validated at the read boundary; the host projects it → `CapabilityFlags`.
+ * This is a DELIBERATE projection of the two consumers — the D15 load-check (the capability flags + the parsed
+ * `capabilities`) and the media-cost governor (the per-modality rates) — NOT a full row mirror: descriptive/
+ * pricing columns the seam does not need (`displayName`, context/token sizes, text-token costs) are omitted by
+ * design. Widen this only when a documented consumer needs the field.
+ */
 export interface ModelCatalogRecord {
   readonly modelId: string;
   readonly providerId: string;
@@ -36,7 +42,12 @@ export interface ModelCatalogRecord {
   readonly mediaVideoCostMicrocents: number | null;
 }
 
-/** Fields a caller supplies to seed/replace a catalog row (the store mints id + timestamps + column defaults). */
+/**
+ * Fields a caller supplies to seed/replace a catalog row (the store mints id + timestamps + column defaults).
+ * Intentionally scoped to what the generative acceptance fixture + an initial sync need; the remaining capability
+ * flags (`supportsToolCalling`/`supportsStreaming`/`supportsJsonMode`) fall to their column defaults until a
+ * provider-sync needs to set them, so they read back on {@link ModelCatalogRecord} but are not settable here yet.
+ */
 export interface ModelCatalogUpsert {
   readonly providerId: string;
   readonly modelId: string;
@@ -60,7 +71,10 @@ export interface ModelCatalogStore {
   /** The `AgentRunnerDeps.resolveMediaSurface` projection: a model's media-output surface, or `undefined` when
    *  the model is not in the catalog (the host then defaults to `'chat'` — the safe inline path, never generative). */
   resolveMediaSurface: (modelId: string) => MediaSurface | undefined;
-  /** The active catalog record for a model id (the host projects it → `CapabilityFlags` for the D15 load-check). */
+  /** The active catalog record for a model id (the host projects it → `CapabilityFlags` for the D15 load-check).
+   *  THROWS on a corrupt `capabilities` row (non-object / non-JSON) — fail-closed; the host must isolate this
+   *  per-model (try/catch) so one tampered row degrades that model, not the whole-catalog projection. Unlike
+   *  {@link resolveMediaSurface}, which never parses `capabilities` and so stays usable for routing. */
   getByModelId: (modelId: string) => ModelCatalogRecord | undefined;
   /** Seed/replace a catalog row (by provider + model) — used by the generative acceptance fixture and a future
    *  provider-sync; the store mints the id + timestamps. */

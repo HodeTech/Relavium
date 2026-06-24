@@ -438,11 +438,9 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     // `undefined` (the path most likely to silently regress if the optional param were dropped).
     seen.describe = 'unset';
     seen.readRange = 'unset';
-    await t.dispatch(
-      t.parseArgs({ handle: HANDLE }),
-      {},
-      { ...mediaCtx(SESSION, capturing), signal: undefined },
-    );
+    // `mediaCtx` carries no `signal` (the base ctx sets none), so this is the absent-signal context — omit the
+    // key rather than assign `signal: undefined` (which `exactOptionalPropertyTypes` rejects for `signal?`).
+    await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, capturing));
     expect(seen.describe).toBeUndefined();
     expect(seen.readRange).toBeUndefined();
   });
