@@ -53,9 +53,14 @@ and **2.C** (the `relavium provider` commands — a provider registry + API keys
 and **2.E** (the `ink` streaming TUI — the third `RunRenderer` over the one event bus: live per-node status
 + spinners, the active node's streaming tokens, a running cost footer, a persistent final summary; cooperative
 Ctrl-C cancel), ✅ Done (PR #46, 2026-06-24) behind [ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md)
-(ink + React 19, confined to `apps/cli`; no new ADR).
-**Next pickup:** **2.G** (interactive human-gate prompt + `relavium gate` resume — go/no-go #3; reuses 2.E's
-`ink` infra + the `finalize?()` seam, and closes 2.K's deferred gate-resume half); the full status-aware
+(ink + React 19, confined to `apps/cli`; no new ADR);
+and **2.G** (the interactive human-gate prompt — a `@clack/prompts` card during `run` — plus the out-of-band
+`relavium gate <runId>` cross-process resume: reload snapshot → reconstruct checkpoint → `resumeFromCheckpoint`,
+idempotent, secret-input fail-closed), ✅ Done (PR #47, 2026-06-24) behind
+[ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md) (`@clack/prompts`; Node floor 20.11→20.12;
+no new ADR) — **fully closing 2.K's deferred gate-resume half**.
+**Next pickup:** **2.I** (`list` / `logs` / `status` / `gate list` over durable history — go/no-go #2, the read
+side; surfaces the pending `gateId`s the 2.G `gate` command points at); the full status-aware
 order is the
 [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
