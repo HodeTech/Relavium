@@ -135,6 +135,11 @@ jobs:
       contents: read
       id-token: write # npm provenance attestation
     steps:
+      # Checkout only so `setup-node` can read `.nvmrc` (the single Node-version source the pack/smoke jobs
+      # use too); publish itself needs no repo files — it pushes the downloaded tarball, not a fresh build.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - name: Set up Node (npm registry)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -149,6 +154,8 @@ jobs:
       # resolved in the packed manifest, so `npm publish <tarball>` is correct here (pnpm-pack did the resolving).
       - name: Publish
         shell: bash
-        run: npm publish "$(ls artifact/*.tgz)" --provenance --access public
+        # `./` for the same reason as the smoke install: a bare `artifact/…tgz` is read by npm as a GitHub
+        # `owner/repo` shorthand, not the local tarball. `./artifact/…` forces the file spec.
+        run: npm publish "./$(ls artifact/*.tgz)" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
