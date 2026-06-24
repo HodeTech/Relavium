@@ -71,16 +71,19 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
 
   const result = AgentSchema.safeParse(raw);
   if (!result.success) {
-    // Field PATHS only (key names / indices) — never an authored value, so the message stays secret-free. A
-    // root-level `unrecognized_keys` issue has an EMPTY path, so name the offending keys (`issue.keys`)
-    // rather than collapsing to `agent` — mirroring parser.ts, so a top-level unknown key is reported.
+    // Field PATHS only (key names / indices) — never an authored value, so the message stays secret-free. For
+    // an `unrecognized_keys` issue Zod puts the unknown key NAMES in `issue.keys` (not the path), so name those
+    // — prefixed with the parent path for a NESTED `.strict()` object (`retry`, `mcp_servers[i]`, memory) so the
+    // context isn't lost, and bare at the root (empty path) — mirroring parser.ts's field locator.
     const fields = [
       ...new Set(
-        result.error.issues.flatMap((issue) =>
-          issue.code === 'unrecognized_keys'
-            ? issue.keys
-            : [issue.path.map(String).join('.') || 'agent'],
-        ),
+        result.error.issues.flatMap((issue) => {
+          if (issue.code === 'unrecognized_keys') {
+            const prefix = issue.path.length > 0 ? `${issue.path.map(String).join('.')}.` : '';
+            return issue.keys.map((key) => `${prefix}${key}`);
+          }
+          return [issue.path.map(String).join('.') || 'agent'];
+        }),
       ),
     ];
     throw new AgentParseError(

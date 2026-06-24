@@ -1,4 +1,9 @@
-import { RunEventSchema, type RunEvent, type RunStatus } from '@relavium/shared';
+import {
+  RunEventSchema,
+  type ExecutionMode,
+  type RunEvent,
+  type RunStatus,
+} from '@relavium/shared';
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
@@ -60,7 +65,9 @@ export interface RunRecord {
   readonly id: string;
   readonly workflowId: string;
   readonly status: RunStatus;
-  readonly executionMode: string;
+  readonly executionMode: ExecutionMode;
+  // `string`, not a union: trigger_type carries NO strict CHECK (schema.ts) — webhook/schedule are Phase-2
+  // values that may legitimately appear, so the read type stays open by design.
   readonly triggerType: string;
   readonly startedAt?: string;
   readonly completedAt?: string;

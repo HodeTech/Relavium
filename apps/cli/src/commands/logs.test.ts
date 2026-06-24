@@ -66,6 +66,14 @@ describe('logsCommand', () => {
     expect(out()).toContain('human_gate:paused g — gate g1 (approval)');
   });
 
+  it('renders the failure detail line for a failed run (the run:failed branch)', async () => {
+    const { io, out } = captureIo();
+    await seedRun(db, { slug: 'demo', runId: 'failed-1', state: 'failed' });
+
+    expect(logsCommand({ runId: 'failed-1' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(out()).toContain('run:failed — internal'); // detailOf surfaces the error code
+  });
+
   it('--json emits each raw RunEvent as one NDJSON line in seq order', async () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });

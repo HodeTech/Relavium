@@ -37,7 +37,6 @@ function stubEngine(resumeFromCheckpoint: WorkflowEngine['resumeFromCheckpoint']
 function emptyHandle(runId: string): RunHandle {
   return {
     runId,
-    // eslint-disable-next-line @typescript-eslint/require-await
     events: (async function* (): AsyncGenerator<RunEvent> {})(),
     subscribe: () => () => {},
     cancel: () => {},

@@ -71,6 +71,14 @@ describe('gateListCommand', () => {
     expect(out()).not.toContain('g-b');
   });
 
+  it('reports no pending gate for a scoped runId that is not paused (no event-log replay)', async () => {
+    const { io, out } = captureIo();
+    await seedRun(db, { slug: 'a', runId: 'done', state: 'completed' });
+
+    expect(gateListCommand({ runId: 'done' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(out()).toContain('Run done has no pending human gate.');
+  });
+
   it('excludes a budget gate (that is `relavium budget resume`, not a human gate)', async () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'a', runId: 'r1', state: 'paused', budgetGateId: 'budget-1' });

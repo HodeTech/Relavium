@@ -94,38 +94,47 @@ export function discoverCatalog(opts: {
   return entries.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
+/** A `valid: false` catalog entry whose slug falls back to the filename stem — the secret-free, path-free shape. */
+function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
+  return {
+    slug: fileStem(basename(path)),
+    name: undefined,
+    tags: [],
+    path: rel,
+    valid: false,
+    error,
+  };
+}
+
 /** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */
 function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
   const rel = relative(cwd, path);
   let yaml: string;
   try {
     const stats = statSync(path);
+    // statSync FOLLOWS a symlink, so a `.yaml` symlinked to a directory, FIFO, or character device (e.g.
+    // /dev/zero) resolves here — and readFileSync on a FIFO/char-device BLOCKS INDEFINITELY (a local DoS via a
+    // crafted symlink in the catalog dir). Reject anything that is not a regular file BEFORE reading; the size
+    // check cannot guard it (a device reports stat.size 0, which passes).
+    if (!stats.isFile()) {
+      return invalidEntry(path, rel, 'not a regular file');
+    }
     // The parser's authoritative cap is a CHARACTER count; `stat.size` is BYTES. UTF-8 encodes at most 4
     // bytes/char, so `chars * 4` is a byte ceiling that never false-rejects a within-limit file (a dense
     // multibyte file just under the char cap is not wrongly hidden) while still bailing before we slurp a
     // genuinely huge file into memory. The parser then re-applies the exact char cap.
     if (stats.size > MAX_SOURCE_CHARS * 4) {
-      return {
-        slug: fileStem(basename(path)),
-        name: undefined,
-        tags: [],
-        path: rel,
-        valid: false,
-        error: 'exceeds the size limit',
-      };
+      return invalidEntry(path, rel, 'exceeds the size limit');
     }
     yaml = readFileSync(path, 'utf8');
   } catch (err) {
     // Generic, path-free reason — never echo a raw fs `err.message` (it carries the absolute path) into the
     // catalog entry / `--json` `error` field (error-handling.md; same discipline as parseReason below).
-    return {
-      slug: fileStem(basename(path)),
-      name: undefined,
-      tags: [],
-      path: rel,
-      valid: false,
-      error: errnoCode(err) === 'EACCES' ? 'permission denied' : 'could not read the file',
-    };
+    return invalidEntry(
+      path,
+      rel,
+      errnoCode(err) === 'EACCES' ? 'permission denied' : 'could not read the file',
+    );
   }
 
   try {
@@ -142,14 +151,7 @@ function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
     const agent = parseAgent(yaml, { source: rel });
     return { slug: agent.id, name: agent.name, tags: [], path: rel, valid: true };
   } catch (err) {
-    return {
-      slug: fileStem(basename(path)),
-      name: undefined,
-      tags: [],
-      path: rel,
-      valid: false,
-      error: parseReason(err),
-    };
+    return invalidEntry(path, rel, parseReason(err));
   }
 }
 

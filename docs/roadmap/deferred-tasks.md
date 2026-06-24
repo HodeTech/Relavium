@@ -498,6 +498,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `ref`) so a secret-bearing run becomes resumable. Until then the fail-closed + the
   [commands.md](../reference/cli/commands.md) note stand. *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
 
+### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
+
+> The PR #48 review (7-dimension multi-agent pass) returned **0 blocker / 0 major**; the fix-now items (the
+> catalog special-file guard + the doc/contract corrections) and the cheap test/code nits landed in the PR.
+> The items below were verified-real but graded **fix-followup** — none blocks merge.
+
+- [ ] **History-read query indexes + pagination.** `listRuns`/`listActiveRuns` sort with a `USE TEMP B-TREE`
+  filesort (no `(created_at DESC, id DESC) WHERE deleted_at IS NULL` index), and `listRuns`/
+  `loadLatestRunPerWorkflow` are unbounded (no `LIMIT`/pagination). Sub-millisecond at single-user CLI scale;
+  add a partial index + a paging API before the desktop/cloud surfaces drive these reads at volume.
+  *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
+- [ ] **`AgentParseError` carries no line/column on a YAML syntax fault** — parity gap with `parseWorkflow`
+  (which threads `LineCounter` positions into `WorkflowSyntaxError`). Add line/col before the 2.J authoring
+  commands surface agent-parse errors to a user. *(low · packages/core/src/agent-parser.ts; before 2.J)*
+- [ ] **Residual read-command test pins.** A few low-risk coverage gaps remain after the PR's test additions:
+  `pendingHumanGates` with `expiresAt` present and with multiple simultaneous gates; `list --json` no-project
+  stderr + invalid-entry `error` machine-contract; the `status` "no node activity" fallback. The production code
+  is correct (verified); these are operator-surface pins. *(low · apps/cli/src/**/*.test.ts; testing.md)*
+- [ ] **Phase-doc structural views still omit `gate list`.** The §2.I heading + acceptance now name `gate list`,
+  but the two Mermaid graphs and the from-scratch wave/dependency tables describe the original plan node and
+  were left unchanged (they are the plan, not a live tracker). Fold `gate list` in if those diagrams are ever
+  regenerated. *(nit · docs/roadmap/phases/phase-2-cli.md)*
+
 ## Schema / validation hardening
 
 - [ ] **`z.unknown()` payload presence** — `agent:tool_call.toolInput`, `node:completed.output`,

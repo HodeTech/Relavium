@@ -356,7 +356,7 @@ later inspection — the same tables the desktop replays.
 run's reported cost; a gate-paused run persists enough state for `relavium gate`
 to resume it in a fresh process.
 
-### 2.I — `list`, `logs`, and `status` over durable history
+### 2.I — `list`, `logs`, `status`, and `gate list` over durable history
 
 Implement the read commands against persisted state so users can browse the
 catalog and inspect past and active runs.
@@ -367,8 +367,8 @@ catalog and inspect past and active runs.
   last-run status (using the `ROW_NUMBER() OVER (PARTITION BY workflow_id …)`
   pattern, since SQLite has no `DISTINCT ON`); add a flag to list agents.
 - `relavium logs <runId>`: print the persisted `run_events` stream for a past run
-  in `seq` order, with a flag to emit raw `RunEvent` JSON (the same data the
-  desktop run-detail drawer replays).
+  in `seq` order; under the global `--json` flag, emit raw `RunEvent` JSON (the same
+  data the desktop run-detail drawer replays).
 - `relavium status`: show currently active/paused runs and their per-node status
   from `runs` + `step_executions`.
 - `relavium gate list [<runId>]`: list the pending human gates (all active runs, or
@@ -379,8 +379,10 @@ catalog and inspect past and active runs.
   codes (`2` for an unknown `runId`).
 
 **Acceptance:** `list` shows discovered workflows with correct last-run status;
-`logs <runId>` reproduces the run's event stream in order (and as raw JSON with the
-flag); `status` reflects a paused run while it awaits a gate; an unknown `runId`
+`logs <runId>` reproduces the run's event stream in order (and as raw `RunEvent`
+NDJSON under `--json`); `status` reflects a paused run while it awaits a gate;
+`gate list` lists the pending human gates across paused runs (and of one run when
+given a `<runId>`), so an operator can pick the `gateId`; an unknown `runId`
 exits `2`.
 
 ### 2.J — `create` / `import` / `export` (YAML lifecycle)

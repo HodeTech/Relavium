@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -152,5 +152,27 @@ describe('discoverCatalog', () => {
 
     const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
     expect(entries.map((e) => e.slug)).toEqual(['hello']);
+  });
+
+  it('discovers .relavium.yml files and strips the compound suffix for the slug fallback', () => {
+    // An invalid `.relavium.yml` so the slug comes from the filename stem — proving fileStem strips
+    // `.relavium.yml` to `review` (not `review.relavium`) and that `.yml` is a discovered extension.
+    write('workflows', 'review.relavium.yml', INVALID_WORKFLOW);
+
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    expect(entries.map((e) => e.slug)).toEqual(['review']);
+    expect(entries[0]?.valid).toBe(false);
+  });
+
+  it('flags a symlinked .yaml that resolves to a non-regular file (no readFileSync hang)', () => {
+    write('workflows', 'hello.relavium.yaml', VALID_WORKFLOW); // ensures workflows/ exists
+    // A `.yaml` symlinked to a DIRECTORY (statSync follows it → not a regular file). The same guard rejects a
+    // symlink to a FIFO/character device (e.g. /dev/zero) BEFORE readFileSync — which would otherwise block.
+    symlinkSync(configDir, join(configDir, 'workflows', 'loop.yaml'));
+
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const loop = entries.find((e) => e.slug === 'loop');
+    expect(loop?.valid).toBe(false);
+    expect(loop?.error).toBe('not a regular file');
   });
 });

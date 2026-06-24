@@ -14,7 +14,7 @@ export interface StatusCommandDeps {
   readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
 }
 
-interface RunStatus {
+interface ActiveRunStatus {
   readonly run: RunRecord;
   readonly steps: readonly StepRecord[];
   readonly pendingGates: readonly PendingGate[];
@@ -34,11 +34,12 @@ export function statusCommand(deps: StatusCommandDeps): ExitCode {
   });
   const { reader, close } = openHistoryReader(homeDir, deps.openDb);
   try {
-    const statuses: RunStatus[] = reader.listActiveRuns().map((run) => ({
+    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => ({
       run,
       steps: reader.loadStepExecutions(run.id),
-      // Only a `paused` run can hold a pending human gate (the engine settles to `paused` before persisting
-      // `human_gate:paused`, checkpoint.ts), so reconstruct the log only for those — a `running` run has none.
+      // Only a `paused` run can hold a pending human gate: persisting a `human_gate:paused` event folds the
+      // run's status to `paused` (run-history-store applyDerived), so reconstruct the log only for those — a
+      // `running` run has no pending gate.
       pendingGates: run.status === 'paused' ? pendingHumanGates(reader.loadRunEvents(run.id)) : [],
     }));
 
@@ -61,7 +62,7 @@ export function statusCommand(deps: StatusCommandDeps): ExitCode {
 }
 
 /** One active run as a machine record: identity + status + per-node steps + any pending human gates. */
-function toJson(status: RunStatus): unknown {
+function toJson(status: ActiveRunStatus): unknown {
   return {
     runId: status.run.id,
     workflowId: status.run.workflowId,
@@ -88,7 +89,7 @@ function toJson(status: RunStatus): unknown {
 }
 
 /** Render one run's status block: a header line, its per-node steps, then any pending gates. */
-function renderRun(io: CliIo, status: RunStatus): void {
+function renderRun(io: CliIo, status: ActiveRunStatus): void {
   io.writeOut(`run ${status.run.id} — ${status.run.status} (workflow ${status.run.workflowId})\n`);
   if (status.steps.length === 0) {
     io.writeOut('  (no node activity recorded yet)\n');

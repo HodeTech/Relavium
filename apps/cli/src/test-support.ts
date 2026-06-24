@@ -43,6 +43,8 @@ export function parseNdjson<T = Record<string, unknown>>(text: string): T[] {
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         throw new Error(`expected one JSON object per NDJSON line, got: ${line}`);
       }
+      // The guard narrows to a non-null, non-array object; `T` is the caller's asserted record shape (a
+      // test-only convenience). The structural garbage a real bug would emit is already rejected above.
       return parsed as T;
     });
 }
@@ -56,7 +58,7 @@ type EventBody<T extends RunEvent['type']> = Omit<
 export interface SeedRunOptions {
   readonly slug: string;
   readonly runId: string;
-  readonly state: 'running' | 'paused' | 'completed';
+  readonly state: 'running' | 'paused' | 'completed' | 'failed';
   /** Drives `createdAt`/`updatedAt` (and the event timestamps) so a test can order runs deterministically. */
   readonly atMs?: number;
   /** For a `paused` run: leave a human gate pending so reconstruct / `status` / `gate list` surface it. */
@@ -95,6 +97,9 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   const workflowId = await store.resolveWorkflowId(opts.slug);
   let seq = 0;
   const emit = async <T extends RunEvent['type']>(type: T, rest: EventBody<T>): Promise<void> => {
+    // The envelope + the per-variant `rest` reconstruct the exact union member; TS can't prove a generic
+    // spread does so, hence the assertion (same pattern as the `ev` builder in run-history-store.test.ts).
+    // `persistEvent` runs `RunEventSchema.parse`, so a wrong/missing field fails loudly at seed time.
     const event = {
       type,
       runId: opts.runId,
@@ -147,6 +152,11 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
       totalTokensUsed: { input: 1, output: 2 },
       totalCostMicrocents: 100,
       durationMs: 9,
+    });
+  } else if (opts.state === 'failed') {
+    await emit('run:failed', {
+      error: { code: 'internal', message: 'boom', retryable: false },
+      partialOutputs: {},
     });
   }
   return opts.runId;

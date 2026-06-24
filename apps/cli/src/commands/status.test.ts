@@ -50,8 +50,19 @@ describe('statusCommand', () => {
     expect(text).toContain('run paused-1 — paused');
     expect(text).toContain('n1 [transform]'); // the completed node step
     expect(text).toContain('g [human_in_the_loop]'); // the gate node still 'running'
-    expect(text).toContain('pending gate gate-1 (approval) at g');
+    expect(text).toContain('pending gate gate-1 (approval) at g — "ship it?"'); // the gate message is shown
     expect(text).not.toContain('run done'); // a terminal run is not active
+  });
+
+  it('lists a running run with its steps and no pending gate', async () => {
+    const { io, out } = captureIo();
+    await seedRun(db, { slug: 'demo', runId: 'run-x', state: 'running' });
+
+    statusCommand(deps(io));
+    const text = out();
+    expect(text).toContain('run run-x — running');
+    expect(text).toContain('n1 [transform]');
+    expect(text).not.toContain('pending gate'); // a running run holds no pending human gate
   });
 
   it('--json emits one record per active run with steps + pendingGates', async () => {

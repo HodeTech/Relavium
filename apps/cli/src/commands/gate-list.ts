@@ -54,8 +54,8 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
 
 /**
  * The run ids to scan for pending gates: every paused run (only a `paused` run can hold a pending human gate —
- * the engine settles to `paused` before persisting `human_gate:paused`, checkpoint.ts), or the one requested
- * run. An unknown requested `runId` is an invalid invocation (exit `2`).
+ * persisting a `human_gate:paused` event folds the run's status to `paused`, run-history-store applyDerived),
+ * or the one requested run. An unknown requested `runId` is an invalid invocation (exit `2`).
  */
 function targetRunIds(reader: RunHistoryReader, runId: string | undefined): string[] {
   if (runId === undefined) {
@@ -68,7 +68,9 @@ function targetRunIds(reader: RunHistoryReader, runId: string | undefined): stri
   if (run === undefined) {
     throw new CliError('invalid_invocation', `no run found with id ${runId}`);
   }
-  return [run.id];
+  // A non-paused run cannot hold a pending human gate — skip it (don't replay its whole event log only to
+  // find none), the same guard `statusCommand` applies. The empty result yields the clear "no pending" message.
+  return run.status === 'paused' ? [run.id] : [];
 }
 
 /** Render the pending-gate rows as one terse line each (or a clear empty message scoped to the query). */
