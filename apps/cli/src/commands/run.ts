@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { join, relative } from 'node:path';
+import { relative } from 'node:path';
 
 import {
   WorkflowParseError,
@@ -7,15 +6,14 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
-import { createModelCatalogStore } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { globalConfigDir } from '../config/paths.js';
 import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
+import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import {
   createProviderResolver,
   neededProviderIds,
@@ -134,23 +132,14 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
     let engineOptions: BuildEngineOptions = { providers };
     if (opened !== undefined) {
-      const catalog = createModelCatalogStore(opened.db, {
-        uuid: () => randomUUID(),
-        now: () => Date.now(),
-      });
+      const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
       engineOptions = {
         providers,
-        host: createCliHost(opened.store, {
-          media: {
-            casRoot: join(globalConfigDir(homeDir), 'media'),
-            saveToRoot: join(deps.global.cwd, '.relavium', 'runs'),
-            referenceDb: opened.db,
-          },
-        }),
-        resolveMediaSurface: catalog.resolveMediaSurface,
-        ...(config.mediaCostEstimate === undefined
+        host: createCliHost(opened.store, { media: wiring.media }),
+        resolveMediaSurface: wiring.resolveMediaSurface,
+        ...(wiring.mediaCostEstimate === undefined
           ? {}
-          : { mediaCostEstimate: config.mediaCostEstimate }),
+          : { mediaCostEstimate: wiring.mediaCostEstimate }),
       };
     }
     const engine = await build(engineOptions);

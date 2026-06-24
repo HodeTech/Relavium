@@ -24,15 +24,15 @@ import {
  */
 export interface CliMediaOptions {
   /**
-   * The `save_to` write-port scope root the CALLER resolves and passes (the `run` path will pass
-   * `.relavium/runs/`, project-relative — that caller wiring lands in a later 2.S step). The port
-   * `realpath`+`commonpath`-jails every write under it (symlinks off, ADR-0044 §2). Absent ⇒ no `mediaWrite`,
-   * so an `output` node's `save_to` fails the run with a clear configuration error (never a silent skip).
+   * The `save_to` write-port scope root the CALLER resolves and passes — the `run`/`gate` paths pass
+   * `<cwd>/.relavium/runs/` (project-relative). The port `realpath`+`commonpath`-jails every write under it
+   * (symlinks off, ADR-0044 §2). Absent ⇒ no `mediaWrite`, so an `output` node's `save_to` fails the run with
+   * a clear configuration error (never a silent skip).
    */
   readonly saveToRoot?: string;
   /**
-   * The content-addressed media-store (CAS) root the CALLER resolves and passes (the `run` path will pass
-   * `~/.relavium/media/` — global, sha256-addressed, deduped across runs; caller wiring lands later in 2.S).
+   * The content-addressed media-store (CAS) root the CALLER resolves and passes — the `run`/`gate` paths pass
+   * `~/.relavium/media/` (global, sha256-addressed, deduped across runs).
    * Backs `ExecutionHost.mediaStore` — the de-inline/persist choke point the engine writes produced media to,
    * and the same instance the `AgentRunnerDeps.resolveForEgress` re-materialization reads (a handle written by
    * one resolves in the other). Absent ⇒ no `mediaStore`, so a media-PRODUCING run fails `media_store_unavailable`.

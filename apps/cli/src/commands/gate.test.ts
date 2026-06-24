@@ -9,6 +9,8 @@ import {
 } from '@relavium/core';
 import {
   createClient,
+  createModelCatalogStore,
+  createProviderStore,
   createRunHistoryStore,
   runMigrations,
   type Db,
@@ -18,7 +20,7 @@ import {
 import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildEngine } from '../engine/build-engine.js';
+import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
@@ -183,6 +185,47 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {
+    // Seed a generative model into the SHARED db so the gate-path catalog (over opened.db) resolves it.
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(db, dbDeps).upsert({
+      providerId,
+      modelId: 'gpt-image-1',
+      displayName: 'GPT Image 1',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    let captured: BuildEngineOptions | undefined;
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        // Capture what gate.ts assembled, then delegate to the real builder (same opts) so the text-only GATED
+        // resume completes — the media ports stay un-exercised (no media node), so no fs writes occur.
+        buildEngine: (opts) => {
+          captured = opts;
+          return buildEngine(opts);
+        },
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    // A gate-resumed run gets the same three media ports + the catalog routing as a fresh `run` — never
+    // silently text-only.
+    expect(captured?.host?.mediaStore).toBeDefined();
+    expect(captured?.host?.mediaReferences).toBeDefined();
+    expect(captured?.host?.mediaWrite).toBeDefined();
+    expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
+    expect(captured?.resolveMediaSurface?.('unknown')).toBeUndefined();
+  });
 
   it('resumes a paused run on --approve, drives it to completion (exit 0), and persists the decision', async () => {
     const { runId } = await setupPausedRun();

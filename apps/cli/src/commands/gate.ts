@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 
 import {
   EngineStateError,
@@ -8,16 +7,10 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
-import {
-  createModelCatalogStore,
-  createRunHistoryStore,
-  loadRunSnapshot,
-  type Db,
-} from '@relavium/db';
+import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
 import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { globalConfigDir } from '../config/paths.js';
 import { openLocalDb } from '../db/open.js';
 import {
   buildEngine as defaultBuildEngine,
@@ -25,6 +18,7 @@ import {
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
 import { createCliHost } from '../engine/host.js';
+import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import type { GatePrompter } from '../gate/prompter.js';
@@ -148,27 +142,20 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const providers = deps.providers ?? createProviderResolver(deps.io.env);
-    // Media host-wiring (2.S), mirrored from `run`: a gate-resumed run that produces media must wire the same
-    // CAS + retention + catalog as the original run (else it would be silently text-only). Same `opened.db`,
-    // same CAS root (`~/.relavium/media/`) + `save_to` root (`.relavium/runs/`) — the checkpointer stays.
-    const catalog = createModelCatalogStore(opened.db, {
-      uuid: () => randomUUID(),
-      now: () => Date.now(),
-    });
+    // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
+    // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
+    // stays. NOTE: `save_to`'s scope root is the RESUMER's cwd (`relavium gate` ran here), not the original run's
+    // cwd — so a run started in A, resumed from B, writes its save_to under B/.relavium/runs/. The authored
+    // `{{ run.id }}` segment still keeps writes per-run-disambiguated; persisting the original run's project
+    // root for an identical location is a deferred refinement (deferred-tasks.md).
+    const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
-      host: createCliHost(store, {
-        checkpointer,
-        media: {
-          casRoot: join(globalConfigDir(homeDir), 'media'),
-          saveToRoot: join(deps.global.cwd, '.relavium', 'runs'),
-          referenceDb: opened.db,
-        },
-      }),
-      resolveMediaSurface: catalog.resolveMediaSurface,
-      ...(config.mediaCostEstimate === undefined
+      host: createCliHost(store, { checkpointer, media: wiring.media }),
+      resolveMediaSurface: wiring.resolveMediaSurface,
+      ...(wiring.mediaCostEstimate === undefined
         ? {}
-        : { mediaCostEstimate: config.mediaCostEstimate }),
+        : { mediaCostEstimate: wiring.mediaCostEstimate }),
     });
     let handle: RunHandle;
     try {
