@@ -6,6 +6,7 @@ import { createClient, runMigrations, type DbClient } from './client.js';
 import { runCosts, runEvents, runs, stepExecutions } from './schema.js';
 import {
   createRunHistoryStore,
+  loadRunSnapshot,
   type RunHistoryStore,
   type RunHistoryWorkflow,
 } from './run-history-store.js';
@@ -381,5 +382,56 @@ describe('createRunHistoryStore', () => {
     ]) {
       expect(value ?? '').not.toContain(RAW);
     }
+  });
+
+  describe('loadRunSnapshot', () => {
+    it('returns the frozen snapshot + status for a paused run (the 2.G resume substrate)', async () => {
+      const wf = await store.resolveWorkflowId('demo');
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId: wf, inputs: { n: 3 }, executionMode: 'local' }),
+        runId: 'run-snap',
+      });
+      await store.persistEvent({
+        ...ev('human_gate:paused', 1, {
+          nodeId: 'gate',
+          gateId: 'g1',
+          gateType: 'approval',
+          message: 'ok?',
+        }),
+        runId: 'run-snap',
+      });
+
+      const snap = loadRunSnapshot(client.db, 'run-snap');
+      expect(snap?.status).toBe('paused');
+      // The exact `JSON.stringify(WorkflowDefinition)` written at run:started — round-trips to the parsed graph.
+      expect(snap?.workflowDefinitionSnapshot).toBe(WORKFLOW.definitionJson);
+      expect(JSON.parse(snap?.workflowDefinitionSnapshot ?? '{}')).toMatchObject({
+        workflow: { id: 'demo' },
+      });
+      // The run's inputs are restored too (a post-gate node may read `{{ inputs.x }}` on resume).
+      expect(JSON.parse(snap?.inputJson ?? '{}')).toEqual({ n: 3 });
+    });
+
+    it('reflects a terminal run status (so the gate command can no-op an already-finished run)', async () => {
+      const wf = await store.resolveWorkflowId('demo');
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId: wf, inputs: {}, executionMode: 'local' }),
+        runId: 'run-done',
+      });
+      await store.persistEvent({
+        ...ev('run:completed', 1, {
+          outputs: {},
+          totalTokensUsed: { input: 0, output: 0 },
+          totalCostMicrocents: 0,
+          durationMs: 1,
+        }),
+        runId: 'run-done',
+      });
+      expect(loadRunSnapshot(client.db, 'run-done')?.status).toBe('completed');
+    });
+
+    it('returns undefined for an unknown runId', () => {
+      expect(loadRunSnapshot(client.db, 'nope')).toBeUndefined();
+    });
   });
 });

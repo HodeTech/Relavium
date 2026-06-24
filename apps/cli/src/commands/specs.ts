@@ -13,6 +13,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
+import { gateCommand } from './gate.js';
 import {
   runProviderCommand,
   type ProviderCommandArgs,
@@ -22,11 +23,11 @@ import { runCommand } from './run.js';
 
 /**
  * The documented command surface (canonical home:
- * [commands.md](../../../../docs/reference/cli/commands.md)). `run` is the real command (2.D); the
- * remaining confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their
- * own workstreams (the read commands at 2.I, the authoring commands at 2.J, the gate at 2.G, keys at
- * 2.C). The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`) and the
- * `gate list` / `budget resume` subcommands land with their workstreams (2.M–2.Q, 2.G), not here.
+ * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` (2.G), and `provider` (2.C)
+ * are real commands; the remaining confirmed pre-chat commands are registered as clean "not-yet-available"
+ * stubs until their own workstreams (the read commands at 2.I, the authoring commands at 2.J). The chat family
+ * (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`) and the `gate list` / `budget resume`
+ * subcommands land with their workstreams (2.M–2.Q, 2.I), not here.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -59,11 +60,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     landsIn: 'workstream 2.I',
   },
   {
-    name: 'gate <runId>',
-    summary: 'Resolve a pending human gate (approve / reject / input).',
-    landsIn: 'workstream 2.G',
-  },
-  {
     name: 'create',
     summary: 'Scaffold a new workflow or agent via an interactive wizard.',
     landsIn: 'workstream 2.J',
@@ -88,6 +84,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
 
 export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
+  registerGate(program, ctx);
   registerProvider(program, ctx);
   for (const spec of STUB_COMMANDS) {
     program
@@ -129,6 +126,58 @@ function registerRun(program: Command, ctx?: CommandContext): void {
       },
     );
   });
+}
+
+/** Register `relavium gate <runId>` (2.G) — resolve a pending human gate over the durable resume substrate. */
+function registerGate(program: Command, ctx?: CommandContext): void {
+  const gate = program
+    .command('gate <runId>')
+    .description('Resolve a pending human gate (approve / reject / input).')
+    .option('--approve', 'approve the gate')
+    .option('--reject', 'reject the gate')
+    .option('--comment <text>', 'a decision comment (with --approve / --reject)')
+    .option('--input <value>', 'provide input for a gate_type=input gate (JSON, else a raw string)')
+    .option(
+      '--gate <gateId>',
+      'which pending gate to resolve (required when more than one is pending)',
+    );
+
+  if (ctx === undefined) {
+    gate.action(() => {
+      throw new CliError('not_implemented', '`relavium gate` requires the CLI runtime context.');
+    });
+    return;
+  }
+
+  gate.action(
+    async (
+      runId: string,
+      opts: {
+        approve?: boolean;
+        reject?: boolean;
+        comment?: string;
+        input?: string;
+        gate?: string;
+      },
+    ) => {
+      ctx.result.exitCode = await gateCommand(
+        {
+          runId,
+          ...(opts.approve === undefined ? {} : { approve: opts.approve }),
+          ...(opts.reject === undefined ? {} : { reject: opts.reject }),
+          ...(opts.comment === undefined ? {} : { comment: opts.comment }),
+          ...(opts.input === undefined ? {} : { input: opts.input }),
+          ...(opts.gate === undefined ? {} : { gate: opts.gate }),
+        },
+        {
+          io: ctx.io,
+          global: ctx.global,
+          // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
+          providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        },
+      );
+    },
+  );
 }
 
 /** Register `relavium provider` and its subcommands (2.C). Each opens the local db + keychain per invocation. */

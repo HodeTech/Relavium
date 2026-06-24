@@ -28,6 +28,25 @@ function fakeMount(): {
   return { mount: () => ({ unmount, waitUntilExit }), unmount, waitUntilExit };
 }
 
+/** Like {@link fakeMount} but counts mount() calls — so suspend/resume re-mount cycles (2.G) are observable. */
+function countingMount(): {
+  mount: () => InkMountInstance;
+  unmount: ReturnType<typeof vi.fn>;
+  mountCount: () => number;
+} {
+  let mounts = 0;
+  const unmount = vi.fn();
+  const waitUntilExit = vi.fn(() => Promise.resolve());
+  return {
+    mount: () => {
+      mounts += 1;
+      return { unmount, waitUntilExit };
+    },
+    unmount,
+    mountCount: () => mounts,
+  };
+}
+
 describe('createInkRenderer', () => {
   it('finalize unmounts, awaits exit, then writes the persistent summary — and is idempotent', async () => {
     const { mount, unmount, waitUntilExit } = fakeMount();
@@ -76,6 +95,46 @@ describe('createInkRenderer', () => {
     await renderer.finalize?.();
     expect(writeSummary).toHaveBeenCalledTimes(1);
     expect(writeSummary.mock.calls[0]?.[0]).toContain('run cancelled');
+  });
+
+  it('suspend unmounts the live view WITHOUT a summary; resume re-mounts from the same store (2.G gate prompt)', async () => {
+    const { mount, unmount, mountCount } = countingMount();
+    const summaries: string[] = [];
+    const renderer = createInkRenderer({
+      color: false,
+      mount,
+      writeSummary: (text) => summaries.push(text),
+    });
+    expect(mountCount()).toBe(1); // initial mount at construction
+
+    // Suspend to hand the terminal to the gate prompt: unmount, but the run is NOT over → no summary.
+    await renderer.suspend?.();
+    expect(unmount).toHaveBeenCalledTimes(1);
+    expect(summaries).toHaveLength(0);
+
+    // Resume re-mounts a fresh ink instance over the retained store.
+    await renderer.resume?.();
+    expect(mountCount()).toBe(2);
+
+    // Finalize then tears down the second instance and writes the persistent summary exactly once.
+    await renderer.finalize?.();
+    expect(unmount).toHaveBeenCalledTimes(2);
+    expect(summaries).toHaveLength(1);
+  });
+
+  it('resume after finalize is a no-op — a late resume never re-opens a torn-down TUI', async () => {
+    const { mount, mountCount } = countingMount();
+    const renderer = createInkRenderer({ color: false, mount, writeSummary: () => {} });
+    await renderer.finalize?.();
+    await renderer.resume?.();
+    expect(mountCount()).toBe(1); // still just the initial mount — finalize is terminal
+  });
+
+  it('resume while already mounted is idempotent (no double-mount without a preceding suspend)', async () => {
+    const { mount, mountCount } = countingMount();
+    const renderer = createInkRenderer({ color: false, mount, writeSummary: () => {} });
+    await renderer.resume?.();
+    expect(mountCount()).toBe(1);
   });
 
   it('clears the frame loop and re-throws if mount() throws during construction', () => {

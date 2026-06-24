@@ -10,6 +10,15 @@ import type { CliIo } from '../process/io.js';
 export interface RunRenderer {
   onEvent: (event: RunEvent) => void;
   /**
+   * Optional pause of the live view so an interactive `@clack/prompts` gate card (2.G) can own the terminal
+   * mid-run: the `ink` TUI unmounts (releasing the terminal) WITHOUT writing its final summary; `resume`
+   * re-mounts from the same retained store so the live view continues seamlessly. The line / NDJSON renderers
+   * have no live view and omit both — the run core calls them only in the interactive TUI path.
+   */
+  suspend?: () => Promise<void> | void;
+  /** Re-mount the live view after a {@link suspend} (no-op once {@link finalize} has run). See `suspend`. */
+  resume?: () => Promise<void> | void;
+  /**
    * Optional teardown, awaited by the run core after the event loop ends (even on a throw). The `ink` TUI
    * (2.E) uses it to unmount the live view — restoring the terminal — and write its persistent final
    * summary; the line and NDJSON renderers need no teardown and omit it. Shared by 2.G / 2.M.

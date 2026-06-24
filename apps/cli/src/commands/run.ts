@@ -6,7 +6,6 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
-import type { RunEvent } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -19,6 +18,8 @@ import {
   neededProviderIds,
   type ProviderResolver,
 } from '../engine/providers.js';
+import type { GatePrompter } from '../gate/prompter.js';
+import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -27,6 +28,7 @@ import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
+import { driveRun } from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
 
 export interface RunCommandArgs {
@@ -51,17 +53,22 @@ export interface RunCommandDeps {
    * inject a fake renderer (onEvent + finalize spies) to assert the finalize wiring without a TTY.
    */
   readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
+  /**
+   * Injectable interactive gate-prompter selector (2.G). Defaults to the real {@link selectGatePrompter}
+   * (present only on an interactive TTY); tests inject a fake prompter to drive the inline gate-resolve path
+   * without a TTY, or omit it so a gate pause exits 3 like the non-interactive path.
+   */
+  readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
 }
-
-type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
 
 /**
  * The `relavium run` core (2.D) — the M3 keystone and first real consumer of `@relavium/core`:
- * resolve + parse the workflow, coerce/validate `--input`, build the engine, drive its event stream
- * through a renderer, forward SIGINT as a cooperative cancel, and map the terminal outcome to a
- * deterministic exit code ([commands.md](../../../docs/reference/cli/commands.md#exit-codes)).
- * Framework-free — no commander/ink import. Pre-run faults (config / not-found / bad input / parse)
- * throw a typed {@link CliError} (exit 2); run-time outcomes arrive as events and map to 0/1/3.
+ * resolve + parse the workflow, coerce/validate `--input`, build the engine, then hand the live run to the
+ * shared {@link driveRun} core (event stream → renderer, SIGINT → cooperative cancel, interactive human gate →
+ * inline prompt, 2.G) and map the terminal outcome to a deterministic exit code
+ * ([commands.md](../../../docs/reference/cli/commands.md#exit-codes)). Framework-free — no commander/ink import.
+ * Pre-run faults (config / not-found / bad input / parse) throw a typed {@link CliError} (exit 2); run-time
+ * outcomes arrive as events and map to 0/1/3.
  */
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
   const build = deps.buildEngine ?? defaultBuildEngine;
@@ -122,67 +129,18 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
     const handle = engine.start({ workflow: def, inputs });
 
-    let outcome: RunOutcome | undefined;
-    let cancelRequested = false;
-    // Register the cancel handler the instant the engine is live — BEFORE constructing the renderer — so a
-    // failure building the renderer (e.g. ink's `render()` throwing) can never leave a running engine with no
-    // cooperative-cancel handler; a Ctrl-C in that window still routes to handle.cancel(). The `finally`
-    // removes it, so the listener can't leak on a throw.
-    const onSigint = (): void => {
-      if (cancelRequested) {
-        // A second Ctrl-C while the cooperative cancel is still draining — force a clean, deterministic exit
-        // rather than hang (e.g. if a provider ignores the abort), and never the bare-signal 130.
-        process.exit(EXIT_CODES.workflowFailed);
-      }
-      cancelRequested = true;
-      handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
-    };
-    // `process.on`, NOT `process.once`: an interactive run mounts ink, which registers a `signal-exit` SIGINT
-    // listener that RE-RAISES SIGINT (→ 128+2 = exit 130) BUT ONLY when it is the sole remaining SIGINT
-    // listener. A `once` handler removes itself the instant it fires, so signal-exit then sees only itself and
-    // re-raises — killing the run at 130 before the cooperative cancel completes. Staying registered keeps
-    // signal-exit from re-raising, so cancel → run:cancelled → exit 1 wins. Removed in the `finally`.
-    process.on('SIGINT', onSigint);
-    let renderer: RunRenderer | undefined;
-    try {
-      // Output mode (commands.md "Output modes"): the ink TUI on an interactive TTY, NDJSON under --json,
-      // the plain line renderer otherwise — all the same `onEvent` seam over one bus (2.F / 2.K).
-      renderer = (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global);
-      for await (const event of handle.events) {
-        renderer.onEvent(event);
-        outcome = nextOutcome(outcome, event);
-        if (event.type === 'run:paused') {
-          // A human gate — the only `run:paused` source in 2.D (no media-job host is wired; build-engine.ts).
-          // The interactive prompt + `relavium gate` resume are 2.G (the persisted gate state is now durable,
-          // 2.H); for now the run exits with the gate-paused code. When media host-wiring lands (2.S) a
-          // media-only park is also a `run:paused`, so revisit whether exit 3 should distinguish it then.
-          break;
-        }
-      }
-    } finally {
-      // No terminal/paused outcome means we're unwinding abnormally (renderer construction threw, or the
-      // event stream rejected) — cancel the still-live engine run so it doesn't keep executing unsupervised
-      // in the background while the error propagates (cancel is idempotent + safe post-terminal).
-      if (outcome === undefined) {
-        handle.cancel();
-      }
-      // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write
-      // its persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer`
-      // is still undefined (construction threw). A teardown error must NOT mask the run's real
-      // outcome/error — surface it to stderr and move on.
-      try {
-        await renderer?.finalize?.();
-      } catch (teardownErr) {
-        deps.io.writeErr(
-          `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,
-        );
-      }
-      // Remove our SIGINT handler LAST — keep it registered across ink's unmount (renderer.finalize), so a
-      // Ctrl-C during unmount still hits us (forcing a clean exit 1) and ink's `signal-exit` never becomes the
-      // sole SIGINT listener (which would re-raise → 130). After finalize, ink has unsubscribed its own
-      // listener, so removing ours here leaves the SIGINT set clean.
-      process.removeListener('SIGINT', onSigint);
-    }
+    // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel
+    // contract, the renderer lifecycle (constructed inside, after SIGINT registration — output mode per
+    // commands.md "Output modes": ink TUI on a TTY, NDJSON under --json, plain otherwise), and the inline
+    // human-gate prompt when an interactive prompter is present (CI / --json / no-TTY → no prompter → a gate
+    // pause exits 3, resumable by `relavium gate`).
+    const outcome = await driveRun({
+      engine,
+      handle,
+      makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
+      gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
+      io: deps.io,
+    });
 
     switch (outcome) {
       case 'completed':
@@ -195,20 +153,5 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     }
   } finally {
     opened?.close();
-  }
-}
-
-function nextOutcome(current: RunOutcome | undefined, event: RunEvent): RunOutcome | undefined {
-  switch (event.type) {
-    case 'run:completed':
-      return 'completed';
-    case 'run:failed':
-      return 'failed';
-    case 'run:cancelled':
-      return 'cancelled';
-    case 'run:paused':
-      return 'paused';
-    default:
-      return current;
   }
 }

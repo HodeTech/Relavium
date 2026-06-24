@@ -481,6 +481,18 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   media-egress work, ~2.S), a media-only park would be reported as "gate-paused" with no gate; at that point
   decide whether exit 3 (and the rendered message) should distinguish a gate park from a media park.
   *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
+- [ ] **`relavium budget resume <runId> [--approve | --abort]` is documented but has no numbered
+  workstream.** [commands.md](../reference/cli/commands.md) lists `budget resume` as the non-interactive
+  operator path for a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval` —
+  [ADR-0028](../decisions/0028-workflow-resource-governance.md)), but no Phase-2 workstream implements it.
+  It reuses **2.G's** cross-process resume substrate end-to-end: a `budget:paused` reconstructs as a
+  pending gate with `isBudgetGate: true` (`reconstructCheckpointState` / `CheckpointPendingGate`), so the
+  command loads the snapshot + checkpoint exactly like `relavium gate` and calls `engine.resumeFromCheckpoint`
+  with a `GateDecision` — `--approve` continues the one-shot deferred call (a pre-egress bypass), `--abort`
+  fails the run. The delta from `gate` is only the command surface + the two budget-specific flags; it is
+  **deliberately out of 2.G** (not in its acceptance criteria, and a distinct ADR-0028 surface). Schedule it
+  as a small follow-up once 2.G lands the substrate — candidate home: alongside 2.I (the read/operator
+  commands) or its own short workstream. *(low · apps/cli/src/commands/; ADR-0028; reuses 2.G resume path)*
 
 ## Schema / validation hardening
 
