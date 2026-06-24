@@ -14,20 +14,24 @@ import type { GlobalOptions } from '../process/options.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { gateCommand } from './gate.js';
+import { gateListCommand } from './gate-list.js';
+import { listCommand } from './list.js';
+import { logsCommand } from './logs.js';
 import {
   runProviderCommand,
   type ProviderCommandArgs,
   type ProviderCommandDeps,
 } from './provider.js';
 import { runCommand } from './run.js';
+import { statusCommand } from './status.js';
 
 /**
  * The documented command surface (canonical home:
- * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` (2.G), and `provider` (2.C)
- * are real commands; the remaining confirmed pre-chat commands are registered as clean "not-yet-available"
- * stubs until their own workstreams (the read commands at 2.I, the authoring commands at 2.J). The chat family
- * (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`) and the `gate list` / `budget resume`
- * subcommands land with their workstreams (2.M–2.Q, 2.I), not here.
+ * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
+ * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
+ * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
+ * (the authoring commands at 2.J). The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`)
+ * and `budget resume` land with their workstreams (2.M–2.Q; a tracked follow-up), not here.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -44,21 +48,6 @@ interface StubSpec {
 }
 
 const STUB_COMMANDS: readonly StubSpec[] = [
-  {
-    name: 'list',
-    summary: 'List discovered workflows in the current project.',
-    landsIn: 'workstream 2.I',
-  },
-  {
-    name: 'logs <runId>',
-    summary: 'Print the persisted event stream for a past run.',
-    landsIn: 'workstream 2.I',
-  },
-  {
-    name: 'status',
-    summary: 'Show active/paused runs and their per-node status.',
-    landsIn: 'workstream 2.I',
-  },
   {
     name: 'create',
     summary: 'Scaffold a new workflow or agent via an interactive wizard.',
@@ -86,6 +75,9 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
+  registerList(program, ctx);
+  registerLogs(program, ctx);
+  registerStatus(program, ctx);
   for (const spec of STUB_COMMANDS) {
     program
       .command(spec.name)
@@ -128,10 +120,15 @@ function registerRun(program: Command, ctx?: CommandContext): void {
   });
 }
 
-/** Register `relavium gate <runId>` (2.G) — resolve a pending human gate over the durable resume substrate. */
+/**
+ * Register `relavium gate [runId]` (2.G — resolve a pending human gate over the durable resume substrate) plus
+ * its `gate list [runId]` subcommand (2.I — list the pending gates so an operator picks a `gateId`). The
+ * positional is OPTIONAL so commander routes `gate list …` to the subcommand; a bare `gate` (no runId, no
+ * subcommand) falls through to the parent action, which reports the missing runId as a clean exit-2 invocation.
+ */
 function registerGate(program: Command, ctx?: CommandContext): void {
   const gate = program
-    .command('gate <runId>')
+    .command('gate [runId]')
     .description('Resolve a pending human gate (approve / reject / input).')
     .option('--approve', 'approve the gate')
     .option('--reject', 'reject the gate')
@@ -141,17 +138,26 @@ function registerGate(program: Command, ctx?: CommandContext): void {
       '--gate <gateId>',
       'which pending gate to resolve (required when more than one is pending)',
     );
+  const gateList = gate
+    .command('list [runId]')
+    .description('List pending human gates (all paused runs, or one run).');
 
   if (ctx === undefined) {
     gate.action(() => {
       throw new CliError('not_implemented', '`relavium gate` requires the CLI runtime context.');
+    });
+    gateList.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium gate list` requires the CLI runtime context.',
+      );
     });
     return;
   }
 
   gate.action(
     async (
-      runId: string,
+      runId: string | undefined,
       opts: {
         approve?: boolean;
         reject?: boolean;
@@ -160,6 +166,13 @@ function registerGate(program: Command, ctx?: CommandContext): void {
         gate?: string;
       },
     ) => {
+      if (runId === undefined) {
+        // No runId and no `list` subcommand matched — a clean invocation fault, not a thrown stack.
+        throw new CliError(
+          'invalid_invocation',
+          '`relavium gate` requires a <runId> (or use `relavium gate list`).',
+        );
+      }
       ctx.result.exitCode = await gateCommand(
         { runId, ...opts },
         {
@@ -171,6 +184,65 @@ function registerGate(program: Command, ctx?: CommandContext): void {
       );
     },
   );
+
+  gateList.action((runId: string | undefined) => {
+    ctx.result.exitCode = gateListCommand(runId === undefined ? {} : { runId }, {
+      io: ctx.io,
+      global: ctx.global,
+    });
+  });
+}
+
+/** Register `relavium list [--agents]` (2.I) — the disk catalog + last-run overlay from durable history. */
+function registerList(program: Command, ctx?: CommandContext): void {
+  const list = program
+    .command('list')
+    .description('List discovered workflows (or, with --agents, agents) in the current project.')
+    .option('--agents', 'list agents instead of workflows');
+  if (ctx === undefined) {
+    list.action(() => {
+      throw new CliError('not_implemented', '`relavium list` requires the CLI runtime context.');
+    });
+    return;
+  }
+  list.action((opts: { agents?: boolean }) => {
+    ctx.result.exitCode = listCommand(
+      { agents: opts.agents ?? false },
+      { io: ctx.io, global: ctx.global },
+    );
+  });
+}
+
+/** Register `relavium logs <runId>` (2.I) — replay a past run's persisted event stream. */
+function registerLogs(program: Command, ctx?: CommandContext): void {
+  const logs = program
+    .command('logs <runId>')
+    .description('Print the persisted event stream for a past run.');
+  if (ctx === undefined) {
+    logs.action(() => {
+      throw new CliError('not_implemented', '`relavium logs` requires the CLI runtime context.');
+    });
+    return;
+  }
+  logs.action((runId: string) => {
+    ctx.result.exitCode = logsCommand({ runId }, { io: ctx.io, global: ctx.global });
+  });
+}
+
+/** Register `relavium status` (2.I) — the active/paused runs + their per-node status. */
+function registerStatus(program: Command, ctx?: CommandContext): void {
+  const status = program
+    .command('status')
+    .description('Show active/paused runs and their per-node status.');
+  if (ctx === undefined) {
+    status.action(() => {
+      throw new CliError('not_implemented', '`relavium status` requires the CLI runtime context.');
+    });
+    return;
+  }
+  status.action(() => {
+    ctx.result.exitCode = statusCommand({ io: ctx.io, global: ctx.global });
+  });
 }
 
 /** Register `relavium provider` and its subcommands (2.C). Each opens the local db + keychain per invocation. */

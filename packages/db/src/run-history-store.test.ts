@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { runCosts, runEvents, runs, stepExecutions } from './schema.js';
 import {
+  createRunHistoryReader,
   createRunHistoryStore,
   loadRunSnapshot,
+  type RunHistoryReader,
   type RunHistoryStore,
   type RunHistoryWorkflow,
 } from './run-history-store.js';
@@ -414,5 +416,173 @@ describe('createRunHistoryStore', () => {
     it('returns undefined for an unknown runId', () => {
       expect(loadRunSnapshot(client.db, 'nope')).toBeUndefined();
     });
+  });
+});
+
+describe('createRunHistoryReader', () => {
+  let client: DbClient;
+  let reader: RunHistoryReader;
+  let next: number;
+
+  beforeEach(() => {
+    client = createClient(':memory:');
+    runMigrations(client.db);
+    next = 0;
+    reader = createRunHistoryReader(client.db);
+  });
+
+  afterEach(() => {
+    client.sqlite.close();
+  });
+
+  /** A fresh workflow-scoped writer (the store is one-workflow-scoped) used only to SEED rows for the reader. */
+  function storeFor(slug: string): RunHistoryStore {
+    return createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => TS_MS,
+      workflow: {
+        slug,
+        name: slug,
+        definitionJson: JSON.stringify({
+          workflow: { id: slug, name: slug, nodes: [], edges: [] },
+        }),
+      },
+    });
+  }
+
+  /** Build a RunEvent for an arbitrary runId + timestamp (the file-level `ev` hard-codes both). */
+  function evRun<T extends RunEvent['type']>(
+    runId: string,
+    type: T,
+    seq: number,
+    rest: EventBody<T>,
+    ts: string,
+  ): Extract<RunEvent, { type: T }> {
+    return { type, runId, timestamp: ts, sequenceNumber: seq, ...rest } as Extract<
+      RunEvent,
+      { type: T }
+    >;
+  }
+
+  /**
+   * Seed one run (started → one node lifecycle), optionally driven to a paused gate or a clean completion.
+   * `atMs` becomes the run's `createdAt`, so a test can order runs deterministically (the fixed-clock store
+   * would otherwise tie every `createdAt`, leaving the latest-per-workflow pick to the arbitrary id tiebreak).
+   */
+  async function seedRun(
+    slug: string,
+    runId: string,
+    opts: { readonly paused?: boolean; readonly completed?: boolean; readonly atMs?: number } = {},
+  ): Promise<string> {
+    const ts = new Date(opts.atMs ?? TS_MS).toISOString();
+    const store = storeFor(slug);
+    const workflowId = await store.resolveWorkflowId(slug);
+    await store.persistEvent(
+      evRun(runId, 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+    );
+    await store.persistEvent(
+      evRun(runId, 'node:started', 1, { nodeId: 'n1', nodeType: 'transform' }, ts),
+    );
+    await store.persistEvent(
+      evRun(
+        runId,
+        'node:completed',
+        2,
+        {
+          nodeId: 'n1',
+          output: {},
+          tokensUsed: { input: 1, output: 2 },
+          durationMs: 5,
+          cumulativeCostMicrocents: 100,
+        },
+        ts,
+      ),
+    );
+    if (opts.paused) {
+      await store.persistEvent(
+        evRun(runId, 'node:started', 3, { nodeId: 'g', nodeType: 'human_in_the_loop' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          runId,
+          'human_gate:paused',
+          4,
+          { nodeId: 'g', gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+          ts,
+        ),
+      );
+    }
+    if (opts.completed) {
+      await store.persistEvent(
+        evRun(
+          runId,
+          'run:completed',
+          3,
+          {
+            outputs: { ok: true },
+            totalTokensUsed: { input: 1, output: 2 },
+            totalCostMicrocents: 100,
+            durationMs: 9,
+          },
+          ts,
+        ),
+      );
+    }
+    return workflowId;
+  }
+
+  it('listActiveRuns returns only non-terminal runs, newest first', async () => {
+    await seedRun('alpha', 'run-done', { completed: true, atMs: TS_MS });
+    await seedRun('alpha', 'run-paused', { paused: true, atMs: TS_MS + 1000 });
+    await seedRun('beta', 'run-running', { atMs: TS_MS + 2000 }); // started, node done, no terminal/pause → 'running'
+
+    const active = reader.listActiveRuns();
+    // newest createdAt first; the completed run is excluded.
+    expect(active.map((r) => r.id)).toEqual(['run-running', 'run-paused']);
+    expect(active.find((r) => r.id === 'run-paused')?.status).toBe('paused');
+    expect(active.find((r) => r.id === 'run-running')?.status).toBe('running');
+  });
+
+  it('loadLatestRunPerWorkflow keeps the newest run per workflow (ROW_NUMBER), joined by slug', async () => {
+    // Two runs of 'alpha' at distinct createdAt so the latest is unambiguous (not the id tiebreak).
+    await seedRun('alpha', 'alpha-old', { completed: true, atMs: TS_MS });
+    await seedRun('alpha', 'alpha-new', { paused: true, atMs: TS_MS + 1000 });
+    await seedRun('beta', 'beta-1', { completed: true, atMs: TS_MS });
+
+    const summaries = reader.loadLatestRunPerWorkflow();
+    const bySlug = new Map(summaries.map((s) => [s.slug, s]));
+    expect([...bySlug.keys()].sort()).toEqual(['alpha', 'beta']);
+    // 'alpha' has two runs; the newer createdAt (alpha-new) wins — its folded status is 'paused'.
+    expect(bySlug.get('alpha')?.lastRun.id).toBe('alpha-new');
+    expect(bySlug.get('alpha')?.lastRun.status).toBe('paused');
+    expect(bySlug.get('beta')?.lastRun.status).toBe('completed');
+  });
+
+  it('loadStepExecutions returns per-node rows in execution order, with ISO timestamps', async () => {
+    await seedRun('alpha', 'run-1', { paused: true });
+
+    const steps = reader.loadStepExecutions('run-1');
+    expect(steps.map((s) => s.nodeId)).toEqual(['n1', 'g']);
+    const n1 = steps[0];
+    expect(n1?.status).toBe('completed');
+    expect(n1?.nodeType).toBe('transform');
+    expect(n1?.durationMs).toBe(5);
+    expect(n1?.startedAt).toBe(TS); // epoch-ms → ISO at the read boundary
+    // The gate node started but never completed → its step row stays 'running' (a live ghost `status` surfaces).
+    expect(steps[1]?.status).toBe('running');
+    expect(steps[1]?.completedAt).toBeUndefined();
+  });
+
+  it('loadRun / loadRunEvents resolve an unknown runId to undefined / empty', () => {
+    expect(reader.loadRun('nope')).toBeUndefined();
+    expect(reader.loadRunEvents('nope')).toEqual([]);
+  });
+
+  it('a store created over the same db delegates its reads to the reader (one implementation)', async () => {
+    await seedRun('alpha', 'run-1', { completed: true });
+    const store = storeFor('alpha');
+    // The store's listRuns/loadRun/loadRunEvents are the reader's — same rows, same order.
+    expect(store.listRuns().map((r) => r.id)).toEqual(reader.listRuns().map((r) => r.id));
+    expect(store.loadRunEvents('run-1').length).toBe(reader.loadRunEvents('run-1').length);
   });
 });

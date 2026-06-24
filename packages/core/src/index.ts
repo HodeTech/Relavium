@@ -10,6 +10,10 @@
 export { parseWorkflow, MAX_SOURCE_CHARS } from './parser.js';
 export type { WorkflowDefinition, ParseWorkflowOptions } from './parser.js';
 
+// Agent parser — the `.agent.yaml` sibling of parseWorkflow (CLI catalog scan 2.I, authoring 2.J).
+export { parseAgent, AgentParseError } from './agent-parser.js';
+export type { AgentDefinition, ParseAgentOptions } from './agent-parser.js';
+
 // Catalog-aware load-check (1.AF/D15) — validates each agent node's `output_modalities` against its
 // resolved model's `media.outputCombinations`, using a host-provided model→capabilities catalog.
 export { validateWorkflowWithCatalog, type WorkflowModelCatalog } from './validate-catalog.js';
