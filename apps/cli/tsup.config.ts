@@ -1,6 +1,12 @@
-import { cpSync, rmSync } from 'node:fs';
+import { cpSync, readFileSync, rmSync } from 'node:fs';
 
 import { defineConfig } from 'tsup';
+
+// Stamp the published version into the bundle at build time (see `define` below + program.ts). Read from
+// THIS package's manifest (resolved beside the config, not via cwd) so it is correct from any build entry point.
+const { version } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { version: string };
 
 /**
  * The CLI distribution bundle (2.L, [ADR-0051](../../docs/decisions/0051-cli-distribution-thin-bundle-private-engine.md)).
@@ -44,6 +50,10 @@ export default defineConfig({
   dts: false,
   noExternal: [/^@relavium\//],
   external: THIRD_PARTY_EXTERNAL,
+  // Replace the `__RELAVIUM_CLI_VERSION__` token (program.ts) with the literal package version, so the
+  // bundled `relavium --version` reports the real version with no runtime file read. Source runs (tsx/vitest)
+  // have no define and fall back to a dev sentinel.
+  define: { __RELAVIUM_CLI_VERSION__: JSON.stringify(version) },
   banner: { js: '#!/usr/bin/env node' },
   // The inlined `@relavium/db` resolves its drizzle migrations via `new URL('../drizzle', import.meta.url)`,
   // which — once bundled — points beside THIS bundle, not the db package. So ship the migration set alongside

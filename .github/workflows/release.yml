@@ -102,9 +102,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TGZ=$(ls artifact/*.tgz)
+          # The `./` prefix is load-bearing: npm reads a slash-bearing arg without it
+          # (`artifact/relavium-X.tgz`) as a GitHub `owner/repo` shorthand and tries to git-clone it.
+          # `./artifact/…` forces the local-file spec. (Verified via npm-package-arg.)
+          TGZ="./$(ls artifact/*.tgz)"
           npm install -g "$TGZ"
           echo "## relavium --help" && relavium --help >/dev/null
+          echo "## relavium --version matches the published package version"
+          VER="$(relavium --version)"
+          PKG="$(node -p "require('./apps/cli/package.json').version")"
+          test "$VER" = "$PKG" || { echo "relavium --version=$VER != package.json $PKG"; exit 1; }
           echo "## relavium provider list" && relavium provider list
           echo "## relavium run (sequential) --json (exit 0)"
           relavium run apps/cli/src/harness/fixtures/sequential.relavium.yaml --input n=21 --json
