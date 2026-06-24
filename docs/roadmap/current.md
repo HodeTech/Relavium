@@ -28,8 +28,8 @@ and the [reference specs](../reference/).
 
 > **Live maintainer obligations:** (1) mark the CI `ci` job a **required check** in GitHub branch
 > protection (carried from Phase 0; optionally add `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
-> cross-runner remote cache); (2) once **2.L** lands, add the **`NPM_TOKEN`** repo secret + npm 2FA so the
-> tag-triggered `Release CLI` workflow can publish (the actual `npm publish` is maintainer-gated,
+> cross-runner remote cache); (2) now that **2.L** has landed (PR #49), add the **`NPM_TOKEN`** repo secret + npm 2FA
+> so the tag-triggered `Release CLI` workflow can publish (the actual `npm publish` is maintainer-gated,
 > [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
 > [release-a-surface.md](../runbooks/release-a-surface.md)).
 
@@ -64,10 +64,15 @@ idempotent, secret-input fail-closed), ✅ Done (PR #47, 2026-06-24) behind
 no new ADR) — **fully closing 2.K's deferred gate-resume half**;
 and **2.I** (the read commands `list` / `logs` / `status` / `gate list` over durable history — go/no-go #2, the
 read side; surfaces the pending `gateId`s the 2.G `gate` command points at), ✅ Done (PR #48, 2026-06-24)
-(no new ADR — an additive workflow-agnostic `@relavium/db` read seam + a `@relavium/core` `parseAgent`).
-**Next pickup:** **2.L** (packaging, distribution & install verification — go/no-go #7, the last gate-closing
-spine PR; once it lands all seven Phase-3 exit criteria hold); the full status-aware
-order is the
+(no new ADR — an additive workflow-agnostic `@relavium/db` read seam + a `@relavium/core` `parseAgent`);
+and **2.L** (packaging, distribution & install verification — go/no-go #7, the last gate-closing spine PR: the
+`tsup` engine-inlined ESM bundle, the bundle-closure drift guard, and the tag-triggered cross-OS install-smoke
+`Release CLI` workflow), ✅ Done (PR #49, 2026-06-24) behind
+[ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) — **closing go/no-go #7, so the
+Phase-2 spine is complete and all seven Phase-3 exit criteria now hold (Phase 3 may start)**.
+**Next pickup:** **2.S** (media host-wiring — the largest additive lane, carrying the lone `EgressCapability.fetch`
+SSRF security review; off the M3 critical path and the Phase-3 go/no-go, so it completes in-phase without blocking
+Phase 3); the full status-aware order is the
 [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
 [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the

@@ -54,8 +54,10 @@ commands with OS-keychain storage landed (2.C — PR #45, behind ADR-0019 + ADR-
 streaming TUI landed (2.E — PR #46, behind ADR-0047); the interactive human-gate prompt + the
 out-of-band `relavium gate` cross-process resume landed (2.G — PR #47, behind ADR-0047), **fully closing
 2.K's deferred gate-resume half**; and the read commands `list` / `logs` / `status` / `gate list` over durable
-history landed (2.I — PR #48, no new ADR). The next pickup is 2.L (packaging & install verification — the last
-gate-closing spine PR). For live status, per-PR history,
+history landed (2.I — PR #48, no new ADR); and CLI packaging, distribution & install verification landed
+(2.L — PR #49, behind ADR-0051) — the last gate-closing spine PR, **closing go/no-go #7 so all seven Phase-3
+exit criteria now hold and Phase 3 may start**. The next pickup is 2.S (media host-wiring — the first additive
+lane, off the M3 critical path and the Phase-3 go/no-go). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.

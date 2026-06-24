@@ -1,6 +1,6 @@
 # Release a Surface
 
-> Status: draft — to be expanded
+> Status: partial — the CLI (npm) release flow is complete (2.L, ADR-0051); the desktop (`.dmg`) and VS Code (`.vsix`) sections are still to be expanded
 
 This runbook will describe how to cut a release for each Phase-1 Relavium surface. The
 three surfaces ship through three different channels, but they all build on the same
