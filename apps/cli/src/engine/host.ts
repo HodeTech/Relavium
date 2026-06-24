@@ -15,6 +15,10 @@ export interface CliHostOptions {
    * cross-process gate-resume path (**2.G**), where it must reconstruct from the durable event log (the
    * `createHistoryCheckpointer` over the SQLite store). Omitted on the `run` path, which never resumes from a
    * checkpoint, so it defaults to the in-memory reconstruction (a no-op `undefined` over the durable store).
+   *
+   * MUST be paired with an explicit **durable** `store` reconstructed from the SAME backend — the engine reads
+   * the checkpoint from here but resolves/persists through `host.store`, so a checkpointer over the default
+   * in-memory store is a split-backend wiring bug that `createCliHost` rejects at construction.
    */
   readonly checkpointer?: Checkpointer;
 }
@@ -33,6 +37,15 @@ export function createCliHost(
   store: RunStore = new InMemoryRunStore(),
   options?: CliHostOptions,
 ): ExecutionHost {
+  // A durable checkpointer reads from one backend (the persisted event log) while the host's `store` does the
+  // resolveWorkflowId / persistEvent writes; if `store` is the in-memory reference (incl. the default), the two
+  // point at DIFFERENT backends and `resumeFromCheckpoint` would validate/persist against the wrong store. Fail
+  // loud at wiring time — the only valid pairing is a durable `store` + a checkpointer reconstructed from it.
+  if (options?.checkpointer !== undefined && store instanceof InMemoryRunStore) {
+    throw new Error(
+      'createCliHost: a checkpointer requires an explicit durable RunStore (the checkpointer must reconstruct from the same store the run persists to)',
+    );
+  }
   return {
     clock: { now: () => new Date().toISOString() },
     ids: { newId: () => randomUUID() },

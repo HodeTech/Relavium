@@ -1,14 +1,27 @@
-import type { Checkpointer } from '@relavium/core';
+import type { Checkpointer, RunStore } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import { createCliHost } from './host.js';
 
+/** A stand-in DURABLE store (not the in-memory reference) — what the gate path injects alongside a checkpointer. */
+const durableStore: RunStore = {
+  resolveWorkflowId: () => Promise.resolve('wf'),
+  persistEvent: () => Promise.resolve(),
+  listInterruptedRuns: () => Promise.resolve([]),
+};
+
 describe('createCliHost', () => {
   it('uses an injected checkpointer (the 2.G cross-process gate-resume seam) over the default', async () => {
     const injected: Checkpointer = { load: () => Promise.resolve(undefined) };
-    const host = createCliHost(undefined, { checkpointer: injected });
+    const host = createCliHost(durableStore, { checkpointer: injected });
     expect(host.checkpointer).toBe(injected); // resumeFromCheckpoint loads from the durable reconstruction
     expect(await host.checkpointer.load('any')).toBeUndefined();
+  });
+
+  it('rejects a checkpointer over the in-memory store — that split-backend pairing would resume against the wrong store', () => {
+    const injected: Checkpointer = { load: () => Promise.resolve(undefined) };
+    // Default store (in-memory) + a durable checkpointer = read/write backends diverge → fail loud at wiring.
+    expect(() => createCliHost(undefined, { checkpointer: injected })).toThrow(/durable RunStore/);
   });
 
   it('defaults to the in-memory checkpointer when none is injected (the run path never resumes)', () => {
