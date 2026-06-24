@@ -1,4 +1,4 @@
-import type { Checkpointer, RunStore } from '@relavium/core';
+import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import { createCliHost } from './host.js';
@@ -47,5 +47,39 @@ describe('createCliHost', () => {
     const cancel = host.setTimer(10_000, () => {});
     expect(typeof cancel).toBe('function');
     cancel(); // clears the timer — no dangling handle
+  });
+
+  describe('fetchMedia (the SSRF media-egress port, 2.S / ADR-0043)', () => {
+    // Asserts the port is wired AND returns it narrowed (no non-null `!`); a missing port fails loudly here.
+    function mediaFetch(): NonNullable<ExecutionHost['fetchMedia']> {
+      const { fetchMedia } = createCliHost();
+      if (fetchMedia === undefined) {
+        throw new Error('createCliHost must wire the fetchMedia media-egress port');
+      }
+      return fetchMedia;
+    }
+
+    // All three reject BEFORE any network: scheme/credential checks and the literal-IP range block run ahead of
+    // DNS/connect, so the wiring is verified offline (the mechanism's own redirect/rebinding vectors are covered
+    // by @relavium/db's 23 media-egress tests — here we only assert the CLI wires it with allowPrivate=false).
+    it('rejects a non-HTTPS url (insecure_url), opening no connection', async () => {
+      await expect(mediaFetch()('http://media.example/a.png', 1000)).rejects.toMatchObject({
+        code: 'insecure_url',
+      });
+    });
+
+    it('rejects a url with embedded credentials (insecure_url)', async () => {
+      await expect(
+        mediaFetch()('https://user:pass@media.example/a.png', 1000),
+      ).rejects.toMatchObject({
+        code: 'insecure_url',
+      });
+    });
+
+    it('rejects a literal private/loopback target — proving allowPrivate=false (blocked_host, no network)', async () => {
+      await expect(mediaFetch()('https://127.0.0.1/a.png', 1000)).rejects.toMatchObject({
+        code: 'blocked_host',
+      });
+    });
   });
 });
