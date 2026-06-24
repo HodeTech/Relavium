@@ -7,7 +7,22 @@ import {
   type ExecutionHost,
   type RunStore,
 } from '@relavium/core';
-import { fetchMediaBytes } from '@relavium/db';
+import { createFilesystemMediaWrite, fetchMediaBytes } from '@relavium/db';
+
+/**
+ * Host media-port roots the CLI resolves per-invocation and injects into {@link createCliHost} (2.S). Each is
+ * optional + absent-tolerant: an unset root leaves its port `undefined`, and the engine fails the relevant
+ * operation loud rather than leaking bytes. Passed in (never hard-coded) so the desktop/VS Code hosts reuse
+ * the same seam with their own roots.
+ */
+export interface CliMediaOptions {
+  /**
+   * The `save_to` write-port scope root — the CLI resolves `.relavium/runs/` (project-relative) and the port
+   * `realpath`+`commonpath`-jails every write under it (symlinks off, ADR-0044 §2). Absent ⇒ no `mediaWrite`,
+   * so an `output` node's `save_to` fails the run with a clear configuration error (never a silent skip).
+   */
+  readonly saveToRoot?: string;
+}
 
 /** Options for {@link createCliHost}. */
 export interface CliHostOptions {
@@ -22,6 +37,8 @@ export interface CliHostOptions {
    * in-memory store is a split-backend wiring bug that `createCliHost` rejects at construction.
    */
   readonly checkpointer?: Checkpointer;
+  /** The media-port roots (2.S) — see {@link CliMediaOptions}. Absent ⇒ a media-producing run fails loud. */
+  readonly media?: CliMediaOptions;
 }
 
 /**
@@ -29,12 +46,13 @@ export interface CliHostOptions {
  * (ADR-0022), `setTimeout` one-shot timers, and the global AbortController. `run` injects the durable
  * SQLite `RunStore` (2.H); `gate` additionally injects the durable {@link Checkpointer} (2.G) so a fresh
  * process can rehydrate a paused run from its persisted events. The host media-egress port (`fetchMedia`,
- * SSRF-validated, ADR-0043) is wired (**2.S**); the remaining media ports — `mediaStore` / `mediaReferences`
- * / `mediaWrite` — land later in 2.S, so a run that PRODUCES media still fails loud (`media_store_unavailable`,
- * never a silent byte leak) until then.
+ * SSRF-validated, ADR-0043) is always wired, and the `save_to` write port (`mediaWrite`) is wired when a
+ * `media.saveToRoot` is given (**2.S**); the remaining media ports — `mediaStore` / `mediaReferences` — land
+ * later in 2.S, so a run that PRODUCES media still fails loud (`media_store_unavailable`, never a silent byte
+ * leak) until the store is wired.
  *
- * The clock/ids/abort/timer/fetchMedia are generic Node primitives (no CLI specifics), so this is positioned
- * for later extraction to a shared node-host helper the VS Code host can reuse.
+ * The clock/ids/abort/timer + the media ports are generic Node primitives (no CLI specifics), so this is
+ * positioned for later extraction to a shared node-host helper the VS Code host can reuse.
  */
 export function createCliHost(
   store: RunStore = new InMemoryRunStore(),
@@ -78,5 +96,13 @@ export function createCliHost(
         allowPrivate: false,
         ...(signal === undefined ? {} : { signal }),
       }),
+    // The host `save_to` write port (1.AF/D16, ADR-0044 §2) — wired only when a scope root is supplied (the
+    // run path resolves `.relavium/runs/`). The port `realpath`+`commonpath`-jails every write under the root
+    // (symlinks off); the engine resolves the `{{ run.id }}`-only template + the produced handle's bytes and
+    // hands `(relativePath, bytes)` here. Absent root ⇒ no port, and a `save_to` fails the run with a clear
+    // configuration error (never a silent skip — `save_to` is a real deliverable).
+    ...(options?.media?.saveToRoot === undefined
+      ? {}
+      : { mediaWrite: createFilesystemMediaWrite(options.media.saveToRoot) }),
   };
 }

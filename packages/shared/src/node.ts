@@ -45,10 +45,12 @@ export const OutputModalitiesSchema = z
 /**
  * The authored `save_to` on an `output` node (1.AF, ADR-0031/0044, A9) — a **relative** path template
  * the surface writes generated media bytes to (the engine carries the handle on the edge; bytes
- * materialize only at the surface boundary). It may interpolate `{{ run.id }}`. Authored fail-fast:
- * an absolute path or a `..` traversal segment is rejected at parse; the host write port additionally
- * enforces `realpath`+`commonpath` fail-closed against a scope root (security-review.md §Media byte
- * delivery). The deep path discipline is the host's; this is the authoring guard.
+ * materialize only at the surface boundary). It may interpolate **only `{{ run.id }}`** — never
+ * `inputs`/`ctx`/`run.outputs` (a filesystem path must not draw arbitrary authored data into it).
+ * Authored fail-fast: an absolute path, a `..` traversal segment, or a non-`run.id` interpolation is
+ * rejected at parse; the host write port additionally enforces `realpath`+`commonpath` fail-closed
+ * against a scope root (security-review.md §Media byte delivery). The deep path discipline is the
+ * host's; these are the authoring guards.
  */
 export const SaveToSchema = nonEmptyString
   .refine((p) => !p.startsWith('/') && !p.startsWith('\\') && !/^[A-Za-z]:[\\/]/.test(p), {
@@ -59,7 +61,18 @@ export const SaveToSchema = nonEmptyString
   })
   .refine((p) => !p.split(/[\\/]/).includes('..'), {
     message: 'save_to must not contain a ".." path segment',
-  });
+  })
+  .refine(
+    (p) => [...p.matchAll(/\{\{([^}]*)\}\}/g)].every((m) => (m[1] ?? '').trim() === 'run.id'),
+    {
+      // The run.id-only reference restriction (1.AF, ADR-0044 §2; workflow-yaml-spec.md): a save_to path
+      // template may interpolate ONLY `{{ run.id }}`. The engine resolves it with only `run.id` in scope, so a
+      // non-`run.id` reference (or a filtered `{{ run.id | … }}`) otherwise fails only at RUNTIME — this surfaces
+      // it at LOAD (CLI exit 2), never a mid-run surprise. A literal (no-interpolation) save_to is allowed.
+      message:
+        'save_to may interpolate only `{{ run.id }}` (no inputs/ctx/run.outputs in a filesystem path)',
+    },
+  );
 
 /** Human-gate kind. */
 export const GateTypeSchema = z.enum(['approval', 'input', 'review']);

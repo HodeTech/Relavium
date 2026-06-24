@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
@@ -80,6 +84,31 @@ describe('createCliHost', () => {
       await expect(mediaFetch()('https://127.0.0.1/a.png', 1000)).rejects.toMatchObject({
         code: 'blocked_host',
       });
+    });
+  });
+
+  describe('mediaWrite (the save_to write port, 2.S / ADR-0044 §2)', () => {
+    it('is unwired when no saveToRoot is given (a save_to then fails the run loud)', () => {
+      expect(createCliHost().mediaWrite).toBeUndefined();
+    });
+
+    it('writes jailed under the saveToRoot and rejects a traversal escape', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'relavium-saveto-'));
+      try {
+        const { mediaWrite } = createCliHost(undefined, { media: { saveToRoot: root } });
+        if (mediaWrite === undefined) {
+          throw new Error('createCliHost must wire mediaWrite when a saveToRoot is given');
+        }
+        await mediaWrite('sub/out.bin', new Uint8Array([1, 2, 3]));
+        expect(Array.from(readFileSync(join(root, 'sub', 'out.bin')))).toEqual([1, 2, 3]);
+        // The port's realpath+commonpath jail rejects an escape above the root (the binding control), so a
+        // `..`-resolved path that slipped past the authoring guard still cannot write outside the scope root.
+        await expect(mediaWrite('../escape.bin', new Uint8Array([9]))).rejects.toBeInstanceOf(
+          Error,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
   });
 });
