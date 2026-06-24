@@ -31,7 +31,7 @@ and the [reference specs](../reference/).
 > cross-runner remote cache); (2) once **2.L** lands, add the **`NPM_TOKEN`** repo secret + npm 2FA so the
 > tag-triggered `Release CLI` workflow can publish (the actual `npm publish` is maintainer-gated,
 > [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
-> [release-a-surface.md](runbooks/release-a-surface.md)).
+> [release-a-surface.md](../runbooks/release-a-surface.md)).
 
 ## What is active now
 

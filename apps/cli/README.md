@@ -51,4 +51,4 @@ The full command reference, the `--json` machine contract, and the CI guide live
 
 ## License
 
-Proprietary — © HodeTech, all rights reserved. See [LICENSE](./LICENSE).
+Proprietary — © HodeTech, all rights reserved. See [LICENSE](https://github.com/HodeTech/Relavium/blob/main/LICENSE).

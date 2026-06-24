@@ -61,12 +61,16 @@ Mechanics 2.L implements (named here so the boundary is unambiguous):
   the engine's transitive runtime deps that 2.L hoists into the CLI manifest — `better-sqlite3`
   (native), `drizzle-orm`, `yaml`, `quickjs-emscripten-core`, `@jitl/quickjs-singlefile-mjs-release-sync`,
   `@anthropic-ai/sdk`, `openai`, `@google/genai`. Versions stay pinned by the pnpm `catalog:`.
+- **Ship `@relavium/db`'s migrations beside the bundle.** The inlined db resolves its drizzle migrations
+  via `new URL('../drizzle', import.meta.url)`, which — once bundled — points at the CLI package, not the db
+  package; so the `tsup` build copies the migration set to `<pkg>/drizzle` and `files` ships it. Without this,
+  every database-opening command fails on the installed CLI (`Can't find meta/_journal.json`).
 - **Publish with `pnpm publish`.** Only pnpm's pack resolves `catalog:`/`workspace:*` to concrete
   versions in the published manifest; `npm publish` would leave the literal protocol strings and break
   the install. The CLI `package.json` (`apps/cli/package.json`) also drops `private: true` (the four
   engine packages **remain** `private: true` and are never published), declares a `license` field
-  (the repo's proprietary terms), `engines.node >= 20.12.0` (per [tech-stack.md](../tech-stack.md)),
-  starts pre-1.0, and keeps `files: ["dist"]`.
+  (the repo's proprietary terms; `pnpm pack` ships the workspace-root `LICENSE`), `engines.node >= 20.12.0`
+  (per [tech-stack.md](../tech-stack.md)), starts pre-1.0, and sets `files: ["dist", "drizzle"]`.
 
 Alternatives weighed:
 

@@ -29,7 +29,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "prepack": "tsup",
+    "prepack": "tsup && pnpm -w run lint:bundle-closure",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run"

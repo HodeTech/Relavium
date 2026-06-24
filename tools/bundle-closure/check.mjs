@@ -36,8 +36,10 @@ if (!existsSync(BUNDLE)) {
 }
 
 const code = readFileSync(BUNDLE, 'utf8');
-// Static `from "x"`, dynamic `import("x")`, and CJS-interop `require("x")` — minified (no spaces) or not.
-const SPEC_RE = /(?:from\s*|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/g;
+// Every external-import form esbuild can emit — minified (no spaces) or not: `from "x"`, side-effect
+// `import "x"`, dynamic `import("x")`, and CJS-interop `require("x")`. `import\s*\(` precedes the bare
+// `import\s*` branch so a dynamic import is matched by the former, not mis-split by the latter.
+const SPEC_RE = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s*)["']([^"']+)["']/g;
 const imported = new Set();
 for (const match of code.matchAll(SPEC_RE)) {
   const spec = match[1];

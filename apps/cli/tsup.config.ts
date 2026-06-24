@@ -1,4 +1,4 @@
-import { cpSync } from 'node:fs';
+import { cpSync, rmSync } from 'node:fs';
 
 import { defineConfig } from 'tsup';
 
@@ -49,6 +49,9 @@ export default defineConfig({
   // which — once bundled — points beside THIS bundle, not the db package. So ship the migration set alongside
   // `dist/` (`files: ["dist","drizzle"]`); `<pkg>/drizzle` is then what the bundled db code finds at runtime.
   onSuccess: async () => {
+    // Clean first: cpSync merges (recursive) and never deletes, so a migration removed/renamed in the source
+    // would otherwise linger here and ship stale. Recreate from the source of truth each build.
+    rmSync('./drizzle', { recursive: true, force: true });
     cpSync('../../packages/db/drizzle', './drizzle', { recursive: true });
   },
 });
