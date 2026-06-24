@@ -17,7 +17,7 @@
  * it reads an input's *type*, never its value.
  */
 
-import { LineCounter, parse as parseYaml, YAMLParseError } from 'yaml';
+import { LineCounter, YAMLParseError } from 'yaml';
 import type { ZodIssue } from 'zod';
 
 import { WorkflowSchema, type Workflow } from '@relavium/shared';
@@ -29,6 +29,7 @@ import {
   type WorkflowIssue,
 } from './errors.js';
 import { analyzePreRunReferences, analyzeSecretTaint } from './interpolation/analyze.js';
+import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated workflow document — `@relavium/shared`'s `Workflow`, under a parser-local alias. */
 export type WorkflowDefinition = Workflow;
@@ -66,20 +67,8 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
   const lineCounter = new LineCounter();
   let raw: unknown;
   try {
-    raw = parseYaml(yamlText, {
-      // The hardened, deterministic, cross-platform profile (ADR-0035). The decode produces only
-      // plain JSON-like data on every surface; strict Zod then enforces the contract.
-      version: '1.2',
-      schema: 'core', // YAML 1.2 core only — `!!timestamp`/`!!binary` never become a Date/Buffer
-      resolveKnownTags: false, // an unknown `!!`-tag stays a string, never a platform object
-      merge: false, // no YAML-1.1 `<<` merge keys
-      uniqueKeys: true, // a duplicate map key is an error
-      stringKeys: true, // complex/non-string keys are rejected (a deterministic object shape)
-      maxAliasCount: 0, // anchors/aliases are not part of the authored contract — no alias-bomb expansion
-      prettyErrors: false, // no source snippet in the message (secret-free); line/col via the LineCounter
-      logLevel: 'error', // no `console.warn` — the parser stays a pure function (no I/O side effect)
-      lineCounter,
-    });
+    // The hardened, deterministic, cross-platform decode (ADR-0035) — one profile shared with parseAgent.
+    raw = decodeHardenedYaml(yamlText, lineCounter);
   } catch (err) {
     throw syntaxErrorFrom(err, source, lineCounter);
   }

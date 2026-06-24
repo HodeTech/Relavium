@@ -1,5 +1,10 @@
-import { RunEventSchema, type RunEvent, type RunStatus } from '@relavium/shared';
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import {
+  RunEventSchema,
+  type ExecutionMode,
+  type RunEvent,
+  type RunStatus,
+} from '@relavium/shared';
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import {
@@ -13,6 +18,7 @@ import {
   type NewRunRow,
   type NewStepExecutionRow,
   type RunRow,
+  type StepExecutionRow,
 } from './schema.js';
 import { epochMsToIso, isoToEpochMs } from './time.js';
 
@@ -59,7 +65,9 @@ export interface RunRecord {
   readonly id: string;
   readonly workflowId: string;
   readonly status: RunStatus;
-  readonly executionMode: string;
+  readonly executionMode: ExecutionMode;
+  // `string`, not a union: trigger_type carries NO strict CHECK (schema.ts) — webhook/schedule are Phase-2
+  // values that may legitimately appear, so the read type stays open by design.
   readonly triggerType: string;
   readonly startedAt?: string;
   readonly completedAt?: string;
@@ -68,6 +76,25 @@ export interface RunRecord {
   readonly totalCostMicrocents: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+/** A per-node step row for `relavium status` (2.I) — row-derived, with ISO timestamps. */
+export interface StepRecord {
+  readonly nodeId: string;
+  readonly nodeType: string;
+  /** The persisted `step_executions.status` (the closed StepStatus set), reused from the inferred row type. */
+  readonly status: StepExecutionRow['status'];
+  readonly attemptNumber: number;
+  readonly startedAt?: string;
+  readonly completedAt?: string;
+  readonly durationMs?: number;
+  readonly costMicrocents: number;
+}
+
+/** The latest run for one workflow (joined by slug) — the `relavium list` last-run-status overlay. */
+export interface WorkflowRunSummary {
+  readonly slug: string;
+  readonly lastRun: RunRecord;
 }
 
 /** The catalog identity + frozen graph of the workflow a store instance records (events don't carry the graph). */
@@ -88,19 +115,41 @@ export interface RunHistoryStoreDeps {
 }
 
 /**
- * The durable run-history store. The first three methods are the engine's `RunStore` port (async to match
- * the seam, synchronous under `better-sqlite3`); the rest are the 2.I/2.G read API.
+ * The workflow-agnostic read API the `relavium list`/`logs`/`status`/`gate list` (2.I) commands consume.
+ * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
+ * span every workflow (the same standalone-read rationale as {@link loadRunSnapshot}, which the
+ * workflow-scoped {@link createRunHistoryStore} can't satisfy for a cross-workflow listing).
+ * {@link RunHistoryStore} re-exposes the first three (the writer also reads back its own event log).
  */
-export interface RunHistoryStore {
+export interface RunHistoryReader {
+  /** All runs (newest first), excluding soft-deleted. */
+  listRuns: () => RunRecord[];
+  /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
+  loadRun: (runId: string) => RunRecord | undefined;
+  /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
+   *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first. */
+  loadRunEvents: (runId: string) => RunEvent[];
+  /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
+  listActiveRuns: () => RunRecord[];
+  /** The latest run per workflow (joined by slug) — `relavium list`'s last-run-status overlay. */
+  loadLatestRunPerWorkflow: () => WorkflowRunSummary[];
+  /** A run's per-node step rows in execution order — `relavium status`'s per-node detail. Keyed by `runId`
+   *  alone; the caller validates the run via {@link loadRun} first (the active-run list is already filtered). */
+  loadStepExecutions: (runId: string) => StepRecord[];
+}
+
+/**
+ * The durable run-history store. The first three methods are the engine's `RunStore` port (async to match
+ * the seam, synchronous under `better-sqlite3`); it also re-exposes the {@link RunHistoryReader} reads it
+ * shares (the 2.G resume reconstruct reads back this store's own log).
+ */
+export interface RunHistoryStore extends Pick<
+  RunHistoryReader,
+  'listRuns' | 'loadRun' | 'loadRunEvents'
+> {
   resolveWorkflowId: (slug: string) => Promise<string>;
   persistEvent: (event: RunEvent) => Promise<void>;
   listInterruptedRuns: () => Promise<readonly InterruptedRunInfo[]>;
-  /** All runs (newest first), excluding soft-deleted — for `relavium list`. */
-  listRuns: () => RunRecord[];
-  /** One run by id, or `undefined` — for `relavium status`. */
-  loadRun: (runId: string) => RunRecord | undefined;
-  /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. */
-  loadRunEvents: (runId: string) => RunEvent[];
 }
 
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
@@ -124,6 +173,10 @@ function fromRunRow(row: RunRow): RunRecord {
 
 /** Wire a {@link RunHistoryStore} over a `@relavium/db` connection. */
 export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHistoryStore {
+  // The store's own read methods are the workflow-agnostic reader's — one implementation per query, and the
+  // 2.I read commands reach the same SQL without this store's workflow scope (createRunHistoryReader).
+  const reader = createRunHistoryReader(db);
+
   /** The run-wide cumulative cost already persisted on `runs` — the baseline a node-cost delta subtracts from. */
   const currentRunCost = (runId: string): number =>
     db.select({ c: runs.totalCostMicrocents }).from(runs).where(eq(runs.id, runId)).get()?.c ?? 0;
@@ -387,17 +440,40 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       );
     },
 
+    listRuns: reader.listRuns,
+    loadRun: reader.loadRun,
+    loadRunEvents: reader.loadRunEvents,
+  };
+}
+
+/**
+ * Wire a workflow-agnostic {@link RunHistoryReader} over a `@relavium/db` connection — the read backend for
+ * `relavium list`/`logs`/`status`/`gate list` (2.I). It needs no `deps.workflow` ({@link createRunHistoryStore}
+ * is workflow-scoped at construction, which a cross-workflow listing can't satisfy), so a read command opens it
+ * from a plain db handle (mirroring the standalone {@link loadRunSnapshot}). All methods are synchronous
+ * (better-sqlite3) and validate at the row↔domain boundary, like the writer mappers above.
+ */
+export function createRunHistoryReader(db: Db): RunHistoryReader {
+  return {
     listRuns: () =>
       db
         .select()
         .from(runs)
         .where(isNull(runs.deletedAt))
-        .orderBy(desc(runs.createdAt))
+        // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs
+        // (same tiebreak as loadLatestRunPerWorkflow) — keeps `status`/`list` output deterministic.
+        .orderBy(desc(runs.createdAt), desc(runs.id))
         .all()
         .map(fromRunRow),
 
     loadRun: (runId) => {
-      const row = db.select().from(runs).where(eq(runs.id, runId)).get();
+      // Excludes soft-deleted runs, matching listRuns/listActiveRuns — a run hidden from `relavium list`
+      // must also read as not-found via logs/status/gate-list (and not be resumable, see loadRunSnapshot).
+      const row = db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+        .get();
       return row === undefined ? undefined : fromRunRow(row);
     },
 
@@ -409,6 +485,73 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         .orderBy(asc(runEvents.seq))
         .all()
         .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+
+    listActiveRuns: () =>
+      db
+        .select()
+        .from(runs)
+        .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
+        .orderBy(desc(runs.createdAt), desc(runs.id)) // stable secondary key — see listRuns
+        .all()
+        .map(fromRunRow),
+
+    loadLatestRunPerWorkflow: () => {
+      // SQLite has no DISTINCT ON, so rank runs within each workflow and keep rn = 1 — the latest run per
+      // workflow (newest createdAt; id as a deterministic tiebreak). The slug innerJoin lets `relavium list`
+      // overlay last-run status onto its disk-discovered catalog (events carry a UUID workflowId, not the slug).
+      const ranked = db.$with('ranked').as(
+        db
+          .select({
+            ...getTableColumns(runs),
+            slug: workflows.slug,
+            rn: sql<number>`row_number() over (partition by ${runs.workflowId} order by ${runs.createdAt} desc, ${runs.id} desc)`.as(
+              'rn',
+            ),
+          })
+          .from(runs)
+          .innerJoin(workflows, eq(runs.workflowId, workflows.id))
+          .where(and(isNull(runs.deletedAt), isNull(workflows.deletedAt))),
+      );
+      return db
+        .with(ranked)
+        .select()
+        .from(ranked)
+        .where(eq(ranked.rn, 1))
+        .all()
+        .map((row): WorkflowRunSummary => ({ slug: row.slug, lastRun: fromRunRow(row) }));
+    },
+
+    loadStepExecutions: (runId) =>
+      db
+        .select({
+          nodeId: stepExecutions.nodeId,
+          nodeType: stepExecutions.nodeType,
+          status: stepExecutions.status,
+          attemptNumber: stepExecutions.attemptNumber,
+          startedAt: stepExecutions.startedAt,
+          completedAt: stepExecutions.completedAt,
+          durationMs: stepExecutions.durationMs,
+          costMicrocents: stepExecutions.costMicrocents,
+        })
+        .from(stepExecutions)
+        .where(eq(stepExecutions.runId, runId))
+        // createdAt is the execution-order key; `rowid` (insertion order = persist/seq order) is the
+        // deterministic tiebreak for same-millisecond steps, so the per-node order never depends on the
+        // engine clock resolution or a future index over createdAt.
+        .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
+        .all()
+        .map(
+          (r): StepRecord => ({
+            nodeId: r.nodeId,
+            nodeType: r.nodeType,
+            status: r.status,
+            attemptNumber: r.attemptNumber,
+            ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
+            ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
+            ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
+            costMicrocents: r.costMicrocents,
+          }),
+        ),
   };
 }
 
@@ -439,8 +582,9 @@ export interface RunResumeSnapshot {
  * the gate command only learns the workflow *from* this snapshot — a chicken-and-egg the standalone read
  * resolves. (Run *status* is not returned — the gate command uses the authoritative `checkpoint.runStatus`
  * folded fresh from the event log, and `loadRun(runId).status` covers any status-by-id need.) Returns
- * `undefined` for an unknown `runId`. The snapshot/inputs are unsafe-column data (no raw secrets — the engine
- * masks at the write boundary, ADR-0050); this read is pass-through and never logs them.
+ * `undefined` for an unknown OR soft-deleted `runId` (matching `loadRun` — a soft-deleted run is not
+ * resumable). The snapshot/inputs are unsafe-column data (no raw secrets — the engine masks at the write
+ * boundary, ADR-0050); this read is pass-through and never logs them.
  */
 export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | undefined {
   const row = db
@@ -449,7 +593,7 @@ export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | unde
       inputJson: runs.inputJson,
     })
     .from(runs)
-    .where(eq(runs.id, runId))
+    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
     .get();
   return row === undefined
     ? undefined

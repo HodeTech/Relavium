@@ -82,6 +82,15 @@ describe('run', () => {
     expect(await run(argv('run'), io)).toBe(2);
   });
 
+  it('exits 2 for a bare `gate` (no runId, no subcommand) — the guard, not a stack', async () => {
+    // 2.G regression guard: restructuring `gate <runId>` → `gate [runId]` (so `gate list` can be a
+    // subcommand) must keep a bare `gate` an exit-2 invocation fault. The runId guard throws before any
+    // db/keychain access, so this exercises only the routing + guard.
+    const { io, err } = captureIo();
+    expect(await run(argv('gate'), io)).toBe(2);
+    expect(err()).toContain('requires a <runId>');
+  });
+
   it('exits 2 with a clean not-implemented message for a stub command (no stack leak)', async () => {
     const { io, out, err } = captureIo();
     expect(await run(argv('create'), io)).toBe(2); // `create` is still a stub (2.J)

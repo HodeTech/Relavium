@@ -73,12 +73,16 @@ export {
 // platform-free engine never imports this — a host wires it over history.db (unencrypted on the CLI, ADR-0050).
 export {
   createRunHistoryStore,
+  createRunHistoryReader,
   loadRunSnapshot,
   type RunHistoryStore,
+  type RunHistoryReader,
   type RunHistoryStoreDeps,
   type RunHistoryWorkflow,
   type InterruptedRunInfo,
   type RunRecord,
+  type StepRecord,
+  type WorkflowRunSummary,
   type RunResumeSnapshot,
 } from './run-history-store.js';
 
