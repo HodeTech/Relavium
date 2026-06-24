@@ -77,7 +77,9 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
     const fields = [
       ...new Set(
         result.error.issues.flatMap((issue) =>
-          issue.code === 'unrecognized_keys' ? issue.keys : [issue.path.map(String).join('.') || 'agent'],
+          issue.code === 'unrecognized_keys'
+            ? issue.keys
+            : [issue.path.map(String).join('.') || 'agent'],
         ),
       ),
     ];
