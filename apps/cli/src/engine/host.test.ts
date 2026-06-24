@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
-import { createClient, runMigrations } from '@relavium/db';
+import { createClient, createMediaReferenceStore, runMigrations } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { createCliHost } from './host.js';
@@ -123,25 +123,68 @@ describe('createCliHost', () => {
       expect(host.mediaReferences).toBeUndefined();
     });
 
-    it('wire a single content-addressed mediaStore (put/get round-trip) + the reference port', async () => {
+    it('wires the two ports independently from their own config fields (not coupled)', () => {
       const casRoot = mkdtempSync(join(tmpdir(), 'relavium-cas-'));
       const client = createClient(':memory:');
       try {
         runMigrations(client.db);
-        const host = createCliHost(undefined, { media: { casRoot, referenceDb: client.db } });
-        expect(host.mediaReferences).toBeDefined();
-        const store = host.mediaStore;
-        if (store === undefined) {
-          throw new Error('createCliHost must wire mediaStore when a casRoot is given');
-        }
-        // A content-addressed round-trip proves it is a real FilesystemMediaStore over the CAS root: put →
-        // a `media://sha256-…` handle → get returns the same bytes (the deep store behavior is db-covered).
-        const handle = await store.put(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
-        expect(handle).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
-        expect(Array.from(await store.get(handle))).toEqual([1, 2, 3, 4]);
+        // casRoot only ⇒ mediaStore wired, mediaReferences absent.
+        const storeOnly = createCliHost(undefined, { media: { casRoot } });
+        expect(storeOnly.mediaStore).toBeDefined();
+        expect(storeOnly.mediaReferences).toBeUndefined();
+        // referenceDb only ⇒ mediaReferences wired, mediaStore absent (a coupling regression would fail here).
+        const refsOnly = createCliHost(undefined, { media: { referenceDb: client.db } });
+        expect(refsOnly.mediaReferences).toBeDefined();
+        expect(refsOnly.mediaStore).toBeUndefined();
       } finally {
         client.sqlite.close();
         rmSync(casRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('wires a single content-addressed mediaStore (round-trip + fail-closed on an unknown handle)', async () => {
+      const casRoot = mkdtempSync(join(tmpdir(), 'relavium-cas-'));
+      try {
+        const store = createCliHost(undefined, { media: { casRoot } }).mediaStore;
+        if (store === undefined) {
+          throw new Error('createCliHost must wire mediaStore when a casRoot is given');
+        }
+        // A content-addressed round-trip proves it is a real FilesystemMediaStore over the CAS root.
+        const handle = await store.put(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
+        expect(handle).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
+        expect(Array.from(await store.get(handle))).toEqual([1, 2, 3, 4]);
+        // Fail-closed: an unknown handle (not in the CAS) rejects rather than serving stray bytes.
+        await expect(store.get(`media://sha256-${'0'.repeat(64)}`)).rejects.toThrow();
+      } finally {
+        rmSync(casRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('wires a mediaReferences port actually backed by the passed referenceDb', async () => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        const refs = createCliHost(undefined, {
+          media: { referenceDb: client.db },
+        }).mediaReferences;
+        if (refs === undefined) {
+          throw new Error('createCliHost must wire mediaReferences when a referenceDb is given');
+        }
+        await refs.recordRunMedia(
+          {
+            handle: `media://sha256-${'a'.repeat(64)}`,
+            mimeType: 'image/png',
+            modality: 'image',
+            byteLength: 4,
+          },
+          'run-1',
+        );
+        // Proof it wrote to the SAME db (not merely non-undefined): an observer store over `client.db` sees
+        // and reclaims the run reference the host's port just recorded.
+        const observer = createMediaReferenceStore(client.db);
+        expect(observer.removeRunReferences('run-1')).toBe(1);
+      } finally {
+        client.sqlite.close();
       }
     });
   });
