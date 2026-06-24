@@ -92,6 +92,29 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(store.getByModelId('not-in-catalog')).toBeUndefined();
   });
 
+  it('fromRow maps each capability flag to its own column (non-default values)', () => {
+    store.upsert({
+      providerId,
+      modelId: 'gpt-4o',
+      displayName: 'GPT-4o',
+      contextWindowTokens: 128_000,
+      maxOutputTokens: 16_384,
+    });
+    // Set the three flags to NON-default values directly (the upsert API intentionally exposes only
+    // `supportsVision`). Defaults are false/true/false, so a `fromRow` mapping that read the wrong column would
+    // read a different value here and fail. (Three booleans cannot make every pairwise swap detectable — two
+    // must share a value — but distinct-from-default catches a mapping that reads the wrong column.)
+    client.sqlite
+      .prepare(
+        'UPDATE model_catalog SET supports_tool_calling = 1, supports_streaming = 0, supports_json_mode = 1 WHERE model_id = ?',
+      )
+      .run('gpt-4o');
+    const rec = store.getByModelId('gpt-4o');
+    expect(rec?.supportsToolCalling).toBe(true);
+    expect(rec?.supportsStreaming).toBe(false);
+    expect(rec?.supportsJsonMode).toBe(true);
+  });
+
   it('a NULL media rate reads back as null (cost degrades to 0 — never fabricated)', () => {
     const rec = store.upsert({
       providerId,

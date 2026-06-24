@@ -5,7 +5,7 @@ import type { Db } from './client.js';
 import { modelCatalog, type ModelCatalogRow, type NewModelCatalogRow } from './schema.js';
 
 /**
- * Model-catalog reader (workstream **2.S**, ADR-0045 §1 / ADR-0044 §2/§3) — the host source for the two
+ * Model-catalog reader (workstream **2.S**, ADR-0045 §1 / ADR-0044 §2-3) — the host source for the two
  * media routing/validation projections: `AgentRunnerDeps.resolveMediaSurface` (generative-vs-chat routing) and
  * the `WorkflowModelCatalog` `CapabilityFlags` load-check. Until this lands the `model_catalog` table has **no
  * reader**, so every model routes inline and no generative model is reachable.
