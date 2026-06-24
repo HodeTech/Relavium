@@ -161,14 +161,7 @@ function registerGate(program: Command, ctx?: CommandContext): void {
       },
     ) => {
       ctx.result.exitCode = await gateCommand(
-        {
-          runId,
-          ...(opts.approve === undefined ? {} : { approve: opts.approve }),
-          ...(opts.reject === undefined ? {} : { reject: opts.reject }),
-          ...(opts.comment === undefined ? {} : { comment: opts.comment }),
-          ...(opts.input === undefined ? {} : { input: opts.input }),
-          ...(opts.gate === undefined ? {} : { gate: opts.gate }),
-        },
+        { runId, ...opts },
         {
           io: ctx.io,
           global: ctx.global,

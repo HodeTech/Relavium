@@ -140,6 +140,18 @@ describe('gateCommand', () => {
     });
   });
 
+  it('surfaces a corrupt persisted event log as a clean exit-2 fault (no raw escaping error)', async () => {
+    const { runId } = await setupPausedRun();
+    // Corrupt a run_events payload so the checkpoint reconstruction (loadRunEvents → JSON.parse) throws.
+    client.sqlite
+      .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
+      .run('{not json', runId);
+    const { io } = captureIo();
+    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+      code: 'invalid_invocation',
+    });
+  });
+
   it('resumes on --reject, persisting the rejection + comment', async () => {
     const { runId } = await setupPausedRun();
     const { io } = captureIo();
@@ -169,7 +181,7 @@ describe('gateCommand', () => {
     const code = await gateCommand({ runId, approve: true }, deps(io)); // second decision
     expect(code).toBe(EXIT_CODES.success);
     expect(out()).toContain('nothing to resume'); // idempotent message, not a re-run
-    expect(reader.loadRunEvents(runId).length).toBe(eventsAfterFirst); // NO new events — not advanced twice
+    expect(reader.loadRunEvents(runId)).toHaveLength(eventsAfterFirst); // NO new events — not advanced twice
   });
 
   it('rejects an unknown runId (exit 2)', async () => {

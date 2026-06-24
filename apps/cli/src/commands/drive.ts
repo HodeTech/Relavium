@@ -73,11 +73,13 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         await resolveGateInline(engine, handle, renderer, gatePrompter, event);
         continue; // a resolve continues the run; a cancel drains it to run:cancelled — keep consuming either way
       }
-      if (event.type === 'run:paused') {
-        if (shouldBreakOnPause(event, gatePrompter !== undefined, handledGates)) {
-          break;
-        }
-        continue; // every gate was handled inline (and no media park) — the resumed run continues to its terminal
+      // A non-breaking run:paused (a prompter handled every gate inline, no media park) is informational —
+      // the resumed run continues. Only a real pause (CI/plain/json, or an unresolvable park) stops → exit 3.
+      if (
+        event.type === 'run:paused' &&
+        shouldBreakOnPause(event, gatePrompter !== undefined, handledGates)
+      ) {
+        break;
       }
     }
   } finally {

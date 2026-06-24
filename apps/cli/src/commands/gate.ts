@@ -107,7 +107,18 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       },
     });
     const checkpointer = createHistoryCheckpointer(store);
-    const checkpoint = await checkpointer.load(args.runId);
+    let checkpoint: CheckpointState | undefined;
+    try {
+      checkpoint = await checkpointer.load(args.runId);
+    } catch (err) {
+      // A malformed run_events row (bad JSON / failed schema parse during the fold) — surface a corrupt log
+      // as a clean exit-2 fault, matching the snapshot/inputs handling, never a raw escaping error.
+      throw new CliError(
+        'invalid_invocation',
+        `the persisted event log for run ${args.runId} could not be read`,
+        { cause: err },
+      );
+    }
     if (checkpoint === undefined) {
       // A run row with a snapshot but no reconstructable checkpoint (no run:started in the log) — corrupt/partial.
       throw new CliError('invalid_invocation', `run ${args.runId} has no resumable state`);
@@ -249,6 +260,11 @@ function parseSnapshot(snapshotJson: string, runId: string): WorkflowDefinition 
  * (matching {@link parseSnapshot}) — never a silent `{}`, which would resume with every `{{ inputs.x }}`
  * evaluating to `undefined` and fail confusingly at a downstream node instead of cleanly up front.
  */
+/** A non-null, non-array object — the shape a run's restored inputs must have (a guard, so no `as` cast). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function parseInputs(inputJson: string, runId: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -260,11 +276,11 @@ function parseInputs(inputJson: string, runId: string): Record<string, unknown> 
       { cause: err },
     );
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+  if (!isPlainObject(parsed)) {
     throw new CliError(
       'invalid_invocation',
       `the stored inputs for run ${runId} are not a JSON object`,
     );
   }
-  return parsed as Record<string, unknown>;
+  return parsed; // narrowed by isPlainObject — no cast
 }
