@@ -37,7 +37,8 @@ export function statusCommand(deps: StatusCommandDeps): ExitCode {
     const statuses: RunStatus[] = reader.listActiveRuns().map((run) => ({
       run,
       steps: reader.loadStepExecutions(run.id),
-      // Pending human gates only matter for a paused run; reconstruct from its event log.
+      // Only a `paused` run can hold a pending human gate (the engine settles to `paused` before persisting
+      // `human_gate:paused`, checkpoint.ts), so reconstruct the log only for those — a `running` run has none.
       pendingGates: run.status === 'paused' ? pendingHumanGates(reader.loadRunEvents(run.id)) : [],
     }));
 

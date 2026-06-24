@@ -30,6 +30,26 @@ provider: anthropic
 system_prompt: Summarize the input.
 `;
 
+// A workflow that interpolates a `secret`-typed input into agent text → WorkflowSecretLeakError at parse.
+const SECRET_LEAK_WORKFLOW = `schema_version: '1.0'
+workflow:
+  id: leaky
+  inputs:
+    - name: api_key
+      type: secret
+  agents:
+    - id: ag
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: 'system'
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: ag
+      prompt_template: 'use {{inputs.api_key}}'
+  edges: []
+`;
+
 describe('discoverCatalog', () => {
   let proj: string;
   let configDir: string;
@@ -83,6 +103,18 @@ describe('discoverCatalog', () => {
     expect(discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' })).toEqual(
       [],
     );
+  });
+
+  it('flags a secret-taint workflow as invalid, surfacing only the taint path (no value)', () => {
+    write('workflows', 'leaky.relavium.yaml', SECRET_LEAK_WORKFLOW);
+
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const leaky = entries.find((e) => e.slug === 'leaky'); // slug falls back to the filename stem
+    expect(leaky?.valid).toBe(false);
+    // The reason is the field-named WorkflowSecretLeakError message — a taint PATH (`inputs.api_key`), the
+    // symbol reference, never a resolved value (there is none at parse time). `parseReason` only echoes a
+    // typed WorkflowParseError/AgentParseError message, so no arbitrary error text reaches the entry.
+    expect(leaky?.error).toContain('inputs.api_key');
   });
 
   it('ignores non-YAML files', () => {

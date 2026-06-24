@@ -56,6 +56,7 @@ describe('parseAgent', () => {
       parseAgent('id: Not_Kebab\nmodel: m\nprovider: anthropic');
       expect.unreachable('should have thrown');
     } catch (err) {
+      expect(err).toBeInstanceOf(AgentParseError);
       const e = err as AgentParseError;
       expect(e.code).toBe('agent_validation');
       expect(e.fields).toContain('system_prompt'); // missing required field is named

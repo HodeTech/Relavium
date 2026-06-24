@@ -1,7 +1,13 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
-import { AgentParseError, MAX_SOURCE_CHARS, parseAgent, parseWorkflow } from '@relavium/core';
+import {
+  AgentParseError,
+  MAX_SOURCE_CHARS,
+  WorkflowParseError,
+  parseAgent,
+  parseWorkflow,
+} from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
 
@@ -131,13 +137,18 @@ function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
   }
 }
 
-/** A short, secret-free reason from a typed parse error (or a generic fallback). */
+/**
+ * A short, secret-free reason from a typed parse error. Only the contract-guaranteed parse errors surface
+ * their `.message` ({@link AgentParseError} + every {@link WorkflowParseError} subclass are field-named and
+ * secret-free by construction — including `WorkflowSecretLeakError`, whose message names a *taint path* like
+ * `inputs.api_key`, never a resolved value). Any OTHER thrown value (a future wrapper, an unexpected fault)
+ * gets a generic reason — its `.message` is never echoed into the catalog entry / `--json` `error` field.
+ */
 function parseReason(err: unknown): string {
-  if (err instanceof AgentParseError) {
+  if (err instanceof AgentParseError || err instanceof WorkflowParseError) {
     return err.message;
   }
-  // WorkflowParseError subclasses carry a secret-free `.message`; anything else gets a generic reason.
-  return err instanceof Error ? err.message : 'could not parse the file';
+  return 'could not parse the file';
 }
 
 /** The `errno` code of a Node fs error (`ENOENT`, `EACCES`, …), or `undefined` if it is not one. */

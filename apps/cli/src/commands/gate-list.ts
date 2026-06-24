@@ -42,6 +42,9 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
       }
       runIds.push(run.id);
     } else {
+      // Only `paused` runs can hold a pending human gate: the engine settles a run to `paused` *before* it
+      // persists the `human_gate:paused` event (checkpoint.ts), so a `running`/`pending` run never has one —
+      // filtering here avoids reconstructing every active run's log only to find no gate.
       for (const run of reader.listActiveRuns()) {
         if (run.status === 'paused') {
           runIds.push(run.id);
