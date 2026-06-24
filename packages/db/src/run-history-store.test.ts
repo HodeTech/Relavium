@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { runCosts, runEvents, runs, stepExecutions } from './schema.js';
+import { runCosts, runEvents, runs, stepExecutions, workflows } from './schema.js';
 import {
   createRunHistoryReader,
   createRunHistoryStore,
@@ -416,6 +416,17 @@ describe('createRunHistoryStore', () => {
     it('returns undefined for an unknown runId', () => {
       expect(loadRunSnapshot(client.db, 'nope')).toBeUndefined();
     });
+
+    it('returns undefined for a soft-deleted run (a deleted run is not resumable)', async () => {
+      const wf = await store.resolveWorkflowId('demo');
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId: wf, inputs: {}, executionMode: 'local' }),
+        runId: 'run-del',
+      });
+      expect(loadRunSnapshot(client.db, 'run-del')).toBeDefined();
+      client.db.update(runs).set({ deletedAt: TS_MS }).where(eq(runs.id, 'run-del')).run();
+      expect(loadRunSnapshot(client.db, 'run-del')).toBeUndefined();
+    });
   });
 });
 
@@ -576,6 +587,38 @@ describe('createRunHistoryReader', () => {
   it('loadRun / loadRunEvents resolve an unknown runId to undefined / empty', () => {
     expect(reader.loadRun('nope')).toBeUndefined();
     expect(reader.loadRunEvents('nope')).toEqual([]);
+  });
+
+  it('loadLatestRunPerWorkflow breaks a createdAt tie deterministically by id desc', async () => {
+    // Both runs of 'alpha' share createdAt (same atMs), so ONLY the `id desc` tiebreak decides the winner —
+    // the lexically-greater id ('r-zzz' > 'r-aaa') must win, deterministically (no incidental row order).
+    await seedRun('alpha', 'r-aaa', { completed: true, atMs: TS_MS });
+    await seedRun('alpha', 'r-zzz', { paused: true, atMs: TS_MS });
+
+    const summaries = reader.loadLatestRunPerWorkflow();
+    expect(summaries.find((s) => s.slug === 'alpha')?.lastRun.id).toBe('r-zzz');
+  });
+
+  it('loadLatestRunPerWorkflow excludes a soft-deleted workflow', async () => {
+    await seedRun('alpha', 'a1', { completed: true });
+    await seedRun('gamma', 'g1', { completed: true });
+    // Soft-delete the 'gamma' workflow row — its run must drop out of the CTE (isNull(workflows.deletedAt)).
+    client.db.update(workflows).set({ deletedAt: TS_MS }).where(eq(workflows.slug, 'gamma')).run();
+
+    const slugs = reader.loadLatestRunPerWorkflow().map((s) => s.slug);
+    expect(slugs).toContain('alpha');
+    expect(slugs).not.toContain('gamma');
+  });
+
+  it('loadRun excludes a soft-deleted run (matching listRuns), so logs/status read it as not-found', async () => {
+    await seedRun('alpha', 'r1', { completed: true });
+    expect(reader.loadRun('r1')).toBeDefined();
+    client.db.update(runs).set({ deletedAt: TS_MS }).where(eq(runs.id, 'r1')).run();
+
+    expect(reader.loadRun('r1')).toBeUndefined();
+    expect(reader.listRuns().map((r) => r.id)).not.toContain('r1');
+    // loadRunEvents is keyed by runId alone (caller validates via loadRun first) — still returns the log.
+    expect(reader.loadRunEvents('r1').length).toBeGreaterThan(0);
   });
 
   it('a store created over the same db delegates its reads to the reader (one implementation)', async () => {

@@ -117,15 +117,17 @@ export interface RunHistoryStoreDeps {
 export interface RunHistoryReader {
   /** All runs (newest first), excluding soft-deleted. */
   listRuns: () => RunRecord[];
-  /** One run by id, or `undefined` — the existence check `relavium logs`/`status`/`gate list` gate on. */
+  /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
   loadRun: (runId: string) => RunRecord | undefined;
-  /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. */
+  /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
+   *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first. */
   loadRunEvents: (runId: string) => RunEvent[];
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
   /** The latest run per workflow (joined by slug) — `relavium list`'s last-run-status overlay. */
   loadLatestRunPerWorkflow: () => WorkflowRunSummary[];
-  /** A run's per-node step rows in execution order — `relavium status`'s per-node detail. */
+  /** A run's per-node step rows in execution order — `relavium status`'s per-node detail. Keyed by `runId`
+   *  alone; the caller validates the run via {@link loadRun} first (the active-run list is already filtered). */
   loadStepExecutions: (runId: string) => StepRecord[];
 }
 
@@ -456,7 +458,13 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .map(fromRunRow),
 
     loadRun: (runId) => {
-      const row = db.select().from(runs).where(eq(runs.id, runId)).get();
+      // Excludes soft-deleted runs, matching listRuns/listActiveRuns — a run hidden from `relavium list`
+      // must also read as not-found via logs/status/gate-list (and not be resumable, see loadRunSnapshot).
+      const row = db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+        .get();
       return row === undefined ? undefined : fromRunRow(row);
     },
 
@@ -518,7 +526,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         })
         .from(stepExecutions)
         .where(eq(stepExecutions.runId, runId))
-        .orderBy(asc(stepExecutions.createdAt))
+        // createdAt is the execution-order key; `rowid` (insertion order = persist/seq order) is the
+        // deterministic tiebreak for same-millisecond steps, so the per-node order never depends on the
+        // engine clock resolution or a future index over createdAt.
+        .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
         .all()
         .map(
           (r): StepRecord => ({
@@ -562,8 +573,9 @@ export interface RunResumeSnapshot {
  * the gate command only learns the workflow *from* this snapshot — a chicken-and-egg the standalone read
  * resolves. (Run *status* is not returned — the gate command uses the authoritative `checkpoint.runStatus`
  * folded fresh from the event log, and `loadRun(runId).status` covers any status-by-id need.) Returns
- * `undefined` for an unknown `runId`. The snapshot/inputs are unsafe-column data (no raw secrets — the engine
- * masks at the write boundary, ADR-0050); this read is pass-through and never logs them.
+ * `undefined` for an unknown OR soft-deleted `runId` (matching `loadRun` — a soft-deleted run is not
+ * resumable). The snapshot/inputs are unsafe-column data (no raw secrets — the engine masks at the write
+ * boundary, ADR-0050); this read is pass-through and never logs them.
  */
 export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | undefined {
   const row = db
@@ -572,7 +584,7 @@ export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | unde
       inputJson: runs.inputJson,
     })
     .from(runs)
-    .where(eq(runs.id, runId))
+    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
     .get();
   return row === undefined
     ? undefined

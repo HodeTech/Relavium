@@ -64,7 +64,9 @@ export function discoverCatalog(opts: {
   let names: readonly string[];
   try {
     names = readdirSync(dir, { withFileTypes: true })
-      .filter((d) => d.isFile())
+      // Include symlinks (a `.yaml` may be symlinked into the catalog) so `list` matches `run`, which
+      // resolves a symlinked workflow path; a dangling/dir symlink simply fails the read → a flagged entry.
+      .filter((d) => d.isFile() || d.isSymbolicLink())
       .map((d) => d.name)
       .filter((name) => name.endsWith('.yaml') || name.endsWith('.yml'));
   } catch (err) {
@@ -90,7 +92,11 @@ function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
   let yaml: string;
   try {
     const stats = statSync(path);
-    if (stats.size > MAX_SOURCE_CHARS) {
+    // The parser's authoritative cap is a CHARACTER count; `stat.size` is BYTES. UTF-8 encodes at most 4
+    // bytes/char, so `chars * 4` is a byte ceiling that never false-rejects a within-limit file (a dense
+    // multibyte file just under the char cap is not wrongly hidden) while still bailing before we slurp a
+    // genuinely huge file into memory. The parser then re-applies the exact char cap.
+    if (stats.size > MAX_SOURCE_CHARS * 4) {
       return {
         slug: fileStem(basename(path)),
         name: undefined,
@@ -102,13 +108,15 @@ function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
     }
     yaml = readFileSync(path, 'utf8');
   } catch (err) {
+    // Generic, path-free reason — never echo a raw fs `err.message` (it carries the absolute path) into the
+    // catalog entry / `--json` `error` field (error-handling.md; same discipline as parseReason below).
     return {
       slug: fileStem(basename(path)),
       name: undefined,
       tags: [],
       path: rel,
       valid: false,
-      error: err instanceof Error ? err.message : 'could not read the file',
+      error: errnoCode(err) === 'EACCES' ? 'permission denied' : 'could not read the file',
     };
   }
 

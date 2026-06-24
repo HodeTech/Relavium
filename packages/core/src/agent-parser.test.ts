@@ -26,7 +26,7 @@ describe('parseAgent', () => {
     expect(agent.provider).toBe('anthropic');
   });
 
-  it('reads name/description/model off a fuller agent', () => {
+  it('rejects an agent document with an unknown key (the schema is strict)', () => {
     // `tags` is not in AgentSchema (.strict()), so a doc carrying it must be rejected — proving strictness.
     expect(() => parseAgent(VALID)).toThrow(AgentParseError);
     try {

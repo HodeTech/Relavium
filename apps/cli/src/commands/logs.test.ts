@@ -53,6 +53,19 @@ describe('logsCommand', () => {
     expect(text).toContain('[3] run:completed — completed');
   });
 
+  it('renders the gate detail line for a paused run (the human_gate:paused branch)', async () => {
+    const { io, out } = captureIo();
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'paused-1',
+      state: 'paused',
+      gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
+    });
+
+    expect(logsCommand({ runId: 'paused-1' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(out()).toContain('human_gate:paused g — gate g1 (approval)');
+  });
+
   it('--json emits each raw RunEvent as one NDJSON line in seq order', async () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });

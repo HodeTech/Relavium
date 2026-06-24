@@ -22,7 +22,7 @@ export interface LogsCommandDeps {
 /**
  * The `relavium logs <runId>` core (**2.I**) — replay a past run's persisted `run_events` in `seq` order (the
  * same data the desktop run-detail drawer replays). `--json` emits each raw `RunEvent` as one NDJSON line —
- * byte-identical to what `relavium run --json` streamed (the spec's "raw RunEvent JSON" flag); the human mode
+ * the same `RunEvent` data `relavium run --json` streamed (the spec's "raw RunEvent JSON" flag); the human mode
  * prints a terse line per event. An unknown `runId` is an invalid invocation (exit `2`). Framework-free.
  */
 export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitCode {

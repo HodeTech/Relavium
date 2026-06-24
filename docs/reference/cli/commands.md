@@ -152,7 +152,7 @@ Interactive scaffolder (`@clack/prompts`) that writes a new `.relavium.yaml` or 
 
 ### `relavium logs <runId>`
 
-Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode. Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line**, byte-identical to what `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
+Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode. Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line** — the same `RunEvent` data `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
 
 ### `relavium status`
 

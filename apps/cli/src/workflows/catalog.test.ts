@@ -105,6 +105,25 @@ describe('discoverCatalog', () => {
     );
   });
 
+  it('flags an invalid agent file (only valid agents are listed clean)', () => {
+    write('agents', 'broken.agent.yaml', 'id: Not_Kebab\nmodel: m\n'); // missing required fields + bad id
+
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+    const broken = entries.find((e) => e.slug === 'broken'); // slug falls back to the filename stem
+    expect(broken?.valid).toBe(false);
+    expect(broken?.error).toBeTruthy();
+  });
+
+  it('throws an exit-2 invocation error when the catalog path is not a directory (ENOTDIR)', () => {
+    // A regular file where the `workflows/` directory is expected → readdirSync raises ENOTDIR (not ENOENT),
+    // which is a real fault, not an empty catalog. Cross-platform (no chmod/perms needed).
+    writeFileSync(join(configDir, 'workflows'), 'not a directory', 'utf8');
+
+    expect(() =>
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }),
+    ).toThrow(/could not read the workflows catalog/);
+  });
+
   it('flags a secret-taint workflow as invalid, surfacing only the taint path (no value)', () => {
     write('workflows', 'leaky.relavium.yaml', SECRET_LEAK_WORKFLOW);
 

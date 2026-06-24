@@ -34,14 +34,22 @@ export function pendingHumanGates(events: readonly RunEvent[]): PendingGate[] {
       pausedByGate.set(event.gateId, event);
     }
   }
-  return pending.map((gate): PendingGate => {
+  const result: PendingGate[] = [];
+  for (const gate of pending) {
     const paused = pausedByGate.get(gate.gateId);
-    return {
+    // Invariant: a non-budget pending gate was folded FROM a `human_gate:paused` event, so its detail is
+    // always present. If it somehow is not (a corrupt/hand-edited log), OMIT the gate rather than fabricate a
+    // `gateType` — a wrong type would mislead an operator into passing the wrong `relavium gate` flag.
+    if (paused === undefined) {
+      continue;
+    }
+    result.push({
       gateId: gate.gateId,
       nodeId: gate.nodeId,
-      gateType: paused?.gateType ?? 'approval',
-      message: paused?.message ?? '',
-      ...(paused?.expiresAt === undefined ? {} : { expiresAt: paused.expiresAt }),
-    };
-  });
+      gateType: paused.gateType,
+      message: paused.message,
+      ...(paused.expiresAt === undefined ? {} : { expiresAt: paused.expiresAt }),
+    });
+  }
+  return result;
 }

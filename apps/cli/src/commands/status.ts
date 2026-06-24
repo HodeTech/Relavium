@@ -72,7 +72,10 @@ function toJson(status: RunStatus): unknown {
       nodeType: step.nodeType,
       status: step.status,
       attemptNumber: step.attemptNumber,
+      startedAt: step.startedAt ?? null,
+      completedAt: step.completedAt ?? null,
       durationMs: step.durationMs ?? null,
+      costMicrocents: step.costMicrocents,
     })),
     pendingGates: status.pendingGates.map((gate) => ({
       gateId: gate.gateId,
