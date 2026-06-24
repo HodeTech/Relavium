@@ -488,7 +488,7 @@ const readMediaTool = defineBuiltin({
     if (access === undefined || requesting === undefined) {
       throw new ToolUnavailableError('read_media', 'media-read');
     }
-    const info = await access.describe(args.handle);
+    const info = await access.describe(args.handle, ctx.signal);
     if (info === undefined) {
       throw new ToolArgsInvalidError('read_media', ['handle'], 'read_media: unknown media handle');
     }
@@ -523,7 +523,7 @@ const readMediaTool = defineBuiltin({
         `read_media: ${checked.reason}`,
       );
     }
-    const source = await access.readRange(args.handle, checked.range);
+    const source = await access.readRange(args.handle, checked.range, ctx.signal);
     return { type: 'media', mimeType: info.mimeType, source };
   },
 });
