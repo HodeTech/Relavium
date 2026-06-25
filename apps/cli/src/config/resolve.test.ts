@@ -39,6 +39,14 @@ describe('resolveConfig', () => {
     expect(resolved.maxMessages).toBe(100); // falls back to workspace
     expect(resolved.maxCostMicrocents).toBe(1000); // only on project
     expect(resolved.onExceed).toBe('warn'); // only on project
+    // A project [chat] block present but omitting max_turns inherits the workspace's value per-field
+    // (the new field's own fallback arm — not just whole-block presence).
+    const wsFallback = resolveConfig({
+      workspace,
+      project: { chat: { fs_scope: 'project' } },
+    }).chat;
+    expect(wsFallback.maxTurns).toBe(20); // workspace max_turns flows through
+    expect(wsFallback.fsScope).toBe('project'); // project still overrides the field it declares
     // [chat] is project/workspace-scoped, not global — and absent at every layer ⇒ all undefined.
     expect(resolveConfig({}).chat.maxTurns).toBeUndefined();
   });

@@ -73,7 +73,9 @@ silently *continues* the session — [config-spec.md](config-spec.md)) and the t
 `session:turn_completed` carries `stopReason: 'error'` + `error.code: 'turn_limit'`
 ([sse-event-schema.md](sse-event-schema.md#error-code-taxonomy)) — never a silent stop; the within-turn
 `maxToolTurns` guard surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
-knob** in 1.V (a surface maps its `[chat]` default onto it); it is **not** a new `[chat]` field in Phase 1.
+knob** (`SessionDeps.maxTurns`); a surface maps the `[chat].max_turns` config field onto it at construction
+time — that surface field was added in build-phase 2 (workstream **2.M**); see
+[config-spec.md](config-spec.md) §`[chat]`.
 
 ## Session context
 
@@ -94,7 +96,8 @@ interface SessionContext {
 `fsScopeTier` and the command allowlist are the **same** filesystem-scope tiers and `allowedCommands`
 policy a workflow uses (see [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers)
 and [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools)); the chat-mode **defaults**
-(`fs_scope`, the command allowlist, `default_model`, `max_messages`, and an optional pre-egress cost
+(`fs_scope`, the command allowlist, `default_model`, `max_turns` (the hard turn cap → `SessionDeps.maxTurns`),
+`max_messages`, and an optional pre-egress cost
 cap `max_cost_microcents` / `on_exceed` — the same [ADR-0028](../../decisions/0028-workflow-resource-governance.md)
 governor a workflow budget uses) live in the `[chat]` block of [config-spec.md](config-spec.md) and
 reference those canonical homes — they are not re-declared here.

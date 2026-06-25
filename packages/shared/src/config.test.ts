@@ -197,7 +197,8 @@ describe('config schemas', () => {
   it('accepts [chat].max_turns (the hard turn cap → SessionDeps.maxTurns) as a positive int only', () => {
     // max_turns is the surface-mapped hard session turn cap, DISTINCT from max_messages (history-trim).
     expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 10 } }).success).toBe(true);
-    // positiveInt rejects 0 and negatives (0/absent ⇒ the engine default is applied downstream, not here).
+    // positiveInt rejects 0 and negatives here at the config layer; only an ABSENT max_turns falls
+    // back to the engine default downstream (0 never reaches the engine's `<= 0 ⇒ default` arm).
     expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 0 } }).success).toBe(false);
     expect(ProjectConfigSchema.safeParse({ chat: { max_turns: -1 } }).success).toBe(false);
     expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 1.5 } }).success).toBe(false);
