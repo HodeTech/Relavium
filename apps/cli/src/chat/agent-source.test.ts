@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { AgentParseError } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -56,10 +57,23 @@ describe('resolveChatAgent', () => {
     expect(agent.provider).toBe('anthropic');
   });
 
-  it('discovers a bare --agent id under <projectConfigDir>/agents/', () => {
+  it('discovers a bare --agent id under <projectConfigDir>/agents/ (.agent.yaml suffix)', () => {
     const projectConfigDir = join(dir, '.relavium');
     mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
     writeFileSync(join(projectConfigDir, 'agents', 'coder.agent.yaml'), AGENT_YAML);
+    const agent = resolveChatAgent('coder', {
+      cwd: dir,
+      projectConfigDir,
+      defaultModel: undefined,
+    });
+    expect(agent.id).toBe('coder');
+  });
+
+  it('discovers a bare --agent id via the fallback suffixes (.relavium.yaml when no .agent.yaml)', () => {
+    const projectConfigDir = join(dir, '.relavium');
+    mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
+    // Only the .relavium.yaml exists — the resolver must try it after .agent.yaml misses.
+    writeFileSync(join(projectConfigDir, 'agents', 'coder.relavium.yaml'), AGENT_YAML);
     const agent = resolveChatAgent('coder', {
       cwd: dir,
       projectConfigDir,
@@ -86,11 +100,18 @@ describe('resolveChatAgent', () => {
     }
   });
 
-  it('surfaces an invalid .agent.yaml as a parse error (not a silent default)', () => {
+  it('surfaces an invalid .agent.yaml as a field-named AgentParseError (not a silent default or CliError)', () => {
     const path = join(dir, 'bad.agent.yaml');
     writeFileSync(path, 'id: bad\nprovider: not-a-provider\nmodel: m\nsystem_prompt: x');
-    expect(() =>
-      resolveChatAgent(path, { cwd: dir, projectConfigDir: undefined, defaultModel: undefined }),
-    ).toThrow();
+    let caught: unknown;
+    try {
+      resolveChatAgent(path, { cwd: dir, projectConfigDir: undefined, defaultModel: undefined });
+    } catch (err) {
+      caught = err;
+    }
+    // A schema failure is a typed parse error naming the offending field — NOT an invocation CliError.
+    expect(caught).toBeInstanceOf(AgentParseError);
+    expect(isCliError(caught)).toBe(false);
+    expect(String((caught as AgentParseError).message)).toMatch(/provider/i);
   });
 });

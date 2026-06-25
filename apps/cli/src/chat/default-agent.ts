@@ -41,9 +41,10 @@ export const DEFAULT_CHAT_TOOLS: readonly string[] = ['read_file', 'list_directo
 export function inferProviderFromModel(model: string): ProviderId | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
-  if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) {
-    return 'openai';
-  }
+  // OpenAI's GPT family + the o-series reasoning models. `/^o\d/` matches the whole o-series (o1/o3/o4 and
+  // future o5+) in one expression rather than enumerating each prefix. (A model→provider catalog lookup is
+  // the eventual robust source; this prefix map is the deliberate Phase-1 zero-config default.)
+  if (m.startsWith('gpt') || /^o\d/.test(m)) return 'openai';
   if (m.startsWith('gemini')) return 'gemini';
   if (m.startsWith('deepseek')) return 'deepseek';
   return undefined;

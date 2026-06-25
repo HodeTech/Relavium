@@ -14,8 +14,11 @@ describe('inferProviderFromModel', () => {
     expect(inferProviderFromModel('claude-sonnet-4-6')).toBe('anthropic');
     expect(inferProviderFromModel('Claude-Opus-4-8')).toBe('anthropic');
     expect(inferProviderFromModel('gpt-4o')).toBe('openai');
+    // The whole o-series resolves via /^o\d/ — o1/o3/o4 today and future o5+ without enumerating each.
     expect(inferProviderFromModel('o1-mini')).toBe('openai');
-    expect(inferProviderFromModel('o3')).toBe('openai');
+    expect(inferProviderFromModel('o3-mini')).toBe('openai');
+    expect(inferProviderFromModel('o4-mini')).toBe('openai');
+    expect(inferProviderFromModel('o4-mini-high')).toBe('openai');
     expect(inferProviderFromModel('gemini-2.5-pro')).toBe('gemini');
     expect(inferProviderFromModel('deepseek-chat')).toBe('deepseek');
   });

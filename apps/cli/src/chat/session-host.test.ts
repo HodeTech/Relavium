@@ -1,7 +1,8 @@
+import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
-import { buildChatSession, buildGovernorWiring } from './session-host.js';
+import { buildChatSession, buildGovernorWiring, type ChatBudgetWarning } from './session-host.js';
 import { drainHandle, scriptedResolver, textTurn, unresolvedResolver } from './test-support.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
@@ -58,6 +59,7 @@ describe('buildChatSession', () => {
     const types = events.map((e) => e.type);
     expect(types).toContain('session:started');
     expect(types).toContain('session:turn_started');
+    expect(types).toContain('cost:updated'); // the per-attempt cost event rides the session stream
     expect(types).toContain('session:turn_completed');
     expect(types[types.length - 1]).toBe('session:cancelled'); // the session's sole terminal
 
@@ -89,6 +91,10 @@ describe('buildChatSession', () => {
 });
 
 describe('buildGovernorWiring', () => {
+  // Seed the governor's cumulative directly via updateCost so the pre-egress projection trips the cap
+  // regardless of model pricing — exercising the real fail/pause/warn behavior, not just the wiring shape.
+  const OVER_CAP = { model: 'claude-sonnet-4-6', maxTokens: 1000 } as const;
+
   it('is unbounded (no governor) when the cost cap is absent or 0', () => {
     expect(buildGovernorWiring(EMPTY_CHAT)).toBeUndefined();
     expect(buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 0 })).toBeUndefined();
@@ -103,7 +109,30 @@ describe('buildGovernorWiring', () => {
     expect(wiring).toBeDefined();
     expect(typeof wiring?.preEgress).toBe('function');
     expect(typeof wiring?.updateCost).toBe('function');
-    // updateCost is a pure bookkeeping forward — exercising it must not throw.
-    expect(() => wiring?.updateCost(500)).not.toThrow();
+  });
+
+  it('on_exceed:fail — preEgress rejects with BudgetExceededError once the cap is exceeded', async () => {
+    const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'fail' });
+    wiring?.updateCost(999_999); // cumulative now far past the 1-microcent cap
+    await expect(wiring?.preEgress(OVER_CAP)).rejects.toBeInstanceOf(BudgetExceededError);
+  });
+
+  it('on_exceed default (pause_for_approval) — preEgress rejects with BudgetPauseError', async () => {
+    // onExceed omitted ⇒ the wiring defaults to pause_for_approval (the REPL is the approval gate).
+    const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1 });
+    wiring?.updateCost(999_999);
+    await expect(wiring?.preEgress(OVER_CAP)).rejects.toBeInstanceOf(BudgetPauseError);
+  });
+
+  it('on_exceed:warn — preEgress is non-blocking and forwards to onWarning (no silent drop)', async () => {
+    const warnings: ChatBudgetWarning[] = [];
+    const wiring = buildGovernorWiring(
+      { ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' },
+      (warning) => warnings.push(warning),
+    );
+    wiring?.updateCost(999_999);
+    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // warn never blocks
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.limitMicrocents).toBe(1);
   });
 });

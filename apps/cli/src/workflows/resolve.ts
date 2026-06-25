@@ -6,13 +6,13 @@ import { MAX_SOURCE_CHARS } from '@relavium/core';
 import { CliError } from '../process/errors.js';
 
 /**
- * Pre-read byte ceiling for a workflow source — the core parser's authoritative char cap
- * ({@link MAX_SOURCE_CHARS}), reused (not re-declared) so this guard never desyncs from it. UTF-8
+ * Pre-read byte ceiling for a YAML source file (workflow or agent) — the core parser's authoritative char
+ * cap ({@link MAX_SOURCE_CHARS}), reused (not re-declared) so this guard never desyncs from it. UTF-8
  * bytes ≥ chars, so rejecting a file whose `stat` size exceeds the char cap is conservative and lets
  * us bail BEFORE slurping it into memory; the parser then re-applies the exact char cap (a multibyte
  * file slightly under this byte ceiling may still trip there — the authoritative check).
  */
-const MAX_WORKFLOW_BYTES = MAX_SOURCE_CHARS;
+const MAX_YAML_SOURCE_BYTES = MAX_SOURCE_CHARS;
 
 export interface WorkflowSource {
   /** The absolute path the YAML was read from (also the parse-error label, made cwd-relative). */
@@ -115,10 +115,10 @@ function tryRead(path: string, kind: string): string | undefined {
   if (!stats.isFile()) {
     throw new CliError('invalid_invocation', `${kind} path '${path}' is not a regular file.`);
   }
-  if (stats.size > MAX_WORKFLOW_BYTES) {
+  if (stats.size > MAX_YAML_SOURCE_BYTES) {
     throw new CliError(
       'invalid_invocation',
-      `${kind} file '${path}' exceeds the ${MAX_WORKFLOW_BYTES}-byte size limit.`,
+      `${kind} file '${path}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
     );
   }
   try {

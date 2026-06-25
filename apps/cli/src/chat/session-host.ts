@@ -45,6 +45,19 @@ export interface BuildChatSessionOptions {
   readonly providers?: ProviderResolver;
   /** The tool-execution host (injectable for tests); defaults to fail-closed `{}` (capabilities are a follow-up). */
   readonly toolHost?: ToolHost;
+  /**
+   * Sink for an `on_exceed: 'warn'` pre-egress budget warning. A session has no `budget:warning` event in
+   * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
+   * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
+   */
+  readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
+}
+
+/** A pre-egress budget warning surfaced to the chat surface (`on_exceed: 'warn'`) — secret-free counts only. */
+export interface ChatBudgetWarning {
+  readonly spentMicrocents: number;
+  readonly limitMicrocents: number;
+  readonly thresholdPct: number;
 }
 
 export interface BuiltChatSession {
@@ -77,7 +90,7 @@ export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSessio
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: opts.toolHost ?? {} });
-  const governor = buildGovernorWiring(opts.chat);
+  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
 
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
@@ -113,17 +126,31 @@ export interface GovernorWiring {
  * ⇒ **unbounded** (no governor, the common case). When a positive cap is set, `pause_for_approval` and
  * `fail` both settle a tripped turn **loudly** as `budget_exceeded` (the turn core wraps the exceeded error;
  * the interactive REPL itself is the approval gate — no session pause machinery in 1.V), and `warn` is
- * non-blocking (a session has no `budget:warning` event, so the governor's emit is a no-op). Exported for
- * direct unit coverage of the absent/0/positive arms.
+ * non-blocking, but instead of dropping the warning it forwards to `onWarning` (the REPL surfaces it; a
+ * session has no `budget:warning` event of its own). Exported for direct unit coverage of the
+ * absent/0/positive arms and the fail/pause/warn behavior.
  */
-export function buildGovernorWiring(chat: ResolvedChatConfig): GovernorWiring | undefined {
+export function buildGovernorWiring(
+  chat: ResolvedChatConfig,
+  onWarning?: (warning: ChatBudgetWarning) => void,
+): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
   const budget: Budget = {
     max_cost_microcents: cap,
     on_exceed: chat.onExceed ?? 'pause_for_approval',
   };
-  const governor = new BudgetGovernor({ budget, emit: async () => {} });
+  const governor = new BudgetGovernor({
+    budget,
+    emit: (event) => {
+      onWarning?.({
+        spentMicrocents: event.spentMicrocents,
+        limitMicrocents: event.limitMicrocents,
+        thresholdPct: event.thresholdPct,
+      });
+      return Promise.resolve();
+    },
+  });
   return {
     preEgress: (info) =>
       governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate),
