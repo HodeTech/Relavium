@@ -90,4 +90,33 @@ describe('createChatStore', () => {
     store.appendUser('x');
     expect(notified).toBe(1); // only the pre-unsubscribe flush
   });
+
+  it('returns a stable snapshot reference between flushes (useSyncExternalStore contract)', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    const snap = store.getSnapshot();
+    expect(store.getSnapshot()).toBe(snap); // identical reference until the next flush
+    store.appendUser('x'); // a flush
+    expect(store.getSnapshot()).not.toBe(snap); // a fresh snapshot reference
+  });
+
+  it('does not repaint on tick once the session has ended', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply({
+      type: 'session:cancelled',
+      sessionId: 'sess-1',
+      sequenceNumber: 1,
+      timestamp: '2026-06-25T00:00:03.000Z',
+    });
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.tick();
+    expect(notified).toBe(0); // ended ⇒ not running, nothing dirty ⇒ no wasted repaint
+  });
+
+  it('threads the color flag into the snapshot', () => {
+    expect(createChatStore(false).getSnapshot().color).toBe(false);
+    expect(createChatStore(true).getSnapshot().color).toBe(true);
+  });
 });

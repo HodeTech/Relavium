@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   appendUserMessage,
   initialSessionViewState,
+  MAX_LIVE_TOKEN_CHARS,
+  MAX_LIVE_TOOL_CALLS,
   reduceSessionEvent,
   type SessionViewState,
 } from './session-view-model.js';
@@ -110,7 +112,8 @@ describe('session-view-model', () => {
     if (entry?.role === 'assistant') {
       expect(entry.summary.stopReason).toBe('stop');
       expect(entry.summary.tokensUsed).toEqual({ input: 10, output: 5 });
-      expect(entry.summary.durationMs).toBeGreaterThanOrEqual(0);
+      // The 1ms-per-event clock: turn_started @ +1ms, two tokens, turn_completed @ +4ms ⇒ 3ms.
+      expect(entry.summary.durationMs).toBe(3);
     }
   });
 
@@ -218,5 +221,143 @@ describe('session-view-model', () => {
     expect(dup.liveTokens).toBe('ab'); // the stale token was NOT applied
     expect(dup.gapDetected).toBe(true);
     expect(dup.warnings.some((w) => w.includes('out of order'))).toBe(true);
+  });
+
+  it('keeps gapDetected set across a following contiguous event AND a turn boundary (monotonic flag)', () => {
+    const start = reduceSessionEvent(initialSessionViewState(), {
+      type: 'session:turn_started',
+      sessionId: 'sess-1',
+      sequenceNumber: 0,
+      timestamp: '2026-06-25T00:00:00.000Z',
+    });
+    const gapped = reduceSessionEvent(start, {
+      type: 'agent:token',
+      sessionId: 'sess-1',
+      sequenceNumber: 5, // forward gap
+      timestamp: '2026-06-25T00:00:01.000Z',
+      nodeId: 'relavium-chat',
+      token: 'x',
+      model: 'claude-sonnet-4-6',
+    });
+    const next = reduceSessionEvent(gapped, {
+      type: 'session:turn_completed',
+      sessionId: 'sess-1',
+      sequenceNumber: 6, // contiguous after the gap
+      timestamp: '2026-06-25T00:00:02.000Z',
+      stopReason: 'stop',
+      tokensUsed: { input: 1, output: 1 },
+    });
+    expect(next.gapDetected).toBe(true); // OR-folded: a later clean event never reverts it
+  });
+
+  it('does not append a transcript entry for an empty-text successful turn, but still counts it', () => {
+    const e = events();
+    const state = reduceAll([e.started(), e.turnStarted(), e.turnCompleted()]);
+    expect(state.transcript).toHaveLength(0); // nothing streamed ⇒ no assistant entry (mirrors the engine)
+    expect(state.turnCount).toBe(1);
+  });
+
+  it('clears all in-flight buffers when session:cancelled arrives mid-turn (the primary cancel path)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('partial'),
+      e.toolCall('read_file'),
+      e.cancelled(),
+    ]);
+    expect(state.status).toBe('ended');
+    expect(state.liveTokens).toBe(''); // no dangling partial token in the final frame
+    expect(state.liveToolCalls).toEqual([]);
+    expect(state.transcript).toHaveLength(0); // the cancelled turn produced no completed entry
+  });
+
+  it('stores only the final segment of a multi-tool turn (resets on EACH tool call)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('preamble '),
+      e.toolCall('a'),
+      e.token('middle '),
+      e.toolCall('b'),
+      e.token('final'),
+      e.turnCompleted(),
+    ]);
+    expect(state.transcript[0]).toMatchObject({ role: 'assistant', text: 'final' });
+  });
+
+  it('resolves only the first matching unresolved tool call when a toolId repeats', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.toolCall('read_file'),
+      e.toolCall('read_file'),
+      e.toolResult('read_file'),
+    ]);
+    expect(state.liveToolCalls).toEqual([
+      { toolId: 'read_file', resolved: true },
+      { toolId: 'read_file', resolved: false },
+    ]);
+  });
+
+  it('interleaves user and assistant entries in turn order', () => {
+    const e = events();
+    let state: SessionViewState = reduceAll([e.started()]);
+    state = appendUserMessage(state, 'hi');
+    state = reduceSessionEvent(state, e.turnStarted());
+    state = reduceSessionEvent(state, e.token('hello'));
+    state = reduceSessionEvent(state, e.turnCompleted());
+    state = appendUserMessage(state, 'bye');
+    expect(state.transcript.map((t) => `${t.role}:${t.role === 'user' ? t.text : t.text}`)).toEqual(
+      ['user:hi', 'assistant:hello', 'user:bye'],
+    );
+  });
+
+  it('accumulates cost across a turn boundary (the latest cumulative wins)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.cost(100),
+      e.turnCompleted(),
+      e.turnStarted(),
+      e.cost(250),
+      e.turnCompleted(),
+    ]);
+    expect(state.cumulativeCostMicrocents).toBe(250);
+  });
+
+  it('treats session:exported as a no-op side event', () => {
+    const e = events();
+    const before = reduceAll([e.started()]);
+    const after = reduceSessionEvent(before, {
+      type: 'session:exported',
+      sessionId: 'sess-1',
+      sequenceNumber: 1, // contiguous after started (#0) — no gap, so only lastSequenceNumber advances
+      timestamp: '2026-06-25T00:00:01.000Z',
+      workflowPath: '/tmp/out.relavium.yaml',
+    });
+    expect({ ...after, lastSequenceNumber: undefined }).toEqual({
+      ...before,
+      lastSequenceNumber: undefined,
+    });
+  });
+
+  it('bounds the live token buffer to the trailing MAX_LIVE_TOKEN_CHARS', () => {
+    const e = events();
+    const big = 'x'.repeat(MAX_LIVE_TOKEN_CHARS + 500);
+    const state = reduceAll([e.started(), e.turnStarted(), e.token(big)]);
+    expect(state.liveTokens).toHaveLength(MAX_LIVE_TOKEN_CHARS);
+  });
+
+  it('bounds the in-flight tool-call list to MAX_LIVE_TOOL_CALLS', () => {
+    const e = events();
+    const evs = [e.started(), e.turnStarted()];
+    for (let i = 0; i < MAX_LIVE_TOOL_CALLS + 3; i++) {
+      evs.push(e.toolCall(`tool-${i}`));
+    }
+    expect(reduceAll(evs).liveToolCalls).toHaveLength(MAX_LIVE_TOOL_CALLS);
   });
 });

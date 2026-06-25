@@ -1,4 +1,5 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { StopReason } from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `relavium chat` ink REPL (workstream **2.M**) — the session
@@ -24,7 +25,7 @@ export interface ToolCallView {
 
 /** The per-turn summary shown after a completed assistant turn. */
 export interface TurnSummary {
-  readonly stopReason: string;
+  readonly stopReason: StopReason;
   readonly tokensUsed: { readonly input: number; readonly output: number };
   readonly durationMs?: number;
   readonly errorCode?: string;
@@ -200,7 +201,16 @@ export function reduceSessionEvent(
       return reduceTurnCompleted(base, event);
 
     case 'session:cancelled':
-      return { ...base, status: 'ended' };
+      // The session's sole terminal — and the primary cancellation path arrives MID-turn, so clear the
+      // in-flight buffers too, else the last rendered frame would show a dangling partial token/tool stream
+      // for a turn that never completed.
+      return {
+        ...base,
+        status: 'ended',
+        liveTokens: '',
+        liveToolCalls: [],
+        turnStartedAtMs: undefined,
+      };
 
     default:
       // session:exported and any forward-compatible additions: no view change.
@@ -228,10 +238,11 @@ type TurnCompletedEvent = Extract<SessionStreamHandleEvent, { type: 'session:tur
  * assistant entry only when it produced some text; either way the summary (incl. any `error`) is recorded.
  */
 function reduceTurnCompleted(state: SessionViewState, event: TurnCompletedEvent): SessionViewState {
-  const durationMs =
-    state.turnStartedAtMs === undefined
-      ? undefined
-      : Math.max(0, Date.parse(event.timestamp) - state.turnStartedAtMs);
+  // A finite, non-negative duration only — guard against a NaN from an unparseable timestamp so a NaN can
+  // never reach `durationMs` (and `formatDuration`), keeping the `durationMs?: number` contract strict.
+  const rawDuration =
+    state.turnStartedAtMs === undefined ? NaN : Date.parse(event.timestamp) - state.turnStartedAtMs;
+  const durationMs = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : undefined;
   const summary: TurnSummary = {
     stopReason: event.stopReason,
     tokensUsed: { input: event.tokensUsed.input, output: event.tokensUsed.output },
