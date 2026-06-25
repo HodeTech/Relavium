@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,7 +30,7 @@ import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
-import { gateCommand, selectGate, type GateCommandDeps } from './gate.js';
+import { gateCommand, resolveSaveToRoot, selectGate, type GateCommandDeps } from './gate.js';
 
 /** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
  *  that the real engine can't be driven into deterministically (they need a concurrent-settle race). */
@@ -672,5 +672,26 @@ describe('selectGate', () => {
       kind: 'invalid',
       message: 'the run is not paused at a human gate',
     });
+  });
+});
+
+describe('resolveSaveToRoot (save_to scope root on resume)', () => {
+  it('uses the original run project root when it still exists on this machine', () => {
+    const original = mkdtempSync(join(tmpdir(), 'relavium-orig-'));
+    try {
+      expect(resolveSaveToRoot(original, '/resumer/cwd')).toBe(original);
+    } finally {
+      rmSync(original, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the resumer cwd when the persisted project root no longer exists (deleted / other machine)', () => {
+    const gone = join(tmpdir(), 'relavium-deleted-nonexistent-xyz');
+    expect(existsSync(gone)).toBe(false); // precondition: the path does not exist
+    expect(resolveSaveToRoot(gone, '/resumer/cwd')).toBe('/resumer/cwd');
+  });
+
+  it('falls back to the resumer cwd when no project root was persisted (null — pre-column run)', () => {
+    expect(resolveSaveToRoot(null, '/resumer/cwd')).toBe('/resumer/cwd');
   });
 });

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 
 import {
   EngineStateError,
@@ -18,7 +19,10 @@ import {
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
 import { createCliHost } from '../engine/host.js';
-import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
+import {
+  sweepHostMediaBestEffort as defaultSweepMedia,
+  sweepMediaAtTerminal,
+} from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
@@ -59,6 +63,18 @@ export interface GateCommandDeps {
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * The `save_to` scope root for a resumed run: the ORIGINAL run's persisted `runs.project_root` when it still
+ * exists on THIS machine — so a run started in dir A and resumed from B writes its deliverables under A — else the
+ * resumer's cwd. The existence check keeps a cross-machine / CI resume (or one where the original dir was deleted
+ * or moved) from failing the `save_to` write against a now-missing absolute path; it falls back gracefully. A run
+ * started before `project_root` was populated (`null`) also falls back. The realpath+commonpath jail holds under
+ * either root, so this only changes the destination, never the containment guarantee.
+ */
+export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string): string {
+  return projectRoot !== null && existsSync(projectRoot) ? projectRoot : resumerCwd;
+}
 
 /**
  * Resume the run from its checkpoint, mapping a typed engine refusal (e.g. `workflow_mismatch` on a corrupt
@@ -176,11 +192,10 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     const providers = deps.providers ?? createProviderResolver(deps.io.env);
     // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
     // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
-    // stays. `save_to`'s scope root is the ORIGINAL run's project root (`runs.project_root`, persisted at
-    // run-start), so a run started in dir A and resumed from B still writes its deliverables under A — not the
-    // resumer's cwd. A run started before that column was populated (`projectRoot === null`) falls back to the
-    // resumer's cwd; the realpath+commonpath jail holds under either root.
-    const saveToRoot = snapshot.projectRoot ?? deps.global.cwd;
+    // stays. `save_to`'s scope root is the ORIGINAL run's project root when it still exists here (see
+    // resolveSaveToRoot), else the resumer's cwd — so a same-machine resume writes under the original dir, while
+    // a resume on a different machine / after that dir was deleted falls back gracefully instead of failing.
+    const saveToRoot = resolveSaveToRoot(snapshot.projectRoot, deps.global.cwd);
     const wiring = buildMediaEngineWiring(opened.db, homeDir, saveToRoot, config, (m) =>
       deps.io.writeErr(`${m}\n`),
     );
@@ -222,21 +237,16 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
-    // `run` does (the same helper). A re-pause (a second gate / budget pause) is NOT terminal: skip it, so the
-    // still-paused run's media survives for the next resume. A GC failure is swallowed (never a correctness break).
-    if (wiring.media.casRoot !== undefined && isTerminalOutcome(outcome)) {
-      try {
-        await (deps.sweepMedia ?? defaultSweepMedia)({
-          db: opened.db,
-          casRoot: wiring.media.casRoot,
-          currentRunId: args.runId,
-          ...(config.mediaGcGraceMs === undefined ? {} : { graceMs: config.mediaGcGraceMs }),
-        });
-      } catch {
-        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the resume —
-        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
-      }
-    }
+    // `run` does (the SAME helper). A re-pause (a second gate / budget pause) is NOT terminal, so the still-paused
+    // run's media survives for the next resume; a GC failure is swallowed (never a correctness break).
+    await sweepMediaAtTerminal({
+      sweep: deps.sweepMedia ?? defaultSweepMedia,
+      isTerminal: isTerminalOutcome(outcome),
+      db: opened.db,
+      casRoot: wiring.media.casRoot,
+      currentRunId: args.runId,
+      graceMs: config.mediaGcGraceMs,
+    });
     return outcomeToExitCode(outcome);
   } finally {
     opened.close();

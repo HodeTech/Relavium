@@ -162,3 +162,35 @@ export async function sweepHostMediaBestEffort(args: {
     return undefined; // best-effort — a GC failure is never a run-correctness break (ADR-0042 §3)
   }
 }
+
+/**
+ * The run-end host media GC call the `run` and `gate` commands share (2.S/D-GC, ADR-0042 §4): fire
+ * {@link sweepHostMediaBestEffort} ONLY when the run reached a TERMINAL event (`isTerminal`) AND a CAS is wired
+ * (`casRoot`/`db` present — the in-memory unit/harness path has neither). A non-terminal (`paused`) outcome is
+ * skipped so the resumable run's media survives. The whole call is best-effort — any throw (incl. an injected
+ * `sweep` stub's) is swallowed so the GC can NEVER fail the run. Extracted here so neither command carries the
+ * branch/try in its own body (one home for the guard).
+ */
+export async function sweepMediaAtTerminal(args: {
+  readonly sweep: typeof sweepHostMediaBestEffort;
+  readonly isTerminal: boolean;
+  readonly db: Db | undefined;
+  readonly casRoot: string | undefined;
+  readonly currentRunId: string;
+  readonly graceMs: number | undefined;
+}): Promise<void> {
+  if (!args.isTerminal || args.db === undefined || args.casRoot === undefined) {
+    return;
+  }
+  try {
+    await args.sweep({
+      db: args.db,
+      casRoot: args.casRoot,
+      currentRunId: args.currentRunId,
+      ...(args.graceMs === undefined ? {} : { graceMs: args.graceMs }),
+    });
+  } catch {
+    // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the run —
+    // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
+  }
+}

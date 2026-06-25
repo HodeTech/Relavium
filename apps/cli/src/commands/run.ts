@@ -13,7 +13,10 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
-import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
+import {
+  sweepHostMediaBestEffort as defaultSweepMedia,
+  sweepMediaAtTerminal,
+} from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import {
   createProviderResolver,
@@ -181,23 +184,18 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       io: deps.io,
     });
 
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — a best-effort pass keyed on the run reaching a TERMINAL event: the
-    // clean-terminal reclaim retry (a crash-dropped prior sweep) + the grace-window byte reclaim + the CAS-orphan
-    // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Skipped on a
-    // `paused` outcome (the run is resumable — its media must survive) and on the in-memory unit/harness path.
-    if (opened !== undefined && mediaCasRoot !== undefined && isTerminalOutcome(outcome)) {
-      try {
-        await (deps.sweepMedia ?? defaultSweepMedia)({
-          db: opened.db,
-          casRoot: mediaCasRoot,
-          currentRunId: handle.runId,
-          ...(config.mediaGcGraceMs === undefined ? {} : { graceMs: config.mediaGcGraceMs }),
-        });
-      } catch {
-        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the run —
-        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
-      }
-    }
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — best-effort, keyed on a TERMINAL outcome: the clean-terminal reclaim
+    // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
+    // a `paused` outcome (resumable — its media must survive) and the in-memory path (no CAS). See
+    // sweepMediaAtTerminal for the guard + the never-fail-the-run swallow.
+    await sweepMediaAtTerminal({
+      sweep: deps.sweepMedia ?? defaultSweepMedia,
+      isTerminal: isTerminalOutcome(outcome),
+      db: opened?.db,
+      casRoot: mediaCasRoot,
+      currentRunId: handle.runId,
+      graceMs: config.mediaGcGraceMs,
+    });
 
     return outcomeToExitCode(outcome);
   } finally {
