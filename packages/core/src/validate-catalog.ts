@@ -28,8 +28,9 @@ export type WorkflowModelCatalog = (modelId: string) => CapabilityFlags | undefi
  * Runs as a separate pass because `WorkflowSchema.superRefine` has no model catalog (this is the
  * `packages/core` → `packages/llm` parse-time dependency — not circular, `core` already depends on the
  * seam). A model absent from the catalog is **deferred** (no error — see {@link WorkflowModelCatalog});
- * an incapable model throws a field-named {@link WorkflowValidationError} listing every offending node.
- * Secret-free messages (a model id + the modality set, never a payload).
+ * an incapable model — including a generative-surface model whose `output_modalities` is omitted or is not
+ * exactly one media modality — throws a field-named {@link WorkflowValidationError} listing every offending
+ * node. Secret-free messages (a model id + the modality set, never a payload).
  */
 export function validateWorkflowWithCatalog(
   workflow: WorkflowDefinition,
@@ -37,8 +38,8 @@ export function validateWorkflowWithCatalog(
 ): void {
   const issues: WorkflowIssue[] = [];
   for (const node of workflow.workflow.nodes) {
-    if (node.type !== 'agent' || node.model === undefined || node.output_modalities === undefined) {
-      continue; // not an agent, or text-only / model-unspecified — nothing to load-check
+    if (node.type !== 'agent' || node.model === undefined) {
+      continue; // not an agent, or model-unspecified — nothing to load-check
     }
     const caps = catalog(node.model);
     if (caps === undefined) {
@@ -49,16 +50,24 @@ export function validateWorkflowWithCatalog(
       // Section C, ADR-0045 §1); its producible output is defined by the generateMedia modality, NOT by the
       // inline `outputCombinations` (which is empty / chat-surface only). The inline membership check does not
       // apply — but the SAME one-media-modality rule the runtime dispatch enforces (`singleBilledModality`:
-      // exactly one of image|audio|video, no text) IS checked here, so a malformed generative node fails fast
-      // at load rather than only at runtime.
-      const billed = node.output_modalities.filter(isBilledModality);
-      if (node.output_modalities.length !== 1 || billed.length !== 1) {
+      // exactly one of image|audio|video, no text) IS checked here. A generative model ALWAYS produces exactly
+      // one media modality (no text-chat output), so an OMITTED `output_modalities` is as invalid as a malformed
+      // one — both fail fast at load rather than only at the runtime `singleBilledModality` dispatch.
+      const declared = node.output_modalities ?? [];
+      const billed = declared.filter(isBilledModality);
+      if (declared.length !== 1 || billed.length !== 1) {
         issues.push({
           field: `node \`${node.id}\`.output_modalities`,
-          message: `a media_surface 'generative' model requires output_modalities to declare exactly one media modality (image | audio | video) with no text, got [${node.output_modalities.join(', ')}]`,
+          message:
+            node.output_modalities === undefined
+              ? `a media_surface 'generative' model requires output_modalities to declare exactly one media modality (image | audio | video), but none were authored`
+              : `a media_surface 'generative' model requires output_modalities to declare exactly one media modality (image | audio | video) with no text, got [${node.output_modalities.join(', ')}]`,
         });
       }
       continue; // the inline outputCombinations load-check does not apply to a generative model
+    }
+    if (node.output_modalities === undefined) {
+      continue; // non-generative model, text-only node — nothing to load-check
     }
     if (!isOutputCombinationSupported(caps.media.outputCombinations, node.output_modalities)) {
       issues.push({
