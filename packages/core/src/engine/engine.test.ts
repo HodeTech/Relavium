@@ -1047,6 +1047,89 @@ describe('WorkflowEngine — the exactly-one-terminal-event invariant', () => {
     expect(failed.partialOutputs).not.toHaveProperty('done');
     assertGapFreeSeq(events);
   });
+
+  it('snapshots the run-wide cumulative cost onto node:failed (durable fail-cost, 2.S/D-GC, ADR-0045 §5)', async () => {
+    const emitCost = (nodeId: string, amount: number): Handler => {
+      return (ctx) => {
+        ctx.emit({
+          type: 'cost:updated',
+          nodeId,
+          model: 'm',
+          inputTokens: 1,
+          outputTokens: 1,
+          costMicrocents: amount,
+          cumulativeCostMicrocents: 0, // the engine owns the cumulative
+        });
+        return { kind: 'completed', output: nodeId, tokensUsed: { input: 1, output: 1 } };
+      };
+    };
+    const events = await drain(
+      engineWith({
+        start: emitCost('start', 100),
+        work: () => ({
+          kind: 'failed',
+          error: { code: 'tool_failed', message: 'boom', retryable: false },
+        }),
+      }).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    if (nodeFailed?.type !== 'node:failed') {
+      throw new Error('expected node:failed');
+    }
+    // The cost accrued before the failure (cost:updated is transient) is durable on the terminal node event.
+    expect(nodeFailed.cumulativeCostMicrocents).toBe(100);
+  });
+
+  it('snapshots the run-wide cumulative cost onto run:cancelled (durable fail-cost, 2.S/D-GC, ADR-0045 §5)', async () => {
+    const engine = engineWith({
+      emit: (ctx) => {
+        ctx.emit({
+          type: 'cost:updated',
+          nodeId: 'emit',
+          model: 'm',
+          inputTokens: 1,
+          outputTokens: 1,
+          costMicrocents: 100,
+          cumulativeCostMicrocents: 0,
+        });
+        return { kind: 'completed', output: 'emit', tokensUsed: { input: 1, output: 1 } };
+      },
+      slow: (ctx) =>
+        new Promise<NodeOutcome>((resolve) => {
+          const onAbort = (): void => resolve({ kind: 'completed', output: 'aborted' });
+          if (ctx.signal.aborted) {
+            onAbort();
+            return;
+          }
+          ctx.signal.addEventListener('abort', onAbort);
+        }),
+    });
+    const handle = engine.start({
+      workflow: workflow(`  id: cancel-cost
+  nodes:
+    - { id: start, type: input }
+    - { id: emit, type: transform, transform: 'x' }
+    - { id: slow, type: transform, transform: 's' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: emit }
+    - { from: emit, to: slow }
+    - { from: slow, to: done }`),
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:started' && event.nodeId === 'slow') {
+        engine.cancel(handle.runId);
+      }
+    }
+    const cancelled = events.find((e) => e.type === 'run:cancelled');
+    if (cancelled?.type !== 'run:cancelled') {
+      throw new Error('expected run:cancelled');
+    }
+    // The cost accrued before the cancel (cost:updated is transient) is durable on the terminal run event.
+    expect(cancelled.cumulativeCostMicrocents).toBe(100);
+  });
 });
 
 // --- human gate suspend / resume --------------------------------------------------------------

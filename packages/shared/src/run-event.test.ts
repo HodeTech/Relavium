@@ -401,6 +401,23 @@ describe('cost:updated and sequenceNumber invariants', () => {
     expect(CostUpdatedEventSchema.safeParse({ ...ok, attemptNumber: 0 }).success).toBe(false);
   });
 
+  it('accepts an optional cumulativeCostMicrocents on node:failed / run:cancelled, rejects negative/fractional (2.S/D-GC)', () => {
+    // The durable fail-cost snapshot (ADR-0045 §5): both terminal carriers accept the optional running total
+    // (omittable for backward-compat) but pin it to non-negative integer micro-cents, like every cost field.
+    for (const base of [valid['node:failed'], { type: 'run:cancelled' as const, ...env }]) {
+      expect(RunEventSchema.safeParse({ ...base, cumulativeCostMicrocents: 4242 }).success).toBe(
+        true,
+      );
+      expect(RunEventSchema.safeParse(base).success).toBe(true); // still valid when omitted
+      expect(RunEventSchema.safeParse({ ...base, cumulativeCostMicrocents: -1 }).success).toBe(
+        false,
+      );
+      expect(RunEventSchema.safeParse({ ...base, cumulativeCostMicrocents: 1.5 }).success).toBe(
+        false,
+      );
+    }
+  });
+
   it('accepts sequenceNumber 0 but rejects negative / fractional', () => {
     const cancelled = { type: 'run:cancelled', ...env };
     expect(RunEventSchema.safeParse({ ...cancelled, sequenceNumber: 0 }).success).toBe(true);

@@ -1265,6 +1265,10 @@ class RunExecution {
       // can quote it and it joins to the structured internal log.
       error: { ...error, correlationId: this.#host.ids.newId() },
       ...(attemptNumber > 1 ? { attemptNumber } : {}),
+      // Snapshot the run-wide cost AT this node boundary onto the durable terminal (2.S/D-GC, ADR-0045 §5):
+      // a billed-but-failed PAID media job folded its realized cost into the running total via cost:updated
+      // (transient) — persisting it here keeps that fail-cost durable. Mirrors node:completed.
+      cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
     });
   }
 
@@ -1708,7 +1712,11 @@ class RunExecution {
         partialOutputs: this.#collectOutputs('completed'),
       };
     } else {
-      draft = { type, runId: this.runId };
+      // run:cancelled — snapshot the run-wide cost onto the durable terminal (2.S/D-GC, ADR-0045 §5). A paid
+      // media job pending at the cancel had its lone estimate addend emitted just above (#emitMediaJobCost,
+      // before this terminal), so the cumulative now includes it and the fail-cost is durable here (cost:updated
+      // is transient). run:completed carries the same figure as totalCostMicrocents.
+      draft = { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
     }
     await this.#emitDurable(draft);
     this.#onSettled(this.runId);
