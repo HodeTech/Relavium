@@ -13,9 +13,9 @@ import type { RunStatus } from '@relavium/shared';
 const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['completed', 'failed', 'cancelled']);
 
 /**
- * The ADR-0042 §4 default grace window (7 days) before a zero-reference handle's bytes are reclaimed. The
- * `[defaults].media_gc_grace_days` config key is forward-declared (P4/D11) but not yet wired; until it lands the
- * host GC uses this default.
+ * The ADR-0042 §4 DEFAULT grace window (7 days) before a zero-reference handle's bytes are reclaimed — the
+ * fallback when `[defaults].media_gc_grace_days` (config-spec.md) is unset. The CLI resolves that key (DAYS → ms)
+ * in `config/resolve.ts` and threads it into `sweepHostMediaBestEffort`'s `graceMs`; absent ⇒ this default.
  */
 export const DEFAULT_MEDIA_GC_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 

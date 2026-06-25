@@ -203,9 +203,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   is host-agnostic but lives in `apps/cli/src/engine/media-gc.ts`, so the Phase-3 desktop / Phase-6 cloud hosts
   can't reuse it. When a 2nd host wires media GC, promote the pure orchestration to `@relavium/db` (or a shared
   host-helper) and pin the mechanism in a `docs/reference/` home so the hosts can't drift. *(med · apps/cli → @relavium/db; Phase-3+)*
-- [ ] **`[defaults].media_gc_grace_days` is forward-declared, not read (2.S)** — the host GC uses the built-in
-  `DEFAULT_MEDIA_GC_GRACE_MS` (7 days); the config key (config-spec.md, ADR-0042 §4c) is documented but not yet
-  threaded through `sweepHostMediaBestEffort`'s `graceMs`. Resolve it from config and pass it through. *(low · apps/cli; Phase-2)*
+- [x] **`[defaults].media_gc_grace_days` wired (✅ PR #53).** Added to the config Zod schema; `config/resolve.ts`
+  resolves it (last-writer-wins) and normalizes DAYS → ms (`mediaGcGraceMs`); `run`/`gate` thread it into
+  `sweepHostMediaBestEffort`'s `graceMs`. Absent ⇒ the built-in `DEFAULT_MEDIA_GC_GRACE_MS` (7-day) default
+  (ADR-0042 §4c). *(apps/cli + shared config; PR #53)*
 - [ ] **Keychain no-raw-key IPC test (ADR-0044 §4 acceptance gate)** — ADR-0044 §4 makes "the keychain bridge
   never returns a raw key from an IPC command" an **explicit 1.AF test deliverable**, bundled with the media
   IPC/byte-delivery review surface. That IPC surface is the desktop/Tauri command layer, which is **unbuilt at

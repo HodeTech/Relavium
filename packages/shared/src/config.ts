@@ -136,6 +136,9 @@ export const ProjectConfigSchema = z
         media_job_poll_initial_ms: positiveInt.optional(),
         media_job_poll_max_ms: positiveInt.optional(),
         media_job_deadline_ms: positiveInt.optional(),
+        // Grace window (in DAYS) before a zero-reference media handle's CAS bytes are reclaimed by the host
+        // media GC (ADR-0042 §4c). Absent ⇒ the built-in 7-day default (DEFAULT_MEDIA_GC_GRACE_MS).
+        media_gc_grace_days: positiveInt.optional(),
       })
       .strict()
       .refine(

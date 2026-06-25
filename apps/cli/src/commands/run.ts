@@ -187,6 +187,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           db: opened.db,
           casRoot: mediaCasRoot,
           currentRunId: handle.runId,
+          ...(config.mediaGcGraceMs === undefined ? {} : { graceMs: config.mediaGcGraceMs }),
         });
       } catch {
         // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the run —

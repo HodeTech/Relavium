@@ -229,6 +229,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
           db: opened.db,
           casRoot: wiring.media.casRoot,
           currentRunId: args.runId,
+          ...(config.mediaGcGraceMs === undefined ? {} : { graceMs: config.mediaGcGraceMs }),
         });
       } catch {
         // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the resume —

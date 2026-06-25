@@ -22,6 +22,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
   fsScope: undefined,
   maxTokensEstimate: undefined,
   mediaCostEstimate: undefined,
+  mediaGcGraceMs: undefined,
   variables: {},
   mcpServers: [],
 };
