@@ -30,9 +30,35 @@ export function resolveWorkflowSource(
   workflowArg: string,
   opts: { readonly cwd: string; readonly projectConfigDir: string | undefined },
 ): WorkflowSource {
-  const candidates = workflowCandidatePaths(workflowArg, opts);
+  return resolveYamlSource(workflowArg, {
+    cwd: opts.cwd,
+    kind: 'workflow',
+    subdir: 'workflows',
+    projectConfigDir: opts.projectConfigDir,
+    idSuffixes: ['.relavium.yaml', '.yaml'],
+  });
+}
+
+/**
+ * The shared resolver for a bare-id-or-path YAML argument (workflow `<ref>`, agent `--agent <ref>`):
+ * a path-like arg (absolute, slash-bearing, or `.yaml`/`.yml`/`.agent.yaml`) reads exactly that file;
+ * a bare id/slug discovers `<projectConfigDir>/<subdir>/<id><suffix>` for each `idSuffixes` entry. The
+ * host owns IO; the pure parser runs on the returned `yaml`. A miss is a clean exit-2 listing where it
+ * looked, keyed on `kind` so the message names the right artifact.
+ */
+export function resolveYamlSource(
+  arg: string,
+  opts: {
+    readonly cwd: string;
+    readonly kind: string;
+    readonly subdir: string;
+    readonly projectConfigDir: string | undefined;
+    readonly idSuffixes: readonly string[];
+  },
+): WorkflowSource {
+  const candidates = candidatePaths(arg, opts);
   for (const candidate of candidates) {
-    const yaml = tryRead(candidate);
+    const yaml = tryRead(candidate, opts.kind);
     if (yaml !== undefined) {
       return { path: candidate, yaml };
     }
@@ -40,28 +66,30 @@ export function resolveWorkflowSource(
   const where = candidates.length > 0 ? candidates.join(', ') : '(no project .relavium/ found)';
   throw new CliError(
     'invalid_invocation',
-    `workflow '${workflowArg}' not found — looked for: ${where}.`,
+    `${opts.kind} '${arg}' not found — looked for: ${where}.`,
   );
 }
 
-function workflowCandidatePaths(
-  workflowArg: string,
-  opts: { readonly cwd: string; readonly projectConfigDir: string | undefined },
+function candidatePaths(
+  arg: string,
+  opts: {
+    readonly cwd: string;
+    readonly subdir: string;
+    readonly projectConfigDir: string | undefined;
+    readonly idSuffixes: readonly string[];
+  },
 ): string[] {
   const looksLikePath =
-    isAbsolute(workflowArg) ||
-    workflowArg.includes('/') ||
-    workflowArg.endsWith('.yaml') ||
-    workflowArg.endsWith('.yml');
+    isAbsolute(arg) || arg.includes('/') || arg.endsWith('.yaml') || arg.endsWith('.yml');
   if (looksLikePath) {
-    return [isAbsolute(workflowArg) ? workflowArg : resolve(opts.cwd, workflowArg)];
+    return [isAbsolute(arg) ? arg : resolve(opts.cwd, arg)];
   }
-  // A bare id/slug → discover under the project workflows directory (none ⇒ no candidates).
+  // A bare id/slug → discover under the project subdir (none ⇒ no candidates).
   if (opts.projectConfigDir === undefined) {
     return [];
   }
-  const dir = join(opts.projectConfigDir, 'workflows');
-  return [join(dir, `${workflowArg}.relavium.yaml`), join(dir, `${workflowArg}.yaml`)];
+  const dir = join(opts.projectConfigDir, opts.subdir);
+  return opts.idSuffixes.map((suffix) => join(dir, `${arg}${suffix}`));
 }
 
 /**
@@ -69,9 +97,10 @@ function workflowCandidatePaths(
  * genuine miss (`ENOENT`) returns `undefined` so the next candidate is tried (and the caller reports a
  * clean "not found"), but an existing-but-unreadable file (`EACCES`, a non-regular file, or one over
  * the size cap) is a real fault and throws an exit-2 error — never silently mis-reported as "not
- * found". The size cap is enforced from `stat` before the file is read into memory.
+ * found". The size cap is enforced from `stat` before the file is read into memory. `kind` names the
+ * artifact in the diagnostic ('workflow' / 'agent').
  */
-function tryRead(path: string): string | undefined {
+function tryRead(path: string, kind: string): string | undefined {
   let stats: Stats;
   try {
     stats = statSync(path);
@@ -79,23 +108,23 @@ function tryRead(path: string): string | undefined {
     if (errnoCode(err) === 'ENOENT') {
       return undefined; // this candidate does not exist — try the next
     }
-    throw new CliError('invalid_invocation', `workflow file '${path}' could not be read.`, {
+    throw new CliError('invalid_invocation', `${kind} file '${path}' could not be read.`, {
       cause: err,
     });
   }
   if (!stats.isFile()) {
-    throw new CliError('invalid_invocation', `workflow path '${path}' is not a regular file.`);
+    throw new CliError('invalid_invocation', `${kind} path '${path}' is not a regular file.`);
   }
   if (stats.size > MAX_WORKFLOW_BYTES) {
     throw new CliError(
       'invalid_invocation',
-      `workflow file '${path}' exceeds the ${MAX_WORKFLOW_BYTES}-byte size limit.`,
+      `${kind} file '${path}' exceeds the ${MAX_WORKFLOW_BYTES}-byte size limit.`,
     );
   }
   try {
     return readFileSync(path, 'utf8');
   } catch (err) {
-    throw new CliError('invalid_invocation', `workflow file '${path}' could not be read.`, {
+    throw new CliError('invalid_invocation', `${kind} file '${path}' could not be read.`, {
       cause: err,
     });
   }
