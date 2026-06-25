@@ -214,9 +214,10 @@ function writeWorkflow(name: string, yaml: string): string {
 
 /** An `openRunStore` backed by the given in-memory db — the durable-history stub the 2.S wiring tests share. */
 function historyOpenRunStore(db: Db): NonNullable<RunCommandDeps['openRunStore']> {
-  // `_homeDir` / `_projectRoot` are intentionally dropped: this in-memory stub seeds no `runs.project_root`, so
-  // every run.test.ts run resolves it to NULL (a resume would then fall back to the resumer cwd).
-  return (workflow, _homeDir, _projectRoot) => ({
+  // Intentionally takes only `workflow` (a valid subtype of the 3-arg openRunStore type): this in-memory stub
+  // ignores homeDir + projectRoot, so it seeds no `runs.project_root` — every run.test.ts run resolves it to
+  // NULL (a resume would then fall back to the resumer cwd). The third-arg wiring is asserted separately below.
+  return (workflow) => ({
     store: createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),

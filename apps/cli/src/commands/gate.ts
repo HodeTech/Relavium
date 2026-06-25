@@ -75,7 +75,10 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed'
  * destination — the realpath+commonpath jail still holds, never escaping the root.
  */
 export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string): string {
-  if (projectRoot !== null && statSync(projectRoot, { throwIfNoEntry: false })?.isDirectory() === true) {
+  if (
+    projectRoot !== null &&
+    statSync(projectRoot, { throwIfNoEntry: false })?.isDirectory() === true
+  ) {
     return projectRoot;
   }
   return resumerCwd;

@@ -372,7 +372,12 @@ describe('sweepMediaAtTerminal (the shared run/gate run-end GC guard)', () => {
       graceMs: 12345,
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ db: client.db, casRoot: '/cas', currentRunId: 'r1', graceMs: 12345 });
+    expect(calls[0]).toEqual({
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: 12345,
+    });
   });
 
   it('OMITS the graceMs key when it is undefined (so the GC default 7-day window applies)', async () => {
