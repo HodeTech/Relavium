@@ -306,6 +306,12 @@ export const nodeMediaEgressDeps: MediaEgressDeps = {
         {
           protocol: 'https:',
           hostname: request.hostname,
+          // The URL's port (default 443) is honored as-is — a public CDN media URL may legitimately serve
+          // over a non-443 HTTPS port. This is safe under the current default wiring (allowPrivate: false):
+          // the private/loopback/link-local IP range block (resolveValidatedIps) prevents reaching an internal
+          // service on ANY port, so no port allow-list is needed. If the BYOK local-endpoint allowPrivate
+          // opt-in is ever wired, that ADR MUST add an explicit port allow-list decision (a crafted
+          // https://host:22/ to a permitted-private address would otherwise be reachable). See SEC-EGRESS-3.
           port: parsed.port === '' ? 443 : Number(parsed.port),
           path: `${parsed.pathname}${parsed.search}`,
           method: 'GET',

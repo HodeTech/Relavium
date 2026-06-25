@@ -155,21 +155,26 @@ export class FilesystemMediaStore implements MediaStore {
       }
       throw err;
     }
-    const out: Array<{ handle: string; mtimeMs: number }> = [];
-    for (const shard of shards) {
-      // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
-      if (!shard.isDirectory() || !/^[0-9a-f]{2}$/.test(shard.name)) {
-        continue;
-      }
-      const shardDir = join(this.#root, shard.name);
-      for (const entry of await readdir(shardDir, { withFileTypes: true })) {
-        const found = await this.#handleForEntry(shardDir, shard.name, entry);
-        if (found !== undefined) {
-          out.push(found);
-        }
-      }
-    }
-    return out;
+    // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
+    const shardDirs = shards.filter((s) => s.isDirectory() && /^[0-9a-f]{2}$/.test(s.name));
+    // Enumerate + stat every shard's entries concurrently. The host GC awaits this on the CLI's terminal-run
+    // exit path, so a sequential shard-by-shard, entry-by-entry walk added O(shards + blobs) serial I/O to
+    // every run's exit latency; fanning out bounds it by the slowest single shard instead. Result order is
+    // irrelevant — the GC consumes the handle set unordered. A shard `readdir` / entry `stat` fault still
+    // propagates (Promise.all rejects on the first), preserving the no-silent-partial-listing contract.
+    const perShard = await Promise.all(
+      shardDirs.map(async (shard) => {
+        const shardDir = join(this.#root, shard.name);
+        const entries = await readdir(shardDir, { withFileTypes: true });
+        const found = await Promise.all(
+          entries.map((entry) => this.#handleForEntry(shardDir, shard.name, entry)),
+        );
+        return found.filter(
+          (f): f is { handle: string; mtimeMs: number } => f !== undefined,
+        );
+      }),
+    );
+    return perShard.flat();
   }
 
   /** Reconstruct + stat one shard-dir entry into a `{handle, mtimeMs}`, or `undefined` to skip it: a non-file (a
