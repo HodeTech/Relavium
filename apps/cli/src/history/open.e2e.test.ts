@@ -55,7 +55,11 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
     const { io } = captureIo();
     const code = await runCommand(
       { workflow: join(FIXTURES, 'sequential.relavium.yaml'), input: ['n=3'] },
-      { io, global: globalOptions(), openRunStore: (wf, _homeDir, projectRoot) => openHistoryStore(wf, home, projectRoot) },
+      {
+        io,
+        global: globalOptions(),
+        openRunStore: (wf, _homeDir, projectRoot) => openHistoryStore(wf, home, projectRoot),
+      },
     );
     expect(code).toBe(EXIT_CODES.success);
 
@@ -85,7 +89,11 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
     const { io } = captureIo();
     const code = await runCommand(
       { workflow: join(FIXTURES, 'human-gate.relavium.yaml'), input: [] },
-      { io, global: globalOptions(), openRunStore: (wf, _homeDir, projectRoot) => openHistoryStore(wf, home, projectRoot) },
+      {
+        io,
+        global: globalOptions(),
+        openRunStore: (wf, _homeDir, projectRoot) => openHistoryStore(wf, home, projectRoot),
+      },
     );
     expect(code).toBe(EXIT_CODES.gatePaused);
 
