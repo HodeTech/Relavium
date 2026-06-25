@@ -25,7 +25,7 @@ describe('resolveConfig', () => {
     });
   });
 
-  it('resolves the [chat] block last-writer-wins (project > workspace), per field, absent ⇒ undefined', () => {
+  it('resolves the [chat] block last-writer-wins (project > workspace), per field', () => {
     const workspace: ProjectConfig = {
       chat: { default_model: 'w-model', fs_scope: 'sandboxed', max_turns: 20, max_messages: 100 },
     };
@@ -39,16 +39,50 @@ describe('resolveConfig', () => {
     expect(resolved.maxMessages).toBe(100); // falls back to workspace
     expect(resolved.maxCostMicrocents).toBe(1000); // only on project
     expect(resolved.onExceed).toBe('warn'); // only on project
-    // A project [chat] block present but omitting max_turns inherits the workspace's value per-field
-    // (the new field's own fallback arm — not just whole-block presence).
-    const wsFallback = resolveConfig({
-      workspace,
-      project: { chat: { fs_scope: 'project' } },
+  });
+
+  it('resolves [chat] per field: a project block present but omitting a key falls through to workspace', () => {
+    const workspace: ProjectConfig = { chat: { default_model: 'w-model', max_turns: 20 } };
+    // project declares fs_scope only — max_turns/default_model must inherit from workspace per-field.
+    const resolved = resolveConfig({ workspace, project: { chat: { fs_scope: 'project' } } }).chat;
+    expect(resolved.maxTurns).toBe(20); // workspace max_turns flows through
+    expect(resolved.defaultModel).toBe('w-model'); // workspace default_model flows through
+    expect(resolved.fsScope).toBe('project'); // project still overrides the field it declares
+  });
+
+  it('resolves [chat] from a single layer (workspace-only and project-only), like the sister resolvers', () => {
+    // Workspace-only: project absent ⇒ every field comes from workspace alone.
+    const wsOnly = resolveConfig({
+      workspace: { chat: { default_model: 'w-model', max_turns: 20 } },
     }).chat;
-    expect(wsFallback.maxTurns).toBe(20); // workspace max_turns flows through
-    expect(wsFallback.fsScope).toBe('project'); // project still overrides the field it declares
-    // [chat] is project/workspace-scoped, not global — and absent at every layer ⇒ all undefined.
-    expect(resolveConfig({}).chat.maxTurns).toBeUndefined();
+    expect(wsOnly.defaultModel).toBe('w-model');
+    expect(wsOnly.maxTurns).toBe(20);
+    expect(wsOnly.fsScope).toBeUndefined();
+    // Project-only: workspace absent ⇒ every field comes from project alone.
+    const pOnly = resolveConfig({ project: { chat: { max_turns: 5 } } }).chat;
+    expect(pOnly.maxTurns).toBe(5);
+    expect(pOnly.defaultModel).toBeUndefined();
+  });
+
+  it('treats [chat].max_cost_microcents=0 (unbounded) as a real value, not a fall-through to a lower layer', () => {
+    // 0 means "unbounded" (a distinct sentinel) — `??` keeps it, so a project 0 must NOT inherit
+    // workspace's 9999. (Guards against a future `??`→`||` regression that would leak the cap through.)
+    const resolved = resolveConfig({
+      workspace: { chat: { max_cost_microcents: 9999 } },
+      project: { chat: { max_cost_microcents: 0 } },
+    }).chat;
+    expect(resolved.maxCostMicrocents).toBe(0);
+  });
+
+  it('resolves an absent [chat] block (every layer) to all-undefined — [chat] is project/workspace-scoped, not global', () => {
+    const empty = resolveConfig({}).chat;
+    expect(empty.maxTurns).toBeUndefined();
+    expect(empty.defaultModel).toBeUndefined();
+    expect(empty.maxCostMicrocents).toBeUndefined();
+    // A global layer carries no [chat] block, so it cannot supply chat defaults.
+    expect(
+      resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.defaultModel,
+    ).toBe(undefined);
   });
 
   it('resolves media_gc_grace_days (2.S/D11) DAYS → ms, last-writer-wins, absent ⇒ undefined', () => {

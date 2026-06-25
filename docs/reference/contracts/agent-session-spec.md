@@ -74,8 +74,8 @@ silently *continues* the session — [config-spec.md](config-spec.md)) and the t
 ([sse-event-schema.md](sse-event-schema.md#error-code-taxonomy)) — never a silent stop; the within-turn
 `maxToolTurns` guard surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
 knob** (`SessionDeps.maxTurns`); a surface maps the `[chat].max_turns` config field onto it at construction
-time — that surface field was added in build-phase 2 (workstream **2.M**); see
-[config-spec.md](config-spec.md) §`[chat]`.
+time — that surface field was added in build-phase 2 (workstream **2.M**); see the `[chat]` block in
+[config-spec.md](config-spec.md).
 
 ## Session context
 
