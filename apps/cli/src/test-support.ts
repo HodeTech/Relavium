@@ -1,9 +1,49 @@
 import { randomUUID } from 'node:crypto';
 
 import { createRunHistoryStore, type Db } from '@relavium/db';
+import { CapabilityFlagsSchema, type CapabilityFlags } from '@relavium/llm';
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from './process/io.js';
+
+/**
+ * A well-formed chat-surface {@link CapabilityFlags} (text-only output) — the `model_catalog.capabilities` blob
+ * the D15 load-check projects and re-validates. Built THROUGH `CapabilityFlagsSchema` so the drift-refine
+ * (`vision` mirrors `media.input.image`, ADR-0031) is enforced at module load: the single fixture both the
+ * media-wiring and `run` command tests project, so that invariant is encoded once, not copied per file.
+ */
+export const CHAT_TEXT_CAPABILITY_FLAGS: CapabilityFlags = CapabilityFlagsSchema.parse({
+  tools: true,
+  streaming: true,
+  parallelToolCalls: false,
+  vision: false,
+  promptCache: false,
+  reasoning: false,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [['text']],
+    surface: 'chat',
+  },
+});
+
+/**
+ * A well-formed generative-surface {@link CapabilityFlags} — routes to `generateMedia` (ADR-0045 §1), so its
+ * inline `outputCombinations` is empty and the load-check's generative branch keys on `media.surface`. The
+ * matching catalog row drives the projection's generative path (distinct from the chat inline-membership path).
+ */
+export const GENERATIVE_IMAGE_CAPABILITY_FLAGS: CapabilityFlags = CapabilityFlagsSchema.parse({
+  tools: false,
+  streaming: false,
+  parallelToolCalls: false,
+  vision: false,
+  promptCache: false,
+  reasoning: false,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [],
+    surface: 'generative',
+  },
+});
 
 /**
  * Test-only IO capture: a {@link CliIo} whose `writeOut`/`writeErr` accumulate into arrays, so a test

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { globalConfigDir } from '../config/paths.js';
 import type { ResolvedConfig } from '../config/resolve.js';
+import { CHAT_TEXT_CAPABILITY_FLAGS, GENERATIVE_IMAGE_CAPABILITY_FLAGS } from '../test-support.js';
 import { buildMediaEngineWiring } from './media-wiring.js';
 
 const EMPTY_CONFIG: ResolvedConfig = {
@@ -22,23 +23,6 @@ const EMPTY_CONFIG: ResolvedConfig = {
   mediaCostEstimate: undefined,
   variables: {},
   mcpServers: [],
-};
-
-// A well-formed CapabilityFlags (chat surface, text-only output) — the `capabilities` blob a `model_catalog`
-// row stores and the host re-validates against `CapabilityFlagsSchema`. `vision` MUST mirror `media.input.image`
-// (the schema's drift refine, ADR-0031), so both are false here.
-const CHAT_TEXT_CAPS = {
-  tools: true,
-  streaming: true,
-  parallelToolCalls: false,
-  vision: false,
-  promptCache: false,
-  reasoning: false,
-  media: {
-    input: { image: false, audio: false, video: false, document: false },
-    outputCombinations: [['text']],
-    surface: 'chat',
-  },
 };
 
 describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', () => {
@@ -93,7 +77,7 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
   });
 
   describe('workflowModelCatalog (the D15 load-check projection — capabilities → CapabilityFlags)', () => {
-    it('projects a row with a well-formed capabilities blob into validated CapabilityFlags', () => {
+    it('projects a row with a well-formed chat capabilities blob into validated CapabilityFlags', () => {
       createModelCatalogStore(client.db, dbDeps).upsert({
         providerId,
         modelId: 'chat-text',
@@ -101,7 +85,7 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
         contextWindowTokens: 4096,
         maxOutputTokens: 4096,
         mediaSurface: 'chat',
-        capabilities: CHAT_TEXT_CAPS,
+        capabilities: CHAT_TEXT_CAPABILITY_FLAGS,
       });
       const flags = buildMediaEngineWiring(
         client.db,
@@ -115,6 +99,29 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
       expect(flags?.tools).toBe(true);
     });
 
+    it('carries media.surface from the capabilities blob — a generative row projects surface generative', () => {
+      // The projection reads `media.surface` from the capabilities JSON (NOT the DB `mediaSurface` column —
+      // resolveMediaSurface owns that), so the load-check's generative branch (validate-catalog.ts) keys on it.
+      // A regression that dropped `media.surface` would default to 'chat' and silently take the wrong branch.
+      createModelCatalogStore(client.db, dbDeps).upsert({
+        providerId,
+        modelId: 'gen-image',
+        displayName: 'Gen Image',
+        contextWindowTokens: 4096,
+        maxOutputTokens: 4096,
+        mediaSurface: 'generative',
+        capabilities: GENERATIVE_IMAGE_CAPABILITY_FLAGS,
+      });
+      const flags = buildMediaEngineWiring(
+        client.db,
+        '/home/u',
+        '/proj',
+        EMPTY_CONFIG,
+      ).workflowModelCatalog('gen-image');
+      expect(flags?.media.surface).toBe('generative');
+      expect(flags?.media.outputCombinations).toEqual([]);
+    });
+
     it('defers (undefined) for a model absent from the catalog', () => {
       expect(
         buildMediaEngineWiring(client.db, '/home/u', '/proj', EMPTY_CONFIG).workflowModelCatalog(
@@ -124,26 +131,34 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
     });
 
     it('defers (undefined) for a row whose capabilities fail CapabilityFlagsSchema — never throws', () => {
-      // The seeded `gpt-image-1` stored an empty `{}` capabilities blob (no required flags) — a partial/legacy
-      // shape that fails the schema. The projection must `safeParse`-defer, not surface a parse throw.
+      // Seed a model with an explicit empty `capabilities: {}` (no required flags) so the test is self-contained,
+      // not coupled to the beforeEach row's default. `safeParse({})` fails ⇒ the projection must defer, not throw.
+      createModelCatalogStore(client.db, dbDeps).upsert({
+        providerId,
+        modelId: 'empty-caps',
+        displayName: 'Empty Caps',
+        contextWindowTokens: 4096,
+        maxOutputTokens: 4096,
+        capabilities: {},
+      });
       expect(
         buildMediaEngineWiring(client.db, '/home/u', '/proj', EMPTY_CONFIG).workflowModelCatalog(
-          'gpt-image-1',
+          'empty-caps',
         ),
       ).toBeUndefined();
     });
 
     it('isolates a corrupt (non-object) capabilities row to that model — defers, not a whole-catalog throw', () => {
-      // `getByModelId` THROWS on a non-object capabilities column (the store contract); the projection's per-model
-      // try/catch must degrade THIS model to undefined without sinking the load-check. Corrupt the column directly
-      // (the upsert can only write an object), then assert the projection swallows it.
+      // `getByModelId` THROWS a TypeError on a non-object capabilities column (the store contract); the
+      // projection's per-model catch must degrade THIS model to undefined without sinking the load-check. Corrupt
+      // the column directly (the upsert can only write an object), then assert the projection swallows it.
       createModelCatalogStore(client.db, dbDeps).upsert({
         providerId,
         modelId: 'corrupt-caps',
         displayName: 'Corrupt Caps',
         contextWindowTokens: 4096,
         maxOutputTokens: 4096,
-        capabilities: { ...CHAT_TEXT_CAPS },
+        capabilities: { ...CHAT_TEXT_CAPABILITY_FLAGS },
       });
       client.sqlite
         .prepare(`UPDATE model_catalog SET capabilities = '[]' WHERE model_id = ?`)
@@ -156,6 +171,21 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
       ).workflowModelCatalog;
       expect(() => catalog('corrupt-caps')).not.toThrow();
       expect(catalog('corrupt-caps')).toBeUndefined();
+    });
+
+    it('propagates a genuine store fault (a closed db) instead of masking it as a defer', () => {
+      // The narrowed catch swallows ONLY the store's documented parse faults; a real DB error (here, a closed
+      // connection) must surface, not be degraded to a clean "model unresolvable" that slips a node past the gate.
+      const local = createClient(':memory:');
+      runMigrations(local.db);
+      const catalog = buildMediaEngineWiring(
+        local.db,
+        '/home/u',
+        '/proj',
+        EMPTY_CONFIG,
+      ).workflowModelCatalog;
+      local.sqlite.close(); // any subsequent query throws a generic "database connection is not open" Error
+      expect(() => catalog('any-model')).toThrow();
     });
   });
 });

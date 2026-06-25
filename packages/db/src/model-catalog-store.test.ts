@@ -2,7 +2,11 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { createModelCatalogStore, type ModelCatalogStore } from './model-catalog-store.js';
+import {
+  createModelCatalogStore,
+  ModelCatalogCapabilitiesError,
+  type ModelCatalogStore,
+} from './model-catalog-store.js';
 import { createProviderStore, type ProviderStore } from './provider-store.js';
 import { modelCatalog } from './schema.js';
 
@@ -276,7 +280,7 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(store.getByModelId('gpt-image-1')?.mediaSurface).toBe('chat');
   });
 
-  it('fail-closed: a non-object capabilities value aborts the read loudly', () => {
+  it('fail-closed: a corrupt capabilities value aborts the read with a typed ModelCatalogCapabilitiesError', () => {
     store.upsert({
       providerId,
       modelId: 'gpt-image-1',
@@ -287,14 +291,24 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     client.sqlite
       .prepare("UPDATE model_catalog SET capabilities = '[]' WHERE model_id = ?")
       .run('gpt-image-1');
-    expect(() => store.getByModelId('gpt-image-1')).toThrow(TypeError);
+    // A typed domain error (not a bare TypeError) so a caller can tell a corrupt row apart from a DB fault.
+    expect(() => store.getByModelId('gpt-image-1')).toThrow(ModelCatalogCapabilitiesError);
     // resolveMediaSurface does not parse capabilities, so it stays usable for routing.
     expect(store.resolveMediaSurface('gpt-image-1')).toBe('chat');
-    // A genuinely malformed (non-JSON) value takes the distinct JSON.parse-throws branch (SyntaxError) — also
-    // fail-closed, so a refactor that swallowed the parse error would be caught here too.
+    // A genuinely malformed (non-JSON) value takes the distinct JSON.parse-throws branch — wrapped in the SAME
+    // typed error (preserving the SyntaxError as `cause`) so the caller's catch handles both corrupt shapes.
     client.sqlite
       .prepare("UPDATE model_catalog SET capabilities = '{' WHERE model_id = ?")
       .run('gpt-image-1');
-    expect(() => store.getByModelId('gpt-image-1')).toThrow(SyntaxError);
+    let caught: unknown;
+    try {
+      store.getByModelId('gpt-image-1');
+    } catch (err) {
+      caught = err;
+    }
+    if (!(caught instanceof ModelCatalogCapabilitiesError)) {
+      throw new Error('expected a ModelCatalogCapabilitiesError on a non-JSON capabilities column');
+    }
+    expect(caught.cause).toBeInstanceOf(SyntaxError);
   });
 });

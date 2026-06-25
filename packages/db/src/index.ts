@@ -136,6 +136,7 @@ export { createFilesystemMediaWrite, MediaWriteError } from './media-write.js';
 // `@relavium/llm` `CapabilityFlags`. `db` stays free of `@relavium/llm`/`@relavium/core` — the projection is the host's.
 export {
   createModelCatalogStore,
+  ModelCatalogCapabilitiesError,
   type ModelCatalogStore,
   type ModelCatalogStoreDeps,
   type ModelCatalogRecord,

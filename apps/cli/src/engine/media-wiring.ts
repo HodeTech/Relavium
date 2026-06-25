@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { WorkflowModelCatalog } from '@relavium/core';
 import {
   createModelCatalogStore,
+  ModelCatalogCapabilitiesError,
   type Db,
   type ModelCatalogRecord,
   type ModelCatalogStore,
@@ -45,8 +46,12 @@ export interface MediaEngineWiring {
  *
  * Two per-model "degrade to `undefined`" (defer) paths — never a whole-catalog abort, so one bad row can't sink
  * the load-check for a valid sibling model (the runtime FallbackChain pre-skip stays the backstop):
- *   - `getByModelId` THROWS on a corrupt `capabilities` row (non-object / non-JSON, the store's contract) — the
- *     `try`/`catch` isolates it to this model.
+ *   - `getByModelId` throws a typed {@link ModelCatalogCapabilitiesError} on a corrupt `capabilities` row
+ *     (non-JSON / non-object); the `catch` swallows ONLY that type, isolating the corrupt row to this model. A
+ *     throw of ANY OTHER kind is a genuine store/DB fault (a closed/locked connection, an IO error) — NOT a
+ *     capability verdict — so it is rethrown rather than masked as a clean "unresolvable" defer that would slip
+ *     an unchecked node past the load gate. (A bare `instanceof TypeError` would be wrong here — better-sqlite3
+ *     itself throws a `TypeError` on a closed connection, so the typed domain error is what makes this precise.)
  *   - a row whose `capabilities` fails `CapabilityFlagsSchema` (a partial / legacy blob) — `safeParse` defers.
  */
 function createWorkflowModelCatalog(catalog: ModelCatalogStore): WorkflowModelCatalog {
@@ -54,8 +59,11 @@ function createWorkflowModelCatalog(catalog: ModelCatalogStore): WorkflowModelCa
     let record: ModelCatalogRecord | undefined;
     try {
       record = catalog.getByModelId(modelId);
-    } catch {
-      return undefined;
+    } catch (err) {
+      if (err instanceof ModelCatalogCapabilitiesError) {
+        return undefined; // a corrupt-capabilities row — defer this one model
+      }
+      throw err; // a real store/DB fault is not a defer verdict — surface it
     }
     if (record === undefined) {
       return undefined;

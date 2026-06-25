@@ -72,9 +72,10 @@ export interface ModelCatalogStore {
    *  the model is not in the catalog (the host then defaults to `'chat'` — the safe inline path, never generative). */
   resolveMediaSurface: (modelId: string) => MediaSurface | undefined;
   /** The active catalog record for a model id (the host projects it → `CapabilityFlags` for the D15 load-check).
-   *  THROWS on a corrupt `capabilities` row (non-object / non-JSON) — fail-closed; the host must isolate this
-   *  per-model (try/catch) so one tampered row degrades that model, not the whole-catalog projection. Unlike
-   *  {@link resolveMediaSurface}, which never parses `capabilities` and so stays usable for routing. */
+   *  THROWS a {@link ModelCatalogCapabilitiesError} on a corrupt `capabilities` row (non-object / non-JSON) —
+   *  fail-closed; the host catches THAT type per-model (so one tampered row degrades that model, not the
+   *  whole-catalog projection) while a genuine store/DB fault propagates. Unlike {@link resolveMediaSurface},
+   *  which never parses `capabilities` and so stays usable for routing. */
   getByModelId: (modelId: string) => ModelCatalogRecord | undefined;
   /** Seed/replace a catalog row (by provider + model) — used by the generative acceptance fixture and a future
    *  provider-sync; the store mints the id + timestamps. */
@@ -92,15 +93,37 @@ function coerceMediaSurface(value: string): MediaSurface {
 }
 
 /**
+ * A `model_catalog.capabilities` column that is not a JSON object — invalid JSON, or valid JSON that is `null` /
+ * an array / a scalar. A typed DOMAIN fault (mirrors {@link MediaWriteError}/`MediaEgressError`), DISTINCT from an
+ * infrastructure error (a closed/locked DB connection, an IO fault). The distinction matters to a caller that
+ * isolates a single corrupt row: the host D15 capability projection swallows THIS to defer one model, but must
+ * let a genuine store fault propagate. Names a reason only — never the column bytes.
+ */
+export class ModelCatalogCapabilitiesError extends Error {
+  constructor(message: string, options?: { cause: unknown }) {
+    super(message, options);
+    this.name = 'ModelCatalogCapabilitiesError';
+  }
+}
+
+/**
  * Parse a stored `capabilities` JSON-text column into a JSON object — `unknown` + a runtime shape check at the
  * DB read boundary (no unsafe `as`; mirrors `provider-store.ts`'s `parseStringRecord`). A corrupt/non-object
- * value aborts the read loudly rather than propagating a wrongly-typed value; the host then validates the object
- * against `CapabilityFlagsSchema`.
+ * value aborts the read with a typed {@link ModelCatalogCapabilitiesError} rather than propagating a wrongly-typed
+ * value (or a bare TypeError/SyntaxError a caller cannot tell apart from a DB fault); the host then validates the
+ * object against `CapabilityFlagsSchema`.
  */
 function parseCapabilities(json: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(json);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    throw new ModelCatalogCapabilitiesError('model_catalog.capabilities is not valid JSON', {
+      cause: err,
+    });
+  }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new TypeError('model_catalog.capabilities is not a JSON object');
+    throw new ModelCatalogCapabilitiesError('model_catalog.capabilities is not a JSON object');
   }
   return { ...parsed };
 }
