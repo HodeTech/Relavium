@@ -54,7 +54,11 @@ export interface RunCommandDeps {
    * Production wires the durable SQLite run-history store (2.H) here, per workflow; the unit tests and the
    * 2.K harness omit it, keeping the in-memory `RunStore` so they never open `~/.relavium/history.db`.
    */
-  readonly openRunStore?: (workflow: WorkflowDefinition, homeDir: string) => OpenedHistory;
+  readonly openRunStore?: (
+    workflow: WorkflowDefinition,
+    homeDir: string,
+    projectRoot: string,
+  ) => OpenedHistory;
   /**
    * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
    * inject a fake renderer (onEvent + finalize spies) to assert the finalize wiring without a TTY.
@@ -124,7 +128,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // the connection at run end. A persist failure rejects out of the engine (ADR-0050 fatal posture).
   let opened: OpenedHistory | undefined;
   try {
-    opened = deps.openRunStore?.(def, homeDir);
+    opened = deps.openRunStore?.(def, homeDir, deps.global.cwd);
   } catch (err) {
     // A pre-run history fault (cannot create / open / migrate ~/.relavium/history.db) is an INVOCATION
     // fault (exit 2), not a workflow failure (exit 1) — surface it as such, before the engine starts, so a

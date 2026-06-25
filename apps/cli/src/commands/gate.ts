@@ -176,11 +176,12 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     const providers = deps.providers ?? createProviderResolver(deps.io.env);
     // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
     // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
-    // stays. NOTE: `save_to`'s scope root is the RESUMER's cwd (`relavium gate` ran here), not the original run's
-    // cwd — so a run started in A, resumed from B, writes its save_to under B/.relavium/runs/. The authored
-    // `{{ run.id }}` segment still keeps writes per-run-disambiguated; persisting the original run's project
-    // root for an identical location is a deferred refinement (to be tracked in deferred-tasks.md).
-    const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
+    // stays. `save_to`'s scope root is the ORIGINAL run's project root (`runs.project_root`, persisted at
+    // run-start), so a run started in dir A and resumed from B still writes its deliverables under A — not the
+    // resumer's cwd. A run started before that column was populated (`projectRoot === null`) falls back to the
+    // resumer's cwd; the realpath+commonpath jail holds under either root.
+    const saveToRoot = snapshot.projectRoot ?? deps.global.cwd;
+    const wiring = buildMediaEngineWiring(opened.db, homeDir, saveToRoot, config, (m) =>
       deps.io.writeErr(`${m}\n`),
     );
     // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's

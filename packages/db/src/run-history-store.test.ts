@@ -95,6 +95,23 @@ describe('createRunHistoryStore', () => {
     expect(row?.triggerType).toBe('manual');
     expect(row?.workflowDefinitionSnapshot).toBe(WORKFLOW.definitionJson);
     expect(row?.startedAt).toBe(TS_MS);
+    expect(row?.projectRoot).toBeNull(); // no deps.projectRoot ⇒ NULL (a resume then falls back to the resumer's cwd)
+  });
+
+  it('run:started persists deps.projectRoot, and loadRunSnapshot reads it back (save_to resume re-jail)', async () => {
+    const rooted = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => TS_MS,
+      projectRoot: '/orig/project',
+      workflow: WORKFLOW,
+    });
+    const workflowId = await rooted.resolveWorkflowId('demo');
+    await rooted.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+    );
+    // The originating run's cwd is durable, so a cross-process `relavium gate` resume re-jails save_to under it
+    // (a run started in dir A and resumed from B still writes its deliverables under A).
+    expect(loadRunSnapshot(client.db, 'run-1')?.projectRoot).toBe('/orig/project');
   });
 
   it('folds a node lifecycle into a step_executions row + a run_costs delta', async () => {

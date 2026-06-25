@@ -193,11 +193,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`save_to` url double-fetch** — a `url`-sourced media part in a save_to output is fetched twice (the
   save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
   result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
-- [ ] **`save_to` resumer-cwd vs original-run project root (2.S)** — on a `relavium gate` resume the `save_to`
-  jail root is the RESUMER's cwd (`gate.ts` passes `deps.global.cwd`), not the original run's project root, so a
-  run started in dir A and resumed from B writes its deliverables under `B/.relavium/runs/`. The `realpath`+
-  `commonpath` jail still holds (no escape) — only the destination differs. Persist the original run's project
-  root in the run snapshot and re-jail under it on resume for an identical location. *(low · apps/cli `gate.ts`; Phase-2)*
+- [x] **`save_to` resumer-cwd vs original-run project root — ✅ Done (PR #53).** `run` now persists the run's cwd
+  to `runs.project_root` at run-start (threaded through `openHistoryStore` → `RunHistoryStoreDeps.projectRoot`),
+  and `loadRunSnapshot` returns it; `gate` re-jails `save_to` under that ORIGINAL root (`snapshot.projectRoot ??`
+  the resumer's cwd for a pre-column run), so a run started in dir A and resumed from B writes its deliverables
+  under A. The `realpath`+`commonpath` jail holds under either root. *(apps/cli + @relavium/db; PR #53)*
 - [ ] **Host-GC orchestration is CLI-local (2.S)** — `runHostMediaGc` (the 3 ordered steps: clean-terminal
   reclaim-retry, grace-window byte reclaim, CAS-orphan sweep + the `orphanMinAgeMs` concurrent-writer age-guard)
   is host-agnostic but lives in `apps/cli/src/engine/media-gc.ts`, so the Phase-3 desktop / Phase-6 cloud hosts
