@@ -110,6 +110,18 @@ describe('createCliHost', () => {
           /must not contain a "\.\." segment/,
         );
         expect(existsSync(join(root, '..', 'escape.bin'))).toBe(false);
+        // An ABSOLUTE path is rejected for its own distinct cause (not the `..` one) — confirm the wired port
+        // forwards every relative-only rule, not just traversal. (The full drive/UNC/symlink matrix is the db
+        // media-write suite's; here we assert the CLI didn't narrow the guard to `..` alone.)
+        await expect(mediaWrite('/etc/escape.bin', new Uint8Array([9]))).rejects.toThrow(
+          /must be relative/,
+        );
+        // A PRE-ABORTED signal short-circuits the write cooperatively (the port's throwIfAborted) — the bytes
+        // never land. (wireSaveToPort's mkdir runs first, so the scope root may exist, but no file is written.)
+        await expect(
+          mediaWrite('aborted.bin', new Uint8Array([9]), AbortSignal.abort()),
+        ).rejects.toThrow(/was aborted/);
+        expect(existsSync(join(root, 'aborted.bin'))).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

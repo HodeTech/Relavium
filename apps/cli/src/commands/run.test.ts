@@ -155,12 +155,35 @@ const ABSENT_MODEL_WF = GENERATIVE_REJECT_WF.replace(
   'id: cli-run-absent',
 ).replace('model: gen-image', 'model: not-in-catalog');
 
+// `os.homedir()` reads `HOME` on POSIX but `USERPROFILE` on Windows — override BOTH so the hermetic home holds
+// cross-platform (the global CAS root resolves under it). Mirrors the generative e2e harness.
+const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
+
 let root: string;
+let home: string;
+const savedHome = new Map<string, string | undefined>();
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'relavium-run-'));
+  // Point the home at a tmpdir so `os.homedir()` (→ `~/.relavium/media`, the CAS root) never resolves to the real
+  // developer home. The in-memory host path bypasses `put()` today, but keep the discipline so a future change
+  // exercising the CAS through the captured opts can't write to the real `~/.relavium`.
+  home = mkdtempSync(join(tmpdir(), 'relavium-run-home-'));
+  for (const v of HOME_ENV_VARS) {
+    savedHome.set(v, process.env[v]);
+    process.env[v] = home;
+  }
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
+  for (const v of HOME_ENV_VARS) {
+    const prior = savedHome.get(v);
+    if (prior === undefined) {
+      delete process.env[v];
+    } else {
+      process.env[v] = prior;
+    }
+  }
+  rmSync(home, { recursive: true, force: true });
 });
 
 function globalOptions(over: Partial<GlobalOptions> = {}): GlobalOptions {

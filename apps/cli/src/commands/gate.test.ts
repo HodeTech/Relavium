@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -123,11 +125,39 @@ workflow:
     - { from: g, to: out }
 `;
 
+// `os.homedir()` reads `HOME` on POSIX but `USERPROFILE` on Windows — override BOTH so the hermetic home holds
+// cross-platform. The resume path builds the media wiring (the global CAS root resolves under the home), and the
+// `save_to` scope root is the resumer's `cwd` — both must be tmpdirs, never the real home / repo cwd.
+const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
+let root: string;
+let home: string;
+const savedHome = new Map<string, string | undefined>();
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'relavium-gate-'));
+  home = mkdtempSync(join(tmpdir(), 'relavium-gate-home-'));
+  for (const v of HOME_ENV_VARS) {
+    savedHome.set(v, process.env[v]);
+    process.env[v] = home;
+  }
+});
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+  for (const v of HOME_ENV_VARS) {
+    const prior = savedHome.get(v);
+    if (prior === undefined) {
+      delete process.env[v];
+    } else {
+      process.env[v] = prior;
+    }
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
 function globalOptions(): GlobalOptions {
   return {
     json: false,
     color: false,
-    cwd: process.cwd(),
+    cwd: root,
     configPath: undefined,
     verbosity: 'normal',
   };

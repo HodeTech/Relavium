@@ -229,6 +229,37 @@ describe('sweepHostMediaBestEffort (the run/gate run-end wrapper — real db + C
     expect(refs.runReferenceRunIds()).toEqual(['active-run']);
   });
 
+  it('PRESERVES a PAUSED run’s media ref and DEFERS the orphan sweep — paused media must survive a cross-process resume', async () => {
+    // The single highest-stakes invariant of the deletion surface: a paused run's media MUST survive — it backs a
+    // human-gate / budget cross-process resume. The protection rests entirely on 'paused' being ABSENT from
+    // TERMINAL_RUN_STATUSES (so its run-ref is never reclaimed) and PRESENT in the active set (so it defers the
+    // destructive orphan sweep). Pin it at the real-DB integration level so a future status-set regression that
+    // would delete a paused run's media mid-resume fails CI.
+    await seedRun(client.db, {
+      slug: 'wf',
+      runId: 'paused-run',
+      state: 'paused',
+      gate: { gateId: 'g1', gateType: 'approval' }, // parked on a human gate — the canonical resume scenario
+    });
+    const refs = createMediaReferenceStore(client.db);
+    refs.recordObject({ handle: H('a'), mimeType: 'image/png', modality: 'image', byteLength: 5 });
+    refs.addReference(H('a'), 'run', 'paused-run'); // a legitimately-live ref on the paused run
+    const cas = new FilesystemMediaStore(casRoot);
+    const orphan = await cas.put(new Uint8Array([9, 9, 9])); // a row-less blob the sweep WOULD delete if it ran
+
+    const report = await sweepHostMediaBestEffort({
+      db: client.db,
+      casRoot,
+      currentRunId: 'gate-run',
+      orphanMinAgeMs: 0, // even with the age-guard off, the paused run must defer the sweep
+    });
+    expect(report?.reclaimedRuns).toBe(0); // the paused run is NON-terminal — its ref is NEVER reclaimed
+    expect(report?.orphanSweepRan).toBe(false); // a paused run counts as active — the destructive sweep defers
+    expect(report?.orphansDeleted).toBe(0);
+    expect(refs.runReferenceRunIds()).toEqual(['paused-run']); // the ref survives for the resume
+    await expect(cas.get(orphan)).resolves.toBeDefined(); // sweep deferred ⇒ even a row-less blob survives
+  });
+
   it('reclaims the run-refs of a GONE run (no live history row — soft-deleted / pruned)', async () => {
     // A run-ref whose run is absent from live history (`loadRun` undefined) is a retention leak: its ref kept the
     // handle's refcount > 0 forever. The reclaim retry treats a GONE run as reclaimable (status === undefined),
