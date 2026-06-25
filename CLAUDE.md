@@ -56,8 +56,9 @@ out-of-band `relavium gate` cross-process resume landed (2.G — PR #47, behind 
 2.K's deferred gate-resume half**; and the read commands `list` / `logs` / `status` / `gate list` over durable
 history landed (2.I — PR #48, no new ADR); and CLI packaging, distribution & install verification landed
 (2.L — PR #49, behind ADR-0051) — the last gate-closing spine PR, **closing go/no-go #7 so all seven Phase-3
-exit criteria now hold and Phase 3 may start**. The next pickup is 2.S (media host-wiring — the first additive
-lane, off the M3 critical path and the Phase-3 go/no-go). For live status, per-PR history,
+exit criteria now hold and Phase 3 may start**; and media host-wiring landed (2.S — PR #52, behind ADR-0042–0046,
+no new ADR — `read_media` input access deferred to 2.M), **the first additive lane done**. The next pickup is 2.R
+(the inbound MCP client, ADR-0034 — off the M3 critical path and the Phase-3 go/no-go). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-22
+> Last updated: 2026-06-25
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -85,14 +85,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   submit) on a retryable timeout. ADR-0045 §3 makes this a **MAY** ("the loop itself never silently re-submits"), so the
   current behavior is conformant; re-dispatching a parked-then-failed media node through the node-retry budget is an
   additive refinement. *(packages/core/src/engine/engine.ts #pollMediaJob; post-1.AG)*
-- [ ] **Durable realized cost for a FAILED/CANCELLED paid media job (review M1, Phase 2).** `#emitMediaJobCost`
-  rides the transient `cost:updated` stream; `node:failed`/`run:failed`/`run:cancelled` carry no
-  `cumulativeCostMicrocents` (only `node:completed` snapshots it), so a durable-log reader reconstructing cost for a
-  billed-but-failed/cancelled media job sees the addend only on the LIVE stream, not the persisted log. This is the
-  PRE-EXISTING behavior of `cost:updated` (always live-only) — NOT 1.AG-introduced, and nothing in 1.AG depends on
-  durable fail-cost reconstruction (ADR-0045 §5's guarantee is about the live cost report). Snapshotting the
-  cumulative onto `node:failed`/`run:cancelled` (or a cost field on the terminal) is an additive Phase-2 durability
-  improvement. *(packages/core/src/engine/engine.ts #emitMediaJobCost; shared/run-event.ts; Phase 2)*
+- [x] **Durable realized cost for a FAILED/CANCELLED paid media job — ✅ Done (PR #52, 2.S Part 3).**
+  `node:failed`, `run:cancelled`, AND `run:failed` now each snapshot `cumulativeCostMicrocents` onto the durable
+  terminal (the `#emitMediaJobCost` fold runs just before the terminal), so a durable-log reader reconstructs a
+  billed-but-failed/cancelled media job's cost from the persisted log, not only the live `cost:updated` stream.
+  The checkpoint fold reads cost only from `node:completed`, so resume is unaffected (ADR-0045 §5).
+  *(packages/core/src/engine/engine.ts; shared/run-event.ts; PR #52)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a
@@ -151,9 +149,9 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
 > so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
 > deferred mechanism/wiring half. *(1.AF is ✅ Done — all PRs merged #33/#34/#35/#36, 2026-06-20; the items
-> below remain: `read_media` (D12) is deferred to **2.M** (maintainer-approved), and D15/D17/D8 + the `save_to`
-> semantics to the CLI/desktop host-wiring (Phase-2/Phase-3). The D15/D17/D8 check-offs for the CLI half land
-> post-merge with their PR number, per the done-after-merge convention.)*
+> below remain: `read_media` (D12) is deferred to **2.M** (maintainer-approved). **D15/D17/D8 are now wired by the
+> CLI (✅ PR #52, 2026-06-25, checked off below)** — the desktop/VS Code surfaces reuse the same injectable ports
+> (Phase-3/Phase-4); the `save_to` multi-feeder semantics remain.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
   factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns
@@ -166,44 +164,49 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`ctx.mediaRead` / `ctx.requestingScope` not wired into the dispatch context** — the AgentRunner +
   AgentSession build `ToolDispatchContext` without these, so `read_media` always throws
   `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 2.M)*
-- [ ] **`validateWorkflowWithCatalog` (D15) is called by no production loader** — exported + tested, but
-  no parse/load path invokes it, so authored `output_modalities` are not load-validated (the runtime
-  FallbackChain pre-skip — now wired onto the request — is the only backstop). A host should call it
-  post-parse with the DB `model_catalog`. *(CLI/desktop load path; 1.AH/Phase-2)*
-- [ ] **`[defaults].media_cost_estimate` → `AgentRunnerDeps.mediaCostEstimate` (D17)** — the config key +
-  the dep both exist but nothing reads the config and threads it into `createAgentNodeExecutor`, so
-  `buildMediaUnitsEstimate` always uses the built-in `DEFAULT_MEDIA_UNIT_ESTIMATE`. *(host executor construction; 1.AH/Phase-2)*
-- [ ] **`resolveForEgress` (D8) not wired in the engine path** — the FallbackChain re-materialization hook
-  is never injected by the AgentRunner, so a durable handle in a transcript message is sent unchanged (no-op);
-  the D7/D8 failover re-materialization is inert until the host wires `resolveForEgress`. *(packages/core/src/engine/agent-runner.ts; 1.AH/Phase-2)*
+- [x] **`validateWorkflowWithCatalog` (D15) — wired by the CLI loader (✅ PR #52).** `run` and `gate` call it
+  post-parse via `assertWorkflowCatalogValid` (the shared `drive.ts` helper) over the DB `model_catalog`, so an
+  incapable / malformed-generative authored `output_modalities` fails fast at LOAD (exit 2) on a fresh run AND a
+  resume — not only at the runtime FallbackChain pre-skip. The desktop/VS Code loaders reuse the same
+  `WorkflowModelCatalog` projection (phase-3/phase-4). *(apps/cli; PR #52)*
+- [x] **`[defaults].media_cost_estimate` → `AgentRunnerDeps.mediaCostEstimate` (D17) — wired by the CLI (✅ PR #52).**
+  `config/resolve.ts` reads the key and `media-wiring.ts` / `build-engine.ts` thread it into the engine, so the
+  media cost governor uses the configured per-modality estimate (falling back to `DEFAULT_MEDIA_UNIT_ESTIMATE`
+  only when unset). *(apps/cli; PR #52)*
+- [x] **`resolveForEgress` (D8) — wired by the CLI host (✅ PR #52).** `build-engine.ts` injects the
+  `FilesystemMediaStore.resolveForEgress` re-materialization hook, so a durable handle in a transcript message is
+  re-materialized on the failover/egress path rather than sent unchanged. *(apps/cli; PR #52)*
 - [ ] **`save_to` multi-feeder output semantics** — an output node with several feeders captures a record;
   `save_to` requires exactly one media handle across it (0/>1 → node failure). Document the "which handle"
   contract + add a mixed-feeder test. *(low · workflow-yaml-spec.md + packages/core; 1.AH)*
 - [ ] **`save_to` accepts only the `run.id` namespace at LOAD time** — a non-`run.id` ref in `save_to`
   (e.g. `{{ run.outputs[...] }}`) parses, creates a spurious DAG edge, and fails only at runtime. Add a
   load-time check restricting `save_to` to `run.id` so the author gets an immediate error. *(low · packages/core load path)*
-- [ ] **CAS-orphan crash window for `save_to`** — `#performSaveTo` puts bytes (CAS) before the
-  node:completed emit records the `media_objects` row; a crash between them leaves row-less CAS bytes that
-  `reclaimExpired` (which keys off rows) can never reclaim. Needs a host CAS-orphan sweep. *(low · packages/db host GC; 1.AH/Phase-2)*
-- [ ] **Clean-terminal media-reclaim has no retry** — `#reclaimRunMedia` is best-effort at the terminal;
-  a transient async-host rejection on a cleanly-completed run leaves the `run` refs (resume short-circuits
-  on a terminal checkpoint). Consider a host periodic sweep keyed on terminal run events. *(low · host GC; 1.AH/Phase-2)*
+- [x] **CAS-orphan crash window for `save_to` — ✅ Done (PR #52).** The host media GC's CAS-orphan sweep
+  (`runHostMediaGc` step 3, ADR-0042 §4) deletes row-less CAS bytes (a crash between `put` and `recordObject`) —
+  gated on no other active run AND an `orphanMinAgeMs` age-guard so a concurrent writer's fresh blob is never
+  swept. *(apps/cli host GC; PR #52)*
+- [x] **Clean-terminal media-reclaim retry — ✅ Done (PR #52).** The host media GC's clean-terminal reclaim-retry
+  (`runHostMediaGc` step 1) re-attempts `removeRunReferences` for every settled (terminal/gone) run whose inline
+  `#reclaimRunMedia` was dropped by a crash — never the current run (the engine reclaims it inline) and never a
+  paused run (its media must survive a resume). *(apps/cli host GC; PR #52)*
 - [ ] **`save_to` url double-fetch** — a `url`-sourced media part in a save_to output is fetched twice (the
   save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
   result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
-- [ ] **`save_to` resumer-cwd vs original-run project root (2.S)** — on a `relavium gate` resume the `save_to`
-  jail root is the RESUMER's cwd (`gate.ts` passes `deps.global.cwd`), not the original run's project root, so a
-  run started in dir A and resumed from B writes its deliverables under `B/.relavium/runs/`. The `realpath`+
-  `commonpath` jail still holds (no escape) — only the destination differs. Persist the original run's project
-  root in the run snapshot and re-jail under it on resume for an identical location. *(low · apps/cli `gate.ts`; Phase-2)*
+- [x] **`save_to` resumer-cwd vs original-run project root — ✅ Done (PR #53).** `run` now persists the run's cwd
+  to `runs.project_root` at run-start (threaded through `openHistoryStore` → `RunHistoryStoreDeps.projectRoot`),
+  and `loadRunSnapshot` returns it; `gate` re-jails `save_to` under that ORIGINAL root (`snapshot.projectRoot ??`
+  the resumer's cwd for a pre-column run), so a run started in dir A and resumed from B writes its deliverables
+  under A. The `realpath`+`commonpath` jail holds under either root. *(apps/cli + @relavium/db; PR #53)*
 - [ ] **Host-GC orchestration is CLI-local (2.S)** — `runHostMediaGc` (the 3 ordered steps: clean-terminal
   reclaim-retry, grace-window byte reclaim, CAS-orphan sweep + the `orphanMinAgeMs` concurrent-writer age-guard)
   is host-agnostic but lives in `apps/cli/src/engine/media-gc.ts`, so the Phase-3 desktop / Phase-6 cloud hosts
   can't reuse it. When a 2nd host wires media GC, promote the pure orchestration to `@relavium/db` (or a shared
   host-helper) and pin the mechanism in a `docs/reference/` home so the hosts can't drift. *(med · apps/cli → @relavium/db; Phase-3+)*
-- [ ] **`[defaults].media_gc_grace_days` is forward-declared, not read (2.S)** — the host GC uses the built-in
-  `DEFAULT_MEDIA_GC_GRACE_MS` (7 days); the config key (config-spec.md, ADR-0042 §4c) is documented but not yet
-  threaded through `sweepHostMediaBestEffort`'s `graceMs`. Resolve it from config and pass it through. *(low · apps/cli; Phase-2)*
+- [x] **`[defaults].media_gc_grace_days` wired (✅ PR #53).** Added to the config Zod schema; `config/resolve.ts`
+  resolves it (last-writer-wins) and normalizes DAYS → ms (`mediaGcGraceMs`); `run`/`gate` thread it into
+  `sweepHostMediaBestEffort`'s `graceMs`. Absent ⇒ the built-in `DEFAULT_MEDIA_GC_GRACE_MS` (7-day) default
+  (ADR-0042 §4c). *(apps/cli + shared config; PR #53)*
 - [ ] **Keychain no-raw-key IPC test (ADR-0044 §4 acceptance gate)** — ADR-0044 §4 makes "the keychain bridge
   never returns a raw key from an IPC command" an **explicit 1.AF test deliverable**, bundled with the media
   IPC/byte-delivery review surface. That IPC surface is the desktop/Tauri command layer, which is **unbuilt at

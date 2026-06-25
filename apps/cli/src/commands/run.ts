@@ -13,7 +13,10 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
-import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
+import {
+  sweepHostMediaBestEffort as defaultSweepMedia,
+  sweepMediaAtTerminal,
+} from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import {
   createProviderResolver,
@@ -54,7 +57,11 @@ export interface RunCommandDeps {
    * Production wires the durable SQLite run-history store (2.H) here, per workflow; the unit tests and the
    * 2.K harness omit it, keeping the in-memory `RunStore` so they never open `~/.relavium/history.db`.
    */
-  readonly openRunStore?: (workflow: WorkflowDefinition, homeDir: string) => OpenedHistory;
+  readonly openRunStore?: (
+    workflow: WorkflowDefinition,
+    homeDir: string,
+    projectRoot: string,
+  ) => OpenedHistory;
   /**
    * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
    * inject a fake renderer (onEvent + finalize spies) to assert the finalize wiring without a TTY.
@@ -124,7 +131,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // the connection at run end. A persist failure rejects out of the engine (ADR-0050 fatal posture).
   let opened: OpenedHistory | undefined;
   try {
-    opened = deps.openRunStore?.(def, homeDir);
+    opened = deps.openRunStore?.(def, homeDir, deps.global.cwd);
   } catch (err) {
     // A pre-run history fault (cannot create / open / migrate ~/.relavium/history.db) is an INVOCATION
     // fault (exit 2), not a workflow failure (exit 1) — surface it as such, before the engine starts, so a
@@ -177,22 +184,18 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       io: deps.io,
     });
 
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — a best-effort pass keyed on the run reaching a TERMINAL event: the
-    // clean-terminal reclaim retry (a crash-dropped prior sweep) + the grace-window byte reclaim + the CAS-orphan
-    // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Skipped on a
-    // `paused` outcome (the run is resumable — its media must survive) and on the in-memory unit/harness path.
-    if (opened !== undefined && mediaCasRoot !== undefined && isTerminalOutcome(outcome)) {
-      try {
-        await (deps.sweepMedia ?? defaultSweepMedia)({
-          db: opened.db,
-          casRoot: mediaCasRoot,
-          currentRunId: handle.runId,
-        });
-      } catch {
-        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the run —
-        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
-      }
-    }
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — best-effort, keyed on a TERMINAL outcome: the clean-terminal reclaim
+    // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
+    // a `paused` outcome (resumable — its media must survive) and the in-memory path (no CAS). See
+    // sweepMediaAtTerminal for the guard + the never-fail-the-run swallow.
+    await sweepMediaAtTerminal({
+      sweep: deps.sweepMedia ?? defaultSweepMedia,
+      isTerminal: isTerminalOutcome(outcome),
+      db: opened?.db,
+      casRoot: mediaCasRoot,
+      currentRunId: handle.runId,
+      graceMs: config.mediaGcGraceMs,
+    });
 
     return outcomeToExitCode(outcome);
   } finally {

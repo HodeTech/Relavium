@@ -112,6 +112,10 @@ export interface RunHistoryStoreDeps {
   readonly now: () => number;
   /** The single workflow this store records (one per `relavium run`); supplies the durable snapshot. */
   readonly workflow: RunHistoryWorkflow;
+  /** The run's project root (the cwd `relavium run` was invoked in), persisted to `runs.project_root` at
+   *  run-start so a cross-process `relavium gate` resume can re-jail `save_to` under the ORIGINAL run's root
+   *  rather than the resumer's cwd. Absent (tests / the in-memory path) ⇒ NULL. */
+  readonly projectRoot?: string;
 }
 
 /**
@@ -193,6 +197,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           executionMode: event.executionMode,
           triggerType: 'manual',
           inputJson: JSON.stringify(event.inputs),
+          projectRoot: deps.projectRoot ?? null,
           startedAt: ts,
           createdAt: ts,
           updatedAt: ts,
@@ -572,6 +577,10 @@ export interface RunResumeSnapshot {
   /** `JSON.stringify(inputs)` from `run:started` (`runs.input_json`) — restored on resume so a post-gate node
    * that reads `{{ inputs.x }}` sees the value the run started with (the events don't replay the inputs). */
   readonly inputJson: string;
+  /** `runs.project_root` — the ORIGINAL run's cwd, so a cross-process resume re-jails `save_to` under it (a run
+   * started in dir A and resumed from B still writes under A). `null` for a run started before this column was
+   * populated ⇒ the caller falls back to the resumer's cwd. */
+  readonly projectRoot: string | null;
 }
 
 /**
@@ -591,6 +600,7 @@ export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | unde
     .select({
       snapshot: runs.workflowDefinitionSnapshot,
       inputJson: runs.inputJson,
+      projectRoot: runs.projectRoot,
     })
     .from(runs)
     .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
@@ -600,5 +610,6 @@ export function loadRunSnapshot(db: Db, runId: string): RunResumeSnapshot | unde
     : {
         workflowDefinitionSnapshot: row.snapshot,
         inputJson: row.inputJson,
+        projectRoot: row.projectRoot,
       };
 }

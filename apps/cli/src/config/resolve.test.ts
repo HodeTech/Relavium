@@ -11,9 +11,20 @@ describe('resolveConfig', () => {
       fsScope: undefined,
       maxTokensEstimate: undefined,
       mediaCostEstimate: undefined,
+      mediaGcGraceMs: undefined,
       variables: {},
       mcpServers: [],
     });
+  });
+
+  it('resolves media_gc_grace_days (2.S/D11) DAYS → ms, last-writer-wins, absent ⇒ undefined', () => {
+    const workspace: ProjectConfig = { defaults: { media_gc_grace_days: 30 } };
+    const project: ProjectConfig = { defaults: { media_gc_grace_days: 3 } };
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    // project replaces workspace (last-writer-wins), and the days are normalized to milliseconds.
+    expect(resolveConfig({ workspace, project }).mediaGcGraceMs).toBe(3 * MS_PER_DAY);
+    expect(resolveConfig({ workspace }).mediaGcGraceMs).toBe(30 * MS_PER_DAY);
+    expect(resolveConfig({}).mediaGcGraceMs).toBeUndefined(); // absent ⇒ the GC's built-in 7-day default applies
   });
 
   it('takes media_cost_estimate (2.S/D17) from the highest layer present — whole-object, not per-key merge', () => {

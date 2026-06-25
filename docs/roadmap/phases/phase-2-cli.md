@@ -1,6 +1,6 @@
 # Phase 2 — CLI
 
-> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**; **2.H** (durable run history) is ✅ **Done (PR #44, 2026-06-23)**, behind [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md); and **2.C** (provider/key commands — OS keychain via `@napi-rs/keyring`) is ✅ **Done (PR #45, 2026-06-23)**, behind [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) + [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md); and **2.E** (the `ink` streaming TUI) is ✅ **Done (PR #46, 2026-06-24)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md); and **2.G** (the interactive human-gate prompt + `relavium gate` cross-process resume) is ✅ **Done (PR #47, 2026-06-24)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) (`@clack/prompts`; no new ADR) — **fully closing 2.K's deferred gate-resume half**; and **2.I** (the read commands `list` / `logs` / `status` / `gate list` over durable history) is ✅ **Done (PR #48, 2026-06-24)** (no new ADR — additive `@relavium/db` read seam + `@relavium/core` `parseAgent`); and **2.L** (packaging, distribution & install verification) is ✅ **Done (PR #49, 2026-06-24)**, behind [ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md) — **closing go/no-go #7, so the Phase-2 spine is complete and all seven Phase-3 exit criteria now hold**. The status-aware order for everything still open (next pickup: **2.S**) is the [Remaining build order](#remaining-build-order) queue.
+> Status: In progress (Product Phase 1, build phase 2). **2.A** (CLI skeleton + process contract) and **2.B** (config resolution) are ✅ **Done (PR #40, 2026-06-22)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) + [ADR-0048](../../decisions/0048-toml-config-parser.md); **2.D** (`run` → engine, the M3 keystone) is ✅ **Done (PR #41, 2026-06-22)**, and **2.F** (the `--json` CI machine-output contract) is ✅ **Done (PR #42, 2026-06-22)**, behind [ADR-0049](../../decisions/0049-cli-machine-output-contract.md), and **2.K** (the engine regression harness) is ✅ **Done (PR #43, 2026-06-23)** — so **global milestone M3 is reached**; **2.H** (durable run history) is ✅ **Done (PR #44, 2026-06-23)**, behind [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md); and **2.C** (provider/key commands — OS keychain via `@napi-rs/keyring`) is ✅ **Done (PR #45, 2026-06-23)**, behind [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) + [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md); and **2.E** (the `ink` streaming TUI) is ✅ **Done (PR #46, 2026-06-24)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md); and **2.G** (the interactive human-gate prompt + `relavium gate` cross-process resume) is ✅ **Done (PR #47, 2026-06-24)**, behind [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md) (`@clack/prompts`; no new ADR) — **fully closing 2.K's deferred gate-resume half**; and **2.I** (the read commands `list` / `logs` / `status` / `gate list` over durable history) is ✅ **Done (PR #48, 2026-06-24)** (no new ADR — additive `@relavium/db` read seam + `@relavium/core` `parseAgent`); and **2.L** (packaging, distribution & install verification) is ✅ **Done (PR #49, 2026-06-24)**, behind [ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md) — **closing go/no-go #7, so the Phase-2 spine is complete and all seven Phase-3 exit criteria now hold**; and **2.S** (media host-wiring — the surface half of the multimodal sub-spine) is ✅ **Done (PR #52, 2026-06-25)**, behind [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) (no new ADR — `read_media` input access deferred to **2.M**), **the first additive lane done**. The status-aware order for everything still open (next pickup: **2.R**) is the [Remaining build order](#remaining-build-order) queue.
 
 - **Related**: [../README.md](../README.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../architecture/execution-model.md](../../architecture/execution-model.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)
 
@@ -519,6 +519,8 @@ explicit opt-in; the import-zone check confirms no SDK type leaks past the integ
 
 ### 2.S — Media host-wiring (1.AH / Phase-2)
 
+> **Status:** ✅ **Done (PR #52, 2026-06-25)** — behind [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) (no new ADR). Shipped: the `model_catalog` reader → `resolveMediaSurface` routing + the D15 catalog load-check shared by `run`/`gate`, the content-addressed `MediaStore` de-inline, the SSRF-validated `EgressCapability.fetch` egress (with a dedicated security review), the containment-checked `save_to` write port, durable fail-cost on the terminal events (ADR-0045 §5), the produced-media render surface, and the best-effort run-end host media GC (ADR-0042 §4: grace reclaim + CAS-orphan sweep + clean-terminal reclaim-retry). `read_media` **input** access (D12) was deferred to **2.M** with maintainer approval; the deferred D8/D15/D17 mechanism half is discharged for the CLI surface (see [../deferred-tasks.md](../deferred-tasks.md)). The first additive lane — **next pickup: 2.R**.
+
 The surface half of the multimodal sub-spine. The engine-pure media **policy** landed
 in Phase 1 (1.AF/1.AG: the `MediaStore`/`deInlineMedia` choke point, `read_media` +
 scope-set authz, the byte-delivery `Range` gate, the `output_modalities` load-check,
@@ -642,7 +644,7 @@ streams. Built behind injectable ports so desktop (§3.B) and VS Code (§4.N) re
 | Published, installable binary verified on all OSes | 2.L | — |
 | **Agent-first CLI** — `relavium chat` + session commands (resume / list / export / `agent run` / `gate list`): the **first user-facing `AgentSession` surface**, a committed build-phase-2 deliverable (off the M3 critical path and the Phase-3 go/no-go, completed in-phase — the agent-first headline is demonstrable here) | 2.M, 2.N, 2.O, 2.P, 2.Q | — |
 | **MCP client live** — a fixture agent completes a real stdio MCP tool round-trip behind the `ToolRegistry`, per [ADR-0034](../../decisions/0034-mcp-client-sdk-dependency.md) (off the M3 critical path) | 2.R | — |
-| **Media host-wiring** — a generative media-output fixture runs end-to-end on the CLI (host `resolveMediaSurface` routing, scoped `read_media`, containment-checked `save_to`, the `EgressCapability.fetch` SSRF mechanism), the shared ports designed to fit desktop/VS Code, per the media ADRs ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)) (off the M3 critical path) | 2.S | — |
+| **Media host-wiring** ✅ **(PR #52, 2026-06-25)** — a generative media-output fixture runs end-to-end on the CLI (host `resolveMediaSurface` routing, containment-checked `save_to`, the `EgressCapability.fetch` SSRF mechanism; `read_media` input access deferred to 2.M), the shared ports designed to fit desktop/VS Code, per the media ADRs ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)) (off the M3 critical path) | 2.S | — |
 
 ## Sequencing & parallelization
 
@@ -664,29 +666,28 @@ This is the status × plan view; the dependency rationale for every row lives in
 [Ordered waves](#ordered-waves-each-wave-is-internally-parallel-waves-gate-left-to-right) —
 this table does not restate them, it only sequences what remains.
 
-> **Status (2026-06-24):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H · 2.C · 2.E · 2.G · 2.I · 2.L** done — **M3 reached, Phase-2 spine complete, all 7 Phase-3 go/no-go exit criteria hold (Phase 3 may start)** · next pickup: **2.S**.
-> (2.L shipped the published, install-verified binary (PR #49) — so go/no-go #7 now holds and **every Phase-2
-> spine/gate PR is done**; the four additive lanes (2.S, 2.R, chat, 2.J) complete in-phase but don't block Phase 3.)
+> **Status (2026-06-25):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H · 2.C · 2.E · 2.G · 2.I · 2.L · 2.S** done — **M3 reached, Phase-2 spine complete, all 7 Phase-3 go/no-go exit criteria hold (Phase 3 may start)**; **2.S** (media host-wiring — the first additive lane) landed PR #52 · next pickup: **2.R**.
+> (2.L shipped the published, install-verified binary (PR #49) — so go/no-go #7 holds and **every Phase-2
+> spine/gate PR is done**; **2.S** then cleared the first additive lane (PR #52). The remaining three additive
+> lanes (2.R, chat, 2.J) complete in-phase but don't block Phase 3.)
 
 | Next | Lane | Why now | Blockers (all met on arrival) |
 |---|---|---|---|
-| **1. 2.S** media host-wiring | additive | biggest lane + the lone SSRF security review; **first** among the additive lanes — never tailed | 2.D · 2.H ✓ |
-| **2. 2.R** MCP client | additive | inbound MCP tools | 2.B ✓ · 2.C ✓ |
-| **3. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C ✓ · 2.H ✓ · 2.E ✓ |
-| **4. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
+| **1. 2.R** MCP client | additive | inbound MCP tools; first lane after 2.S | 2.B ✓ · 2.C ✓ |
+| **2. 2.M → 2.N–2.Q** chat | additive | agent-first chat surface | 2.C ✓ · 2.H ✓ · 2.E ✓ |
+| **3. 2.J** create / import / export | additive | cheap filler — drop into any low-energy slot | 2.A ✓ |
+| ✅ 2.S media host-wiring | additive | **Done (PR #52)** — the first additive lane; the lone SSRF security review cleared | 2.D · 2.H ✓ |
 
 - **Gate-closing backbone — complete (`2.L` landed, PR #49):** with the published, install-verified binary
   shipped, every exit-criteria/spine PR is done (2.K + 2.H + 2.C + 2.E + 2.G + 2.I + 2.L), so **all seven
-  Phase-3 go/no-go criteria hold and Phase 3 may start**. The remaining four (**2.S, 2.R, chat, 2.J**) complete
-  in-phase but do **not** block starting Phase 3.
+  Phase-3 go/no-go criteria hold and Phase 3 may start**. **2.S** then cleared the first additive lane (PR #52);
+  the remaining three (**2.R, chat, 2.J**) complete in-phase but do **not** block starting Phase 3.
 - **2.K is fully closed (via 2.G).** Its deferred gate-resume scenario was exercised once the
   gate pause/resume surface shipped, which unblocked **2.L** — now landed (PR #49).
-- **The one judgement call — 2.S timing.** Front-load it as the *first* additive lane
-  (now the next pickup); never tail it behind chat / MCP / filler. It is the long pole, carries the only
-  dedicated security review (the `EgressCapability.fetch` SSRF mechanism), and its injectable
-  ports are inherited by desktop ([§3.B](phase-3-desktop.md)) + VS Code ([§4.N](phase-4-vscode.md)).
-  Pull it even earlier (right after 2.H) if de-risking that security review outweighs reaching
-  the Phase-3 gate fastest.
+- **The one judgement call — 2.S timing — was honored.** It landed as the *first* additive lane (PR #52,
+  2026-06-25), never tailed behind chat / MCP / filler. The long pole with the only dedicated security review
+  (the `EgressCapability.fetch` SSRF mechanism) is cleared first, and its injectable ports are now ready for
+  desktop ([§3.B](phase-3-desktop.md)) + VS Code ([§4.N](phase-4-vscode.md)) reuse.
 
 ### One spine, parallel feeders, three additive lanes
 

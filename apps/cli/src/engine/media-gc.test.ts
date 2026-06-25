@@ -12,7 +12,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { seedRun } from '../test-support.js';
-import { runHostMediaGc, sweepHostMediaBestEffort, type MediaGcDeps } from './media-gc.js';
+import {
+  runHostMediaGc,
+  sweepHostMediaBestEffort,
+  sweepMediaAtTerminal,
+  type MediaGcDeps,
+} from './media-gc.js';
 
 const H = (c: string): string => `media://sha256-${c.repeat(64)}`;
 
@@ -290,5 +295,116 @@ describe('sweepHostMediaBestEffort (the run/gate run-end wrapper — real db + C
     expect(report?.orphanSweepRan).toBe(true);
     expect(report?.orphansDeleted).toBe(1);
     await expect(cas.get(orphan)).rejects.toThrow(); // the orphan bytes are gone
+  });
+});
+
+describe('sweepMediaAtTerminal (the shared run/gate run-end GC guard)', () => {
+  let client: DbClient;
+  beforeEach(() => {
+    client = createClient(':memory:');
+  });
+  afterEach(() => {
+    client.sqlite.close();
+  });
+
+  /** A `sweep` spy of the real sweeper's shape, recording every args object it was called with. */
+  function spySweep(impl?: typeof sweepHostMediaBestEffort): {
+    sweep: typeof sweepHostMediaBestEffort;
+    calls: Array<Parameters<typeof sweepHostMediaBestEffort>[0]>;
+  } {
+    const calls: Array<Parameters<typeof sweepHostMediaBestEffort>[0]> = [];
+    const sweep: typeof sweepHostMediaBestEffort =
+      impl ??
+      ((args) => {
+        calls.push(args);
+        return Promise.resolve(undefined);
+      });
+    return { sweep, calls };
+  }
+
+  it('does NOT sweep on a non-terminal (paused) outcome', async () => {
+    const { sweep, calls } = spySweep();
+    await sweepMediaAtTerminal({
+      sweep,
+      isTerminal: false,
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: undefined,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does NOT sweep when db is undefined (the in-memory unit/harness path)', async () => {
+    const { sweep, calls } = spySweep();
+    await sweepMediaAtTerminal({
+      sweep,
+      isTerminal: true,
+      db: undefined,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: undefined,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does NOT sweep when casRoot is undefined', async () => {
+    const { sweep, calls } = spySweep();
+    await sweepMediaAtTerminal({
+      sweep,
+      isTerminal: true,
+      db: client.db,
+      casRoot: undefined,
+      currentRunId: 'r1',
+      graceMs: undefined,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('sweeps with the configured graceMs when terminal + fully wired', async () => {
+    const { sweep, calls } = spySweep();
+    await sweepMediaAtTerminal({
+      sweep,
+      isTerminal: true,
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: 12345,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: 12345,
+    });
+  });
+
+  it('OMITS the graceMs key when it is undefined (so the GC default 7-day window applies)', async () => {
+    const { sweep, calls } = spySweep();
+    await sweepMediaAtTerminal({
+      sweep,
+      isTerminal: true,
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: undefined,
+    });
+    expect(calls).toHaveLength(1);
+    expect('graceMs' in (calls[0] ?? {})).toBe(false); // conditional-spread omitted the key, never graceMs: undefined
+  });
+
+  it('SWALLOWS a throwing sweep — the run-end GC must NEVER fail the run', async () => {
+    const { sweep } = spySweep(() => Promise.reject(new Error('gc boom')));
+    await expect(
+      sweepMediaAtTerminal({
+        sweep,
+        isTerminal: true,
+        db: client.db,
+        casRoot: '/cas',
+        currentRunId: 'r1',
+        graceMs: undefined,
+      }),
+    ).resolves.toBeUndefined();
   });
 });

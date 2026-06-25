@@ -21,9 +21,15 @@ export interface ResolvedConfig {
    *  pre-egress media-cost governor. Resolved last-writer-wins like the other defaults; absent ⇒ the engine's
    *  built-in unit estimate. (The per-unit price lives in the model catalog, never here.) */
   readonly mediaCostEstimate: ProjectDefaults['media_cost_estimate'];
+  /** `[defaults].media_gc_grace_days` (2.S/D11, ADR-0042 §4c) normalized to **milliseconds** for the host media
+   *  GC's grace window. Resolved last-writer-wins; absent ⇒ the GC's built-in `DEFAULT_MEDIA_GC_GRACE_MS` default. */
+  readonly mediaGcGraceMs: number | undefined;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
+
+/** ms per day — the host media GC's grace window is configured in days but threaded as ms. */
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface ConfigLayers {
   readonly global?: GlobalConfig | undefined;
@@ -42,9 +48,22 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
       project?.defaults?.max_tokens_estimate ?? workspace?.defaults?.max_tokens_estimate,
     mediaCostEstimate:
       project?.defaults?.media_cost_estimate ?? workspace?.defaults?.media_cost_estimate,
+    mediaGcGraceMs: resolveGraceMs(project, workspace),
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };
+}
+
+/**
+ * Resolve `[defaults].media_gc_grace_days` (last-writer-wins: project → workspace) and normalize DAYS → ms.
+ * Absent at every layer ⇒ `undefined`, so the host media GC falls back to its built-in `DEFAULT_MEDIA_GC_GRACE_MS`.
+ */
+function resolveGraceMs(
+  project: ProjectConfig | undefined,
+  workspace: ProjectConfig | undefined,
+): number | undefined {
+  const days = project?.defaults?.media_gc_grace_days ?? workspace?.defaults?.media_gc_grace_days;
+  return days === undefined ? undefined : days * MS_PER_DAY;
 }
 
 /**

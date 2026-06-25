@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,7 +30,7 @@ import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
-import { gateCommand, selectGate, type GateCommandDeps } from './gate.js';
+import { gateCommand, resolveSaveToRoot, selectGate, type GateCommandDeps } from './gate.js';
 
 /** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
  *  that the real engine can't be driven into deterministically (they need a concurrent-settle race). */
@@ -194,11 +194,13 @@ describe('gateCommand', () => {
   async function setupPausedRun(
     yaml = GATED,
     inputs: Record<string, unknown> = { n: 7 },
+    projectRoot?: string,
   ): Promise<{ runId: string; gateIds: string[] }> {
     const def = parseWorkflow(yaml, { source: 'gate.test' });
     const store = createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
+      ...(projectRoot === undefined ? {} : { projectRoot }), // persist runs.project_root for the resume re-jail test
       workflow: {
         slug: def.workflow.id,
         name: def.workflow.name ?? def.workflow.id,
@@ -236,7 +238,9 @@ describe('gateCommand', () => {
     const { runId } = await setupPausedRun();
     const { io } = captureIo();
     let captured: BuildEngineOptions | undefined;
-    let sweptArgs: { db: unknown; casRoot: string; currentRunId: string } | undefined;
+    let sweptArgs:
+      | { db: unknown; casRoot: string; currentRunId: string; graceMs?: number }
+      | undefined;
     const code = await gateCommand(
       { runId, approve: true },
       {
@@ -265,6 +269,44 @@ describe('gateCommand', () => {
     expect(sweptArgs?.db).toBe(db);
     expect(sweptArgs?.currentRunId).toBe(runId);
     expect(sweptArgs?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
+    expect(sweptArgs?.graceMs).toBeUndefined(); // no [defaults].media_gc_grace_days ⇒ the GC default window
+  });
+
+  it('re-jails save_to under the ORIGINAL run project root on resume (persisted runs.project_root)', async () => {
+    // Seed the paused run WITH project_root = a real dir A (distinct from the resumer cwd `root`), then resume.
+    const originalRoot = mkdtempSync(join(tmpdir(), 'relavium-orig-root-'));
+    try {
+      const { runId } = await setupPausedRun(GATED, { n: 7 }, originalRoot);
+      const { io } = captureIo();
+      let captured: BuildEngineOptions | undefined;
+      const code = await gateCommand(
+        { runId, approve: true },
+        {
+          ...deps(io),
+          buildEngine: (opts) => {
+            captured = opts;
+            return buildEngine(opts);
+          },
+          sweepMedia: () => Promise.resolve(undefined),
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      const mediaWrite = captured?.host?.mediaWrite;
+      if (mediaWrite === undefined) {
+        throw new Error('expected the gate-resume host to wire mediaWrite');
+      }
+      // The save_to port was jailed under the ORIGINAL run root (A), not the resumer cwd — invoking it lands the
+      // deliverable under <A>/.relavium/runs/, proving the persisted project_root drove the wiring (rank-2 chain:
+      // loadRunSnapshot.projectRoot → resolveSaveToRoot → buildMediaEngineWiring → the save_to jail root).
+      await mediaWrite('out.bin', new Uint8Array([1, 2, 3]));
+      const delivered = join(originalRoot, '.relavium', 'runs', 'out.bin');
+      expect(existsSync(delivered)).toBe(true);
+      expect(Array.from(readFileSync(delivered))).toEqual([1, 2, 3]);
+      // ...and NEVER under the resumer cwd.
+      expect(existsSync(join(root, '.relavium', 'runs', 'out.bin'))).toBe(false);
+    } finally {
+      rmSync(originalRoot, { recursive: true, force: true });
+    }
   });
 
   it('re-runs the D15 catalog load-check on resume: a node incapable in the current catalog rejects (exit 2)', async () => {
@@ -672,5 +714,43 @@ describe('selectGate', () => {
       kind: 'invalid',
       message: 'the run is not paused at a human gate',
     });
+  });
+});
+
+describe('resolveSaveToRoot (save_to scope root on resume)', () => {
+  it('uses the original run project root when it still exists on this machine', () => {
+    const original = mkdtempSync(join(tmpdir(), 'relavium-orig-'));
+    try {
+      expect(resolveSaveToRoot(original, '/resumer/cwd')).toBe(original);
+    } finally {
+      rmSync(original, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the resumer cwd when the persisted project root no longer exists (deleted / other machine)', () => {
+    // A collision-free absent path: a fresh tmpdir, removed, so the inner path is guaranteed not to exist.
+    const parent = mkdtempSync(join(tmpdir(), 'relavium-gone-'));
+    const gone = join(parent, 'inner-nonexistent');
+    rmSync(parent, { recursive: true, force: true });
+    expect(existsSync(gone)).toBe(false); // precondition: the path does not exist
+    expect(resolveSaveToRoot(gone, '/resumer/cwd')).toBe('/resumer/cwd');
+  });
+
+  it('falls back to the resumer cwd when the persisted project root is a FILE, not a directory', () => {
+    // A path that EXISTS but is a regular file must not be used as the jail scope root (existsSync would have
+    // wrongly accepted it; the directory check rejects it). Using it would only fail the downstream mkdir/write.
+    const parent = mkdtempSync(join(tmpdir(), 'relavium-file-'));
+    const filePath = join(parent, 'not-a-dir');
+    writeFileSync(filePath, 'x');
+    try {
+      expect(existsSync(filePath)).toBe(true); // precondition: the path exists...
+      expect(resolveSaveToRoot(filePath, '/resumer/cwd')).toBe('/resumer/cwd'); // ...but is a file ⇒ fall back
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the resumer cwd when no project root was persisted (null — pre-column run)', () => {
+    expect(resolveSaveToRoot(null, '/resumer/cwd')).toBe('/resumer/cwd');
   });
 });

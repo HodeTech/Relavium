@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { reconstructCheckpointState } from '@relavium/core';
-import { createClient, createRunHistoryStore, type RunHistoryStore } from '@relavium/db';
+import {
+  createClient,
+  createRunHistoryStore,
+  loadRunSnapshot,
+  type Db,
+  type RunHistoryStore,
+} from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -31,14 +37,14 @@ function globalOptions(): GlobalOptions {
 }
 
 /** Re-open the temp history.db read-only-ish for assertions (a fresh connection — the run's was closed). */
-function reopen(home: string): { store: RunHistoryStore; close: () => void } {
+function reopen(home: string): { store: RunHistoryStore; db: Db; close: () => void } {
   const client = createClient(join(home, '.relavium', 'history.db'));
   const store = createRunHistoryStore(client.db, {
     uuid: () => randomUUID(),
     now: () => Date.now(),
     workflow: { slug: 'reader', name: 'reader', definitionJson: '{}' },
   });
-  return { store, close: () => client.sqlite.close() };
+  return { store, db: client.db, close: () => client.sqlite.close() };
 }
 
 describe('2.H durable run history — real run → history.db (temp home)', () => {
@@ -55,7 +61,11 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
     const { io } = captureIo();
     const code = await runCommand(
       { workflow: join(FIXTURES, 'sequential.relavium.yaml'), input: ['n=3'] },
-      { io, global: globalOptions(), openRunStore: (wf) => openHistoryStore(wf, home) },
+      {
+        io,
+        global: globalOptions(),
+        openRunStore: (wf, _homeDir, projectRoot) => openHistoryStore(wf, home, projectRoot),
+      },
     );
     expect(code).toBe(EXIT_CODES.success);
 
@@ -67,7 +77,7 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
       expect(statSync(join(home, '.relavium')).mode & 0o777).toBe(0o700);
     }
 
-    const { store, close } = reopen(home);
+    const { store, db, close } = reopen(home);
     try {
       const runs = store.listRuns();
       expect(runs).toHaveLength(1);
@@ -76,6 +86,9 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
       expect(events[0]?.type).toBe('run:started');
       expect(events.at(-1)?.type).toBe('run:completed');
       expect(events.map((e) => e.sequenceNumber)).toEqual(events.map((_, i) => i)); // gap-free
+      // The run's cwd (FIXTURES, passed as openRunStore's projectRoot) was persisted to runs.project_root —
+      // the durable half of the save_to resume re-jail (loadRunSnapshot reads it back on a `relavium gate`).
+      expect(loadRunSnapshot(db, runs[0]?.id ?? '')?.projectRoot).toBe(FIXTURES);
     } finally {
       close();
     }
@@ -85,7 +98,11 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
     const { io } = captureIo();
     const code = await runCommand(
       { workflow: join(FIXTURES, 'human-gate.relavium.yaml'), input: [] },
-      { io, global: globalOptions(), openRunStore: (wf) => openHistoryStore(wf, home) },
+      {
+        io,
+        global: globalOptions(),
+        openRunStore: (wf, _homeDir, projectRoot) => openHistoryStore(wf, home, projectRoot),
+      },
     );
     expect(code).toBe(EXIT_CODES.gatePaused);
 
