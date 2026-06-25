@@ -101,6 +101,7 @@ focus_area = "security and type safety"
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
 default_model = "claude-sonnet-4-6"   # model for a chat session that names none
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
+max_turns = 50                     # hard session TURN cap → SessionDeps.maxTurns (DoS fail-safe; 0/absent ⇒ engine default 50) — DISTINCT from max_messages
 max_messages = 200                 # session-history cap before older turns are trimmed/summarized
 max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress cost cap (the same governor as a workflow budget — ADR-0028)
 on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
@@ -117,6 +118,8 @@ on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a
 > allowlist: a chat session reuses the workflow `allowedCommands` policy whose canonical home is
 > [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools) (empty/absent ⇒ `run_command`
 > disabled). Session history persists in the existing `history.db` — there is no separate `sessions.db`. A chat session may carry its own **pre-egress cost cap** (`max_cost_microcents` + `on_exceed`), enforced by the **same** governor as a workflow `budget` ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) — so an open-ended chat that loops on tool calls fails safe, and "both entry points inherit resource governance" holds literally.
+>
+> `max_turns` is the surface-mapped form of the engine **hard turn cap** (`SessionDeps.maxTurns`, [agent-session-spec.md](agent-session-spec.md#hard-turn-cap)) — a finite DoS fail-safe (engine default **50**; `0`/absent ⇒ that default). It is **distinct** from `max_messages` (a history-**trim** threshold that *silently continues*) and the within-turn `maxToolTurns` tool-loop guard: a `sendMessage` past `max_turns` ends **loudly** (`session:turn_completed` with `error.code: 'turn_limit'`, no egress).
 
 ## Secrets are out of band
 

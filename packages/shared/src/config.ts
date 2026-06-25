@@ -94,6 +94,11 @@ export const ChatConfigSchema = z
   .object({
     default_model: z.string().optional(),
     fs_scope: FsScopeSchema.optional(),
+    // Hard session **turn cap** — the surface-mapped form of the engine knob `SessionDeps.maxTurns`
+    // (a finite DoS fail-safe; engine default 50, 0/absent ⇒ that default). A `sendMessage` past the
+    // cap ends loudly (`session:turn_completed` `turn_limit`, no egress). DISTINCT from `max_messages`
+    // (a history-**trim** threshold that silently continues) and the within-turn `maxToolTurns` guard.
+    max_turns: positiveInt.optional(),
     max_messages: positiveInt.optional(), // session-history cap before older turns are trimmed
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),

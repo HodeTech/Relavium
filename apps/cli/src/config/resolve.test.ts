@@ -12,9 +12,35 @@ describe('resolveConfig', () => {
       maxTokensEstimate: undefined,
       mediaCostEstimate: undefined,
       mediaGcGraceMs: undefined,
+      chat: {
+        defaultModel: undefined,
+        fsScope: undefined,
+        maxTurns: undefined,
+        maxMessages: undefined,
+        maxCostMicrocents: undefined,
+        onExceed: undefined,
+      },
       variables: {},
       mcpServers: [],
     });
+  });
+
+  it('resolves the [chat] block last-writer-wins (project > workspace), per field, absent ⇒ undefined', () => {
+    const workspace: ProjectConfig = {
+      chat: { default_model: 'w-model', fs_scope: 'sandboxed', max_turns: 20, max_messages: 100 },
+    };
+    const project: ProjectConfig = {
+      chat: { fs_scope: 'project', max_turns: 5, max_cost_microcents: 1000, on_exceed: 'warn' },
+    };
+    const resolved = resolveConfig({ workspace, project }).chat;
+    expect(resolved.maxTurns).toBe(5); // project overrides workspace
+    expect(resolved.fsScope).toBe('project'); // project overrides workspace
+    expect(resolved.defaultModel).toBe('w-model'); // falls back to workspace (project omits it)
+    expect(resolved.maxMessages).toBe(100); // falls back to workspace
+    expect(resolved.maxCostMicrocents).toBe(1000); // only on project
+    expect(resolved.onExceed).toBe('warn'); // only on project
+    // [chat] is project/workspace-scoped, not global — and absent at every layer ⇒ all undefined.
+    expect(resolveConfig({}).chat.maxTurns).toBeUndefined();
   });
 
   it('resolves media_gc_grace_days (2.S/D11) DAYS → ms, last-writer-wins, absent ⇒ undefined', () => {
