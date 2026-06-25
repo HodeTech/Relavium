@@ -147,7 +147,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // stays. NOTE: `save_to`'s scope root is the RESUMER's cwd (`relavium gate` ran here), not the original run's
     // cwd — so a run started in A, resumed from B, writes its save_to under B/.relavium/runs/. The authored
     // `{{ run.id }}` segment still keeps writes per-run-disambiguated; persisting the original run's project
-    // root for an identical location is a deferred refinement (deferred-tasks.md).
+    // root for an identical location is a deferred refinement (to be tracked in deferred-tasks.md).
     const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,

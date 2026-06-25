@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { createModelCatalogStore, type Db } from '@relavium/db';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
-import type { ResolvedConfig } from '../config/resolve.js';
 import { globalConfigDir } from '../config/paths.js';
+import type { ResolvedConfig } from '../config/resolve.js';
 import type { CliMediaOptions } from './host.js';
 
 /**

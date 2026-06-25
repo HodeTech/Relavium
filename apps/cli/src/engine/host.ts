@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 
 import {
   InMemoryRunStore,
@@ -65,6 +66,20 @@ export interface CliHostOptions {
 }
 
 /**
+ * Wire the `save_to` write port, provisioning its jail root first. The port itself fail-closes when the root is
+ * missing (`createFilesystemMediaWrite` `realpath`s it on every write, ADR-0044 §2) and never creates it — so it
+ * can't be coerced into materializing an arbitrary directory. Provisioning is therefore the HOST's job: a fresh
+ * `relavium run` in a project that has never produced media has no `<cwd>/.relavium/runs/` yet, and the first
+ * `save_to` deliverable must land, not fail the run. `mkdir(recursive)` is idempotent, so an existing root (the
+ * common case, and every host-test fixture) is a no-op. The CAS root is NOT provisioned here — `FilesystemMediaStore`
+ * lazily `mkdir`s its sharded path on `put`, so it self-provisions on first write.
+ */
+function wireSaveToPort(saveToRoot: string) {
+  mkdirSync(saveToRoot, { recursive: true });
+  return createFilesystemMediaWrite(saveToRoot);
+}
+
+/**
  * A real, node-backed {@link ExecutionHost} for the CLI — wall-clock ISO timestamps, UUID ids
  * (ADR-0022), `setTimeout` one-shot timers, and the global AbortController. `run` injects the durable
  * SQLite `RunStore` (2.H); `gate` additionally injects the durable {@link Checkpointer} (2.G) so a fresh
@@ -101,8 +116,7 @@ export function createCliHost(
     media?.referenceDb === undefined
       ? undefined
       : createMediaReferencePort(createMediaReferenceStore(media.referenceDb));
-  const mediaWrite =
-    media?.saveToRoot === undefined ? undefined : createFilesystemMediaWrite(media.saveToRoot);
+  const mediaWrite = media?.saveToRoot === undefined ? undefined : wireSaveToPort(media.saveToRoot);
   return {
     clock: { now: () => new Date().toISOString() },
     ids: { newId: () => randomUUID() },

@@ -114,6 +114,26 @@ describe('createCliHost', () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+
+    it('provisions a not-yet-existing saveToRoot so the first save_to write lands (not a loud fail)', async () => {
+      // The write port fail-closes if its jail root is missing — a fresh project has no `.relavium/runs/` yet, so
+      // the host must `mkdir -p` it. Point at a nested root whose ancestors do NOT exist and assert the first
+      // write succeeds (a regression that dropped the provisioning would throw MediaWriteError here).
+      const base = mkdtempSync(join(tmpdir(), 'relavium-saveto-fresh-'));
+      const saveToRoot = join(base, '.relavium', 'runs');
+      try {
+        expect(existsSync(saveToRoot)).toBe(false);
+        const { mediaWrite } = createCliHost(undefined, { media: { saveToRoot } });
+        if (mediaWrite === undefined) {
+          throw new Error('createCliHost must wire mediaWrite when a saveToRoot is given');
+        }
+        expect(existsSync(saveToRoot)).toBe(true); // provisioned at wiring time, before any write
+        await mediaWrite('out.bin', new Uint8Array([7]));
+        expect(Array.from(readFileSync(join(saveToRoot, 'out.bin')))).toEqual([7]);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('mediaStore + mediaReferences (the CAS + retention ports, 2.S / ADR-0042)', () => {

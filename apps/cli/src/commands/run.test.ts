@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -246,6 +246,60 @@ describe('runCommand', () => {
       // an unknown one is undefined (the host then defaults to the safe inline 'chat').
       expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
       expect(captured?.resolveMediaSurface?.('unknown-model')).toBeUndefined();
+      // With no project config, the call-site OMITS mediaCostEstimate (the exactOptionalPropertyTypes spread
+      // arm — never `{ mediaCostEstimate: undefined }`).
+      expect('mediaCostEstimate' in (captured ?? {})).toBe(false);
+      // The save_to scope root is the run's cwd: run.ts forwards `deps.global.cwd` into the helper, so a write
+      // through the wired port lands under <cwd>/.relavium/runs (proves the cwd plumbing + the root value, not
+      // just that the port is defined).
+      const mediaWrite = captured?.host?.mediaWrite;
+      if (mediaWrite === undefined) {
+        throw new Error('expected run.ts to wire mediaWrite when durable history is open');
+      }
+      await mediaWrite('out.bin', new Uint8Array([7]));
+      expect(existsSync(join(root, '.relavium', 'runs', 'out.bin'))).toBe(true);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('threads [defaults].media_cost_estimate from config into the engine options (the populated arm)', async () => {
+    // A project config under the run cwd sets the per-modality estimate; run.ts must forward it to the builder.
+    mkdirSync(join(root, '.relavium'), { recursive: true });
+    writeFileSync(
+      join(root, '.relavium', 'project.toml'),
+      '[defaults.media_cost_estimate]\nimage = 5\naudio = 9\n',
+    );
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    let captured: BuildEngineOptions | undefined;
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: (workflow) => ({
+            store: createRunHistoryStore(client.db, {
+              uuid: () => randomUUID(),
+              now: () => Date.now(),
+              workflow: {
+                slug: workflow.workflow.id,
+                name: workflow.workflow.id,
+                definitionJson: JSON.stringify(workflow),
+              },
+            }),
+            db: client.db,
+            close: () => {},
+          }),
+          buildEngine: (opts) => {
+            captured = opts;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(captured?.mediaCostEstimate).toEqual({ image: 5, audio: 9 });
     } finally {
       client.sqlite.close();
     }
