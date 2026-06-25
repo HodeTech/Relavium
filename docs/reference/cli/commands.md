@@ -93,7 +93,7 @@ before parsing the subcommand).
 
 ## Commands
 
-The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are **live**; the authoring commands (`create` / `import` / `export`) land at **2.J**, the chat family at **2.M–2.Q**, and `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
+The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), and **`chat`** (2.M) are **live**; the authoring commands (`create` / `import` / `export`) land at **2.J**, the rest of the chat family (`chat-resume` / `chat-list` / `chat-export` / `agent run`) at **2.N–2.Q**, and `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
 
 | Command | Purpose |
 |---------|---------|
@@ -231,7 +231,7 @@ CI relies on deterministic exit codes:
 | `1` | Workflow failed (a node errored and exhausted retries/fallbacks) |
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
-| `4` | A chat session ended via `/exit` (a clean, user-initiated end of an interactive `relavium chat` REPL) — see [chat-session.md](chat-session.md) |
+| `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
 
 > Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
 >
