@@ -1130,6 +1130,37 @@ describe('WorkflowEngine — the exactly-one-terminal-event invariant', () => {
     // The cost accrued before the cancel (cost:updated is transient) is durable on the terminal run event.
     expect(cancelled.cumulativeCostMicrocents).toBe(100);
   });
+
+  it('snapshots the run-wide cumulative cost onto run:failed (durable fail-cost, 2.S/D-GC, ADR-0045 §5)', async () => {
+    const events = await drain(
+      engineWith({
+        start: (ctx) => {
+          ctx.emit({
+            type: 'cost:updated',
+            nodeId: 'start',
+            model: 'm',
+            inputTokens: 1,
+            outputTokens: 1,
+            costMicrocents: 100,
+            cumulativeCostMicrocents: 0, // the engine owns the cumulative
+          });
+          return { kind: 'completed', output: 'start', tokensUsed: { input: 1, output: 1 } };
+        },
+        work: () => ({
+          kind: 'failed',
+          error: { code: 'tool_failed', message: 'boom', retryable: false },
+        }),
+      }).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    if (failed?.type !== 'run:failed') {
+      throw new Error('expected run:failed');
+    }
+    // The accrued cost (cost:updated is transient) is durable on the terminal run event, mirroring run:cancelled.
+    // A sibling node's abandoned media-job addend folds in the same way — emitted before this terminal in #settle
+    // (after the root-cause node:failed snapshot) — so run:failed never under-reports the run's realized cost.
+    expect(failed.cumulativeCostMicrocents).toBe(100);
+  });
 });
 
 // --- human gate suspend / resume --------------------------------------------------------------

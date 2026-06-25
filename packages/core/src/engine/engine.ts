@@ -1710,6 +1710,12 @@ class RunExecution {
           correlationId: this.#host.ids.newId(),
         },
         partialOutputs: this.#collectOutputs('completed'),
+        // Snapshot the run-wide cost onto the durable terminal (2.S/D-GC, ADR-0045 §5), mirroring run:cancelled
+        // below. The root-cause node's node:failed snapshotted the cumulative as of that node; a SIBLING's paid
+        // media job abandoned by this failure had its lone estimate addend emitted just above (#emitMediaJobCost,
+        // before this terminal), so the cumulative now includes it and the fail-cost is durable here (cost:updated
+        // is transient). The checkpoint fold reads cost only from node:completed, so this never affects resume.
+        cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
       };
     } else {
       // run:cancelled — snapshot the run-wide cost onto the durable terminal (2.S/D-GC, ADR-0045 §5). A paid

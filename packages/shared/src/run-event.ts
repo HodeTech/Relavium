@@ -350,6 +350,13 @@ export const RunFailedEventSchema = z.object({
   ...runBase,
   error: z.object({ ...eventErrorFields, nodeId: nonEmptyString.optional() }), // nodeId = root-cause node
   partialOutputs: z.record(z.string(), z.unknown()),
+  // The run-wide cost running total at failure (integer micro-cents). The root-cause node's node:failed snapshots
+  // the cumulative as of THAT node, but a SIBLING node's paid media job abandoned by the failure is still billed
+  // provider-side and its lone estimate addend is folded only just BEFORE this terminal (ADR-0045 §5) — after that
+  // node:failed was already emitted. Snapshotting the cumulative here makes that fail-cost durable (2.S/D-GC);
+  // cost:updated, its only other carrier, is streamed, never persisted. Optional for backward-compat; the engine
+  // always populates it. Mirrors run:cancelled.cumulativeCostMicrocents and run:completed.totalCostMicrocents.
+  cumulativeCostMicrocents: nonNegativeInt.optional(),
 });
 
 export const RunCancelledEventSchema = z.object({
