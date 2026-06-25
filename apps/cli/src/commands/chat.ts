@@ -121,7 +121,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       return;
     }
     if (line.startsWith('/')) {
-      deps.io.writeErr(`unknown command '${line}'. Available: /exit, /cancel.\n`);
+      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
+      // terminal control sequence (or a flood) into stderr.
+      const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
+      deps.io.writeErr(`unknown command '${safe}'. Available: /exit, /cancel.\n`);
       return;
     }
     store.appendUser(line);

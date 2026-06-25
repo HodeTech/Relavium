@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,7 +7,13 @@ import type { StreamChunk } from '@relavium/llm';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { scriptedResolver, textTurn, toolUseTurn } from '../chat/test-support.js';
+import { buildChatSession } from '../chat/session-host.js';
+import {
+  scriptedResolver,
+  textTurn,
+  toolUseTurn,
+  unresolvedResolver,
+} from '../chat/test-support.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
@@ -132,6 +138,49 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.session.status).toBe('ended');
   });
 
+  it('survives an error turn and keeps the REPL going (resilience)', async () => {
+    // unresolvedResolver settles every turn as an `internal` error (no throw); the REPL must keep accepting
+    // input and exit cleanly on /exit — both error turns roll back, so nothing persists.
+    const { d, store, sessionId } = deps(['hello', 'world', '/exit'], []);
+    const code = await chatCommand({ agent: undefined }, { ...d, providers: unresolvedResolver() });
+    expect(code).toBe(EXIT_CODES.chatEnded);
+    const full = store.loadFull(sessionId);
+    expect(full?.messages).toHaveLength(0);
+    expect(full?.session.status).toBe('ended');
+  });
+
+  it('binds an explicit --agent file (path) instead of the built-in default', async () => {
+    const agentPath = join(cwd, 'coder.agent.yaml');
+    writeFileSync(
+      agentPath,
+      'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.',
+    );
+    const { d, store, sessionId } = deps(['hi', '/exit'], [textTurn('done')]);
+    await chatCommand({ agent: agentPath }, d);
+    expect(store.loadFull(sessionId)?.session.agentSlug).toBe('coder'); // bound agent, not relavium-chat
+  });
+
+  it('ignores empty and whitespace-only input lines (no turn, no persistence)', async () => {
+    // Only ONE script is provided; if a blank line triggered a turn, the 2nd stream call would throw.
+    const { d, store, sessionId } = deps(['', '   ', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // exactly the one 'hello' exchange
+  });
+
+  it('routes a budget warning to stderr via the onBudgetWarning seam', async () => {
+    const { d, err } = deps(['/exit'], [textTurn('x')]);
+    let captured:
+      | ((w: { spentMicrocents: number; limitMicrocents: number; thresholdPct: number }) => void)
+      | undefined;
+    const withCapture: typeof buildChatSession = (opts) => {
+      captured = opts.onBudgetWarning;
+      return buildChatSession(opts);
+    };
+    await chatCommand({ agent: undefined }, { ...d, buildSession: withCapture });
+    captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 });
+    expect(err()).toContain('budget warning');
+  });
+
   it('surfaces an un-inferrable default model as a clean exit-2 CliError (before any session)', async () => {
     // A [chat].default_model the provider-inference can't map ⇒ buildChatSession throws CliError (exit 2).
     const { d } = deps(['/exit'], [textTurn('x')]);
@@ -149,22 +198,29 @@ describe('chatCommand', () => {
 });
 
 describe('makePlainPrinter', () => {
-  const ev = (e: Partial<SessionStreamHandleEvent> & { type: string }): SessionStreamHandleEvent =>
-    ({
-      sessionId: 'sess-1',
-      sequenceNumber: 0,
-      timestamp: '2026-06-25T00:00:00.000Z',
-      ...e,
-    }) as SessionStreamHandleEvent;
+  const STAMP = { sessionId: 'sess-1', sequenceNumber: 0, timestamp: '2026-06-25T00:00:00.000Z' };
+  const token = (text: string): SessionStreamHandleEvent => ({
+    type: 'agent:token',
+    ...STAMP,
+    nodeId: 'a',
+    token: text,
+    model: 'm',
+  });
+  const toolCall = (toolId: string): SessionStreamHandleEvent => ({
+    type: 'agent:tool_call',
+    ...STAMP,
+    nodeId: 'a',
+    model: 'm',
+    toolId,
+    toolInput: {},
+  });
 
   it('streams the assistant tokens and annotates a tool call (id only, no arguments)', () => {
     const { io, out } = captureIo();
     const print = makePlainPrinter(io);
-    print(ev({ type: 'agent:token', nodeId: 'a', token: 'hel', model: 'm' }));
-    print(ev({ type: 'agent:token', nodeId: 'a', token: 'lo', model: 'm' }));
-    print(
-      ev({ type: 'agent:tool_call', nodeId: 'a', model: 'm', toolId: 'read_file', toolInput: {} }),
-    );
+    print(token('hel'));
+    print(token('lo'));
+    print(toolCall('read_file'));
     expect(out()).toContain('hello');
     expect(out()).toContain('read_file');
   });
@@ -172,14 +228,13 @@ describe('makePlainPrinter', () => {
   it('marks a failed turn with its error code, secret-free', () => {
     const { io, out } = captureIo();
     const print = makePlainPrinter(io);
-    print(
-      ev({
-        type: 'session:turn_completed',
-        stopReason: 'error',
-        tokensUsed: { input: 0, output: 0 },
-        error: { code: 'turn_limit', message: 'secret-ish detail', retryable: false },
-      }),
-    );
+    print({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: { code: 'turn_limit', message: 'secret-ish detail', retryable: false },
+    });
     expect(out()).toContain('turn_limit');
     expect(out()).not.toContain('secret-ish detail'); // only the code, never the message
   });

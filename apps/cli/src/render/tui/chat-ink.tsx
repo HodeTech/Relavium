@@ -46,8 +46,10 @@ interface ChatAppProps {
   readonly onSubmit: (line: string) => Promise<void>;
   /** `true` once the session should end — the app unmounts via {@link onExit}. */
   readonly shouldStop: () => boolean;
-  /** Called once the session has ended so the driver can unmount + finalize. */
+  /** Called once the session has ended (clean exit) so the driver can unmount + finalize. */
   readonly onExit: () => void;
+  /** Called when a turn rejects UNEXPECTEDLY (a re-thrown turn-core bug) — the driver tears down + propagates. */
+  readonly onError: (err: unknown) => void;
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
@@ -59,9 +61,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const running = state.status === 'running';
 
   const submit = (line: string): void => {
-    void props.onSubmit(line).then(() => {
-      if (props.shouldStop()) props.onExit();
-    });
+    // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
+    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs).
+    void props.onSubmit(line).then(
+      () => {
+        if (props.shouldStop()) props.onExit();
+      },
+      (err: unknown) => props.onError(err),
+    );
   };
 
   useInput((char, key) => {
@@ -128,8 +135,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
   frame.unref();
 
   let resolveExit: () => void = () => undefined;
-  const exited = new Promise<void>((resolve) => {
+  let rejectExit: (err: unknown) => void = () => undefined;
+  const exited = new Promise<void>((resolve, reject) => {
     resolveExit = resolve;
+    rejectExit = reject;
   });
   const instance = render(
     createElement(ChatApp, {
@@ -137,6 +146,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
       onSubmit: ctx.processLine,
       shouldStop: ctx.shouldStop,
       onExit: () => resolveExit(),
+      // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
+      // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
+      onError: (err) => rejectExit(err),
     }),
     {
       // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
