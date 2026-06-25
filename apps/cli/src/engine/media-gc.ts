@@ -5,9 +5,12 @@ import {
   type Db,
   type MediaReferenceStore,
 } from '@relavium/db';
+import type { RunStatus } from '@relavium/shared';
 
-/** The terminal `runs.status` set — a run here will never be resumed, so its lingering `run`-refs are reclaimable. */
-const TERMINAL_RUN_STATUSES = new Set<string>(['completed', 'failed', 'cancelled']);
+/** The terminal `runs.status` set — a run here will never be resumed, so its lingering `run`-refs are reclaimable.
+ *  Typed as `Set<RunStatus>` (not `Set<string>`) so a misspelled status is a compile error and `.has(status)`
+ *  narrows against the closed run-status union. */
+const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['completed', 'failed', 'cancelled']);
 
 /**
  * The ADR-0042 §4 default grace window (7 days) before a zero-reference handle's bytes are reclaimed. The
@@ -88,11 +91,16 @@ export async function runHostMediaGc(deps: MediaGcDeps): Promise<MediaGcReport> 
     }
   }
 
-  // 2. Grace-window GC — reclaim the bytes of grace-expired zero-ref handles.
+  // 2. Grace-window GC — reclaim the bytes of grace-expired zero-ref handles. `reclaimExpired` soft-deletes the
+  //    rows synchronously and returns the handles; the CAS unlinks run concurrently (independent deletes).
+  //    Known best-effort gap (ADR-0042 §3): between the soft-delete and a delete, a concurrent process could
+  //    `recordObject` the same content-addressed handle (ON CONFLICT clears `deleted_at`), and the unlink would
+  //    then drop bytes that are live again — leaving a row with no file. It requires byte-identical content
+  //    re-produced inside a sub-ms window AFTER a full `graceMs` (7-day) zero-ref period, so it is negligible
+  //    today; if `graceMs` is ever shortened materially, gate each delete on a re-verify SELECT (skip a handle
+  //    whose `deleted_at` is NULL again).
   const expired = deps.references.reclaimExpired(deps.graceMs);
-  for (const handle of expired) {
-    await deps.casStore.delete(handle);
-  }
+  await Promise.all(expired.map((handle) => deps.casStore.delete(handle)));
 
   // 3. CAS-orphan sweep — skip entirely while another run could be mid-write; age-guard each candidate so a
   //    fresh row-less blob (a concurrent run's, not yet recordObject'd) is never deleted.
@@ -101,13 +109,13 @@ export async function runHostMediaGc(deps: MediaGcDeps): Promise<MediaGcReport> 
   if (orphanSweepRan) {
     const known = new Set(deps.references.listObjectHandles());
     const settledBefore = deps.now() - deps.orphanMinAgeMs;
-    for (const { handle, mtimeMs } of await deps.casStore.listHandles()) {
-      if (known.has(handle) || mtimeMs > settledBefore) {
-        continue; // has a row, OR too fresh to conclude it is a crash-orphan (a concurrent put)
-      }
-      await deps.casStore.delete(handle);
-      orphansDeleted += 1;
-    }
+    // A row-less blob is an orphan ONLY if it also aged past `orphanMinAgeMs` — a fresher one may be a concurrent
+    // run's just-`put` blob whose `recordObject` has not landed yet. Collect, then unlink concurrently.
+    const orphans = (await deps.casStore.listHandles())
+      .filter(({ handle, mtimeMs }) => !known.has(handle) && mtimeMs <= settledBefore)
+      .map(({ handle }) => handle);
+    await Promise.all(orphans.map((handle) => deps.casStore.delete(handle)));
+    orphansDeleted = orphans.length;
   }
 
   return { reclaimedRuns, graceReclaimed: expired.length, orphansDeleted, orphanSweepRan };

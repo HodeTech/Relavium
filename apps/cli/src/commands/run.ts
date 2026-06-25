@@ -144,7 +144,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     let engineOptions: BuildEngineOptions = { providers };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
-      const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
+      const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
+        deps.io.writeErr(`${m}\n`),
+      );
       mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC below
       // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
       // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check

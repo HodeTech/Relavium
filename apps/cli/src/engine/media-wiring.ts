@@ -52,8 +52,17 @@ export interface MediaEngineWiring {
  *     an unchecked node past the load gate. (A bare `instanceof TypeError` would be wrong here — better-sqlite3
  *     itself throws a `TypeError` on a closed connection, so the typed domain error is what makes this precise.)
  *   - a row whose `capabilities` fails `CapabilityFlagsSchema` (a partial / legacy blob) — `safeParse` defers.
+ *
+ * A `safeParse` defer is silent fail-open (the runtime FallbackChain pre-skip is the backstop), but it is
+ * indistinguishable from "model absent" to an operator. When a `warn` sink is supplied, the schema-mismatch defer
+ * emits a secret-free, per-model-deduped line (model id + Zod issue messages — capability flags carry no secret),
+ * so a future `CapabilityFlagsSchema` evolution that silently invalidates previously-valid rows is observable.
  */
-function createWorkflowModelCatalog(catalog: ModelCatalogStore): WorkflowModelCatalog {
+function createWorkflowModelCatalog(
+  catalog: ModelCatalogStore,
+  warn?: (message: string) => void,
+): WorkflowModelCatalog {
+  const warnedModels = new Set<string>();
   return (modelId) => {
     let record: ModelCatalogRecord | undefined;
     try {
@@ -68,7 +77,16 @@ function createWorkflowModelCatalog(catalog: ModelCatalogStore): WorkflowModelCa
       return undefined;
     }
     const parsed = CapabilityFlagsSchema.safeParse(record.capabilities);
-    return parsed.success ? parsed.data : undefined;
+    if (!parsed.success) {
+      if (warn !== undefined && !warnedModels.has(modelId)) {
+        warnedModels.add(modelId); // one line per model — a model referenced by N nodes warns once
+        warn(
+          `media: model '${modelId}' has a capabilities row that failed validation — the D15 load-check defers it (treated as unresolvable). Issues: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`,
+        );
+      }
+      return undefined;
+    }
+    return parsed.data;
   };
 }
 
@@ -84,6 +102,7 @@ export function buildMediaEngineWiring(
   homeDir: string,
   cwd: string,
   config: ResolvedConfig,
+  warn?: (message: string) => void,
 ): MediaEngineWiring {
   const catalog = createModelCatalogStore(db, { uuid: () => randomUUID(), now: () => Date.now() });
   return {
@@ -93,7 +112,7 @@ export function buildMediaEngineWiring(
       referenceDb: db,
     },
     resolveMediaSurface: catalog.resolveMediaSurface,
-    workflowModelCatalog: createWorkflowModelCatalog(catalog),
+    workflowModelCatalog: createWorkflowModelCatalog(catalog, warn),
     mediaCostEstimate: config.mediaCostEstimate,
   };
 }

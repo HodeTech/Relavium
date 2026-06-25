@@ -180,7 +180,9 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // cwd — so a run started in A, resumed from B, writes its save_to under B/.relavium/runs/. The authored
     // `{{ run.id }}` segment still keeps writes per-run-disambiguated; persisting the original run's project
     // root for an identical location is a deferred refinement (to be tracked in deferred-tasks.md).
-    const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
+    const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
+      deps.io.writeErr(`${m}\n`),
+    );
     // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
     // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
     // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.

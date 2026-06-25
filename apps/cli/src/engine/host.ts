@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 
 import {
   InMemoryRunStore,
@@ -71,16 +71,17 @@ export interface CliHostOptions {
  * on every write, ADR-0044 §2) and never creates it — so it can't be coerced into materializing an arbitrary
  * directory; provisioning is the HOST's job. A fresh `relavium run` in a project that has never produced media has
  * no `<cwd>/.relavium/runs/` yet, and the first `save_to` deliverable must land, not fail the run. Doing the
- * `mkdir` on the first WRITE (rather than eagerly in `createCliHost`) keeps a run WITHOUT any `save_to` from
- * requiring cwd write access — durable runs in a read-only environment don't fail at host construction.
- * `mkdir(recursive)` is idempotent (a no-op once the root exists) and runs before `createFilesystemMediaWrite`'s
- * `realpath` jail. The CAS root is NOT provisioned here — `FilesystemMediaStore` lazily `mkdir`s its sharded path
+ * `mkdir` on EVERY write (rather than eagerly in `createCliHost`) keeps a run WITHOUT any `save_to` from
+ * requiring cwd write access — durable runs in a read-only environment don't fail at host construction. The
+ * async `mkdir(recursive)` is idempotent (a ~no-op once the root exists) and runs before
+ * `createFilesystemMediaWrite`'s `realpath` jail; the await keeps the port fully non-blocking (matching the
+ * `node:fs/promises` pattern `FilesystemMediaStore.put` uses). The CAS root is NOT provisioned here — `FilesystemMediaStore` lazily `mkdir`s its sharded path
  * on `put`.
  */
 function wireSaveToPort(saveToRoot: string): ReturnType<typeof createFilesystemMediaWrite> {
   const write = createFilesystemMediaWrite(saveToRoot);
-  return (relativePath, bytes, signal) => {
-    mkdirSync(saveToRoot, { recursive: true });
+  return async (relativePath, bytes, signal) => {
+    await mkdir(saveToRoot, { recursive: true });
     return write(relativePath, bytes, signal);
   };
 }
