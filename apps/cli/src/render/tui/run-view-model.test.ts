@@ -748,9 +748,12 @@ describe('reduceRunEvent — produced media (2.S, the node:completed handle surf
     durationMs: 5,
   });
 
-  it('surfaces a produced handle (handle + mime + node) — never inline bytes', () => {
+  it('surfaces a produced handle (handle + mime + node) — never inline bytes, without disturbing node fields', () => {
     const s = reduceAll([completed('a', { content: [mediaPart(HANDLE_A)] }, 1)]);
     expect(s.producedMedia).toEqual([{ nodeId: 'a', handle: HANDLE_A, mimeType: 'image/png' }]);
+    // The media branch must not clobber the node's own lifecycle patch (status / durationMs).
+    expect(s.nodes['a']?.status).toBe('completed');
+    expect(s.nodes['a']?.durationMs).toBe(5);
   });
 
   it('stays empty for a text-only / null node output', () => {
@@ -803,13 +806,17 @@ describe('reduceRunEvent — produced media (2.S, the node:completed handle surf
   it('dedups the same handle across nodes (one deliverable; first-seen attribution wins)', () => {
     // An output node's save_to re-emits the SAME content-addressed handle its upstream producer already
     // surfaced — it is ONE artifact, listed once, attributed to the node that first produced it.
-    const s = reduceAll([
-      completed('producer', { content: [mediaPart(HANDLE_A)] }, 1),
+    const afterProducer = reduceAll([completed('producer', { content: [mediaPart(HANDLE_A)] }, 1)]);
+    const afterSaver = reduceRunEvent(
+      afterProducer,
       completed('saver', { content: [mediaPart(HANDLE_A)] }, 2),
-    ]);
-    expect(s.producedMedia).toEqual([
+    );
+    expect(afterSaver.producedMedia).toEqual([
       { nodeId: 'producer', handle: HANDLE_A, mimeType: 'image/png' },
     ]);
+    // The pure-duplicate event re-uses the SAME producedMedia array reference (the early-return on no fresh
+    // handles) — no needless state churn; a regression that re-allocated an equal array would trip this.
+    expect(afterSaver.producedMedia).toBe(afterProducer.producedMedia);
   });
 
   it('bounds the deliverables list to the trailing MAX_PRODUCED_MEDIA', () => {
