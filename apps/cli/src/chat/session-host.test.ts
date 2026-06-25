@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildChatSession, buildGovernorWiring, type ChatBudgetWarning } from './session-host.js';
-import { drainHandle, scriptedResolver, textTurn, unresolvedResolver } from './test-support.js';
+import {
+  drainHandle,
+  scriptedResolver,
+  textTurn,
+  toolUseTurn,
+  unresolvedResolver,
+} from './test-support.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
   defaultModel: undefined,
@@ -69,6 +75,25 @@ describe('buildChatSession', () => {
     expect(completed?.type === 'session:turn_completed' && completed.stopReason).toBe('stop');
   });
 
+  it('streams a tool-calling turn: the model calls a granted tool, the loop completes, the answer streams', async () => {
+    // Turn 1 calls read_file (a default-agent grant) → dispatched through the fail-closed {} host (a
+    // tool_result, unavailable) → turn 2 streams the final answer. The agent:tool_call annotation fires.
+    const built = build({
+      providers: scriptedResolver([toolUseTurn('c1', 'read_file'), textTurn('the answer')]),
+    });
+    built.session.start();
+    await built.session.sendMessage('read the file');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain('agent:tool_call'); // the tool call is annotated on the stream
+    const toolCall = events.find((e) => e.type === 'agent:tool_call');
+    expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('read_file');
+    const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
+    expect(tokens).toContain('the answer'); // the post-tool answer reached the stream
+  });
+
   it('enforces [chat].max_turns: an over-cap sendMessage settles loudly as turn_limit with no provider call', async () => {
     // unresolvedResolver ⇒ every turn fails fast as `internal` (a host-wiring gap) but still COUNTS toward
     // the cap, so the 3rd message past a cap of 2 is blocked as turn_limit without engaging a provider.
@@ -124,7 +149,7 @@ describe('buildGovernorWiring', () => {
     await expect(wiring?.preEgress(OVER_CAP)).rejects.toBeInstanceOf(BudgetPauseError);
   });
 
-  it('on_exceed:warn — preEgress is non-blocking and forwards to onWarning (no silent drop)', async () => {
+  it('on_exceed:warn — preEgress is non-blocking, forwards once to onWarning, and suppresses repeats', async () => {
     const warnings: ChatBudgetWarning[] = [];
     const wiring = buildGovernorWiring(
       { ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' },
@@ -132,7 +157,21 @@ describe('buildGovernorWiring', () => {
     );
     wiring?.updateCost(999_999);
     await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // warn never blocks
+    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // still non-blocking the 2nd time
+    // The governor emits the warning ONCE (#warningEmitted) — the 2nd over-cap call must not re-notify.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.limitMicrocents).toBe(1);
+  });
+
+  it('on_exceed:warn — a throwing onWarning surface never rejects preEgress (warn stays non-blocking)', async () => {
+    const wiring = buildGovernorWiring(
+      { ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' },
+      () => {
+        throw new Error('renderer blew up');
+      },
+    );
+    wiring?.updateCost(999_999);
+    // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed.
+    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
   });
 });

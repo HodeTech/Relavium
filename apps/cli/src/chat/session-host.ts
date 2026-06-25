@@ -143,11 +143,17 @@ export function buildGovernorWiring(
   const governor = new BudgetGovernor({
     budget,
     emit: (event) => {
-      onWarning?.({
-        spentMicrocents: event.spentMicrocents,
-        limitMicrocents: event.limitMicrocents,
-        thresholdPct: event.thresholdPct,
-      });
+      // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
+      // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.
+      try {
+        onWarning?.({
+          spentMicrocents: event.spentMicrocents,
+          limitMicrocents: event.limitMicrocents,
+          thresholdPct: event.thresholdPct,
+        });
+      } catch {
+        // The warn surface is advisory; it cannot block or fail the turn.
+      }
       return Promise.resolve();
     },
   });

@@ -41,7 +41,8 @@ export function resolveWorkflowSource(
 
 /**
  * The shared resolver for a bare-id-or-path YAML argument (workflow `<ref>`, agent `--agent <ref>`):
- * a path-like arg (absolute, slash-bearing, or `.yaml`/`.yml`/`.agent.yaml`) reads exactly that file;
+ * a path-like arg (absolute, slash-bearing, or ending in `.yaml`/`.yml` — which subsumes `.agent.yaml`)
+ * reads exactly that file;
  * a bare id/slug discovers `<projectConfigDir>/<subdir>/<id><suffix>` for each `idSuffixes` entry. The
  * host owns IO; the pure parser runs on the returned `yaml`. A miss is a clean exit-2 listing where it
  * looked, keyed on `kind` so the message names the right artifact.

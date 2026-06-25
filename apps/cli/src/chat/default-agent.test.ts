@@ -39,7 +39,14 @@ describe('buildDefaultChatAgent', () => {
     expect(agent.system_prompt.length).toBeGreaterThan(0);
     expect(agent.tools).toEqual([...DEFAULT_CHAT_TOOLS]);
     // Secure-by-default: no write / exec / commit / egress tool in the default grant.
-    for (const dangerous of ['write_file', 'run_command', 'git_commit', 'http_request']) {
+    for (const dangerous of [
+      'write_file',
+      'run_command',
+      'git_commit',
+      'http_request',
+      'web_search',
+      'mcp_call',
+    ]) {
       expect(agent.tools).not.toContain(dangerous);
     }
   });

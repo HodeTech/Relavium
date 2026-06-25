@@ -82,6 +82,19 @@ describe('resolveChatAgent', () => {
     expect(agent.id).toBe('coder');
   });
 
+  it('discovers a bare --agent id via the bare .yaml suffix (last in the fallback chain)', () => {
+    const projectConfigDir = join(dir, '.relavium');
+    mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
+    // Neither .agent.yaml nor .relavium.yaml exists — only coder.yaml, the third/last idSuffix.
+    writeFileSync(join(projectConfigDir, 'agents', 'coder.yaml'), AGENT_YAML);
+    const agent = resolveChatAgent('coder', {
+      cwd: dir,
+      projectConfigDir,
+      defaultModel: undefined,
+    });
+    expect(agent.id).toBe('coder');
+  });
+
   it('is a clean exit-2 CliError when the --agent ref is not found', () => {
     let caught: unknown;
     try {
@@ -100,6 +113,25 @@ describe('resolveChatAgent', () => {
     }
   });
 
+  it('reports a clean "no project" miss for a bare id when there is no .relavium/ project dir', () => {
+    let caught: unknown;
+    try {
+      resolveChatAgent('some-agent', {
+        cwd: dir,
+        projectConfigDir: undefined,
+        defaultModel: undefined,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    // A bare id with no project dir has no candidate paths — a clean exit-2, not a crash.
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('no project');
+    }
+  });
+
   it('surfaces an invalid .agent.yaml as a field-named AgentParseError (not a silent default or CliError)', () => {
     const path = join(dir, 'bad.agent.yaml');
     writeFileSync(path, 'id: bad\nprovider: not-a-provider\nmodel: m\nsystem_prompt: x');
@@ -112,6 +144,8 @@ describe('resolveChatAgent', () => {
     // A schema failure is a typed parse error naming the offending field — NOT an invocation CliError.
     expect(caught).toBeInstanceOf(AgentParseError);
     expect(isCliError(caught)).toBe(false);
-    expect(String((caught as AgentParseError).message)).toMatch(/provider/i);
+    if (caught instanceof AgentParseError) {
+      expect(caught.message).toMatch(/provider/i); // names the offending field, secret-free
+    }
   });
 });
