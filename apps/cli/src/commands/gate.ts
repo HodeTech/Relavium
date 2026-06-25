@@ -30,7 +30,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
-import { driveRun, outcomeToExitCode } from './drive.js';
+import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
 
 export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
@@ -192,16 +192,6 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       io: deps.io,
     });
 
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — the gate-resumed run reached a terminal too, so sweep best-effort,
-    // exactly as `run` does (the same helper). Keyed on the terminal; a GC failure is swallowed.
-    if (wiring.media.casRoot !== undefined) {
-      await (deps.sweepMedia ?? defaultSweepMedia)({
-        db: opened.db,
-        casRoot: wiring.media.casRoot,
-        currentRunId: args.runId,
-      });
-    }
-
     if (outcome === undefined) {
       // The resumed handle closed with NO events. The engine returns a closed handle when its own internal
       // checkpoint re-read already found the run terminal — i.e. a concurrent `relavium gate` settled it in the
@@ -209,6 +199,17 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // already completed), not a failure: exit 0, mirroring the selectGate terminal path.
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
+    }
+
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
+    // `run` does (the same helper). A re-pause (a second gate / budget pause) is NOT terminal: skip it, so the
+    // still-paused run's media survives for the next resume. A GC failure is swallowed (never a correctness break).
+    if (wiring.media.casRoot !== undefined && isTerminalOutcome(outcome)) {
+      await (deps.sweepMedia ?? defaultSweepMedia)({
+        db: opened.db,
+        casRoot: wiring.media.casRoot,
+        currentRunId: args.runId,
+      });
     }
     return outcomeToExitCode(outcome);
   } finally {

@@ -390,6 +390,30 @@ describe('runCommand', () => {
     expect(swept).toBe(false); // no openRunStore ⇒ no media wiring ⇒ the GC never runs
   });
 
+  it('skips the host media GC on a non-terminal (paused) outcome — a resumable run keeps its media (2.S/D-GC)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    let swept = false;
+    try {
+      const code = await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: () => {
+            swept = true;
+            return Promise.resolve(undefined);
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.gatePaused); // exit 3 — the run paused at the human gate
+    } finally {
+      client.sqlite.close();
+    }
+    expect(swept).toBe(false); // the GC must NOT run while the run is merely paused (its media survives the resume)
+  });
+
   it('rejects an agent node whose output_modalities exceed the catalog model at LOAD — exit 2, engine never built (D15)', async () => {
     const client = createClient(':memory:');
     runMigrations(client.db);

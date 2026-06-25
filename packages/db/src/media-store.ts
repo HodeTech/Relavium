@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import {
@@ -126,40 +126,46 @@ export class FilesystemMediaStore implements MediaStore {
   }
 
   /**
-   * Delete a blob by handle — the host GC's byte-reclamation step (2.S/D-GC, ADR-0042 §4c: a grace-expired or
-   * row-less-orphan handle). `digestOf` rejects a non-`media://` handle and `#pathFor` jails the path, so this
-   * can never unlink outside the store root. Idempotent: a missing blob (already reclaimed / never written) is a
-   * no-op via `rm`'s `force`. NOT on the `MediaStore` engine port — GC is a host concern, not an engine one.
+   * Delete a blob by handle — the host GC's byte-reclamation step (2.S/D-GC, ADR-0042 §4: a grace-expired handle
+   * (§4c) or a row-less-orphan handle from a crash). `digestOf` rejects a non-`media://` handle and `#pathFor`
+   * jails the path, so this can never unlink outside the store root. Idempotent: a missing blob (already
+   * reclaimed / never written) is a no-op via `rm`'s `force`. NOT on the `MediaStore` engine port — GC is a host
+   * concern, not an engine one.
    */
   async delete(handle: string): Promise<void> {
     await rm(this.#pathFor(digestOf(handle)), { force: true });
   }
 
   /**
-   * Enumerate every well-formed `media://sha256-<hex>` handle the CAS currently holds — the host GC's
-   * orphan-detection input (a blob with no `media_objects` row, 2.S/D-GC). Reconstructs the handle from the
-   * shard dir + filename and re-validates it against {@link MEDIA_HANDLE_PATTERN}, so a stray `.tmp` from an
-   * interrupted publish, or any non-conforming file, is skipped (never returned as a handle). An absent root
-   * (the CAS was never written) yields `[]`.
+   * Enumerate every well-formed `media://sha256-<hex>` handle the CAS currently holds, each with its blob's
+   * `mtimeMs` — the host GC's orphan-detection + age-guard input (a row-less blob, 2.S/D-GC; the `mtimeMs` lets
+   * the GC skip a freshly-written blob a concurrent run may not have `recordObject`'d yet). Reconstructs the
+   * handle from the shard dir + filename and re-validates it against {@link MEDIA_HANDLE_PATTERN}, so a stray
+   * `.tmp` from an interrupted publish, or any non-conforming name, is skipped; the inner loop also skips a
+   * non-file (a stray subdir). An absent root (the CAS was never written) yields `[]`.
    */
-  async listHandles(): Promise<string[]> {
+  async listHandles(): Promise<Array<{ handle: string; mtimeMs: number }>> {
     if (!existsSync(this.#root)) {
       return [];
     }
-    const handles: string[] = [];
+    const out: Array<{ handle: string; mtimeMs: number }> = [];
     for (const shard of await readdir(this.#root, { withFileTypes: true })) {
       // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
       if (!shard.isDirectory() || !/^[0-9a-f]{2}$/.test(shard.name)) {
         continue;
       }
-      for (const file of await readdir(join(this.#root, shard.name))) {
-        const handle = `${HANDLE_PREFIX}${shard.name}${file}`;
+      const shardDir = join(this.#root, shard.name);
+      for (const entry of await readdir(shardDir, { withFileTypes: true })) {
+        if (!entry.isFile()) {
+          continue; // a stray subdir inside a shard could otherwise reconstruct a bogus 62-hex "handle"
+        }
+        const handle = `${HANDLE_PREFIX}${shard.name}${entry.name}`;
         if (MEDIA_HANDLE_PATTERN.test(handle)) {
-          handles.push(handle);
+          out.push({ handle, mtimeMs: (await stat(join(shardDir, entry.name))).mtimeMs });
         }
       }
     }
-    return handles;
+    return out;
   }
 
   /** Resolve the CAS path for a validated digest, fail-closed if it would escape the store root. */

@@ -128,20 +128,25 @@ describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandl
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it('listHandles enumerates every stored handle; an absent root yields []', async () => {
+  it('listHandles enumerates every stored handle (with mtime); an absent root yields []', async () => {
     expect(await store.listHandles()).toEqual([]); // never written ⇒ no root
     const h1 = await store.put(new Uint8Array([1]));
     const h2 = await store.put(new Uint8Array([2, 3]));
-    expect(new Set(await store.listHandles())).toEqual(new Set([h1, h2]));
+    const listed = await store.listHandles();
+    expect(new Set(listed.map((e) => e.handle))).toEqual(new Set([h1, h2]));
+    expect(listed.every((e) => typeof e.mtimeMs === 'number' && e.mtimeMs > 0)).toBe(true);
   });
 
-  it('listHandles skips a non-conforming file (a stray .tmp from an interrupted publish)', async () => {
+  it('listHandles skips strays: a non-conforming file, a non-shard dir, a root file, a subdir in a shard', async () => {
     const h1 = await store.put(HELLO);
     const shard = h1.slice('media://sha256-'.length, 'media://sha256-'.length + 2);
-    // A leftover temp file in the same shard dir must never be returned as a handle.
-    mkdirSync(join(root, shard), { recursive: true });
+    // (a) a leftover temp file in the shard dir; (b) a subdir inside the shard dir (would reconstruct a bogus
+    // handle if treated as a file); (c) a non-2-hex dir at the root; (d) a loose file at the root.
     writeFileSync(join(root, shard, `.save.${'0'.repeat(8)}.tmp`), 'x');
-    expect(await store.listHandles()).toEqual([h1]);
+    mkdirSync(join(root, shard, 'a'.repeat(62)), { recursive: true });
+    mkdirSync(join(root, 'zz-not-a-shard'), { recursive: true });
+    writeFileSync(join(root, 'loose-file'), 'x');
+    expect((await store.listHandles()).map((e) => e.handle)).toEqual([h1]); // only the real blob
   });
 
   it('delete removes a blob (a later get fails) and is idempotent on a missing blob', async () => {

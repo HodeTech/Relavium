@@ -195,6 +195,18 @@ export function outcomeToExitCode(outcome: RunOutcome | undefined): ExitCode {
   }
 }
 
+/**
+ * Did the run reach a TERMINAL disposition (`completed | failed | cancelled`)? `paused` is non-terminal (the run
+ * is resumable) and `undefined` is an abnormal no-terminal unwind — neither is terminal. The single owner of the
+ * "is this run done" predicate, shared by `run`/`gate` so the run-end host media GC fires only on a real terminal
+ * (2.S/D-GC — never while a run is merely paused, whose media it must keep for the resume).
+ */
+export function isTerminalOutcome(
+  outcome: RunOutcome | undefined,
+): outcome is 'completed' | 'failed' | 'cancelled' {
+  return outcome === 'completed' || outcome === 'failed' || outcome === 'cancelled';
+}
+
 function nextOutcome(current: RunOutcome | undefined, event: RunEvent): RunOutcome | undefined {
   switch (event.type) {
     case 'run:completed':

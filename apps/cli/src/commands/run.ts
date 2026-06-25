@@ -32,7 +32,7 @@ import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
-import { driveRun, outcomeToExitCode } from './drive.js';
+import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
 
 export interface RunCommandArgs {
@@ -182,11 +182,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       io: deps.io,
     });
 
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — a best-effort, run-end pass keyed on the terminal run event: the
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — a best-effort pass keyed on the run reaching a TERMINAL event: the
     // clean-terminal reclaim retry (a crash-dropped prior sweep) + the grace-window byte reclaim + the CAS-orphan
-    // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Only when
-    // durable history (the references db) + the CAS root are wired (the in-memory unit/harness path skips it).
-    if (opened !== undefined && mediaCasRoot !== undefined) {
+    // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Skipped on a
+    // `paused` outcome (the run is resumable — its media must survive) and on the in-memory unit/harness path.
+    if (opened !== undefined && mediaCasRoot !== undefined && isTerminalOutcome(outcome)) {
       await (deps.sweepMedia ?? defaultSweepMedia)({
         db: opened.db,
         casRoot: mediaCasRoot,
