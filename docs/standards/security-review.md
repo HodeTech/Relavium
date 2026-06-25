@@ -127,7 +127,8 @@ SSRF range-primitive — never a second hand-rolled parser. The same validation
 (HTTPS only, reject non-HTTP(S) schemes and credentials-in-URL, and **block
 private/loopback/link-local/metadata ranges** — `127.0.0.0/8`, `::1`, `10/8`,
 `172.16/12`, `192.168/16`, `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
-unless the user has explicitly opted into a local endpoint) applies to all three:
+unless the user has explicitly opted into a local endpoint) applies to **all four** — including the media `url`
+carrier fetched by `fetchMediaBytes`:
 
 - **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
   user-supplied `baseURL`. Never let an agent-config URL cause the engine to call an
