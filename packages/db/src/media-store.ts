@@ -163,22 +163,38 @@ export class FilesystemMediaStore implements MediaStore {
       }
       const shardDir = join(this.#root, shard.name);
       for (const entry of await readdir(shardDir, { withFileTypes: true })) {
-        if (!entry.isFile()) {
-          continue; // a stray subdir inside a shard could otherwise reconstruct a bogus 62-hex "handle"
-        }
-        const handle = `${HANDLE_PREFIX}${shard.name}${entry.name}`;
-        if (!MEDIA_HANDLE_PATTERN.test(handle)) {
-          continue;
-        }
-        try {
-          out.push({ handle, mtimeMs: (await stat(join(shardDir, entry.name))).mtimeMs });
-        } catch {
-          // The blob vanished between the readdir and the stat (a concurrent delete / GC) — skip it, never
-          // abort the whole listing. An un-stat-able entry is not a usable handle anyway.
+        const found = await this.#handleForEntry(shardDir, shard.name, entry);
+        if (found !== undefined) {
+          out.push(found);
         }
       }
     }
     return out;
+  }
+
+  /** Reconstruct + stat one shard-dir entry into a `{handle, mtimeMs}`, or `undefined` to skip it: a non-file (a
+   *  stray subdir), a non-conforming name (a `.tmp`), or a blob that vanished between the readdir and the stat (a
+   *  concurrent delete — ENOENT). A real permission / IO `stat` fault propagates (never a silent partial listing). */
+  async #handleForEntry(
+    shardDir: string,
+    shardName: string,
+    entry: Dirent,
+  ): Promise<{ handle: string; mtimeMs: number } | undefined> {
+    if (!entry.isFile()) {
+      return undefined;
+    }
+    const handle = `${HANDLE_PREFIX}${shardName}${entry.name}`;
+    if (!MEDIA_HANDLE_PATTERN.test(handle)) {
+      return undefined;
+    }
+    try {
+      return { handle, mtimeMs: (await stat(join(shardDir, entry.name))).mtimeMs };
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        return undefined;
+      }
+      throw err;
+    }
   }
 
   /** Resolve the CAS path for a validated digest, fail-closed if it would escape the store root. */

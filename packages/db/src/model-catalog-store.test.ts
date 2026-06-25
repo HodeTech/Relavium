@@ -159,7 +159,7 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
       .from(modelCatalog)
       .where(eq(modelCatalog.modelId, 'gpt-image-1'))
       .all();
-    expect(rows.length).toBe(1);
+    expect(rows).toHaveLength(1);
     expect(b.modelId).toBe(a.modelId);
   });
 
@@ -206,7 +206,7 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
       .from(modelCatalog)
       .where(eq(modelCatalog.modelId, 'gpt-image-1'))
       .all();
-    expect(both.length).toBe(2);
+    expect(both).toHaveLength(2);
     const surfaces = [0, 1, 2].map(() => store.resolveMediaSurface('gpt-image-1'));
     expect(surfaces).toEqual(['generative', 'generative', 'generative']);
     expect(store.getByModelId('gpt-image-1')?.providerId).toBe(secondProviderId);

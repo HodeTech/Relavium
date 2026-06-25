@@ -128,8 +128,11 @@ describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandl
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it('listHandles enumerates every stored handle (with mtime); an absent root yields []', async () => {
-    expect(await store.listHandles()).toEqual([]); // never written ⇒ no root
+  it('listHandles enumerates every stored handle (with mtime); an empty or absent root yields []', async () => {
+    expect(await store.listHandles()).toEqual([]); // the root exists but is empty
+    // A store at a NEVER-created path exercises the absent-root (readdir ENOENT) branch — not just empty-dir.
+    const absent = new FilesystemMediaStore(join(root, 'never-created-subdir'));
+    expect(await absent.listHandles()).toEqual([]);
     const h1 = await store.put(new Uint8Array([1]));
     const h2 = await store.put(new Uint8Array([2, 3]));
     const listed = await store.listHandles();

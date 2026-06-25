@@ -152,7 +152,7 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     expect(new Set(store.listObjectHandles())).toEqual(new Set([HANDLE, h2]));
     // A GC-soft-deleted (deleted_at set) row still HAS a row — its blob is not a row-less orphan, so it stays in
     // the set (both handles are unreferenced + past a 0 grace ⇒ reclaimExpired soft-deletes them).
-    expect(store.reclaimExpired(0).length).toBe(2);
+    expect(store.reclaimExpired(0)).toHaveLength(2);
     expect(new Set(store.listObjectHandles())).toEqual(new Set([HANDLE, h2]));
   });
 
