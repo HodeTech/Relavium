@@ -115,10 +115,10 @@ describe('createCliHost', () => {
       }
     });
 
-    it('provisions a not-yet-existing saveToRoot so the first save_to write lands (not a loud fail)', async () => {
+    it('provisions a not-yet-existing saveToRoot LAZILY on the first write (not at host construction)', async () => {
       // The write port fail-closes if its jail root is missing — a fresh project has no `.relavium/runs/` yet, so
-      // the host must `mkdir -p` it. Point at a nested root whose ancestors do NOT exist and assert the first
-      // write succeeds (a regression that dropped the provisioning would throw MediaWriteError here).
+      // the host `mkdir -p`s it. But LAZILY (on the first write), so wiring the host for a run WITHOUT save_to
+      // never needs cwd write access (read-only-env safe). Point at a nested root whose ancestors do NOT exist.
       const base = mkdtempSync(join(tmpdir(), 'relavium-saveto-fresh-'));
       const saveToRoot = join(base, '.relavium', 'runs');
       try {
@@ -127,8 +127,9 @@ describe('createCliHost', () => {
         if (mediaWrite === undefined) {
           throw new Error('createCliHost must wire mediaWrite when a saveToRoot is given');
         }
-        expect(existsSync(saveToRoot)).toBe(true); // provisioned at wiring time, before any write
+        expect(existsSync(saveToRoot)).toBe(false); // NOT provisioned at construction — lazy
         await mediaWrite('out.bin', new Uint8Array([7]));
+        expect(existsSync(saveToRoot)).toBe(true); // provisioned on the first write, and the bytes landed
         expect(Array.from(readFileSync(join(saveToRoot, 'out.bin')))).toEqual([7]);
       } finally {
         rmSync(base, { recursive: true, force: true });

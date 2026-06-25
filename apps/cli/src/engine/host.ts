@@ -66,17 +66,23 @@ export interface CliHostOptions {
 }
 
 /**
- * Wire the `save_to` write port, provisioning its jail root first. The port itself fail-closes when the root is
- * missing (`createFilesystemMediaWrite` `realpath`s it on every write, ADR-0044 §2) and never creates it — so it
- * can't be coerced into materializing an arbitrary directory. Provisioning is therefore the HOST's job: a fresh
- * `relavium run` in a project that has never produced media has no `<cwd>/.relavium/runs/` yet, and the first
- * `save_to` deliverable must land, not fail the run. `mkdir(recursive)` is idempotent, so an existing root (the
- * common case, and every host-test fixture) is a no-op. The CAS root is NOT provisioned here — `FilesystemMediaStore`
- * lazily `mkdir`s its sharded path on `put`, so it self-provisions on first write.
+ * Wire the `save_to` write port, provisioning its jail root LAZILY — on the first actual write, not at host
+ * construction. The port itself fail-closes when the root is missing (`createFilesystemMediaWrite` `realpath`s it
+ * on every write, ADR-0044 §2) and never creates it — so it can't be coerced into materializing an arbitrary
+ * directory; provisioning is the HOST's job. A fresh `relavium run` in a project that has never produced media has
+ * no `<cwd>/.relavium/runs/` yet, and the first `save_to` deliverable must land, not fail the run. Doing the
+ * `mkdir` on the first WRITE (rather than eagerly in `createCliHost`) keeps a run WITHOUT any `save_to` from
+ * requiring cwd write access — durable runs in a read-only environment don't fail at host construction.
+ * `mkdir(recursive)` is idempotent (a no-op once the root exists) and runs before `createFilesystemMediaWrite`'s
+ * `realpath` jail. The CAS root is NOT provisioned here — `FilesystemMediaStore` lazily `mkdir`s its sharded path
+ * on `put`.
  */
-function wireSaveToPort(saveToRoot: string) {
-  mkdirSync(saveToRoot, { recursive: true });
-  return createFilesystemMediaWrite(saveToRoot);
+function wireSaveToPort(saveToRoot: string): ReturnType<typeof createFilesystemMediaWrite> {
+  const write = createFilesystemMediaWrite(saveToRoot);
+  return (relativePath, bytes, signal) => {
+    mkdirSync(saveToRoot, { recursive: true });
+    return write(relativePath, bytes, signal);
+  };
 }
 
 /**

@@ -30,7 +30,12 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
-import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
+import {
+  assertWorkflowCatalogValid,
+  driveRun,
+  isTerminalOutcome,
+  outcomeToExitCode,
+} from './drive.js';
 
 export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
@@ -54,6 +59,30 @@ export interface GateCommandDeps {
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * Resume the run from its checkpoint, mapping a typed engine refusal (e.g. `workflow_mismatch` on a corrupt
+ * store) to a clean exit-2 invocation fault rather than an unhandled crash — surfaced with the engine's reason.
+ */
+async function resumeOrFail(
+  engine: WorkflowEngine,
+  params: Parameters<WorkflowEngine['resumeFromCheckpoint']>[0],
+): Promise<RunHandle> {
+  try {
+    return await engine.resumeFromCheckpoint(params);
+  } catch (err) {
+    if (err instanceof EngineStateError) {
+      throw new CliError(
+        'invalid_invocation',
+        `cannot resume run ${params.runId}: ${err.message}`,
+        {
+          cause: err,
+        },
+      );
+    }
+    throw err;
+  }
+}
 
 /**
  * The `relavium gate` core (**2.G**) — resolve a pending human gate from the terminal, the surface-agnostic
@@ -152,6 +181,10 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // `{{ run.id }}` segment still keeps writes per-run-disambiguated; persisting the original run's project
     // root for an identical location is a deferred refinement (to be tracked in deferred-tasks.md).
     const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
+    // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
+    // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
+    // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
+    assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
       host: createCliHost(store, { checkpointer, media: wiring.media }),
@@ -160,29 +193,13 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
         ? {}
         : { mediaCostEstimate: wiring.mediaCostEstimate }),
     });
-    let handle: RunHandle;
-    try {
-      handle = await engine.resumeFromCheckpoint({
-        runId: args.runId,
-        workflow,
-        inputs,
-        gateId: selection.gateId,
-        decision,
-      });
-    } catch (err) {
-      // A typed engine refusal (e.g. workflow_mismatch on a corrupt store) is an invalid invocation, not an
-      // unhandled crash — surface it cleanly as exit 2 with the engine's reason.
-      if (err instanceof EngineStateError) {
-        throw new CliError(
-          'invalid_invocation',
-          `cannot resume run ${args.runId}: ${err.message}`,
-          {
-            cause: err,
-          },
-        );
-      }
-      throw err;
-    }
+    const handle = await resumeOrFail(engine, {
+      runId: args.runId,
+      workflow,
+      inputs,
+      gateId: selection.gateId,
+      decision,
+    });
 
     const outcome = await driveRun({
       engine,

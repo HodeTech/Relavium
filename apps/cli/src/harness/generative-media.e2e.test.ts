@@ -68,18 +68,23 @@ function generativeProvider(): LlmProvider {
   };
 }
 
+// `os.homedir()` reads `HOME` on POSIX but `USERPROFILE` on Windows — override both so the hermetic home holds
+// on every platform (CI), and the global CAS always lands in the tmpdir, never the developer's real `~`.
+const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
+
 describe('generative media-output — end-to-end on the CLI (2.S acceptance)', () => {
   let home: string;
   let cwd: string;
   let client: DbClient;
-  let realHome: string | undefined;
+  const savedHome = new Map<string, string | undefined>();
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'relavium-gen-home-'));
     cwd = mkdtempSync(join(tmpdir(), 'relavium-gen-cwd-'));
-    // Point HOME at the tmpdir so loadResolvedConfig's `homedir()` → the global CAS lands there, not the real ~.
-    realHome = process.env['HOME'];
-    process.env['HOME'] = home;
+    for (const v of HOME_ENV_VARS) {
+      savedHome.set(v, process.env[v]);
+      process.env[v] = home;
+    }
     client = createClient(':memory:');
     runMigrations(client.db);
     const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
@@ -100,10 +105,13 @@ describe('generative media-output — end-to-end on the CLI (2.S acceptance)', (
   });
 
   afterEach(() => {
-    if (realHome === undefined) {
-      delete process.env['HOME'];
-    } else {
-      process.env['HOME'] = realHome;
+    for (const v of HOME_ENV_VARS) {
+      const prior = savedHome.get(v);
+      if (prior === undefined) {
+        delete process.env[v];
+      } else {
+        process.env[v] = prior;
+      }
     }
     client.sqlite.close();
     rmSync(home, { recursive: true, force: true });

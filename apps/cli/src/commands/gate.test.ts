@@ -27,7 +27,7 @@ import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { gateCommand, selectGate, type GateCommandDeps } from './gate.js';
 
 /** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
@@ -235,6 +235,55 @@ describe('gateCommand', () => {
     expect(sweptArgs?.db).toBe(db);
     expect(sweptArgs?.currentRunId).toBe(runId);
     expect(sweptArgs?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
+  });
+
+  it('re-runs the D15 catalog load-check on resume: a node incapable in the current catalog rejects (exit 2)', async () => {
+    // A workflow whose downstream agent (model `chat-text`) authored output_modalities [text, image] the model
+    // can't produce. The gate is BEFORE the agent, so the paused snapshot never ran it; on resume the gate path
+    // runs the SAME catalog check `run` does — and rejects (exit 2), consistently with a fresh run.
+    const incapableGated = `schema_version: '1.0'
+workflow:
+  id: gate-incapable
+  agents:
+    - { id: painter, model: gpt-4o, provider: openai, system_prompt: paint }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: a, type: agent, agent_ref: painter, model: chat-text, output_modalities: ['text', 'image'] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: a }
+    - { from: a, to: out }
+`;
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(db, dbDeps).upsert({
+      providerId,
+      modelId: 'chat-text',
+      displayName: 'Chat Text',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'chat',
+      capabilities: CHAT_TEXT_CAPABILITY_FLAGS,
+    });
+    const { runId } = await setupPausedRun(incapableGated, {});
+    const { io } = captureIo();
+    let caught: unknown;
+    try {
+      await gateCommand({ runId, approve: true }, deps(io));
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('chat-text'); // the catalog check rejected it, not a generic fault
+    }
   });
 
   it('resumes a paused run on --approve, drives it to completion (exit 0), and persists the decision', async () => {

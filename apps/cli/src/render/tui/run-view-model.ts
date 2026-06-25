@@ -1,4 +1,9 @@
-import { collectDurableMediaHandles, type AgentTokenEvent, type RunEvent } from '@relavium/shared';
+import {
+  collectDurableMediaHandles,
+  type AgentTokenEvent,
+  type NodeCompletedEvent,
+  type RunEvent,
+} from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -240,6 +245,32 @@ function reduceAgentToken(base: RunViewState, event: AgentTokenEvent): RunViewSt
 }
 
 /**
+ * The `node:completed` reduction (extracted to keep {@link reduceRunEvent}'s switch lean): mark the node
+ * completed, fold its cumulative-cost snapshot into the running total, and append any produced media deliverables
+ * (handle-only — the engine de-inlined any bytes at the emit choke point, ADR-0042; `collectDurableMediaHandles`
+ * walks the `unknown` output cycle-safe + deduped, so a text-only node yields none).
+ */
+function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): RunViewState {
+  const produced = collectDurableMediaHandles(event.output).map(
+    (meta): ProducedMediaView => ({
+      nodeId: event.nodeId,
+      handle: meta.handle,
+      mimeType: meta.mimeType,
+    }),
+  );
+  return {
+    ...base,
+    ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
+    ...(event.cumulativeCostMicrocents === undefined
+      ? {}
+      : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+    ...(produced.length === 0
+      ? {}
+      : { producedMedia: appendProducedMedia(base.producedMedia, produced) }),
+  };
+}
+
+/**
  * Reduce one canonical {@link RunEvent} into the next immutable {@link RunViewState}. Pure: no I/O, no
  * mutation of `state`. A token reduce is shallow (only the active buffer changes) so a high token rate
  * stays cheap. Unknown/forward event types fall through (the run-event union is intentionally lenient).
@@ -301,28 +332,8 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'cost:updated':
       return { ...base, cumulativeCostMicrocents: event.cumulativeCostMicrocents };
 
-    case 'node:completed': {
-      // A media-producing node's output carries durable `media://` handles (the engine de-inlined any bytes at
-      // the emit choke point, ADR-0042). Surface each as a deliverable — handle-only, never bytes. `output` is
-      // `unknown`; `collectDurableMediaHandles` walks it cycle-safe + deduped, so a text-only node yields [].
-      const produced = collectDurableMediaHandles(event.output).map(
-        (meta): ProducedMediaView => ({
-          nodeId: event.nodeId,
-          handle: meta.handle,
-          mimeType: meta.mimeType,
-        }),
-      );
-      return {
-        ...base,
-        ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
-        ...(event.cumulativeCostMicrocents === undefined
-          ? {}
-          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
-        ...(produced.length === 0
-          ? {}
-          : { producedMedia: appendProducedMedia(base.producedMedia, produced) }),
-      };
-    }
+    case 'node:completed':
+      return reduceNodeCompleted(base, event);
 
     case 'node:failed':
       return {
@@ -332,6 +343,12 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           errorCode: event.error.code,
           ...attemptPatch(event.attemptNumber),
         }),
+        // node:failed carries the run-wide cost snapshot at this boundary (2.S/D-GC durable fail-cost) — fold it
+        // into the running total just like node:completed, so a billed-but-failed media job's cost survives a
+        // durable reconstruction (cost:updated is streamed-only). Optional (older logs omit it).
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
       };
 
     case 'node:skipped':

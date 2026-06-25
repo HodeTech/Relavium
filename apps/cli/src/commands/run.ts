@@ -2,9 +2,7 @@ import { relative } from 'node:path';
 
 import {
   WorkflowParseError,
-  WorkflowValidationError,
   parseWorkflow,
-  validateWorkflowWithCatalog,
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
@@ -32,7 +30,12 @@ import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
-import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
+import {
+  assertWorkflowCatalogValid,
+  driveRun,
+  isTerminalOutcome,
+  outcomeToExitCode,
+} from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
 
 export interface RunCommandArgs {
@@ -143,20 +146,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
       mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC below
-      // D15 load-check (ADR-0044 §2 / ADR-0045 §1): validate each agent node's authored `output_modalities`
-      // against its resolved model's capabilities in the DB `model_catalog`, so an incapable or malformed
-      // generative node fails fast at LOAD (exit 2) — not only at the runtime FallbackChain pre-skip. A model
-      // absent from the catalog defers (no error). Re-uses the same catalog the media routing reads (one db).
-      // (The check is parse-time; `gate` resume skips it — it trusts the original run's verdict + the runtime
-      // backstop.) A capability failure is an invocation fault, surfaced like a parse error.
-      try {
-        validateWorkflowWithCatalog(def, wiring.workflowModelCatalog);
-      } catch (err) {
-        if (err instanceof WorkflowValidationError) {
-          throw new CliError('invalid_invocation', err.message, { cause: err });
-        }
-        throw err;
-      }
+      // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
+      // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
+      // (drive.ts), so a fresh run and a resume reject consistently.
+      assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
       engineOptions = {
         providers,
         host: createCliHost(opened.store, { media: wiring.media }),

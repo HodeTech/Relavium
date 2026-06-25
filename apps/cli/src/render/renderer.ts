@@ -64,13 +64,13 @@ function describe(event: RunEvent): string | undefined {
     case 'node:started':
       return `  - ${event.nodeId} ...`;
     case 'node:completed': {
-      const media = collectDurableMediaHandles(event.output);
-      const ok = `  ok ${event.nodeId}`;
       // Surface each produced media handle (never bytes) on its own indented line — the plain/CI leaf of the
       // cross-surface "render a produced media handle" acceptance. A text-only node yields no extra lines.
-      return media.length === 0
-        ? ok
-        : `${ok}\n${media.map((m) => `    ${formatProducedMedia(m)}`).join('\n')}`;
+      const ok = `  ok ${event.nodeId}`;
+      const mediaLines = collectDurableMediaHandles(event.output).map(
+        (m) => `    ${formatProducedMedia(m)}`,
+      );
+      return [ok, ...mediaLines].join('\n');
     }
     case 'node:failed':
       return `  FAIL ${event.nodeId}: ${event.error.code}`;

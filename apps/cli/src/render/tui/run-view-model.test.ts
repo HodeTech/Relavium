@@ -401,6 +401,22 @@ describe('reduceRunEvent', () => {
     expect(s.cumulativeCostMicrocents).toBe(4242);
   });
 
+  it('folds node:failed.cumulativeCostMicrocents into the running total (2.S durable fail-cost)', () => {
+    const s = reduceRunEvent(initialRunViewState(), {
+      type: 'node:failed',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      nodeId: 'a',
+      error: { code: 'tool_failed', message: 'boom', retryable: false },
+      cumulativeCostMicrocents: 777,
+    });
+    // The node fails AND its durable cost snapshot folds into the running total (like node:completed), so a
+    // billed-but-failed media job's cost survives a durable reconstruction (cost:updated is streamed-only).
+    expect(s.nodes['a']?.status).toBe('failed');
+    expect(s.cumulativeCostMicrocents).toBe(777);
+  });
+
   it('does not mutate the input state (pure reducer)', () => {
     const s0 = initialRunViewState();
     const s1 = reduceRunEvent(s0, {
@@ -839,7 +855,7 @@ describe('reduceRunEvent — produced media (2.S, the node:completed handle surf
       completed('a', { content: [mediaPart(handle(i))] }, i + 1),
     );
     const s = reduceAll(events);
-    expect(s.producedMedia.length).toBe(MAX_PRODUCED_MEDIA);
+    expect(s.producedMedia).toHaveLength(MAX_PRODUCED_MEDIA);
     // The trailing entries are kept: the last-emitted handle is present, the earliest dropped.
     expect(s.producedMedia[s.producedMedia.length - 1]?.handle).toBe(
       handle(MAX_PRODUCED_MEDIA + 4),

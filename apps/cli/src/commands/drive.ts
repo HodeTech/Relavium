@@ -1,10 +1,39 @@
-import { EngineStateError, type RunHandle, type WorkflowEngine } from '@relavium/core';
+import {
+  EngineStateError,
+  WorkflowValidationError,
+  validateWorkflowWithCatalog,
+  type RunHandle,
+  type WorkflowDefinition,
+  type WorkflowEngine,
+  type WorkflowModelCatalog,
+} from '@relavium/core';
 import type { HumanGatePausedEvent, RunEvent, RunPausedEvent } from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
+import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { RunRenderer } from '../render/renderer.js';
+
+/**
+ * The D15 catalog load-check, shared by `run` (a fresh load) and `gate` (a resume — re-validated against the
+ * CURRENT catalog so a model that lost a capability between the run and the resume is caught consistently, not
+ * only at the runtime FallbackChain pre-skip). An incapable / malformed-generative authored `output_modalities`
+ * surfaces as an `invalid_invocation` CliError (exit 2), like a parse fault; any other throw propagates.
+ */
+export function assertWorkflowCatalogValid(
+  workflow: WorkflowDefinition,
+  catalog: WorkflowModelCatalog,
+): void {
+  try {
+    validateWorkflowWithCatalog(workflow, catalog);
+  } catch (err) {
+    if (err instanceof WorkflowValidationError) {
+      throw new CliError('invalid_invocation', err.message, { cause: err });
+    }
+    throw err;
+  }
+}
 
 /** A run's terminal disposition (`undefined` means the stream ended with no terminal/paused — an abnormal unwind). */
 export type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';

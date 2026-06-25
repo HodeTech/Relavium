@@ -28,10 +28,9 @@ export interface MediaEngineWiring {
   /** The `AgentRunnerDeps.resolveMediaSurface` projection over the `model_catalog` (ADR-0045 §1). */
   readonly resolveMediaSurface: (model: string) => MediaSurface | undefined;
   /**
-   * The `WorkflowModelCatalog` the D15 load-check ({@link validateWorkflowWithCatalog}) reads — a model →
-   * `CapabilityFlags` lookup over the same `model_catalog`. Used by the `run` parse path only; `gate` resume
-   * trusts the original run's load-time verdict (it never re-parses the YAML), with the runtime FallbackChain
-   * pre-skip as the backstop, so it leaves this field unread.
+   * The `WorkflowModelCatalog` the D15 load-check reads — a model → `CapabilityFlags` lookup over the same
+   * `model_catalog`. BOTH `run` (a fresh load) and `gate` (a resume — re-validated against the current catalog)
+   * feed it to `assertWorkflowCatalogValid` (drive.ts), so the two paths reject an incapable node consistently.
    */
   readonly workflowModelCatalog: WorkflowModelCatalog;
   /** The `[defaults].media_cost_estimate` the command spreads into `BuildEngineOptions` (`undefined` ⇒ omit). */
