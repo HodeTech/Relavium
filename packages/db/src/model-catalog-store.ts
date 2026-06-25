@@ -100,7 +100,7 @@ function coerceMediaSurface(value: string): MediaSurface {
  * let a genuine store fault propagate. Names a reason only — never the column bytes.
  */
 export class ModelCatalogCapabilitiesError extends Error {
-  constructor(message: string, options?: { cause: unknown }) {
+  constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'ModelCatalogCapabilitiesError';
   }
@@ -108,10 +108,11 @@ export class ModelCatalogCapabilitiesError extends Error {
 
 /**
  * Parse a stored `capabilities` JSON-text column into a JSON object — `unknown` + a runtime shape check at the
- * DB read boundary (no unsafe `as`; mirrors `provider-store.ts`'s `parseStringRecord`). A corrupt/non-object
- * value aborts the read with a typed {@link ModelCatalogCapabilitiesError} rather than propagating a wrongly-typed
- * value (or a bare TypeError/SyntaxError a caller cannot tell apart from a DB fault); the host then validates the
- * object against `CapabilityFlagsSchema`.
+ * DB read boundary (no unsafe `as`; same `unknown` + runtime-shape-check boundary posture as `provider-store.ts`'s
+ * `parseStringRecord`). UNLIKE that sibling (which still throws a bare TypeError / lets `JSON.parse`'s SyntaxError
+ * escape), a corrupt/non-object value here aborts the read with a typed {@link ModelCatalogCapabilitiesError} —
+ * so a caller can isolate a corrupt row from a genuine DB fault; the host then validates the object against
+ * `CapabilityFlagsSchema`.
  */
 function parseCapabilities(json: string): Record<string, unknown> {
   let parsed: unknown;

@@ -434,6 +434,10 @@ describe('runCommand', () => {
     if (isCliError(caught)) {
       expect(caught.code).toBe('invalid_invocation');
       expect(caught.message).toContain('generative'); // distinguishes the generative branch from chat-membership
+      // ...and pins the field-named, modality-listing contract (validate-catalog's WorkflowValidationError), not
+      // just the branch keyword — a message that dropped the node field/modality detail would fail here.
+      expect(caught.message).toContain('output_modalities');
+      expect(caught.message).toContain('image');
     }
   });
 

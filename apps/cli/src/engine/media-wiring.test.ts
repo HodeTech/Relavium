@@ -5,6 +5,7 @@ import {
   createClient,
   createModelCatalogStore,
   createProviderStore,
+  ModelCatalogCapabilitiesError,
   runMigrations,
   type DbClient,
 } from '@relavium/db';
@@ -149,9 +150,9 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
     });
 
     it('isolates a corrupt (non-object) capabilities row to that model — defers, not a whole-catalog throw', () => {
-      // `getByModelId` THROWS a TypeError on a non-object capabilities column (the store contract); the
-      // projection's per-model catch must degrade THIS model to undefined without sinking the load-check. Corrupt
-      // the column directly (the upsert can only write an object), then assert the projection swallows it.
+      // `getByModelId` THROWS a ModelCatalogCapabilitiesError on a non-object capabilities column (the store
+      // contract the catch keys on); the projection's per-model catch must degrade THIS model to undefined without
+      // sinking the load-check. Corrupt the column directly (the upsert can only write an object), then assert it.
       createModelCatalogStore(client.db, dbDeps).upsert({
         providerId,
         modelId: 'corrupt-caps',
@@ -185,7 +186,17 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
         EMPTY_CONFIG,
       ).workflowModelCatalog;
       local.sqlite.close(); // any subsequent query throws a generic "database connection is not open" Error
-      expect(() => catalog('any-model')).toThrow();
+      let caught: unknown;
+      try {
+        catalog('any-model');
+      } catch (err) {
+        caught = err;
+      }
+      // It SURFACED (not swallowed to undefined) AND is a non-domain fault — NOT the ModelCatalogCapabilitiesError
+      // the catch swallows. This is the whole point: better-sqlite3 throws a TypeError on a closed connection, so a
+      // by-type narrow would misclassify it as a defer; the typed-domain narrow lets it through.
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(ModelCatalogCapabilitiesError);
     });
   });
 });
