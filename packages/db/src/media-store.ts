@@ -160,8 +160,14 @@ export class FilesystemMediaStore implements MediaStore {
           continue; // a stray subdir inside a shard could otherwise reconstruct a bogus 62-hex "handle"
         }
         const handle = `${HANDLE_PREFIX}${shard.name}${entry.name}`;
-        if (MEDIA_HANDLE_PATTERN.test(handle)) {
+        if (!MEDIA_HANDLE_PATTERN.test(handle)) {
+          continue;
+        }
+        try {
           out.push({ handle, mtimeMs: (await stat(join(shardDir, entry.name))).mtimeMs });
+        } catch {
+          // The blob vanished between the readdir and the stat (a concurrent delete / GC) — skip it, never
+          // abort the whole listing. An un-stat-able entry is not a usable handle anyway.
         }
       }
     }
