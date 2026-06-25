@@ -151,19 +151,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
 > so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
 > deferred mechanism/wiring half. *(1.AF is ✅ Done — all PRs merged #33/#34/#35/#36, 2026-06-20; the items
-> below remain, owned by 1.AH.)*
+> below remain: `read_media` (D12) is deferred to **2.M** (maintainer-approved), and D15/D17/D8 + the `save_to`
+> semantics to the CLI/desktop host-wiring (Phase-2/Phase-3). The D15/D17/D8 check-offs for the CLI half land
+> post-merge with their PR number, per the done-after-merge convention.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
   factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns
   `Uint8Array`) into the `MediaReadAccess` the tool needs (whose `readRange` returns an in-flight **base64**
-  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; 1.AH)*
+  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; 2.M)*
 - [ ] **`read_media` session-scope population (D12 authz data, ADR-0044 §1)** — nothing writes
   `session`/`workspace` `media_references` rows (the only writer, `createMediaReferencePort`, writes `run`
   refs only), so `describe().allowedScopes` is always `[]` and every read denies. The input-transfer
-  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; 1.AH)*
+  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; 2.M)*
 - [ ] **`ctx.mediaRead` / `ctx.requestingScope` not wired into the dispatch context** — the AgentRunner +
   AgentSession build `ToolDispatchContext` without these, so `read_media` always throws
-  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 1.AH)*
+  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 2.M)*
 - [ ] **`validateWorkflowWithCatalog` (D15) is called by no production loader** — exported + tested, but
   no parse/load path invokes it, so authored `output_modalities` are not load-validated (the runtime
   FallbackChain pre-skip — now wired onto the request — is the only backstop). A host should call it
