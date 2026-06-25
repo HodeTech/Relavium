@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-24
+> Last updated: 2026-06-25
 
 - **Related**: [README.md](README.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
