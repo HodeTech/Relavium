@@ -387,6 +387,20 @@ describe('reduceRunEvent', () => {
     expect(paused.summary).toEqual({ outcome: 'paused', pausedGateIds: ['g1'] });
   });
 
+  it('folds run:cancelled.cumulativeCostMicrocents into the summary + running total (2.S durable fail-cost)', () => {
+    const s = reduceRunEvent(initialRunViewState(), {
+      type: 'run:cancelled',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      cumulativeCostMicrocents: 4242,
+    });
+    // The durable terminal cost (a paid media job billed before the cancel) becomes the summary total + the
+    // final running total — so the cancelled-run summary shows the billed figure, not a stale live value.
+    expect(s.summary).toEqual({ outcome: 'cancelled', totalCostMicrocents: 4242 });
+    expect(s.cumulativeCostMicrocents).toBe(4242);
+  });
+
   it('does not mutate the input state (pure reducer)', () => {
     const s0 = initialRunViewState();
     const s1 = reduceRunEvent(s0, {

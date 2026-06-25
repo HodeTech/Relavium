@@ -415,7 +415,22 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'run:cancelled':
-      return { ...base, summary: { outcome: 'cancelled' } };
+      // run:cancelled carries the run-wide cost snapshot (2.S/D-GC — a paid media job billed before the cancel,
+      // ADR-0045 §5). Fold it onto the summary + the running total (mirrors run:completed) so the final cost is
+      // the durable terminal figure, not just whatever the last transient cost:updated left. Optional (older
+      // logs omit it); absent ⇒ the live `cumulativeCostMicrocents` already on `base` stands.
+      return {
+        ...base,
+        summary: {
+          outcome: 'cancelled',
+          ...(event.cumulativeCostMicrocents === undefined
+            ? {}
+            : { totalCostMicrocents: event.cumulativeCostMicrocents }),
+        },
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+      };
 
     case 'run:paused':
       return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };

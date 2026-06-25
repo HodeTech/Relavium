@@ -132,9 +132,12 @@ export async function sweepHostMediaBestEffort(args: {
   try {
     // The cross-workflow read API (loadRun status + listActiveRuns) is built from the db handle alone.
     const reader = createRunHistoryReader(args.db);
+    const now = args.now ?? Date.now;
     return await runHostMediaGc({
       casStore: new FilesystemMediaStore(args.casRoot),
-      references: createMediaReferenceStore(args.db),
+      // One clock governs both the grace cutoff (`reclaimExpired` reads the store's `now`) and the orphan
+      // age-guard below, so an injected `now` makes the whole pass deterministic.
+      references: createMediaReferenceStore(args.db, now),
       isReclaimableRun: (id) => {
         // A run absent from LIVE history (soft-deleted / pruned ⇒ `loadRun` undefined) is GONE — its run-refs are
         // safe to reclaim, just like a terminal run's. An in-flight / paused run (a live non-terminal row) is kept.
@@ -143,7 +146,7 @@ export async function sweepHostMediaBestEffort(args: {
       },
       hasOtherActiveRuns: () => reader.listActiveRuns().some((run) => run.id !== args.currentRunId),
       graceMs: args.graceMs ?? DEFAULT_MEDIA_GC_GRACE_MS,
-      now: args.now ?? Date.now,
+      now,
       orphanMinAgeMs: args.orphanMinAgeMs ?? DEFAULT_ORPHAN_MIN_AGE_MS,
       currentRunId: args.currentRunId,
     });

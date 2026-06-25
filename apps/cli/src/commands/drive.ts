@@ -203,8 +203,8 @@ export function outcomeToExitCode(outcome: RunOutcome | undefined): ExitCode {
  */
 export function isTerminalOutcome(
   outcome: RunOutcome | undefined,
-): outcome is 'completed' | 'failed' | 'cancelled' {
-  return outcome === 'completed' || outcome === 'failed' || outcome === 'cancelled';
+): outcome is Exclude<RunOutcome, 'paused'> {
+  return outcome !== undefined && outcome !== 'paused';
 }
 
 function nextOutcome(current: RunOutcome | undefined, event: RunEvent): RunOutcome | undefined {

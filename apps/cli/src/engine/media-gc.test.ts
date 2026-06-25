@@ -114,17 +114,20 @@ describe('runHostMediaGc (2.S/D-GC, ADR-0042 §4)', () => {
     expect(report.orphanSweepRan).toBe(true);
   });
 
-  it('orphan-sweep: age-guard SKIPS a fresh row-less blob (a concurrent put not yet recordObject-ed)', async () => {
+  it('orphan-sweep: age-guard SKIPS a fresh blob, DELETES one exactly at the cutoff (strict > skip)', async () => {
+    // now 10_000, orphanMinAgeMs 5_000 ⇒ settledBefore 5_000. The skip is `mtimeMs > settledBefore`, so a blob
+    // AT the boundary (mtimeMs === 5_000, age exactly the window) is deleted; a younger one is protected.
     const cas = fakeCas([
-      { handle: H('old'), mtimeMs: 1_000 }, // older than the settle window
-      { handle: H('fresh'), mtimeMs: 9_999 }, // within the window (now 10_000, age 5_000)
+      { handle: H('old'), mtimeMs: 1_000 }, // older than the window → deleted
+      { handle: H('boundary'), mtimeMs: 5_000 }, // exactly at the window (age === orphanMinAgeMs) → deleted
+      { handle: H('fresh'), mtimeMs: 9_999 }, // within the window → protected
     ]);
     const { refs } = fakeRefs({ objectHandles: [] });
     const report = await runHostMediaGc(
       baseDeps({ casStore: cas.store, references: refs, now: () => 10_000, orphanMinAgeMs: 5_000 }),
     );
-    expect(cas.deleted).toEqual([H('old')]); // the fresh blob is protected
-    expect(report.orphansDeleted).toBe(1);
+    expect(cas.deleted).toEqual([H('old'), H('boundary')]); // the fresh blob alone is protected
+    expect(report.orphansDeleted).toBe(2);
   });
 
   it('orphan-sweep: SKIPPED entirely while another run is active (protects a concurrent writer)', async () => {
@@ -224,6 +227,24 @@ describe('sweepHostMediaBestEffort (the run/gate run-end wrapper — real db + C
     expect(report?.orphanSweepRan).toBe(false); // the active run defers the sweep (TOCTOU protection)
     // The active run keeps its ref; the terminal run's ref is gone.
     expect(refs.runReferenceRunIds()).toEqual(['active-run']);
+  });
+
+  it('reclaims the run-refs of a GONE run (no live history row — soft-deleted / pruned)', async () => {
+    // A run-ref whose run is absent from live history (`loadRun` undefined) is a retention leak: its ref kept the
+    // handle's refcount > 0 forever. The reclaim retry treats a GONE run as reclaimable (status === undefined),
+    // so its lingering ref is swept. (No `seedRun` for `pruned-run` → no `runs` row ⇒ loadRun returns undefined.)
+    const refs = createMediaReferenceStore(client.db);
+    refs.recordObject({ handle: H('a'), mimeType: 'image/png', modality: 'image', byteLength: 5 });
+    refs.addReference(H('a'), 'run', 'pruned-run');
+
+    const report = await sweepHostMediaBestEffort({
+      db: client.db,
+      casRoot,
+      currentRunId: 'gate-run',
+      orphanMinAgeMs: 0,
+    });
+    expect(report?.reclaimedRuns).toBe(1); // the gone run's lingering ref was reclaimed
+    expect(refs.runReferenceRunIds()).toEqual([]); // ...and no run-ref lingers
   });
 
   it('sweeps a row-less CAS orphan when no run is active (the current run is excluded)', async () => {

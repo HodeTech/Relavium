@@ -389,8 +389,24 @@ describe('gateCommand', () => {
     const { runId, gateIds } = await setupPausedRun(SEQ_GATES, {});
     expect(gateIds).toHaveLength(1); // only g1 pends initially (sequential, not parallel)
     const { io } = captureIo();
-    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.gatePaused); // g1 → re-pause at g2
-    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success); // blind repeat resolves g2
+    // The GC is gated on a TERMINAL outcome (2.S/D-GC): a re-pause must NOT sweep (the still-paused run keeps its
+    // media); the second resolve completes → terminal → the GC runs. Pin BOTH directions.
+    let sweptOnRepause = false;
+    let sweptOnComplete = false;
+    expect(
+      await gateCommand(
+        { runId, approve: true },
+        { ...deps(io), sweepMedia: () => ((sweptOnRepause = true), Promise.resolve(undefined)) },
+      ),
+    ).toBe(EXIT_CODES.gatePaused); // g1 → re-pause at g2
+    expect(sweptOnRepause).toBe(false); // the re-pause (non-terminal) skipped the GC
+    expect(
+      await gateCommand(
+        { runId, approve: true },
+        { ...deps(io), sweepMedia: () => ((sweptOnComplete = true), Promise.resolve(undefined)) },
+      ),
+    ).toBe(EXIT_CODES.success); // blind repeat resolves g2 → completes
+    expect(sweptOnComplete).toBe(true); // the terminal resume DID run the GC
   });
 
   it('wires selectGatePrompter through to driveRun: a re-pause at a later gate is resolved inline (exit 0)', async () => {
