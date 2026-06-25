@@ -24,13 +24,31 @@ const EMPTY_CONFIG: ResolvedConfig = {
   mcpServers: [],
 };
 
+// A well-formed CapabilityFlags (chat surface, text-only output) — the `capabilities` blob a `model_catalog`
+// row stores and the host re-validates against `CapabilityFlagsSchema`. `vision` MUST mirror `media.input.image`
+// (the schema's drift refine, ADR-0031), so both are false here.
+const CHAT_TEXT_CAPS = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: false,
+  vision: false,
+  promptCache: false,
+  reasoning: false,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [['text']],
+    surface: 'chat',
+  },
+};
+
 describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', () => {
   let client: DbClient;
+  let providerId: string;
+  const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
   beforeEach(() => {
     client = createClient(':memory:');
     runMigrations(client.db);
-    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
-    const providerId = createProviderStore(client.db, dbDeps).upsert({
+    providerId = createProviderStore(client.db, dbDeps).upsert({
       name: 'openai',
       displayName: 'OpenAI',
       baseUrl: 'https://api.openai.com/v1',
@@ -72,5 +90,72 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
     expect(
       buildMediaEngineWiring(client.db, '/home/u', '/proj', EMPTY_CONFIG).mediaCostEstimate,
     ).toBeUndefined();
+  });
+
+  describe('workflowModelCatalog (the D15 load-check projection — capabilities → CapabilityFlags)', () => {
+    it('projects a row with a well-formed capabilities blob into validated CapabilityFlags', () => {
+      createModelCatalogStore(client.db, dbDeps).upsert({
+        providerId,
+        modelId: 'chat-text',
+        displayName: 'Chat Text',
+        contextWindowTokens: 4096,
+        maxOutputTokens: 4096,
+        mediaSurface: 'chat',
+        capabilities: CHAT_TEXT_CAPS,
+      });
+      const flags = buildMediaEngineWiring(
+        client.db,
+        '/home/u',
+        '/proj',
+        EMPTY_CONFIG,
+      ).workflowModelCatalog('chat-text');
+      // Round-trips through CapabilityFlagsSchema — the load-check reads `media.surface` + `outputCombinations`.
+      expect(flags?.media.surface).toBe('chat');
+      expect(flags?.media.outputCombinations).toEqual([['text']]);
+      expect(flags?.tools).toBe(true);
+    });
+
+    it('defers (undefined) for a model absent from the catalog', () => {
+      expect(
+        buildMediaEngineWiring(client.db, '/home/u', '/proj', EMPTY_CONFIG).workflowModelCatalog(
+          'not-in-catalog',
+        ),
+      ).toBeUndefined();
+    });
+
+    it('defers (undefined) for a row whose capabilities fail CapabilityFlagsSchema — never throws', () => {
+      // The seeded `gpt-image-1` stored an empty `{}` capabilities blob (no required flags) — a partial/legacy
+      // shape that fails the schema. The projection must `safeParse`-defer, not surface a parse throw.
+      expect(
+        buildMediaEngineWiring(client.db, '/home/u', '/proj', EMPTY_CONFIG).workflowModelCatalog(
+          'gpt-image-1',
+        ),
+      ).toBeUndefined();
+    });
+
+    it('isolates a corrupt (non-object) capabilities row to that model — defers, not a whole-catalog throw', () => {
+      // `getByModelId` THROWS on a non-object capabilities column (the store contract); the projection's per-model
+      // try/catch must degrade THIS model to undefined without sinking the load-check. Corrupt the column directly
+      // (the upsert can only write an object), then assert the projection swallows it.
+      createModelCatalogStore(client.db, dbDeps).upsert({
+        providerId,
+        modelId: 'corrupt-caps',
+        displayName: 'Corrupt Caps',
+        contextWindowTokens: 4096,
+        maxOutputTokens: 4096,
+        capabilities: { ...CHAT_TEXT_CAPS },
+      });
+      client.sqlite
+        .prepare(`UPDATE model_catalog SET capabilities = '[]' WHERE model_id = ?`)
+        .run('corrupt-caps');
+      const catalog = buildMediaEngineWiring(
+        client.db,
+        '/home/u',
+        '/proj',
+        EMPTY_CONFIG,
+      ).workflowModelCatalog;
+      expect(() => catalog('corrupt-caps')).not.toThrow();
+      expect(catalog('corrupt-caps')).toBeUndefined();
+    });
   });
 });

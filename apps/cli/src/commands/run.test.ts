@@ -108,6 +108,40 @@ const AGENT_WF_GEMINI = AGENT_WF.replace('id: cli-run-agent', 'id: cli-run-agent
   'model: gemini-2.5-flash, provider: gemini',
 );
 
+// An agent node whose authored output_modalities ([text, image]) exceed what the catalog model `chat-text`
+// supports (text only) — parses fine, but the D15 catalog load-check (2.S Step 7) must reject it at LOAD. The
+// inline `model: chat-text` is the node-level override validate-catalog reads (node.model), distinct from the
+// agent's base model.
+const INCAPABLE_WF = `schema_version: '1.0'
+workflow:
+  id: cli-run-incapable
+  agents:
+    - { id: writer, model: gpt-4o, provider: openai, system_prompt: write }
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: writer, model: chat-text, prompt_template: 'go', output_modalities: ['text', 'image'] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
+`;
+
+// A well-formed CapabilityFlags blob the catalog stores for `chat-text`: chat surface, text-only output, so
+// [text, image] is unsupported. `vision` mirrors `media.input.image` (the schema's drift refine, ADR-0031).
+const CHAT_TEXT_ONLY_CAPS = {
+  tools: true,
+  streaming: true,
+  parallelToolCalls: false,
+  vision: false,
+  promptCache: false,
+  reasoning: false,
+  media: {
+    input: { image: false, audio: false, video: false, document: false },
+    outputCombinations: [['text']],
+    surface: 'chat',
+  },
+};
+
 let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'relavium-run-'));
@@ -302,6 +336,64 @@ describe('runCommand', () => {
       expect(captured?.mediaCostEstimate).toEqual({ image: 5, audio: 9 });
     } finally {
       client.sqlite.close();
+    }
+  });
+
+  it('rejects an agent node whose output_modalities exceed the catalog model at LOAD — exit 2, engine never built (D15)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(client.db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(client.db, dbDeps).upsert({
+      providerId,
+      modelId: 'chat-text',
+      displayName: 'Chat Text',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'chat',
+      capabilities: CHAT_TEXT_ONLY_CAPS,
+    });
+    const { io } = captureIo();
+    const path = writeWorkflow('incapable.relavium.yaml', INCAPABLE_WF);
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          // Key present ⇒ the pre-flight passes; the D15 load-check is what must reject the run.
+          providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
+          openRunStore: (workflow) => ({
+            store: createRunHistoryStore(client.db, {
+              uuid: () => randomUUID(),
+              now: () => Date.now(),
+              workflow: {
+                slug: workflow.workflow.id,
+                name: workflow.workflow.id,
+                definitionJson: JSON.stringify(workflow),
+              },
+            }),
+            db: client.db,
+            close: () => {},
+          }),
+          // The load-check runs BEFORE the engine builds — a regression that skipped it would trip this.
+          buildEngine: () => {
+            throw new Error('the engine must not build — the D15 load-check rejects first');
+          },
+        }),
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      client.sqlite.close();
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('chat-text'); // the message names the offending model, secret-free
     }
   });
 

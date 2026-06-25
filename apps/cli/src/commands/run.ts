@@ -2,7 +2,9 @@ import { relative } from 'node:path';
 
 import {
   WorkflowParseError,
+  WorkflowValidationError,
   parseWorkflow,
+  validateWorkflowWithCatalog,
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
@@ -133,6 +135,20 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     let engineOptions: BuildEngineOptions = { providers };
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
+      // D15 load-check (ADR-0044 §2 / ADR-0045 §1): validate each agent node's authored `output_modalities`
+      // against its resolved model's capabilities in the DB `model_catalog`, so an incapable or malformed
+      // generative node fails fast at LOAD (exit 2) — not only at the runtime FallbackChain pre-skip. A model
+      // absent from the catalog defers (no error). Re-uses the same catalog the media routing reads (one db).
+      // (The check is parse-time; `gate` resume skips it — it trusts the original run's verdict + the runtime
+      // backstop.) A capability failure is an invocation fault, surfaced like a parse error.
+      try {
+        validateWorkflowWithCatalog(def, wiring.workflowModelCatalog);
+      } catch (err) {
+        if (err instanceof WorkflowValidationError) {
+          throw new CliError('invalid_invocation', err.message, { cause: err });
+        }
+        throw err;
+      }
       engineOptions = {
         providers,
         host: createCliHost(opened.store, { media: wiring.media }),

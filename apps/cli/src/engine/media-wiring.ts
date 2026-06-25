@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
-import { createModelCatalogStore, type Db } from '@relavium/db';
+import type { WorkflowModelCatalog } from '@relavium/core';
+import {
+  createModelCatalogStore,
+  type Db,
+  type ModelCatalogRecord,
+  type ModelCatalogStore,
+} from '@relavium/db';
+import { CapabilityFlagsSchema } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { globalConfigDir } from '../config/paths.js';
@@ -19,8 +26,43 @@ export interface MediaEngineWiring {
   readonly media: CliMediaOptions;
   /** The `AgentRunnerDeps.resolveMediaSurface` projection over the `model_catalog` (ADR-0045 §1). */
   readonly resolveMediaSurface: (model: string) => MediaSurface | undefined;
+  /**
+   * The `WorkflowModelCatalog` the D15 load-check ({@link validateWorkflowWithCatalog}) reads — a model →
+   * `CapabilityFlags` lookup over the same `model_catalog`. Used by the `run` parse path only; `gate` resume
+   * trusts the original run's load-time verdict (it never re-parses the YAML), with the runtime FallbackChain
+   * pre-skip as the backstop, so it leaves this field unread.
+   */
+  readonly workflowModelCatalog: WorkflowModelCatalog;
   /** The `[defaults].media_cost_estimate` the command spreads into `BuildEngineOptions` (`undefined` ⇒ omit). */
   readonly mediaCostEstimate: MediaCostEstimate | undefined;
+}
+
+/**
+ * Project the DB `model_catalog` reader into the engine's {@link WorkflowModelCatalog} — the D15 load-check's
+ * `(modelId) => CapabilityFlags | undefined` lookup (ADR-0044 §2 / ADR-0045 §1). `@relavium/db` deliberately
+ * returns the raw `capabilities` JSON object (it never depends on `@relavium/llm`, the `CapabilityFlags` home);
+ * the HOST validates it against `CapabilityFlagsSchema` here, keeping the engine portable (CLAUDE.md rule 5).
+ *
+ * Two per-model "degrade to `undefined`" (defer) paths — never a whole-catalog abort, so one bad row can't sink
+ * the load-check for a valid sibling model (the runtime FallbackChain pre-skip stays the backstop):
+ *   - `getByModelId` THROWS on a corrupt `capabilities` row (non-object / non-JSON, the store's contract) — the
+ *     `try`/`catch` isolates it to this model.
+ *   - a row whose `capabilities` fails `CapabilityFlagsSchema` (a partial / legacy blob) — `safeParse` defers.
+ */
+function createWorkflowModelCatalog(catalog: ModelCatalogStore): WorkflowModelCatalog {
+  return (modelId) => {
+    let record: ModelCatalogRecord | undefined;
+    try {
+      record = catalog.getByModelId(modelId);
+    } catch {
+      return undefined;
+    }
+    if (record === undefined) {
+      return undefined;
+    }
+    const parsed = CapabilityFlagsSchema.safeParse(record.capabilities);
+    return parsed.success ? parsed.data : undefined;
+  };
 }
 
 /**
@@ -44,6 +86,7 @@ export function buildMediaEngineWiring(
       referenceDb: db,
     },
     resolveMediaSurface: catalog.resolveMediaSurface,
+    workflowModelCatalog: createWorkflowModelCatalog(catalog),
     mediaCostEstimate: config.mediaCostEstimate,
   };
 }
