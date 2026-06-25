@@ -35,6 +35,13 @@ export interface SessionPersisterDeps {
   readonly now: () => number;
   /** Process-unique id source for each persisted message (injectable; `randomUUID` in production). */
   readonly uuid: () => string;
+  /**
+   * The first `sequenceNumber` this persister assigns (default `0`). A fresh session starts at 0; the 2.N
+   * resume path seeds it past the persisted `MAX(sequence_number)` so a continued session does not collide
+   * on the `(session_id, sequence_number)` UNIQUE index. (Resume also reloads the row rather than inserting,
+   * which is the 2.N concern; this is the write-side injection point it needs.)
+   */
+  readonly initialSequenceNumber?: number;
 }
 
 export interface SessionPersister {
@@ -50,7 +57,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   const iso = (): string => new Date(deps.now()).toISOString();
 
   let createdAt = '';
-  let sequenceNumber = 0;
+  let sequenceNumber = deps.initialSequenceNumber ?? 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCostMicrocents = 0;
@@ -99,14 +106,19 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         totalCostMicrocents = event.cumulativeCostMicrocents;
         return;
       case 'session:turn_completed':
-        // Only a COMPLETED exchange (no error) is persisted; an error turn is rolled back by the engine.
+        // Only a COMPLETED exchange (no error) writes MESSAGES — an error turn is rolled back by the engine,
+        // keeping the transcript to completed exchanges. But the session COST (the cumulative from
+        // cost:updated) is real even for a failed turn — the engine never decrements it — so flush the row
+        // UNCONDITIONALLY so a resumed budget governor seeds from the true spend (ADR-0028), not an
+        // understated one. (Failed-turn token usage is 0, mirroring the engine, so the token columns are
+        // unaffected.)
         if (event.error === undefined) {
           if (pendingUserText !== undefined) appendText('user', pendingUserText);
           if (assistantText.length > 0) appendText('assistant', assistantText);
           totalInputTokens += event.tokensUsed.input;
           totalOutputTokens += event.tokensUsed.output;
-          deps.store.updateSession(record('active'));
         }
+        deps.store.updateSession(record('active'));
         pendingUserText = undefined;
         assistantText = '';
         return;

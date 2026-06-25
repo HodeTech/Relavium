@@ -73,6 +73,9 @@ describe('openSessionStore (2.M)', () => {
       expect(full?.session.agentSlug).toBe('relavium-chat');
       expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1]);
       expect(full?.messages[1]?.role).toBe('assistant');
+      // The durable content text survives the write → close → reopen round-trip.
+      expect(full?.messages[0]?.content[0]).toEqual({ type: 'text', text: 'hello' });
+      expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'hi there' });
     } finally {
       second.close();
     }
@@ -84,8 +87,11 @@ describe('openSessionStore (2.M)', () => {
       opened.store.createSession(makeSession('sess-perms'));
       const dbPath = join(globalConfigDir(home), 'history.db');
       // ADR-0050: unencrypted at rest, guarded by OS file permissions — the file is 0600, its dir 0700.
-      expect(statSync(dbPath).mode & 0o777).toBe(0o600);
-      expect(statSync(globalConfigDir(home)).mode & 0o777).toBe(0o700);
+      // POSIX-only: Windows does not carry these mode bits (mirrors history/open.e2e.test.ts).
+      if (process.platform !== 'win32') {
+        expect(statSync(dbPath).mode & 0o777).toBe(0o600);
+        expect(statSync(globalConfigDir(home)).mode & 0o777).toBe(0o700);
+      }
     } finally {
       opened.close();
     }

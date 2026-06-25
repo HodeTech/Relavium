@@ -158,7 +158,9 @@ mandatory guardrails (`run_command` allowlist; `git_commit` behind approval). Pe
 - `http_request` / MCP egress is subject to the same SSRF policy as a workflow.
 
 The user's own **conversational content** typed into a session is the user's data: it is persisted in
-the **encrypted** `history.db` and is *not* a managed secret — this boundary is stated in
+the `history.db` (on the CLI surface, **unencrypted at rest**, guarded by `0600`/`0700` OS permissions per
+[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md); the desktop's SQLCipher-encrypted store
+is a separate surface) and is *not* a managed secret — this boundary is stated in
 [security-review.md](../../standards/security-review.md).
 
 ## Events
@@ -224,6 +226,7 @@ reproducible and round-trips):
 - Validated against `AgentSessionSchema` / `SessionMessageSchema` / `SessionContextSchema` (Zod, in
   `@relavium/shared`) — invalid input fails fast, like every other authored/runtime contract
   ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)).
-- Persisted in the global encrypted `history.db` (`agent_sessions` + `session_messages`); the DDL is
+- Persisted in the global `history.db` (`agent_sessions` + `session_messages`; on the CLI surface
+  unencrypted at rest, `0600`/`0700`-guarded per [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)); the DDL is
   canonical in [database-schema.md](../desktop/database-schema.md). API keys never appear in a session
   row, a message, or an event payload (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).

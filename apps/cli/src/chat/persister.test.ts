@@ -40,7 +40,7 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
-  function setup(providers: ProviderResolver) {
+  function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
     let msgId = 0;
@@ -61,6 +61,7 @@ describe('createSessionPersister', () => {
       context: built.context,
       now,
       uuid: () => `msg-${msgId++}`,
+      ...(initialSequenceNumber === undefined ? {} : { initialSequenceNumber }),
     });
     return { built, persister };
   }
@@ -152,5 +153,61 @@ describe('createSessionPersister', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'hi there' }] },
     ]);
     expect(state.turnCount).toBe(1);
+  });
+
+  it('accumulates sequenceNumber and token totals across consecutive turns', async () => {
+    const { built, persister } = setup(
+      scriptedResolver([textTurn('reply 1'), textTurn('reply 2')]),
+    );
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+
+    const full = store.loadFull('sess-1');
+    // sequenceNumber is continuous across turns; roles alternate user/assistant.
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    // {input:10, output:5} per turn × 2 completed turns folds into the session totals.
+    expect(full?.session.totalInputTokens).toBe(20);
+    expect(full?.session.totalOutputTokens).toBe(10);
+    // The cost column is folded from cost:updated and durably written (magnitude is pricing-dependent).
+    expect(typeof full?.session.totalCostMicrocents).toBe('number');
+  });
+
+  it('seeds the first sequenceNumber from initialSequenceNumber (the 2.N resume injection point)', async () => {
+    const { built, persister } = setup(scriptedResolver([textTurn('hi')]), 5);
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go');
+    // A resumed persister continues past the persisted MAX rather than colliding at 0.
+    expect(store.loadFull('sess-1')?.messages.map((m) => m.sequenceNumber)).toEqual([5, 6]);
+  });
+
+  it('start() is idempotent — a second call neither duplicates the row nor double-subscribes', async () => {
+    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
+    persister.start();
+    persister.start(); // a duplicate createSession would PK-violate; a double-subscribe would double-write
+    built.session.start();
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go');
+    expect(store.loadFull('sess-1')?.messages).toHaveLength(2);
+  });
+
+  it('close() unsubscribes — turns after close are not persisted (the session stays in the db)', async () => {
+    const { built, persister } = setup(scriptedResolver([textTurn('one'), textTurn('two')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    expect(store.loadFull('sess-1')?.messages).toHaveLength(2);
+
+    persister.close();
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+    expect(store.loadFull('sess-1')?.messages).toHaveLength(2); // unchanged — close() stopped persistence
   });
 });
