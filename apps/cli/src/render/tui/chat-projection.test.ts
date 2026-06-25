@@ -40,18 +40,25 @@ describe('chat-projection', () => {
   describe('formatSessionFooter', () => {
     it('shows the model, running cost, and pluralized turn count', () => {
       const base = initialSessionViewState();
-      const one = formatSessionFooter({ ...base, model: 'claude-sonnet-4-6', turnCount: 1 });
+      const one = formatSessionFooter({
+        ...base,
+        model: 'claude-sonnet-4-6',
+        turnCount: 1,
+        cumulativeCostMicrocents: 12_345,
+      });
       expect(one).toContain('claude-sonnet-4-6');
       expect(one).toContain('1 turn');
       expect(one).not.toContain('1 turns');
+      expect(one).toMatch(/\$\d/); // the formatted USD cost is present
 
       const many = formatSessionFooter({ ...base, model: 'gpt-4o', turnCount: 3 });
       expect(many).toContain('3 turns');
     });
 
-    it('omits the model segment before session:started resolves it', () => {
+    it('omits the model segment before session:started resolves it (cost + turns only)', () => {
       const footer = formatSessionFooter(initialSessionViewState());
       expect(footer).toContain('0 turns');
+      expect(footer).toMatch(/^\$/); // starts with the cost (no leading model segment / separator)
     });
   });
 });

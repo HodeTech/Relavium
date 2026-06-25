@@ -7,6 +7,8 @@ import {
   initialSessionViewState,
   MAX_LIVE_TOKEN_CHARS,
   MAX_LIVE_TOOL_CALLS,
+  MAX_TRANSCRIPT_ENTRIES,
+  MAX_WARNINGS,
   reduceSessionEvent,
   type SessionViewState,
 } from './session-view-model.js';
@@ -310,9 +312,11 @@ describe('session-view-model', () => {
     state = reduceSessionEvent(state, e.token('hello'));
     state = reduceSessionEvent(state, e.turnCompleted());
     state = appendUserMessage(state, 'bye');
-    expect(state.transcript.map((t) => `${t.role}:${t.role === 'user' ? t.text : t.text}`)).toEqual(
-      ['user:hi', 'assistant:hello', 'user:bye'],
-    );
+    expect(state.transcript.map((t) => `${t.role}:${t.text}`)).toEqual([
+      'user:hi',
+      'assistant:hello',
+      'user:bye',
+    ]);
   });
 
   it('accumulates cost across a turn boundary (the latest cumulative wins)', () => {
@@ -339,6 +343,7 @@ describe('session-view-model', () => {
       timestamp: '2026-06-25T00:00:01.000Z',
       workflowPath: '/tmp/out.relavium.yaml',
     });
+    expect(after.lastSequenceNumber).toBe(1); // the side event still advances the seq high-water mark
     expect({ ...after, lastSequenceNumber: undefined }).toEqual({
       ...before,
       lastSequenceNumber: undefined,
@@ -359,5 +364,96 @@ describe('session-view-model', () => {
       evs.push(e.toolCall(`tool-${i}`));
     }
     expect(reduceAll(evs).liveToolCalls).toHaveLength(MAX_LIVE_TOOL_CALLS);
+  });
+
+  it('bounds the transcript to the trailing MAX_TRANSCRIPT_ENTRIES', () => {
+    let state = initialSessionViewState();
+    for (let i = 0; i < MAX_TRANSCRIPT_ENTRIES + 5; i++) {
+      state = appendUserMessage(state, `m${i}`);
+    }
+    expect(state.transcript).toHaveLength(MAX_TRANSCRIPT_ENTRIES);
+    // The OLDEST entries were dropped (those already printed to the terminal scrollback).
+    expect(state.transcript[0]).toEqual({ role: 'user', text: 'm5' });
+  });
+
+  it('bounds the warnings buffer to the trailing MAX_WARNINGS', () => {
+    let state = reduceSessionEvent(initialSessionViewState(), {
+      type: 'session:turn_started',
+      sessionId: 'sess-1',
+      sequenceNumber: 100,
+      timestamp: '2026-06-25T00:00:00.000Z',
+    });
+    // Each duplicate (backward) sequenceNumber records one warning; emit more than MAX_WARNINGS.
+    for (let i = 0; i < MAX_WARNINGS + 3; i++) {
+      state = reduceSessionEvent(state, {
+        type: 'agent:token',
+        sessionId: 'sess-1',
+        sequenceNumber: 1, // stale ⇒ a warning each time
+        timestamp: '2026-06-25T00:00:01.000Z',
+        nodeId: 'relavium-chat',
+        token: 'x',
+        model: 'claude-sonnet-4-6',
+      });
+    }
+    expect(state.warnings).toHaveLength(MAX_WARNINGS);
+  });
+
+  it('omits durationMs when a turn completes without a preceding turn_started (NaN guard)', () => {
+    const e = events();
+    // turn_completed with no turn_started ⇒ turnStartedAtMs is undefined ⇒ durationMs must be OMITTED.
+    const state = reduceAll([e.started(), e.token('hi'), e.turnCompleted()]);
+    const entry = state.transcript[0];
+    expect(entry?.role).toBe('assistant');
+    if (entry?.role === 'assistant') {
+      expect('durationMs' in entry.summary).toBe(false);
+    }
+  });
+
+  it('clears turnStartedAtMs after each completed turn (so the next turn measures its own duration)', () => {
+    const e = events();
+    const afterTurn1 = reduceAll([e.started(), e.turnStarted(), e.token('a'), e.turnCompleted()]);
+    expect(afterTurn1.turnStartedAtMs).toBeUndefined();
+  });
+
+  it('surfaces an error turn that DID stream partial text (keeps the text + the error code)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('partial '),
+      e.turnCompleted({ error: { code: 'provider_unavailable', message: 'boom' } }),
+    ]);
+    const entry = state.transcript[0];
+    expect(entry).toMatchObject({ role: 'assistant', text: 'partial ' });
+    if (entry?.role === 'assistant') {
+      expect(entry.summary.errorCode).toBe('provider_unavailable');
+    }
+  });
+
+  it('preserves a detected gap through a mid-turn cancel', () => {
+    const start = reduceSessionEvent(initialSessionViewState(), {
+      type: 'session:turn_started',
+      sessionId: 'sess-1',
+      sequenceNumber: 0,
+      timestamp: '2026-06-25T00:00:00.000Z',
+    });
+    const gapped = reduceSessionEvent(start, {
+      type: 'agent:token',
+      sessionId: 'sess-1',
+      sequenceNumber: 9, // forward gap
+      timestamp: '2026-06-25T00:00:01.000Z',
+      nodeId: 'relavium-chat',
+      token: 'x',
+      model: 'claude-sonnet-4-6',
+    });
+    const cancelled = reduceSessionEvent(gapped, {
+      type: 'session:cancelled',
+      sessionId: 'sess-1',
+      sequenceNumber: 10,
+      timestamp: '2026-06-25T00:00:02.000Z',
+    });
+    expect(cancelled.status).toBe('ended');
+    expect(cancelled.gapDetected).toBe(true); // a gap survives the terminal
+    expect(cancelled.warnings.length).toBeGreaterThan(0);
   });
 });

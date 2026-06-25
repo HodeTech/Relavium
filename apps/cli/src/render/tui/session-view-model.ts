@@ -28,7 +28,10 @@ export interface TurnSummary {
   readonly stopReason: StopReason;
   readonly tokensUsed: { readonly input: number; readonly output: number };
   readonly durationMs?: number;
+  /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */
   readonly errorCode?: string;
+  /** The classified error message — kept for diagnostics, but NOT rendered (it may carry prompt context);
+   *  `formatTurnSummary` surfaces only `errorCode`. */
   readonly errorMessage?: string;
 }
 
@@ -233,15 +236,17 @@ function markResolved(calls: readonly ToolCallView[], toolId: string): readonly 
 type TurnCompletedEvent = Extract<SessionStreamHandleEvent, { type: 'session:turn_completed' }>;
 
 /**
- * Reduce `session:turn_completed`: count the turn, drop the in-flight buffers, and — on a successful turn —
- * append the completed assistant entry (the final live text) with its summary. An error turn appends an
- * assistant entry only when it produced some text; either way the summary (incl. any `error`) is recorded.
+ * Reduce `session:turn_completed`: count the turn, drop the in-flight buffers, and append the completed
+ * assistant entry with its summary. An **error** turn ALWAYS appends an entry (even with no streamed text)
+ * so the failure is visible in the transcript; a **successful** turn appends only when it produced text (an
+ * empty-text success is a silent no-op, mirroring the engine/persister). `base` already carries the
+ * seq-tracking patch from {@link reduceSessionEvent}.
  */
-function reduceTurnCompleted(state: SessionViewState, event: TurnCompletedEvent): SessionViewState {
+function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent): SessionViewState {
   // A finite, non-negative duration only — guard against a NaN from an unparseable timestamp so a NaN can
   // never reach `durationMs` (and `formatDuration`), keeping the `durationMs?: number` contract strict.
   const rawDuration =
-    state.turnStartedAtMs === undefined ? NaN : Date.parse(event.timestamp) - state.turnStartedAtMs;
+    base.turnStartedAtMs === undefined ? NaN : Date.parse(event.timestamp) - base.turnStartedAtMs;
   const durationMs = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : undefined;
   const summary: TurnSummary = {
     stopReason: event.stopReason,
@@ -251,17 +256,15 @@ function reduceTurnCompleted(state: SessionViewState, event: TurnCompletedEvent)
       ? {}
       : { errorCode: event.error.code, errorMessage: event.error.message }),
   };
-  // Show a completed turn when it produced text, OR when it errored (so the failure is visible) — an
-  // empty-text successful turn appends nothing, mirroring the engine/persister.
-  const text = state.liveTokens;
+  const text = base.liveTokens;
   const show = text.length > 0 || event.error !== undefined;
   const transcript = show
-    ? pushBounded(state.transcript, { role: 'assistant', text, summary }, MAX_TRANSCRIPT_ENTRIES)
-    : state.transcript;
+    ? pushBounded(base.transcript, { role: 'assistant', text, summary }, MAX_TRANSCRIPT_ENTRIES)
+    : base.transcript;
   return {
-    ...state,
+    ...base,
     status: 'idle',
-    turnCount: state.turnCount + 1,
+    turnCount: base.turnCount + 1,
     liveTokens: '',
     liveToolCalls: [],
     turnStartedAtMs: undefined,

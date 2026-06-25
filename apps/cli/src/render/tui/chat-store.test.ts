@@ -119,4 +119,70 @@ describe('createChatStore', () => {
     expect(createChatStore(false).getSnapshot().color).toBe(false);
     expect(createChatStore(true).getSnapshot().color).toBe(true);
   });
+
+  it('flushes a session:turn_completed lifecycle event immediately', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply(turnStarted); // running
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.apply({
+      type: 'session:turn_completed',
+      sessionId: 'sess-1',
+      sequenceNumber: 3,
+      timestamp: '2026-06-25T00:00:03.000Z',
+      stopReason: 'stop',
+      tokensUsed: { input: 1, output: 1 },
+    });
+    expect(notified).toBe(1); // a lifecycle transition repaints immediately
+    expect(store.getSnapshot().state.turnCount).toBe(1);
+  });
+
+  it('coalesces a cost:updated event like a token (dirty until tick)', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply(turnStarted);
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.apply({
+      type: 'cost:updated',
+      sessionId: 'sess-1',
+      sequenceNumber: 3,
+      timestamp: '2026-06-25T00:00:03.000Z',
+      nodeId: 'relavium-chat',
+      model: 'claude-sonnet-4-6',
+      inputTokens: 10,
+      outputTokens: 5,
+      costMicrocents: 42,
+      cumulativeCostMicrocents: 42,
+    });
+    expect(notified).toBe(0); // coalesced
+    store.tick();
+    expect(notified).toBe(1);
+    expect(store.getSnapshot().state.cumulativeCostMicrocents).toBe(42);
+  });
+
+  it('clears the dirty flag when a lifecycle event flushes mid-stream, so a later tick does not repaint', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply(turnStarted);
+    store.apply(token(2, 'hi')); // dirty = true
+    store.apply({
+      type: 'session:cancelled',
+      sessionId: 'sess-1',
+      sequenceNumber: 3,
+      timestamp: '2026-06-25T00:00:03.000Z',
+    }); // lifecycle flush clears dirty + ends the session
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.tick();
+    expect(notified).toBe(0); // not dirty + ended ⇒ no wasted repaint
+  });
+
+  it('summaryText renders the session footer (model · cost · turns)', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    expect(store.summaryText()).toContain('claude-sonnet-4-6');
+    expect(store.summaryText()).toContain('0 turns');
+  });
 });

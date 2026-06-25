@@ -1,5 +1,6 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
+import { formatSessionFooter } from './chat-projection.js';
 import {
   appendUserMessage,
   initialSessionViewState,
@@ -43,6 +44,8 @@ export interface ChatStoreController extends ChatStore {
   tick: () => void;
   /** Force a repaint (used on finalize to paint the last frame). */
   flush: () => void;
+  /** The persistent one-line session summary (model · cost · turns) for after-unmount output (Step-5 teardown). */
+  summaryText: () => string;
 }
 
 /**
@@ -100,5 +103,6 @@ export function createChatStore(color: boolean): ChatStoreController {
       }
     },
     flush,
+    summaryText: () => formatSessionFooter(state),
   };
 }
