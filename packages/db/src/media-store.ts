@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
@@ -145,11 +145,18 @@ export class FilesystemMediaStore implements MediaStore {
    * non-file (a stray subdir). An absent root (the CAS was never written) yields `[]`.
    */
   async listHandles(): Promise<Array<{ handle: string; mtimeMs: number }>> {
-    if (!existsSync(this.#root)) {
-      return [];
+    let shards: Dirent[];
+    try {
+      shards = await readdir(this.#root, { withFileTypes: true });
+    } catch (err) {
+      // An absent CAS root (never written) yields `[]` — one async call, no `existsSync`/`readdir` window.
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        return [];
+      }
+      throw err;
     }
     const out: Array<{ handle: string; mtimeMs: number }> = [];
-    for (const shard of await readdir(this.#root, { withFileTypes: true })) {
+    for (const shard of shards) {
       // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
       if (!shard.isDirectory() || !/^[0-9a-f]{2}$/.test(shard.name)) {
         continue;
