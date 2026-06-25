@@ -90,3 +90,16 @@ export function formatDuration(ms: number): string {
 export function formatTokens(tokens: { readonly input: number; readonly output: number }): string {
   return `↑${tokens.input} ↓${tokens.output}`;
 }
+
+/**
+ * Format a produced media deliverable as a one-line, secret-free reference: `📎 image/png media://sha256-…`.
+ * Renders the durable HANDLE (never inline bytes) — the CLI's leaf of the cross-surface "each surface renders a
+ * produced media handle" acceptance (2.S). Takes the structural minimum so both the TUI's `ProducedMediaView` and
+ * the engine's `DurableMediaMeta` (the plain renderer's source) reuse one format. Node attribution is the caller's.
+ */
+export function formatProducedMedia(media: {
+  readonly mimeType: string;
+  readonly handle: string;
+}): string {
+  return `📎 ${media.mimeType} ${media.handle}`;
+}

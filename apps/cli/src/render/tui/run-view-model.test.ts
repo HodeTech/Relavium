@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   initialRunViewState,
+  MAX_PRODUCED_MEDIA,
   MAX_TOKEN_CHARS,
   MAX_TOOL_LINES,
   MAX_WARNINGS,
@@ -723,5 +724,64 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
     ]);
     expect(s.activeTokens).toBe('hi'); // not 'hihi'
     expect(s.warnings.some((w) => w.includes('out of order'))).toBe(true);
+  });
+});
+
+describe('reduceRunEvent — produced media (2.S, the node:completed handle surfacing)', () => {
+  const HANDLE_A = `media://sha256-${'a'.repeat(64)}`;
+  const HANDLE_B = `media://sha256-${'b'.repeat(64)}`;
+  /** A durable (handle-only) media part — the shape a media-producing node's output carries post-de-inline. */
+  const mediaPart = (ref: string, mimeType = 'image/png'): Record<string, unknown> => ({
+    type: 'media',
+    mimeType,
+    source: { kind: 'handle', ref },
+    byteLength: 256,
+  });
+  const completed = (nodeId: string, output: unknown, seq: number): RunEvent => ({
+    type: 'node:completed',
+    runId: RUN,
+    timestamp: TS,
+    sequenceNumber: seq,
+    nodeId,
+    output,
+    tokensUsed: { input: 0, output: 0 },
+    durationMs: 5,
+  });
+
+  it('surfaces a produced handle (handle + mime + modality + node) — never inline bytes', () => {
+    const s = reduceAll([completed('a', { content: [mediaPart(HANDLE_A)] }, 1)]);
+    expect(s.producedMedia).toEqual([
+      { nodeId: 'a', handle: HANDLE_A, mimeType: 'image/png', modality: 'image' },
+    ]);
+  });
+
+  it('stays empty for a text-only / null node output', () => {
+    expect(reduceAll([completed('a', { text: 'hi' }, 1)]).producedMedia).toEqual([]);
+    expect(reduceAll([completed('a', null, 1)]).producedMedia).toEqual([]);
+  });
+
+  it('accumulates across nodes, attributing each handle to its emitting node', () => {
+    const s = reduceAll([
+      completed('a', { content: [mediaPart(HANDLE_A)] }, 1),
+      completed('b', { content: [mediaPart(HANDLE_B, 'audio/mpeg')] }, 2),
+    ]);
+    expect(s.producedMedia.map((m) => [m.nodeId, m.modality])).toEqual([
+      ['a', 'image'],
+      ['b', 'audio'],
+    ]);
+  });
+
+  it('bounds the deliverables list to the trailing MAX_PRODUCED_MEDIA', () => {
+    const handle = (i: number): string => `media://sha256-${String(i).padStart(64, '0')}`;
+    const events = Array.from({ length: MAX_PRODUCED_MEDIA + 5 }, (_, i) =>
+      completed('a', { content: [mediaPart(handle(i))] }, i + 1),
+    );
+    const s = reduceAll(events);
+    expect(s.producedMedia.length).toBe(MAX_PRODUCED_MEDIA);
+    // The trailing entries are kept: the last-emitted handle is present, the earliest dropped.
+    expect(s.producedMedia[s.producedMedia.length - 1]?.handle).toBe(
+      handle(MAX_PRODUCED_MEDIA + 4),
+    );
+    expect(s.producedMedia.some((m) => m.handle === handle(0))).toBe(false);
   });
 });

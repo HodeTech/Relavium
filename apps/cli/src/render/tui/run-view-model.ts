@@ -1,4 +1,9 @@
-import type { AgentTokenEvent, RunEvent } from '@relavium/shared';
+import {
+  collectDurableMediaHandles,
+  type AgentTokenEvent,
+  type DurableMediaMeta,
+  type RunEvent,
+} from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -27,6 +32,18 @@ export interface NodeView {
   readonly errorCode?: string;
   /** The 1-based node-retry dispatch attempt (present once a retry has occurred). */
   readonly attempt?: number;
+}
+
+/**
+ * A produced media DELIVERABLE surfaced on a `node:completed` (2.S/D-series, ADR-0042) — the durable
+ * `media://sha256-<hex>` HANDLE (never inline bytes), its modality + MIME, and the node that emitted it.
+ * The CLI's leaf of the cross-surface "each surface renders a produced media handle" acceptance.
+ */
+export interface ProducedMediaView {
+  readonly nodeId: string;
+  readonly handle: string;
+  readonly mimeType: string;
+  readonly modality: DurableMediaMeta['modality'];
 }
 
 export interface RunSummary {
@@ -62,6 +79,9 @@ export interface RunViewState {
   readonly gapDetected: boolean;
   /** Bounded, user-facing warnings (gap, budget, timeout, gate). */
   readonly warnings: readonly string[];
+  /** Produced media handles surfaced as nodes complete (2.S) — the run's media deliverables, bounded to the
+   *  trailing {@link MAX_PRODUCED_MEDIA}. Handle-only by construction (the engine de-inlines bytes upstream). */
+  readonly producedMedia: readonly ProducedMediaView[];
   /** Set once the run reaches a terminal/parked event — drives the final summary panel. */
   readonly summary?: RunSummary;
 }
@@ -72,6 +92,9 @@ export const MAX_TOKEN_CHARS = 4000;
 export const MAX_TOOL_LINES = 8;
 /** Recent warnings kept for display. */
 export const MAX_WARNINGS = 6;
+/** Produced media deliverables kept for display — generous (a real run emits a handful) but bounded so a
+ *  pathological media-spewing run can't grow the view state without limit; the trailing entries are kept. */
+export const MAX_PRODUCED_MEDIA = 50;
 /** Trailing logical lines of the active node's token stream shown in the live region (RunApp). */
 export const MAX_ACTIVE_TOKEN_LINES = 6;
 
@@ -85,6 +108,7 @@ export function initialRunViewState(): RunViewState {
     cumulativeCostMicrocents: 0,
     gapDetected: false,
     warnings: [],
+    producedMedia: [],
   };
 }
 
@@ -92,6 +116,15 @@ export function initialRunViewState(): RunViewState {
 function pushBounded(arr: readonly string[], line: string, max: number): string[] {
   const next = [...arr, line];
   return next.length > max ? next.slice(next.length - max) : next;
+}
+
+/** Append produced media deliverables, keeping only the trailing {@link MAX_PRODUCED_MEDIA}. */
+function appendProducedMedia(
+  current: readonly ProducedMediaView[],
+  added: readonly ProducedMediaView[],
+): ProducedMediaView[] {
+  const next = [...current, ...added];
+  return next.length > MAX_PRODUCED_MEDIA ? next.slice(next.length - MAX_PRODUCED_MEDIA) : next;
 }
 
 /** Append streamed token text, keeping only the trailing {@link MAX_TOKEN_CHARS}. */
@@ -263,14 +296,29 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'cost:updated':
       return { ...base, cumulativeCostMicrocents: event.cumulativeCostMicrocents };
 
-    case 'node:completed':
+    case 'node:completed': {
+      // A media-producing node's output carries durable `media://` handles (the engine de-inlined any bytes at
+      // the emit choke point, ADR-0042). Surface each as a deliverable — handle-only, never bytes. `output` is
+      // `unknown`; `collectDurableMediaHandles` walks it cycle-safe + deduped, so a text-only node yields [].
+      const produced = collectDurableMediaHandles(event.output).map(
+        (meta): ProducedMediaView => ({
+          nodeId: event.nodeId,
+          handle: meta.handle,
+          mimeType: meta.mimeType,
+          modality: meta.modality,
+        }),
+      );
       return {
         ...base,
         ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
         ...(event.cumulativeCostMicrocents === undefined
           ? {}
           : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+        ...(produced.length === 0
+          ? {}
+          : { producedMedia: appendProducedMedia(base.producedMedia, produced) }),
       };
+    }
 
     case 'node:failed':
       return {
