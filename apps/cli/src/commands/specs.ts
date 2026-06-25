@@ -7,12 +7,15 @@ import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
 import { createProviderResolver } from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
+import { openSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
+import { chatCommand } from './chat.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
 import { listCommand } from './list.js';
@@ -73,6 +76,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
 
 export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
+  registerChat(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -115,6 +119,39 @@ function registerRun(program: Command, ctx?: CommandContext): void {
         // persists to ~/.relavium/history.db and resolves keys via the OS keychain → env var.
         openRunStore: openHistoryStore,
         providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+      },
+    );
+  });
+}
+
+/**
+ * Register `relavium chat [--agent <ref>]` (2.M — the agent-first interactive REPL over `AgentSession`).
+ * Production wires the keychain-backed key resolver (2.C), durable session persistence (over the shared
+ * `history.db`, 2.H/ADR-0050), and the TTY-aware driver (ink for a real terminal, the plain line loop
+ * otherwise). `/exit` ends the session with exit code 4.
+ */
+function registerChat(program: Command, ctx?: CommandContext): void {
+  const chat = program
+    .command('chat')
+    .description('Start an interactive agent chat session (REPL).')
+    .option('--agent <ref>', 'bind a specific agent (.agent.yaml path or .relavium/ id)');
+
+  if (ctx === undefined) {
+    chat.action(() => {
+      throw new CliError('not_implemented', '`relavium chat` requires the CLI runtime context.');
+    });
+    return;
+  }
+
+  chat.action(async (opts: { agent?: string }) => {
+    ctx.result.exitCode = await chatCommand(
+      { agent: opts.agent },
+      {
+        io: ctx.io,
+        global: ctx.global,
+        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        openSessionStore,
+        drive: selectChatDriver,
       },
     );
   });
