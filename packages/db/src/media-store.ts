@@ -169,9 +169,7 @@ export class FilesystemMediaStore implements MediaStore {
         const found = await Promise.all(
           entries.map((entry) => this.#handleForEntry(shardDir, shard.name, entry)),
         );
-        return found.filter(
-          (f): f is { handle: string; mtimeMs: number } => f !== undefined,
-        );
+        return found.filter((f): f is { handle: string; mtimeMs: number } => f !== undefined);
       }),
     );
     return perShard.flat();
