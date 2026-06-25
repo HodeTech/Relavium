@@ -115,9 +115,10 @@ const DEFAULT_TS_MS = 1_750_000_000_000;
 
 /**
  * Seed one run into the history db for the read-command tests (`list`/`logs`/`status`/`gate list`, 2.I):
- * `run:started` → one node lifecycle → the requested terminal/pause state. A `paused` run can carry a pending
- * human and/or budget gate. Events go through the real `persistEvent` (so `RunEventSchema` validates them and a
- * malformed fixture fails loudly at seed time). Returns the run id.
+ * `run:started` → one node lifecycle → the requested terminal/pause state. A `paused` run carries a pending
+ * suspension reason: a human and/or budget gate when one is given, else an async media-job park (the only other
+ * valid pause — `RunEventSchema` rejects a `run:paused` with no reason). Events go through the real `persistEvent`
+ * (so `RunEventSchema` validates them and a malformed fixture fails loudly at seed time). Returns the run id.
  */
 export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   const tsMs = opts.atMs ?? DEFAULT_TS_MS;
@@ -181,9 +182,21 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
         });
       }
     } else {
-      // No specific gate — a media-job-style park: just `run:paused` (no human-gate node started), so
-      // `state: 'paused'` is never silently a 'running' run yet doesn't seed a phantom gate step.
-      await emit('run:paused', { pendingGateCount: 0, gateIds: [] });
+      // No human/budget gate — model an async MEDIA-JOB park (1.AG Section D, ADR-0045 §2): a generative node
+      // parks awaiting its job, so `run:paused` carries `pendingMediaJobNodeIds` (NOT a gate). This is the only
+      // valid zero-gate pause — `RunEventSchema` rejects a `run:paused` that carries no suspension reason at all,
+      // so the park MUST seed the parked node + its `media_job:submitted` (an empty `run:paused` is malformed).
+      await emit('node:started', { nodeId: 'g', nodeType: 'agent' });
+      await emit('media_job:submitted', {
+        nodeId: 'g',
+        jobId: 'job-1',
+        provider: 'openai',
+        model: 'gpt-image-1',
+        modality: 'image',
+        startedAt: ts,
+        deadlineAt: new Date(tsMs + 60_000).toISOString(),
+      });
+      await emit('run:paused', { pendingGateCount: 0, gateIds: [], pendingMediaJobNodeIds: ['g'] });
     }
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
