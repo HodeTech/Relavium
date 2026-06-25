@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -686,9 +686,26 @@ describe('resolveSaveToRoot (save_to scope root on resume)', () => {
   });
 
   it('falls back to the resumer cwd when the persisted project root no longer exists (deleted / other machine)', () => {
-    const gone = join(tmpdir(), 'relavium-deleted-nonexistent-xyz');
+    // A collision-free absent path: a fresh tmpdir, removed, so the inner path is guaranteed not to exist.
+    const parent = mkdtempSync(join(tmpdir(), 'relavium-gone-'));
+    const gone = join(parent, 'inner-nonexistent');
+    rmSync(parent, { recursive: true, force: true });
     expect(existsSync(gone)).toBe(false); // precondition: the path does not exist
     expect(resolveSaveToRoot(gone, '/resumer/cwd')).toBe('/resumer/cwd');
+  });
+
+  it('falls back to the resumer cwd when the persisted project root is a FILE, not a directory', () => {
+    // A path that EXISTS but is a regular file must not be used as the jail scope root (existsSync would have
+    // wrongly accepted it; the directory check rejects it). Using it would only fail the downstream mkdir/write.
+    const parent = mkdtempSync(join(tmpdir(), 'relavium-file-'));
+    const filePath = join(parent, 'not-a-dir');
+    writeFileSync(filePath, 'x');
+    try {
+      expect(existsSync(filePath)).toBe(true); // precondition: the path exists...
+      expect(resolveSaveToRoot(filePath, '/resumer/cwd')).toBe('/resumer/cwd'); // ...but is a file ⇒ fall back
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 
   it('falls back to the resumer cwd when no project root was persisted (null — pre-column run)', () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 
 import {
   EngineStateError,
@@ -66,14 +66,19 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed'
 
 /**
  * The `save_to` scope root for a resumed run: the ORIGINAL run's persisted `runs.project_root` when it still
- * exists on THIS machine — so a run started in dir A and resumed from B writes its deliverables under A — else the
- * resumer's cwd. The existence check keeps a cross-machine / CI resume (or one where the original dir was deleted
- * or moved) from failing the `save_to` write against a now-missing absolute path; it falls back gracefully. A run
- * started before `project_root` was populated (`null`) also falls back. The realpath+commonpath jail holds under
- * either root, so this only changes the destination, never the containment guarantee.
+ * exists on THIS machine AS A DIRECTORY — so a run started in dir A and resumed from B writes its deliverables
+ * under A — else the resumer's cwd. The directory check (`statSync` with `throwIfNoEntry: false`, then
+ * `isDirectory`) keeps a cross-machine / CI resume, a deleted-or-moved original dir, OR a path now occupied by a
+ * file (a non-dir would only fail the downstream `mkdir`/write with an opaque ENOTDIR) from being used as the jail
+ * root; each falls back gracefully, as does a `null` (pre-column run). Known benign window: the dir is checked
+ * here but `realpath`'d again at write time (media-write.ts), so a symlink-target swap in between changes only the
+ * destination — the realpath+commonpath jail still holds, never escaping the root.
  */
 export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string): string {
-  return projectRoot !== null && existsSync(projectRoot) ? projectRoot : resumerCwd;
+  if (projectRoot !== null && statSync(projectRoot, { throwIfNoEntry: false })?.isDirectory() === true) {
+    return projectRoot;
+  }
+  return resumerCwd;
 }
 
 /**
