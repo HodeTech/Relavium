@@ -36,8 +36,10 @@ surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
   key in localStorage, no key returned from an IPC command. The frontend learns *that* a
   provider is configured, never its secret.
 - **No plaintext at rest.** No key in a config file, `.env` committed to git,
-  `.relavium.yaml`, a log, or the SQLite DB unencrypted (the local DB is SQLCipher;
-  secrets still belong in the keychain, not a DB column).
+  `.relavium.yaml`, a log, or a DB column (the **desktop's** local DB is SQLCipher-encrypted;
+  the **CLI's** `history.db` is unencrypted, guarded by `0600`/`0700` OS permissions per
+  [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) — either way, secrets
+  belong in the keychain, never a DB column).
 - Keys are never interpolated into error messages, the normalized `LlmError` (`.message` / `.code`), or
   the `node:failed` / `run:failed` events (see [error-handling.md](error-handling.md)). **This is a
   positive, *tested* obligation, not only a prohibition:** the `@relavium/llm` **per-adapter adapter tests**
@@ -106,8 +108,9 @@ session runs under the same filesystem **scope tier**, `run_command` uses the sa
 A chat-only relaxation of any rule here is a security violation, not a feature.
 
 - **Conversational content is the user's data, not a managed secret.** What the user types
-  into a session and the model's replies are persisted **encrypted in `history.db`**
-  (SQLCipher) — that is user data under the user's control, not a key-custody concern, and
+  into a session and the model's replies are persisted in `history.db` (SQLCipher-encrypted on
+  the desktop; unencrypted, `0600`/`0700`-guarded on the CLI per [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md))
+  — that is user data under the user's control, not a key-custody concern, and
   it is **not** a violation of
   [secrets-never-touch-the-frontend](architectural-principles.md#6-secrets-never-touch-disk-or-the-frontend).
 - **The real leak is a `secret`-typed input in a prompt.** non-negotiable #6 targets
@@ -236,8 +239,8 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   Event-payload masking is not enough on its
   own — a secret interpolated into a prompt has already left the boundary before any mask
   applies. The user's own conversational content in a chat session is the user's data
-  (encrypted in `history.db`), **not** a managed secret; the leak this rule closes is a
-  `secret`-typed *input* reaching prompt/tool text.
+  (persisted in `history.db` — see the at-rest posture above), **not** a managed secret; the
+  leak this rule closes is a `secret`-typed *input* reaching prompt/tool text.
 
 ### Expression sandbox (`condition` / `transform` / `merge_fn`)
 

@@ -56,7 +56,9 @@ export interface SessionPersister {
 export function createSessionPersister(deps: SessionPersisterDeps): SessionPersister {
   const iso = (): string => new Date(deps.now()).toISOString();
 
-  let createdAt = '';
+  // Frozen at persister construction (≈ session start) — the row's creation time never changes, so it is a
+  // const and never the `''` sentinel a pre-start record() would otherwise carry into the schema.
+  const createdAt = iso();
   let sequenceNumber = deps.initialSequenceNumber ?? 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -112,8 +114,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // UNCONDITIONALLY so a resumed budget governor seeds from the true spend (ADR-0028), not an
         // understated one. (Failed-turn token usage is 0, mirroring the engine, so the token columns are
         // unaffected.)
-        if (event.error === undefined) {
-          if (pendingUserText !== undefined) appendText('user', pendingUserText);
+        // A completed exchange always has a user message (the REPL calls beginUserTurn before sendMessage);
+        // gating the whole exchange on it prevents an orphaned assistant row with no preceding user row.
+        if (event.error === undefined && pendingUserText !== undefined) {
+          appendText('user', pendingUserText);
           if (assistantText.length > 0) appendText('assistant', assistantText);
           totalInputTokens += event.tokensUsed.input;
           totalOutputTokens += event.tokensUsed.output;
@@ -123,8 +127,11 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         assistantText = '';
         return;
       case 'session:cancelled':
-        // The session's sole terminal — mark it ended (still resumable from the persisted transcript).
+        // The session's sole terminal — mark it ended (still resumable from the persisted transcript), then
+        // self-detach so the bus listener does not leak if the REPL's close() is skipped on an early exit.
         deps.store.updateSession(record('ended'));
+        unsubscribe?.();
+        unsubscribe = undefined;
         return;
       default:
         return;
@@ -135,7 +142,6 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     start(): void {
       if (started) return;
       started = true;
-      createdAt = iso();
       deps.store.createSession(record('active'));
       unsubscribe = deps.handle.subscribe(onEvent);
     },

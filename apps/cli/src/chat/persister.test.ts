@@ -67,13 +67,14 @@ describe('createSessionPersister', () => {
   }
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', () => {
-    const { persister } = setup(scriptedResolver([textTurn('hi')]));
+    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
     persister.start();
     const full = store.loadFull('sess-1');
     expect(full).toBeDefined();
     expect(full?.session.status).toBe('active');
     expect(full?.session.agentSlug).toBe('relavium-chat');
-    expect(full?.session.agentSnapshot?.model).toBe('claude-sonnet-4-6');
+    // The full bound agent is frozen into agent_snapshot (for reproducible resume/export).
+    expect(full?.session.agentSnapshot).toEqual(built.agent);
     expect(full?.messages).toHaveLength(0); // no turn yet
   });
 
@@ -153,6 +154,8 @@ describe('createSessionPersister', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'hi there' }] },
     ]);
     expect(state.turnCount).toBe(1);
+    // claude-sonnet-4-6 is priced, so a real turn produces a non-zero session cost the resume seeds from.
+    expect(state.cumulativeCostMicrocents).toBeGreaterThan(0);
   });
 
   it('accumulates sequenceNumber and token totals across consecutive turns', async () => {
@@ -173,8 +176,8 @@ describe('createSessionPersister', () => {
     // {input:10, output:5} per turn × 2 completed turns folds into the session totals.
     expect(full?.session.totalInputTokens).toBe(20);
     expect(full?.session.totalOutputTokens).toBe(10);
-    // The cost column is folded from cost:updated and durably written (magnitude is pricing-dependent).
-    expect(typeof full?.session.totalCostMicrocents).toBe('number');
+    // The cost column is folded from cost:updated; claude-sonnet-4-6 is priced ⇒ a non-zero running total.
+    expect(full?.session.totalCostMicrocents).toBeGreaterThan(0);
   });
 
   it('seeds the first sequenceNumber from initialSequenceNumber (the 2.N resume injection point)', async () => {
@@ -209,5 +212,41 @@ describe('createSessionPersister', () => {
     persister.beginUserTurn('second');
     await built.session.sendMessage('second');
     expect(store.loadFull('sess-1')?.messages).toHaveLength(2); // unchanged — close() stopped persistence
+  });
+
+  it('flushes the running cost on a failed turn so a resumed budget governor sees the true spend', async () => {
+    // Turn 1 succeeds and incurs a real (priced) cost; turn 2 is unscripted, so the provider throws and the
+    // turn settles as an error. The d6b975b unconditional flush must keep the turn-1 cost durable (not 0).
+    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    const afterSuccess = store.loadFull('sess-1')?.session.totalCostMicrocents ?? 0;
+    expect(afterSuccess).toBeGreaterThan(0);
+
+    persister.beginUserTurn('second');
+    // The 2nd (unscripted) turn fails; whether it settles or rethrows, turn_completed flushes the row first.
+    await built.session.sendMessage('second').catch(() => undefined);
+    const after = store.loadFull('sess-1');
+    expect(after?.session.totalCostMicrocents).toBe(afterSuccess); // cost did NOT regress to 0 on the error
+    expect(after?.messages).toHaveLength(2); // the failed turn added no transcript rows
+  });
+
+  it('on cancel after a successful turn: status ended, totals retained, messages untouched', async () => {
+    const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('hello');
+    await built.session.sendMessage('hello');
+    const before = store.loadFull('sess-1');
+    built.session.cancel();
+    const after = store.loadFull('sess-1');
+
+    expect(after?.session.status).toBe('ended');
+    // The ended-flush carries the accumulated totals forward (live reads, not a start-time snapshot of 0).
+    expect(after?.session.totalInputTokens).toBe(before?.session.totalInputTokens);
+    expect(after?.session.totalCostMicrocents).toBe(before?.session.totalCostMicrocents);
+    expect(after?.messages).toHaveLength(2); // cancel does not touch the transcript
   });
 });
