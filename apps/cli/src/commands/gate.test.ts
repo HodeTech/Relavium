@@ -310,6 +310,16 @@ workflow:
     expect(doubled).toMatchObject({ output: { d: 14 } });
   });
 
+  it('swallows a throwing media GC on resume — a GC fault never fails the resume (2.S/D-GC, best-effort)', async () => {
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    const code = await gateCommand(
+      { runId, approve: true },
+      { ...deps(io), sweepMedia: () => Promise.reject(new Error('gc boom')) },
+    );
+    expect(code).toBe(EXIT_CODES.success); // the resume completed; the GC rejection was swallowed at the call site
+  });
+
   it('surfaces a corrupt stored inputs blob as a clean exit-2 fault (no silent empty-inputs resume)', async () => {
     const { runId } = await setupPausedRun();
     // Corrupt the persisted input_json to a non-JSON blob (simulating a damaged store row).

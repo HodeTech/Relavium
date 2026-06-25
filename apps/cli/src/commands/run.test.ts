@@ -414,6 +414,25 @@ describe('runCommand', () => {
     expect(swept).toBe(false); // the GC must NOT run while the run is merely paused (its media survives the resume)
   });
 
+  it('swallows a throwing media GC at run-end — a GC fault never fails the run (2.S/D-GC, best-effort)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: () => Promise.reject(new Error('gc boom')),
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success); // the run completed; the GC rejection was swallowed at the call site
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
   it('rejects an agent node whose output_modalities exceed the catalog model at LOAD — exit 2, engine never built (D15)', async () => {
     const client = createClient(':memory:');
     runMigrations(client.db);

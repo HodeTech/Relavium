@@ -222,11 +222,16 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // `run` does (the same helper). A re-pause (a second gate / budget pause) is NOT terminal: skip it, so the
     // still-paused run's media survives for the next resume. A GC failure is swallowed (never a correctness break).
     if (wiring.media.casRoot !== undefined && isTerminalOutcome(outcome)) {
-      await (deps.sweepMedia ?? defaultSweepMedia)({
-        db: opened.db,
-        casRoot: wiring.media.casRoot,
-        currentRunId: args.runId,
-      });
+      try {
+        await (deps.sweepMedia ?? defaultSweepMedia)({
+          db: opened.db,
+          casRoot: wiring.media.casRoot,
+          currentRunId: args.runId,
+        });
+      } catch {
+        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the resume —
+        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
+      }
     }
     return outcomeToExitCode(outcome);
   } finally {

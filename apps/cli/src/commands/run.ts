@@ -180,11 +180,16 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Skipped on a
     // `paused` outcome (the run is resumable — its media must survive) and on the in-memory unit/harness path.
     if (opened !== undefined && mediaCasRoot !== undefined && isTerminalOutcome(outcome)) {
-      await (deps.sweepMedia ?? defaultSweepMedia)({
-        db: opened.db,
-        casRoot: mediaCasRoot,
-        currentRunId: handle.runId,
-      });
+      try {
+        await (deps.sweepMedia ?? defaultSweepMedia)({
+          db: opened.db,
+          casRoot: mediaCasRoot,
+          currentRunId: handle.runId,
+        });
+      } catch {
+        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the run —
+        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
+      }
     }
 
     return outcomeToExitCode(outcome);
