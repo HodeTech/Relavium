@@ -4,7 +4,12 @@ import { createElement, useState, useSyncExternalStore, type ReactElement } from
 import { drivePlain, type ChatDriveContext, type ChatDriver } from '../../commands/chat.js';
 import { colorProps } from './projection.js';
 import { spinnerFrame } from './format.js';
-import { formatSessionFooter, formatToolCall, formatTurnSummary } from './chat-projection.js';
+import {
+  formatSessionFooter,
+  formatToolCall,
+  formatTurnSummary,
+  stripTerminalControls,
+} from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { TranscriptEntry } from './session-view-model.js';
 
@@ -28,13 +33,13 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
     return (
       <Text {...colorProps(color, 'cyan')}>
         {'> '}
-        {entry.text}
+        {stripTerminalControls(entry.text)}
       </Text>
     );
   }
   return (
     <Box flexDirection="column">
-      <Text>{entry.text}</Text>
+      <Text>{stripTerminalControls(entry.text)}</Text>
       <Text {...colorProps(color, 'gray')}> {formatTurnSummary(entry.summary)}</Text>
     </Box>
   );
@@ -110,7 +115,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             </Text>
           ))}
           <Text>
-            {spinnerFrame(tick)} {state.liveTokens}
+            {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
           </Text>
         </Box>
       )}
@@ -131,6 +136,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 export function driveInk(ctx: ChatDriveContext): Promise<void> {
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
+  // Open the session ONLY now — the store is subscribed, so the synchronous session:started (which carries
+  // the model for the footer) is observed, not raced.
+  ctx.startSession();
   const frame = setInterval(() => ctx.store.tick(), FRAME_MS);
   frame.unref();
 
@@ -158,12 +166,16 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
     },
   );
 
-  return exited.finally(() => {
-    clearInterval(frame);
-    unsubscribe();
-    instance.unmount();
-    ctx.io.writeOut(`${ctx.store.summaryText()}\n`); // persistent final summary after the live view is torn down
-  });
+  return exited
+    .then(() => {
+      // The persistent final summary — only on a CLEAN exit; an error reject skips it and propagates (exit 1).
+      ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
+    })
+    .finally(() => {
+      clearInterval(frame);
+      unsubscribe();
+      instance.unmount();
+    });
 }
 
 /** Select the chat driver by surface: a real TTY (and not `--json`, which is 2.Q) ⇒ ink; else the plain loop. */

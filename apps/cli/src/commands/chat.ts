@@ -11,7 +11,7 @@ import { openSessionStore, type OpenedSessionStore } from '../history/session-op
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
-import { formatToolCall } from '../render/tui/chat-projection.js';
+import { formatToolCall, stripTerminalControls } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 
 /**
@@ -30,6 +30,11 @@ export interface ChatCommandArgs {
 
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
 export interface ChatDriveContext {
+  /**
+   * Open the session — call this AS THE FIRST ACT inside the driver, AFTER it has wired its stream
+   * subscription, so the synchronous `session:started` (which carries the model) is observed, not raced.
+   */
+  readonly startSession: () => void;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
   readonly processLine: (line: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
@@ -132,10 +137,13 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     await built.session.sendMessage(line);
   };
 
-  persister.start();
-  built.session.start();
+  // persister.start() subscribes for the turn events + inserts the session row; it does NOT consume
+  // session:started, so it is safe before the driver. session.start() (which fires session:started) is
+  // deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
   try {
+    persister.start();
     await (deps.drive ?? drivePlain)({
+      startSession: () => built.session.start(),
       processLine,
       shouldStop: () => stop,
       handle: built.handle,
@@ -159,13 +167,19 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
 export async function drivePlain(ctx: ChatDriveContext): Promise<void> {
   const unsubscribe = ctx.handle.subscribe(makePlainPrinter(ctx.io));
   const rl = createInterface({ input: process.stdin, terminal: false });
+  // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
+  // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
+  const onSigint = (): void => rl.close();
+  process.once('SIGINT', onSigint);
   try {
     ctx.io.writeOut('relavium chat — type a message, or /exit to quit.\n');
+    ctx.startSession(); // subscription wired above ⇒ session:started is observed, not raced
     for await (const line of rl) {
       await ctx.processLine(line);
       if (ctx.shouldStop()) break;
     }
   } finally {
+    process.removeListener('SIGINT', onSigint);
     rl.close();
     unsubscribe();
   }
@@ -179,7 +193,8 @@ export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) =
   return (event) => {
     switch (event.type) {
       case 'agent:token':
-        io.writeOut(event.token);
+        // Sanitize the model's tokens before they reach the terminal (no ANSI/OSC/control injection).
+        io.writeOut(stripTerminalControls(event.token));
         return;
       case 'agent:tool_call':
         io.writeOut(`\n${formatToolCall({ toolId: event.toolId, resolved: false })}\n`);

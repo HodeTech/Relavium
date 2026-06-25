@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-06-05
+> Last updated: 2026-06-26
 
 - **Status**: Reference (the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, and durable persistence are implemented in **2.M**; `chat-resume`/`chat-list`/`chat-export`/`--json`/`agent run` are 2.N–2.Q)
 - **Surface**: CLI (`relavium chat`)
@@ -46,7 +46,7 @@ A small set of slash commands drives the REPL itself (not the agent):
 | Command | Effect |
 | --- | --- |
 | `/exit` | End the session cleanly and quit the REPL (**exit code 4**, below). |
-| `/cancel` | Abort the in-flight assistant turn **and end the session**. (In Phase 1 the engine has no per-turn abort that keeps a session alive, so `/cancel` terminates the session — but it is **persisted and resumable** via `relavium chat-resume <sessionId>`, 2.N. Exits with code 4.) |
+| `/cancel` | End the session (aborting any in-flight turn — relevant when entered as **Ctrl-C** mid-turn in TTY mode; a typed `/cancel` runs between turns). In Phase 1 the engine has no per-turn abort that keeps a session alive, so `/cancel` terminates it — but the session is **persisted and resumable** via `relavium chat-resume <sessionId>` (2.N). Exits with code 4. |
 | `/export` | _(lands in **2.P** with `relavium chat-export`)_ Export the session to a `.relavium.yaml` scaffold (same ADR-0026 contract). |
 
 An unrecognized `/…` command prints a one-line, secret-free notice and the prompt returns. In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).

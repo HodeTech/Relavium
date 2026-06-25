@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatSessionFooter, formatToolCall, formatTurnSummary } from './chat-projection.js';
+import {
+  formatSessionFooter,
+  formatToolCall,
+  formatTurnSummary,
+  stripTerminalControls,
+} from './chat-projection.js';
 import { initialSessionViewState } from './session-view-model.js';
 
 describe('chat-projection', () => {
@@ -59,6 +64,23 @@ describe('chat-projection', () => {
       const footer = formatSessionFooter(initialSessionViewState());
       expect(footer).toContain('0 turns');
       expect(footer).toMatch(/^\$/); // starts with the cost (no leading model segment / separator)
+    });
+  });
+
+  describe('stripTerminalControls', () => {
+    it('removes ANSI CSI + OSC escapes and bare control bytes, keeping printable text + tab/newline', () => {
+      // OSC title-write, CSI color, a CR, a NUL — all stripped; the real text + \n + \t survive.
+      const dirty = '\x1b]0;pwned\x07\x1b[31mred\x1b[0m\rdata\x00\tend\n';
+      const clean = stripTerminalControls(dirty);
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(clean).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]/); // no remaining control bytes (incl. ESC, CR, NUL)
+      expect(clean).toContain('red');
+      expect(clean).toContain('data');
+      expect(clean).toContain('\tend\n'); // tab + newline preserved
+    });
+
+    it('leaves clean text untouched', () => {
+      expect(stripTerminalControls('hello world')).toBe('hello world');
     });
   });
 });

@@ -28,6 +28,7 @@ function globalOptions(cwd: string): GlobalOptions {
 /** A headless driver that feeds a fixed line list through the command core (no TTY / ink). */
 function linesDriver(lines: readonly string[]): ChatDriver {
   return async (ctx) => {
+    ctx.startSession(); // open the session (a real driver does this after wiring its subscription)
     for (const line of lines) {
       await ctx.processLine(line);
       if (ctx.shouldStop()) break;
@@ -181,6 +182,36 @@ describe('chatCommand', () => {
     expect(err()).toContain('budget warning');
   });
 
+  it('strips control bytes from an unknown-slash echo (terminal-injection guard)', async () => {
+    const { d, err } = deps(['/\x1b[2Jboom', '/exit'], [textTurn('x')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).not.toContain('\x1b'); // the raw ESC never reached stderr
+    expect(err()).toContain('?'); // it was replaced
+  });
+
+  it('propagates a driver rejection AND still runs teardown (the anti-hang/propagation contract)', async () => {
+    // A driver that rejects models the unexpected-turn-core throw (processLine rejecting in the plain path,
+    // or driveInk's rejectExit): the command must propagate it (→ exit 1) while its finally still tears down.
+    const { d } = deps([], [textTurn('x')]);
+    let closed = false;
+    const store = createSessionStore(client.db);
+    const failingDrive: ChatDriver = (ctx) => {
+      ctx.startSession();
+      return Promise.reject(new Error('boom'));
+    };
+    await expect(
+      chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          openSessionStore: () => ({ store, db: client.db, close: () => (closed = true) }),
+          drive: failingDrive,
+        },
+      ),
+    ).rejects.toThrow('boom');
+    expect(closed).toBe(true); // opened.close() ran in the finally despite the rejection
+  });
+
   it('surfaces an un-inferrable default model as a clean exit-2 CliError (before any session)', async () => {
     // A [chat].default_model the provider-inference can't map ⇒ buildChatSession throws CliError (exit 2).
     const { d } = deps(['/exit'], [textTurn('x')]);
@@ -206,23 +237,44 @@ describe('makePlainPrinter', () => {
     token: text,
     model: 'm',
   });
-  const toolCall = (toolId: string): SessionStreamHandleEvent => ({
+  const toolCall = (toolId: string, toolInput: unknown): SessionStreamHandleEvent => ({
     type: 'agent:tool_call',
     ...STAMP,
     nodeId: 'a',
     model: 'm',
     toolId,
-    toolInput: {},
+    toolInput,
   });
 
-  it('streams the assistant tokens and annotates a tool call (id only, no arguments)', () => {
+  it('streams the assistant tokens and annotates a tool call (id only — NEVER the arguments)', () => {
     const { io, out } = captureIo();
     const print = makePlainPrinter(io);
     print(token('hel'));
     print(token('lo'));
-    print(toolCall('read_file'));
+    print(toolCall('read_file', { path: '/etc/passwd', secret: 'root:x:0:0' }));
     expect(out()).toContain('hello');
     expect(out()).toContain('read_file');
+    // The tool ARGUMENTS (a potential secret/PII path) never reach the screen.
+    expect(out()).not.toContain('/etc/passwd');
+    expect(out()).not.toContain('root:x:0:0');
+  });
+
+  it('sanitizes terminal control sequences out of the streamed model tokens', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)(token('\x1b]0;pwned\x07hi'));
+    expect(out()).not.toContain('\x1b'); // the OSC title-write escape is stripped
+    expect(out()).toContain('hi');
+  });
+
+  it('emits a bare newline on a successful turn completion', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'stop',
+      tokensUsed: { input: 1, output: 1 },
+    });
+    expect(out()).toBe('\n');
   });
 
   it('marks a failed turn with its error code, secret-free', () => {

@@ -33,8 +33,9 @@ import { statusCommand } from './status.js';
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`)
- * and `budget resume` land with their workstreams (2.M–2.Q; a tracked follow-up), not here.
+ * (the authoring commands at 2.J). `chat` (2.M) is a real command (`registerChat` below); the rest of the chat
+ * family (`chat-resume`/`chat-list`/`chat-export`/`agent run`) and `budget resume` land with their workstreams
+ * (2.N–2.Q; a tracked follow-up), not here.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -66,7 +67,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     summary: 'Export a workflow/agent to a portable YAML (secrets stripped).',
     landsIn: 'workstream 2.J',
   },
-  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.M–2.Q' },
+  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.N–2.Q' },
   {
     name: 'init',
     summary: 'Initialize a .relavium/ directory in the current project.',

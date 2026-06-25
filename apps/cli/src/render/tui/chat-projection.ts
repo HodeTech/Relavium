@@ -8,6 +8,23 @@ import type { SessionViewState, ToolCallView, TurnSummary } from './session-view
  * arranges them in `ink` `Box`/`Text`.
  */
 
+/* eslint-disable no-control-regex */
+/** ESC-introduced sequences (ANSI CSI colors/cursor, OSC title/hyperlink/clipboard, and other ESC escapes). */
+const ESC_SEQUENCES = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
+/** Remaining C0/C1 control bytes — keep only TAB (\x09) and LINE FEED (\x0a). */
+const BARE_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+/* eslint-enable no-control-regex */
+
+/**
+ * Strip terminal control sequences from text that will be written to a terminal — so model output (or pasted
+ * input) cannot inject ANSI/OSC escapes (colors, a cursor jump, a window-title/clipboard/hyperlink write, a
+ * `\r` line-overwrite). Applied at the **display** boundary only; the PERSISTED transcript keeps the raw text
+ * (it is user/model data, not displayed back through a shell). Keeps printable text plus tabs and newlines.
+ */
+export function stripTerminalControls(text: string): string {
+  return text.replace(ESC_SEQUENCES, '').replace(BARE_CONTROLS, '');
+}
+
 /**
  * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code),
  * the turn's token usage, and its duration. Secret-free — it carries only counts/codes, never argument text.
