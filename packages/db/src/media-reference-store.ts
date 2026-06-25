@@ -58,6 +58,12 @@ export interface MediaReferenceStore {
   describe(handle: string): MediaHandleRecord | undefined;
   /** D11 terminal sweep: remove a run's `run`-kind references (scoped to the run); returns the count removed. */
   removeRunReferences(runId: string): number;
+  /** Every `media_objects.handle` (incl. soft-deleted rows) — the host GC's orphan-detection set (2.S/D-GC):
+   *  a CAS blob whose handle is NOT here has no row at all (a crash between `put` and `recordObject`). */
+  listObjectHandles(): string[];
+  /** The distinct run ids that hold a `run`-kind reference — the host GC's clean-terminal reclaim-retry input
+   *  (2.S/D-GC): re-attempt {@link removeRunReferences} for those whose run is terminal (a crashed inline sweep). */
+  runReferenceRunIds(): string[];
   /**
    * D11 grace-window GC (ADR-0042 §4 step c): soft-delete (set `deleted_at`) every LIVE object that now
    * has **zero** references AND whose `last_referenced_at` is older than `graceMs` before now. Returns the
@@ -170,6 +176,23 @@ export function createMediaReferenceStore(
           .run();
       }
       return result.changes;
+    },
+
+    listObjectHandles(): string[] {
+      return db
+        .select({ handle: mediaObjects.handle })
+        .from(mediaObjects)
+        .all()
+        .map((row) => row.handle);
+    },
+
+    runReferenceRunIds(): string[] {
+      return db
+        .selectDistinct({ scopeId: mediaReferences.scopeId })
+        .from(mediaReferences)
+        .where(eq(mediaReferences.scopeKind, 'run'))
+        .all()
+        .map((row) => row.scopeId);
     },
 
     reclaimExpired(graceMs: number): string[] {

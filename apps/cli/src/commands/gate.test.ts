@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import {
   EngineStateError,
@@ -205,6 +206,7 @@ describe('gateCommand', () => {
     const { runId } = await setupPausedRun();
     const { io } = captureIo();
     let captured: BuildEngineOptions | undefined;
+    let sweptArgs: { db: unknown; casRoot: string; currentRunId: string } | undefined;
     const code = await gateCommand(
       { runId, approve: true },
       {
@@ -214,6 +216,10 @@ describe('gateCommand', () => {
         buildEngine: (opts) => {
           captured = opts;
           return buildEngine(opts);
+        },
+        sweepMedia: (args) => {
+          sweptArgs = args;
+          return Promise.resolve(undefined);
         },
       },
     );
@@ -225,6 +231,10 @@ describe('gateCommand', () => {
     expect(captured?.host?.mediaWrite).toBeDefined();
     expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
     expect(captured?.resolveMediaSurface?.('unknown')).toBeUndefined();
+    // ...and the gate-resume terminal runs the host media GC too (2.S/D-GC), over the same db, for this run.
+    expect(sweptArgs?.db).toBe(db);
+    expect(sweptArgs?.currentRunId).toBe(runId);
+    expect(sweptArgs?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
   });
 
   it('resumes a paused run on --approve, drives it to completion (exit 0), and persists the decision', async () => {

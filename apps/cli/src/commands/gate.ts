@@ -18,6 +18,7 @@ import {
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
 import { createCliHost } from '../engine/host.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
@@ -48,6 +49,8 @@ export interface GateCommandDeps {
   readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
   readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
+  /** Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it. */
+  readonly sweepMedia?: typeof defaultSweepMedia;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
@@ -188,6 +191,16 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
     });
+
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — the gate-resumed run reached a terminal too, so sweep best-effort,
+    // exactly as `run` does (the same helper). Keyed on the terminal; a GC failure is swallowed.
+    if (wiring.media.casRoot !== undefined) {
+      await (deps.sweepMedia ?? defaultSweepMedia)({
+        db: opened.db,
+        casRoot: wiring.media.casRoot,
+        currentRunId: args.runId,
+      });
+    }
 
     if (outcome === undefined) {
       // The resumed handle closed with NO events. The engine returns a closed handle when its own internal

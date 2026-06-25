@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { MEDIA_HANDLE_PATTERN } from '@relavium/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
 
@@ -116,5 +116,42 @@ describe('MediaStore.readRange (1.AF/D13 — byte-delivery Range gate)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandles)', () => {
+  let root: string;
+  let store: FilesystemMediaStore;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'relavium-media-gc-'));
+    store = new FilesystemMediaStore(root);
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('listHandles enumerates every stored handle; an absent root yields []', async () => {
+    expect(await store.listHandles()).toEqual([]); // never written ⇒ no root
+    const h1 = await store.put(new Uint8Array([1]));
+    const h2 = await store.put(new Uint8Array([2, 3]));
+    expect(new Set(await store.listHandles())).toEqual(new Set([h1, h2]));
+  });
+
+  it('listHandles skips a non-conforming file (a stray .tmp from an interrupted publish)', async () => {
+    const h1 = await store.put(HELLO);
+    const shard = h1.slice('media://sha256-'.length, 'media://sha256-'.length + 2);
+    // A leftover temp file in the same shard dir must never be returned as a handle.
+    mkdirSync(join(root, shard), { recursive: true });
+    writeFileSync(join(root, shard, `.save.${'0'.repeat(8)}.tmp`), 'x');
+    expect(await store.listHandles()).toEqual([h1]);
+  });
+
+  it('delete removes a blob (a later get fails) and is idempotent on a missing blob', async () => {
+    const handle = await store.put(HELLO);
+    await store.delete(handle);
+    await expect(store.get(handle)).rejects.toThrow();
+    await expect(store.delete(handle)).resolves.toBeUndefined(); // a 2nd delete is a no-op
+  });
+
+  it('delete rejects a non-media:// handle (the digest jail) — never unlinks outside the root', async () => {
+    await expect(store.delete('not-a-handle')).rejects.toThrow(/handle/);
   });
 });

@@ -15,6 +15,7 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import {
   createProviderResolver,
@@ -62,6 +63,11 @@ export interface RunCommandDeps {
    * without a TTY, or omit it so a gate pause exits 3 like the non-interactive path.
    */
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
+  /**
+   * Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it to
+   * assert the run-end invocation without touching a real CAS, and the in-memory unit path never reaches it.
+   */
+  readonly sweepMedia?: typeof defaultSweepMedia;
 }
 
 /**
@@ -133,8 +139,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
     // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
     let engineOptions: BuildEngineOptions = { providers };
+    let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config);
+      mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC below
       // D15 load-check (ADR-0044 §2 / ADR-0045 §1): validate each agent node's authored `output_modalities`
       // against its resolved model's capabilities in the DB `model_catalog`, so an incapable or malformed
       // generative node fails fast at LOAD (exit 2) — not only at the runtime FallbackChain pre-skip. A model
@@ -173,6 +181,18 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
     });
+
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — a best-effort, run-end pass keyed on the terminal run event: the
+    // clean-terminal reclaim retry (a crash-dropped prior sweep) + the grace-window byte reclaim + the CAS-orphan
+    // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Only when
+    // durable history (the references db) + the CAS root are wired (the in-memory unit/harness path skips it).
+    if (opened !== undefined && mediaCasRoot !== undefined) {
+      await (deps.sweepMedia ?? defaultSweepMedia)({
+        db: opened.db,
+        casRoot: mediaCasRoot,
+        currentRunId: handle.runId,
+      });
+    }
 
     return outcomeToExitCode(outcome);
   } finally {

@@ -345,6 +345,51 @@ describe('runCommand', () => {
     }
   });
 
+  it('runs the host media GC at run-end with the durable db + CAS root + run id (2.S/D-GC)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    let swept: { db: unknown; casRoot: string; currentRunId: string } | undefined;
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: (args) => {
+            swept = args;
+            return Promise.resolve(undefined);
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The GC ran once at the terminal, over the SAME durable connection + the global CAS root, for this run.
+      expect(swept?.db).toBe(client.db);
+      expect(swept?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
+      expect(typeof swept?.currentRunId).toBe('string');
+      expect(swept?.currentRunId).not.toBe('');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('skips the host media GC when durable history is closed (no references db to GC over)', async () => {
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    let swept = false;
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'] },
+      deps(io, globalOptions(), {
+        sweepMedia: () => {
+          swept = true;
+          return Promise.resolve(undefined);
+        },
+      }),
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(swept).toBe(false); // no openRunStore ⇒ no media wiring ⇒ the GC never runs
+  });
+
   it('rejects an agent node whose output_modalities exceed the catalog model at LOAD — exit 2, engine never built (D15)', async () => {
     const client = createClient(':memory:');
     runMigrations(client.db);

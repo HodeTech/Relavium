@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import {
@@ -122,6 +123,43 @@ export class FilesystemMediaStore implements MediaStore {
   // calls this before egress.
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
+  }
+
+  /**
+   * Delete a blob by handle — the host GC's byte-reclamation step (2.S/D-GC, ADR-0042 §4c: a grace-expired or
+   * row-less-orphan handle). `digestOf` rejects a non-`media://` handle and `#pathFor` jails the path, so this
+   * can never unlink outside the store root. Idempotent: a missing blob (already reclaimed / never written) is a
+   * no-op via `rm`'s `force`. NOT on the `MediaStore` engine port — GC is a host concern, not an engine one.
+   */
+  async delete(handle: string): Promise<void> {
+    await rm(this.#pathFor(digestOf(handle)), { force: true });
+  }
+
+  /**
+   * Enumerate every well-formed `media://sha256-<hex>` handle the CAS currently holds — the host GC's
+   * orphan-detection input (a blob with no `media_objects` row, 2.S/D-GC). Reconstructs the handle from the
+   * shard dir + filename and re-validates it against {@link MEDIA_HANDLE_PATTERN}, so a stray `.tmp` from an
+   * interrupted publish, or any non-conforming file, is skipped (never returned as a handle). An absent root
+   * (the CAS was never written) yields `[]`.
+   */
+  async listHandles(): Promise<string[]> {
+    if (!existsSync(this.#root)) {
+      return [];
+    }
+    const handles: string[] = [];
+    for (const shard of await readdir(this.#root, { withFileTypes: true })) {
+      // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
+      if (!shard.isDirectory() || !/^[0-9a-f]{2}$/.test(shard.name)) {
+        continue;
+      }
+      for (const file of await readdir(join(this.#root, shard.name))) {
+        const handle = `${HANDLE_PREFIX}${shard.name}${file}`;
+        if (MEDIA_HANDLE_PATTERN.test(handle)) {
+          handles.push(handle);
+        }
+      }
+    }
+    return handles;
   }
 
   /** Resolve the CAS path for a validated digest, fail-closed if it would escape the store root. */
