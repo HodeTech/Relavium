@@ -70,11 +70,16 @@ and **2.L** (packaging, distribution & install verification — go/no-go #7, the
 `Release CLI` workflow), ✅ Done (PR #49, 2026-06-24) behind
 [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) — **closing go/no-go #7, so the
 Phase-2 spine is complete and all seven Phase-3 exit criteria now hold (Phase 3 may start)**.
-**Next pickup:** **2.S** (media host-wiring — the largest additive lane, carrying the lone `EgressCapability.fetch`
-SSRF security review; off the M3 critical path and the Phase-3 go/no-go, so it completes in-phase without blocking
-Phase 3); the full status-aware order is the
-[Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. The CLI also lands the inbound MCP client (2.R,
-[ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md)) off the M3 critical path. See the
+**Also landed — the first additive lane:** **2.S** (media host-wiring — the surface half of the multimodal
+sub-spine: the `model_catalog` reader → `resolveMediaSurface` routing + the D15 catalog load-check shared by
+`run`/`gate`, the content-addressed `MediaStore` de-inline to a `media://` handle, the SSRF-validated
+`EgressCapability.fetch` egress, the containment-checked `save_to` write port, durable fail-cost on the terminal
+events, the produced-media render surface, and the best-effort run-end host media GC), ✅ Done (PR #52, 2026-06-25)
+behind [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)
+(no new ADR — `read_media` input access deferred to 2.M).
+**Next pickup:** **2.R** (the inbound MCP client, [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) — off
+the M3 critical path and the Phase-3 go/no-go, so it completes in-phase without blocking Phase 3); the full
+status-aware order is the [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
 [sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).
 
