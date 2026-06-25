@@ -1,9 +1,4 @@
-import {
-  collectDurableMediaHandles,
-  type AgentTokenEvent,
-  type DurableMediaMeta,
-  type RunEvent,
-} from '@relavium/shared';
+import { collectDurableMediaHandles, type AgentTokenEvent, type RunEvent } from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -36,14 +31,14 @@ export interface NodeView {
 
 /**
  * A produced media DELIVERABLE surfaced on a `node:completed` (2.S/D-series, ADR-0042) — the durable
- * `media://sha256-<hex>` HANDLE (never inline bytes), its modality + MIME, and the node that emitted it.
- * The CLI's leaf of the cross-surface "each surface renders a produced media handle" acceptance.
+ * `media://sha256-<hex>` HANDLE (never inline bytes), its MIME, and the node that first emitted it. The CLI's
+ * leaf of the cross-surface "each surface renders a produced media handle" acceptance. (The modality is carried
+ * by the MIME — `image/png` → image — so it is not stored separately.)
  */
 export interface ProducedMediaView {
   readonly nodeId: string;
   readonly handle: string;
   readonly mimeType: string;
-  readonly modality: DurableMediaMeta['modality'];
 }
 
 export interface RunSummary {
@@ -118,12 +113,22 @@ function pushBounded(arr: readonly string[], line: string, max: number): string[
   return next.length > max ? next.slice(next.length - max) : next;
 }
 
-/** Append produced media deliverables, keeping only the trailing {@link MAX_PRODUCED_MEDIA}. */
+/**
+ * Append produced media deliverables, deduped by handle across the whole run (a content-addressed
+ * `media://sha256-<hex>` handle is ONE artifact — an `output` node's `save_to` legitimately re-emits the same
+ * handle its upstream producer already surfaced, so first-seen attribution wins and it is listed once), keeping
+ * only the trailing {@link MAX_PRODUCED_MEDIA}.
+ */
 function appendProducedMedia(
   current: readonly ProducedMediaView[],
   added: readonly ProducedMediaView[],
-): ProducedMediaView[] {
-  const next = [...current, ...added];
+): readonly ProducedMediaView[] {
+  const seen = new Set(current.map((m) => m.handle));
+  const fresh = added.filter((m) => !seen.has(m.handle));
+  if (fresh.length === 0) {
+    return current; // every added handle is already listed — no change
+  }
+  const next = [...current, ...fresh];
   return next.length > MAX_PRODUCED_MEDIA ? next.slice(next.length - MAX_PRODUCED_MEDIA) : next;
 }
 
@@ -305,7 +310,6 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           nodeId: event.nodeId,
           handle: meta.handle,
           mimeType: meta.mimeType,
-          modality: meta.modality,
         }),
       );
       return {

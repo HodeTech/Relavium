@@ -131,7 +131,7 @@ describe('createPlainRenderer', () => {
     );
     const text = out();
     expect(text).toContain('ok painter');
-    expect(text).toContain(`📎 image/png ${handle}`); // the durable handle, indented under the node line
+    expect(text).toContain(`◆ image/png ${handle}`); // the durable handle, indented under the node line
   });
 });
 

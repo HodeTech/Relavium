@@ -147,7 +147,7 @@ describe('renderFinalSummary', () => {
     ]);
     const out = renderFinalSummary(state);
     expect(out).toContain('produced media:');
-    expect(out).toContain(`📎 image/png ${handle} (painter)`); // handle + node attribution, never bytes
+    expect(out).toContain(`◆ image/png ${handle} (painter)`); // handle + node attribution, never bytes
   });
 
   it('omits the produced-media section when a run emitted none', () => {

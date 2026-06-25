@@ -748,11 +748,9 @@ describe('reduceRunEvent — produced media (2.S, the node:completed handle surf
     durationMs: 5,
   });
 
-  it('surfaces a produced handle (handle + mime + modality + node) — never inline bytes', () => {
+  it('surfaces a produced handle (handle + mime + node) — never inline bytes', () => {
     const s = reduceAll([completed('a', { content: [mediaPart(HANDLE_A)] }, 1)]);
-    expect(s.producedMedia).toEqual([
-      { nodeId: 'a', handle: HANDLE_A, mimeType: 'image/png', modality: 'image' },
-    ]);
+    expect(s.producedMedia).toEqual([{ nodeId: 'a', handle: HANDLE_A, mimeType: 'image/png' }]);
   });
 
   it('stays empty for a text-only / null node output', () => {
@@ -760,14 +758,57 @@ describe('reduceRunEvent — produced media (2.S, the node:completed handle surf
     expect(reduceAll([completed('a', null, 1)]).producedMedia).toEqual([]);
   });
 
-  it('accumulates across nodes, attributing each handle to its emitting node', () => {
+  it('stays empty for a media-shaped part that collectDurableMediaHandles skips (missing byteLength / unknown mime)', () => {
+    // A handle part with no Y3 `byteLength`, or a mime that maps to no modality, is NOT a recordable durable
+    // part (content.ts durableMediaMetaOf returns undefined) — the reducer must yield no deliverable, never a
+    // malformed entry. Guards the reducer's reliance on the upstream skip arms.
+    const noByteLength = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'handle', ref: HANDLE_A },
+    };
+    const unknownMime = {
+      type: 'media',
+      mimeType: 'application/zip',
+      source: { kind: 'handle', ref: HANDLE_A },
+      byteLength: 8,
+    };
+    expect(reduceAll([completed('a', { content: [noByteLength] }, 1)]).producedMedia).toEqual([]);
+    expect(reduceAll([completed('a', { content: [unknownMime] }, 1)]).producedMedia).toEqual([]);
+  });
+
+  it('surfaces every distinct handle in one node output, all attributed to that node', () => {
+    const s = reduceAll([
+      completed('a', { content: [mediaPart(HANDLE_A), mediaPart(HANDLE_B, 'audio/mpeg')] }, 1),
+    ]);
+    // Both handles, attributed to node 'a' — assert order-independently (the collector's walk order is a
+    // stack-walk artifact, not a contract).
+    expect(s.producedMedia).toHaveLength(2);
+    expect(s.producedMedia.every((m) => m.nodeId === 'a')).toBe(true);
+    expect(new Set(s.producedMedia.map((m) => m.handle))).toEqual(new Set([HANDLE_A, HANDLE_B]));
+    expect(s.producedMedia.find((m) => m.handle === HANDLE_B)?.mimeType).toBe('audio/mpeg');
+  });
+
+  it('accumulates across nodes, attributing each distinct handle to its emitting node', () => {
     const s = reduceAll([
       completed('a', { content: [mediaPart(HANDLE_A)] }, 1),
       completed('b', { content: [mediaPart(HANDLE_B, 'audio/mpeg')] }, 2),
     ]);
-    expect(s.producedMedia.map((m) => [m.nodeId, m.modality])).toEqual([
-      ['a', 'image'],
-      ['b', 'audio'],
+    expect(s.producedMedia.map((m) => [m.nodeId, m.mimeType])).toEqual([
+      ['a', 'image/png'],
+      ['b', 'audio/mpeg'],
+    ]);
+  });
+
+  it('dedups the same handle across nodes (one deliverable; first-seen attribution wins)', () => {
+    // An output node's save_to re-emits the SAME content-addressed handle its upstream producer already
+    // surfaced — it is ONE artifact, listed once, attributed to the node that first produced it.
+    const s = reduceAll([
+      completed('producer', { content: [mediaPart(HANDLE_A)] }, 1),
+      completed('saver', { content: [mediaPart(HANDLE_A)] }, 2),
+    ]);
+    expect(s.producedMedia).toEqual([
+      { nodeId: 'producer', handle: HANDLE_A, mimeType: 'image/png' },
     ]);
   });
 

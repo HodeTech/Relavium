@@ -87,8 +87,9 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {/* Produced media deliverables (handle-only, never bytes) */}
       {state.producedMedia.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
-          {state.producedMedia.map((media, i) => (
-            <Text key={i} {...colorProps(color, 'magenta')} wrap="truncate-end">
+          {state.producedMedia.map((media) => (
+            // The content-addressed handle is unique (the view-model dedups by it) + stable — a sound React key.
+            <Text key={media.handle} {...colorProps(color, 'magenta')} wrap="truncate-end">
               {formatProducedMedia(media)}
             </Text>
           ))}

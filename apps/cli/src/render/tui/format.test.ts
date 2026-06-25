@@ -75,8 +75,10 @@ describe('statusGlyph / statusColor', () => {
 });
 
 describe('formatProducedMedia', () => {
-  it('renders the durable handle + mime on one line, never inline bytes', () => {
+  it('renders the durable handle + mime on one line (monochrome glyph), never inline bytes', () => {
     const handle = `media://sha256-${'a'.repeat(64)}`;
-    expect(formatProducedMedia({ mimeType: 'image/png', handle })).toBe(`📎 image/png ${handle}`);
+    expect(formatProducedMedia({ mimeType: 'image/png', handle })).toBe(`◆ image/png ${handle}`);
+    // Pure mimeType passthrough — a non-image modality is rendered verbatim (no per-modality special-casing).
+    expect(formatProducedMedia({ mimeType: 'audio/mpeg', handle })).toBe(`◆ audio/mpeg ${handle}`);
   });
 });
