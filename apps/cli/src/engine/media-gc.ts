@@ -179,6 +179,8 @@ export async function sweepMediaAtTerminal(args: {
   readonly currentRunId: string;
   readonly graceMs: number | undefined;
 }): Promise<void> {
+  // `db === undefined` is run.ts's optional-store path (gate always passes a live `opened.db`); `casRoot` /
+  // `db` are wired together, so the in-memory unit/harness path (neither present) is also skipped here.
   if (!args.isTerminal || args.db === undefined || args.casRoot === undefined) {
     return;
   }

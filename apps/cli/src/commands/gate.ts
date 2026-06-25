@@ -153,6 +153,9 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
 
     // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
     // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
+    // `projectRoot` is intentionally OMITTED here: the engine never re-emits `run:started` on resume, so the only
+    // consumer of `deps.projectRoot` (the run:started insert) is unreachable — the original run already persisted
+    // `runs.project_root` at its start, and this resume READS it back via `snapshot.projectRoot` above.
     const store = createRunHistoryStore(opened.db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),

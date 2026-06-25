@@ -214,7 +214,9 @@ function writeWorkflow(name: string, yaml: string): string {
 
 /** An `openRunStore` backed by the given in-memory db — the durable-history stub the 2.S wiring tests share. */
 function historyOpenRunStore(db: Db): NonNullable<RunCommandDeps['openRunStore']> {
-  return (workflow) => ({
+  // `_homeDir` / `_projectRoot` are intentionally dropped: this in-memory stub seeds no `runs.project_root`, so
+  // every run.test.ts run resolves it to NULL (a resume would then fall back to the resumer cwd).
+  return (workflow, _homeDir, _projectRoot) => ({
     store: createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
@@ -373,7 +375,7 @@ describe('runCommand', () => {
     runMigrations(client.db);
     const { io } = captureIo();
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
-    let swept: { db: unknown; casRoot: string; currentRunId: string } | undefined;
+    let swept: { db: unknown; casRoot: string; currentRunId: string; graceMs?: number } | undefined;
     try {
       const code = await runCommand(
         { workflow: path, input: ['n=3'] },
@@ -391,6 +393,58 @@ describe('runCommand', () => {
       expect(swept?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
       expect(typeof swept?.currentRunId).toBe('string');
       expect(swept?.currentRunId).not.toBe('');
+      expect(swept?.graceMs).toBeUndefined(); // no [defaults].media_gc_grace_days ⇒ the GC's built-in 7-day default
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('threads [defaults].media_gc_grace_days into the run-end GC graceMs (DAYS → ms)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    mkdirSync(join(root, '.relavium'), { recursive: true });
+    writeFileSync(join(root, '.relavium', 'project.toml'), '[defaults]\nmedia_gc_grace_days = 3\n');
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    let swept: { graceMs?: number } | undefined;
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: (args) => {
+            swept = args;
+            return Promise.resolve(undefined);
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The configured grace (3 days) is resolved DAYS → ms and threaded into the GC — the chain
+      // project.toml → resolveConfig → run.ts → sweepMediaAtTerminal → graceMs arg.
+      expect(swept?.graceMs).toBe(3 * 24 * 60 * 60 * 1000);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('passes the run cwd (the project root) as the third arg to openRunStore (2.S save_to resume)', async () => {
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const args: Array<readonly unknown[]> = [];
+    const capturing: NonNullable<RunCommandDeps['openRunStore']> = (...passed) => {
+      args.push(passed);
+      return historyOpenRunStore(client.db)(...passed);
+    };
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), { openRunStore: capturing }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(args).toHaveLength(1);
+      expect(args[0]?.[2]).toBe(root); // arg[2] = projectRoot = deps.global.cwd, persisted to runs.project_root
     } finally {
       client.sqlite.close();
     }

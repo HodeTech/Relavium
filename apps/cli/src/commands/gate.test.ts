@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -194,11 +194,13 @@ describe('gateCommand', () => {
   async function setupPausedRun(
     yaml = GATED,
     inputs: Record<string, unknown> = { n: 7 },
+    projectRoot?: string,
   ): Promise<{ runId: string; gateIds: string[] }> {
     const def = parseWorkflow(yaml, { source: 'gate.test' });
     const store = createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
+      ...(projectRoot === undefined ? {} : { projectRoot }), // persist runs.project_root for the resume re-jail test
       workflow: {
         slug: def.workflow.id,
         name: def.workflow.name ?? def.workflow.id,
@@ -236,7 +238,9 @@ describe('gateCommand', () => {
     const { runId } = await setupPausedRun();
     const { io } = captureIo();
     let captured: BuildEngineOptions | undefined;
-    let sweptArgs: { db: unknown; casRoot: string; currentRunId: string } | undefined;
+    let sweptArgs:
+      | { db: unknown; casRoot: string; currentRunId: string; graceMs?: number }
+      | undefined;
     const code = await gateCommand(
       { runId, approve: true },
       {
@@ -265,6 +269,44 @@ describe('gateCommand', () => {
     expect(sweptArgs?.db).toBe(db);
     expect(sweptArgs?.currentRunId).toBe(runId);
     expect(sweptArgs?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
+    expect(sweptArgs?.graceMs).toBeUndefined(); // no [defaults].media_gc_grace_days ⇒ the GC default window
+  });
+
+  it('re-jails save_to under the ORIGINAL run project root on resume (persisted runs.project_root)', async () => {
+    // Seed the paused run WITH project_root = a real dir A (distinct from the resumer cwd `root`), then resume.
+    const originalRoot = mkdtempSync(join(tmpdir(), 'relavium-orig-root-'));
+    try {
+      const { runId } = await setupPausedRun(GATED, { n: 7 }, originalRoot);
+      const { io } = captureIo();
+      let captured: BuildEngineOptions | undefined;
+      const code = await gateCommand(
+        { runId, approve: true },
+        {
+          ...deps(io),
+          buildEngine: (opts) => {
+            captured = opts;
+            return buildEngine(opts);
+          },
+          sweepMedia: () => Promise.resolve(undefined),
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      const mediaWrite = captured?.host?.mediaWrite;
+      if (mediaWrite === undefined) {
+        throw new Error('expected the gate-resume host to wire mediaWrite');
+      }
+      // The save_to port was jailed under the ORIGINAL run root (A), not the resumer cwd — invoking it lands the
+      // deliverable under <A>/.relavium/runs/, proving the persisted project_root drove the wiring (rank-2 chain:
+      // loadRunSnapshot.projectRoot → resolveSaveToRoot → buildMediaEngineWiring → the save_to jail root).
+      await mediaWrite('out.bin', new Uint8Array([1, 2, 3]));
+      const delivered = join(originalRoot, '.relavium', 'runs', 'out.bin');
+      expect(existsSync(delivered)).toBe(true);
+      expect(Array.from(readFileSync(delivered))).toEqual([1, 2, 3]);
+      // ...and NEVER under the resumer cwd.
+      expect(existsSync(join(root, '.relavium', 'runs', 'out.bin'))).toBe(false);
+    } finally {
+      rmSync(originalRoot, { recursive: true, force: true });
+    }
   });
 
   it('re-runs the D15 catalog load-check on resume: a node incapable in the current catalog rejects (exit 2)', async () => {
