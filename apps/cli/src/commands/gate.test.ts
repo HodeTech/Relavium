@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   EngineStateError,
@@ -9,6 +12,8 @@ import {
 } from '@relavium/core';
 import {
   createClient,
+  createModelCatalogStore,
+  createProviderStore,
   createRunHistoryStore,
   runMigrations,
   type Db,
@@ -18,13 +23,13 @@ import {
 import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildEngine } from '../engine/build-engine.js';
+import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { gateCommand, selectGate, type GateCommandDeps } from './gate.js';
 
 /** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
@@ -120,11 +125,39 @@ workflow:
     - { from: g, to: out }
 `;
 
+// `os.homedir()` reads `HOME` on POSIX but `USERPROFILE` on Windows — override BOTH so the hermetic home holds
+// cross-platform. The resume path builds the media wiring (the global CAS root resolves under the home), and the
+// `save_to` scope root is the resumer's `cwd` — both must be tmpdirs, never the real home / repo cwd.
+const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
+let root: string;
+let home: string;
+const savedHome = new Map<string, string | undefined>();
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'relavium-gate-'));
+  home = mkdtempSync(join(tmpdir(), 'relavium-gate-home-'));
+  for (const v of HOME_ENV_VARS) {
+    savedHome.set(v, process.env[v]);
+    process.env[v] = home;
+  }
+});
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+  for (const v of HOME_ENV_VARS) {
+    const prior = savedHome.get(v);
+    if (prior === undefined) {
+      delete process.env[v];
+    } else {
+      process.env[v] = prior;
+    }
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
 function globalOptions(): GlobalOptions {
   return {
     json: false,
     color: false,
-    cwd: process.cwd(),
+    cwd: root,
     configPath: undefined,
     verbosity: 'normal',
   };
@@ -184,6 +217,105 @@ describe('gateCommand', () => {
     return { runId, gateIds };
   }
 
+  it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {
+    // Seed a generative model into the SHARED db so the gate-path catalog (over opened.db) resolves it.
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(db, dbDeps).upsert({
+      providerId,
+      modelId: 'gpt-image-1',
+      displayName: 'GPT Image 1',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    let captured: BuildEngineOptions | undefined;
+    let sweptArgs: { db: unknown; casRoot: string; currentRunId: string } | undefined;
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        // Capture what gate.ts assembled, then delegate to the real builder (same opts) so the text-only GATED
+        // resume completes — the media ports stay un-exercised (no media node), so no fs writes occur.
+        buildEngine: (opts) => {
+          captured = opts;
+          return buildEngine(opts);
+        },
+        sweepMedia: (args) => {
+          sweptArgs = args;
+          return Promise.resolve(undefined);
+        },
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    // A gate-resumed run gets the same three media ports + the catalog routing as a fresh `run` — never
+    // silently text-only.
+    expect(captured?.host?.mediaStore).toBeDefined();
+    expect(captured?.host?.mediaReferences).toBeDefined();
+    expect(captured?.host?.mediaWrite).toBeDefined();
+    expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
+    expect(captured?.resolveMediaSurface?.('unknown')).toBeUndefined();
+    // ...and the gate-resume terminal runs the host media GC too (2.S/D-GC), over the same db, for this run.
+    expect(sweptArgs?.db).toBe(db);
+    expect(sweptArgs?.currentRunId).toBe(runId);
+    expect(sweptArgs?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
+  });
+
+  it('re-runs the D15 catalog load-check on resume: a node incapable in the current catalog rejects (exit 2)', async () => {
+    // A workflow whose downstream agent (model `chat-text`) authored output_modalities [text, image] the model
+    // can't produce. The gate is BEFORE the agent, so the paused snapshot never ran it; on resume the gate path
+    // runs the SAME catalog check `run` does — and rejects (exit 2), consistently with a fresh run.
+    const incapableGated = `schema_version: '1.0'
+workflow:
+  id: gate-incapable
+  agents:
+    - { id: painter, model: gpt-4o, provider: openai, system_prompt: paint }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: a, type: agent, agent_ref: painter, model: chat-text, output_modalities: ['text', 'image'] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: a }
+    - { from: a, to: out }
+`;
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(db, dbDeps).upsert({
+      providerId,
+      modelId: 'chat-text',
+      displayName: 'Chat Text',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'chat',
+      capabilities: CHAT_TEXT_CAPABILITY_FLAGS,
+    });
+    const { runId } = await setupPausedRun(incapableGated, {});
+    const { io } = captureIo();
+    let caught: unknown;
+    try {
+      await gateCommand({ runId, approve: true }, deps(io));
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('chat-text'); // the catalog check rejected it, not a generic fault
+    }
+  });
+
   it('resumes a paused run on --approve, drives it to completion (exit 0), and persists the decision', async () => {
     const { runId } = await setupPausedRun();
     const { io } = captureIo();
@@ -206,6 +338,16 @@ describe('gateCommand', () => {
     // produced d=14. A lost-inputs regression would compute `undefined * 2` = NaN instead.
     const doubled = events.find((e) => e.type === 'node:completed' && e.nodeId === 'double');
     expect(doubled).toMatchObject({ output: { d: 14 } });
+  });
+
+  it('swallows a throwing media GC on resume — a GC fault never fails the resume (2.S/D-GC, best-effort)', async () => {
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    const code = await gateCommand(
+      { runId, approve: true },
+      { ...deps(io), sweepMedia: () => Promise.reject(new Error('gc boom')) },
+    );
+    expect(code).toBe(EXIT_CODES.success); // the resume completed; the GC rejection was swallowed at the call site
   });
 
   it('surfaces a corrupt stored inputs blob as a clean exit-2 fault (no silent empty-inputs resume)', async () => {
@@ -336,8 +478,24 @@ describe('gateCommand', () => {
     const { runId, gateIds } = await setupPausedRun(SEQ_GATES, {});
     expect(gateIds).toHaveLength(1); // only g1 pends initially (sequential, not parallel)
     const { io } = captureIo();
-    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.gatePaused); // g1 → re-pause at g2
-    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success); // blind repeat resolves g2
+    // The GC is gated on a TERMINAL outcome (2.S/D-GC): a re-pause must NOT sweep (the still-paused run keeps its
+    // media); the second resolve completes → terminal → the GC runs. Pin BOTH directions.
+    let sweptOnRepause = false;
+    let sweptOnComplete = false;
+    expect(
+      await gateCommand(
+        { runId, approve: true },
+        { ...deps(io), sweepMedia: () => ((sweptOnRepause = true), Promise.resolve(undefined)) },
+      ),
+    ).toBe(EXIT_CODES.gatePaused); // g1 → re-pause at g2
+    expect(sweptOnRepause).toBe(false); // the re-pause (non-terminal) skipped the GC
+    expect(
+      await gateCommand(
+        { runId, approve: true },
+        { ...deps(io), sweepMedia: () => ((sweptOnComplete = true), Promise.resolve(undefined)) },
+      ),
+    ).toBe(EXIT_CODES.success); // blind repeat resolves g2 → completes
+    expect(sweptOnComplete).toBe(true); // the terminal resume DID run the GC
   });
 
   it('wires selectGatePrompter through to driveRun: a re-pause at a later gate is resolved inline (exit 0)', async () => {

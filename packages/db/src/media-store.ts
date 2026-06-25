@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import {
@@ -122,6 +123,81 @@ export class FilesystemMediaStore implements MediaStore {
   // calls this before egress.
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
+  }
+
+  /**
+   * Delete a blob by handle — the host GC's byte-reclamation step (2.S/D-GC, ADR-0042 §4: a grace-expired handle
+   * (§4c) or a row-less-orphan handle from a crash). `digestOf` rejects a non-`media://` handle and `#pathFor`
+   * jails the path, so this can never unlink outside the store root. Idempotent: a missing blob (already
+   * reclaimed / never written) is a no-op via `rm`'s `force`. NOT on the `MediaStore` engine port — GC is a host
+   * concern, not an engine one.
+   */
+  async delete(handle: string): Promise<void> {
+    await rm(this.#pathFor(digestOf(handle)), { force: true });
+  }
+
+  /**
+   * Enumerate every well-formed `media://sha256-<hex>` handle the CAS currently holds, each with its blob's
+   * `mtimeMs` — the host GC's orphan-detection + age-guard input (a row-less blob, 2.S/D-GC; the `mtimeMs` lets
+   * the GC skip a freshly-written blob a concurrent run may not have `recordObject`'d yet). Reconstructs the
+   * handle from the shard dir + filename and re-validates it against {@link MEDIA_HANDLE_PATTERN}, so a stray
+   * `.tmp` from an interrupted publish, or any non-conforming name, is skipped; the inner loop also skips a
+   * non-file (a stray subdir). An absent root (the CAS was never written) yields `[]`.
+   */
+  async listHandles(): Promise<Array<{ handle: string; mtimeMs: number }>> {
+    let shards: Dirent[];
+    try {
+      shards = await readdir(this.#root, { withFileTypes: true });
+    } catch (err) {
+      // An absent CAS root (never written) yields `[]` — one async call, no `existsSync`/`readdir` window.
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        return [];
+      }
+      throw err;
+    }
+    // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
+    const shardDirs = shards.filter((s) => s.isDirectory() && /^[0-9a-f]{2}$/.test(s.name));
+    // Enumerate + stat every shard's entries concurrently. The host GC awaits this on the CLI's terminal-run
+    // exit path, so a sequential shard-by-shard, entry-by-entry walk added O(shards + blobs) serial I/O to
+    // every run's exit latency; fanning out bounds it by the slowest single shard instead. Result order is
+    // irrelevant — the GC consumes the handle set unordered. A shard `readdir` / entry `stat` fault still
+    // propagates (Promise.all rejects on the first), preserving the no-silent-partial-listing contract.
+    const perShard = await Promise.all(
+      shardDirs.map(async (shard) => {
+        const shardDir = join(this.#root, shard.name);
+        const entries = await readdir(shardDir, { withFileTypes: true });
+        const found = await Promise.all(
+          entries.map((entry) => this.#handleForEntry(shardDir, shard.name, entry)),
+        );
+        return found.filter((f): f is { handle: string; mtimeMs: number } => f !== undefined);
+      }),
+    );
+    return perShard.flat();
+  }
+
+  /** Reconstruct + stat one shard-dir entry into a `{handle, mtimeMs}`, or `undefined` to skip it: a non-file (a
+   *  stray subdir), a non-conforming name (a `.tmp`), or a blob that vanished between the readdir and the stat (a
+   *  concurrent delete — ENOENT). A real permission / IO `stat` fault propagates (never a silent partial listing). */
+  async #handleForEntry(
+    shardDir: string,
+    shardName: string,
+    entry: Dirent,
+  ): Promise<{ handle: string; mtimeMs: number } | undefined> {
+    if (!entry.isFile()) {
+      return undefined;
+    }
+    const handle = `${HANDLE_PREFIX}${shardName}${entry.name}`;
+    if (!MEDIA_HANDLE_PATTERN.test(handle)) {
+      return undefined;
+    }
+    try {
+      return { handle, mtimeMs: (await stat(join(shardDir, entry.name))).mtimeMs };
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        return undefined;
+      }
+      throw err;
+    }
   }
 
   /** Resolve the CAS path for a validated digest, fail-closed if it would escape the store root. */

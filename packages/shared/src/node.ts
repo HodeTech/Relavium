@@ -45,10 +45,12 @@ export const OutputModalitiesSchema = z
 /**
  * The authored `save_to` on an `output` node (1.AF, ADR-0031/0044, A9) — a **relative** path template
  * the surface writes generated media bytes to (the engine carries the handle on the edge; bytes
- * materialize only at the surface boundary). It may interpolate `{{ run.id }}`. Authored fail-fast:
- * an absolute path or a `..` traversal segment is rejected at parse; the host write port additionally
- * enforces `realpath`+`commonpath` fail-closed against a scope root (security-review.md §Media byte
- * delivery). The deep path discipline is the host's; this is the authoring guard.
+ * materialize only at the surface boundary). It may interpolate **only `{{ run.id }}`** — never
+ * `inputs`/`ctx`/`run.outputs` (a filesystem path must not draw arbitrary authored data into it).
+ * Authored fail-fast: an absolute path, a `..` traversal segment, or a non-`run.id` interpolation is
+ * rejected at parse; the host write port additionally enforces `realpath`+`commonpath` fail-closed
+ * against a scope root (security-review.md §Media byte delivery). The deep path discipline is the
+ * host's; these are the authoring guards.
  */
 export const SaveToSchema = nonEmptyString
   .refine((p) => !p.startsWith('/') && !p.startsWith('\\') && !/^[A-Za-z]:[\\/]/.test(p), {
@@ -59,6 +61,17 @@ export const SaveToSchema = nonEmptyString
   })
   .refine((p) => !p.split(/[\\/]/).includes('..'), {
     message: 'save_to must not contain a ".." path segment',
+  })
+  .refine((p) => !p.replace(/\{\{\s*run\.id\s*\}\}/g, '').includes('{{'), {
+    // The run.id-only reference restriction (1.AF, ADR-0044 §2; workflow-yaml-spec.md): a save_to path
+    // template may interpolate ONLY `{{ run.id }}`. Strip every well-formed `{{ run.id }}` (whitespace-
+    // tolerant) and reject if any `{{` remains — so a non-`run.id` reference (`{{ inputs.x }}`), a filtered
+    // `{{ run.id | … }}`, a trailing-path `{{ run.id.x }}`, a degenerate `{{}}`, or a brace-in-string
+    // `{{ run.outputs["a}b"] }}` is caught at LOAD (CLI exit 2), never a mid-run surprise. This is a check,
+    // NOT a second interpolation parser: it shares no grammar with the engine lexer, so it cannot diverge into
+    // accepting a reference the engine resolves to nothing at runtime. A literal (no `{{`) save_to is allowed.
+    message:
+      'save_to may interpolate only `{{ run.id }}` (no inputs/ctx/run.outputs in a filesystem path)',
   });
 
 /** Human-gate kind. */

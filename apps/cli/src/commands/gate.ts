@@ -18,6 +18,8 @@ import {
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
 import { createCliHost } from '../engine/host.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
+import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import type { GatePrompter } from '../gate/prompter.js';
@@ -28,7 +30,12 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
-import { driveRun, outcomeToExitCode } from './drive.js';
+import {
+  assertWorkflowCatalogValid,
+  driveRun,
+  isTerminalOutcome,
+  outcomeToExitCode,
+} from './drive.js';
 
 export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
@@ -47,9 +54,35 @@ export interface GateCommandDeps {
   readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
   readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
+  /** Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it. */
+  readonly sweepMedia?: typeof defaultSweepMedia;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * Resume the run from its checkpoint, mapping a typed engine refusal (e.g. `workflow_mismatch` on a corrupt
+ * store) to a clean exit-2 invocation fault rather than an unhandled crash — surfaced with the engine's reason.
+ */
+async function resumeOrFail(
+  engine: WorkflowEngine,
+  params: Parameters<WorkflowEngine['resumeFromCheckpoint']>[0],
+): Promise<RunHandle> {
+  try {
+    return await engine.resumeFromCheckpoint(params);
+  } catch (err) {
+    if (err instanceof EngineStateError) {
+      throw new CliError(
+        'invalid_invocation',
+        `cannot resume run ${params.runId}: ${err.message}`,
+        {
+          cause: err,
+        },
+      );
+    }
+    throw err;
+  }
+}
 
 /**
  * The `relavium gate` core (**2.G**) — resolve a pending human gate from the terminal, the surface-agnostic
@@ -72,7 +105,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
   }
   const decision = flags.decision;
 
-  const { homeDir } = loadResolvedConfig({
+  const { config, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -141,33 +174,34 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const providers = deps.providers ?? createProviderResolver(deps.io.env);
+    // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
+    // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
+    // stays. NOTE: `save_to`'s scope root is the RESUMER's cwd (`relavium gate` ran here), not the original run's
+    // cwd — so a run started in A, resumed from B, writes its save_to under B/.relavium/runs/. The authored
+    // `{{ run.id }}` segment still keeps writes per-run-disambiguated; persisting the original run's project
+    // root for an identical location is a deferred refinement (to be tracked in deferred-tasks.md).
+    const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
+      deps.io.writeErr(`${m}\n`),
+    );
+    // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
+    // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
+    // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
+    assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
-      host: createCliHost(store, { checkpointer }),
+      host: createCliHost(store, { checkpointer, media: wiring.media }),
+      resolveMediaSurface: wiring.resolveMediaSurface,
+      ...(wiring.mediaCostEstimate === undefined
+        ? {}
+        : { mediaCostEstimate: wiring.mediaCostEstimate }),
     });
-    let handle: RunHandle;
-    try {
-      handle = await engine.resumeFromCheckpoint({
-        runId: args.runId,
-        workflow,
-        inputs,
-        gateId: selection.gateId,
-        decision,
-      });
-    } catch (err) {
-      // A typed engine refusal (e.g. workflow_mismatch on a corrupt store) is an invalid invocation, not an
-      // unhandled crash — surface it cleanly as exit 2 with the engine's reason.
-      if (err instanceof EngineStateError) {
-        throw new CliError(
-          'invalid_invocation',
-          `cannot resume run ${args.runId}: ${err.message}`,
-          {
-            cause: err,
-          },
-        );
-      }
-      throw err;
-    }
+    const handle = await resumeOrFail(engine, {
+      runId: args.runId,
+      workflow,
+      inputs,
+      gateId: selection.gateId,
+      decision,
+    });
 
     const outcome = await driveRun({
       engine,
@@ -184,6 +218,22 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // already completed), not a failure: exit 0, mirroring the selectGate terminal path.
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
+    }
+
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
+    // `run` does (the same helper). A re-pause (a second gate / budget pause) is NOT terminal: skip it, so the
+    // still-paused run's media survives for the next resume. A GC failure is swallowed (never a correctness break).
+    if (wiring.media.casRoot !== undefined && isTerminalOutcome(outcome)) {
+      try {
+        await (deps.sweepMedia ?? defaultSweepMedia)({
+          db: opened.db,
+          casRoot: wiring.media.casRoot,
+          currentRunId: args.runId,
+        });
+      } catch {
+        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the resume —
+        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
+      }
     }
     return outcomeToExitCode(outcome);
   } finally {

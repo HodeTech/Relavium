@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto';
 
 import type { WorkflowDefinition } from '@relavium/core';
-import { createRunHistoryStore, type RunHistoryStore } from '@relavium/db';
+import { createRunHistoryStore, type Db, type RunHistoryStore } from '@relavium/db';
 
 import { openLocalDb } from '../db/open.js';
 
 /** An opened history store plus the handle to close its SQLite connection at run end. */
 export interface OpenedHistory {
   readonly store: RunHistoryStore;
+  /**
+   * The same `~/.relavium/history.db` connection the store runs on (2.S reuses it for the `model_catalog`
+   * reader + the `media_references` retention junction, ADR-0050) — so the catalog/media ports share one
+   * connection with run history, closed once by {@link close}.
+   */
+  readonly db: Db;
   readonly close: () => void;
 }
 
@@ -29,5 +35,5 @@ export function openHistoryStore(workflow: WorkflowDefinition, homeDir: string):
       definitionJson: JSON.stringify(workflow),
     },
   });
-  return { store, close };
+  return { store, db, close };
 }

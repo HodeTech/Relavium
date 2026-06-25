@@ -1,6 +1,7 @@
-import type { RunEvent } from '@relavium/shared';
+import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
+import { formatProducedMedia } from './tui/format.js';
 
 /**
  * A renderer consumes the run's canonical {@link RunEvent} stream. The renderers below sit behind this one
@@ -62,8 +63,15 @@ function describe(event: RunEvent): string | undefined {
       return `> run ${event.runId} started`;
     case 'node:started':
       return `  - ${event.nodeId} ...`;
-    case 'node:completed':
-      return `  ok ${event.nodeId}`;
+    case 'node:completed': {
+      // Surface each produced media handle (never bytes) on its own indented line — the plain/CI leaf of the
+      // cross-surface "render a produced media handle" acceptance. A text-only node yields no extra lines.
+      const ok = `  ok ${event.nodeId}`;
+      const mediaLines = collectDurableMediaHandles(event.output).map(
+        (m) => `    ${formatProducedMedia(m)}`,
+      );
+      return [ok, ...mediaLines].join('\n');
+    }
     case 'node:failed':
       return `  FAIL ${event.nodeId}: ${event.error.code}`;
     case 'human_gate:paused':

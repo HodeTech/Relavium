@@ -1,10 +1,39 @@
-import { EngineStateError, type RunHandle, type WorkflowEngine } from '@relavium/core';
+import {
+  EngineStateError,
+  WorkflowValidationError,
+  validateWorkflowWithCatalog,
+  type RunHandle,
+  type WorkflowDefinition,
+  type WorkflowEngine,
+  type WorkflowModelCatalog,
+} from '@relavium/core';
 import type { HumanGatePausedEvent, RunEvent, RunPausedEvent } from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
+import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { RunRenderer } from '../render/renderer.js';
+
+/**
+ * The D15 catalog load-check, shared by `run` (a fresh load) and `gate` (a resume — re-validated against the
+ * CURRENT catalog so a model that lost a capability between the run and the resume is caught consistently, not
+ * only at the runtime FallbackChain pre-skip). An incapable / malformed-generative authored `output_modalities`
+ * surfaces as an `invalid_invocation` CliError (exit 2), like a parse fault; any other throw propagates.
+ */
+export function assertWorkflowCatalogValid(
+  workflow: WorkflowDefinition,
+  catalog: WorkflowModelCatalog,
+): void {
+  try {
+    validateWorkflowWithCatalog(workflow, catalog);
+  } catch (err) {
+    if (err instanceof WorkflowValidationError) {
+      throw new CliError('invalid_invocation', err.message, { cause: err });
+    }
+    throw err;
+  }
+}
 
 /** A run's terminal disposition (`undefined` means the stream ended with no terminal/paused — an abnormal unwind). */
 export type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -193,6 +222,18 @@ export function outcomeToExitCode(outcome: RunOutcome | undefined): ExitCode {
       // failed / cancelled / (an abnormal no-terminal `undefined`) → non-zero workflow failure.
       return EXIT_CODES.workflowFailed;
   }
+}
+
+/**
+ * Did the run reach a TERMINAL disposition (`completed | failed | cancelled`)? `paused` is non-terminal (the run
+ * is resumable) and `undefined` is an abnormal no-terminal unwind — neither is terminal. The single owner of the
+ * "is this run done" predicate, shared by `run`/`gate` so the run-end host media GC fires only on a real terminal
+ * (2.S/D-GC — never while a run is merely paused, whose media it must keep for the resume).
+ */
+export function isTerminalOutcome(
+  outcome: RunOutcome | undefined,
+): outcome is Exclude<RunOutcome, 'paused'> {
+  return outcome !== undefined && outcome !== 'paused';
 }
 
 function nextOutcome(current: RunOutcome | undefined, event: RunEvent): RunOutcome | undefined {

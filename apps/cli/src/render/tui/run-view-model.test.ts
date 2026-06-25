@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   initialRunViewState,
+  MAX_PRODUCED_MEDIA,
   MAX_TOKEN_CHARS,
   MAX_TOOL_LINES,
   MAX_WARNINGS,
@@ -386,6 +387,36 @@ describe('reduceRunEvent', () => {
     expect(paused.summary).toEqual({ outcome: 'paused', pausedGateIds: ['g1'] });
   });
 
+  it('folds run:cancelled.cumulativeCostMicrocents into the summary + running total (2.S durable fail-cost)', () => {
+    const s = reduceRunEvent(initialRunViewState(), {
+      type: 'run:cancelled',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      cumulativeCostMicrocents: 4242,
+    });
+    // The durable terminal cost (a paid media job billed before the cancel) becomes the summary total + the
+    // final running total — so the cancelled-run summary shows the billed figure, not a stale live value.
+    expect(s.summary).toEqual({ outcome: 'cancelled', totalCostMicrocents: 4242 });
+    expect(s.cumulativeCostMicrocents).toBe(4242);
+  });
+
+  it('folds node:failed.cumulativeCostMicrocents into the running total (2.S durable fail-cost)', () => {
+    const s = reduceRunEvent(initialRunViewState(), {
+      type: 'node:failed',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      nodeId: 'a',
+      error: { code: 'tool_failed', message: 'boom', retryable: false },
+      cumulativeCostMicrocents: 777,
+    });
+    // The node fails AND its durable cost snapshot folds into the running total (like node:completed), so a
+    // billed-but-failed media job's cost survives a durable reconstruction (cost:updated is streamed-only).
+    expect(s.nodes['a']?.status).toBe('failed');
+    expect(s.cumulativeCostMicrocents).toBe(777);
+  });
+
   it('does not mutate the input state (pure reducer)', () => {
     const s0 = initialRunViewState();
     const s1 = reduceRunEvent(s0, {
@@ -723,5 +754,112 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
     ]);
     expect(s.activeTokens).toBe('hi'); // not 'hihi'
     expect(s.warnings.some((w) => w.includes('out of order'))).toBe(true);
+  });
+});
+
+describe('reduceRunEvent — produced media (2.S, the node:completed handle surfacing)', () => {
+  const HANDLE_A = `media://sha256-${'a'.repeat(64)}`;
+  const HANDLE_B = `media://sha256-${'b'.repeat(64)}`;
+  /** A durable (handle-only) media part — the shape a media-producing node's output carries post-de-inline. */
+  const mediaPart = (ref: string, mimeType = 'image/png'): Record<string, unknown> => ({
+    type: 'media',
+    mimeType,
+    source: { kind: 'handle', ref },
+    byteLength: 256,
+  });
+  const completed = (nodeId: string, output: unknown, seq: number): RunEvent => ({
+    type: 'node:completed',
+    runId: RUN,
+    timestamp: TS,
+    sequenceNumber: seq,
+    nodeId,
+    output,
+    tokensUsed: { input: 0, output: 0 },
+    durationMs: 5,
+  });
+
+  it('surfaces a produced handle (handle + mime + node) — never inline bytes, without disturbing node fields', () => {
+    const s = reduceAll([completed('a', { content: [mediaPart(HANDLE_A)] }, 1)]);
+    expect(s.producedMedia).toEqual([{ nodeId: 'a', handle: HANDLE_A, mimeType: 'image/png' }]);
+    // The media branch must not clobber the node's own lifecycle patch (status / durationMs).
+    expect(s.nodes['a']?.status).toBe('completed');
+    expect(s.nodes['a']?.durationMs).toBe(5);
+  });
+
+  it('stays empty for a text-only / null node output', () => {
+    expect(reduceAll([completed('a', { text: 'hi' }, 1)]).producedMedia).toEqual([]);
+    expect(reduceAll([completed('a', null, 1)]).producedMedia).toEqual([]);
+  });
+
+  it('stays empty for a media-shaped part that collectDurableMediaHandles skips (missing byteLength / unknown mime)', () => {
+    // A handle part with no Y3 `byteLength`, or a mime that maps to no modality, is NOT a recordable durable
+    // part (content.ts durableMediaMetaOf returns undefined) — the reducer must yield no deliverable, never a
+    // malformed entry. Guards the reducer's reliance on the upstream skip arms.
+    const noByteLength = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'handle', ref: HANDLE_A },
+    };
+    const unknownMime = {
+      type: 'media',
+      mimeType: 'application/zip',
+      source: { kind: 'handle', ref: HANDLE_A },
+      byteLength: 8,
+    };
+    expect(reduceAll([completed('a', { content: [noByteLength] }, 1)]).producedMedia).toEqual([]);
+    expect(reduceAll([completed('a', { content: [unknownMime] }, 1)]).producedMedia).toEqual([]);
+  });
+
+  it('surfaces every distinct handle in one node output, all attributed to that node', () => {
+    const s = reduceAll([
+      completed('a', { content: [mediaPart(HANDLE_A), mediaPart(HANDLE_B, 'audio/mpeg')] }, 1),
+    ]);
+    // Both handles, attributed to node 'a' — assert order-independently (the collector's walk order is a
+    // stack-walk artifact, not a contract).
+    expect(s.producedMedia).toHaveLength(2);
+    expect(s.producedMedia.every((m) => m.nodeId === 'a')).toBe(true);
+    expect(new Set(s.producedMedia.map((m) => m.handle))).toEqual(new Set([HANDLE_A, HANDLE_B]));
+    expect(s.producedMedia.find((m) => m.handle === HANDLE_B)?.mimeType).toBe('audio/mpeg');
+  });
+
+  it('accumulates across nodes, attributing each distinct handle to its emitting node', () => {
+    const s = reduceAll([
+      completed('a', { content: [mediaPart(HANDLE_A)] }, 1),
+      completed('b', { content: [mediaPart(HANDLE_B, 'audio/mpeg')] }, 2),
+    ]);
+    expect(s.producedMedia.map((m) => [m.nodeId, m.mimeType])).toEqual([
+      ['a', 'image/png'],
+      ['b', 'audio/mpeg'],
+    ]);
+  });
+
+  it('dedups the same handle across nodes (one deliverable; first-seen attribution wins)', () => {
+    // An output node's save_to re-emits the SAME content-addressed handle its upstream producer already
+    // surfaced — it is ONE artifact, listed once, attributed to the node that first produced it.
+    const afterProducer = reduceAll([completed('producer', { content: [mediaPart(HANDLE_A)] }, 1)]);
+    const afterSaver = reduceRunEvent(
+      afterProducer,
+      completed('saver', { content: [mediaPart(HANDLE_A)] }, 2),
+    );
+    expect(afterSaver.producedMedia).toEqual([
+      { nodeId: 'producer', handle: HANDLE_A, mimeType: 'image/png' },
+    ]);
+    // The pure-duplicate event re-uses the SAME producedMedia array reference (the early-return on no fresh
+    // handles) — no needless state churn; a regression that re-allocated an equal array would trip this.
+    expect(afterSaver.producedMedia).toBe(afterProducer.producedMedia);
+  });
+
+  it('bounds the deliverables list to the trailing MAX_PRODUCED_MEDIA', () => {
+    const handle = (i: number): string => `media://sha256-${String(i).padStart(64, '0')}`;
+    const events = Array.from({ length: MAX_PRODUCED_MEDIA + 5 }, (_, i) =>
+      completed('a', { content: [mediaPart(handle(i))] }, i + 1),
+    );
+    const s = reduceAll(events);
+    expect(s.producedMedia).toHaveLength(MAX_PRODUCED_MEDIA);
+    // The trailing entries are kept: the last-emitted handle is present, the earliest dropped.
+    expect(s.producedMedia[s.producedMedia.length - 1]?.handle).toBe(
+      handle(MAX_PRODUCED_MEDIA + 4),
+    );
+    expect(s.producedMedia.some((m) => m.handle === handle(0))).toBe(false);
   });
 });

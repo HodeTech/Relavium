@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,10 +9,18 @@ import {
   type NodeExecutor,
   type NodeOutcome,
 } from '@relavium/core';
+import {
+  createClient,
+  createModelCatalogStore,
+  createProviderStore,
+  createRunHistoryStore,
+  runMigrations,
+  type Db,
+} from '@relavium/db';
 import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildEngine } from '../engine/build-engine.js';
+import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError } from '../process/errors.js';
@@ -19,7 +28,11 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
-import { captureIo } from '../test-support.js';
+import {
+  CHAT_TEXT_CAPABILITY_FLAGS,
+  GENERATIVE_IMAGE_CAPABILITY_FLAGS,
+  captureIo,
+} from '../test-support.js';
 import { runCommand, type RunCommandDeps } from './run.js';
 
 // A minimal real workflow: input → transform → output. Runs end-to-end through the standard node
@@ -100,12 +113,77 @@ const AGENT_WF_GEMINI = AGENT_WF.replace('id: cli-run-agent', 'id: cli-run-agent
   'model: gemini-2.5-flash, provider: gemini',
 );
 
+// An agent node whose authored output_modalities ([text, image]) exceed what the catalog model `chat-text`
+// supports (text only) — parses fine, but the D15 catalog load-check (2.S Step 7) must reject it at LOAD via the
+// chat inline-membership branch. The inline `model: chat-text` is the node-level override validate-catalog reads
+// (node.model), distinct from the agent's base model.
+const INCAPABLE_WF = `schema_version: '1.0'
+workflow:
+  id: cli-run-incapable
+  agents:
+    - { id: writer, model: gpt-4o, provider: openai, system_prompt: write }
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: writer, model: chat-text, prompt_template: 'go', output_modalities: ['text', 'image'] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
+`;
+
+// A node whose model `gen-image` is a media_surface 'generative' catalog row, with output_modalities that the
+// generative branch rejects (it requires EXACTLY one media modality, no text) — exercises validate-catalog's
+// generative branch through the real projection (which reads media.surface from the capabilities blob).
+const GENERATIVE_REJECT_WF = `schema_version: '1.0'
+workflow:
+  id: cli-run-gen-reject
+  agents:
+    - { id: painter, model: gpt-4o, provider: openai, system_prompt: paint }
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: painter, model: gen-image, prompt_template: 'go', output_modalities: ['text', 'image'] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
+`;
+
+// Same shape but the node model is ABSENT from the catalog — the load-check must DEFER (not reject), so the run
+// proceeds to build the engine. (output_modalities present so the check would evaluate the node if it resolved.)
+const ABSENT_MODEL_WF = GENERATIVE_REJECT_WF.replace(
+  'id: cli-run-gen-reject',
+  'id: cli-run-absent',
+).replace('model: gen-image', 'model: not-in-catalog');
+
+// `os.homedir()` reads `HOME` on POSIX but `USERPROFILE` on Windows — override BOTH so the hermetic home holds
+// cross-platform (the global CAS root resolves under it). Mirrors the generative e2e harness.
+const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
+
 let root: string;
+let home: string;
+const savedHome = new Map<string, string | undefined>();
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'relavium-run-'));
+  // Point the home at a tmpdir so `os.homedir()` (→ `~/.relavium/media`, the CAS root) never resolves to the real
+  // developer home. The in-memory host path bypasses `put()` today, but keep the discipline so a future change
+  // exercising the CAS through the captured opts can't write to the real `~/.relavium`.
+  home = mkdtempSync(join(tmpdir(), 'relavium-run-home-'));
+  for (const v of HOME_ENV_VARS) {
+    savedHome.set(v, process.env[v]);
+    process.env[v] = home;
+  }
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
+  for (const v of HOME_ENV_VARS) {
+    const prior = savedHome.get(v);
+    if (prior === undefined) {
+      delete process.env[v];
+    } else {
+      process.env[v] = prior;
+    }
+  }
+  rmSync(home, { recursive: true, force: true });
 });
 
 function globalOptions(over: Partial<GlobalOptions> = {}): GlobalOptions {
@@ -132,6 +210,23 @@ function writeWorkflow(name: string, yaml: string): string {
   const path = join(root, name);
   writeFileSync(path, yaml);
   return path;
+}
+
+/** An `openRunStore` backed by the given in-memory db — the durable-history stub the 2.S wiring tests share. */
+function historyOpenRunStore(db: Db): NonNullable<RunCommandDeps['openRunStore']> {
+  return (workflow) => ({
+    store: createRunHistoryStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+      workflow: {
+        slug: workflow.workflow.id,
+        name: workflow.workflow.id,
+        definitionJson: JSON.stringify(workflow),
+      },
+    }),
+    db,
+    close: () => {},
+  });
 }
 
 /**
@@ -182,6 +277,333 @@ describe('runCommand', () => {
     expect(code).toBe(EXIT_CODES.success);
     expect(out()).toContain('started');
     expect(out()).toContain('run completed');
+  });
+
+  it('wires the media host + catalog resolveMediaSurface + the media ports when durable history is open (2.S)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(client.db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(client.db, dbDeps).upsert({
+      providerId,
+      modelId: 'gpt-image-1',
+      displayName: 'GPT Image 1',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    let captured: BuildEngineOptions | undefined;
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          // Durable history open ⇒ run.ts wires the media host + the catalog reader over this same db.
+          openRunStore: historyOpenRunStore(client.db),
+          // Capture what run.ts assembled, then run a real in-memory engine so the HAPPY workflow completes.
+          buildEngine: (opts) => {
+            captured = opts;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The media host carries all three ports (CAS + retention + save_to), backed by the run-path roots + db.
+      expect(captured?.host?.mediaStore).toBeDefined();
+      expect(captured?.host?.mediaReferences).toBeDefined();
+      expect(captured?.host?.mediaWrite).toBeDefined();
+      // resolveMediaSurface is the catalog projection over the SAME db: the seeded generative model routes;
+      // an unknown one is undefined (the host then defaults to the safe inline 'chat').
+      expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
+      expect(captured?.resolveMediaSurface?.('unknown-model')).toBeUndefined();
+      // With no project config, the call-site OMITS mediaCostEstimate (the exactOptionalPropertyTypes spread
+      // arm — never `{ mediaCostEstimate: undefined }`).
+      expect('mediaCostEstimate' in (captured ?? {})).toBe(false);
+      // The save_to scope root is the run's cwd: run.ts forwards `deps.global.cwd` into the helper, so a write
+      // through the wired port lands under <cwd>/.relavium/runs (proves the cwd plumbing + the root value, not
+      // just that the port is defined).
+      const mediaWrite = captured?.host?.mediaWrite;
+      if (mediaWrite === undefined) {
+        throw new Error('expected run.ts to wire mediaWrite when durable history is open');
+      }
+      await mediaWrite('out.bin', new Uint8Array([7]));
+      expect(existsSync(join(root, '.relavium', 'runs', 'out.bin'))).toBe(true);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('threads [defaults].media_cost_estimate from config into the engine options (the populated arm)', async () => {
+    // A project config under the run cwd sets the per-modality estimate; run.ts must forward it to the builder.
+    mkdirSync(join(root, '.relavium'), { recursive: true });
+    writeFileSync(
+      join(root, '.relavium', 'project.toml'),
+      '[defaults.media_cost_estimate]\nimage = 5\naudio = 9\n',
+    );
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    let captured: BuildEngineOptions | undefined;
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          buildEngine: (opts) => {
+            captured = opts;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(captured?.mediaCostEstimate).toEqual({ image: 5, audio: 9 });
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('runs the host media GC at run-end with the durable db + CAS root + run id (2.S/D-GC)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    let swept: { db: unknown; casRoot: string; currentRunId: string } | undefined;
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: (args) => {
+            swept = args;
+            return Promise.resolve(undefined);
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The GC ran once at the terminal, over the SAME durable connection + the global CAS root, for this run.
+      expect(swept?.db).toBe(client.db);
+      expect(swept?.casRoot.endsWith(join('.relavium', 'media'))).toBe(true);
+      expect(typeof swept?.currentRunId).toBe('string');
+      expect(swept?.currentRunId).not.toBe('');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('skips the host media GC when durable history is closed (no references db to GC over)', async () => {
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    let swept = false;
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'] },
+      deps(io, globalOptions(), {
+        sweepMedia: () => {
+          swept = true;
+          return Promise.resolve(undefined);
+        },
+      }),
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(swept).toBe(false); // no openRunStore ⇒ no media wiring ⇒ the GC never runs
+  });
+
+  it('skips the host media GC on a non-terminal (paused) outcome — a resumable run keeps its media (2.S/D-GC)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    let swept = false;
+    try {
+      const code = await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: () => {
+            swept = true;
+            return Promise.resolve(undefined);
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.gatePaused); // exit 3 — the run paused at the human gate
+    } finally {
+      client.sqlite.close();
+    }
+    expect(swept).toBe(false); // the GC must NOT run while the run is merely paused (its media survives the resume)
+  });
+
+  it('swallows a throwing media GC at run-end — a GC fault never fails the run (2.S/D-GC, best-effort)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    try {
+      const code = await runCommand(
+        { workflow: path, input: ['n=3'] },
+        deps(io, globalOptions(), {
+          openRunStore: historyOpenRunStore(client.db),
+          sweepMedia: () => Promise.reject(new Error('gc boom')),
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success); // the run completed; the GC rejection was swallowed at the call site
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('rejects an agent node whose output_modalities exceed the catalog model at LOAD — exit 2, engine never built (D15)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(client.db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(client.db, dbDeps).upsert({
+      providerId,
+      modelId: 'chat-text',
+      displayName: 'Chat Text',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'chat',
+      capabilities: CHAT_TEXT_CAPABILITY_FLAGS,
+    });
+    const { io } = captureIo();
+    const path = writeWorkflow('incapable.relavium.yaml', INCAPABLE_WF);
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          // Key present ⇒ the pre-flight passes; the D15 load-check is what must reject the run.
+          providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
+          openRunStore: historyOpenRunStore(client.db),
+          // The load-check runs BEFORE the engine builds — a regression that skipped it would trip this.
+          buildEngine: () => {
+            throw new Error('the engine must not build — the D15 load-check rejects first');
+          },
+        }),
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      client.sqlite.close();
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('chat-text'); // the message names the offending model, secret-free
+    }
+  });
+
+  it('rejects a generative-surface model with a malformed output_modalities at LOAD — exit 2 (D15 generative branch)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(client.db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    // A generative catalog row: the projection reads media.surface='generative' from THIS capabilities blob, so
+    // the load-check takes the generative branch (exactly one media modality, no text) and rejects [text, image].
+    createModelCatalogStore(client.db, dbDeps).upsert({
+      providerId,
+      modelId: 'gen-image',
+      displayName: 'Gen Image',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+      capabilities: GENERATIVE_IMAGE_CAPABILITY_FLAGS,
+    });
+    const { io } = captureIo();
+    const path = writeWorkflow('gen-reject.relavium.yaml', GENERATIVE_REJECT_WF);
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
+          openRunStore: historyOpenRunStore(client.db),
+          buildEngine: () => {
+            throw new Error('the engine must not build — the generative load-check rejects first');
+          },
+        }),
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      client.sqlite.close();
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('generative'); // distinguishes the generative branch from chat-membership
+      // ...and pins the field-named, modality-listing contract (validate-catalog's WorkflowValidationError), not
+      // just the branch keyword — a message that dropped the node field/modality detail would fail here.
+      expect(caught.message).toContain('output_modalities');
+      expect(caught.message).toContain('image');
+    }
+  });
+
+  it('DEFERS (does not reject) a node whose model is absent from the catalog — the engine still builds (D15)', async () => {
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const { io } = captureIo();
+    const path = writeWorkflow('absent.relavium.yaml', ABSENT_MODEL_WF);
+    let built = false;
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
+          openRunStore: historyOpenRunStore(client.db), // catalog open, but `not-in-catalog` is unseeded
+          // Halt right after the load-check so we observe the defer without running the agent over the network.
+          buildEngine: () => {
+            built = true;
+            throw new Error('halt after the load-check deferred');
+          },
+        }),
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      client.sqlite.close();
+    }
+    expect(built).toBe(true); // the load-check reached buildEngine — it DEFERRED the unresolvable model
+    expect(isCliError(caught)).toBe(false); // ...and did NOT reject with an invocation fault
+  });
+
+  it('skips the load-check entirely when durable history is closed (no catalog to check against)', async () => {
+    // No `openRunStore` ⇒ `opened` is undefined ⇒ the whole media-wiring + load-check block is skipped. Even the
+    // would-be-incapable INCAPABLE_WF then builds the engine (there is no catalog), pinning the guard boundary.
+    const { io } = captureIo();
+    const path = writeWorkflow('incapable.relavium.yaml', INCAPABLE_WF);
+    let built = false;
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        deps(io, globalOptions(), {
+          providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
+          buildEngine: () => {
+            built = true;
+            throw new Error('halt after the skipped load-check');
+          },
+        }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(built).toBe(true); // no durable history ⇒ no catalog ⇒ the load-check never runs, never over-rejects
+    expect(isCliError(caught)).toBe(false);
   });
 
   it('awaits the renderer finalize() once after the run loop (the TUI teardown wire)', async () => {

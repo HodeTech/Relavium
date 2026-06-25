@@ -10,9 +10,19 @@ describe('resolveConfig', () => {
       defaultModel: undefined,
       fsScope: undefined,
       maxTokensEstimate: undefined,
+      mediaCostEstimate: undefined,
       variables: {},
       mcpServers: [],
     });
+  });
+
+  it('takes media_cost_estimate (2.S/D17) from the highest layer present — whole-object, not per-key merge', () => {
+    const workspace: ProjectConfig = { defaults: { media_cost_estimate: { image: 2, audio: 5 } } };
+    const project: ProjectConfig = { defaults: { media_cost_estimate: { image: 9 } } };
+    // project replaces workspace (last-writer-wins like the other defaults), it does not merge audio in.
+    expect(resolveConfig({ workspace, project }).mediaCostEstimate).toEqual({ image: 9 });
+    expect(resolveConfig({ workspace }).mediaCostEstimate).toEqual({ image: 2, audio: 5 });
+    expect(resolveConfig({}).mediaCostEstimate).toBeUndefined();
   });
 
   it('applies last-writer-wins precedence (project > workspace > global) for the default model', () => {

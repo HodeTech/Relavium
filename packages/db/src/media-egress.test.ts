@@ -119,6 +119,16 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     expect(calls).toHaveLength(0);
   });
 
+  it('blocks a 6to4 IPv6 literal embedding a loopback IPv4 (blocked_host), never resolving or connecting', async () => {
+    // 2002:7f00:0001:: is the 6to4 form of 127.0.0.1 — a valid IPv6 literal, so DNS is short-circuited; the
+    // range-check must extract the embedded IPv4 and block it (closes the SEC-EGRESS 6to4 gap).
+    const { deps, calls } = fakeDeps({ hops: [{ status: 200 }] });
+    await expect(
+      fetchMediaBytes('https://[2002:7f00:0001::]/a.png', { maxBytes: 1000 }, deps),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+    expect(calls).toHaveLength(0);
+  });
+
   it('blocks a public hostname that RESOLVES to a private IP (blocked_host), opening no connection', async () => {
     const { deps, calls } = fakeDeps({
       resolve: { 'rebind.example': ['10.0.0.1'] },

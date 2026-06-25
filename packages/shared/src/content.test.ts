@@ -733,6 +733,10 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['64:ff9b::127.0.0.1', 'NAT64-mapped loopback'],
     ['64:ff9b::10.0.0.1', 'NAT64-mapped private'],
     ['64:ff9b::169.254.169.254', 'NAT64-mapped cloud metadata'],
+    // 6to4 (2002::/16, RFC 3056) embeds the IPv4 in bits 16-47 — a private/loopback embed must be re-checked.
+    ['2002:7f00:0001::', '6to4-embedded loopback (= 127.0.0.1)'],
+    ['2002:a9fe:a9fe::', '6to4-embedded cloud metadata (= 169.254.169.254)'],
+    ['2002:0a00:0001::', '6to4-embedded private 10/8 (= 10.0.0.1)'],
     ['localhost', 'hostname localhost'],
     ['myapp.localhost', 'hostname .localhost suffix'],
     ['myapp.local', 'hostname .local suffix'],
@@ -761,6 +765,7 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['142.250.80.46', 'public IP'],
     ['api.openai.com', 'public hostname'],
     ['2001:4860:4860::8888', 'public IPv6'],
+    ['2002:0808:0808::', '6to4-embedded public 8.8.8.8 — must not over-block'],
     ['172.15.0.1', 'just below 172.16/12 range'],
     ['172.32.0.1', 'just above 172.16/12 range'],
     ['100.63.255.255', 'just below CGNAT range'],

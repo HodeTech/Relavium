@@ -1,7 +1,14 @@
 import { Box, Text } from 'ink';
 import { useSyncExternalStore, type ReactElement } from 'react';
 
-import { formatCostUsd, formatTokens, spinnerFrame, statusColor, statusGlyph } from './format.js';
+import {
+  formatCostUsd,
+  formatProducedMedia,
+  formatTokens,
+  spinnerFrame,
+  statusColor,
+  statusGlyph,
+} from './format.js';
 import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
@@ -72,6 +79,18 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           {state.toolLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
               {line}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+
+      {/* Produced media deliverables (handle-only, never bytes) */}
+      {state.producedMedia.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          {state.producedMedia.map((media) => (
+            // The content-addressed handle is unique (the view-model dedups by it) + stable — a sound React key.
+            <Text key={media.handle} {...colorProps(color, 'magenta')} wrap="truncate-end">
+              {formatProducedMedia(media)}
             </Text>
           ))}
         </Box>

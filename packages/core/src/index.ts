@@ -282,6 +282,8 @@ export type {
   SpawnOpts,
   ToolNodeConfig,
   ToolDispatchContext,
+  MediaReadAccess,
+  MediaHandleInfo,
   ToolDispatchOutcome,
   ToolCallPart,
   ToolResultPart,

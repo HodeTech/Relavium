@@ -1,4 +1,9 @@
-import type { AgentTokenEvent, RunEvent } from '@relavium/shared';
+import {
+  collectDurableMediaHandles,
+  type AgentTokenEvent,
+  type NodeCompletedEvent,
+  type RunEvent,
+} from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -27,6 +32,18 @@ export interface NodeView {
   readonly errorCode?: string;
   /** The 1-based node-retry dispatch attempt (present once a retry has occurred). */
   readonly attempt?: number;
+}
+
+/**
+ * A produced media DELIVERABLE surfaced on a `node:completed` (2.S/D-series, ADR-0042) — the durable
+ * `media://sha256-<hex>` HANDLE (never inline bytes), its MIME, and the node that first emitted it. The CLI's
+ * leaf of the cross-surface "each surface renders a produced media handle" acceptance. (The modality is carried
+ * by the MIME — `image/png` → image — so it is not stored separately.)
+ */
+export interface ProducedMediaView {
+  readonly nodeId: string;
+  readonly handle: string;
+  readonly mimeType: string;
 }
 
 export interface RunSummary {
@@ -62,6 +79,9 @@ export interface RunViewState {
   readonly gapDetected: boolean;
   /** Bounded, user-facing warnings (gap, budget, timeout, gate). */
   readonly warnings: readonly string[];
+  /** Produced media handles surfaced as nodes complete (2.S) — the run's media deliverables, bounded to the
+   *  trailing {@link MAX_PRODUCED_MEDIA}. Handle-only by construction (the engine de-inlines bytes upstream). */
+  readonly producedMedia: readonly ProducedMediaView[];
   /** Set once the run reaches a terminal/parked event — drives the final summary panel. */
   readonly summary?: RunSummary;
 }
@@ -72,6 +92,9 @@ export const MAX_TOKEN_CHARS = 4000;
 export const MAX_TOOL_LINES = 8;
 /** Recent warnings kept for display. */
 export const MAX_WARNINGS = 6;
+/** Produced media deliverables kept for display — generous (a real run emits a handful) but bounded so a
+ *  pathological media-spewing run can't grow the view state without limit; the trailing entries are kept. */
+export const MAX_PRODUCED_MEDIA = 50;
 /** Trailing logical lines of the active node's token stream shown in the live region (RunApp). */
 export const MAX_ACTIVE_TOKEN_LINES = 6;
 
@@ -85,6 +108,7 @@ export function initialRunViewState(): RunViewState {
     cumulativeCostMicrocents: 0,
     gapDetected: false,
     warnings: [],
+    producedMedia: [],
   };
 }
 
@@ -92,6 +116,25 @@ export function initialRunViewState(): RunViewState {
 function pushBounded(arr: readonly string[], line: string, max: number): string[] {
   const next = [...arr, line];
   return next.length > max ? next.slice(next.length - max) : next;
+}
+
+/**
+ * Append produced media deliverables, deduped by handle across the whole run (a content-addressed
+ * `media://sha256-<hex>` handle is ONE artifact — an `output` node's `save_to` legitimately re-emits the same
+ * handle its upstream producer already surfaced, so first-seen attribution wins and it is listed once), keeping
+ * only the trailing {@link MAX_PRODUCED_MEDIA}.
+ */
+function appendProducedMedia(
+  current: readonly ProducedMediaView[],
+  added: readonly ProducedMediaView[],
+): readonly ProducedMediaView[] {
+  const seen = new Set(current.map((m) => m.handle));
+  const fresh = added.filter((m) => !seen.has(m.handle));
+  if (fresh.length === 0) {
+    return current; // every added handle is already listed — no change
+  }
+  const next = [...current, ...fresh];
+  return next.length > MAX_PRODUCED_MEDIA ? next.slice(next.length - MAX_PRODUCED_MEDIA) : next;
 }
 
 /** Append streamed token text, keeping only the trailing {@link MAX_TOKEN_CHARS}. */
@@ -202,6 +245,32 @@ function reduceAgentToken(base: RunViewState, event: AgentTokenEvent): RunViewSt
 }
 
 /**
+ * The `node:completed` reduction (extracted to keep {@link reduceRunEvent}'s switch lean): mark the node
+ * completed, fold its cumulative-cost snapshot into the running total, and append any produced media deliverables
+ * (handle-only — the engine de-inlined any bytes at the emit choke point, ADR-0042; `collectDurableMediaHandles`
+ * walks the `unknown` output cycle-safe + deduped, so a text-only node yields none).
+ */
+function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): RunViewState {
+  const produced = collectDurableMediaHandles(event.output).map(
+    (meta): ProducedMediaView => ({
+      nodeId: event.nodeId,
+      handle: meta.handle,
+      mimeType: meta.mimeType,
+    }),
+  );
+  return {
+    ...base,
+    ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
+    ...(event.cumulativeCostMicrocents === undefined
+      ? {}
+      : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+    ...(produced.length === 0
+      ? {}
+      : { producedMedia: appendProducedMedia(base.producedMedia, produced) }),
+  };
+}
+
+/**
  * Reduce one canonical {@link RunEvent} into the next immutable {@link RunViewState}. Pure: no I/O, no
  * mutation of `state`. A token reduce is shallow (only the active buffer changes) so a high token rate
  * stays cheap. Unknown/forward event types fall through (the run-event union is intentionally lenient).
@@ -264,13 +333,7 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       return { ...base, cumulativeCostMicrocents: event.cumulativeCostMicrocents };
 
     case 'node:completed':
-      return {
-        ...base,
-        ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
-        ...(event.cumulativeCostMicrocents === undefined
-          ? {}
-          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
-      };
+      return reduceNodeCompleted(base, event);
 
     case 'node:failed':
       return {
@@ -280,6 +343,12 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           errorCode: event.error.code,
           ...attemptPatch(event.attemptNumber),
         }),
+        // node:failed carries the run-wide cost snapshot at this boundary (2.S/D-GC durable fail-cost) — fold it
+        // into the running total just like node:completed, so a billed-but-failed media job's cost survives a
+        // durable reconstruction (cost:updated is streamed-only). Optional (older logs omit it).
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
       };
 
     case 'node:skipped':
@@ -363,7 +432,22 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'run:cancelled':
-      return { ...base, summary: { outcome: 'cancelled' } };
+      // run:cancelled carries the run-wide cost snapshot (2.S/D-GC — a paid media job billed before the cancel,
+      // ADR-0045 §5). Fold it onto the summary + the running total (mirrors run:completed) so the final cost is
+      // the durable terminal figure, not just whatever the last transient cost:updated left. Optional (older
+      // logs omit it); absent ⇒ the live `cumulativeCostMicrocents` already on `base` stands.
+      return {
+        ...base,
+        summary: {
+          outcome: 'cancelled',
+          ...(event.cumulativeCostMicrocents === undefined
+            ? {}
+            : { totalCostMicrocents: event.cumulativeCostMicrocents }),
+        },
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+      };
 
     case 'run:paused':
       return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };

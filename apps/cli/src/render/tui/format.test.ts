@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatCostUsd,
   formatDuration,
+  formatProducedMedia,
   formatTokens,
   SPINNER_FRAMES,
   spinnerFrame,
@@ -70,5 +71,14 @@ describe('statusGlyph / statusColor', () => {
     expect(statusColor('completed')).toBe('green');
     expect(statusColor('failed')).toBe('red');
     expect(statusColor('retrying')).toBe('yellow');
+  });
+});
+
+describe('formatProducedMedia', () => {
+  it('renders the durable handle + mime on one line (monochrome glyph), never inline bytes', () => {
+    const handle = `media://sha256-${'a'.repeat(64)}`;
+    expect(formatProducedMedia({ mimeType: 'image/png', handle })).toBe(`◆ image/png ${handle}`);
+    // Pure mimeType passthrough — a non-image modality is rendered verbatim (no per-modality special-casing).
+    expect(formatProducedMedia({ mimeType: 'audio/mpeg', handle })).toBe(`◆ audio/mpeg ${handle}`);
   });
 });

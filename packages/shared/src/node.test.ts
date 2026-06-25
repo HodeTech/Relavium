@@ -149,6 +149,34 @@ describe('NodeSchema', () => {
     ).toBe(false);
   });
 
+  it('save_to enforces the run.id-only interpolation restriction at parse (1.AF, ADR-0044 §2)', () => {
+    const parse = (save_to: string): boolean =>
+      NodeSchema.safeParse({ id: 'o', type: 'output', save_to }).success;
+    // A literal (no interpolation) and a `{{ run.id }}`-only template (with/without spaces) are accepted.
+    expect(parse('output.png')).toBe(true);
+    expect(parse('out/{{run.id}}/image.png')).toBe(true);
+    expect(parse('{{ run.id }}/image.png')).toBe(true);
+    // A non-run.id reference — or a filtered / trailing-path run.id — is rejected at parse, not only at runtime.
+    expect(parse('{{ inputs.name }}/x.png')).toBe(false);
+    expect(parse('out/{{ ctx.dir }}/x.png')).toBe(false);
+    expect(parse('{{ run.outputs.node.path }}')).toBe(false);
+    expect(parse('{{ run.id | upper }}/x.png')).toBe(false);
+    expect(parse('{{ run.id.x }}/x.png')).toBe(false);
+    // A mix that includes one disallowed reference alongside run.id is still rejected.
+    expect(parse('{{ run.id }}/{{ inputs.x }}.png')).toBe(false);
+    // The strip-and-check shares no grammar with the engine lexer, so a brace-in-string reference (which the
+    // prior naive `{{[^}]*}}` regex wrongly ACCEPTED, since the inner `}` stopped it from matching the ref) is
+    // still rejected — the exact load-vs-runtime gap this guards. The adjacency case is the sharpest: the old
+    // regex matched the leading `{{ run.id }}`, failed to match the brace-in-string ref, and so passed.
+    expect(parse('{{ run.outputs["a}b"] }}/x.png')).toBe(false);
+    expect(parse('{{ run.id }}{{ run.outputs["x}y"] }}.png')).toBe(false);
+    // A degenerate / empty interpolation is rejected (it is not `{{ run.id }}`, so it survives the strip).
+    expect(parse('{{}}/x.png')).toBe(false);
+    expect(parse('{{   }}/x.png')).toBe(false);
+    // A bare `}}` with no opening `{{` is literal text to BOTH the schema strip and the engine lexer — accepted.
+    expect(parse('out/}} literal.png')).toBe(true);
+  });
+
   it('rejects a retry_on listing a non-retryable error code (ADR-0040 A.4)', () => {
     // `tool_denied` is fatal — retrying it just re-denies; the subset enum rejects it at parse.
     const bad = {

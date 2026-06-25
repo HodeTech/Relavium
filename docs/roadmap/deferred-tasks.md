@@ -151,19 +151,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
 > so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
 > deferred mechanism/wiring half. *(1.AF is ✅ Done — all PRs merged #33/#34/#35/#36, 2026-06-20; the items
-> below remain, owned by 1.AH.)*
+> below remain: `read_media` (D12) is deferred to **2.M** (maintainer-approved), and D15/D17/D8 + the `save_to`
+> semantics to the CLI/desktop host-wiring (Phase-2/Phase-3). The D15/D17/D8 check-offs for the CLI half land
+> post-merge with their PR number, per the done-after-merge convention.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
   factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns
   `Uint8Array`) into the `MediaReadAccess` the tool needs (whose `readRange` returns an in-flight **base64**
-  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; 1.AH)*
+  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; 2.M)*
 - [ ] **`read_media` session-scope population (D12 authz data, ADR-0044 §1)** — nothing writes
   `session`/`workspace` `media_references` rows (the only writer, `createMediaReferencePort`, writes `run`
   refs only), so `describe().allowedScopes` is always `[]` and every read denies. The input-transfer
-  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; 1.AH)*
+  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; 2.M)*
 - [ ] **`ctx.mediaRead` / `ctx.requestingScope` not wired into the dispatch context** — the AgentRunner +
   AgentSession build `ToolDispatchContext` without these, so `read_media` always throws
-  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 1.AH)*
+  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 2.M)*
 - [ ] **`validateWorkflowWithCatalog` (D15) is called by no production loader** — exported + tested, but
   no parse/load path invokes it, so authored `output_modalities` are not load-validated (the runtime
   FallbackChain pre-skip — now wired onto the request — is the only backstop). A host should call it
@@ -189,6 +191,19 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`save_to` url double-fetch** — a `url`-sourced media part in a save_to output is fetched twice (the
   save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
   result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
+- [ ] **`save_to` resumer-cwd vs original-run project root (2.S)** — on a `relavium gate` resume the `save_to`
+  jail root is the RESUMER's cwd (`gate.ts` passes `deps.global.cwd`), not the original run's project root, so a
+  run started in dir A and resumed from B writes its deliverables under `B/.relavium/runs/`. The `realpath`+
+  `commonpath` jail still holds (no escape) — only the destination differs. Persist the original run's project
+  root in the run snapshot and re-jail under it on resume for an identical location. *(low · apps/cli `gate.ts`; Phase-2)*
+- [ ] **Host-GC orchestration is CLI-local (2.S)** — `runHostMediaGc` (the 3 ordered steps: clean-terminal
+  reclaim-retry, grace-window byte reclaim, CAS-orphan sweep + the `orphanMinAgeMs` concurrent-writer age-guard)
+  is host-agnostic but lives in `apps/cli/src/engine/media-gc.ts`, so the Phase-3 desktop / Phase-6 cloud hosts
+  can't reuse it. When a 2nd host wires media GC, promote the pure orchestration to `@relavium/db` (or a shared
+  host-helper) and pin the mechanism in a `docs/reference/` home so the hosts can't drift. *(med · apps/cli → @relavium/db; Phase-3+)*
+- [ ] **`[defaults].media_gc_grace_days` is forward-declared, not read (2.S)** — the host GC uses the built-in
+  `DEFAULT_MEDIA_GC_GRACE_MS` (7 days); the config key (config-spec.md, ADR-0042 §4c) is documented but not yet
+  threaded through `sweepHostMediaBestEffort`'s `graceMs`. Resolve it from config and pass it through. *(low · apps/cli; Phase-2)*
 - [ ] **Keychain no-raw-key IPC test (ADR-0044 §4 acceptance gate)** — ADR-0044 §4 makes "the keychain bridge
   never returns a raw key from an IPC command" an **explicit 1.AF test deliverable**, bundled with the media
   IPC/byte-delivery review surface. That IPC surface is the desktop/Tauri command layer, which is **unbuilt at

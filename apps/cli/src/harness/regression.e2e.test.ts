@@ -328,6 +328,7 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
             definitionJson: JSON.stringify(workflow),
           },
         }),
+        db: runClient.db,
         close: () => {},
       });
 

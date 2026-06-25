@@ -686,10 +686,11 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
     expect(writes).toHaveLength(0);
   });
 
-  it('fails with `validation` (not `internal`) when the save_to path template cannot be resolved', async () => {
-    // A `save_to` referencing a non-`run.id` namespace passes the relative-path schema but resolves to
-    // nothing at runtime (only run.id is in scope) — an InterpolationError the engine classifies as a
-    // validation (authoring) fault, never an engine `internal` fault.
+  it('classifies an unresolvable save_to template as `validation`, not `internal` (defense-in-depth)', async () => {
+    // 2.S rejects a non-`run.id` save_to at PARSE (the `SaveToSchema` refine; covered in shared/node.test.ts),
+    // so authored YAML can no longer reach this. But #performSaveTo must STILL classify an unresolvable
+    // template — a programmatically-built definition that bypassed the schema — as a `validation` (authoring)
+    // fault, never an engine `internal` fault. Build the bad save_to by replacing it AFTER parse (schema bypass).
     const { store: mediaStore, puts } = stubMediaStore();
     const { write, writes } = stubMediaWrite();
     const host = createInMemoryHost({
@@ -697,14 +698,25 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
       mediaStore,
       mediaWrite: write,
     });
-    const wf = workflow(`  id: saveto-badtmpl
+    const valid = workflow(`  id: saveto-badtmpl
   nodes:
     - { id: start, type: input }
     - { id: gen, type: transform, transform: 'g' }
-    - { id: out, type: output, save_to: 'out/{{ inputs.missing }}/x.png' }
+    - { id: out, type: output, save_to: 'out/{{ run.id }}/x.png' }
   edges:
     - { from: start, to: gen }
     - { from: gen, to: out }`);
+    const wf: WorkflowDefinition = {
+      ...valid,
+      workflow: {
+        ...valid.workflow,
+        nodes: valid.workflow.nodes.map((n) =>
+          n.id === 'out' && n.type === 'output'
+            ? { ...n, save_to: 'out/{{ inputs.missing }}/x.png' }
+            : n,
+        ),
+      },
+    };
     const events = await drain(
       engineWith({ out: () => ({ kind: 'completed', output: { image: MEDIA_PART } }) }, host).start(
         {
@@ -1034,6 +1046,120 @@ describe('WorkflowEngine — the exactly-one-terminal-event invariant', () => {
     expect(failed.partialOutputs).not.toHaveProperty('work');
     expect(failed.partialOutputs).not.toHaveProperty('done');
     assertGapFreeSeq(events);
+  });
+
+  it('snapshots the run-wide cumulative cost onto node:failed (durable fail-cost, 2.S/D-GC, ADR-0045 §5)', async () => {
+    const emitCost = (nodeId: string, amount: number): Handler => {
+      return (ctx) => {
+        ctx.emit({
+          type: 'cost:updated',
+          nodeId,
+          model: 'm',
+          inputTokens: 1,
+          outputTokens: 1,
+          costMicrocents: amount,
+          cumulativeCostMicrocents: 0, // the engine owns the cumulative
+        });
+        return { kind: 'completed', output: nodeId, tokensUsed: { input: 1, output: 1 } };
+      };
+    };
+    const events = await drain(
+      engineWith({
+        start: emitCost('start', 100),
+        work: () => ({
+          kind: 'failed',
+          error: { code: 'tool_failed', message: 'boom', retryable: false },
+        }),
+      }).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    if (nodeFailed?.type !== 'node:failed') {
+      throw new Error('expected node:failed');
+    }
+    // The cost accrued before the failure (cost:updated is transient) is durable on the terminal node event.
+    expect(nodeFailed.cumulativeCostMicrocents).toBe(100);
+  });
+
+  it('snapshots the run-wide cumulative cost onto run:cancelled (durable fail-cost, 2.S/D-GC, ADR-0045 §5)', async () => {
+    const engine = engineWith({
+      emit: (ctx) => {
+        ctx.emit({
+          type: 'cost:updated',
+          nodeId: 'emit',
+          model: 'm',
+          inputTokens: 1,
+          outputTokens: 1,
+          costMicrocents: 100,
+          cumulativeCostMicrocents: 0,
+        });
+        return { kind: 'completed', output: 'emit', tokensUsed: { input: 1, output: 1 } };
+      },
+      slow: (ctx) =>
+        new Promise<NodeOutcome>((resolve) => {
+          const onAbort = (): void => resolve({ kind: 'completed', output: 'aborted' });
+          if (ctx.signal.aborted) {
+            onAbort();
+            return;
+          }
+          ctx.signal.addEventListener('abort', onAbort);
+        }),
+    });
+    const handle = engine.start({
+      workflow: workflow(`  id: cancel-cost
+  nodes:
+    - { id: start, type: input }
+    - { id: emit, type: transform, transform: 'x' }
+    - { id: slow, type: transform, transform: 's' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: emit }
+    - { from: emit, to: slow }
+    - { from: slow, to: done }`),
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:started' && event.nodeId === 'slow') {
+        engine.cancel(handle.runId);
+      }
+    }
+    const cancelled = events.find((e) => e.type === 'run:cancelled');
+    if (cancelled?.type !== 'run:cancelled') {
+      throw new Error('expected run:cancelled');
+    }
+    // The cost accrued before the cancel (cost:updated is transient) is durable on the terminal run event.
+    expect(cancelled.cumulativeCostMicrocents).toBe(100);
+  });
+
+  it('snapshots the run-wide cumulative cost onto run:failed (durable fail-cost, 2.S/D-GC, ADR-0045 §5)', async () => {
+    const events = await drain(
+      engineWith({
+        start: (ctx) => {
+          ctx.emit({
+            type: 'cost:updated',
+            nodeId: 'start',
+            model: 'm',
+            inputTokens: 1,
+            outputTokens: 1,
+            costMicrocents: 100,
+            cumulativeCostMicrocents: 0, // the engine owns the cumulative
+          });
+          return { kind: 'completed', output: 'start', tokensUsed: { input: 1, output: 1 } };
+        },
+        work: () => ({
+          kind: 'failed',
+          error: { code: 'tool_failed', message: 'boom', retryable: false },
+        }),
+      }).start({ workflow: workflow(SEQUENTIAL) }),
+    );
+    const failed = events.find((e) => e.type === 'run:failed');
+    if (failed?.type !== 'run:failed') {
+      throw new Error('expected run:failed');
+    }
+    // The accrued cost (cost:updated is transient) is durable on the terminal run event, mirroring run:cancelled.
+    // A sibling node's abandoned media-job addend folds in the same way — emitted before this terminal in #settle
+    // (after the root-cause node:failed snapshot) — so run:failed never under-reports the run's realized cost.
+    expect(failed.cumulativeCostMicrocents).toBe(100);
   });
 });
 

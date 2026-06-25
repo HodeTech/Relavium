@@ -13,6 +13,8 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
+import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import {
   createProviderResolver,
   neededProviderIds,
@@ -28,7 +30,12 @@ import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
-import { driveRun, outcomeToExitCode } from './drive.js';
+import {
+  assertWorkflowCatalogValid,
+  driveRun,
+  isTerminalOutcome,
+  outcomeToExitCode,
+} from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
 
 export interface RunCommandArgs {
@@ -59,6 +66,11 @@ export interface RunCommandDeps {
    * without a TTY, or omit it so a gate pause exits 3 like the non-interactive path.
    */
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
+  /**
+   * Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it to
+   * assert the run-end invocation without touching a real CAS, and the in-memory unit path never reaches it.
+   */
+  readonly sweepMedia?: typeof defaultSweepMedia;
 }
 
 /**
@@ -77,7 +89,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery,
   // homeDir locates `~/.relavium/history.db` (2.H).
-  const { projectConfigDir, homeDir } = loadResolvedConfig({
+  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -124,9 +136,32 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
   }
   try {
-    const engine = await build(
-      opened === undefined ? { providers } : { providers, host: createCliHost(opened.store) },
-    );
+    // Media host-wiring (2.S): when durable history is open, the SAME `~/.relavium/history.db` connection
+    // backs the `model_catalog` reader (→ `resolveMediaSurface` routing) + the `media_references` retention
+    // junction, and the host gets the global CAS root (`~/.relavium/media/`) + the project-relative `save_to`
+    // root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
+    // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
+    let engineOptions: BuildEngineOptions = { providers };
+    let mediaCasRoot: string | undefined;
+    if (opened !== undefined) {
+      const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
+        deps.io.writeErr(`${m}\n`),
+      );
+      mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC below
+      // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
+      // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
+      // (drive.ts), so a fresh run and a resume reject consistently.
+      assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
+      engineOptions = {
+        providers,
+        host: createCliHost(opened.store, { media: wiring.media }),
+        resolveMediaSurface: wiring.resolveMediaSurface,
+        ...(wiring.mediaCostEstimate === undefined
+          ? {}
+          : { mediaCostEstimate: wiring.mediaCostEstimate }),
+      };
+    }
+    const engine = await build(engineOptions);
     const handle = engine.start({ workflow: def, inputs });
 
     // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel
@@ -141,6 +176,23 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
     });
+
+    // Host media GC (2.S/D-GC, ADR-0042 §4) — a best-effort pass keyed on the run reaching a TERMINAL event: the
+    // clean-terminal reclaim retry (a crash-dropped prior sweep) + the grace-window byte reclaim + the CAS-orphan
+    // sweep, over the same durable `history.db`. Swallows any throw (never a run-correctness break). Skipped on a
+    // `paused` outcome (the run is resumable — its media must survive) and on the in-memory unit/harness path.
+    if (opened !== undefined && mediaCasRoot !== undefined && isTerminalOutcome(outcome)) {
+      try {
+        await (deps.sweepMedia ?? defaultSweepMedia)({
+          db: opened.db,
+          casRoot: mediaCasRoot,
+          currentRunId: handle.runId,
+        });
+      } catch {
+        // Defense-in-depth: the default sweeper already swallows, but the run-end GC must NEVER fail the run —
+        // a throwing sweeper (a test, or a future impl) is swallowed here too (ADR-0042 §3).
+      }
+    }
 
     return outcomeToExitCode(outcome);
   } finally {

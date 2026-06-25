@@ -107,6 +107,32 @@ describe('createPlainRenderer', () => {
     );
     expect(out()).toBe('');
   });
+
+  it('surfaces a produced media handle (handle-only, never bytes) under the node:completed line (2.S)', () => {
+    const { io, out } = captureIo();
+    const handle = `media://sha256-${'a'.repeat(64)}`;
+    createPlainRenderer(io).onEvent(
+      ev({
+        type: 'node:completed',
+        nodeId: 'painter',
+        output: {
+          content: [
+            {
+              type: 'media',
+              mimeType: 'image/png',
+              source: { kind: 'handle', ref: handle },
+              byteLength: 9,
+            },
+          ],
+        },
+        tokensUsed: { input: 0, output: 0 },
+        durationMs: 0,
+      }),
+    );
+    const text = out();
+    expect(text).toContain('ok painter');
+    expect(text).toContain(`◆ image/png ${handle}`); // the durable handle, indented under the node line
+  });
 });
 
 describe('createJsonRenderer', () => {
@@ -206,5 +232,32 @@ describe('createJsonRenderer', () => {
     // The emitted line round-trips to EXACTLY the event it was handed — the renderer adds nothing, drops
     // nothing, and has no path to unwrap the { secret: true, ref } masked shape into a raw value.
     expect(JSON.parse(out().trim())).toEqual(event);
+  });
+
+  it('carries a produced media handle verbatim in node:completed.output (the --json leaf of the acceptance)', () => {
+    const { io, out } = captureIo();
+    const handle = `media://sha256-${'a'.repeat(64)}`;
+    // The engine de-inlines bytes to a handle BEFORE the event, so node:completed.output is already handle-only;
+    // the NDJSON renderer emits it verbatim, so a machine consumer reads the produced handle off the stream.
+    const event = ev({
+      type: 'node:completed',
+      nodeId: 'painter',
+      output: {
+        content: [
+          {
+            type: 'media',
+            mimeType: 'image/png',
+            source: { kind: 'handle', ref: handle },
+            byteLength: 9,
+          },
+        ],
+      },
+      tokensUsed: { input: 0, output: 0 },
+      durationMs: 0,
+    });
+    createJsonRenderer(io).onEvent(event);
+    const line = out().trim();
+    expect(line).toContain(handle); // the handle is on the machine stream...
+    expect(JSON.parse(line)).toEqual(event); // ...verbatim (the renderer neither inlines bytes nor drops it)
   });
 });

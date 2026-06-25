@@ -62,6 +62,27 @@ describe('validateWorkflowWithCatalog (1.AF/D15 — output_modalities load-check
     expect(() => validateWorkflowWithCatalog(twoMedia, catalog)).toThrow(WorkflowValidationError);
   });
 
+  it('THROWS for a generative-surface model with NO authored output_modalities (it always produces one media modality) — 1.AG Section C', () => {
+    // The output_modalities===undefined short-circuit must NOT pre-empt the generative-surface check: a
+    // generative model with no declaration would route to generateMedia and fail the runtime
+    // singleBilledModality guard — so it must fail fast at LOAD instead.
+    const generativeCaps: CapabilityFlags = {
+      ...caps([]),
+      media: { ...caps([]).media, surface: 'generative' },
+    };
+    const noModalities = agentWorkflow(', model: gpt-image-1'); // generative model, output_modalities omitted
+    try {
+      validateWorkflowWithCatalog(noModalities, () => generativeCaps);
+      throw new Error('expected a WorkflowValidationError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(WorkflowValidationError);
+      if (error instanceof WorkflowValidationError) {
+        expect(error.issues[0]?.field).toBe('node `gen`.output_modalities');
+        expect(error.issues[0]?.message).toContain('none were authored');
+      }
+    }
+  });
+
   it('throws a field-named WorkflowValidationError when the model cannot output the combination', () => {
     const wf = agentWorkflow(", model: m1, output_modalities: ['text', 'image']");
     const catalog: WorkflowModelCatalog = () => caps([['text']]); // text-only model

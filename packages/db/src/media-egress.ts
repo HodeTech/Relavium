@@ -210,10 +210,14 @@ async function performHop(
   const ips = await resolveValidatedIps(host, deps, allowPrivate);
   // Connect by the FIRST validated IP — every IP was range-checked + confirmed an IP literal above, so
   // pinning means the address validated is the address connected to (no re-resolve TOCTOU window).
-  const response = await deps.openConnection(
-    { url: target, hostname: host, pinnedIp: ips[0] ?? host },
-    signal,
-  );
+  const pinnedIp = ips[0];
+  if (pinnedIp === undefined) {
+    // Unreachable: `resolveValidatedIps` throws `blocked_host` on an empty result rather than returning `[]`.
+    // Fail closed (never fall back to pinning the UNVALIDATED hostname) so a future return-convention change
+    // can't silently reopen the re-resolve window.
+    throw new MediaEgressError('blocked_host', 'no validated IP to pin the connection to');
+  }
+  const response = await deps.openConnection({ url: target, hostname: host, pinnedIp }, signal);
   if (isRedirectStatus(response.status)) {
     response.dispose(); // never read a redirect body
     const location = response.location;
@@ -302,6 +306,12 @@ export const nodeMediaEgressDeps: MediaEgressDeps = {
         {
           protocol: 'https:',
           hostname: request.hostname,
+          // The URL's port (default 443) is honored as-is — a public CDN media URL may legitimately serve
+          // over a non-443 HTTPS port. This is safe under the current default wiring (allowPrivate: false):
+          // the private/loopback/link-local IP range block (resolveValidatedIps) prevents reaching an internal
+          // service on ANY port, so no port allow-list is needed. If the BYOK local-endpoint allowPrivate
+          // opt-in is ever wired, that ADR MUST add an explicit port allow-list decision (a crafted
+          // https://host:22/ to a permitted-private address would otherwise be reachable). See SEC-EGRESS-3.
           port: parsed.port === '' ? 443 : Number(parsed.port),
           path: `${parsed.pathname}${parsed.search}`,
           method: 'GET',

@@ -1234,8 +1234,9 @@ function parseIpv6Groups(host: string): number[] | null {
 
 /**
  * Range-check decoded IPv6 groups: unspecified (`::`), loopback (`::1`), link-local (`fe80::/10`),
- * unique-local (`fc00::/7`), and IPv4-mapped (`::ffff:a.b.c.d`) / NAT64 (`64:ff9b::a.b.c.d`) embeddings
- * which are re-checked through the IPv4 rules.
+ * unique-local (`fc00::/7`), and the IPv4-embedding forms — IPv4-mapped (`::ffff:a.b.c.d`), NAT64
+ * (`64:ff9b::a.b.c.d`), and 6to4 (`2002:a.b.c.d::/48`, the IPv4 in bits 16-47) — which are re-checked
+ * through the IPv4 rules so a private/loopback IPv4 cannot tunnel past the block inside an IPv6 literal.
  */
 function isPrivateIpv6Groups(g: number[]): boolean {
   if (g.every((x) => x === 0)) {
@@ -1256,6 +1257,9 @@ function isPrivateIpv6Groups(g: number[]): boolean {
   }
   if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
     return isPrivateOrLocalHost(ipv4FromGroups(g[6] ?? 0, g[7] ?? 0)); // 64:ff9b::/96 NAT64
+  }
+  if (g[0] === 0x2002) {
+    return isPrivateOrLocalHost(ipv4FromGroups(g[1] ?? 0, g[2] ?? 0)); // 2002::/16 6to4 — IPv4 in bits 16-47
   }
   return false;
 }

@@ -17,6 +17,10 @@ export interface ResolvedConfig {
   readonly defaultModel: string | undefined;
   readonly fsScope: FsScope;
   readonly maxTokensEstimate: number | undefined;
+  /** `[defaults].media_cost_estimate` (2.S/D17, ADR-0044 §3) — per-modality output unit-count defaults for the
+   *  pre-egress media-cost governor. Resolved last-writer-wins like the other defaults; absent ⇒ the engine's
+   *  built-in unit estimate. (The per-unit price lives in the model catalog, never here.) */
+  readonly mediaCostEstimate: ProjectDefaults['media_cost_estimate'];
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
@@ -36,6 +40,8 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     fsScope: project?.defaults?.fs_scope ?? workspace?.defaults?.fs_scope,
     maxTokensEstimate:
       project?.defaults?.max_tokens_estimate ?? workspace?.defaults?.max_tokens_estimate,
+    mediaCostEstimate:
+      project?.defaults?.media_cost_estimate ?? workspace?.defaults?.media_cost_estimate,
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };

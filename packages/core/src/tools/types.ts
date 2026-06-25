@@ -248,8 +248,8 @@ export interface MediaHandleInfo {
  * `MediaSource` (the host encodes — the engine-pure tool never touches raw bytes).
  */
 export interface MediaReadAccess {
-  describe(handle: string): Promise<MediaHandleInfo | undefined>;
-  readRange(handle: string, range: ByteRange): Promise<MediaSource>;
+  describe(handle: string, signal?: AbortSignalLike): Promise<MediaHandleInfo | undefined>;
+  readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<MediaSource>;
 }
 
 export interface ToolDispatchContext {

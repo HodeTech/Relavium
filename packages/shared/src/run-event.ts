@@ -237,6 +237,12 @@ export const NodeFailedEventSchema = z.object({
   // budget is exhausted. `node:failed` stays the single TERMINAL failure per node; per-attempt failures
   // surface as `node:retrying` (below).
   attemptNumber: positiveInt.optional(),
+  // The run-wide cost running total AT this node boundary (integer micro-cents) — the SAME counter
+  // cost:updated carries, snapshotted onto the durable node:failed (2.S/D-GC, ADR-0045 §5) so a billed-but-
+  // failed PAID media job's realized cost survives on the durable terminal (cost:updated itself is streamed,
+  // never persisted — it was the only carrier). Optional for backward-compat with logs persisted before this
+  // field existed; the engine always populates it. Mirrors node:completed.cumulativeCostMicrocents.
+  cumulativeCostMicrocents: nonNegativeInt.optional(),
 });
 
 /**
@@ -344,11 +350,24 @@ export const RunFailedEventSchema = z.object({
   ...runBase,
   error: z.object({ ...eventErrorFields, nodeId: nonEmptyString.optional() }), // nodeId = root-cause node
   partialOutputs: z.record(z.string(), z.unknown()),
+  // The run-wide cost running total at failure (integer micro-cents). The root-cause node's node:failed snapshots
+  // the cumulative as of THAT node, but a SIBLING node's paid media job abandoned by the failure is still billed
+  // provider-side and its lone estimate addend is folded only just BEFORE this terminal (ADR-0045 §5) — after that
+  // node:failed was already emitted. Snapshotting the cumulative here makes that fail-cost durable (2.S/D-GC);
+  // cost:updated, its only other carrier, is streamed, never persisted. Optional for backward-compat; the engine
+  // always populates it. Mirrors run:cancelled.cumulativeCostMicrocents and run:completed.totalCostMicrocents.
+  cumulativeCostMicrocents: nonNegativeInt.optional(),
 });
 
 export const RunCancelledEventSchema = z.object({
   type: z.literal('run:cancelled'),
   ...runBase,
+  // The run-wide cost running total at cancellation (integer micro-cents). A PAID media job still pending at
+  // the cancel was billed provider-side (its lone estimate addend is emitted just BEFORE this terminal,
+  // ADR-0045 §5), so snapshotting the cumulative here makes that fail-cost durable (2.S/D-GC) — cost:updated,
+  // its only other carrier, is streamed, never persisted. Optional for backward-compat; the engine always
+  // populates it. The run-completed counterpart is run:completed.totalCostMicrocents.
+  cumulativeCostMicrocents: nonNegativeInt.optional(),
 });
 
 export const RunPausedEventSchema = z.object({

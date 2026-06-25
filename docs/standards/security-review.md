@@ -118,15 +118,17 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   prompt body); see the parse-time rejection rule under
   [Sandbox and tool policy](#sandbox-and-tool-policy-run_command-node-tools-secret-inputs).
 
-## Network and outbound URLs (SSRF — three egress paths today, a fourth reserved)
+## Network and outbound URLs (SSRF — four egress paths, all on one primitive)
 
-There are **three** user-supplied outbound-URL paths today (a fourth — the multimodal media `url`
-carrier — is forward-looking; see the last bullet), and they share **one** vetted
+There are **four** outbound-URL paths (the fourth — the multimodal media `url` carrier — is now wired
+host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s `fetchMediaBytes`;
+see the last bullet), and they share **one** vetted
 SSRF range-primitive — never a second hand-rolled parser. The same validation
 (HTTPS only, reject non-HTTP(S) schemes and credentials-in-URL, and **block
 private/loopback/link-local/metadata ranges** — `127.0.0.0/8`, `::1`, `10/8`,
 `172.16/12`, `192.168/16`, `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
-unless the user has explicitly opted into a local endpoint) applies to all three:
+unless the user has explicitly opted into a local endpoint) applies to **all four** — including the media `url`
+carrier fetched by `fetchMediaBytes`:
 
 - **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
   user-supplied `baseURL`. Never let an agent-config URL cause the engine to call an
@@ -146,11 +148,15 @@ unless the user has explicitly opted into a local endpoint) applies to all three
   URLs run the **same** SSRF range-primitive (no second parser). See
   [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
   and [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
-- **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7) — a fourth path, forward-looking.**
-  A media `url` source (a user-supplied input URL or a provider-returned output URL) is fetched by the
-  **engine** (never an adapter), through this **same** range-primitive — no second parser. It ships
-  **feature-flag-OFF** until the one shared primitive lands. *(Not yet built; recorded here so it binds to
-  the same primitive when it does.)*
+- **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7 / [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)) — a fourth path, now wired host-side.**
+  A media `url` source (a provider-returned output URL re-hosted to a handle, or a user-supplied input URL) is
+  fetched through the **host** `fetchMedia` port — `@relavium/db`'s **`fetchMediaBytes`**, the one vetted
+  SSRF primitive (DNS-resolve → validate-every-IP → connect-by-validated-IP → re-validate per redirect), never an
+  adapter and never a second parser. The CLI host wires it with **`allowPrivate: false`** (the default-deny
+  posture, 2.S/[ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the engine owns the
+  `maxBytes` size bound + the run `AbortSignal`. The shared primitive **has landed** (ADR-0043, tested); a
+  user-supplied `url` INPUT *source* (a `url` media part crossing the seam) stays **feature-flag-OFF**
+  (`MEDIA_URL_SOURCE_ENABLED`) until the BYOK local-endpoint opt-in lands behind a fresh ADR.
 - **The check and the connect must see the same address (no TOCTOU).** The primitive resolves the
   hostname, validates **every** resolved IP against the range-block, and then **pins the connection
   to a validated IP** (connect-by-validated-IP / a lookup-pinned HTTP agent). Validating one

@@ -11,7 +11,7 @@ import { buildEngine } from '../engine/build-engine.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { captureIo } from '../test-support.js';
-import { driveRun, shouldBreakOnPause } from './drive.js';
+import { driveRun, isTerminalOutcome, shouldBreakOnPause } from './drive.js';
 
 // gate → out: a single approval gate, then completes. The in-memory host pauses at the fail-closed gate.
 const GATED = `schema_version: '1.0'
@@ -218,5 +218,15 @@ describe('shouldBreakOnPause', () => {
   it('breaks on a media-job park even when every gate was handled', () => {
     const event = pause({ pendingGateCount: 0, gateIds: [], pendingMediaJobNodeIds: ['m'] });
     expect(shouldBreakOnPause(event, true, new Set())).toBe(true);
+  });
+});
+
+describe('isTerminalOutcome', () => {
+  it('is true for every terminal outcome, false for paused / undefined (the GC gate, 2.S/D-GC)', () => {
+    expect(isTerminalOutcome('completed')).toBe(true);
+    expect(isTerminalOutcome('failed')).toBe(true);
+    expect(isTerminalOutcome('cancelled')).toBe(true);
+    expect(isTerminalOutcome('paused')).toBe(false); // resumable — its media must survive
+    expect(isTerminalOutcome(undefined)).toBe(false); // an abnormal no-terminal unwind
   });
 });

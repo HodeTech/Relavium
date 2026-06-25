@@ -88,6 +88,7 @@ max_tokens_estimate = 4096         # per-call output-token estimate the pre-egre
 media_job_poll_initial_ms = 5000   # async media-job (generateMedia LRO) first-poll delay + backoff base (1.AG/ADR-0045 §7)
 media_job_poll_max_ms = 30000      # backoff cap: poll interval = min(initial × 2^(n-1), max), no jitter
 media_job_deadline_ms = 1800000    # abandon a job past this (from submit) as a retryable timeout (30 min)
+media_gc_grace_days = 7            # FORWARD-DECLARED (P4/D11, ADR-0042 §4c) — grace before a zero-reference media handle's CAS bytes are reclaimed by the host media GC. NOT YET WIRED: the 2.S host GC uses a built-in 7-day default (DEFAULT_MEDIA_GC_GRACE_MS) until this key is read; see [deferred-tasks.md](../../roadmap/deferred-tasks.md).
 
 [defaults.media_cost_estimate]     # per-modality media-output UNIT-COUNT default for the pre-egress media cost estimate (1.AF/D17, ADR-0044 §3) — a COUNT, not a price; the per-unit price lives in the model catalog. Used when a media-output turn declares no volume. Omit the table for text-only workflows.
 image = 1                          # assumed images per media-output turn

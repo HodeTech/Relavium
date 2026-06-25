@@ -144,4 +144,25 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     await port.reclaimRun('run-1');
     expect(store.removeRunReferences('run-1')).toBe(0); // the run ref was already reclaimed by the port
   });
+
+  it('listObjectHandles returns every media_objects handle incl. soft-deleted (the GC orphan-detection set)', () => {
+    const h2 = `media://sha256-${'c'.repeat(64)}`;
+    store.recordObject({ handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 });
+    store.recordObject({ handle: h2, mimeType: 'audio/mpeg', modality: 'audio', byteLength: 9 });
+    expect(new Set(store.listObjectHandles())).toEqual(new Set([HANDLE, h2]));
+    // A GC-soft-deleted (deleted_at set) row still HAS a row — its blob is not a row-less orphan, so it stays in
+    // the set (both handles are unreferenced + past a 0 grace ⇒ reclaimExpired soft-deletes them).
+    expect(store.reclaimExpired(0)).toHaveLength(2);
+    expect(new Set(store.listObjectHandles())).toEqual(new Set([HANDLE, h2]));
+  });
+
+  it('runReferenceRunIds returns the distinct run-kind scope ids only (the reclaim-retry input)', () => {
+    store.recordObject({ handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 });
+    store.addReference(HANDLE, 'run', 'run-a');
+    store.addReference(HANDLE, 'run', 'run-a'); // idempotent — counted once
+    store.addReference(HANDLE, 'run', 'run-b');
+    store.addReference(HANDLE, 'node', 'node-1'); // lifetime, NOT a run ref
+    store.addReference(HANDLE, 'session', 's1'); // authz, NOT a run ref
+    expect(new Set(store.runReferenceRunIds())).toEqual(new Set(['run-a', 'run-b']));
+  });
 });

@@ -130,3 +130,15 @@ export {
 // jail under a scope root, symlinks off, atomic publish). A host wires it into `ExecutionHost.mediaWrite`;
 // the pure engine never imports it (Node `node:fs` — it depends only on the @relavium/shared `MediaWritePort`).
 export { createFilesystemMediaWrite, MediaWriteError } from './media-write.js';
+
+// Model catalog (2.S, ADR-0045 §1 / ADR-0044 §2-3) — the host reader the media routing/load-check projections
+// source from: `resolveMediaSurface` (generative-vs-chat) + the validated record the host turns into a
+// `@relavium/llm` `CapabilityFlags`. `db` stays free of `@relavium/llm`/`@relavium/core` — the projection is the host's.
+export {
+  createModelCatalogStore,
+  ModelCatalogCapabilitiesError,
+  type ModelCatalogStore,
+  type ModelCatalogStoreDeps,
+  type ModelCatalogRecord,
+  type ModelCatalogUpsert,
+} from './model-catalog-store.js';

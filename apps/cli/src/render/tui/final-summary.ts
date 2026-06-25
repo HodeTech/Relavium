@@ -1,4 +1,10 @@
-import { formatCostUsd, formatDuration, formatTokens, statusGlyph } from './format.js';
+import {
+  formatCostUsd,
+  formatDuration,
+  formatProducedMedia,
+  formatTokens,
+  statusGlyph,
+} from './format.js';
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
 
@@ -57,6 +63,15 @@ export function renderFinalSummary(state: RunViewState): string {
     }
     // Reuse the live view's suffix logic (one source of truth) — completed→duration, failed→error code, etc.
     lines.push(`  ${statusGlyph(node.status)} ${id}${nodeSuffix(node)}`);
+  }
+
+  // The run's media deliverables — the durable handle per produced artifact (never bytes), attributed to its
+  // node, so they survive in the scrollback after the live frames clear (the cross-surface handle acceptance).
+  if (state.producedMedia.length > 0) {
+    lines.push('  produced media:');
+    for (const media of state.producedMedia) {
+      lines.push(`    ${formatProducedMedia(media)} (${media.nodeId})`);
+    }
   }
 
   return `${lines.join('\n')}\n`;

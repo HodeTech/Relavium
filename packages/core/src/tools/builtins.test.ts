@@ -412,6 +412,39 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     expect(err).toBeInstanceOf(ToolUnavailableError);
   });
 
+  it('forwards ctx.signal to describe() and readRange() (D13 cancellation threading)', async () => {
+    const t = tool('read_media');
+    const signal = new AbortController().signal;
+    const seen: { describe?: unknown; readRange?: unknown } = {};
+    const capturing: MediaReadAccess = {
+      describe: (_handle, s) => {
+        seen.describe = s;
+        return Promise.resolve({ mimeType: 'image/png', byteLength: 5, allowedScopes: [SESSION] });
+      },
+      readRange: (_handle, range, s) => {
+        seen.readRange = s;
+        return Promise.resolve({ kind: 'base64', data: `B${range.start}-${range.end}` });
+      },
+    };
+    await t.dispatch(
+      t.parseArgs({ handle: HANDLE }),
+      {},
+      { ...mediaCtx(SESSION, capturing), signal },
+    );
+    expect(seen.describe).toBe(signal);
+    expect(seen.readRange).toBe(signal);
+
+    // Absent-signal branch — the optional, non-breaking forward: a ctx with no signal hands the delegate
+    // `undefined` (the path most likely to silently regress if the optional param were dropped).
+    seen.describe = 'unset';
+    seen.readRange = 'unset';
+    // `mediaCtx` carries no `signal` (the base ctx sets none), so this is the absent-signal context — omit the
+    // key rather than assign `signal: undefined` (which `exactOptionalPropertyTypes` rejects for `signal?`).
+    await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, capturing));
+    expect(seen.describe).toBeUndefined();
+    expect(seen.readRange).toBeUndefined();
+  });
+
   it('returns a HANDLE source (schema-valid, not empty base64) for a whole-handle read of a zero-byte handle', async () => {
     const t = tool('read_media');
     let read = false;

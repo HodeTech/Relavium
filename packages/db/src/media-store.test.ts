@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { MEDIA_HANDLE_PATTERN } from '@relavium/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
 
@@ -116,5 +116,50 @@ describe('MediaStore.readRange (1.AF/D13 — byte-delivery Range gate)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandles)', () => {
+  let root: string;
+  let store: FilesystemMediaStore;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'relavium-media-gc-'));
+    store = new FilesystemMediaStore(root);
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('listHandles enumerates every stored handle (with mtime); an empty or absent root yields []', async () => {
+    expect(await store.listHandles()).toEqual([]); // the root exists but is empty
+    // A store at a NEVER-created path exercises the absent-root (readdir ENOENT) branch — not just empty-dir.
+    const absent = new FilesystemMediaStore(join(root, 'never-created-subdir'));
+    expect(await absent.listHandles()).toEqual([]);
+    const h1 = await store.put(new Uint8Array([1]));
+    const h2 = await store.put(new Uint8Array([2, 3]));
+    const listed = await store.listHandles();
+    expect(new Set(listed.map((e) => e.handle))).toEqual(new Set([h1, h2]));
+    expect(listed.every((e) => typeof e.mtimeMs === 'number' && e.mtimeMs > 0)).toBe(true);
+  });
+
+  it('listHandles skips strays: a non-conforming file, a non-shard dir, a root file, a subdir in a shard', async () => {
+    const h1 = await store.put(HELLO);
+    const shard = h1.slice('media://sha256-'.length, 'media://sha256-'.length + 2);
+    // (a) a leftover temp file in the shard dir; (b) a subdir inside the shard dir (would reconstruct a bogus
+    // handle if treated as a file); (c) a non-2-hex dir at the root; (d) a loose file at the root.
+    writeFileSync(join(root, shard, `.save.${'0'.repeat(8)}.tmp`), 'x');
+    mkdirSync(join(root, shard, 'a'.repeat(62)), { recursive: true });
+    mkdirSync(join(root, 'zz-not-a-shard'), { recursive: true });
+    writeFileSync(join(root, 'loose-file'), 'x');
+    expect((await store.listHandles()).map((e) => e.handle)).toEqual([h1]); // only the real blob
+  });
+
+  it('delete removes a blob (a later get fails) and is idempotent on a missing blob', async () => {
+    const handle = await store.put(HELLO);
+    await store.delete(handle);
+    await expect(store.get(handle)).rejects.toThrow();
+    await expect(store.delete(handle)).resolves.toBeUndefined(); // a 2nd delete is a no-op
+  });
+
+  it('delete rejects a non-media:// handle (the digest jail) — never unlinks outside the root', async () => {
+    await expect(store.delete('not-a-handle')).rejects.toThrow(/handle/);
   });
 });
