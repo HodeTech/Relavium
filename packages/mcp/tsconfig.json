@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
+    // `@relavium/mcp` is a Node-side host package — it fences the `@modelcontextprotocol/sdk`
+    // and (in a later step) spawns stdio servers via `node:child_process`, so `@types/node` is
+    // the platform boundary here. The engine (`packages/core`) never imports this package, so
+    // the SDK + `node:*` stay confined behind the seam (ADR-0034 g3 / ADR-0052 §1).
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

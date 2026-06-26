@@ -307,6 +307,25 @@ importers:
         specifier: 'catalog:'
         version: 3.2.6(@types/node@20.19.41)(tsx@4.22.4)(yaml@2.9.0)
 
+  packages/mcp:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 20.19.41
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@20.19.41)(tsx@4.22.4)(yaml@2.9.0)
+
   packages/shared:
     dependencies:
       zod:
