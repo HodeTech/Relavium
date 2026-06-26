@@ -9,17 +9,20 @@ import type { SessionViewState, ToolCallView, TurnSummary } from './session-view
  */
 
 /* eslint-disable no-control-regex */
-/**
- * ESC-introduced sequences, in three arms:
- *  1. String sequences — OSC (`ESC ]`) and DCS/PM/APC/SOS (`ESC P`/`ESC ^`/`ESC _`/`ESC X`), sharing one body;
- *     the terminator (BEL or ST) is REQUIRED, so an UNterminated introducer does not match here (it falls to
- *     arm 3, which strips only its 2-byte form, leaving the following text visible). An optional terminator
- *     would instead swallow the whole remainder of the string, silently erasing legitimate model output.
- *  2. CSI (`ESC [` colors/cursor) — the parameter/intermediate/final byte form.
- *  3. Any remaining 2-byte `ESC <0x40–0x5f>` escape (incl. an unterminated OSC/DCS/PM/APC introducer).
- */
-const ESC_SEQUENCES =
-  /\x1b[\]P^_X][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
+// The terminal-sanitizer matcher, composed from one named source fragment per ESC-introduced escape family so a
+// future edit touches a single, clearly-scoped family rather than one dense expression. SECURITY-SENSITIVE: the
+// alternation below is byte-for-byte the prior single literal — keep behavior exact (covered by the strip tests).
+/** OSC (`ESC ]`) + DCS/PM/APC/SOS (`ESC P`/`^`/`_`/`X`) string sequences, sharing one body. The terminator (BEL
+ *  or ST) is REQUIRED, so an UNterminated introducer does NOT match here — it falls through to {@link ESC_2BYTE}
+ *  (only its 2-byte form stripped), leaving the following text visible. An optional terminator would instead
+ *  swallow the whole remainder of the string, silently erasing legitimate model output. */
+const ESC_STRING_SEQ = String.raw`\x1b[\]P^_X][^\x07\x1b]*(?:\x07|\x1b\\)`;
+/** CSI (`ESC [` colors/cursor) — the parameter / intermediate / final-byte form. */
+const ESC_CSI = String.raw`\x1b\[[0-?]*[ -/]*[@-~]`;
+/** Any remaining 2-byte `ESC <0x40–0x5f>` escape (incl. an unterminated OSC/DCS/PM/APC introducer). */
+const ESC_2BYTE = String.raw`\x1b[@-Z\\-_]`;
+/** Every ESC-introduced sequence, composed from the named families above. */
+const ESC_SEQUENCES = new RegExp(`${ESC_STRING_SEQ}|${ESC_CSI}|${ESC_2BYTE}`, 'g');
 /** Remaining C0/C1 control bytes — keep only TAB (\x09) and LINE FEED (\x0a). */
 const BARE_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 /* eslint-enable no-control-regex */

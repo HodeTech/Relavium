@@ -61,7 +61,7 @@ A chat session uses the **same** built-in `ToolRegistry` as a workflow agent ([b
 
 ## `--json` session-event stream _(lands in **2.Q**)_
 
-> _Not yet available._ The headless `--json` chat mode ships in workstream **2.Q**; the section below is the target spec, not current behavior. Today `relavium chat` has no `--json` option, and a non-TTY invocation falls back to the plain line loop. (`session:exported` likewise depends on `/export`, which is **2.P**.)
+> _Not yet available._ The machine-readable NDJSON stream below is the target spec for workstream **2.Q**, not current behavior. `--json` is already a recognized global flag, but it does not yet emit `SessionEvent` JSON: `selectChatDriver` routes a `--json` invocation (and any non-TTY surface) to the **plain line loop**, so today `relavium chat --json` produces the plain text output, not the NDJSON below. (`session:exported` likewise depends on `/export`, which is **2.P**.)
 
 For scripting and non-interactive use, `--json` will switch the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`:
 

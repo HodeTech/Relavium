@@ -177,9 +177,16 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
   // registered keeps signal-exit from re-raising, so the cooperative /cancel (→ session:cancelled → persister
   // marks 'ended') wins; a second SIGINT forces a clean exit 4 rather than hang on a provider ignoring the
   // abort. Removed LAST in the finally (after unmount), so a Ctrl-C during unmount still hits us.
+  // Hoisted so the SIGINT handler can unmount ink (restoring the terminal) before a forced exit.
+  let instance: ReturnType<typeof render> | undefined;
   let cancelRequested = false;
   const onSigint = (): void => {
     if (cancelRequested) {
+      // A second SIGINT while the cooperative /cancel is still draining (e.g. a provider ignoring the abort):
+      // unmount ink FIRST so the terminal is restored from raw mode, THEN force a clean exit 4. (Process death
+      // reclaims the unref'd frame interval, the subscription, and this listener — the terminal restore is the
+      // one piece of cleanup that must not be skipped on the hard-exit path.)
+      instance?.unmount();
       process.exit(EXIT_CODES.chatEnded);
     }
     cancelRequested = true;
@@ -188,7 +195,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
   process.on('SIGINT', onSigint);
 
   try {
-    const instance = render(
+    instance = render(
       createElement(ChatApp, {
         store: ctx.store,
         onSubmit: ctx.processLine,
@@ -215,7 +222,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
       .finally(() => {
         clearInterval(frame);
         unsubscribe();
-        instance.unmount();
+        instance?.unmount();
         process.removeListener('SIGINT', onSigint);
       });
   } catch (err) {
