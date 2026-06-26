@@ -140,17 +140,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       )}
 
       {/* Sequence-gap / out-of-order diagnostics (the live stream is no-drop, so any gap is a defect worth
-          surfacing — mirrors RunApp). Integer-only today, but sanitized for belt-and-suspenders defence. */}
+          surfacing — mirrors RunApp). Integer-only today, but sanitized for belt-and-suspenders defence. Joined
+          into a single newline-separated Text so there is no keyed list — sidestepping both a duplicate React
+          key (two identical warning strings) and an array-index key. */}
       {state.warnings.length > 0 && (
-        <Box flexDirection="column">
-          {state.warnings.map((w, i) => (
-            // Index key (matching RunApp): the bounded list is replace-not-mutate, and two identical warning
-            // strings (a repeated gap) would collide on a content key, hiding the second from the display.
-            <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
-              ⚠ {stripTerminalControls(w)}
-            </Text>
-          ))}
-        </Box>
+        <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+          {state.warnings.map((w) => `⚠ ${stripTerminalControls(w)}`).join('\n')}
+        </Text>
       )}
       <Text {...colorProps(color, 'gray')}>{formatSessionFooter(state)}</Text>
     </Box>

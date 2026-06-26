@@ -10,18 +10,16 @@ import type { SessionViewState, ToolCallView, TurnSummary } from './session-view
 
 /* eslint-disable no-control-regex */
 /**
- * ESC-introduced sequences, in four arms:
- *  1. OSC (`ESC ]` title/hyperlink/clipboard) — terminator REQUIRED (BEL or ST). An UNterminated `ESC]…` does
- *     not match here (so it falls to arm 4 and only its 2-byte introducer is stripped, leaving the rest of the
- *     text visible) — an optional terminator would instead swallow the whole remainder of the string,
- *     silently erasing legitimate model output after an injected prefix.
- *  2. DCS/PM/APC/SOS string sequences (`ESC P`/`ESC ^`/`ESC _`/`ESC X`) — terminator REQUIRED (same rationale);
- *     consumes the payload through ST so terminated string sequences leave nothing behind.
- *  3. CSI (`ESC [` colors/cursor) — the parameter/intermediate/final byte form.
- *  4. Any remaining 2-byte `ESC <0x40–0x5f>` escape (incl. an unterminated OSC/DCS/PM/APC introducer).
+ * ESC-introduced sequences, in three arms:
+ *  1. String sequences — OSC (`ESC ]`) and DCS/PM/APC/SOS (`ESC P`/`ESC ^`/`ESC _`/`ESC X`), sharing one body;
+ *     the terminator (BEL or ST) is REQUIRED, so an UNterminated introducer does not match here (it falls to
+ *     arm 3, which strips only its 2-byte form, leaving the following text visible). An optional terminator
+ *     would instead swallow the whole remainder of the string, silently erasing legitimate model output.
+ *  2. CSI (`ESC [` colors/cursor) — the parameter/intermediate/final byte form.
+ *  3. Any remaining 2-byte `ESC <0x40–0x5f>` escape (incl. an unterminated OSC/DCS/PM/APC introducer).
  */
 const ESC_SEQUENCES =
-  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[P^_X][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
+  /\x1b[\]P^_X][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
 /** Remaining C0/C1 control bytes — keep only TAB (\x09) and LINE FEED (\x0a). */
 const BARE_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 /* eslint-enable no-control-regex */

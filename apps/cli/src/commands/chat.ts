@@ -196,11 +196,15 @@ export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) =
         // Sanitize the model's tokens before they reach the terminal (no ANSI/OSC/control injection).
         io.writeOut(stripTerminalControls(event.token));
         return;
-      case 'agent:tool_call':
-        io.writeOut(
-          `\n${formatToolCall({ id: `tc-${event.sequenceNumber}`, toolId: event.toolId, resolved: false })}\n`,
-        );
+      case 'agent:tool_call': {
+        const annotation = formatToolCall({
+          id: `tc-${event.sequenceNumber}`,
+          toolId: event.toolId,
+          resolved: false,
+        });
+        io.writeOut(`\n${annotation}\n`);
         return;
+      }
       case 'session:turn_completed':
         io.writeOut(event.error === undefined ? '\n' : `\n[turn failed: ${event.error.code}]\n`);
         return;
