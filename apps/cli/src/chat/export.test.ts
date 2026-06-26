@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import { createClient, createSessionStore, runMigrations, type DbClient } from '
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { isCliError } from '../process/errors.js';
 import { exportSession } from './export.js';
 
 const ISO = '2026-06-25T00:00:00.000Z';
@@ -135,6 +136,19 @@ describe('exportSession (2.P)', () => {
     expect(() => exportSession({ store, sessionId: 'ghost', cwd, force: false })).toThrow(
       /no session found with id ghost/,
     );
+  });
+
+  it('remaps a directory target (EISDIR under --force) to a clean exit-2 fault, not a raw crash', () => {
+    seedOneTurn();
+    mkdirSync(join(cwd, 's1.relavium.yaml')); // occupy the default path with a DIRECTORY
+    let thrown: unknown;
+    try {
+      exportSession({ store, sessionId: 's1', cwd, force: true });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(isCliError(thrown)).toBe(true); // a typed invocation fault (exit 2), not a raw EISDIR (exit 1)
+    expect(isCliError(thrown) && thrown.message).toMatch(/not a file/);
   });
 
   it('exports a session with no completed turns as a minimal input→output scaffold', () => {

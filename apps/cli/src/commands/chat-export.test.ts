@@ -139,12 +139,52 @@ describe('chatExportCommand (2.P)', () => {
     expect(closed).toBe(true);
   });
 
-  it('refuses to overwrite an existing target without --force (exit-2 fault)', () => {
+  it('honors --out at the command level (the args.out → outPath passthrough)', () => {
+    const { io } = captureIo();
+    expect(
+      chatExportCommand({ sessionId: 's1', out: 'custom/out.yaml', force: false }, deps(io)),
+    ).toBe(EXIT_CODES.success);
+    expect(existsSync(join(cwd, 'custom/out.yaml'))).toBe(true);
+  });
+
+  it('degrades a row-mark failure to a stderr warning — the scaffold still lands, exit 0', () => {
+    // updateSession throws (e.g. a locked db): the file write is the durable contract, so the export still
+    // succeeds (exit 0) with a stderr note rather than failing an export already on disk.
+    opened = {
+      ...opened,
+      store: {
+        ...opened.store,
+        updateSession: () => {
+          throw new Error('db locked');
+        },
+      },
+    };
+    const { io, err } = captureIo();
+    expect(chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toBe(EXIT_CODES.success);
+    expect(err()).toContain('could not mark the session exported');
+    expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+  });
+
+  it('refuses to overwrite an existing target without --force (exit-2 fault) and closes the store', () => {
     const { io } = captureIo();
     chatExportCommand({ sessionId: 's1', force: false }, deps(io)); // first export creates the file
+    let closed = false;
+    opened = { ...opened, close: () => (closed = true) };
     expect(() => chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toThrow(
       /already exists — pass --force/,
     );
+    expect(closed).toBe(true); // the store is closed on the file-exists throw path too
+  });
+
+  it('warns when exporting a session with no stored agent snapshot (run-time agent_ref hint)', () => {
+    const fresh = createSessionStore(client.db);
+    fresh.createSession(record({ id: 's-nosnap', title: 'No Snap', agentSnapshot: undefined }));
+    opened = { store: fresh, db: client.db, close: () => undefined };
+    const { io, err } = captureIo();
+    expect(chatExportCommand({ sessionId: 's-nosnap', force: false }, deps(io))).toBe(
+      EXIT_CODES.success,
+    );
+    expect(err()).toContain('no stored agent');
   });
 
   it('overwrites with --force', () => {

@@ -70,9 +70,26 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
   if (!opts.force && existsSync(path)) {
     throw new CliError('invalid_invocation', `${path} already exists — pass --force to overwrite`);
   }
-  // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, yaml, 'utf8');
+  try {
+    // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, yaml, 'utf8');
+  } catch (err) {
+    // A structurally-invalid `--out` (a directory target → EISDIR; a file used as a dir → ENOTDIR) is an
+    // INVOCATION fault (exit 2), not an opaque exit-1 crash. Other write faults (permissions, disk) propagate.
+    const code =
+      err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code === 'EISDIR' || code === 'ENOTDIR') {
+      throw new CliError(
+        'invalid_invocation',
+        `cannot write ${path}: the target path is not a file`,
+        {
+          cause: err,
+        },
+      );
+    }
+    throw err;
+  }
 
   // The session is append-only; the next event/seq is one past the durable MAX (a fold, not a spread).
   const sequenceNumber =

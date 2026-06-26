@@ -52,6 +52,15 @@ export function chatExportCommand(
       force: args.force,
     });
 
+    // A session with no captured `agentSnapshot` exports an `agents:`-less scaffold (the CLI persister always
+    // captures one, so this only bites a NULL-snapshot row from another surface/migration): warn that its
+    // `agent_ref` must resolve against the workspace registry before `relavium run` will accept it.
+    if (result.record.agentSnapshot === undefined) {
+      deps.io.writeErr(
+        `note: this session has no stored agent — set agent_ref in ${result.path} to a workspace agent before running it.\n`,
+      );
+    }
+
     // Mark the session `exported` + record the path (provenance, ADR-0026). Safe here — this is a NON-live
     // session (no concurrent persister), unlike the in-REPL `/export` which deliberately does not mark the row.
     // The file write is the durable contract, so a provenance-mark fault degrades to a warning (stderr, so

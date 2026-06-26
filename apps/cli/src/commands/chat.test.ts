@@ -246,6 +246,22 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // /exit's terminal
   });
 
+  it('re-exports on a second /export (force overwrites the session OWN scaffold)', async () => {
+    // The path is keyed on the session id, so a 2nd /export targets the same file — it must overwrite, not
+    // fail "already exists" (which a force:false regression would produce on the second pass).
+    const { d, err } = deps([], [textTurn('hi')]);
+    const twiceDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('hello');
+      await ctx.processLine('/export'); // creates id-0.relavium.yaml
+      await ctx.processLine('/export'); // must overwrite it (force:true), not error
+      await ctx.processLine('/exit');
+    };
+    await chatCommand({ agent: undefined }, { ...d, drive: twiceDrive });
+    expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+    expect(err()).not.toContain('export failed:'); // force:false would fail the 2nd pass
+  });
+
   it('reports a real /export failure on stderr without crashing the REPL', async () => {
     // A DIRECTORY at the target path makes writeFileSync throw EISDIR — a deterministic /export failure that
     // exercises the catch arm. The REPL must report it and still drive to /exit (status 'ended'), not crash.
