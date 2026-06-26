@@ -14,7 +14,19 @@ describe('command registration (specs)', () => {
   it('registers the 2.I read commands and the gate list subcommand', () => {
     const program = buildProgram(captureIo().io);
     const names = program.commands.map((command) => command.name());
-    expect(names).toEqual(expect.arrayContaining(['list', 'logs', 'status', 'gate', 'chat']));
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'list',
+        'logs',
+        'status',
+        'gate',
+        'chat',
+        'chat-resume',
+        'chat-list',
+        'chat-export',
+        'agent',
+      ]),
+    );
 
     const gate = program.commands.find((command) => command.name() === 'gate');
     expect(gate?.commands.map((command) => command.name())).toContain('list');
@@ -24,6 +36,30 @@ describe('command registration (specs)', () => {
     const program = buildProgram(captureIo().io);
     program.exitOverride();
     expect(() => program.parse(['node', 'relavium', 'chat'])).toThrow(/`relavium chat` requires/);
+  });
+
+  it('routes `relavium chat-list` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'chat-list'])).toThrow(
+      /`relavium chat-list` requires/,
+    );
+  });
+
+  it('routes `relavium chat-resume <id>` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'chat-resume', 'sess-1'])).toThrow(
+      /`relavium chat-resume` requires/,
+    );
+  });
+
+  it('routes `relavium chat-export <id>` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'chat-export', 'sess-1'])).toThrow(
+      /`relavium chat-export` requires/,
+    );
   });
 
   it('routes `gate list` to the gate-list subcommand (not the parent gate action)', () => {
@@ -41,18 +77,21 @@ describe('command registration (specs)', () => {
     );
   });
 
-  it('gives the documented "not available yet" message for the unshipped chat-family + budget stubs', () => {
+  it('routes `relavium agent run <agent>` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'agent', 'run', 'coder'])).toThrow(
+      /`relavium agent run` requires/,
+    );
+  });
+
+  it('gives the documented "not available yet" message for the unshipped budget stub', () => {
     // commands.md promises a clean "not available yet (lands in …)" message — not commander's "unknown
-    // command" — for the next chat-family / budget commands. These are registered as stubs (C1).
-    for (const argv of [
-      ['chat-resume', 'sess-1'],
-      ['chat-list'],
-      ['chat-export', 'sess-1'],
-      ['budget', 'resume', 'run-1'],
-    ]) {
-      const program = buildProgram(captureIo().io);
-      program.exitOverride();
-      expect(() => program.parse(['node', 'relavium', ...argv])).toThrow(/is not available yet/);
-    }
+    // command" — for `budget resume` (a tracked follow-up). It is the last registered stub.
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'budget', 'resume', 'run-1'])).toThrow(
+      /is not available yet/,
+    );
   });
 });

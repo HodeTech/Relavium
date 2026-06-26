@@ -4,7 +4,7 @@ import {
   type AgentSessionRecord,
   type SessionMessage,
 } from '@relavium/shared';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import {
@@ -172,6 +172,13 @@ export interface SessionStore {
   updateSession: (record: AgentSessionRecord) => void;
   /** Load a session record by id, or `undefined` if absent. */
   loadSession: (sessionId: string) => AgentSessionRecord | undefined;
+  /**
+   * List the non-deleted sessions, most-recently-updated first (the `relavium chat-list` read seam, 2.O) —
+   * the session counterpart of the run-history `listRuns`. Soft-deleted rows (`deleted_at` set) are excluded,
+   * matching `loadSession`; `id` is the stable secondary sort key so the order is deterministic when two rows
+   * share an `updated_at`.
+   */
+  listSessions: () => AgentSessionRecord[];
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
@@ -185,9 +192,24 @@ export interface SessionStore {
 /** Wire a {@link SessionStore} over a `@relavium/db` connection. */
 export function createSessionStore(db: Db): SessionStore {
   const loadSession = (sessionId: string): AgentSessionRecord | undefined => {
-    const row = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).get();
+    // Exclude soft-deleted rows (matching `listSessions`): a tombstoned session must not reload or resume —
+    // `chat-resume`'s `loadFull` would otherwise resurrect it and the persister would re-write the row.
+    const row = db
+      .select()
+      .from(agentSessions)
+      .where(and(eq(agentSessions.id, sessionId), isNull(agentSessions.deletedAt)))
+      .get();
     return row === undefined ? undefined : fromAgentSessionRow(row);
   };
+
+  const listSessions = (): AgentSessionRecord[] =>
+    db
+      .select()
+      .from(agentSessions)
+      .where(isNull(agentSessions.deletedAt))
+      .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id))
+      .all()
+      .map(fromAgentSessionRow);
 
   const loadMessages = (sessionId: string): SessionMessage[] =>
     db
@@ -212,6 +234,7 @@ export function createSessionStore(db: Db): SessionStore {
       db.update(agentSessions).set(mutable).where(eq(agentSessions.id, record.id)).run();
     },
     loadSession,
+    listSessions,
     appendMessage: (message, meta) => {
       db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
     },

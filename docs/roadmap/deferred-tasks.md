@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-25
+> Last updated: 2026-06-26
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -472,6 +472,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
   structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
   validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
+- [ ] **Session `{{ctx.*}}` prompt interpolation (surfaced by 2.Q `agent run --input`).** `AgentSession.#runTurn`
+  passes the agent's `system_prompt` **verbatim** — it does NOT `resolveTemplate` it against
+  `#context.variables` the way the workflow `AgentRunner` interpolates an `agent` node's prompt. So
+  `relavium agent run --input k=v` (2.Q) carries the variables in `SessionContext` (visible on `session:started`)
+  but a `{{ctx.k}}` placeholder in the agent's prompt is sent to the model **literally**. Wire a `resolveTemplate`
+  pass over the session prompt against a `RunScope` built from `context.variables` (deliberately deferred —
+  no surface needed it before 2.Q). *(medium · packages/core/src/engine/agent-session.ts)*
 
 ## Phase-2 CLI (2.D) follow-ups
 

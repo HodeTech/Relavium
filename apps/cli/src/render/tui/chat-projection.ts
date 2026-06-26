@@ -38,11 +38,12 @@ export function stripTerminalControls(text: string): string {
 }
 
 /**
- * Sanitize a single-line dynamic identifier (a tool id, the bound model name) for terminal display: strip the
- * ANSI/OSC/control bytes {@link stripTerminalControls} removes, then collapse any surviving tab/newline to a
- * single space so the value cannot spoof extra terminal lines or columns inside a one-line annotation/footer.
+ * Sanitize a single-line dynamic identifier (a tool id, the bound model name, a persisted session title) for
+ * terminal display: strip the ANSI/OSC/control bytes {@link stripTerminalControls} removes, then collapse any
+ * surviving tab/newline to a single space so the value cannot spoof extra terminal lines or columns inside a
+ * one-line annotation/footer/list row.
  */
-function sanitizeInline(text: string): string {
+export function sanitizeInline(text: string): string {
   return stripTerminalControls(text).replace(/[\t\n]+/g, ' ');
 }
 

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { agentSessions, llmProviders, modelCatalog, sessionMessages } from './schema.js';
-import { createSessionStore, type SessionStore } from './session-store.js';
+import { createSessionStore, fromAgentSessionRow, type SessionStore } from './session-store.js';
 
 /** Seed a provider + model_catalog row so a session/message `model_id` FK resolves (catalog UUID). */
 function seedModelCatalog(client: DbClient): void {
@@ -103,6 +103,65 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(store.loadFull('nope')).toBeUndefined();
   });
 
+  it('loadSession/loadFull exclude a soft-deleted session (no resurrect on resume)', () => {
+    store.createSession(makeSession({ id: 'sess-del', deletedAt: '2026-06-17T09:00:00.000Z' }));
+    expect(store.loadSession('sess-del')).toBeUndefined();
+    expect(store.loadFull('sess-del')).toBeUndefined();
+  });
+
+  it('listSessions returns the non-deleted sessions, most-recently-updated first (2.O)', () => {
+    // Three sessions at distinct updatedAt; insert out of order to prove the sort is by updated_at, not insert.
+    store.createSession(makeSession({ id: 'sess-a', updatedAt: '2026-06-17T08:00:00.000Z' }));
+    store.createSession(makeSession({ id: 'sess-c', updatedAt: '2026-06-17T10:00:00.000Z' }));
+    store.createSession(makeSession({ id: 'sess-b', updatedAt: '2026-06-17T09:00:00.000Z' }));
+
+    expect(store.listSessions().map((s) => s.id)).toEqual(['sess-c', 'sess-b', 'sess-a']);
+  });
+
+  it('listSessions excludes a soft-deleted session even when it is the most-recently-updated', () => {
+    store.createSession(
+      makeSession({ id: 'sess-live', title: 'Live', updatedAt: '2026-06-17T08:00:00.000Z' }),
+    );
+    // sess-gone sorts FIRST by updated_at — so its absence proves the WHERE runs, not just the ORDER BY.
+    store.createSession(
+      makeSession({
+        id: 'sess-gone',
+        updatedAt: '2026-06-17T10:00:00.000Z',
+        deletedAt: '2026-06-17T11:00:00.000Z',
+      }),
+    );
+
+    const listed = store.listSessions();
+    expect(listed.map((s) => s.id)).toEqual(['sess-live']);
+    expect(listed[0]).toEqual(
+      makeSession({ id: 'sess-live', title: 'Live', updatedAt: '2026-06-17T08:00:00.000Z' }),
+    );
+  });
+
+  it('listSessions is empty for a fresh store', () => {
+    expect(store.listSessions()).toEqual([]);
+  });
+
+  it('listSessions breaks an updated_at tie deterministically by id descending (not insert order)', () => {
+    const tie = '2026-06-17T08:00:00.000Z';
+    // Insert in an order (b, a, c) that neither id-asc nor id-desc matches, so passing proves the sort is by
+    // id (descending), not the rows' insertion/rowid order: id-desc ⇒ [c, b, a]; insertion ⇒ [b, a, c].
+    store.createSession(makeSession({ id: 'sess-b', updatedAt: tie }));
+    store.createSession(makeSession({ id: 'sess-a', updatedAt: tie }));
+    store.createSession(makeSession({ id: 'sess-c', updatedAt: tie }));
+
+    expect(store.listSessions().map((s) => s.id)).toEqual(['sess-c', 'sess-b', 'sess-a']);
+  });
+
+  it('listSessions returns a row whose modelId references the model_catalog (FK-resolved passthrough)', () => {
+    // modelId is the catalog UUID (FK → model_catalog.id), not a raw model string — mirrors the existing
+    // FK round-trip test; this pins that listSessions' projection does not drop the column.
+    seedModelCatalog(client);
+    store.createSession(makeSession({ id: 'sess-m', modelId: 'model-1' }));
+
+    expect(store.listSessions()[0]?.modelId).toBe('model-1');
+  });
+
   it('updateSession overwrites mutable fields by id', () => {
     store.createSession(makeSession());
     store.updateSession(
@@ -196,7 +255,7 @@ describe('SessionStore (1.X) — persist + resume', () => {
     }).toThrow();
   });
 
-  it('round-trips the optional fields — agentSnapshot, exportedWorkflowPath, deletedAt', () => {
+  it('round-trips the optional fields — agentSnapshot + exportedWorkflowPath (loadSession), deletedAt (mapper)', () => {
     const agentSnapshot = AgentSchema.parse({
       id: 'chatter',
       model: 'claude-opus-4-8',
@@ -209,13 +268,21 @@ describe('SessionStore (1.X) — persist + resume', () => {
         status: 'exported',
         agentSnapshot,
         exportedWorkflowPath: 'flows/chat.relavium.yaml',
-        deletedAt: TS_ISO,
       }),
     );
     const loaded = store.loadSession('sess-1');
     expect(loaded?.agentSnapshot).toEqual(agentSnapshot); // the JSON snapshot column round-trips
     expect(loaded?.exportedWorkflowPath).toBe('flows/chat.relavium.yaml');
-    expect(loaded?.deletedAt).toBe(TS_ISO); // the soft-delete tombstone survives the epoch-ms edge
+
+    // A soft-deleted session is HIDDEN from loadSession (the exclusion test covers that), so the deletedAt
+    // tombstone's epoch-ms→ISO round-trip is verified by reading the raw row through the mapper directly.
+    store.createSession(makeSession({ id: 'sess-del', deletedAt: TS_ISO }));
+    const rawRow = client.db
+      .select()
+      .from(agentSessions)
+      .where(eq(agentSessions.id, 'sess-del'))
+      .get();
+    expect(rawRow && fromAgentSessionRow(rawRow).deletedAt).toBe(TS_ISO);
   });
 
   it('updateSession preserves the immutable created_at while advancing updated_at', () => {

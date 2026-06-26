@@ -98,7 +98,11 @@ provider/key commands (API keys in the OS keychain), the live `ink` streaming TU
 prompt + out-of-band `relavium gate` resume, the read commands (`list` / `logs` / `status` / `gate list`)
 over durable history, and the published, cross-OS-installable `npm i -g relavium` binary (packaging &
 install verification) have landed (milestone **M3** reached; with packaging shipped, all seven Phase-3
-go/no-go exit criteria now hold). For live status and the full roadmap, see
+go/no-go exit criteria now hold). The first additive lanes have since landed too — media host-wiring
+(a generative media-output fixture runs end-to-end on the CLI) and the full agent-first chat family: the
+`relavium chat` REPL plus session resume / list / export, a headless `chat --json` event stream, and a
+one-shot `agent run` with deterministic offline `--fixture` replay — the first user-facing `AgentSession`
+surface. For live status and the full roadmap, see
 [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 

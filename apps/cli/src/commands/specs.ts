@@ -15,7 +15,10 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
-import { chatCommand } from './chat.js';
+import { agentRunCommand } from './agent-run.js';
+import { chatCommand, chatResumeCommand } from './chat.js';
+import { chatExportCommand } from './chat-export.js';
+import { chatListCommand } from './chat-list.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
 import { listCommand } from './list.js';
@@ -32,11 +35,12 @@ import { statusCommand } from './status.js';
  * The documented command surface (canonical home:
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
- * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). `chat` (2.M) is a real command (`registerChat` below); the rest of the chat
- * family (`chat-resume`/`chat-list`/`chat-export`/`agent run`) and `budget resume` are likewise registered as
- * clean stubs here (so the documented "not available yet" message — not commander's "unknown command" — is
- * what a user sees) until their workstreams land (2.N–2.Q; a tracked follow-up).
+ * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams.
+ * The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), `chat-export`
+ * (2.P), and `agent run` (2.Q) — via their `register*` functions below. The remaining `STUB_COMMANDS` are the
+ * authoring commands `create` / `import` / `export` (2.J), `init` (a later workstream), and `budget resume`
+ * (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message (not commander's
+ * "unknown command") until it lands.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -68,22 +72,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     summary: 'Export a workflow/agent to a portable YAML (secrets stripped).',
     landsIn: 'workstream 2.J',
   },
-  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.N–2.Q' },
-  {
-    name: 'chat-resume <sessionId>',
-    summary: 'Reload a persisted session from history.db and continue the conversation.',
-    landsIn: 'workstreams 2.N–2.Q',
-  },
-  {
-    name: 'chat-list',
-    summary: 'List past agent sessions (id, agent, last activity).',
-    landsIn: 'workstreams 2.N–2.Q',
-  },
-  {
-    name: 'chat-export <sessionId>',
-    summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
-    landsIn: 'workstreams 2.N–2.Q',
-  },
   {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
@@ -99,6 +87,10 @@ const STUB_COMMANDS: readonly StubSpec[] = [
 export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
   registerChat(program, ctx);
+  registerChatResume(program, ctx);
+  registerChatList(program, ctx);
+  registerChatExport(program, ctx);
+  registerAgent(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -176,6 +168,143 @@ function registerChat(program: Command, ctx?: CommandContext): void {
         drive: selectChatDriver,
       },
     );
+  });
+}
+
+/**
+ * Register `relavium chat-resume <sessionId>` (2.N) — reload a persisted session from `history.db` and continue
+ * it in the same REPL. Production wires the keychain-backed key resolver (2.C) + the TTY-aware driver, like
+ * `chat`. An unknown session id is a clean exit-2 invocation fault; `/exit` ends with exit code 4.
+ */
+function registerChatResume(program: Command, ctx?: CommandContext): void {
+  const chatResume = program
+    .command('chat-resume <sessionId>')
+    .description('Reload a persisted session from history.db and continue the conversation.');
+
+  if (ctx === undefined) {
+    chatResume.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium chat-resume` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+
+  chatResume.action(async (sessionId: string) => {
+    ctx.result.exitCode = await chatResumeCommand(
+      { sessionId },
+      {
+        io: ctx.io,
+        global: ctx.global,
+        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        openSessionStore,
+        drive: selectChatDriver,
+      },
+    );
+  });
+}
+
+/** Register `relavium chat-list` (2.O) — list past agent sessions from durable `history.db` (id, agent, last activity). */
+function registerChatList(program: Command, ctx?: CommandContext): void {
+  const chatList = program
+    .command('chat-list')
+    .description('List past agent sessions (id, agent, title, last activity).');
+  if (ctx === undefined) {
+    chatList.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium chat-list` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+  chatList.action(() => {
+    // Pass the real opener explicitly (consistent with registerChat) so the production wiring is visible at
+    // the registration site and a future specs-level integration test can inject an in-memory store.
+    ctx.result.exitCode = chatListCommand({ io: ctx.io, global: ctx.global, openSessionStore });
+  });
+}
+
+/**
+ * Register `relavium chat-export <sessionId>` (2.P) — export a persisted session to a `.relavium.yaml`
+ * scaffold for review ([ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md)). Writes
+ * `<id>.relavium.yaml` in cwd by default; `--out <path>` overrides, `--force` overwrites an existing file.
+ */
+function registerChatExport(program: Command, ctx?: CommandContext): void {
+  const chatExport = program
+    .command('chat-export <sessionId>')
+    .description('Export a session to a .relavium.yaml scaffold for review (ADR-0026).')
+    .option('--out <path>', 'write the scaffold here instead of <id>.relavium.yaml')
+    .option('--force', 'overwrite an existing file at the target path');
+  if (ctx === undefined) {
+    chatExport.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium chat-export` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+  chatExport.action((sessionId: string, opts: { out?: string; force?: boolean }) => {
+    ctx.result.exitCode = chatExportCommand(
+      {
+        sessionId,
+        ...(opts.out === undefined ? {} : { out: opts.out }),
+        force: opts.force ?? false,
+      },
+      { io: ctx.io, global: ctx.global, openSessionStore },
+    );
+  });
+}
+
+/**
+ * Register `relavium agent run <agent>` (2.Q) — a one-shot, non-interactive agent invocation over the same
+ * `AgentSession` infra. The prompt is piped on stdin; `--input k=v` adds `{{ctx.*}}` variables; `--fixture`
+ * replays a recorded cassette (offline). Production resolves keys via the OS keychain (skipped under
+ * `--fixture`). A bare `relavium agent` (no subcommand) is a clean exit-2 invocation fault.
+ */
+function registerAgent(program: Command, ctx?: CommandContext): void {
+  const agent = program.command('agent').description('Manage and run agents.');
+  const run = agent
+    .command('run <agent>')
+    .description(
+      'Run a single agent one-shot (prompt on stdin); --fixture replays a recorded cassette.',
+    )
+    .option('--input <key=value...>', 'a session {{ctx.*}} variable (repeatable)')
+    .option('--fixture <path>', 'replay a recorded LLM cassette (deterministic, offline)');
+
+  if (ctx === undefined) {
+    run.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium agent run` requires the CLI runtime context.',
+      );
+    });
+    agent.action(() => {
+      throw new CliError('not_implemented', '`relavium agent` requires the CLI runtime context.');
+    });
+    return;
+  }
+
+  run.action(async (agentRef: string, opts: { input?: readonly string[]; fixture?: string }) => {
+    ctx.result.exitCode = await agentRunCommand(
+      {
+        agent: agentRef,
+        input: opts.input ?? [],
+        ...(opts.fixture === undefined ? {} : { fixture: opts.fixture }),
+      },
+      {
+        io: ctx.io,
+        global: ctx.global,
+        // A non-fixture run resolves keys via the OS keychain → env var (2.C), like `run`/`chat`.
+        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+      },
+    );
+  });
+  // A bare `relavium agent` (no `run`) is a clean invocation fault, not a thrown stack.
+  agent.action(() => {
+    throw new CliError('invalid_invocation', '`relavium agent` requires a subcommand (run).');
   });
 }
 

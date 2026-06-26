@@ -97,6 +97,29 @@ describe('session-view-model', () => {
     expect(state.transcript).toEqual([{ role: 'user', text: 'hello' }]);
   });
 
+  it('a fresh (unseeded) initial state has an empty header + zero totals', () => {
+    const state = initialSessionViewState();
+    expect(state.agentRef).toBeUndefined();
+    expect(state.model).toBeUndefined();
+    expect(state.cumulativeCostMicrocents).toBe(0);
+    expect(state.turnCount).toBe(0);
+  });
+
+  it('a resume seed (2.N) pre-sets the header model/agent + carried cost/turn count', () => {
+    const state = initialSessionViewState({
+      agentRef: 'coder',
+      model: 'claude-opus-4-8',
+      cumulativeCostMicrocents: 4200,
+      turnCount: 3,
+    });
+    expect(state.agentRef).toBe('coder');
+    expect(state.model).toBe('claude-opus-4-8');
+    expect(state.cumulativeCostMicrocents).toBe(4200);
+    expect(state.turnCount).toBe(3);
+    expect(state.status).toBe('idle'); // a resumed session is idle, ready for the next turn
+    expect(state.transcript).toEqual([]); // the prior transcript stays durable, not replayed into the view
+  });
+
   it('streams a text turn: running while live, then a completed assistant entry with a summary', () => {
     const e = events();
     const mid = reduceAll([e.started(), e.turnStarted(), e.token('hel'), e.token('lo')]);

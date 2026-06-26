@@ -1,9 +1,16 @@
 import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
-import { buildChatSession, buildGovernorWiring, type ChatBudgetWarning } from './session-host.js';
+import { buildDefaultChatAgent } from './default-agent.js';
+import {
+  buildChatSession,
+  buildGovernorWiring,
+  buildResumedChatSession,
+  type ChatBudgetWarning,
+} from './session-host.js';
 import {
   drainHandle,
   scriptedResolver,
@@ -129,6 +136,150 @@ describe('buildChatSession', () => {
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
     );
     expect(errorCodes).toEqual(['internal', 'internal', 'turn_limit']);
+  });
+});
+
+describe('buildResumedChatSession (2.N)', () => {
+  const RESUME_AGENT = buildDefaultChatAgent('claude-sonnet-4-6');
+  const ISO = '2026-06-25T00:00:00.000Z';
+
+  const message = (seq: number, role: 'user' | 'assistant', text: string): SessionMessage => ({
+    id: `m${seq}`,
+    sessionId: 'sess-r',
+    sequenceNumber: seq,
+    role,
+    content: [{ type: 'text', text }],
+    timestamp: ISO,
+  });
+
+  const record = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecord => ({
+    id: 'sess-r',
+    agentSlug: RESUME_AGENT.id,
+    agentSnapshot: RESUME_AGENT,
+    context: { workingDir: '/workspace', fsScopeTier: 'project' },
+    status: 'ended',
+    totalInputTokens: 10,
+    totalOutputTokens: 5,
+    totalCostMicrocents: 1234,
+    createdAt: ISO,
+    updatedAt: ISO,
+    ...overrides,
+  });
+
+  function resume(messages: readonly SessionMessage[], rec: AgentSessionRecord = record()) {
+    return buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: rec,
+      messages,
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('continued')]),
+    });
+  }
+
+  it('rebinds the frozen agent + context and reconstructs the carried-over state', () => {
+    const built = resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
+    expect(built.sessionId).toBe('sess-r');
+    expect(built.agent.id).toBe(RESUME_AGENT.id);
+    expect(built.agent.model).toBe('claude-sonnet-4-6');
+    expect(built.context.fsScopeTier).toBe('project'); // the frozen context tier, not the chat default
+    expect(built.resumeState.turnCount).toBe(1); // one completed exchange
+    expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
+    // The persister continues PAST the persisted MAX(sequence_number) = 1.
+    expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('continues a transcript whose last persisted seq is computed from the MAX (order-independent)', () => {
+    // Rows passed out of order; nextSequenceNumber must be MAX+1, not last-element+1.
+    const built = resume([message(1, 'assistant', 'hello'), message(0, 'user', 'hi')]);
+    expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('computes nextSequenceNumber from the MAX, not the row COUNT (a gapped transcript)', () => {
+    // A gapped transcript (seq 0,1,5 — length 3 but MAX 5) pins MAX+1 semantics: a count-based bug
+    // (`messages.length`) would yield 3 and collide; the correct answer is 6.
+    const built = resume([
+      message(0, 'user', 'hi'),
+      message(1, 'assistant', 'hello'),
+      message(5, 'user', 'later'),
+    ]);
+    expect(built.nextSequenceNumber).toBe(6);
+  });
+
+  it('rolls back a trailing unanswered user turn but still continues past its durable seq', () => {
+    // A session interrupted after the user typed (assistant never replied): the durable transcript ends in a
+    // dangling user row (seq 2). reconstruct rolls it back (so the model is not re-sent two user turns), but
+    // the persister must still continue PAST that durable row (seq 3), never overwrite it.
+    const built = resume([
+      message(0, 'user', 'hi'),
+      message(1, 'assistant', 'hello'),
+      message(2, 'user', 'dangling'),
+    ]);
+    expect(built.resumeState.turnCount).toBe(1); // only the one completed exchange survives projection
+    expect(built.resumeState.messages.at(-1)?.role).toBe('assistant'); // the dangling user turn is trimmed
+    expect(built.nextSequenceNumber).toBe(3); // continues past the durable orphan row, not over it
+  });
+
+  it('starts a never-messaged session at sequence 0', () => {
+    const built = resume([]);
+    expect(built.nextSequenceNumber).toBe(0);
+    expect(built.resumeState.turnCount).toBe(0);
+  });
+
+  it('the resumed session lands at idle and continues WITHOUT re-emitting session:started', async () => {
+    const built = resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
+    // No start() — AgentSession.resume already landed at idle; sendMessage continues the conversation.
+    await built.session.sendMessage('again');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const types = events.map((e) => e.type);
+    expect(types).not.toContain('session:started'); // resume must not double the lifecycle-open event
+    expect(types).toContain('session:turn_completed');
+    const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
+    expect(tokens).toContain('continued');
+  });
+
+  it('rebinds the agent from the SNAPSHOT, not the record agentSlug (which may diverge after a rename)', async () => {
+    // agentSlug diverges from the snapshot id; the resumed session must bind the SNAPSHOT's id, and the
+    // live events' nodeId (= agentRef = agent.id) must follow the snapshot — not the stale slug.
+    const built = resume(
+      [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      record({ agentSlug: 'old-slug' }),
+    );
+    expect(built.agent.id).toBe(RESUME_AGENT.id); // 'relavium-chat' from the snapshot, not 'old-slug'
+
+    await built.session.sendMessage('go');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const token = events.find((e) => e.type === 'agent:token');
+    expect(token?.type === 'agent:token' && token.nodeId).toBe(RESUME_AGENT.id);
+  });
+
+  it('seeds the budget governor with the carried cost — the first resumed turn trips the cap pre-egress', async () => {
+    // A near-exhausted record (totalCostMicrocents far past a 1µ¢ cap): AgentSession.resume seeds the governor
+    // via updateCost(carried), so the FIRST resumed turn's pre-egress check trips BEFORE any new cost:updated.
+    // Without that seeding the carried spend would be invisible and the first turn would slip past the cap.
+    const built = buildResumedChatSession({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'fail' },
+      record: record({ totalCostMicrocents: 999_999 }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('should never stream')]),
+    });
+    await built.session.sendMessage('again');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const errorCodes = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errorCodes).toContain('budget_exceeded'); // tripped on the carried cost, no provider call
+  });
+
+  it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', () => {
+    expect(() => resume([], record({ agentSnapshot: undefined }))).toThrow(
+      /no stored agent snapshot/,
+    );
   });
 });
 
