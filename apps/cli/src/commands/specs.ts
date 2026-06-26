@@ -15,6 +15,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
+import { agentRunCommand } from './agent-run.js';
 import { chatCommand, chatResumeCommand } from './chat.js';
 import { chatExportCommand } from './chat-export.js';
 import { chatListCommand } from './chat-list.js';
@@ -35,11 +36,10 @@ import { statusCommand } from './status.js';
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), and `chat-export`
- * (2.P) are real commands (`registerChat` / `registerChatResume` / `registerChatList` / `registerChatExport`
- * below); the remaining `agent run` (2.Q) and `budget resume` (a tracked follow-up) are likewise registered as
- * clean stubs here (so the documented "not available yet" message — not commander's "unknown command" — is
- * what a user sees) until they land.
+ * (the authoring commands at 2.J). The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N),
+ * `chat-list` (2.O), `chat-export` (2.P), and `agent run` (2.Q) — via their `register*` functions below; only
+ * `budget resume` (a tracked follow-up) remains a clean stub here (so the documented "not available yet"
+ * message — not commander's "unknown command" — is what a user sees) until it lands.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -71,7 +71,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     summary: 'Export a workflow/agent to a portable YAML (secrets stripped).',
     landsIn: 'workstream 2.J',
   },
-  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstream 2.Q' },
   {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
@@ -90,6 +89,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerChatResume(program, ctx);
   registerChatList(program, ctx);
   registerChatExport(program, ctx);
+  registerAgent(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -254,6 +254,56 @@ function registerChatExport(program: Command, ctx?: CommandContext): void {
       },
       { io: ctx.io, global: ctx.global, openSessionStore },
     );
+  });
+}
+
+/**
+ * Register `relavium agent run <agent>` (2.Q) — a one-shot, non-interactive agent invocation over the same
+ * `AgentSession` infra. The prompt is piped on stdin; `--input k=v` adds `{{ctx.*}}` variables; `--fixture`
+ * replays a recorded cassette (offline). Production resolves keys via the OS keychain (skipped under
+ * `--fixture`). A bare `relavium agent` (no subcommand) is a clean exit-2 invocation fault.
+ */
+function registerAgent(program: Command, ctx?: CommandContext): void {
+  const agent = program.command('agent').description('Manage and run agents.');
+  const run = agent
+    .command('run <agent>')
+    .description(
+      'Run a single agent one-shot (prompt on stdin); --fixture replays a recorded cassette.',
+    )
+    .option('--input <key=value...>', 'a session {{ctx.*}} variable (repeatable)')
+    .option('--fixture <path>', 'replay a recorded LLM cassette (deterministic, offline)');
+
+  if (ctx === undefined) {
+    run.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium agent run` requires the CLI runtime context.',
+      );
+    });
+    agent.action(() => {
+      throw new CliError('not_implemented', '`relavium agent` requires the CLI runtime context.');
+    });
+    return;
+  }
+
+  run.action(async (agentRef: string, opts: { input?: readonly string[]; fixture?: string }) => {
+    ctx.result.exitCode = await agentRunCommand(
+      {
+        agent: agentRef,
+        input: opts.input ?? [],
+        ...(opts.fixture === undefined ? {} : { fixture: opts.fixture }),
+      },
+      {
+        io: ctx.io,
+        global: ctx.global,
+        // A non-fixture run resolves keys via the OS keychain → env var (2.C), like `run`/`chat`.
+        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+      },
+    );
+  });
+  // A bare `relavium agent` (no `run`) is a clean invocation fault, not a thrown stack.
+  agent.action(() => {
+    throw new CliError('invalid_invocation', '`relavium agent` requires a subcommand (run).');
   });
 }
 

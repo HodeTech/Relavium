@@ -24,6 +24,7 @@ describe('command registration (specs)', () => {
         'chat-resume',
         'chat-list',
         'chat-export',
+        'agent',
       ]),
     );
 
@@ -76,13 +77,21 @@ describe('command registration (specs)', () => {
     );
   });
 
-  it('gives the documented "not available yet" message for the unshipped agent + budget stubs', () => {
+  it('routes `relavium agent run <agent>` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'agent', 'run', 'coder'])).toThrow(
+      /`relavium agent run` requires/,
+    );
+  });
+
+  it('gives the documented "not available yet" message for the unshipped budget stub', () => {
     // commands.md promises a clean "not available yet (lands in …)" message — not commander's "unknown
-    // command" — for the next commands (`agent run` at 2.Q, `budget resume` a follow-up). Registered as stubs.
-    for (const argv of [['agent'], ['budget', 'resume', 'run-1']]) {
-      const program = buildProgram(captureIo().io);
-      program.exitOverride();
-      expect(() => program.parse(['node', 'relavium', ...argv])).toThrow(/is not available yet/);
-    }
+    // command" — for `budget resume` (a tracked follow-up). It is the last registered stub.
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'budget', 'resume', 'run-1'])).toThrow(
+      /is not available yet/,
+    );
   });
 });

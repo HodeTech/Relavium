@@ -1,7 +1,12 @@
 import { Box, Static, Text, render, useInput } from 'ink';
 import { createElement, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
-import { drivePlain, type ChatDriveContext, type ChatDriver } from '../../commands/chat.js';
+import {
+  driveJson,
+  drivePlain,
+  type ChatDriveContext,
+  type ChatDriver,
+} from '../../commands/chat.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps } from './projection.js';
 import { spinnerFrame } from './format.js';
@@ -241,6 +246,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
   }
 }
 
-/** Select the chat driver by surface: a real TTY (and not `--json`, which is 2.Q) ⇒ ink; else the plain loop. */
+/**
+ * Select the chat driver by surface (2.Q): `--json` ⇒ the headless NDJSON `SessionEvent` stream (machine
+ * output wins over the TTY); else a real TTY ⇒ the ink REPL; else the plain non-TTY line loop.
+ */
 export const selectChatDriver: ChatDriver = (ctx) =>
-  ctx.io.stdoutIsTty && !ctx.global.json ? driveInk(ctx) : drivePlain(ctx);
+  ctx.global.json ? driveJson(ctx) : ctx.io.stdoutIsTty ? driveInk(ctx) : drivePlain(ctx);

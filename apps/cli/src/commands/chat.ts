@@ -365,6 +365,34 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<void> {
 }
 
 /**
+ * The **`--json`** (2.Q) headless driver: the machine analogue of `relavium run --json`. Messages are read
+ * from stdin one user turn per line; every session-stream event (`session:*` + the per-turn `agent:*` /
+ * `cost:updated`) is serialized verbatim as one NDJSON line on **stdout**, each carrying the `sessionId`
+ * ([ADR-0049](../../../docs/decisions/0049-cli-machine-output-contract.md)). Diagnostics (unknown-slash,
+ * /export) stay on stderr, so stdout is a pure `SessionEvent` stream. An input-stream EOF ends the session
+ * (exit code 4, like the REPL). No banner — the first line is the `session:started` event.
+ */
+export async function driveJson(ctx: ChatDriveContext): Promise<void> {
+  const unsubscribe = ctx.handle.subscribe((event) =>
+    ctx.io.writeOut(`${JSON.stringify(event)}\n`),
+  );
+  const rl = createInterface({ input: ctx.io.stdin, terminal: false });
+  const onSigint = (): void => rl.close();
+  process.once('SIGINT', onSigint);
+  try {
+    ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
+    for await (const line of rl) {
+      await ctx.processLine(line);
+      if (ctx.shouldStop()) break;
+    }
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+    rl.close();
+    unsubscribe();
+  }
+}
+
+/**
  * A plain event printer for the non-TTY surface — streams the assistant tokens and annotates tool calls, both
  * SECRET-FREE (only the token text the model produced + the namespaced tool id, never tool arguments).
  */

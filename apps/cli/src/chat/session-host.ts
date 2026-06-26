@@ -49,6 +49,11 @@ export interface BuildChatSessionOptions {
   /** The tool-execution host (injectable for tests); defaults to fail-closed `{}` (capabilities are a follow-up). */
   readonly toolHost?: ToolHost;
   /**
+   * Session-scoped `{{ctx.*}}` variables (plaintext, NO secrets — agent-session-spec.md §Tools). `relavium
+   * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
+   */
+  readonly variables?: Record<string, string>;
+  /**
    * Sink for an `on_exceed: 'warn'` pre-egress budget warning. A session has no `budget:warning` event in
    * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
    * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
@@ -129,6 +134,7 @@ export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSessio
   const context: SessionContext = {
     workingDir: opts.cwd,
     fsScopeTier: opts.chat.fsScope ?? DEFAULT_FS_SCOPE,
+    ...(opts.variables === undefined ? {} : { variables: opts.variables }),
   };
 
   const { bus, deps } = buildSessionRuntime(opts, sessionId);

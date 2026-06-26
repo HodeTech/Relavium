@@ -24,6 +24,7 @@ import { captureIo } from '../test-support.js';
 import {
   chatCommand,
   chatResumeCommand,
+  driveJson,
   drivePlain,
   makePlainPrinter,
   type ChatCommandDeps,
@@ -731,11 +732,63 @@ describe('selectChatDriver', () => {
     await expect(selectChatDriver(ctxWith(false, false))).resolves.toBeUndefined();
   });
 
-  it('routes --json to the plain driver even on a TTY', async () => {
+  it('routes --json to the headless json driver even on a TTY (resolves; ink would block)', async () => {
     await expect(selectChatDriver(ctxWith(true, true))).resolves.toBeUndefined();
   });
 
-  it('routes a non-TTY + --json surface to the plain driver', async () => {
+  it('routes a non-TTY + --json surface to the headless json driver', async () => {
     await expect(selectChatDriver(ctxWith(false, true))).resolves.toBeUndefined();
+  });
+});
+
+describe('driveJson (2.Q)', () => {
+  // A driver context over a REAL session handle + a recording processLine, so we exercise driveJson's
+  // readline loop and its NDJSON serialization of the live event stream over the injected stdin.
+  function jsonCtx(stdin: NodeJS.ReadableStream) {
+    const built = buildChatSession({
+      chat: EMPTY_CHAT,
+      agentRef: undefined,
+      cwd: tmpdir(),
+      projectConfigDir: undefined,
+      now: () => 0,
+      uuid: () => 'sess-j',
+      providers: scriptedResolver([textTurn('hi there')]),
+    });
+    const { io: base, out } = captureIo();
+    let stop = false;
+    const ctx: ChatDriveContext = {
+      startSession: () => built.session.start(), // emits session:started ⇒ the first NDJSON line
+      processLine: async (line) => {
+        if (line === '/exit') {
+          stop = true;
+          return;
+        }
+        await built.session.sendMessage(line);
+      },
+      shouldStop: () => stop,
+      handle: built.handle,
+      store: createChatStore(false),
+      io: { ...base, stdin },
+      global: { ...globalOptions(tmpdir()), json: true },
+    };
+    return { ctx, out, built };
+  }
+
+  it('emits a pure NDJSON SessionEvent stream (session:started → turn events) and ends on EOF', async () => {
+    const stdin = new PassThrough();
+    const { ctx, out } = jsonCtx(stdin);
+    const done = driveJson(ctx);
+    stdin.write('hello\n');
+    stdin.end(); // EOF ends the loop
+    await done;
+
+    const lines = out().trimEnd().split('\n');
+    const events = lines.map((l) => JSON.parse(l) as { type: string; sessionId?: string });
+    const types = events.map((e) => e.type);
+    expect(types[0]).toBe('session:started'); // the first line is the lifecycle-open event
+    expect(types).toContain('session:turn_started');
+    expect(types).toContain('session:turn_completed');
+    // Every line is valid JSON carrying the sessionId (the disjoint session namespace).
+    expect(events.every((e) => e.sessionId === 'sess-j')).toBe(true);
   });
 });
