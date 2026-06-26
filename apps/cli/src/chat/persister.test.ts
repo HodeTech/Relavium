@@ -40,7 +40,11 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
-  function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
+  function setup(
+    providers: ProviderResolver,
+    initialSequenceNumber?: number,
+    seeds?: { input?: number; output?: number; cost?: number },
+  ) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
     let msgId = 0;
@@ -62,6 +66,9 @@ describe('createSessionPersister', () => {
       now,
       uuid: () => `msg-${msgId++}`,
       ...(initialSequenceNumber === undefined ? {} : { initialSequenceNumber }),
+      ...(seeds?.input === undefined ? {} : { initialTotalInputTokens: seeds.input }),
+      ...(seeds?.output === undefined ? {} : { initialTotalOutputTokens: seeds.output }),
+      ...(seeds?.cost === undefined ? {} : { initialTotalCostMicrocents: seeds.cost }),
     });
     return { built, persister };
   }
@@ -101,6 +108,32 @@ describe('createSessionPersister', () => {
     expect(full?.session.totalCostMicrocents).toBe(1300);
   });
 
+  it('resumed persister folds new-turn tokens ON TOP of the seeded prior-session totals, not from zero', async () => {
+    // Simulate 2.N resume: a row with prior totals already exists AND the persister is seeded from it.
+    const { built, persister } = setup(scriptedResolver([textTurn('go')]), 5, { input: 100, output: 50 });
+    store.createSession({
+      id: built.sessionId,
+      agentSlug: built.agent.id,
+      agentSnapshot: built.agent,
+      context: built.context,
+      status: 'ended',
+      totalInputTokens: 100,
+      totalOutputTokens: 50,
+      totalCostMicrocents: 1300,
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go');
+
+    const full = store.loadFull(built.sessionId);
+    // The scripted turn adds {input:10, output:5}; seeded 100/50 ⇒ 110/55, NOT 10/5 (the unseeded regression).
+    expect(full?.session.totalInputTokens).toBe(110);
+    expect(full?.session.totalOutputTokens).toBe(55);
+  });
+
   it('persists a completed turn as a user + text-only assistant pair, and folds the token totals', async () => {
     const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
     persister.start();
@@ -119,6 +152,22 @@ describe('createSessionPersister', () => {
     // The scripted stop reports usage {input:10, output:5}; the persister folds it into the session totals.
     expect(full?.session.totalInputTokens).toBe(10);
     expect(full?.session.totalOutputTokens).toBe(5);
+  });
+
+  it('persists only the user row when a successful turn produces no assistant text', async () => {
+    // A turn that emits only a stop chunk — zero text_delta, so result.text is empty; the assistantText.length
+    // guard must skip the empty assistant row (mirroring the engine), leaving just the user row.
+    const { built, persister } = setup(scriptedResolver([[stop('stop')]]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('hello');
+    await built.session.sendMessage('hello');
+
+    const full = store.loadFull('sess-1');
+    expect(full?.messages).toHaveLength(1); // only the user row — no spurious empty assistant row
+    expect(full?.messages[0]?.role).toBe('user');
+    // The turn still engaged the provider, so its usage folds into the totals even with no text.
+    expect(full?.session.totalInputTokens).toBe(10);
   });
 
   it('stores the post-tool answer as the assistant text, dropping a pre-tool preamble (mirrors result.text)', async () => {
