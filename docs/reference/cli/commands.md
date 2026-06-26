@@ -30,7 +30,7 @@ The CLI auto-detects its environment and switches presentation accordingly:
 |------|------|----------|
 | **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, streaming token output for the active node, final cost/duration summary |
 | **Plain** | No TTY or `CI=true` (and no `--json`) | The TUI is disabled; a terse line-per-lifecycle-event human renderer writes to stdout |
-| **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure [RunEvent](../contracts/sse-event-schema.md) NDJSON stream; all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
+| **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure NDJSON stream — [RunEvent](../contracts/sse-event-schema.md)s for `run` / `gate`, or [SessionEvent](../contracts/sse-event-schema.md#session-event-namespace)s for `chat` / `agent run` — and all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
 
 NDJSON is engaged **only** by `--json` (the explicit machine opt-in); a non-TTY or `CI=true`
 environment disables the interactive TUI but does not by itself switch stdout to NDJSON
@@ -93,7 +93,7 @@ before parsing the subcommand).
 
 ## Commands
 
-The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), and **`chat`** (2.M) are **live**; the authoring commands (`create` / `import` / `export`) land at **2.J**, the rest of the chat family (`chat-resume` / `chat-list` / `chat-export` / `agent run`) at **2.N–2.Q**, and `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
+The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), and the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — are all **live**; the authoring commands (`create` / `import` / `export`) land at **2.J**, and `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
 
 | Command | Purpose |
 |---------|---------|
@@ -102,7 +102,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
 | `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
 | `relavium chat-export <sessionId>` | Export a session to a `.relavium.yaml` scaffold for review ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
-| `relavium agent run <agent> [--input k=v]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — a chat session with one turn, then exit. |
+| `relavium agent run <agent> [--input k=v] [--fixture <path>] [--json]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create` | Scaffold a new workflow or agent YAML via an interactive wizard. |
 | `relavium import <path>` | Import an external `.relavium.yaml` / `.agent.yaml` into the project. |
@@ -160,7 +160,7 @@ Shows the currently active/paused runs (from `runs` + `step_executions`) and eac
 
 ### Read-command `--json` output
 
-The non-streaming read commands (`list` / `status` / `gate list`, and `logs`) keep the CLI to **one machine-output idiom**: `--json` emits **one result record per line** (NDJSON, `jq`-friendly, stdout-pure with diagnostics on stderr) — the same line-oriented shape `relavium run --json` uses for its `RunEvent` stream ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). For `logs --json` the records ARE raw `RunEvent`s — the same `RunEvent` data the run streamed (re-serialized from the persisted log, so the field order may differ from the live `run --json` bytes); for the others they are the per-command result records documented above. An unknown `runId` (`logs` / `gate list`) is the structured pre-run fault on stderr with exit `2`, stdout empty — exactly as for `run`.
+The non-streaming read commands (`list` / `status` / `gate list` / `chat-list`, and `logs`) keep the CLI to **one machine-output idiom**: `--json` emits **one result record per line** (NDJSON, `jq`-friendly, stdout-pure with diagnostics on stderr) — the same line-oriented shape `relavium run --json` uses for its `RunEvent` stream ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). For `logs --json` the records ARE raw `RunEvent`s — the same `RunEvent` data the run streamed (re-serialized from the persisted log, so the field order may differ from the live `run --json` bytes); for the others they are the per-command result records documented above. An unknown `runId` (`logs` / `gate list`) is the structured pre-run fault on stderr with exit `2`, stdout empty — exactly as for `run`. (`chat-export --json` is **not** a read command — it emits a single `session:exported` **event**, not a result record, since the export is a session-lifecycle action.)
 
 ### `relavium gate`
 
@@ -194,6 +194,31 @@ relavium gate list <runId>     # just one run's
 - With no argument it scans **every paused run**; with a `<runId>` it lists just that run's pending gates (an unknown `runId` exits `2`). Budget-cap pauses (`budget:paused`) are **excluded** — those are the separate `relavium budget resume` surface ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)).
 - It rests on the **same** persisted-event reconstruction the [`gate`](#relavium-gate) resume path uses, so the listing and the resume can never disagree on what is pending.
 - Human output is one line per gate (`<runId>  <gateId>  <gateType>  node=<nodeId>  "<message>"`); under `--json` each pending gate is one NDJSON record — `{ runId, gateId, nodeId, gateType, message, expiresAt? }` (see [Read-command `--json` output](#read-command---json-output)).
+
+### `relavium chat-list`
+
+Lists past [agent sessions](../contracts/agent-session-spec.md) from durable `history.db`, most-recently-updated first — the session counterpart of `relavium list`. Human output is one line per session (`<id>  <agentSlug>  [<status>]  <updatedAt>  "<title>"`); an empty history is reported clearly (exit `0`). Under `--json` each session is one NDJSON record — `{ sessionId, agentSlug, title, status, modelId, createdAt, updatedAt, totalCostMicrocents }`, where `title` / `modelId` are `null` when absent (see [Read-command `--json` output](#read-command---json-output)). Soft-deleted sessions are excluded.
+
+### `relavium chat-export`
+
+Exports a persisted session to a `.relavium.yaml` **scaffold** for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)) — the same contract the in-REPL `/export` drives. Writes `<sessionId>.relavium.yaml` in cwd by default (the file name is keyed on the unique session id, so two sessions never collide); `--out <path>` overrides, `--force` overwrites an existing target. The session row is marked `exported` with the written path. Under `--json` it emits a single `session:exported` event (`{ type, sessionId, timestamp, sequenceNumber, workflowPath }`). An unknown sessionId or an existing target without `--force` exits `2`; success is exit `0`.
+
+### `relavium agent run`
+
+Runs a single agent **one-shot** (non-interactive) on the same `AgentSession` infra as `relavium chat` — a session with one turn, then exit. The agent-first headline as a scriptable, CI-friendly primitive.
+
+```bash
+echo "summarize ./README.md" | relavium agent run code-reviewer --input file=./README.md
+echo "review it" | relavium agent run ./agents/coder.agent.yaml --json
+echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.cassette.json --json
+```
+
+- The `<agent>` argument is required — a `.agent.yaml` path or a `.relavium/`-discoverable agent id (resolved by the same strict parser `relavium chat --agent` uses). An unknown agent is an invalid invocation (exit `2`).
+- **The prompt is read from stdin** (the `echo … | relavium agent run` idiom); an empty stdin is an invalid invocation (exit `2`).
+- `--input k=v` (repeatable) adds session `{{ctx.*}}` context variables (plaintext, **no secrets**); a malformed pair (no `=`, empty key) or a duplicate key exits `2`. _(Carried in the `SessionContext` and visible on the `session:started` event; prompt **interpolation** of `{{ctx.*}}` inside a session is a Phase-1 engine concern not yet wired — see [deferred-tasks.md](../../roadmap/deferred-tasks.md).)_
+- `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
+- `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
+- **Not persisted** — a stateless invoke (no `history.db` row), unlike the REPL. The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
 
 ### `relavium provider`
 

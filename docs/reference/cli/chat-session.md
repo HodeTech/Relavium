@@ -2,7 +2,7 @@
 
 > Last updated: 2026-06-26
 
-- **Status**: Reference (the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, and durable persistence are implemented in **2.M**; `chat-resume`/`chat-list`/`chat-export`/`--json`/`agent run` are 2.N–2.Q)
+- **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**)
 - **Surface**: CLI (`relavium chat`)
 - **Scope**: Phase 1 design, local-first. Same `@relavium/core` engine as every other surface.
 - **Related**: [commands.md](commands.md), [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../contracts/config-spec.md](../contracts/config-spec.md), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md), [../../decisions/0024-agent-first-entry-point-agentsession.md](../../decisions/0024-agent-first-entry-point-agentsession.md), [../../decisions/0026-session-export-to-workflow.md](../../decisions/0026-session-export-to-workflow.md)
@@ -47,7 +47,7 @@ A small set of slash commands drives the REPL itself (not the agent):
 | --- | --- |
 | `/exit` | End the session cleanly and quit the REPL (**exit code 4**, below). |
 | `/cancel` | End the session (aborting any in-flight turn — relevant when entered as **Ctrl-C** mid-turn in TTY mode; a typed `/cancel` runs between turns). In Phase 1 the engine has no per-turn abort that keeps a session alive, so `/cancel` terminates it — but the session is **persisted and resumable** via `relavium chat-resume <sessionId>` (2.N). Exits with code 4. |
-| `/export` | _(lands in **2.P** with `relavium chat-export`)_ Export the session to a `.relavium.yaml` scaffold (same ADR-0026 contract). |
+| `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file (named `<sessionId>.relavium.yaml`) and reports the path; under `--json` it emits a `session:exported` event on the stream. **Live (2.P / 2.Q).** |
 
 An unrecognized `/…` command prints a one-line, secret-free notice and the prompt returns. In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 
@@ -59,11 +59,15 @@ In interactive mode the REPL renders the assistant turn live: streaming token ou
 
 A chat session uses the **same** built-in `ToolRegistry` as a workflow agent ([built-in-tools.md](../shared-core/built-in-tools.md)): the same tools, the same filesystem **scope tiers**, and the same mandatory guardrails (`run_command` only ever runs commands on the `allowedCommands` allowlist — empty/absent ⇒ disabled; `git_commit` behind approval). Per [ADR-0029](../../decisions/0029-tool-policy-hardening.md), a session may only **narrow** the agent's `tools:`, never escalate; a `secret`-typed value is never interpolated into a prompt or tool text; and `http_request` / MCP egress is subject to the same SSRF policy as a workflow. The tool surface, FS tier, and command allowlist for chat all resolve from the `[chat]` block of [config-spec.md](../contracts/config-spec.md), which points back to those canonical homes.
 
-## `--json` session-event stream _(lands in **2.Q**)_
+## `--json` session-event stream
 
-> _Not yet available._ The machine-readable NDJSON stream below is the target spec for workstream **2.Q**, not current behavior. `--json` is already a recognized global flag, but it does not yet emit `SessionEvent` JSON: `selectChatDriver` routes a `--json` invocation (and any non-TTY surface) to the **plain line loop**, so today `relavium chat --json` produces the plain text output, not the NDJSON below. (`session:exported` likewise depends on `/export`, which is **2.P**.)
+> **Implementation status (2.Q).** Live: `selectChatDriver` routes a `--json` invocation (`--json` wins
+> over a TTY) to the headless `driveJson` driver, which emits the `SessionEvent` NDJSON stream on stdout —
+> all diagnostics (the unknown-slash notice, the `/export` confirmation) go to stderr, so stdout is a pure
+> `SessionEvent` stream. `/export` under `--json` emits a `session:exported` event on the stream (routed
+> through the session bus, so its `sequenceNumber` stays monotonic with the surrounding events).
 
-For scripting and non-interactive use, `--json` will switch the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`:
+For scripting and non-interactive use, `--json` switches the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`; an input-stream EOF ends the session with the `session:cancelled` terminal and exit code 4:
 
 ```bash
 echo "summarize ./README.md" | relavium chat --agent code-reviewer --json
@@ -73,7 +77,7 @@ The session namespace is **disjoint** from the run namespace (keyed by `sessionI
 
 ## Exit code 4
 
-A `relavium chat` REPL ends with code **`4`** — the canonical **chat-session-ended** code defined in [commands.md](commands.md#exit-codes) — on any of: `/exit`, `/cancel` (or **Ctrl-C** in TTY mode), or an **input-stream EOF** (the user closes stdin in the plain non-TTY mode; the `--json` headless EOF is 2.Q). It is deliberately distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user ended the chat" apart from either. A crash or an unrecoverable provider error still exits `1`; bad arguments still exit `2`.
+A `relavium chat` REPL ends with code **`4`** — the canonical **chat-session-ended** code defined in [commands.md](commands.md#exit-codes) — on any of: `/exit`, `/cancel` (or **Ctrl-C** in TTY mode), or an **input-stream EOF** (the user closes stdin — in plain non-TTY mode, or under `--json`). It is deliberately distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user ended the chat" apart from either. A crash or an unrecoverable provider error still exits `1`; bad arguments still exit `2`. (The one-shot `relavium agent run` is **not** a REPL — it exits with the turn's outcome, `0`/`1`, never `4`.)
 
 ## API keys
 
