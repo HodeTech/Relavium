@@ -6,6 +6,7 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
+import { SessionExportedEventSchema } from '@relavium/shared';
 
 import { exportSession } from '../chat/export.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
@@ -147,7 +148,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   });
 
   return runReplLoop(
-    { built, opened, store, persister, startSession: () => built.session.start() },
+    { built, opened, store, persister, startSession: () => built.session.start(), now },
     deps,
   );
 }
@@ -237,7 +238,7 @@ export async function chatResumeCommand(
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
-  return runReplLoop({ built, opened, store, persister, startSession: () => {}, intro }, deps);
+  return runReplLoop({ built, opened, store, persister, startSession: () => {}, intro, now }, deps);
 }
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
@@ -248,6 +249,8 @@ interface ReplWiring {
   readonly persister: SessionPersister;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
+  /** Wall-clock (ms) — stamps the `session:exported` event timestamp on a `--json` `/export`. */
+  readonly now: () => number;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
 }
@@ -259,7 +262,7 @@ interface ReplWiring {
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
 async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
-  const { built, opened, store, persister, startSession, intro } = wiring;
+  const { built, opened, store, persister, startSession, intro, now } = wiring;
   let stop = false;
   let cancelled = false;
   const cancelOnce = (): void => {
@@ -297,7 +300,20 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
           // id, so `force` here can only ever clobber this session's prior export, never another session's.
           force: true,
         });
-        deps.io.writeErr(`exported session to ${result.path}\n`);
+        if (deps.global.json) {
+          // Machine mode (--json, 2.Q): emit the `session:exported` event on stdout — the same shape the
+          // standalone `chat-export --json` emits — so the NDJSON session stream is complete; stdout stays pure.
+          const event = SessionExportedEventSchema.parse({
+            type: 'session:exported',
+            sessionId: built.sessionId,
+            timestamp: new Date(now()).toISOString(),
+            sequenceNumber: result.sequenceNumber,
+            workflowPath: result.path,
+          });
+          deps.io.writeOut(`${JSON.stringify(event)}\n`);
+        } else {
+          deps.io.writeErr(`exported session to ${result.path}\n`);
+        }
       } catch (err) {
         deps.io.writeErr(`export failed: ${err instanceof Error ? err.message : String(err)}\n`);
       }

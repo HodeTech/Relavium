@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
@@ -20,7 +20,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore } from '../render/tui/chat-store.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, parseNdjson } from '../test-support.js';
 import {
   chatCommand,
   chatResumeCommand,
@@ -271,6 +271,49 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain('export failed:'); // the catch arm reported the fault
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // the REPL survived and ended cleanly
+  });
+
+  it('chat --json drives the headless stream: stdout pure NDJSON, the unknown-slash diagnostic on stderr', async () => {
+    const { io, out, err } = captureIo();
+    const store = createSessionStore(client.db);
+    let id = 0;
+    const d: ChatCommandDeps = {
+      io: { ...io, stdin: Readable.from(['hello\n/bogus\n']) },
+      global: { ...globalOptions(cwd), json: true },
+      providers: scriptedResolver([textTurn('hi there')]),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: driveJson,
+      now: () => 0,
+      uuid: () => `id-${id++}`, // sessionId = id-0; message ids advance, so no PK collision
+    };
+    expect(await chatCommand({ agent: undefined }, d)).toBe(EXIT_CODES.chatEnded);
+    // parseNdjson throws if a human line leaked onto stdout; the /bogus notice must be on stderr only.
+    const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
+    expect(types).toContain('session:started');
+    expect(types).toContain('session:turn_completed');
+    expect(out()).not.toContain('unknown command'); // the diagnostic did NOT leak to stdout
+    expect(err()).toContain("unknown command '/bogus'"); // it went to stderr
+  });
+
+  it('chat --json /export emits a session:exported event on stdout (the machine path)', async () => {
+    const { io, out } = captureIo();
+    const store = createSessionStore(client.db);
+    let id = 0;
+    const d: ChatCommandDeps = {
+      io: { ...io, stdin: Readable.from(['hello\n/export\n']) },
+      global: { ...globalOptions(cwd), json: true },
+      providers: scriptedResolver([textTurn('hi there')]),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: driveJson,
+      now: () => 0,
+      uuid: () => `id-${id++}`, // sessionId = id-0; message ids advance, so no PK collision
+    };
+    expect(await chatCommand({ agent: undefined }, d)).toBe(EXIT_CODES.chatEnded);
+    const exported = parseNdjson<{ type: string; workflowPath?: string }>(out()).find(
+      (e) => e.type === 'session:exported',
+    );
+    expect(exported).toBeDefined(); // /export emits the event on the --json stream, not just a stderr line
+    expect(exported?.workflowPath).toBe(join(cwd, 'id-0.relavium.yaml'));
   });
 
   it('strips control bytes from an unknown-slash echo (terminal-injection guard) and lists /export', async () => {
@@ -782,13 +825,14 @@ describe('driveJson (2.Q)', () => {
     stdin.end(); // EOF ends the loop
     await done;
 
-    const lines = out().trimEnd().split('\n');
-    const events = lines.map((l) => JSON.parse(l) as { type: string; sessionId?: string });
+    // parseNdjson runtime-rejects any non-object line, so it doubles as a stdout-purity guard.
+    const events = parseNdjson<{ type: string; sessionId?: string }>(out());
     const types = events.map((e) => e.type);
     expect(types[0]).toBe('session:started'); // the first line is the lifecycle-open event
     expect(types).toContain('session:turn_started');
     expect(types).toContain('session:turn_completed');
-    // Every line is valid JSON carrying the sessionId (the disjoint session namespace).
+    // Every line carries the sessionId (the disjoint session namespace).
     expect(events.every((e) => e.sessionId === 'sess-j')).toBe(true);
+    expect(out()).not.toContain('test-key'); // the dummy provider key never reaches the stream
   });
 });

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { scriptedResolver, textTurn, unresolvedResolver } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
@@ -83,12 +84,39 @@ describe('agentRunCommand (2.Q)', () => {
     expect(out()).toContain('the summary');
   });
 
-  it('emits the NDJSON session stream under --json', async () => {
-    const { d, out } = deps('hi', { json: true, providers: scriptedResolver([textTurn('reply')]) });
+  it('emits a pure NDJSON session stream under --json (no human chrome, no key leak)', async () => {
+    const { d, out, err } = deps('hi', {
+      json: true,
+      providers: scriptedResolver([textTurn('reply')]),
+    });
     expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
+    // Every stdout line is a valid SessionEvent object (parseNdjson throws on a leaked human line).
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
     expect(types).toContain('session:started');
     expect(types).toContain('session:turn_completed');
+    expect(err()).not.toContain('session:'); // no event leaks onto stderr
+    expect(out()).not.toContain('test-key'); // the dummy provider key never reaches the stream
+  });
+
+  it('--fixture takes precedence over an injected resolver (the cassette wins)', async () => {
+    writeFileSync(join(cwd, 'c.json'), JSON.stringify(CASSETTE));
+    // Pass BOTH a fixture and an injected resolver; the cassette must win (offline determinism beats the seam).
+    const { d, out } = deps('hi', { providers: scriptedResolver([textTurn('INJECTED')]) });
+    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'c.json' }, d)).toBe(
+      EXIT_CODES.success,
+    );
+    expect(out()).toContain('cassette reply');
+    expect(out()).not.toContain('INJECTED');
+  });
+
+  it('maps an under-recorded cassette (an unscripted stream call) to exit 1, never a crash', async () => {
+    // A cassette with zero recorded calls: the first turn's stream() is unscripted ⇒ the replay throws ⇒ the
+    // chain classifies it into a turn error ⇒ the command RESOLVES to exit 1 (it must not reject/crash).
+    writeFileSync(join(cwd, 'empty.json'), JSON.stringify({ ...CASSETTE, calls: [] }));
+    const { d } = deps('hi', {});
+    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'empty.json' }, d)).toBe(
+      EXIT_CODES.workflowFailed,
+    );
   });
 
   it('replays a --fixture cassette deterministically with NO providers injected (offline)', async () => {
@@ -121,10 +149,26 @@ describe('agentRunCommand (2.Q)', () => {
     );
   });
 
-  it('rejects a malformed --input as a clean exit-2 fault', async () => {
-    const { d } = deps('hi', { providers: scriptedResolver([textTurn('x')]) });
-    await expect(agentRunCommand({ agent: agentPath(), input: ['noequals'] }, d)).rejects.toThrow(
-      /expected key=value/,
+  it('rejects a malformed --input (no `=` or empty key) as a clean exit-2 fault', async () => {
+    // A fresh deps per call — the injected stdin stream is single-use (drained by the first invocation).
+    await expect(
+      agentRunCommand(
+        { agent: agentPath(), input: ['noequals'] },
+        deps('hi', { providers: scriptedResolver([textTurn('x')]) }).d,
+      ),
+    ).rejects.toThrow(/expected key=value/);
+    await expect(
+      agentRunCommand(
+        { agent: agentPath(), input: ['=value'] }, // an empty key (leading `=`) is rejected
+        deps('hi', { providers: scriptedResolver([textTurn('x')]) }).d,
+      ),
+    ).rejects.toThrow(/expected key=value/);
+  });
+
+  it('accepts an empty --input value (k= ⇒ a legitimate empty variable)', async () => {
+    const { d } = deps('hi', { providers: scriptedResolver([textTurn('ok')]) });
+    expect(await agentRunCommand({ agent: agentPath(), input: ['k='] }, d)).toBe(
+      EXIT_CODES.success,
     );
   });
 
@@ -135,11 +179,13 @@ describe('agentRunCommand (2.Q)', () => {
     );
   });
 
-  it('rejects an unknown agent as a clean exit-2 fault', async () => {
+  it('rejects an unknown agent as a clean exit-2 (typed invalid_invocation) fault', async () => {
     const { d } = deps('hi', { providers: scriptedResolver([textTurn('x')]) });
-    await expect(
-      agentRunCommand({ agent: join(cwd, 'ghost.agent.yaml'), input: [] }, d),
-    ).rejects.toThrow();
+    let thrown: unknown;
+    await agentRunCommand({ agent: join(cwd, 'ghost.agent.yaml'), input: [] }, d).catch((e) => {
+      thrown = e;
+    });
+    expect(isCliError(thrown)).toBe(true); // a typed CliError (exit 2), not a raw provider/parse crash
   });
 
   it('rejects a bad --fixture cassette as a clean exit-2 fault', async () => {

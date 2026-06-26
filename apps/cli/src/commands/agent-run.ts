@@ -98,6 +98,15 @@ export async function agentRunCommand(
   try {
     built.session.start();
     await built.session.sendMessage(message);
+  } catch (err) {
+    // An UNCLASSIFIED turn error re-raised by the turn core (e.g. an under-recorded `--fixture` cassette whose
+    // next `stream()` call is unscripted) rejects `sendMessage`. Map it to a clean exit 1 here rather than
+    // letting a raw rejection surface as an opaque boundary "internal error". The detail goes to stderr (never
+    // a stack as primary output); under --json the failing `session:turn_completed.error` is already on stdout.
+    turnErrorCode ??= 'internal';
+    if (!deps.global.json) {
+      deps.io.writeErr(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   } finally {
     built.session.cancel(); // the session's terminal (session:cancelled) — closes the one-shot cleanly
     unsubscribe();
@@ -105,11 +114,12 @@ export async function agentRunCommand(
   return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
 }
 
-/** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). Stream chunks are `any`-typed. */
+/** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). */
 async function readAllStdin(stream: NodeJS.ReadableStream): Promise<string> {
   let data = '';
   for await (const chunk of stream) {
-    // `Buffer.isBuffer` narrows the any-typed chunk to Buffer (production stdin); a test stream yields strings.
+    // The chunk is untyped from NodeJS.ReadableStream; `Buffer.isBuffer` narrows it to Buffer (production
+    // stdin) without an unsafe cast, and a test stream yields strings (`String` is total over `unknown`).
     data += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
   }
   return data;
