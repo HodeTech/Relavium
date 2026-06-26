@@ -26,41 +26,46 @@ export function stripTerminalControls(text: string): string {
 }
 
 /**
+ * Sanitize a single-line dynamic identifier (a tool id, the bound model name) for terminal display: strip the
+ * ANSI/OSC/control bytes {@link stripTerminalControls} removes, then collapse any surviving tab/newline to a
+ * single space so the value cannot spoof extra terminal lines or columns inside a one-line annotation/footer.
+ */
+function sanitizeInline(text: string): string {
+  return stripTerminalControls(text).replace(/[\t\n]+/g, ' ');
+}
+
+/**
  * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code),
  * the turn's token usage, and its duration. Secret-free — it carries only counts/codes, never argument text.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
-  const parts: string[] = [];
-  if (summary.errorCode !== undefined) {
-    parts.push(`error: ${summary.errorCode}`);
-  } else {
-    parts.push(summary.stopReason);
-  }
-  parts.push(formatTokens(summary.tokensUsed));
-  if (summary.durationMs !== undefined) {
-    parts.push(formatDuration(summary.durationMs));
-  }
+  const head = summary.errorCode === undefined ? summary.stopReason : `error: ${summary.errorCode}`;
+  const parts = [
+    head,
+    formatTokens(summary.tokensUsed),
+    summary.durationMs === undefined ? undefined : formatDuration(summary.durationMs),
+  ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
 }
 
 /**
  * A tool-call annotation line for the in-flight turn — the namespaced tool id and whether its result has
- * arrived. Never renders the tool's arguments or result bytes (those can carry user/secret data); only the id.
+ * arrived. Never renders the tool's arguments or result bytes (those can carry user/secret data); only the id,
+ * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
 export function formatToolCall(call: ToolCallView): string {
-  return `→ ${call.toolId} ${call.resolved ? '✓' : '…'}`;
+  return `→ ${sanitizeInline(call.toolId)} ${call.resolved ? '✓' : '…'}`;
 }
 
 /**
  * The persistent session footer: the bound model, the running cost, and the completed-turn count. A compact,
- * always-visible status line beneath the prompt.
+ * always-visible status line beneath the prompt. The model name is sanitized before display.
  */
 export function formatSessionFooter(state: SessionViewState): string {
-  const parts: string[] = [];
-  if (state.model !== undefined) {
-    parts.push(state.model);
-  }
-  parts.push(formatCostUsd(state.cumulativeCostMicrocents));
-  parts.push(`${state.turnCount} ${state.turnCount === 1 ? 'turn' : 'turns'}`);
+  const parts = [
+    state.model === undefined ? undefined : sanitizeInline(state.model),
+    formatCostUsd(state.cumulativeCostMicrocents),
+    `${state.turnCount} ${state.turnCount === 1 ? 'turn' : 'turns'}`,
+  ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
 }

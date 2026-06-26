@@ -37,8 +37,23 @@ describe('chat-projection', () => {
 
   describe('formatToolCall', () => {
     it('marks an unresolved call as pending and a resolved call as done — id only, no arguments', () => {
-      expect(formatToolCall({ toolId: 'read_file', resolved: false })).toBe('→ read_file …');
-      expect(formatToolCall({ toolId: 'read_file', resolved: true })).toBe('→ read_file ✓');
+      expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: false })).toBe(
+        '→ read_file …',
+      );
+      expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: true })).toBe(
+        '→ read_file ✓',
+      );
+    });
+
+    it('sanitizes a model-named tool id so it cannot inject control sequences or spoof lines', () => {
+      const line = formatToolCall({
+        id: 'tc-1',
+        toolId: '\x1b[31mread\x1b]0;x\x07\nfile',
+        resolved: false,
+      });
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(line).not.toMatch(/[\x00-\x1f\x7f]/); // no ESC/CR/NUL/tab/newline survived
+      expect(line).toBe('→ read file …'); // escapes stripped; the bare newline collapsed to a space
     });
   });
 
@@ -64,6 +79,16 @@ describe('chat-projection', () => {
       const footer = formatSessionFooter(initialSessionViewState());
       expect(footer).toContain('0 turns');
       expect(footer).toMatch(/^\$/); // starts with the cost (no leading model segment / separator)
+    });
+
+    it('sanitizes the model name so it cannot inject control sequences into the footer', () => {
+      const footer = formatSessionFooter({
+        ...initialSessionViewState(),
+        model: '\x1b[31mevil\x07\nmodel',
+      });
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(footer).not.toMatch(/[\x00-\x1f\x7f]/);
+      expect(footer.startsWith('evil model · ')).toBe(true); // escapes stripped; newline collapsed
     });
   });
 

@@ -197,7 +197,9 @@ export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) =
         io.writeOut(stripTerminalControls(event.token));
         return;
       case 'agent:tool_call':
-        io.writeOut(`\n${formatToolCall({ toolId: event.toolId, resolved: false })}\n`);
+        io.writeOut(
+          `\n${formatToolCall({ id: `tc-${event.sequenceNumber}`, toolId: event.toolId, resolved: false })}\n`,
+        );
         return;
       case 'session:turn_completed':
         io.writeOut(event.error === undefined ? '\n' : `\n[turn failed: ${event.error.code}]\n`);

@@ -78,6 +78,29 @@ describe('createSessionPersister', () => {
     expect(full?.messages).toHaveLength(0); // no turn yet
   });
 
+  it('adopts an existing row on start instead of re-INSERTing (resume does not hit the UNIQUE pk)', () => {
+    const { built, persister } = setup(scriptedResolver([textTurn('hi')]), 5);
+    // Simulate the prior process: the session row already exists in history.db before this resume starts.
+    store.createSession({
+      id: built.sessionId,
+      agentSlug: built.agent.id,
+      agentSnapshot: built.agent,
+      context: built.context,
+      status: 'ended',
+      totalInputTokens: 7,
+      totalOutputTokens: 11,
+      totalCostMicrocents: 1300,
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+    expect(() => persister.start()).not.toThrow(); // a re-INSERT would be a UNIQUE constraint failure
+    const full = store.loadFull(built.sessionId);
+    expect(full).toBeDefined();
+    // The existing row is adopted untouched here — its persisted totals are NOT reset to the fresh record's 0
+    // (chat-resume / 2.N seeds the persister from these before the first resumed turn).
+    expect(full?.session.totalCostMicrocents).toBe(1300);
+  });
+
   it('persists a completed turn as a user + text-only assistant pair, and folds the token totals', async () => {
     const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
     persister.start();

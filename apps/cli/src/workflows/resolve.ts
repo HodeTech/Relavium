@@ -1,5 +1,5 @@
 import { readFileSync, statSync, type Stats } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import { MAX_SOURCE_CHARS } from '@relavium/core';
 
@@ -80,8 +80,14 @@ function candidatePaths(
     readonly idSuffixes: readonly string[];
   },
 ): string[] {
+  // A POSIX `/`, the platform separator (`\` on Windows, where `agents\coder` is a relative path), an
+  // absolute path, or a `.yaml`/`.yml` suffix all mark an explicit file reference rather than a bare id/slug.
   const looksLikePath =
-    isAbsolute(arg) || arg.includes('/') || arg.endsWith('.yaml') || arg.endsWith('.yml');
+    isAbsolute(arg) ||
+    arg.includes('/') ||
+    arg.includes(sep) ||
+    arg.endsWith('.yaml') ||
+    arg.endsWith('.yml');
   if (looksLikePath) {
     return [isAbsolute(arg) ? arg : resolve(opts.cwd, arg)];
   }

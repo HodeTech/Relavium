@@ -19,6 +19,9 @@ export type SessionViewStatus = 'idle' | 'running' | 'ended';
 
 /** A tool call annotated in the in-flight turn — `resolved` once its `agent:tool_result` is observed. */
 export interface ToolCallView {
+  /** A stable per-call render key (derived from the originating event's `sequenceNumber`); two calls to the
+   *  same tool in one turn stay distinct, so the view never keys list items by their array index. */
+  readonly id: string;
   readonly toolId: string;
   readonly resolved: boolean;
 }
@@ -189,7 +192,7 @@ export function reduceSessionEvent(
         liveTokens: '',
         liveToolCalls: pushBounded(
           base.liveToolCalls,
-          { toolId: event.toolId, resolved: false },
+          { id: `tc-${event.sequenceNumber}`, toolId: event.toolId, resolved: false },
           MAX_LIVE_TOOL_CALLS,
         ),
       };
@@ -246,7 +249,9 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
   // A finite, non-negative duration only — guard against a NaN from an unparseable timestamp so a NaN can
   // never reach `durationMs` (and `formatDuration`), keeping the `durationMs?: number` contract strict.
   const rawDuration =
-    base.turnStartedAtMs === undefined ? NaN : Date.parse(event.timestamp) - base.turnStartedAtMs;
+    base.turnStartedAtMs === undefined
+      ? Number.NaN
+      : Date.parse(event.timestamp) - base.turnStartedAtMs;
   const durationMs = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : undefined;
   const summary: TurnSummary = {
     stopReason: event.stopReason,

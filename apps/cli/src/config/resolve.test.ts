@@ -82,7 +82,7 @@ describe('resolveConfig', () => {
     // A global layer carries no [chat] block, so it cannot supply chat defaults.
     expect(
       resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.defaultModel,
-    ).toBe(undefined);
+    ).toBeUndefined();
   });
 
   it('resolves media_gc_grace_days (2.S/D11) DAYS → ms, last-writer-wins, absent ⇒ undefined', () => {

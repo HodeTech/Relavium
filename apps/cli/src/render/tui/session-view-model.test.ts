@@ -137,9 +137,11 @@ describe('session-view-model', () => {
   it('tracks live tool calls and marks them resolved on the result', () => {
     const e = events();
     const mid = reduceAll([e.started(), e.turnStarted(), e.toolCall('read_file')]);
-    expect(mid.liveToolCalls).toEqual([{ toolId: 'read_file', resolved: false }]);
+    expect(mid.liveToolCalls).toMatchObject([{ toolId: 'read_file', resolved: false }]);
+    expect(mid.liveToolCalls[0]?.id).toMatch(/^tc-/); // a stable, index-free render key
     const resolved = reduceSessionEvent(mid, e.toolResult('read_file'));
-    expect(resolved.liveToolCalls).toEqual([{ toolId: 'read_file', resolved: true }]);
+    expect(resolved.liveToolCalls).toMatchObject([{ toolId: 'read_file', resolved: true }]);
+    expect(resolved.liveToolCalls[0]?.id).toBe(mid.liveToolCalls[0]?.id); // id is preserved across resolve
   });
 
   it('stamps the running cost from cost:updated', () => {
@@ -298,10 +300,12 @@ describe('session-view-model', () => {
       e.toolCall('read_file'),
       e.toolResult('read_file'),
     ]);
-    expect(state.liveToolCalls).toEqual([
+    expect(state.liveToolCalls).toMatchObject([
       { toolId: 'read_file', resolved: true },
       { toolId: 'read_file', resolved: false },
     ]);
+    // Two calls to the SAME tool get distinct render keys — the case a toolId- or index-based key would collide on.
+    expect(state.liveToolCalls[0]?.id).not.toBe(state.liveToolCalls[1]?.id);
   });
 
   it('interleaves user and assistant entries in turn order', () => {

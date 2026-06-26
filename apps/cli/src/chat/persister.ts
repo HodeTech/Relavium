@@ -142,7 +142,13 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     start(): void {
       if (started) return;
       started = true;
-      deps.store.createSession(record('active'));
+      // A resumed session's row already exists (the prior process inserted it); re-INSERTing would hit the
+      // UNIQUE primary key and crash on start. Insert only when the row is absent — an existing row is adopted
+      // in place and refreshed by the per-turn updateSession. (chat-resume / 2.N seeds the running totals from
+      // the loaded record before the first resumed turn, so this start() leaves the persisted totals intact.)
+      if (deps.store.loadSession(deps.sessionId) === undefined) {
+        deps.store.createSession(record('active'));
+      }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
     beginUserTurn(text: string): void {

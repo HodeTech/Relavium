@@ -98,7 +98,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
-  const toolLines = state.liveToolCalls.map((call) => formatToolCall(call));
   return (
     <Box flexDirection="column">
       {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
@@ -109,9 +108,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. */}
       {running && (
         <Box flexDirection="column">
-          {toolLines.map((line, index) => (
-            <Text key={index} {...colorProps(color, 'yellow')}>
-              {line}
+          {state.liveToolCalls.map((call) => (
+            <Text key={call.id} {...colorProps(color, 'yellow')}>
+              {formatToolCall(call)}
             </Text>
           ))}
           <Text>
@@ -120,11 +119,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         </Box>
       )}
 
-      {/* The input prompt (idle) and the persistent footer. */}
+      {/* The input prompt (idle) and the persistent footer. The live input echo is sanitized so a paste
+          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. */}
       {!running && (
         <Text {...colorProps(color, 'cyan')}>
           {'> '}
-          {input}
+          {stripTerminalControls(input)}
         </Text>
       )}
       <Text {...colorProps(color, 'gray')}>{formatSessionFooter(state)}</Text>
