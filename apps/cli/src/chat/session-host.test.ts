@@ -239,6 +239,43 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(tokens).toContain('continued');
   });
 
+  it('rebinds the agent from the SNAPSHOT, not the record agentSlug (which may diverge after a rename)', async () => {
+    // agentSlug diverges from the snapshot id; the resumed session must bind the SNAPSHOT's id, and the
+    // live events' nodeId (= agentRef = agent.id) must follow the snapshot — not the stale slug.
+    const built = resume(
+      [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      record({ agentSlug: 'old-slug' }),
+    );
+    expect(built.agent.id).toBe(RESUME_AGENT.id); // 'relavium-chat' from the snapshot, not 'old-slug'
+
+    await built.session.sendMessage('go');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const token = events.find((e) => e.type === 'agent:token');
+    expect(token?.type === 'agent:token' && token.nodeId).toBe(RESUME_AGENT.id);
+  });
+
+  it('seeds the budget governor with the carried cost — the first resumed turn trips the cap pre-egress', async () => {
+    // A near-exhausted record (totalCostMicrocents far past a 1µ¢ cap): AgentSession.resume seeds the governor
+    // via updateCost(carried), so the FIRST resumed turn's pre-egress check trips BEFORE any new cost:updated.
+    // Without that seeding the carried spend would be invisible and the first turn would slip past the cap.
+    const built = buildResumedChatSession({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'fail' },
+      record: record({ totalCostMicrocents: 999_999 }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('should never stream')]),
+    });
+    await built.session.sendMessage('again');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const errorCodes = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errorCodes).toContain('budget_exceeded'); // tripped on the carried cost, no provider call
+  });
+
   it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', () => {
     expect(() => resume([], record({ agentSnapshot: undefined }))).toThrow(
       /no stored agent snapshot/,

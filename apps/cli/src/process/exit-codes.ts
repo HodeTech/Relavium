@@ -13,7 +13,10 @@ export const EXIT_CODES = {
   invalidInvocation: 2,
   /** Run paused at a human gate (CI / non-interactive mode) — resume with `relavium gate`. */
   gatePaused: 3,
-  /** A chat session ended via `/exit` (interactive `relavium chat`) — wired at 2.M. */
+  /**
+   * A chat session ended by the user — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream
+   * EOF — from a `relavium chat` (2.M) or `relavium chat-resume` (2.N) REPL (both drive the same loop).
+   */
   chatEnded: 4,
 } as const;
 

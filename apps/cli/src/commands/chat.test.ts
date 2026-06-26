@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -317,11 +317,16 @@ describe('chatResumeCommand (2.N)', () => {
     };
   }
 
-  /** Resume deps over the SAME store; resume reuses the persisted sessionId (no mint), so ids only feed messages. */
+  /**
+   * Resume deps over the SAME store; resume reuses the persisted sessionId (no mint), so ids only feed
+   * messages. `prefix` makes message ids unique ACROSS resumes (production uses randomUUID; the deterministic
+   * test uuid would otherwise collide on the message PK when one session is resumed more than once).
+   */
   function resumeDeps(
     lines: readonly string[],
     scripts: StreamChunk[][],
     store: Store,
+    prefix = 'r',
   ): { d: ChatResumeCommandDeps; err: () => string } {
     const { io, err } = captureIo();
     let tick = Date.parse('2026-06-25T01:00:00.000Z');
@@ -334,7 +339,7 @@ describe('chatResumeCommand (2.N)', () => {
         openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
         drive: linesDriver(lines),
         now: () => tick++,
-        uuid: () => `r-${id++}`,
+        uuid: () => `${prefix}-${id++}`,
       },
       err,
     };
@@ -362,6 +367,72 @@ describe('chatResumeCommand (2.N)', () => {
     // Totals accumulate across the resume (the persister adopts + hydrates the prior row): 2 turns × {10,5}.
     expect(full?.session.totalInputTokens).toBe(20);
     expect(full?.session.totalOutputTokens).toBe(10);
+    // Cost also accumulates (not reset to the new turn's delta) — the persister seeds it from the adopted row.
+    expect(full?.session.totalCostMicrocents).toBeGreaterThan(0);
+  });
+
+  it('keeps sequence numbers monotonic across THREE resumes (no off-by-one)', async () => {
+    const store = createSessionStore(client.db);
+    await chatCommand({ agent: undefined }, freshDeps(['t1', '/exit'], [textTurn('a')], store));
+    await chatResumeCommand(
+      { sessionId: 'id-0' },
+      resumeDeps(['t2', '/exit'], [textTurn('b')], store, 'r2').d,
+    );
+    await chatResumeCommand(
+      { sessionId: 'id-0' },
+      resumeDeps(['t3', '/exit'], [textTurn('c')], store, 'r3').d,
+    );
+
+    const full = store.loadFull('id-0');
+    // Three turns × {user, assistant} = six rows, contiguously sequenced across the three processes.
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(full?.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+  });
+
+  it('ends a RESUMED session on /cancel with exit 4 (the resumable-cancel contract holds on the resume path)', async () => {
+    const store = createSessionStore(client.db);
+    await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
+    const { d } = resumeDeps(['/cancel'], [], store);
+    expect(await chatResumeCommand({ sessionId: 'id-0' }, d)).toBe(EXIT_CODES.chatEnded);
+    expect(store.loadFull('id-0')?.session.status).toBe('ended');
+  });
+
+  it('warns up front when resuming a session already at/over the [chat].max_turns cap', async () => {
+    const store = createSessionStore(client.db);
+    // Seed two turns under the default (uncapped) cwd so the seeding itself is not blocked.
+    await chatCommand(
+      { agent: undefined },
+      freshDeps(['t1', 't2', '/exit'], [textTurn('a'), textTurn('b')], store),
+    );
+    // A separate project whose [chat].max_turns = 1 is BELOW the session's 2 prior turns.
+    const capCwd = mkdtempSync(join(tmpdir(), 'relavium-cap-'));
+    mkdirSync(join(capCwd, '.relavium'), { recursive: true });
+    writeFileSync(join(capCwd, '.relavium', 'project.toml'), '[chat]\nmax_turns = 1\n');
+    try {
+      const { d, err } = resumeDeps([], [], store);
+      await chatResumeCommand(
+        { sessionId: 'id-0' },
+        { ...d, global: { ...globalOptions(capCwd), json: false } },
+      );
+      expect(err()).toContain('new turns will be refused');
+    } finally {
+      rmSync(capCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT warn when resuming a session below the (default) turn cap', async () => {
+    const store = createSessionStore(client.db);
+    await chatCommand({ agent: undefined }, freshDeps(['t1', '/exit'], [textTurn('a')], store));
+    const { d, err } = resumeDeps([], [], store);
+    await chatResumeCommand({ sessionId: 'id-0' }, d);
+    expect(err()).not.toContain('new turns will be refused'); // 1 turn ≪ default cap 50
   });
 
   it('seeds the view header (model · cost · prior turns) and the resume intro from the reconstructed state', async () => {

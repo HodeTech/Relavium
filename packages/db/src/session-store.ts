@@ -4,7 +4,7 @@ import {
   type AgentSessionRecord,
   type SessionMessage,
 } from '@relavium/shared';
-import { asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import {
@@ -192,7 +192,13 @@ export interface SessionStore {
 /** Wire a {@link SessionStore} over a `@relavium/db` connection. */
 export function createSessionStore(db: Db): SessionStore {
   const loadSession = (sessionId: string): AgentSessionRecord | undefined => {
-    const row = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).get();
+    // Exclude soft-deleted rows (matching `listSessions`): a tombstoned session must not reload or resume —
+    // `chat-resume`'s `loadFull` would otherwise resurrect it and the persister would re-write the row.
+    const row = db
+      .select()
+      .from(agentSessions)
+      .where(and(eq(agentSessions.id, sessionId), isNull(agentSessions.deletedAt)))
+      .get();
     return row === undefined ? undefined : fromAgentSessionRow(row);
   };
 

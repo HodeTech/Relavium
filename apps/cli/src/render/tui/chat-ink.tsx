@@ -155,6 +155,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. */
 export function driveInk(ctx: ChatDriveContext): Promise<void> {
+  // The resume banner (2.N): print it once before mounting ink so it scrolls into the terminal history above
+  // the live region — the TTY counterpart of the line drivePlain writes, so a resumed session is visibly a
+  // resume (not just an N-turn footer). A fresh session has no intro and prints nothing here.
+  if (ctx.intro !== undefined) {
+    ctx.io.writeOut(`${ctx.intro}\n`);
+  }
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
   // Open the session ONLY now — the store is subscribed, so the synchronous session:started (which carries

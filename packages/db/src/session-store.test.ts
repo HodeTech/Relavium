@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { agentSessions, llmProviders, modelCatalog, sessionMessages } from './schema.js';
-import { createSessionStore, type SessionStore } from './session-store.js';
+import { createSessionStore, fromAgentSessionRow, type SessionStore } from './session-store.js';
 
 /** Seed a provider + model_catalog row so a session/message `model_id` FK resolves (catalog UUID). */
 function seedModelCatalog(client: DbClient): void {
@@ -101,6 +101,12 @@ describe('SessionStore (1.X) — persist + resume', () => {
   it('returns undefined for an absent session', () => {
     expect(store.loadSession('nope')).toBeUndefined();
     expect(store.loadFull('nope')).toBeUndefined();
+  });
+
+  it('loadSession/loadFull exclude a soft-deleted session (no resurrect on resume)', () => {
+    store.createSession(makeSession({ id: 'sess-del', deletedAt: '2026-06-17T09:00:00.000Z' }));
+    expect(store.loadSession('sess-del')).toBeUndefined();
+    expect(store.loadFull('sess-del')).toBeUndefined();
   });
 
   it('listSessions returns the non-deleted sessions, most-recently-updated first (2.O)', () => {
@@ -249,7 +255,7 @@ describe('SessionStore (1.X) — persist + resume', () => {
     }).toThrow();
   });
 
-  it('round-trips the optional fields — agentSnapshot, exportedWorkflowPath, deletedAt', () => {
+  it('round-trips the optional fields — agentSnapshot + exportedWorkflowPath (loadSession), deletedAt (mapper)', () => {
     const agentSnapshot = AgentSchema.parse({
       id: 'chatter',
       model: 'claude-opus-4-8',
@@ -262,13 +268,21 @@ describe('SessionStore (1.X) — persist + resume', () => {
         status: 'exported',
         agentSnapshot,
         exportedWorkflowPath: 'flows/chat.relavium.yaml',
-        deletedAt: TS_ISO,
       }),
     );
     const loaded = store.loadSession('sess-1');
     expect(loaded?.agentSnapshot).toEqual(agentSnapshot); // the JSON snapshot column round-trips
     expect(loaded?.exportedWorkflowPath).toBe('flows/chat.relavium.yaml');
-    expect(loaded?.deletedAt).toBe(TS_ISO); // the soft-delete tombstone survives the epoch-ms edge
+
+    // A soft-deleted session is HIDDEN from loadSession (the exclusion test covers that), so the deletedAt
+    // tombstone's epoch-ms→ISO round-trip is verified by reading the raw row through the mapper directly.
+    store.createSession(makeSession({ id: 'sess-del', deletedAt: TS_ISO }));
+    const rawRow = client.db
+      .select()
+      .from(agentSessions)
+      .where(eq(agentSessions.id, 'sess-del'))
+      .get();
+    expect(rawRow && fromAgentSessionRow(rawRow).deletedAt).toBe(TS_ISO);
   });
 
   it('updateSession preserves the immutable created_at while advancing updated_at', () => {

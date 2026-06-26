@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
-import type { SessionHandle, SessionStreamHandleEvent } from '@relavium/core';
+import {
+  DEFAULT_SESSION_MAX_TURNS,
+  type SessionHandle,
+  type SessionStreamHandleEvent,
+} from '@relavium/core';
 
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
@@ -51,9 +55,10 @@ export interface ChatDriveContext {
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /**
-   * The plain-driver banner line (no trailing newline). A fresh session uses the default greeting; a 2.N
-   * resume overrides it with the "Resuming session …" context line. The ink driver ignores it (a resumed
-   * session's bound model + prior-turn count are conveyed by the seeded footer instead).
+   * The session banner line (no trailing newline). A fresh session leaves it unset (the plain driver shows a
+   * default greeting; the ink driver shows nothing); a 2.N resume sets the "Resuming session …" context line,
+   * which BOTH drivers print — the plain loop as its banner, the ink driver once above the live region — so a
+   * resumed session is visibly a resume. The seeded footer additionally carries the bound model + prior totals.
    */
   readonly intro?: string;
 }
@@ -212,6 +217,17 @@ export async function chatResumeCommand(
     });
     const turns = resumed.resumeState.turnCount;
     intro = `Resuming session ${resumed.sessionId} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
+    // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
+    // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
+    // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
+    // silently trapped — distinct from the per-turn engine error. The effective cap mirrors the engine's
+    // `undefined/≤0 ⇒ default` rule (config validation already rejects a non-positive max_turns).
+    const cap = config.chat.maxTurns ?? DEFAULT_SESSION_MAX_TURNS;
+    if (turns >= cap) {
+      deps.io.writeErr(
+        `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
+      );
+    }
   } catch (err) {
     // A pre-loop fault (not-found, no snapshot, build failure) must not strand the open db handle.
     opened.close();
