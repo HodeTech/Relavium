@@ -143,6 +143,31 @@ describe('compileJsonSchemaToZod — supported subset (happy paths)', () => {
     expect(consistent.safeParse(3).success).toBe(false);
   });
 
+  it('intersects type:null with a NON-null const/enum (the contradictory pair accepts nothing)', () => {
+    // The Opus fix covered type×enum only when types.length > 0; a null-only type still admitted the member.
+    const nullEnum = compileOk({ type: 'null', enum: ['a'] });
+    expect(nullEnum.safeParse('a').success).toBe(false); // 'a' is not null
+    expect(nullEnum.safeParse(null).success).toBe(false); // null is not in the enum
+    const nullConst = compileOk({ type: 'null', const: 'x' });
+    expect(nullConst.safeParse('x').success).toBe(false);
+    expect(nullConst.safeParse(null).success).toBe(false);
+    // A CONSISTENT null-only pair still accepts null.
+    expect(compileOk({ type: 'null', const: null }).safeParse(null).success).toBe(true);
+  });
+
+  it('keeps a consistent const + type pair (the intersection admits the in-range literal)', () => {
+    const c = compileOk({ type: 'number', const: 42 });
+    expect(c.safeParse(42).success).toBe(true);
+    expect(c.safeParse(43).success).toBe(false);
+    expect(c.safeParse('42').success).toBe(false);
+  });
+
+  it('treats a boolean `false` sub-schema as never (a property that admits no value)', () => {
+    const schema = compileOk({ type: 'object', properties: { x: false, y: { type: 'string' } } });
+    expect(schema.safeParse({ y: 'ok' }).success).toBe(true); // x is optional + never ⇒ omittable
+    expect(schema.safeParse({ x: 'anything', y: 'ok' }).success).toBe(false); // x present ⇒ never rejects
+  });
+
   it('honors additionalProperties as a schema (passthrough) and explicit `true`', () => {
     const asSchema = compileOk({
       type: 'object',
@@ -159,23 +184,23 @@ describe('compileJsonSchemaToZod — supported subset (happy paths)', () => {
     expect(explicitTrue.safeParse({ a: 'x', extra: 1 }).success).toBe(true);
   });
 
-  it('handles a property named __proto__ without corrupting the shape or polluting', () => {
-    // Building `shape['__proto__'] = …` on a plain `{}` would hit the prototype SETTER and corrupt the shape
-    // object; the null-prototype shape map keeps our builder correct. (zod itself guards `__proto__` on input
-    // — its own prototype-pollution defense — so the value simply passes through, never validated nor harmful.)
-    const result = compileJsonSchemaToZod({
+  it('fails closed on a schema declaring a __proto__ property (prototype-pollution guard), without polluting', () => {
+    // Real input is JSON.parse'd off the wire, where "__proto__" is a genuine OWN key (unlike an object
+    // literal, where `__proto__:` is the prototype setter). A `__proto__` parameter is never legitimate and
+    // would corrupt the shape / poison the validator — so it is rejected at discovery, and never pollutes.
+    const schema: unknown = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"},"ok":{"type":"string"}}}',
+    );
+    expect(compileJsonSchemaToZod(schema).ok).toBe(false);
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+    // a sibling-clean object (no dangerous keys) still compiles + validates normally
+    const clean = compileOk({
       type: 'object',
-      properties: { __proto__: { type: 'string' }, ok: { type: 'string' } },
+      properties: { ok: { type: 'string' } },
       required: ['ok'],
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // The sibling, normally-named key still validates correctly — proving the shape was NOT corrupted.
-    expect(result.schema.safeParse({ ok: 'x' }).success).toBe(true);
-    expect(result.schema.safeParse({ ok: 5 }).success).toBe(false);
-    // Parsing an input with a hostile `__proto__` never pollutes Object.prototype.
-    result.schema.safeParse({ ok: 'x', ['__proto__']: { polluted: true } });
-    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+    expect(clean.safeParse({ ok: 'x' }).success).toBe(true);
+    expect(clean.safeParse({}).success).toBe(false);
   });
 
   it('honors array minItems/maxItems and string maxLength bounds', () => {
@@ -302,6 +327,21 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
     const members = Array.from({ length: MAX_ENUM_MEMBERS }, (_, i) => `m${i}`);
     for (let i = 0; i < 50; i += 1) props[`p${i}`] = { enum: members }; // 50 × 1000 ≫ MAX_NODES
     const result = compileJsonSchemaToZod({ type: 'object', properties: props });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
+  });
+
+  it('fails closed on a non-finite (NaN/Infinity) const or enum member', () => {
+    // NaN/Infinity are not valid JSON; `z.literal(NaN)` would be a permanently-dead gate, so reject at discovery.
+    expect(compileJsonSchemaToZod({ const: NaN }).ok).toBe(false);
+    expect(compileJsonSchemaToZod({ const: Infinity }).ok).toBe(false);
+    expect(compileJsonSchemaToZod({ enum: [NaN, 'a'] }).ok).toBe(false);
+    expect(compileJsonSchemaToZod({ enum: [1, Infinity] }).ok).toBe(false);
+  });
+
+  it('fails closed on a hostile oversized `type` array (charged to the node budget)', () => {
+    const types = Array.from({ length: MAX_NODES + 5 }, () => 'string');
+    const result = compileJsonSchemaToZod({ type: types });
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
   });

@@ -77,7 +77,8 @@ function isJsonScalar(value: unknown): value is JsonScalar {
   return (
     value === null ||
     typeof value === 'string' ||
-    typeof value === 'number' ||
+    // Reject NaN/Infinity — not valid JSON, and `z.literal(NaN)` would build a permanently-dead validator.
+    (typeof value === 'number' && Number.isFinite(value)) ||
     typeof value === 'boolean'
   );
 }
@@ -122,11 +123,14 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
     }
   }
 
-  // `const`/`enum` constrain to specific values; `type` constrains the shape. When BOTH are present they
-  // must BOTH hold (JSON-Schema semantics) — we INTERSECT, so a contradictory `{type:'number', enum:['a']}`
-  // accepts nothing rather than admitting the type-forbidden member.
+  // `const`/`enum` constrain to specific VALUES; `type` constrains the shape — with `'null'` carried as a
+  // first-class type member, so `type:'null'` enforces null and `type:['string','null']` is a real union.
+  // When BOTH a value-constraint and a type are present they must BOTH hold (JSON-Schema semantics) — we
+  // INTERSECT, so `{type:'number', enum:['a']}` AND `{type:'null', enum:['a']}` both accept nothing rather
+  // than admitting the type-forbidden member. The OpenAPI `nullable: true` MODIFIER (distinct from a `'null'`
+  // type member) adds null on top.
   const constOrEnum = readConstOrEnum(node, budget);
-  const { types, nullable, typeDeclared } = readTypes(node);
+  const { types, nullableFlag } = readTypes(node, budget);
 
   let base: z.ZodTypeAny;
   if (constOrEnum !== undefined) {
@@ -136,15 +140,12 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
         : z.intersection(constOrEnum, buildTypeUnion(types, node, budget, depth));
   } else if (types.length > 0) {
     base = buildTypeUnion(types, node, budget, depth);
-  } else if (typeDeclared && nullable) {
-    // The declared type was null-only (`type: 'null'` / `['null']`) — ENFORCE null, never "accept anything".
-    base = z.null();
   } else {
     // No `type`/`const`/`enum`: an unconstrained schema (`{}` / description-only) — accept any value (the
     // gate is *shape*, not exhaustive constraint; MCP servers emit `{}` for a no-arg tool).
     base = z.unknown();
   }
-  return nullable ? base.nullable() : base;
+  return nullableFlag ? base.nullable() : base;
 }
 
 /** `const` → a single literal; `enum` → a union of literal members (budget-charged); neither ⇒ `undefined`. */
@@ -168,33 +169,32 @@ function buildTypeUnion(
 }
 
 /**
- * Read the declared `type`(s), folding a `'null'` member or `nullable: true` into a nullability flag.
- * `typeDeclared` distinguishes a null-only declaration (`type: 'null'` ⇒ ENFORCE null) from an ABSENT type
- * (⇒ unconstrained) — without it a null-only schema would wrongly compile to "accept anything".
+ * Read the declared `type`(s) — each kept as a type, INCLUDING `'null'` (so a null-only or `[…, 'null']`
+ * declaration is enforced/unioned, not silently widened) — plus the OpenAPI `nullable: true` MODIFIER flag
+ * (a separate concept). The list length is charged against the node budget so a huge `type` array (a DoS)
+ * fails closed, consistent with `enumSchema`/`readRequired`.
  */
-function readTypes(node: Record<string, unknown>): {
-  types: string[];
-  nullable: boolean;
-  typeDeclared: boolean;
-} {
+function readTypes(
+  node: Record<string, unknown>,
+  budget: Budget,
+): { types: string[]; nullableFlag: boolean } {
   const raw = node['type'];
-  let nullable = node['nullable'] === true;
+  const nullableFlag = node['nullable'] === true;
   if (raw === undefined) {
-    return { types: [], nullable, typeDeclared: false };
+    return { types: [], nullableFlag };
   }
   const list = Array.isArray(raw) ? raw : [raw];
+  if ((budget.nodes += list.length) > MAX_NODES) {
+    throw new UnsupportedSchemaError(`schema exceeds the maximum of ${MAX_NODES} nodes`);
+  }
   const types: string[] = [];
   for (const entry of list) {
     if (typeof entry !== 'string') {
       throw new UnsupportedSchemaError('`type` must be a string or an array of strings');
     }
-    if (entry === 'null') {
-      nullable = true;
-      continue;
-    }
     types.push(entry);
   }
-  return { types, nullable, typeDeclared: true };
+  return { types, nullableFlag };
 }
 
 function compileTyped(
@@ -212,8 +212,8 @@ function compileTyped(
       return numberSchema(node, false);
     case 'boolean':
       return z.boolean();
-    // `'null'` never reaches here — `readTypes` strips it into the nullability flag, and a null-ONLY
-    // declaration is enforced as `z.null()` in `compileNode`. A stray `'null'` would fall to `default`.
+    case 'null':
+      return z.null();
     case 'object':
       return objectSchema(node, budget, depth);
     case 'array':
@@ -263,10 +263,14 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
     );
   }
   const required = readRequired(node, budget);
-  // A null-prototype map so a property literally named `__proto__` becomes an OWN key `z.object` can see —
-  // a plain `{}` would route `shape['__proto__'] = …` to the prototype setter and silently drop the property.
-  const shape: Record<string, z.ZodTypeAny> = Object.create(null) as Record<string, z.ZodTypeAny>;
+  const shape: Record<string, z.ZodTypeAny> = {};
   for (const [name, propSchema] of propEntries) {
+    // Reject a `__proto__` property outright (a prototype-pollution guard): it is never a legitimate tool
+    // parameter, `shape['__proto__'] = …` would corrupt the shape object via the prototype setter, and zod
+    // special-cases `__proto__` on input — so admitting it yields a poisoned/dead validator. Fail closed.
+    if (name === '__proto__') {
+      throw new UnsupportedSchemaError('a property named "__proto__" is not allowed');
+    }
     const compiled = compileNode(propSchema, budget, depth + 1);
     shape[name] = required.has(name) ? compiled : compiled.optional();
   }
@@ -317,11 +321,15 @@ function arraySchema(node: Record<string, unknown>, budget: Budget, depth: numbe
 
 function literalSchema(value: unknown): z.ZodTypeAny {
   if (value === null) return z.null();
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+  if (typeof value === 'string' || typeof value === 'boolean') {
     return z.literal(value);
   }
-  // A `const` of an object/array would need structural literal matching — out of the subset, fail closed.
-  throw new UnsupportedSchemaError('`const` must be a string, number, boolean, or null');
+  // Accept only a FINITE number — NaN/Infinity are not valid JSON and `z.literal(NaN)` is a permanently-dead
+  // gate; an object/array `const` would need structural matching. Anything else fails closed at discovery.
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return z.literal(value);
+  }
+  throw new UnsupportedSchemaError('`const` must be a finite number, string, boolean, or null');
 }
 
 function enumSchema(value: unknown, budget: Budget): z.ZodTypeAny {
