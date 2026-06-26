@@ -47,14 +47,17 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
   const connections = new Map<string, McpConnection>();
   const toolDefs: ToolDef[] = [];
   const skipped: ManagerSkippedTool[] = [];
+  // Shared ACROSS servers so a namespaced id colliding across two servers (e.g. server `a`+tool `b_x` and
+  // server `a_b`+tool `x` both → `mcp_a_b_x`) fails closed — never a duplicate id reaching `createToolRegistry`.
+  const seenToolIds = new Set<string>();
 
   // The routing key must be unique (it disambiguates connections AND namespaces the tools).
-  const seenIds = new Set<string>();
+  const seenServerIds = new Set<string>();
   for (const server of servers) {
-    if (seenIds.has(server.id)) {
+    if (seenServerIds.has(server.id)) {
       throw new McpError(`duplicate MCP server id "${server.id}"`);
     }
-    seenIds.add(server.id);
+    seenServerIds.add(server.id);
   }
 
   for (const server of servers) {
@@ -62,7 +65,7 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
       const connection = await server.open();
       connections.set(server.id, connection);
       const tools = await connection.listTools();
-      const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist);
+      const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist, seenToolIds);
       toolDefs.push(...shaped.defs);
       for (const s of shaped.skipped) {
         skipped.push({ server: server.id, name: s.name, reason: s.reason });

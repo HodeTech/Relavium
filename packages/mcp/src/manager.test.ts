@@ -119,4 +119,18 @@ describe('startMcpClient', () => {
     await client.close();
     expect(closes).toEqual(['a']);
   });
+
+  it('fails closed on a namespaced-id collision ACROSS servers (no duplicate id reaches the registry)', async () => {
+    const client = await startMcpClient([
+      { id: 'a', open: () => Promise.resolve(fakeConnection([t('b_x')])) }, // → mcp_a_b_x
+      { id: 'a_b', open: () => Promise.resolve(fakeConnection([t('x')])) }, // → mcp_a_b_x (collision)
+    ]);
+    expect(client.toolDefs.map((d) => d.id)).toEqual(['mcp_a_b_x']); // the first server wins
+    expect(client.skipped).toContainEqual({
+      server: 'a_b',
+      name: 'x',
+      reason: 'namespaced id collides with another tool ("mcp_a_b_x")',
+    });
+    await client.close();
+  });
 });

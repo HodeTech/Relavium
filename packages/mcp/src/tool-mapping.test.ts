@@ -101,4 +101,22 @@ describe('buildServerToolDefs', () => {
     expect(defs).toHaveLength(0);
     expect(skipped[0]!.reason).toMatch(/not a valid LLM tool id/);
   });
+
+  it('drops a tool with an empty / whitespace-only name (fail closed)', () => {
+    const { defs, skipped } = buildServerToolDefs('s', [tool(''), tool('  '), tool('ok')]);
+    expect(defs.map((d) => d.id)).toEqual(['mcp_s_ok']);
+    expect(skipped).toEqual([
+      { name: '', reason: 'empty tool name' },
+      { name: '  ', reason: 'empty tool name' },
+    ]);
+  });
+
+  it('shares a collision set across calls when one is passed (cross-server dedup)', () => {
+    const seen = new Set<string>();
+    const a = buildServerToolDefs('a', [tool('b_x')], undefined, seen); // → mcp_a_b_x
+    const b = buildServerToolDefs('a_b', [tool('x')], undefined, seen); // → mcp_a_b_x (collision)
+    expect(a.defs.map((d) => d.id)).toEqual(['mcp_a_b_x']);
+    expect(b.defs).toHaveLength(0);
+    expect(b.skipped[0]!.reason).toMatch(/collides with another tool/);
+  });
 });

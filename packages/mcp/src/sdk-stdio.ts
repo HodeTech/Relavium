@@ -17,9 +17,12 @@ export interface StdioServerSpec {
   readonly command: string;
   readonly args?: readonly string[];
   /**
-   * The child's environment, **constructed explicitly by the host** (the declared `env` + a minimal base +
-   * resolved `mcp-secret:*` values) — NEVER a blanket copy of the host process environment ([ADR-0034](../../../docs/decisions/0034-mcp-client-sdk-dependency.md) g5).
-   * Passed as-is to the SDK so the SDK's host-inheriting `getDefaultEnvironment()` is never used.
+   * The child's environment — the declared `env` + the resolved `mcp-secret:*` values, host-constructed. The
+   * SDK merges it OVER its own **curated minimal base** (`getDefaultEnvironment()` reads ONLY the safe
+   * allowlist `HOME`/`PATH`/`SHELL`/`TERM`/`USER`/`LOGNAME`, plus a fixed Windows set — **never a blanket copy
+   * of the host process env, never an arbitrary var like an API key**), with `spec.env` winning every
+   * conflict. That "declared env + a minimal base, never a blanket copy" is exactly [ADR-0034](../../../docs/decisions/0034-mcp-client-sdk-dependency.md) g5;
+   * the host can override or extend any base var via `spec.env`.
    */
   readonly env: Readonly<Record<string, string>>;
   readonly cwd?: string;
@@ -34,8 +37,10 @@ export async function openStdioConnection(
 ): Promise<McpConnection> {
   const transport = new StdioClientTransport({
     command: spec.command,
-    // Explicit env only — the SDK uses this verbatim and never falls back to `getDefaultEnvironment()` (which
-    // would inherit host vars). The host is responsible for the minimal base (e.g. PATH) + secret injection.
+    // The host-constructed env (declared vars + resolved `mcp-secret:*`). The SDK force-merges its curated
+    // minimal base (`getDefaultEnvironment()` — the HOME/PATH/SHELL/TERM/USER/LOGNAME safe allowlist, never a
+    // blanket host-env copy) UNDER this, and `spec.env` wins conflicts: the ADR-0034 g5 "declared env +
+    // minimal base" end-state. (See the `env` field doc for the full rationale + the override path.)
     env: { ...spec.env },
     // Discard the child's stderr: 'inherit' would pollute our stderr, and 'pipe' without draining could block
     // the child once the OS pipe buffer fills. A connect/list failure surfaces via the rejected promise.

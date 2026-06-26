@@ -53,15 +53,24 @@ export function buildServerToolDefs(
   serverId: string,
   tools: readonly DiscoveredTool[],
   allowlist?: readonly string[],
+  /**
+   * A collision set the caller may SHARE across servers (the manager does), so a namespaced id that collides
+   * with a tool from ANOTHER server also fails closed — never two `ToolDef`s with one id reaching the registry.
+   * Omitted ⇒ a fresh per-call set (intra-server dedup only).
+   */
+  seenToolIds: Set<string> = new Set<string>(),
 ): ServerToolDefs {
   const defs: ToolDef[] = [];
   const skipped: SkippedTool[] = [];
   const allow = allowlist === undefined ? undefined : new Set(allowlist);
-  const seenIds = new Set<string>();
 
   for (const tool of tools) {
     if (allow !== undefined && !allow.has(tool.name)) {
       skipped.push({ name: tool.name, reason: 'not in the server tools_allowlist' });
+      continue;
+    }
+    if (tool.name.trim() === '') {
+      skipped.push({ name: tool.name, reason: 'empty tool name' });
       continue;
     }
     const id = namespacedId(serverId, tool.name);
@@ -72,7 +81,7 @@ export function buildServerToolDefs(
       });
       continue;
     }
-    if (seenIds.has(id)) {
+    if (seenToolIds.has(id)) {
       skipped.push({
         name: tool.name,
         reason: `namespaced id collides with another tool ("${id}")`,
@@ -84,7 +93,7 @@ export function buildServerToolDefs(
       skipped.push({ name: tool.name, reason: `unsupported inputSchema: ${compiled.reason}` });
       continue;
     }
-    seenIds.add(id);
+    seenToolIds.add(id);
     const validator = compiled.schema;
     const originalName = tool.name;
     defs.push({
