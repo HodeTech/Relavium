@@ -90,6 +90,13 @@ cost cap wired; model output + pasted input sanitized of terminal control sequen
 `read_media` **input** access (D12) — which 2.S had pointed at 2.M — was **split into a dedicated,
 security-reviewed follow-up** (maintainer-approved); the 2.M REPL shipped without it (tracked in
 [deferred-tasks.md](deferred-tasks.md)).
+**Also landed — the rest of the agent-first chat family:** **2.N** (`relavium chat-resume` — reload + continue a
+persisted session over a shared REPL), **2.O** (`chat-list` — over a new additive `SessionStore.listSessions`
+read seam), **2.P** (`chat-export` + the in-REPL `/export` — session → `.relavium.yaml` scaffold, [ADR-0026](../decisions/0026-session-export-to-workflow.md)),
+and **2.Q** (`chat --json` — a headless `SessionEvent` NDJSON driver — + the one-shot `relavium agent run` with a
+minimal in-house `--fixture` cassette for deterministic offline replay), all ✅ **Done (PR #55, 2026-06-26)** —
+**no new ADR** — completing the agent-first CLI lane. (`agent run --input` is reserved/rejected until session
+`{{ctx.*}}` prompt interpolation lands — a tracked engine follow-up in [deferred-tasks.md](deferred-tasks.md).)
 **Next pickup:** **2.R** (the inbound MCP client, [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) — off
 the M3 critical path and the Phase-3 go/no-go, so it completes in-phase without blocking Phase 3); the full
 status-aware order is the [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. See the

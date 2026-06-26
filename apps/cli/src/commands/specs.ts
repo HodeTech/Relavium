@@ -35,11 +35,12 @@ import { statusCommand } from './status.js';
  * The documented command surface (canonical home:
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
- * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N),
- * `chat-list` (2.O), `chat-export` (2.P), and `agent run` (2.Q) — via their `register*` functions below; only
- * `budget resume` (a tracked follow-up) remains a clean stub here (so the documented "not available yet"
- * message — not commander's "unknown command" — is what a user sees) until it lands.
+ * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams.
+ * The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), `chat-export`
+ * (2.P), and `agent run` (2.Q) — via their `register*` functions below. The remaining `STUB_COMMANDS` are the
+ * authoring commands `create` / `import` / `export` (2.J), `init` (a later workstream), and `budget resume`
+ * (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message (not commander's
+ * "unknown command") until it lands.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */

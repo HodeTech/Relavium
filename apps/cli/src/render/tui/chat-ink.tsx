@@ -250,5 +250,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
  * Select the chat driver by surface (2.Q): `--json` ⇒ the headless NDJSON `SessionEvent` stream (machine
  * output wins over the TTY); else a real TTY ⇒ the ink REPL; else the plain non-TTY line loop.
  */
-export const selectChatDriver: ChatDriver = (ctx) =>
-  ctx.global.json ? driveJson(ctx) : ctx.io.stdoutIsTty ? driveInk(ctx) : drivePlain(ctx);
+export const selectChatDriver: ChatDriver = (ctx) => {
+  if (ctx.global.json) return driveJson(ctx); // machine output wins over the TTY
+  return ctx.io.stdoutIsTty ? driveInk(ctx) : drivePlain(ctx);
+};

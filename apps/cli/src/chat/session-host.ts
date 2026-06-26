@@ -218,8 +218,7 @@ export function buildResumedChatSession(
   // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a
   // single-writer assumption — the next seq is read at load time, so two concurrent resumes of the SAME
   // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
-  const nextSequenceNumber =
-    messages.reduce((max, m) => (m.sequenceNumber > max ? m.sequenceNumber : max), -1) + 1;
+  const nextSequenceNumber = messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
   return {
     session,
     handle,

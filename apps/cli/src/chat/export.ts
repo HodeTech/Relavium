@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { serializeWorkflow, sessionToWorkflow } from '@relavium/core';
@@ -67,25 +67,30 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
     opts.outPath === undefined
       ? join(opts.cwd, `${opts.sessionId}.relavium.yaml`)
       : resolve(opts.cwd, opts.outPath);
-  if (!opts.force && existsSync(path)) {
-    throw new CliError('invalid_invocation', `${path} already exists — pass --force to overwrite`);
-  }
   try {
     // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, yaml, 'utf8');
+    // Atomic create: `wx` fails with EEXIST if the target already exists — no TOCTOU window between a
+    // separate existence check and the write; `w` truncates/overwrites under `--force`.
+    writeFileSync(path, yaml, { encoding: 'utf8', flag: opts.force ? 'w' : 'wx' });
   } catch (err) {
-    // A structurally-invalid `--out` (a directory target → EISDIR; a file used as a dir → ENOTDIR) is an
-    // INVOCATION fault (exit 2), not an opaque exit-1 crash. Other write faults (permissions, disk) propagate.
     const code =
       err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+    // An existing target without `--force` (EEXIST) is the no-overwrite fault; a structurally-invalid
+    // `--out` (a directory → EISDIR; a file used as a dir → ENOTDIR) is also an INVOCATION fault (exit 2).
+    // Other write faults (permissions, disk) propagate.
+    if (code === 'EEXIST') {
+      throw new CliError(
+        'invalid_invocation',
+        `${path} already exists — pass --force to overwrite`,
+        { cause: err },
+      );
+    }
     if (code === 'EISDIR' || code === 'ENOTDIR') {
       throw new CliError(
         'invalid_invocation',
         `cannot write ${path}: the target path is not a file`,
-        {
-          cause: err,
-        },
+        { cause: err },
       );
     }
     throw err;
@@ -93,6 +98,6 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
 
   // The session is append-only; the next event/seq is one past the durable MAX (a fold, not a spread).
   const sequenceNumber =
-    loaded.messages.reduce((max, m) => (m.sequenceNumber > max ? m.sequenceNumber : max), -1) + 1;
+    loaded.messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
   return { path, workflowId: definition.workflow.id, sequenceNumber, record: loaded.session };
 }

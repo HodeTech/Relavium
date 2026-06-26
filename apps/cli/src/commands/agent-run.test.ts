@@ -165,47 +165,19 @@ describe('agentRunCommand (2.Q)', () => {
     );
   });
 
-  it('threads --input k=v into the session context variables (a value may contain =)', async () => {
-    const { d } = deps('hi', { providers: scriptedResolver([textTurn('ok')]) });
-    expect(
-      await agentRunCommand({ agent: agentPath(), input: ['file=./x.ts', 'expr=a=b'] }, d),
-    ).toBe(EXIT_CODES.success);
+  it('rejects --input as not-yet-supported (session prompt interpolation is a pending engine change)', async () => {
+    // --input is RESERVED: a session does not interpolate {{ctx.*}} into the prompt yet, so exposing it as a
+    // working flag would mislead. It fails loud (exit 2) — before reading stdin — until interpolation lands.
+    const { d } = deps('hi', { providers: scriptedResolver([textTurn('x')]) });
+    await expect(
+      agentRunCommand({ agent: agentPath(), input: ['file=./x.ts'] }, d),
+    ).rejects.toThrow(/`--input` is not supported yet/);
   });
 
   it('rejects an empty stdin prompt as a clean exit-2 fault', async () => {
     const { d } = deps('   ', { providers: scriptedResolver([]) });
     await expect(agentRunCommand({ agent: agentPath(), input: [] }, d)).rejects.toThrow(
       /no input message/,
-    );
-  });
-
-  it('rejects a malformed --input (no `=` or empty key) as a clean exit-2 fault', async () => {
-    // A fresh deps per call — the injected stdin stream is single-use (drained by the first invocation).
-    await expect(
-      agentRunCommand(
-        { agent: agentPath(), input: ['noequals'] },
-        deps('hi', { providers: scriptedResolver([textTurn('x')]) }).d,
-      ),
-    ).rejects.toThrow(/expected key=value/);
-    await expect(
-      agentRunCommand(
-        { agent: agentPath(), input: ['=value'] }, // an empty key (leading `=`) is rejected
-        deps('hi', { providers: scriptedResolver([textTurn('x')]) }).d,
-      ),
-    ).rejects.toThrow(/expected key=value/);
-  });
-
-  it('accepts an empty --input value (k= ⇒ a legitimate empty variable)', async () => {
-    const { d } = deps('hi', { providers: scriptedResolver([textTurn('ok')]) });
-    expect(await agentRunCommand({ agent: agentPath(), input: ['k='] }, d)).toBe(
-      EXIT_CODES.success,
-    );
-  });
-
-  it('rejects a duplicate --input key as a clean exit-2 fault', async () => {
-    const { d } = deps('hi', { providers: scriptedResolver([textTurn('x')]) });
-    await expect(agentRunCommand({ agent: agentPath(), input: ['k=1', 'k=2'] }, d)).rejects.toThrow(
-      /duplicate --input key/,
     );
   });
 

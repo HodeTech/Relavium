@@ -5,6 +5,7 @@ import { openSessionStore, type OpenedSessionStore } from '../history/session-op
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { sanitizeInline } from '../render/tui/chat-projection.js';
 import { writeRecordLines } from '../render/records.js';
 
 export interface ChatListCommandDeps {
@@ -56,7 +57,10 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
  * and the title (if any).
  */
 function renderLine(session: AgentSessionRecord): string {
-  const title = session.title === undefined ? '' : `  "${session.title}"`;
+  // The title is user/model-supplied persisted text — sanitize ANSI/OSC/control bytes + collapse tab/newline
+  // so a crafted title cannot break the one-row layout or inject a terminal escape (the other fields are
+  // schema-constrained: id is a uuid, agentSlug a kebab id, status an enum, updatedAt an ISO timestamp).
+  const title = session.title === undefined ? '' : `  "${sanitizeInline(session.title)}"`;
   return `  ${session.id}  ${session.agentSlug}  [${session.status}]  ${session.updatedAt}${title}\n`;
 }
 

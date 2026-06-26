@@ -81,23 +81,24 @@ A cassette is a single JSON object:
   output (consistent with every other CLI load fault).
 - The replay provider answers **only** for the cassette's `provider` id and returns a fixed, non-secret
   dummy key from `keyFor` — it never reads the OS keychain or an env var, so a fixture run needs no key
-  configured. (A cassette is committed test data; it records only model output and contains **no secret** —
-  the same no-secret rules as every other surface apply, [keychain-and-secrets.md](../desktop/keychain-and-secrets.md).)
+  configured. **A cassette is NOT inherently secret-free**: its `text_delta` and `tool_result` chunks
+  capture real model output and tool results, which **may contain sensitive content** — scrub/redact a
+  cassette before committing it, exactly as any other recorded fixture (the same no-secret rules as every
+  other surface apply, [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
 - An **unscripted** `stream()` call (the agent makes more provider calls than the cassette recorded) fails
   **loudly** — an extra LLM invocation is a fixture/agent mismatch bug, never a silent empty turn (mirroring
   `scriptedProvider`). The run exits non-zero rather than fabricating output.
 
 ## Usage
 
-The one-shot **prompt is read from stdin** (the `echo … | relavium agent run` idiom); `--input k=v` adds
-session `{{ctx.*}}` variables (carried in the `SessionContext` and visible on the `session:started` event;
-prompt **interpolation** of `{{ctx.*}}` inside a session is a Phase-1 engine concern not yet wired —
-[deferred-tasks.md](../../roadmap/deferred-tasks.md)); `--fixture` makes the run deterministic and offline.
+The one-shot **prompt is read from stdin** (the `echo … | relavium agent run` idiom); `--fixture` makes the
+run deterministic and offline. _(`--input k=v` is **reserved** — currently rejected (exit `2`): a session
+does not yet interpolate `{{ctx.*}}` into the agent prompt, a tracked engine follow-up,
+[deferred-tasks.md](../../roadmap/deferred-tasks.md).)_
 
 ```bash
 # deterministic, offline single-turn agent run (prompt on stdin)
-echo "review this file" | relavium agent run code-reviewer --input file=./src/index.ts \
-  --fixture ./fixtures/review.cassette.json
+echo "review this file" | relavium agent run code-reviewer --fixture ./fixtures/review.cassette.json
 
 # machine-readable: the session:* + agent:* NDJSON stream (ADR-0049), one event per line on stdout
 echo "review this file" | relavium agent run code-reviewer --fixture ./fixtures/review.cassette.json --json

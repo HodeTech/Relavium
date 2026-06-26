@@ -102,7 +102,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
 | `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
 | `relavium chat-export <sessionId>` | Export a session to a `.relavium.yaml` scaffold for review ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
-| `relavium agent run <agent> [--input k=v] [--fixture <path>] [--json]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
+| `relavium agent run <agent> [--fixture <path>] [--json]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create` | Scaffold a new workflow or agent YAML via an interactive wizard. |
 | `relavium import <path>` | Import an external `.relavium.yaml` / `.agent.yaml` into the project. |
@@ -208,14 +208,14 @@ Exports a persisted session to a `.relavium.yaml` **scaffold** for review before
 Runs a single agent **one-shot** (non-interactive) on the same `AgentSession` infra as `relavium chat` — a session with one turn, then exit. The agent-first headline as a scriptable, CI-friendly primitive.
 
 ```bash
-echo "summarize ./README.md" | relavium agent run code-reviewer --input file=./README.md
+echo "summarize ./README.md" | relavium agent run code-reviewer
 echo "review it" | relavium agent run ./agents/coder.agent.yaml --json
 echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.cassette.json --json
 ```
 
 - The `<agent>` argument is required — a `.agent.yaml` path or a `.relavium/`-discoverable agent id (resolved by the same strict parser `relavium chat --agent` uses). An unknown agent is an invalid invocation (exit `2`).
 - **The prompt is read from stdin** (the `echo … | relavium agent run` idiom); an empty stdin is an invalid invocation (exit `2`).
-- `--input k=v` (repeatable) adds session `{{ctx.*}}` context variables (plaintext, **no secrets**); a malformed pair (no `=`, empty key) or a duplicate key exits `2`. _(Carried in the `SessionContext` and visible on the `session:started` event; prompt **interpolation** of `{{ctx.*}}` inside a session is a Phase-1 engine concern not yet wired — see [deferred-tasks.md](../../roadmap/deferred-tasks.md).)_
+- `--input k=v` is **reserved** — currently **rejected** (exit `2`): a session does not yet interpolate `{{ctx.*}}` into the agent's prompt (the engine passes `system_prompt` verbatim), so the flag is failed loud rather than exposed as an inert no-op. It re-opens when session prompt interpolation lands (a tracked engine follow-up, [deferred-tasks.md](../../roadmap/deferred-tasks.md)).
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
 - **Not persisted** — a stateless invoke (no `history.db` row), unlike the REPL. The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).

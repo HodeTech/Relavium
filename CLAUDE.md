@@ -59,7 +59,10 @@ history landed (2.I — PR #48, no new ADR); and CLI packaging, distribution & i
 exit criteria now hold and Phase 3 may start**; and media host-wiring landed (2.S — PR #52, behind ADR-0042–0046,
 no new ADR), **the first additive lane done**; and the agent-first `relavium chat` REPL landed (2.M — PR #54,
 2026-06-26, no new ADR — covered by ADR-0024/0047/0028/0050/0029; `read_media` **input** access split into a
-dedicated, security-reviewed follow-up, so 2.M's REPL shipped without it). The next pickup is 2.R
+dedicated, security-reviewed follow-up, so 2.M's REPL shipped without it); and the rest of the agent-first chat
+family landed — `relavium chat-resume` (2.N), `chat-list` (2.O), `chat-export` + the in-REPL `/export` (2.P),
+and `chat --json` + one-shot `agent run` (with `--fixture` cassette replay) (2.Q) — **PR #55, no new ADR**,
+completing the agent-first CLI lane. The next pickup is 2.R
 (the inbound MCP client, ADR-0034 — off the M3 critical path and the Phase-3 go/no-go). For live status, per-PR history,
 milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the

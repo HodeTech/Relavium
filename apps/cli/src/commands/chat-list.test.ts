@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,8 +12,8 @@ import type { OpenedSessionStore } from '../history/session-open.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { chatListCommand, type ChatListCommandDeps } from './chat-list.js';
 
-function globalOptions(json = false): GlobalOptions {
-  return { json, color: false, cwd: process.cwd(), configPath: undefined, verbosity: 'normal' };
+function globalOptions(cwd: string, json = false): GlobalOptions {
+  return { json, color: false, cwd, configPath: undefined, verbosity: 'normal' };
 }
 
 const CTX = { workingDir: '/workspace', fsScopeTier: 'sandboxed' as const };
@@ -32,24 +36,41 @@ function makeSession(overrides: Partial<AgentSessionRecord> = {}): AgentSessionR
 describe('chatListCommand (2.O)', () => {
   let client: DbClient;
   let opened: OpenedSessionStore;
+  let cwd: string;
 
   beforeEach(() => {
     client = createClient(':memory:');
     runMigrations(client.db);
     opened = { store: createSessionStore(client.db), db: client.db, close: () => {} };
+    // A test-local cwd, so loadResolvedConfig() can never walk up into the real repo's `.relavium/` config.
+    cwd = mkdtempSync(join(tmpdir(), 'relavium-chatlist-cwd-'));
   });
   afterEach(() => {
     client.sqlite.close();
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   function deps(io: ReturnType<typeof captureIo>['io'], json = false): ChatListCommandDeps {
-    return { io, global: globalOptions(json), openSessionStore: () => opened };
+    return { io, global: globalOptions(cwd, json), openSessionStore: () => opened };
   }
 
   it('reports an empty history clearly (exit 0)', () => {
     const { io, out } = captureIo();
     expect(chatListCommand(deps(io))).toBe(EXIT_CODES.success);
     expect(out()).toBe('No agent sessions yet.\n');
+  });
+
+  it('sanitizes a crafted session title (no ANSI/control injection, no row break)', () => {
+    // A persisted title with an OSC/CSI escape + a newline must not break the one-row layout or inject a
+    // terminal control sequence; the bytes are stripped and the newline collapsed to a space.
+    opened.store.createSession(makeSession({ id: 'sess-x', title: '\x1b]0;pwn\x07evil\nrow2' }));
+    const { io, out } = captureIo();
+    expect(chatListCommand(deps(io))).toBe(EXIT_CODES.success);
+    const text = out();
+    expect(text).not.toContain('\x1b'); // the escape introducer is gone
+    expect(text).not.toContain('\x07'); // and its BEL terminator
+    expect(text).toContain('"evil row2"'); // the visible text survives, the newline collapsed to a space
+    expect(text.trimEnd().split('\n')).toHaveLength(2); // heading + ONE session row (no smuggled extra line)
   });
 
   it('emits a pure-empty stdout for an empty history under --json and closes the store', () => {
