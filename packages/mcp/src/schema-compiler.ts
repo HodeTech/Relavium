@@ -122,35 +122,65 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
     }
   }
 
-  // `const` and `enum` short-circuit the type machinery (they fully constrain the value).
-  if ('const' in node) {
-    return literalSchema(node['const']);
-  }
-  if ('enum' in node) {
-    return enumSchema(node['enum']);
-  }
+  // `const`/`enum` constrain to specific values; `type` constrains the shape. When BOTH are present they
+  // must BOTH hold (JSON-Schema semantics) — we INTERSECT, so a contradictory `{type:'number', enum:['a']}`
+  // accepts nothing rather than admitting the type-forbidden member.
+  const constOrEnum = readConstOrEnum(node, budget);
+  const { types, nullable, typeDeclared } = readTypes(node);
 
-  const { types, nullable } = readTypes(node);
-  if (types.length === 0) {
-    // No `type`, `const`, or `enum`: an unconstrained schema (e.g. `{}` or a description-only node). The
-    // gate is *shape*, not exhaustive constraint, so accept any value — MCP servers emit `{}` for no-arg tools.
-    return nullable ? z.unknown().nullable() : z.unknown();
+  let base: z.ZodTypeAny;
+  if (constOrEnum !== undefined) {
+    base =
+      types.length === 0
+        ? constOrEnum
+        : z.intersection(constOrEnum, buildTypeUnion(types, node, budget, depth));
+  } else if (types.length > 0) {
+    base = buildTypeUnion(types, node, budget, depth);
+  } else if (typeDeclared && nullable) {
+    // The declared type was null-only (`type: 'null'` / `['null']`) — ENFORCE null, never "accept anything".
+    base = z.null();
+  } else {
+    // No `type`/`const`/`enum`: an unconstrained schema (`{}` / description-only) — accept any value (the
+    // gate is *shape*, not exhaustive constraint; MCP servers emit `{}` for a no-arg tool).
+    base = z.unknown();
   }
-
-  const built = types.map((t) => compileTyped(t, node, budget, depth));
-  const base: z.ZodTypeAny =
-    built.length === 1
-      ? built[0]!
-      : z.union(built as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
   return nullable ? base.nullable() : base;
 }
 
-/** Read the declared `type`(s), folding a `'null'` member or `nullable: true` into a nullability flag. */
-function readTypes(node: Record<string, unknown>): { types: string[]; nullable: boolean } {
+/** `const` → a single literal; `enum` → a union of literal members (budget-charged); neither ⇒ `undefined`. */
+function readConstOrEnum(node: Record<string, unknown>, budget: Budget): z.ZodTypeAny | undefined {
+  if ('const' in node) return literalSchema(node['const']);
+  if ('enum' in node) return enumSchema(node['enum'], budget);
+  return undefined;
+}
+
+/** Compile the declared non-null `type`(s) into one schema — a single type, or a union of them. */
+function buildTypeUnion(
+  types: readonly string[],
+  node: Record<string, unknown>,
+  budget: Budget,
+  depth: number,
+): z.ZodTypeAny {
+  const built = types.map((t) => compileTyped(t, node, budget, depth));
+  return built.length === 1
+    ? built[0]!
+    : z.union(built as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+}
+
+/**
+ * Read the declared `type`(s), folding a `'null'` member or `nullable: true` into a nullability flag.
+ * `typeDeclared` distinguishes a null-only declaration (`type: 'null'` ⇒ ENFORCE null) from an ABSENT type
+ * (⇒ unconstrained) — without it a null-only schema would wrongly compile to "accept anything".
+ */
+function readTypes(node: Record<string, unknown>): {
+  types: string[];
+  nullable: boolean;
+  typeDeclared: boolean;
+} {
   const raw = node['type'];
   let nullable = node['nullable'] === true;
   if (raw === undefined) {
-    return { types: [], nullable };
+    return { types: [], nullable, typeDeclared: false };
   }
   const list = Array.isArray(raw) ? raw : [raw];
   const types: string[] = [];
@@ -164,7 +194,7 @@ function readTypes(node: Record<string, unknown>): { types: string[]; nullable: 
     }
     types.push(entry);
   }
-  return { types, nullable };
+  return { types, nullable, typeDeclared: true };
 }
 
 function compileTyped(
@@ -182,8 +212,8 @@ function compileTyped(
       return numberSchema(node, false);
     case 'boolean':
       return z.boolean();
-    case 'null':
-      return z.null();
+    // `'null'` never reaches here — `readTypes` strips it into the nullability flag, and a null-ONLY
+    // declaration is enforced as `z.null()` in `compileNode`. A stray `'null'` would fall to `default`.
     case 'object':
       return objectSchema(node, budget, depth);
     case 'array':
@@ -232,8 +262,10 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
       `object declares more than the maximum of ${MAX_PROPERTIES} properties`,
     );
   }
-  const required = readRequired(node);
-  const shape: Record<string, z.ZodTypeAny> = {};
+  const required = readRequired(node, budget);
+  // A null-prototype map so a property literally named `__proto__` becomes an OWN key `z.object` can see —
+  // a plain `{}` would route `shape['__proto__'] = …` to the prototype setter and silently drop the property.
+  const shape: Record<string, z.ZodTypeAny> = Object.create(null) as Record<string, z.ZodTypeAny>;
   for (const [name, propSchema] of propEntries) {
     const compiled = compileNode(propSchema, budget, depth + 1);
     shape[name] = required.has(name) ? compiled : compiled.optional();
@@ -251,11 +283,15 @@ function additionalPropsMode(node: Record<string, unknown>): 'strict' | 'passthr
   return additional === false ? 'strict' : 'passthrough';
 }
 
-function readRequired(node: Record<string, unknown>): Set<string> {
+function readRequired(node: Record<string, unknown>, budget: Budget): Set<string> {
   const required = node['required'];
   if (required === undefined) return new Set();
   if (!Array.isArray(required) || !required.every((r): r is string => typeof r === 'string')) {
     throw new UnsupportedSchemaError('`required` must be an array of strings');
+  }
+  // Charge the list length against the shared node budget so a huge `required` array fails closed (a DoS).
+  if ((budget.nodes += required.length) > MAX_NODES) {
+    throw new UnsupportedSchemaError(`schema exceeds the maximum of ${MAX_NODES} nodes`);
   }
   return new Set(required);
 }
@@ -288,12 +324,17 @@ function literalSchema(value: unknown): z.ZodTypeAny {
   throw new UnsupportedSchemaError('`const` must be a string, number, boolean, or null');
 }
 
-function enumSchema(value: unknown): z.ZodTypeAny {
+function enumSchema(value: unknown, budget: Budget): z.ZodTypeAny {
   if (!Array.isArray(value) || value.length === 0) {
     throw new UnsupportedSchemaError('`enum` must be a non-empty array');
   }
   if (value.length > MAX_ENUM_MEMBERS) {
     throw new UnsupportedSchemaError(`\`enum\` exceeds the maximum of ${MAX_ENUM_MEMBERS} members`);
+  }
+  // Charge the members against the shared node budget so MANY enum-bearing nodes (each within the per-enum
+  // cap) cannot multiply into an unbounded compile — the budget is the real TOTAL-work bound, not the cap.
+  if ((budget.nodes += value.length) > MAX_NODES) {
+    throw new UnsupportedSchemaError(`schema exceeds the maximum of ${MAX_NODES} nodes`);
   }
   if (!value.every(isJsonScalar)) {
     throw new UnsupportedSchemaError('`enum` members must be string/number/boolean/null scalars');

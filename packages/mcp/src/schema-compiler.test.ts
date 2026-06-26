@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { compileJsonSchemaToZod, MAX_DEPTH, MAX_NODES } from './schema-compiler.js';
+import {
+  compileJsonSchemaToZod,
+  MAX_DEPTH,
+  MAX_ENUM_MEMBERS,
+  MAX_NODES,
+  MAX_PROPERTIES,
+} from './schema-compiler.js';
 
 /** Compile a schema expected to succeed, returning the Zod validator (fails the test if it did not). */
 function compileOk(schema: unknown) {
@@ -104,6 +110,83 @@ describe('compileJsonSchemaToZod — supported subset (happy paths)', () => {
     expect(compileOk(true).safeParse({ x: 1 }).success).toBe(true);
     expect(compileOk(false).safeParse('anything').success).toBe(false);
   });
+
+  it('ENFORCES type:null as null-only (a declared, supported type is actually validated)', () => {
+    const schema = compileOk({ type: 'null' });
+    expect(schema.safeParse(null).success).toBe(true);
+    expect(schema.safeParse(5).success).toBe(false); // not "accept anything"
+    expect(schema.safeParse('x').success).toBe(false);
+    expect(compileOk({ type: ['null'] }).safeParse({}).success).toBe(false);
+    // and as a required property — proving the gate enforces it
+    const obj = compileOk({ type: 'object', properties: { n: { type: 'null' } }, required: ['n'] });
+    expect(obj.safeParse({ n: null }).success).toBe(true);
+    expect(obj.safeParse({ n: 5 }).success).toBe(false);
+  });
+
+  it('covers the remaining scalar types and const values', () => {
+    expect(compileOk({ type: 'boolean' }).safeParse(true).success).toBe(true);
+    expect(compileOk({ type: 'boolean' }).safeParse('x').success).toBe(false);
+    expect(compileOk({ type: 'number' }).safeParse(1.5).success).toBe(true);
+    expect(compileOk({ type: 'integer' }).safeParse(1.5).success).toBe(false); // the int constraint holds
+    expect(compileOk({ const: null }).safeParse(null).success).toBe(true);
+    expect(compileOk({ const: null }).safeParse(0).success).toBe(false);
+    expect(compileOk({ const: true }).safeParse(true).success).toBe(true);
+    expect(compileOk({ const: 'go' }).safeParse('go').success).toBe(true);
+  });
+
+  it('intersects a `type` with `enum`/`const` (a contradictory pair accepts nothing)', () => {
+    const contradictory = compileOk({ type: 'number', enum: ['a', 'b'] });
+    expect(contradictory.safeParse('a').success).toBe(false); // 'a' is not a number
+    expect(contradictory.safeParse(1).success).toBe(false); // 1 is not an enum member
+    const consistent = compileOk({ type: 'number', enum: [1, 2] });
+    expect(consistent.safeParse(1).success).toBe(true);
+    expect(consistent.safeParse(3).success).toBe(false);
+  });
+
+  it('honors additionalProperties as a schema (passthrough) and explicit `true`', () => {
+    const asSchema = compileOk({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      additionalProperties: { type: 'number' },
+    });
+    // additionalProperties-as-a-schema is treated as allowed-but-not-typed: extras pass through, never reject.
+    expect(asSchema.safeParse({ a: 'x', extra: 'not-a-number' }).success).toBe(true);
+    const explicitTrue = compileOk({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      additionalProperties: true,
+    });
+    expect(explicitTrue.safeParse({ a: 'x', extra: 1 }).success).toBe(true);
+  });
+
+  it('handles a property named __proto__ without corrupting the shape or polluting', () => {
+    // Building `shape['__proto__'] = …` on a plain `{}` would hit the prototype SETTER and corrupt the shape
+    // object; the null-prototype shape map keeps our builder correct. (zod itself guards `__proto__` on input
+    // — its own prototype-pollution defense — so the value simply passes through, never validated nor harmful.)
+    const result = compileJsonSchemaToZod({
+      type: 'object',
+      properties: { __proto__: { type: 'string' }, ok: { type: 'string' } },
+      required: ['ok'],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The sibling, normally-named key still validates correctly — proving the shape was NOT corrupted.
+    expect(result.schema.safeParse({ ok: 'x' }).success).toBe(true);
+    expect(result.schema.safeParse({ ok: 5 }).success).toBe(false);
+    // Parsing an input with a hostile `__proto__` never pollutes Object.prototype.
+    result.schema.safeParse({ ok: 'x', ['__proto__']: { polluted: true } });
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+
+  it('honors array minItems/maxItems and string maxLength bounds', () => {
+    const arr = compileOk({ type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 3 });
+    expect(arr.safeParse(['a']).success).toBe(false);
+    expect(arr.safeParse(['a', 'b']).success).toBe(true);
+    expect(arr.safeParse(['a', 'b', 'c', 'd']).success).toBe(false);
+    const str = compileOk({ type: 'string', maxLength: 3 });
+    expect(str.safeParse('abcd').success).toBe(false);
+    expect(str.safeParse('abc').success).toBe(true);
+  });
 });
 
 describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial input', () => {
@@ -168,5 +251,58 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
       expect(() => compileJsonSchemaToZod(bad)).not.toThrow();
       expect(compileJsonSchemaToZod(bad).ok).toBe(false);
     }
+  });
+
+  it('fails closed on the per-node MAX_PROPERTIES and MAX_ENUM_MEMBERS caps', () => {
+    const wideProps: Record<string, unknown> = {};
+    for (let i = 0; i < MAX_PROPERTIES + 1; i += 1) wideProps[`p${i}`] = { type: 'string' };
+    const propsResult = compileJsonSchemaToZod({ type: 'object', properties: wideProps });
+    expect(propsResult.ok).toBe(false);
+    expect(propsResult.ok === false && propsResult.reason).toMatch(/propert/i);
+
+    const bigEnum = Array.from({ length: MAX_ENUM_MEMBERS + 1 }, (_, i) => `m${i}`);
+    const enumResult = compileJsonSchemaToZod({ enum: bigEnum });
+    expect(enumResult.ok).toBe(false);
+    expect(enumResult.ok === false && enumResult.reason).toMatch(/enum/);
+  });
+
+  it('fails closed on an unknown type and malformed required/properties', () => {
+    expect(compileJsonSchemaToZod({ type: 'frobnicate' }).ok).toBe(false);
+    expect(
+      compileJsonSchemaToZod({
+        type: 'object',
+        properties: { a: { type: 'string' } },
+        required: 'a',
+      }).ok,
+    ).toBe(false);
+    expect(
+      compileJsonSchemaToZod({
+        type: 'object',
+        properties: { a: { type: 'string' } },
+        required: [1],
+      }).ok,
+    ).toBe(false);
+    expect(compileJsonSchemaToZod({ type: 'object', properties: [1, 2] }).ok).toBe(false);
+  });
+
+  it('fails closed on a huge `required` array (the node budget bounds total work, not just count)', () => {
+    const required = Array.from({ length: MAX_NODES + 5 }, (_, i) => `r${i}`);
+    const props: Record<string, unknown> = {};
+    for (const name of required.slice(0, 3)) props[name] = { type: 'string' };
+    const result = compileJsonSchemaToZod({ type: 'object', properties: props, required });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
+  });
+
+  it('fails closed on a within-per-node-caps but high-TOTAL-work enum schema (the DoS the budget closes)', () => {
+    // Each enum is within MAX_ENUM_MEMBERS and the object within MAX_PROPERTIES, but the TOTAL enum work
+    // (props × members) far exceeds MAX_NODES — the shared budget trips, so it rejects fast (no multi-second
+    // compile). This is the multiplicative-bypass the Opus review found; the budget now debits enum members.
+    const props: Record<string, unknown> = {};
+    const members = Array.from({ length: MAX_ENUM_MEMBERS }, (_, i) => `m${i}`);
+    for (let i = 0; i < 50; i += 1) props[`p${i}`] = { enum: members }; // 50 × 1000 ≫ MAX_NODES
+    const result = compileJsonSchemaToZod({ type: 'object', properties: props });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
   });
 });
