@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-25
+> Last updated: 2026-06-26
 
 - **Related**: [README.md](README.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -76,7 +76,20 @@ sub-spine: the `model_catalog` reader → `resolveMediaSurface` routing + the D1
 `EgressCapability.fetch` egress, the containment-checked `save_to` write port, durable fail-cost on the terminal
 events, the produced-media render surface, and the best-effort run-end host media GC), ✅ Done (PR #52, 2026-06-25)
 behind [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)–[ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md)
-(no new ADR — `read_media` input access deferred to 2.M).
+(no new ADR).
+**Also landed — the first user-facing `AgentSession` surface:** **2.M** (`relavium chat` — the agent-first
+interactive REPL over `AgentSession`: streaming tokens, tool-call annotations, the FS-scope tier + `allowedCommands`
+allowlist honored, `git_commit` denied; `/exit` / `/cancel` / an input-stream EOF / raw-mode Ctrl-C all end the
+session with **exit code 4** — over ONE framework-free command core driving both an `ink` TTY app and a plain
+non-TTY line loop; a built-in default agent over `[chat].default_model` for a zero-config first run; durable
+per-turn persistence to the shared `history.db` that round-trips via `reconstructSessionState`; the ADR-0028
+cost cap wired; model output + pasted input sanitized of terminal control sequences at the display boundary),
+✅ Done (PR #54, 2026-06-26) — **no new ADR** (covered by [ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md),
+[ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md), [ADR-0028](../decisions/0028-workflow-resource-governance.md),
+[ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md), [ADR-0029](../decisions/0029-tool-policy-hardening.md)).
+`read_media` **input** access (D12) — which 2.S had pointed at 2.M — was **split into a dedicated,
+security-reviewed follow-up** (maintainer-approved); the 2.M REPL shipped without it (tracked in
+[deferred-tasks.md](deferred-tasks.md)).
 **Next pickup:** **2.R** (the inbound MCP client, [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) — off
 the M3 critical path and the Phase-3 go/no-go, so it completes in-phase without blocking Phase 3); the full
 status-aware order is the [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. See the
