@@ -73,12 +73,19 @@ describe('startMcpClient', () => {
     expect(closed).toBe(true); // the already-opened 'ok' connection was torn down
   });
 
-  it('fails loud if tools/list fails at discovery', async () => {
+  it('fails loud if tools/list fails at discovery, tearing down an already-listed connection', async () => {
+    let okClosed = false;
     await expect(
       startMcpClient([
-        { id: 's', open: () => Promise.resolve(fakeConnection([], { listThrows: true })) },
+        {
+          id: 'ok',
+          open: () =>
+            Promise.resolve(fakeConnection([t('x')], { onClose: () => (okClosed = true) })),
+        },
+        { id: 'bad', open: () => Promise.resolve(fakeConnection([], { listThrows: true })) },
       ]),
-    ).rejects.toThrow(/"s"/);
+    ).rejects.toThrow(/"bad"/);
+    expect(okClosed).toBe(true); // the connection opened + listed before the failure was torn down
   });
 
   it('rejects a duplicate server id (the routing key must be unique)', async () => {
@@ -132,5 +139,18 @@ describe('startMcpClient', () => {
       reason: 'namespaced id collides with another tool ("mcp_a_b_x")',
     });
     await client.close();
+  });
+
+  it('close() is idempotent — a second call does not double-close', async () => {
+    let closeCount = 0;
+    const client = await startMcpClient([
+      {
+        id: 'a',
+        open: () => Promise.resolve(fakeConnection([t('x')], { onClose: () => (closeCount += 1) })),
+      },
+    ]);
+    await client.close();
+    await client.close(); // closeAll snapshots + clears the map, so the second call is a no-op
+    expect(closeCount).toBe(1);
   });
 });
