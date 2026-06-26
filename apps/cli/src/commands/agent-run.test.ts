@@ -11,7 +11,7 @@ import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
-import { agentRunCommand, type AgentRunCommandDeps } from './agent-run.js';
+import { agentRunCommand, readAllStdin, type AgentRunCommandDeps } from './agent-run.js';
 
 const AGENT_YAML =
   'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.\ntools:\n  - read_file';
@@ -197,5 +197,20 @@ describe('agentRunCommand (2.Q)', () => {
     await expect(
       agentRunCommand({ agent: agentPath(), input: [], fixture: 'bad.json' }, d),
     ).rejects.toThrow(/not valid JSON/);
+  });
+});
+
+describe('readAllStdin (2.Q)', () => {
+  it('decodes a multi-byte UTF-8 character split ACROSS a chunk boundary (StringDecoder buffering)', async () => {
+    // Split the UTF-8 bytes of a multi-byte string mid-character into two Buffers; a per-chunk decode would
+    // mangle the boundary char into replacement chars (�), the StringDecoder buffers it across writes.
+    const bytes = Buffer.from('şağ🚀', 'utf8');
+    const mid = Math.floor(bytes.length / 2);
+    const stream = Readable.from([bytes.subarray(0, mid), bytes.subarray(mid)]);
+    expect(await readAllStdin(stream)).toBe('şağ🚀');
+  });
+
+  it('reads a string-yielding stream (the test fallback) verbatim', async () => {
+    expect(await readAllStdin(Readable.from(['hel', 'lo']))).toBe('hello');
   });
 });

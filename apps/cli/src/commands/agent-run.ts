@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
@@ -123,14 +124,16 @@ export async function agentRunCommand(
   return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
 }
 
-/** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). */
-async function readAllStdin(stream: NodeJS.ReadableStream): Promise<string> {
+/** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). Exported for a focused unit test. */
+export async function readAllStdin(stream: NodeJS.ReadableStream): Promise<string> {
+  // Decode binary chunks through a StringDecoder so a multi-byte UTF-8 character split ACROSS a chunk boundary
+  // is buffered (not mangled into replacement chars); `decoder.end()` flushes any trailing partial sequence. A
+  // test stream yields strings (a Buffer is itself a Uint8Array subclass), handled by the String fallback.
+  const decoder = new StringDecoder('utf8');
   let data = '';
   for await (const chunk of stream) {
-    // The chunk is untyped from NodeJS.ReadableStream. Decode any binary chunk (a Buffer — itself a Uint8Array
-    // subclass — or a plain Uint8Array) via Buffer.from so a Uint8Array is not stringified to "104,105"; a
-    // test stream yields strings, handled by the String fallback (total over `unknown`).
-    data += chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf8') : String(chunk);
+    data += chunk instanceof Uint8Array ? decoder.write(Buffer.from(chunk)) : String(chunk);
   }
+  data += decoder.end();
   return data;
 }
