@@ -127,6 +127,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           {stripTerminalControls(input)}
         </Text>
       )}
+
+      {/* Sequence-gap / out-of-order diagnostics (the live stream is no-drop, so any gap is a defect worth
+          surfacing — mirrors RunApp). Integer-only today, but sanitized for belt-and-suspenders defence. */}
+      {state.warnings.length > 0 && (
+        <Box flexDirection="column">
+          {state.warnings.map((w) => (
+            <Text key={w} {...colorProps(color, 'yellow')} wrap="truncate-end">
+              ⚠ {stripTerminalControls(w)}
+            </Text>
+          ))}
+        </Box>
+      )}
       <Text {...colorProps(color, 'gray')}>{formatSessionFooter(state)}</Text>
     </Box>
   );

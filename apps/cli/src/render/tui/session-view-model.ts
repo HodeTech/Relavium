@@ -72,8 +72,6 @@ export interface SessionViewState {
 export const MAX_LIVE_TOKEN_CHARS = 4000;
 /** Tool-call annotations kept in the in-flight turn. */
 export const MAX_LIVE_TOOL_CALLS = 16;
-/** Trailing completed transcript entries kept in state (older ones already printed to the terminal scrollback). */
-export const MAX_TRANSCRIPT_ENTRIES = 500;
 /** Recent warnings kept for display. */
 export const MAX_WARNINGS = 6;
 
@@ -104,13 +102,26 @@ function appendTokens(buffer: string, token: string): string {
 }
 
 /**
+ * Append a completed transcript entry. Unbounded + append-only BY DESIGN: ink `<Static>` (chat-ink.tsx) tracks
+ * already-printed items by the array's length delta, so trimming the head would freeze its cursor at the cap
+ * and silently stop printing every entry past it. The entries are small ({role, text, summary}); a single
+ * local chat session's transcript fits comfortably in memory.
+ */
+function appendTranscript(
+  transcript: readonly TranscriptEntry[],
+  entry: TranscriptEntry,
+): readonly TranscriptEntry[] {
+  return [...transcript, entry];
+}
+
+/**
  * Add the user's typed text as a `user` transcript entry — the REPL calls this immediately before
  * `sendMessage` (the same point it calls the persister's `beginUserTurn`), since no event carries it.
  */
 export function appendUserMessage(state: SessionViewState, text: string): SessionViewState {
   return {
     ...state,
-    transcript: pushBounded(state.transcript, { role: 'user', text }, MAX_TRANSCRIPT_ENTRIES),
+    transcript: appendTranscript(state.transcript, { role: 'user', text }),
   };
 }
 
@@ -264,7 +275,7 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
   const text = base.liveTokens;
   const show = text.length > 0 || event.error !== undefined;
   const transcript = show
-    ? pushBounded(base.transcript, { role: 'assistant', text, summary }, MAX_TRANSCRIPT_ENTRIES)
+    ? appendTranscript(base.transcript, { role: 'assistant', text, summary })
     : base.transcript;
   return {
     ...base,

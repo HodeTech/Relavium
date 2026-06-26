@@ -7,7 +7,6 @@ import {
   initialSessionViewState,
   MAX_LIVE_TOKEN_CHARS,
   MAX_LIVE_TOOL_CALLS,
-  MAX_TRANSCRIPT_ENTRIES,
   MAX_WARNINGS,
   reduceSessionEvent,
   type SessionViewState,
@@ -370,14 +369,17 @@ describe('session-view-model', () => {
     expect(reduceAll(evs).liveToolCalls).toHaveLength(MAX_LIVE_TOOL_CALLS);
   });
 
-  it('bounds the transcript to the trailing MAX_TRANSCRIPT_ENTRIES', () => {
+  it('keeps the transcript append-only and unbounded (ink <Static> tracks already-printed items by length)', () => {
     let state = initialSessionViewState();
-    for (let i = 0; i < MAX_TRANSCRIPT_ENTRIES + 5; i++) {
+    const n = 600; // well past the old 500 cap — every entry must survive, in order
+    for (let i = 0; i < n; i++) {
       state = appendUserMessage(state, `m${i}`);
     }
-    expect(state.transcript).toHaveLength(MAX_TRANSCRIPT_ENTRIES);
-    // The OLDEST entries were dropped (those already printed to the terminal scrollback).
-    expect(state.transcript[0]).toEqual({ role: 'user', text: 'm5' });
+    // NOT trimmed: head entry is still m0. Trimming the head would freeze the Static cursor and silently
+    // stop printing entries past the cap (the F11 bug).
+    expect(state.transcript).toHaveLength(n);
+    expect(state.transcript[0]).toEqual({ role: 'user', text: 'm0' });
+    expect(state.transcript[n - 1]).toEqual({ role: 'user', text: `m${n - 1}` });
   });
 
   it('bounds the warnings buffer to the trailing MAX_WARNINGS', () => {

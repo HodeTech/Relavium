@@ -107,5 +107,19 @@ describe('chat-projection', () => {
     it('leaves clean text untouched', () => {
       expect(stripTerminalControls('hello world')).toBe('hello world');
     });
+
+    it('an UNterminated OSC strips only its 2-byte introducer, preserving the following text (no silent erase)', () => {
+      // The OSC terminator is required: an unterminated ESC] must NOT swallow the rest of the string.
+      const out = stripTerminalControls('Use \x1b]0;title here and more text.');
+      expect(out).toBe('Use 0;title here and more text.'); // ESC] gone; the rest survives
+      // eslint-disable-next-line no-control-regex -- asserting the ESC byte is gone
+      expect(out).not.toMatch(/\x1b/);
+    });
+
+    it('fully consumes a terminated DCS/APC/PM string sequence (payload does not leak through)', () => {
+      // DCS ESC P … ST and APC ESC _ … BEL are stripped whole — no leftover payload (the old 3rd arm left it).
+      expect(stripTerminalControls('a\x1bPpayload\x1b\\b')).toBe('ab');
+      expect(stripTerminalControls('a\x1b_apc\x07b')).toBe('ab');
+    });
   });
 });
