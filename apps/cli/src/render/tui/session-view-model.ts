@@ -10,8 +10,10 @@ import type { StopReason } from '@relavium/shared';
  *
  * The user's typed text is NOT carried by any event, so the REPL feeds it in via {@link appendUserMessage}
  * (the synthetic `user` transcript entry), exactly as it feeds it to the persister via `beginUserTurn`; the
- * assistant side is reduced from the stream. Every derived buffer is BOUNDED so a long, high-token-rate
- * session keeps the render and memory bounded — events are never dropped, only the displayed tail is capped.
+ * assistant side is reduced from the stream. The LIVE render region is BOUNDED (the token buffer + the
+ * in-flight tool-call list) so a high-token-rate turn stays cheap; the completed `transcript`, by contrast, is
+ * append-only and UNBOUNDED because ink `<Static>` requires it (see {@link appendTranscript}). Events are
+ * never dropped.
  */
 
 /** The REPL-level session status shown in the prompt/footer. */
@@ -47,7 +49,9 @@ export interface SessionViewState {
   readonly agentRef?: string;
   readonly model?: string;
   readonly status: SessionViewStatus;
-  /** The completed conversation (user lines + completed assistant turns), bounded to the trailing entries. */
+  /** The completed conversation (user lines + completed assistant turns) — append-only and UNBOUNDED by design:
+   *  ink `<Static>` tracks already-printed items by the array's length delta, so trimming the head would freeze
+   *  its cursor at the cap and silently stop rendering entries past it (see {@link appendTranscript}). */
   readonly transcript: readonly TranscriptEntry[];
   /** The in-flight assistant text — reset per turn AND on each tool call, so it holds the active segment. */
   readonly liveTokens: string;

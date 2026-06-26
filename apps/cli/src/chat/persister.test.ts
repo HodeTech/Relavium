@@ -137,6 +137,32 @@ describe('createSessionPersister', () => {
     expect(full?.session.totalOutputTokens).toBe(55);
   });
 
+  it('resumed persister carries the seeded cost through a zero-egress turn (no cost:updated ⇒ seed survives)', async () => {
+    // A turn with no provider egress emits NO cost:updated, so the cost flush relies entirely on the seed.
+    // unresolvedResolver fails the turn `internal` before any egress; the prior row cost (1300) must survive —
+    // without initialTotalCostMicrocents the unconditional flush would reset it to 0.
+    const { built, persister } = setup(unresolvedResolver(), 5, { cost: 1300 });
+    store.createSession({
+      id: built.sessionId,
+      agentSlug: built.agent.id,
+      agentSnapshot: built.agent,
+      context: built.context,
+      status: 'ended',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 1300,
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go'); // fails internal — no provider egress, so no cost:updated fires
+
+    const full = store.loadFull(built.sessionId);
+    expect(full?.session.totalCostMicrocents).toBe(1300); // the seed survived (would be 0 if unseeded)
+  });
+
   it('persists a completed turn as a user + text-only assistant pair, and folds the token totals', async () => {
     const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
     persister.start();

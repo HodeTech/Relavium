@@ -86,7 +86,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
   },
   {
     name: 'budget',
-    summary: 'Resume a run suspended at a budget cap (`budget resume <runId>`).',
+    summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
     landsIn: 'a tracked follow-up',
   },
   {

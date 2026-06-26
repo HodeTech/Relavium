@@ -8,7 +8,9 @@ export interface CliIo {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Whether stdout is a TTY (`process.stdout.isTTY`). */
   readonly stdoutIsTty: boolean;
-  /** Input stream for line-reading surfaces (the plain `chat` loop). Defaults to `process.stdin`; tests inject. */
+  /** Input stream for line-reading surfaces (the plain `chat` loop). In production this is always `process.stdin`
+   *  (set by {@link processIo}); the `?? process.stdin` fallback in `drivePlain` exists only for tests, which
+   *  leave it `undefined` (via `captureIo`) and inject a `PassThrough`. */
   readonly stdin?: NodeJS.ReadableStream;
 }
 

@@ -312,16 +312,18 @@ describe('drivePlain', () => {
   it('a SIGINT closes the input so the loop ends and the finally removes the handler (teardown path)', async () => {
     const stdin = new PassThrough();
     const { ctx } = plainCtx(stdin);
-    const before = process.listenerCount('SIGINT');
+    // Identify drivePlain's handler by SET-DELTA (not `.at(-1)`), matching the run.test.ts pattern — robust to
+    // any other SIGINT listener the runner/host registers around it. Invoke it directly (not process.emit,
+    // which would also fire the runner's listeners); it calls rl.close(), ending the for-await loop.
+    const before = process.listeners('SIGINT').slice();
     const done = drivePlain(ctx);
-    expect(process.listenerCount('SIGINT')).toBe(before + 1); // our once-handler is registered
-
-    // Invoke OUR handler directly (the most-recently-added listener) — process.emit('SIGINT') would also fire
-    // the test runner's own listeners. The handler calls rl.close(), ending the for-await loop.
-    const handler = process.listeners('SIGINT').at(-1) as () => void;
-    handler();
+    const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
+    expect(added).toHaveLength(1);
+    const handler = added[0];
+    if (typeof handler !== 'function') throw new TypeError('expected a registered SIGINT handler');
+    handler('SIGINT'); // our onSigint ignores the arg; pass it to satisfy the SignalsListener signature
     await done;
-    expect(process.listenerCount('SIGINT')).toBe(before); // the finally removed it (teardown ran)
+    expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
   });
 });
 

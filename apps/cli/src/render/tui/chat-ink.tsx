@@ -143,8 +143,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           surfacing — mirrors RunApp). Integer-only today, but sanitized for belt-and-suspenders defence. */}
       {state.warnings.length > 0 && (
         <Box flexDirection="column">
-          {state.warnings.map((w) => (
-            <Text key={w} {...colorProps(color, 'yellow')} wrap="truncate-end">
+          {state.warnings.map((w, i) => (
+            // Index key (matching RunApp): the bounded list is replace-not-mutate, and two identical warning
+            // strings (a repeated gap) would collide on a content key, hiding the second from the display.
+            <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
               ⚠ {stripTerminalControls(w)}
             </Text>
           ))}
@@ -210,7 +212,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
 
     return exited
       .then(() => {
-        // The persistent final summary — only on a CLEAN exit; an error reject skips it and propagates (exit 1).
+        // The persistent final summary — written on any cooperative end (/exit, /cancel, keyboard Ctrl-C, or
+        // an external SIGINT, all of which resolve `exited`); an unexpected error reject skips it (→ exit 1).
         ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
       })
       .finally(() => {
