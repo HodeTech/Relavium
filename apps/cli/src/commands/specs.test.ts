@@ -40,4 +40,19 @@ describe('command registration (specs)', () => {
       /`relavium gate` requires/,
     );
   });
+
+  it('gives the documented "not available yet" message for the unshipped chat-family + budget stubs', () => {
+    // commands.md promises a clean "not available yet (lands in …)" message — not commander's "unknown
+    // command" — for the next chat-family / budget commands. These are registered as stubs (C1).
+    for (const argv of [
+      ['chat-resume', 'sess-1'],
+      ['chat-list'],
+      ['chat-export', 'sess-1'],
+      ['budget', 'resume', 'run-1'],
+    ]) {
+      const program = buildProgram(captureIo().io);
+      program.exitOverride();
+      expect(() => program.parse(['node', 'relavium', ...argv])).toThrow(/is not available yet/);
+    }
+  });
 });

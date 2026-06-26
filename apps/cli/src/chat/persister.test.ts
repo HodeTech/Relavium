@@ -110,7 +110,10 @@ describe('createSessionPersister', () => {
 
   it('resumed persister folds new-turn tokens ON TOP of the seeded prior-session totals, not from zero', async () => {
     // Simulate 2.N resume: a row with prior totals already exists AND the persister is seeded from it.
-    const { built, persister } = setup(scriptedResolver([textTurn('go')]), 5, { input: 100, output: 50 });
+    const { built, persister } = setup(scriptedResolver([textTurn('go')]), 5, {
+      input: 100,
+      output: 50,
+    });
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,

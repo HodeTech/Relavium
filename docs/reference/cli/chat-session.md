@@ -59,9 +59,11 @@ In interactive mode the REPL renders the assistant turn live: streaming token ou
 
 A chat session uses the **same** built-in `ToolRegistry` as a workflow agent ([built-in-tools.md](../shared-core/built-in-tools.md)): the same tools, the same filesystem **scope tiers**, and the same mandatory guardrails (`run_command` only ever runs commands on the `allowedCommands` allowlist — empty/absent ⇒ disabled; `git_commit` behind approval). Per [ADR-0029](../../decisions/0029-tool-policy-hardening.md), a session may only **narrow** the agent's `tools:`, never escalate; a `secret`-typed value is never interpolated into a prompt or tool text; and `http_request` / MCP egress is subject to the same SSRF policy as a workflow. The tool surface, FS tier, and command allowlist for chat all resolve from the `[chat]` block of [config-spec.md](../contracts/config-spec.md), which points back to those canonical homes.
 
-## `--json` session-event stream
+## `--json` session-event stream _(lands in **2.Q**)_
 
-For scripting and non-interactive use, `--json` switches the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`:
+> _Not yet available._ The headless `--json` chat mode ships in workstream **2.Q**; the section below is the target spec, not current behavior. Today `relavium chat` has no `--json` option, and a non-TTY invocation falls back to the plain line loop. (`session:exported` likewise depends on `/export`, which is **2.P**.)
+
+For scripting and non-interactive use, `--json` will switch the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`:
 
 ```bash
 echo "summarize ./README.md" | relavium chat --agent code-reviewer --json

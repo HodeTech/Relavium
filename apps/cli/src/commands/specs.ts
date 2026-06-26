@@ -34,8 +34,9 @@ import { statusCommand } from './status.js';
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
  * (the authoring commands at 2.J). `chat` (2.M) is a real command (`registerChat` below); the rest of the chat
- * family (`chat-resume`/`chat-list`/`chat-export`/`agent run`) and `budget resume` land with their workstreams
- * (2.N–2.Q; a tracked follow-up), not here.
+ * family (`chat-resume`/`chat-list`/`chat-export`/`agent run`) and `budget resume` are likewise registered as
+ * clean stubs here (so the documented "not available yet" message — not commander's "unknown command" — is
+ * what a user sees) until their workstreams land (2.N–2.Q; a tracked follow-up).
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -68,6 +69,26 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     landsIn: 'workstream 2.J',
   },
   { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.N–2.Q' },
+  {
+    name: 'chat-resume <sessionId>',
+    summary: 'Reload a persisted session from history.db and continue the conversation.',
+    landsIn: 'workstreams 2.N–2.Q',
+  },
+  {
+    name: 'chat-list',
+    summary: 'List past agent sessions (id, agent, last activity).',
+    landsIn: 'workstreams 2.N–2.Q',
+  },
+  {
+    name: 'chat-export <sessionId>',
+    summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
+    landsIn: 'workstreams 2.N–2.Q',
+  },
+  {
+    name: 'budget',
+    summary: 'Resume a run suspended at a budget cap (`budget resume <runId>`).',
+    landsIn: 'a tracked follow-up',
+  },
   {
     name: 'init',
     summary: 'Initialize a .relavium/ directory in the current project.',

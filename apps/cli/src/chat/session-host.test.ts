@@ -67,7 +67,9 @@ describe('buildChatSession', () => {
     built.session.cancel();
     const startedEvent = received.find((e) => e.type === 'session:started');
     expect(startedEvent).toBeDefined();
-    expect(startedEvent?.type === 'session:started' && startedEvent.model).toBe('claude-sonnet-4-6');
+    expect(startedEvent?.type === 'session:started' && startedEvent.model).toBe(
+      'claude-sonnet-4-6',
+    );
   });
 
   it('streams a text turn end-to-end through the handle (started → tokens → cost → completed → cancelled)', async () => {
