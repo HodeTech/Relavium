@@ -14,7 +14,9 @@ describe('command registration (specs)', () => {
   it('registers the 2.I read commands and the gate list subcommand', () => {
     const program = buildProgram(captureIo().io);
     const names = program.commands.map((command) => command.name());
-    expect(names).toEqual(expect.arrayContaining(['list', 'logs', 'status', 'gate', 'chat']));
+    expect(names).toEqual(
+      expect.arrayContaining(['list', 'logs', 'status', 'gate', 'chat', 'chat-list']),
+    );
 
     const gate = program.commands.find((command) => command.name() === 'gate');
     expect(gate?.commands.map((command) => command.name())).toContain('list');
@@ -24,6 +26,14 @@ describe('command registration (specs)', () => {
     const program = buildProgram(captureIo().io);
     program.exitOverride();
     expect(() => program.parse(['node', 'relavium', 'chat'])).toThrow(/`relavium chat` requires/);
+  });
+
+  it('routes `relavium chat-list` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'chat-list'])).toThrow(
+      /`relavium chat-list` requires/,
+    );
   });
 
   it('routes `gate list` to the gate-list subcommand (not the parent gate action)', () => {
@@ -46,7 +56,6 @@ describe('command registration (specs)', () => {
     // command" — for the next chat-family / budget commands. These are registered as stubs (C1).
     for (const argv of [
       ['chat-resume', 'sess-1'],
-      ['chat-list'],
       ['chat-export', 'sess-1'],
       ['budget', 'resume', 'run-1'],
     ]) {

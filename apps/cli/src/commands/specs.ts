@@ -16,6 +16,7 @@ import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { chatCommand } from './chat.js';
+import { chatListCommand } from './chat-list.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
 import { listCommand } from './list.js';
@@ -33,10 +34,11 @@ import { statusCommand } from './status.js';
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). `chat` (2.M) is a real command (`registerChat` below); the rest of the chat
- * family (`chat-resume`/`chat-list`/`chat-export`/`agent run`) and `budget resume` are likewise registered as
- * clean stubs here (so the documented "not available yet" message — not commander's "unknown command" — is
- * what a user sees) until their workstreams land (2.N–2.Q; a tracked follow-up).
+ * (the authoring commands at 2.J). `chat` (2.M) and `chat-list` (2.O) are real commands (`registerChat` /
+ * `registerChatList` below); the rest of the chat family (`chat-resume`/`chat-export`/`agent run`) and
+ * `budget resume` are likewise registered as clean stubs here (so the documented "not available yet" message —
+ * not commander's "unknown command" — is what a user sees) until their workstreams land (2.N/2.P/2.Q; a
+ * tracked follow-up).
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -75,11 +77,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     landsIn: 'workstreams 2.N–2.Q',
   },
   {
-    name: 'chat-list',
-    summary: 'List past agent sessions (id, agent, last activity).',
-    landsIn: 'workstreams 2.N–2.Q',
-  },
-  {
     name: 'chat-export <sessionId>',
     summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
     landsIn: 'workstreams 2.N–2.Q',
@@ -99,6 +96,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
 export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
   registerChat(program, ctx);
+  registerChatList(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -176,6 +174,25 @@ function registerChat(program: Command, ctx?: CommandContext): void {
         drive: selectChatDriver,
       },
     );
+  });
+}
+
+/** Register `relavium chat-list` (2.O) — list past agent sessions from durable `history.db` (id, agent, last activity). */
+function registerChatList(program: Command, ctx?: CommandContext): void {
+  const chatList = program
+    .command('chat-list')
+    .description('List past agent sessions (id, agent, last activity).');
+  if (ctx === undefined) {
+    chatList.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium chat-list` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+  chatList.action(() => {
+    ctx.result.exitCode = chatListCommand({ io: ctx.io, global: ctx.global });
   });
 }
 

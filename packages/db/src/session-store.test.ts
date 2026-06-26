@@ -103,6 +103,36 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(store.loadFull('nope')).toBeUndefined();
   });
 
+  it('listSessions returns the non-deleted sessions, most-recently-updated first (2.O)', () => {
+    // Three sessions at distinct updatedAt; insert out of order to prove the sort is by updated_at, not insert.
+    store.createSession(makeSession({ id: 'sess-a', updatedAt: '2026-06-17T08:00:00.000Z' }));
+    store.createSession(makeSession({ id: 'sess-c', updatedAt: '2026-06-17T10:00:00.000Z' }));
+    store.createSession(makeSession({ id: 'sess-b', updatedAt: '2026-06-17T09:00:00.000Z' }));
+
+    expect(store.listSessions().map((s) => s.id)).toEqual(['sess-c', 'sess-b', 'sess-a']);
+  });
+
+  it('listSessions excludes soft-deleted sessions and returns full records', () => {
+    store.createSession(makeSession({ id: 'sess-live', title: 'Live' }));
+    store.createSession(makeSession({ id: 'sess-gone', deletedAt: '2026-06-17T09:00:00.000Z' }));
+
+    const listed = store.listSessions();
+    expect(listed.map((s) => s.id)).toEqual(['sess-live']);
+    expect(listed[0]).toEqual(makeSession({ id: 'sess-live', title: 'Live' }));
+  });
+
+  it('listSessions is empty for a fresh store', () => {
+    expect(store.listSessions()).toEqual([]);
+  });
+
+  it('listSessions breaks an updated_at tie deterministically by id (descending)', () => {
+    const tie = '2026-06-17T08:00:00.000Z';
+    store.createSession(makeSession({ id: 'sess-1', updatedAt: tie }));
+    store.createSession(makeSession({ id: 'sess-2', updatedAt: tie }));
+
+    expect(store.listSessions().map((s) => s.id)).toEqual(['sess-2', 'sess-1']);
+  });
+
   it('updateSession overwrites mutable fields by id', () => {
     store.createSession(makeSession());
     store.updateSession(
