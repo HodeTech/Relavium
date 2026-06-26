@@ -57,11 +57,13 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
  * and the title (if any).
  */
 function renderLine(session: AgentSessionRecord): string {
-  // The title is user/model-supplied persisted text — sanitize ANSI/OSC/control bytes + collapse tab/newline
-  // so a crafted title cannot break the one-row layout or inject a terminal escape (the other fields are
-  // schema-constrained: id is a uuid, agentSlug a kebab id, status an enum, updatedAt an ISO timestamp).
+  // The title is user/model-supplied persisted text, and `id` is only schema-constrained to a non-empty
+  // string (the CLI mints a UUID, but `history.db` is shared with other surfaces) — so sanitize BOTH:
+  // strip ANSI/OSC/control bytes + collapse tab/newline so neither can break the one-row layout or inject a
+  // terminal escape. The remaining fields are byte-constrained (agentSlug a kebab id, status an enum,
+  // updatedAt an ISO timestamp).
   const title = session.title === undefined ? '' : `  "${sanitizeInline(session.title)}"`;
-  return `  ${session.id}  ${session.agentSlug}  [${session.status}]  ${session.updatedAt}${title}\n`;
+  return `  ${sanitizeInline(session.id)}  ${session.agentSlug}  [${session.status}]  ${session.updatedAt}${title}\n`;
 }
 
 /**

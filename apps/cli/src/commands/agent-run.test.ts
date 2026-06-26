@@ -94,6 +94,7 @@ describe('agentRunCommand (2.Q)', () => {
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
     expect(types[0]).toBe('session:started'); // the subscription is wired before start() — first line
     expect(types).toContain('session:turn_completed');
+    expect(types.at(-1)).toBe('session:cancelled'); // the finally's cancel() flushes the terminal BEFORE unsubscribe
     expect(err()).not.toContain('session:'); // no event leaks onto stderr
     expect(out()).not.toContain('test-key'); // the dummy provider key never reaches the stream
   });

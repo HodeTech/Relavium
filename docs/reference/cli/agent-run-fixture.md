@@ -10,7 +10,7 @@
 A **fixture cassette** is a committed JSON file that records an LLM provider's streamed output for a single
 `relavium agent run` turn, so that run is **deterministic and fully offline** — no key, no network, no live
 provider. It is the on-disk form of the in-memory `scriptedProvider` the `AgentSession` unit tests already
-use: `relavium agent run <agent> --input … --fixture <path>` loads the cassette, builds a replay provider
+use: `relavium agent run <agent> --fixture <path>` loads the cassette, builds a replay provider
 over the `@relavium/llm` seam ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)), and answers
 each `provider.stream()` call from the recorded chunk lists in order.
 

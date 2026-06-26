@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-25
+> Last updated: 2026-06-26
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
