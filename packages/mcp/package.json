@@ -23,6 +23,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "catalog:",
+    "@relavium/core": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {

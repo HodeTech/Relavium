@@ -76,3 +76,9 @@ catalog:
   # Confined to apps/cli's wizard/prompt layer (never the ink live-run renderer, never an engine package),
   # inlined by tsup. §9a cooling window.
   '@clack/prompts': ^1.6.0
+  # Inbound MCP client SDK (2.R, ADR-0034 + ADR-0052/0053) — the official Model Context Protocol TypeScript
+  # SDK. Confined to `@relavium/mcp` (the seam that fences it + node:child_process), surfaced outward only as
+  # Relavium ToolDefs + an McpCapability impl; `packages/core` never imports it (engine purity). 1.29.0 is
+  # well past the §9a cooling window (published 2026-03-30, ~88 days). NOT the ajv/cfworker validation
+  # sub-exports — the JSON-Schema→Zod validator is in-house, dependency-free (ADR-0052 §4).
+  '@modelcontextprotocol/sdk': ^1.29.0
