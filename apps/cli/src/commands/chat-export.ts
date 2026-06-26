@@ -54,12 +54,20 @@ export function chatExportCommand(
 
     // Mark the session `exported` + record the path (provenance, ADR-0026). Safe here — this is a NON-live
     // session (no concurrent persister), unlike the in-REPL `/export` which deliberately does not mark the row.
-    opened.store.updateSession({
-      ...result.record,
-      status: 'exported',
-      exportedWorkflowPath: result.path,
-      updatedAt: new Date(now()).toISOString(),
-    });
+    // The file write is the durable contract, so a provenance-mark fault degrades to a warning (stderr, so
+    // stdout stays pure under --json) rather than failing an export whose scaffold already landed on disk.
+    try {
+      opened.store.updateSession({
+        ...result.record,
+        status: 'exported',
+        exportedWorkflowPath: result.path,
+        updatedAt: new Date(now()).toISOString(),
+      });
+    } catch (err) {
+      deps.io.writeErr(
+        `note: scaffold written but could not mark the session exported: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
 
     if (deps.global.json) {
       // The machine output is the one documented `session:exported` event (validated at the boundary).

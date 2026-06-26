@@ -222,38 +222,46 @@ describe('chatCommand', () => {
     expect(err()).toContain('budget warning');
   });
 
-  it('exports the session-so-far to a scaffold on /export, without ending the session', async () => {
-    // After a completed turn, /export writes the durable session's `.relavium.yaml` scaffold and the REPL
-    // continues (the next 'again' turn still persists). The default session has no title ⇒ id 'exported-session'.
-    const { d, err, store, sessionId } = deps(
-      ['hello', '/export', 'again', '/exit'],
-      [textTurn('hi'), textTurn('more')],
-    );
-    await chatCommand({ agent: undefined }, d);
+  it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {
+    // The filename is the session id ('id-0'). A custom drive snapshots the row status IMMEDIATELY after
+    // /export (before the next turn's persist) — that is the only point that distinguishes "never marked"
+    // from "marked then clobbered": if /export wrongly marked the row, the snapshot would read 'exported'.
+    const { d, err, store, sessionId } = deps([], [textTurn('hi'), textTurn('more')]);
+    let statusAfterExport: string | undefined;
+    const probingDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('hello'); // turn 1 ⇒ persisted, row status 'active'
+      await ctx.processLine('/export'); // export the session-so-far; must NOT mark the row
+      statusAfterExport = store.loadFull(sessionId)?.session.status;
+      await ctx.processLine('again'); // turn 2 still runs (the REPL continued)
+      await ctx.processLine('/exit');
+    };
+    await chatCommand({ agent: undefined }, { ...d, drive: probingDrive });
 
-    const path = join(cwd, 'exported-session.relavium.yaml');
+    const path = join(cwd, 'id-0.relavium.yaml');
     expect(existsSync(path)).toBe(true);
     expect(err()).toContain(`exported session to ${path}`);
-    // The session continued after /export — both turns persisted (4 rows).
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(4);
-    // /export does NOT mark the live row exported (a later turn's persist would clobber it).
-    expect(store.loadFull(sessionId)?.session.status).not.toBe('exported');
+    expect(statusAfterExport).toBe('active'); // /export left the live row untouched (NOT 'exported')
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(4); // both turns persisted — REPL continued
+    expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // /exit's terminal
   });
 
-  it('reports an /export failure on stderr without crashing the REPL', async () => {
-    // Pre-create the target so /export (force:true) still overwrites — so instead assert the success path is
-    // robust; a genuine failure (e.g. an unwritable path) is environment-specific. Here we assert /export on a
-    // session with no completed turn still succeeds (the minimal input→output scaffold), not a crash.
-    const { d, err } = deps(['/export', '/exit'], [textTurn('unused')]);
+  it('reports a real /export failure on stderr without crashing the REPL', async () => {
+    // A DIRECTORY at the target path makes writeFileSync throw EISDIR — a deterministic /export failure that
+    // exercises the catch arm. The REPL must report it and still drive to /exit (status 'ended'), not crash.
+    const { d, err, store, sessionId } = deps(['hello', '/export', '/exit'], [textTurn('hi')]);
+    mkdirSync(join(cwd, 'id-0.relavium.yaml')); // occupy the scaffold path with a dir ⇒ write fails
     await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain('exported session to'); // an empty session exports a minimal scaffold, no crash
+    expect(err()).toContain('export failed:'); // the catch arm reported the fault
+    expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // the REPL survived and ended cleanly
   });
 
-  it('strips control bytes from an unknown-slash echo (terminal-injection guard)', async () => {
+  it('strips control bytes from an unknown-slash echo (terminal-injection guard) and lists /export', async () => {
     const { d, err } = deps(['/\x1b[2Jboom', '/exit'], [textTurn('x')]);
     await chatCommand({ agent: undefined }, d);
     expect(err()).not.toContain('\x1b'); // the raw ESC never reached stderr
     expect(err()).toContain('?'); // it was replaced
+    expect(err()).toContain('/export'); // the help line advertises the /export affordance
   });
 
   it('propagates a driver rejection AND still runs teardown (the anti-hang/propagation contract)', async () => {

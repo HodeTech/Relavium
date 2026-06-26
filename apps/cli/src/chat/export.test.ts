@@ -65,12 +65,12 @@ describe('exportSession (2.P)', () => {
     store.appendMessage(message(1, 'assistant', 'hi there'));
   }
 
-  it('writes a .relavium.yaml scaffold named from the session title, and returns the path', () => {
+  it('writes a .relavium.yaml scaffold named from the UNIQUE session id, and returns the path', () => {
     seedOneTurn();
     const result = exportSession({ store, sessionId: 's1', cwd, force: false });
 
-    expect(result.workflowId).toBe('my-session'); // deterministic kebab slug of the title
-    expect(result.path).toBe(join(cwd, 'my-session.relavium.yaml'));
+    expect(result.workflowId).toBe('my-session'); // the IN-FILE id is the title-slug (renameable on the canvas)
+    expect(result.path).toBe(join(cwd, 's1.relavium.yaml')); // the FILENAME is the collision-free session id
     expect(result.sequenceNumber).toBe(2); // one past the persisted MAX (1)
     expect(existsSync(result.path)).toBe(true);
 
@@ -80,6 +80,16 @@ describe('exportSession (2.P)', () => {
     expect(yaml).toContain('type: agent'); // the one completed turn becomes an agent node
     expect(yaml).toContain('relaviumExport'); // the full transcript is preserved in metadata
     expect(yaml).toContain('hello'); // the transcript is in the metadata
+  });
+
+  it('keys the default filename on the session id, so same-titled sessions never collide', () => {
+    store.createSession(record({ id: 's1', title: 'Same Title' }));
+    store.createSession(record({ id: 's2', title: 'Same Title' }));
+    const a = exportSession({ store, sessionId: 's1', cwd, force: false });
+    const b = exportSession({ store, sessionId: 's2', cwd, force: false });
+    expect(a.path).toBe(join(cwd, 's1.relavium.yaml'));
+    expect(b.path).toBe(join(cwd, 's2.relavium.yaml'));
+    expect(a.path).not.toBe(b.path); // distinct files despite the shared title — no silent clobber
   });
 
   it('honors --out (relative to cwd) and auto-creates the parent directory', () => {
@@ -105,7 +115,7 @@ describe('exportSession (2.P)', () => {
 
   it('refuses to overwrite an existing file without force (exit-2 fault)', () => {
     seedOneTurn();
-    const path = join(cwd, 'my-session.relavium.yaml');
+    const path = join(cwd, 's1.relavium.yaml');
     writeFileSync(path, 'pre-existing', 'utf8');
     expect(() => exportSession({ store, sessionId: 's1', cwd, force: false })).toThrow(
       /already exists — pass --force/,
@@ -115,7 +125,7 @@ describe('exportSession (2.P)', () => {
 
   it('overwrites an existing file with force', () => {
     seedOneTurn();
-    const path = join(cwd, 'my-session.relavium.yaml');
+    const path = join(cwd, 's1.relavium.yaml');
     writeFileSync(path, 'pre-existing', 'utf8');
     exportSession({ store, sessionId: 's1', cwd, force: true });
     expect(readFileSync(path, 'utf8')).toContain('schema_version:'); // replaced with the scaffold

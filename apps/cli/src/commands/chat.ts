@@ -293,7 +293,9 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
           store: opened.store,
           sessionId: built.sessionId,
           cwd: deps.global.cwd,
-          force: true, // re-export overwrites the session's own scaffold (same id ⇒ same path)
+          // Re-export overwrites the session's OWN scaffold: the default path is keyed on the unique session
+          // id, so `force` here can only ever clobber this session's prior export, never another session's.
+          force: true,
         });
         deps.io.writeErr(`exported session to ${result.path}\n`);
       } catch (err) {

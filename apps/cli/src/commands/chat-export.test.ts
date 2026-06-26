@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -81,7 +81,7 @@ describe('chatExportCommand (2.P)', () => {
     const { io, out } = captureIo();
     expect(chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toBe(EXIT_CODES.success);
 
-    const path = join(cwd, 'my-session.relavium.yaml');
+    const path = join(cwd, 's1.relavium.yaml'); // named from the unique session id
     expect(existsSync(path)).toBe(true);
     expect(out()).toBe(`Exported session s1 to ${path}\n`);
 
@@ -102,9 +102,31 @@ describe('chatExportCommand (2.P)', () => {
       type: 'session:exported',
       sessionId: 's1',
       sequenceNumber: 2,
-      workflowPath: join(cwd, 'my-session.relavium.yaml'),
+      workflowPath: join(cwd, 's1.relavium.yaml'),
     });
     expect(out()).not.toContain('Exported session'); // no human chrome on the --json path
+  });
+
+  it('emits sequenceNumber 0 for an empty-session --json export', () => {
+    // Replace the seeded transcript with a turn-less session so the seq fold's base case (−1+1=0) is pinned
+    // at the boundary where it is observable (the event), not only in the export-core unit test.
+    const fresh = createSessionStore(client.db);
+    fresh.createSession(record({ id: 's-empty', title: 'Empty' }));
+    opened = { store: fresh, db: client.db, close: () => undefined };
+    const { io, out } = captureIo();
+    expect(chatExportCommand({ sessionId: 's-empty', force: false }, deps(io, true))).toBe(
+      EXIT_CODES.success,
+    );
+    expect(parseNdjson(out())[0]).toMatchObject({ sequenceNumber: 0 });
+  });
+
+  it('embeds no Relavium-managed key in the scaffold (the agentSnapshot carries no api_key)', () => {
+    const { io } = captureIo();
+    chatExportCommand({ sessionId: 's1', force: false }, deps(io));
+    const yaml = readFileSync(join(cwd, 's1.relavium.yaml'), 'utf8');
+    // The frozen agent is emitted into `agents:`, but it references the provider by id — no key field exists.
+    expect(yaml).not.toMatch(/api_?key/i);
+    expect(yaml).toContain('agents:'); // the snapshot WAS embedded (so the no-key assertion is meaningful)
   });
 
   it('rejects an unknown sessionId as exit-2 and closes the store', () => {
