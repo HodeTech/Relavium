@@ -7,6 +7,7 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 
+import { exportSession } from '../chat/export.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
   buildChatSession,
@@ -282,11 +283,29 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       stop = true;
       return;
     }
+    if (line === '/export') {
+      // Export the session-so-far to a `.relavium.yaml` scaffold (2.P, same ADR-0026 contract). It runs
+      // BETWEEN turns (every completed turn is already persisted), reads the durable transcript, and writes
+      // the file; it does NOT mark the row `exported` (a later turn's persist would clobber that — the
+      // standalone `chat-export` command marks it). A failure is reported, never crashing the REPL.
+      try {
+        const result = exportSession({
+          store: opened.store,
+          sessionId: built.sessionId,
+          cwd: deps.global.cwd,
+          force: true, // re-export overwrites the session's own scaffold (same id ⇒ same path)
+        });
+        deps.io.writeErr(`exported session to ${result.path}\n`);
+      } catch (err) {
+        deps.io.writeErr(`export failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      return;
+    }
     if (line.startsWith('/')) {
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
       // terminal control sequence (or a flood) into stderr.
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      deps.io.writeErr(`unknown command '${safe}'. Available: /exit, /cancel.\n`);
+      deps.io.writeErr(`unknown command '${safe}'. Available: /exit, /cancel, /export.\n`);
       return;
     }
     store.appendUser(line);

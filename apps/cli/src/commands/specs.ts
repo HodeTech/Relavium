@@ -16,6 +16,7 @@ import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { chatCommand, chatResumeCommand } from './chat.js';
+import { chatExportCommand } from './chat-export.js';
 import { chatListCommand } from './chat-list.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
@@ -34,11 +35,11 @@ import { statusCommand } from './status.js';
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). `chat` (2.M), `chat-resume` (2.N), and `chat-list` (2.O) are real commands
- * (`registerChat` / `registerChatResume` / `registerChatList` below); the rest of the chat family
- * (`chat-export`/`agent run`) and `budget resume` are likewise registered as clean stubs here (so the
- * documented "not available yet" message — not commander's "unknown command" — is what a user sees) until
- * their workstreams land (2.P/2.Q; a tracked follow-up).
+ * (the authoring commands at 2.J). `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), and `chat-export`
+ * (2.P) are real commands (`registerChat` / `registerChatResume` / `registerChatList` / `registerChatExport`
+ * below); the remaining `agent run` (2.Q) and `budget resume` (a tracked follow-up) are likewise registered as
+ * clean stubs here (so the documented "not available yet" message — not commander's "unknown command" — is
+ * what a user sees) until they land.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -72,11 +73,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
   },
   { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstream 2.Q' },
   {
-    name: 'chat-export <sessionId>',
-    summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
-    landsIn: 'workstream 2.P',
-  },
-  {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
     landsIn: 'a tracked follow-up',
@@ -93,6 +89,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerChat(program, ctx);
   registerChatResume(program, ctx);
   registerChatList(program, ctx);
+  registerChatExport(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -225,6 +222,38 @@ function registerChatList(program: Command, ctx?: CommandContext): void {
     // Pass the real opener explicitly (consistent with registerChat) so the production wiring is visible at
     // the registration site and a future specs-level integration test can inject an in-memory store.
     ctx.result.exitCode = chatListCommand({ io: ctx.io, global: ctx.global, openSessionStore });
+  });
+}
+
+/**
+ * Register `relavium chat-export <sessionId>` (2.P) — export a persisted session to a `.relavium.yaml`
+ * scaffold for review ([ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md)). Writes
+ * `<id>.relavium.yaml` in cwd by default; `--out <path>` overrides, `--force` overwrites an existing file.
+ */
+function registerChatExport(program: Command, ctx?: CommandContext): void {
+  const chatExport = program
+    .command('chat-export <sessionId>')
+    .description('Export a session to a .relavium.yaml scaffold for review (ADR-0026).')
+    .option('--out <path>', 'write the scaffold here instead of <id>.relavium.yaml')
+    .option('--force', 'overwrite an existing file at the target path');
+  if (ctx === undefined) {
+    chatExport.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium chat-export` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+  chatExport.action((sessionId: string, opts: { out?: string; force?: boolean }) => {
+    ctx.result.exitCode = chatExportCommand(
+      {
+        sessionId,
+        ...(opts.out === undefined ? {} : { out: opts.out }),
+        force: opts.force ?? false,
+      },
+      { io: ctx.io, global: ctx.global, openSessionStore },
+    );
   });
 }
 

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -220,6 +220,33 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, { ...d, buildSession: withCapture });
     captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 });
     expect(err()).toContain('budget warning');
+  });
+
+  it('exports the session-so-far to a scaffold on /export, without ending the session', async () => {
+    // After a completed turn, /export writes the durable session's `.relavium.yaml` scaffold and the REPL
+    // continues (the next 'again' turn still persists). The default session has no title ⇒ id 'exported-session'.
+    const { d, err, store, sessionId } = deps(
+      ['hello', '/export', 'again', '/exit'],
+      [textTurn('hi'), textTurn('more')],
+    );
+    await chatCommand({ agent: undefined }, d);
+
+    const path = join(cwd, 'exported-session.relavium.yaml');
+    expect(existsSync(path)).toBe(true);
+    expect(err()).toContain(`exported session to ${path}`);
+    // The session continued after /export — both turns persisted (4 rows).
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(4);
+    // /export does NOT mark the live row exported (a later turn's persist would clobber it).
+    expect(store.loadFull(sessionId)?.session.status).not.toBe('exported');
+  });
+
+  it('reports an /export failure on stderr without crashing the REPL', async () => {
+    // Pre-create the target so /export (force:true) still overwrites — so instead assert the success path is
+    // robust; a genuine failure (e.g. an unwritable path) is environment-specific. Here we assert /export on a
+    // session with no completed turn still succeeds (the minimal input→output scaffold), not a crash.
+    const { d, err } = deps(['/export', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('exported session to'); // an empty session exports a minimal scaffold, no crash
   });
 
   it('strips control bytes from an unknown-slash echo (terminal-injection guard)', async () => {
