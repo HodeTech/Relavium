@@ -90,7 +90,9 @@ A cassette is a single JSON object:
 ## Usage
 
 The one-shot **prompt is read from stdin** (the `echo … | relavium agent run` idiom); `--input k=v` adds
-session `{{ctx.*}}` variables; `--fixture` makes the run deterministic and offline.
+session `{{ctx.*}}` variables (carried in the `SessionContext` and visible on the `session:started` event;
+prompt **interpolation** of `{{ctx.*}}` inside a session is a Phase-1 engine concern not yet wired —
+[deferred-tasks.md](../../roadmap/deferred-tasks.md)); `--fixture` makes the run deterministic and offline.
 
 ```bash
 # deterministic, offline single-turn agent run (prompt on stdin)

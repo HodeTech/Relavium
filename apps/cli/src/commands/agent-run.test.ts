@@ -14,7 +14,7 @@ import { captureIo, parseNdjson } from '../test-support.js';
 import { agentRunCommand, type AgentRunCommandDeps } from './agent-run.js';
 
 const AGENT_YAML =
-  'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.';
+  'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.\ntools:\n  - read_file';
 const CASSETTE = {
   schema_version: '1.0',
   provider: 'anthropic',
@@ -92,10 +92,40 @@ describe('agentRunCommand (2.Q)', () => {
     expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
     // Every stdout line is a valid SessionEvent object (parseNdjson throws on a leaked human line).
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
-    expect(types).toContain('session:started');
+    expect(types[0]).toBe('session:started'); // the subscription is wired before start() — first line
     expect(types).toContain('session:turn_completed');
     expect(err()).not.toContain('session:'); // no event leaks onto stderr
     expect(out()).not.toContain('test-key'); // the dummy provider key never reaches the stream
+  });
+
+  it('--json + a tool-calling --fixture cassette replays the tool loop, offline, with no key leak', async () => {
+    // A 2-call cassette: a tool_use turn (forcing a 2nd stream() call) then the text turn. Drives the full
+    // replay through the fail-closed tool host; the NDJSON stream carries agent:tool_call and the answer.
+    const toolCassette = {
+      schema_version: '1.0',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      calls: [
+        [
+          { type: 'tool_call_start', id: 'tc-1', name: 'read_file' },
+          { type: 'tool_call_end', id: 'tc-1' },
+          { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 2 } },
+        ],
+        [
+          { type: 'text_delta', text: 'the answer' },
+          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+        ],
+      ],
+    };
+    writeFileSync(join(cwd, 'tool.json'), JSON.stringify(toolCassette));
+    const { d, out } = deps('read it', { json: true }); // no providers ⇒ pure offline cassette path
+    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'tool.json' }, d)).toBe(
+      EXIT_CODES.success,
+    );
+    const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
+    expect(types).toContain('agent:tool_call'); // the recorded tool call is replayed onto the stream
+    expect(types).toContain('session:turn_completed');
+    expect(out()).not.toContain('fixture-key'); // the cassette's offline marker never reaches the stream
   });
 
   it('--fixture takes precedence over an injected resolver (the cassette wins)', async () => {
@@ -186,6 +216,7 @@ describe('agentRunCommand (2.Q)', () => {
       thrown = e;
     });
     expect(isCliError(thrown)).toBe(true); // a typed CliError (exit 2), not a raw provider/parse crash
+    expect(isCliError(thrown) && thrown.code).toBe('invalid_invocation'); // pins exit 2, not exit 1
   });
 
   it('rejects a bad --fixture cassette as a clean exit-2 fault', async () => {

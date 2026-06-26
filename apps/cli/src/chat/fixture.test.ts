@@ -39,6 +39,18 @@ describe('loadCassette + cassetteResolver (2.Q)', () => {
     expect(cassette.calls).toHaveLength(1);
   });
 
+  it('loads a cassette without the optional `model` field (model is undefined)', () => {
+    write(
+      'nm.json',
+      JSON.stringify({
+        schema_version: VALID.schema_version,
+        provider: VALID.provider,
+        calls: VALID.calls,
+      }),
+    );
+    expect(loadCassette('nm.json', cwd).model).toBeUndefined();
+  });
+
   it('rejects a missing file as a clean exit-2 fault', () => {
     expect(() => loadCassette('nope.json', cwd)).toThrow(/cannot read fixture/);
   });

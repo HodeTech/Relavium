@@ -6,7 +6,6 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
-import { SessionExportedEventSchema } from '@relavium/shared';
 
 import { exportSession } from '../chat/export.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
@@ -63,6 +62,12 @@ export interface ChatDriveContext {
    * resumed session is visibly a resume. The seeded footer additionally carries the bound model + prior totals.
    */
   readonly intro?: string;
+  /**
+   * Flush the session's terminal (`session:cancelled`) — a headless driver MUST call this once its input loop
+   * ends, while its render subscription is still attached, so the `--json` stream includes its sole terminal
+   * event (the command's own teardown fires the terminal only AFTER the driver has unsubscribed). Idempotent.
+   */
+  readonly finalize?: () => void;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -148,7 +153,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   });
 
   return runReplLoop(
-    { built, opened, store, persister, startSession: () => built.session.start(), now },
+    { built, opened, store, persister, startSession: () => built.session.start() },
     deps,
   );
 }
@@ -238,7 +243,7 @@ export async function chatResumeCommand(
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
-  return runReplLoop({ built, opened, store, persister, startSession: () => {}, intro, now }, deps);
+  return runReplLoop({ built, opened, store, persister, startSession: () => {}, intro }, deps);
 }
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
@@ -249,8 +254,6 @@ interface ReplWiring {
   readonly persister: SessionPersister;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
-  /** Wall-clock (ms) — stamps the `session:exported` event timestamp on a `--json` `/export`. */
-  readonly now: () => number;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
 }
@@ -262,7 +265,7 @@ interface ReplWiring {
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
 async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
-  const { built, opened, store, persister, startSession, intro, now } = wiring;
+  const { built, opened, store, persister, startSession, intro } = wiring;
   let stop = false;
   let cancelled = false;
   const cancelOnce = (): void => {
@@ -301,16 +304,11 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
           force: true,
         });
         if (deps.global.json) {
-          // Machine mode (--json, 2.Q): emit the `session:exported` event on stdout — the same shape the
-          // standalone `chat-export --json` emits — so the NDJSON session stream is complete; stdout stays pure.
-          const event = SessionExportedEventSchema.parse({
-            type: 'session:exported',
-            sessionId: built.sessionId,
-            timestamp: new Date(now()).toISOString(),
-            sequenceNumber: result.sequenceNumber,
-            workflowPath: result.path,
-          });
-          deps.io.writeOut(`${JSON.stringify(event)}\n`);
+          // Machine mode (--json, 2.Q): emit `session:exported` THROUGH the session bus, so it rides the
+          // live stream's monotonic per-session sequenceNumber (a DB-derived seq would jump backward and
+          // trip a consumer's gap-detection). The bus stamps sessionId/sequenceNumber/timestamp; the
+          // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
+          built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
           deps.io.writeErr(`exported session to ${result.path}\n`);
         }
@@ -344,6 +342,9 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       store,
       io: deps.io,
       global: deps.global,
+      // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the command's own
+      // cancelOnce below is then a no-op (idempotent). Other drivers ignore it — the command fires it.
+      finalize: cancelOnce,
       ...(intro === undefined ? {} : { intro }),
     });
   } finally {
@@ -404,6 +405,8 @@ export async function driveJson(ctx: ChatDriveContext): Promise<void> {
   } finally {
     process.removeListener('SIGINT', onSigint);
     rl.close();
+    // Flush session:cancelled BEFORE unsubscribing, so the NDJSON stream includes its sole terminal event.
+    ctx.finalize?.();
     unsubscribe();
   }
 }

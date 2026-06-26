@@ -9,6 +9,7 @@ import {
   reconstructSessionState,
   type AgentDefinition,
   type SessionDeps,
+  type SessionEventSink,
   type SessionHandle,
   type SessionResumeState,
   type ToolHost,
@@ -76,6 +77,12 @@ export interface BuiltChatSession {
   readonly agent: AgentDefinition;
   /** The frozen session context (working dir + fs-scope tier) the session ran against. */
   readonly context: SessionContext;
+  /**
+   * Push a SURFACE-originated session event onto the same per-session bus (so it shares the monotonic
+   * `sequenceNumber` of the live stream). Used by the in-REPL `/export` to emit `session:exported` under
+   * `--json`; the bus stamps the `sessionId`/`sequenceNumber`/`timestamp`.
+   */
+  readonly emitSessionEvent: SessionEventSink;
 }
 
 /** The safe default filesystem tier when `[chat].fs_scope` is unset (mirrors the workflow default). */
@@ -97,11 +104,14 @@ type SessionRuntimeOptions = Pick<
 function buildSessionRuntime(
   opts: SessionRuntimeOptions,
   sessionId: string,
-): { bus: RunEventBus; deps: SessionDeps } {
+): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink } {
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: opts.toolHost ?? {} });
   const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
+  // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
+  // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
+  const emit = createSessionEventSink(bus, sessionId);
 
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
@@ -112,7 +122,7 @@ function buildSessionRuntime(
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
-    emit: createSessionEventSink(bus, sessionId),
+    emit,
     // No toolPolicy ⇒ the AgentSession default `{}` applies: gated tools deny-all and `run_command` is
     // disabled (empty allowedCommands). A standalone chat has no workflow allowedCommands to inherit, so
     // empty is the secure default (config-spec.md `[chat]` "empty/absent ⇒ run_command disabled").
@@ -121,7 +131,7 @@ function buildSessionRuntime(
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
   };
-  return { bus, deps };
+  return { bus, deps, emit };
 }
 
 export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSession {
@@ -137,10 +147,10 @@ export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSessio
     ...(opts.variables === undefined ? {} : { variables: opts.variables }),
   };
 
-  const { bus, deps } = buildSessionRuntime(opts, sessionId);
+  const { bus, deps, emit } = buildSessionRuntime(opts, sessionId);
   const session = new AgentSession({ sessionId, agentRef: agent.id, agent, context, deps });
   const handle = createSessionHandle(bus, sessionId, () => session.cancel());
-  return { session, handle, sessionId, agent, context };
+  return { session, handle, sessionId, agent, context, emitSessionEvent: emit };
 }
 
 /** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */
@@ -197,7 +207,7 @@ export function buildResumedChatSession(
   const context = record.context;
   const resumeState = reconstructSessionState(record, messages);
 
-  const { bus, deps } = buildSessionRuntime(opts, record.id);
+  const { bus, deps, emit } = buildSessionRuntime(opts, record.id);
   const session = AgentSession.resume(
     { sessionId: record.id, agentRef: agent.id, agent, context, deps },
     resumeState,
@@ -210,7 +220,16 @@ export function buildResumedChatSession(
   // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
   const nextSequenceNumber =
     messages.reduce((max, m) => (m.sequenceNumber > max ? m.sequenceNumber : max), -1) + 1;
-  return { session, handle, sessionId: record.id, agent, context, resumeState, nextSequenceNumber };
+  return {
+    session,
+    handle,
+    sessionId: record.id,
+    agent,
+    context,
+    emitSessionEvent: emit,
+    resumeState,
+    nextSequenceNumber,
+  };
 }
 
 export interface GovernorWiring {

@@ -291,6 +291,7 @@ describe('chatCommand', () => {
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
     expect(types).toContain('session:started');
     expect(types).toContain('session:turn_completed');
+    expect(types.at(-1)).toBe('session:cancelled'); // the terminal flushed via runReplLoop's finalize wiring
     expect(out()).not.toContain('unknown command'); // the diagnostic did NOT leak to stdout
     expect(err()).toContain("unknown command '/bogus'"); // it went to stderr
   });
@@ -787,7 +788,7 @@ describe('selectChatDriver', () => {
 describe('driveJson (2.Q)', () => {
   // A driver context over a REAL session handle + a recording processLine, so we exercise driveJson's
   // readline loop and its NDJSON serialization of the live event stream over the injected stdin.
-  function jsonCtx(stdin: NodeJS.ReadableStream) {
+  function jsonCtx(stdin: NodeJS.ReadableStream, turns: StreamChunk[][] = [textTurn('hi there')]) {
     const built = buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
@@ -795,7 +796,7 @@ describe('driveJson (2.Q)', () => {
       projectConfigDir: undefined,
       now: () => 0,
       uuid: () => 'sess-j',
-      providers: scriptedResolver([textTurn('hi there')]),
+      providers: scriptedResolver(turns),
     });
     const { io: base, out } = captureIo();
     let stop = false;
@@ -813,11 +814,13 @@ describe('driveJson (2.Q)', () => {
       store: createChatStore(false),
       io: { ...base, stdin },
       global: { ...globalOptions(tmpdir()), json: true },
+      // Flush the terminal (session:cancelled) before unsubscribing, as runReplLoop wires in production.
+      finalize: () => built.session.cancel(),
     };
     return { ctx, out, built };
   }
 
-  it('emits a pure NDJSON SessionEvent stream (session:started → turn events) and ends on EOF', async () => {
+  it('emits a pure NDJSON stream (session:started → turn events → session:cancelled terminal) on EOF', async () => {
     const stdin = new PassThrough();
     const { ctx, out } = jsonCtx(stdin);
     const done = driveJson(ctx);
@@ -831,8 +834,23 @@ describe('driveJson (2.Q)', () => {
     expect(types[0]).toBe('session:started'); // the first line is the lifecycle-open event
     expect(types).toContain('session:turn_started');
     expect(types).toContain('session:turn_completed');
+    expect(types.at(-1)).toBe('session:cancelled'); // the sole terminal IS in the stream (the finalize fix)
     // Every line carries the sessionId (the disjoint session namespace).
     expect(events.every((e) => e.sessionId === 'sess-j')).toBe(true);
     expect(out()).not.toContain('test-key'); // the dummy provider key never reaches the stream
+  });
+
+  it('streams two turns, each with its own session:turn_completed, before the terminal', async () => {
+    const stdin = new PassThrough();
+    const { ctx, out } = jsonCtx(stdin, [textTurn('one'), textTurn('two')]);
+    const done = driveJson(ctx);
+    stdin.write('first\n');
+    stdin.write('second\n');
+    stdin.end();
+    await done;
+
+    const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
+    expect(types.filter((t) => t === 'session:turn_completed')).toHaveLength(2); // both turns settled
+    expect(types.at(-1)).toBe('session:cancelled');
   });
 });
