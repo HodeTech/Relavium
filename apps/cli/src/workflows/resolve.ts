@@ -82,6 +82,8 @@ function candidatePaths(
 ): string[] {
   // A POSIX `/`, the platform separator (`\` on Windows, where `agents\coder` is a relative path), an
   // absolute path, or a `.yaml`/`.yml` suffix all mark an explicit file reference rather than a bare id/slug.
+  // NOTE: the `arg.includes(sep)` arm is the Windows-only path — on POSIX `sep === '/'`, so it is a no-op
+  // there and cannot be exercised by the POSIX CI (asserting it would require stubbing `path.sep`).
   const looksLikePath =
     isAbsolute(arg) ||
     arg.includes('/') ||

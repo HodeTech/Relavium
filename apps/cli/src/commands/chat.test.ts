@@ -18,6 +18,7 @@ import {
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
+import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { captureIo } from '../test-support.js';
 import {
@@ -125,6 +126,24 @@ describe('chatCommand', () => {
     // The tool-calling turn (read_file dispatched through the fail-closed host) still completes to a reply.
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
+  });
+
+  it('persists two distinct user turns (the 2nd a tool call) as four sequenced rows with a real cost', async () => {
+    // Turn 1: a plain reply. Turn 2: a tool-calling turn (toolUseTurn → the answer streams after the loop).
+    // Three scripted streams, TWO user messages ⇒ four persisted rows in sequenceNumber order.
+    const { d, store, sessionId } = deps(
+      ['first message', 'use a tool', '/exit'],
+      [textTurn('first reply'), toolUseTurn('c1', 'read_file'), textTurn('the answer')],
+    );
+    const code = await chatCommand({ agent: undefined }, d);
+    expect(code).toBe(EXIT_CODES.chatEnded);
+
+    const full = store.loadFull(sessionId);
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'first reply' });
+    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
+    expect(full?.session.totalCostMicrocents).toBeGreaterThan(0); // priced model ⇒ a real running cost
   });
 
   it('persists nothing but a session row when /exit is the first input', async () => {
@@ -344,6 +363,19 @@ describe('makePlainPrinter', () => {
     expect(out()).toContain('hi');
   });
 
+  it('produces NO output for agent:tool_result (its outputSummary must never reach the terminal)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)({
+      type: 'agent:tool_result',
+      ...STAMP,
+      nodeId: 'a',
+      toolId: 'read_file',
+      success: true,
+      outputSummary: 'file contents: secret-data', // tool output may carry secrets/PII — never printed
+    });
+    expect(out()).toBe('');
+  });
+
   it('emits a bare newline on a successful turn completion', () => {
     const { io, out } = captureIo();
     makePlainPrinter(io)({
@@ -367,5 +399,46 @@ describe('makePlainPrinter', () => {
     });
     expect(out()).toContain('turn_limit');
     expect(out()).not.toContain('secret-ish detail'); // only the code, never the message
+  });
+});
+
+describe('selectChatDriver', () => {
+  // A ctx whose stdin is already at EOF, so the PLAIN driver resolves immediately. The ink driver would mount
+  // and block on input forever, so a resolving promise PROVES the plain branch was chosen. If the routing
+  // predicate regressed (e.g. && → ||), a non-TTY case would route to ink and hang this test.
+  function ctxWith(stdoutIsTty: boolean, json: boolean): ChatDriveContext {
+    const built = buildChatSession({
+      chat: EMPTY_CHAT,
+      agentRef: undefined,
+      cwd: tmpdir(),
+      projectConfigDir: undefined,
+      now: () => 0,
+      uuid: () => 'sess-y',
+      providers: scriptedResolver([]),
+    });
+    const stdin = new PassThrough();
+    stdin.end(); // immediate EOF ⇒ the plain loop completes at once
+    const { io: base } = captureIo();
+    return {
+      startSession: () => undefined,
+      processLine: () => Promise.resolve(),
+      shouldStop: () => true,
+      handle: built.handle,
+      store: createChatStore(false),
+      io: { ...base, stdoutIsTty, stdin },
+      global: { ...globalOptions(tmpdir()), json },
+    };
+  }
+
+  it('routes a non-TTY surface to the plain driver (resolves; ink would block)', async () => {
+    await expect(selectChatDriver(ctxWith(false, false))).resolves.toBeUndefined();
+  });
+
+  it('routes --json to the plain driver even on a TTY', async () => {
+    await expect(selectChatDriver(ctxWith(true, true))).resolves.toBeUndefined();
+  });
+
+  it('routes a non-TTY + --json surface to the plain driver', async () => {
+    await expect(selectChatDriver(ctxWith(false, true))).resolves.toBeUndefined();
   });
 });

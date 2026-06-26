@@ -1,4 +1,5 @@
 import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
+import type { SessionStreamHandleEvent } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -53,6 +54,20 @@ describe('buildChatSession', () => {
   it('honors [chat].fs_scope on the SessionContext', () => {
     const built = build({ chat: { ...EMPTY_CHAT, fsScope: 'project' } });
     expect(built.context.fsScopeTier).toBe('project');
+  });
+
+  it('a subscribe()-wired listener observes session:started synchronously (the driveInk ordering contract)', () => {
+    // driveInk subscribes BEFORE startSession so the synchronous session:started (which carries the model for
+    // the footer) is not raced. This locks that the bus emits session:started inline on session.start().
+    const built = build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
+    const received: SessionStreamHandleEvent[] = [];
+    const off = built.handle.subscribe((e) => received.push(e));
+    built.session.start();
+    off();
+    built.session.cancel();
+    const startedEvent = received.find((e) => e.type === 'session:started');
+    expect(startedEvent).toBeDefined();
+    expect(startedEvent?.type === 'session:started' && startedEvent.model).toBe('claude-sonnet-4-6');
   });
 
   it('streams a text turn end-to-end through the handle (started → tokens → cost → completed → cancelled)', async () => {
@@ -161,6 +176,14 @@ describe('buildGovernorWiring', () => {
     // The governor emits the warning ONCE (#warningEmitted) — the 2nd over-cap call must not re-notify.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.limitMicrocents).toBe(1);
+  });
+
+  it('on_exceed:warn — preEgress resolves cleanly when NO onWarning surface is supplied (the common config)', async () => {
+    // A user who sets max_cost_microcents but wires no warning surface: the absent callback must be a no-op,
+    // never a rejection that would surface as an `internal` turn error.
+    const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' });
+    wiring?.updateCost(999_999);
+    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
   });
 
   it('on_exceed:warn — a throwing onWarning surface never rejects preEgress (warn stays non-blocking)', async () => {

@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { AgentParseError } from '@relavium/core';
+import { AgentParseError, MAX_SOURCE_CHARS } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -129,6 +129,23 @@ describe('resolveChatAgent', () => {
     if (isCliError(caught)) {
       expect(caught.code).toBe('invalid_invocation');
       expect(caught.message).toContain('no project');
+    }
+  });
+
+  it('rejects an oversized .agent.yaml before reading it (the agent kind of the shared size cap)', () => {
+    const path = join(dir, 'huge.agent.yaml');
+    writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS + 1)); // one byte over the shared cap
+    let caught: unknown;
+    try {
+      resolveChatAgent(path, { cwd: dir, projectConfigDir: undefined, defaultModel: undefined });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('agent'); // the `kind` is substituted into the diagnostic
+      expect(caught.message).toContain('size limit');
     }
   });
 

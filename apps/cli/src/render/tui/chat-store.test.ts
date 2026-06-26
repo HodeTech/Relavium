@@ -27,6 +27,26 @@ const token = (seq: number, text: string): SessionStreamHandleEvent => ({
   token: text,
   model: 'claude-sonnet-4-6',
 });
+const toolCall = (seq: number, toolId: string): SessionStreamHandleEvent => ({
+  type: 'agent:tool_call',
+  sessionId: 'sess-1',
+  sequenceNumber: seq,
+  timestamp: '2026-06-25T00:00:02.000Z',
+  nodeId: 'relavium-chat',
+  model: 'claude-sonnet-4-6',
+  toolId,
+  toolInput: { path: 'x' },
+});
+const toolResult = (seq: number, toolId: string): SessionStreamHandleEvent => ({
+  type: 'agent:tool_result',
+  sessionId: 'sess-1',
+  sequenceNumber: seq,
+  timestamp: '2026-06-25T00:00:02.500Z',
+  nodeId: 'relavium-chat',
+  toolId,
+  success: true,
+  outputSummary: 'ok',
+});
 
 describe('createChatStore', () => {
   it('flushes a lifecycle event immediately (notifies subscribers, updates the snapshot)', () => {
@@ -160,6 +180,36 @@ describe('createChatStore', () => {
     store.tick();
     expect(notified).toBe(1);
     expect(store.getSnapshot().state.cumulativeCostMicrocents).toBe(42);
+  });
+
+  it('coalesces an agent:tool_call like a token (dirty until tick), then shows the annotation', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply(turnStarted);
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.apply(toolCall(2, 'read_file')); // high-frequency ⇒ coalesced, no immediate flush
+    expect(notified).toBe(0);
+    expect(store.getSnapshot().state.liveToolCalls).toHaveLength(0); // snapshot not yet refreshed
+    store.tick();
+    expect(notified).toBe(1); // the frame flush
+    expect(store.getSnapshot().state.liveToolCalls[0]?.toolId).toBe('read_file');
+  });
+
+  it('coalesces an agent:tool_result like a token (dirty until tick), then marks the call resolved', () => {
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply(turnStarted);
+    store.apply(toolCall(2, 'read_file'));
+    store.tick(); // flush the unresolved call into the snapshot
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.apply(toolResult(3, 'read_file')); // coalesced
+    expect(notified).toBe(0);
+    expect(store.getSnapshot().state.liveToolCalls[0]?.resolved).toBe(false); // snapshot not yet refreshed
+    store.tick();
+    expect(notified).toBe(1);
+    expect(store.getSnapshot().state.liveToolCalls[0]?.resolved).toBe(true);
   });
 
   it('clears the dirty flag when a lifecycle event flushes mid-stream, so a later tick does not repaint', () => {
