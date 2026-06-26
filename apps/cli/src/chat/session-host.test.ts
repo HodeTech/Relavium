@@ -1,9 +1,16 @@
 import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
-import { buildChatSession, buildGovernorWiring, type ChatBudgetWarning } from './session-host.js';
+import { buildDefaultChatAgent } from './default-agent.js';
+import {
+  buildChatSession,
+  buildGovernorWiring,
+  buildResumedChatSession,
+  type ChatBudgetWarning,
+} from './session-host.js';
 import {
   drainHandle,
   scriptedResolver,
@@ -129,6 +136,88 @@ describe('buildChatSession', () => {
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
     );
     expect(errorCodes).toEqual(['internal', 'internal', 'turn_limit']);
+  });
+});
+
+describe('buildResumedChatSession (2.N)', () => {
+  const RESUME_AGENT = buildDefaultChatAgent('claude-sonnet-4-6');
+  const ISO = '2026-06-25T00:00:00.000Z';
+
+  const message = (seq: number, role: 'user' | 'assistant', text: string): SessionMessage => ({
+    id: `m${seq}`,
+    sessionId: 'sess-r',
+    sequenceNumber: seq,
+    role,
+    content: [{ type: 'text', text }],
+    timestamp: ISO,
+  });
+
+  const record = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecord => ({
+    id: 'sess-r',
+    agentSlug: RESUME_AGENT.id,
+    agentSnapshot: RESUME_AGENT,
+    context: { workingDir: '/workspace', fsScopeTier: 'project' },
+    status: 'ended',
+    totalInputTokens: 10,
+    totalOutputTokens: 5,
+    totalCostMicrocents: 1234,
+    createdAt: ISO,
+    updatedAt: ISO,
+    ...overrides,
+  });
+
+  function resume(messages: readonly SessionMessage[], rec: AgentSessionRecord = record()) {
+    return buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: rec,
+      messages,
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('continued')]),
+    });
+  }
+
+  it('rebinds the frozen agent + context and reconstructs the carried-over state', () => {
+    const built = resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
+    expect(built.sessionId).toBe('sess-r');
+    expect(built.agent.id).toBe(RESUME_AGENT.id);
+    expect(built.agent.model).toBe('claude-sonnet-4-6');
+    expect(built.context.fsScopeTier).toBe('project'); // the frozen context tier, not the chat default
+    expect(built.resumeState.turnCount).toBe(1); // one completed exchange
+    expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
+    // The persister continues PAST the persisted MAX(sequence_number) = 1.
+    expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('continues a transcript whose last persisted seq is computed from the MAX (order-independent)', () => {
+    // Rows passed out of order; nextSequenceNumber must be MAX+1, not last-element+1.
+    const built = resume([message(1, 'assistant', 'hello'), message(0, 'user', 'hi')]);
+    expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('starts a never-messaged session at sequence 0', () => {
+    const built = resume([]);
+    expect(built.nextSequenceNumber).toBe(0);
+    expect(built.resumeState.turnCount).toBe(0);
+  });
+
+  it('the resumed session lands at idle and continues WITHOUT re-emitting session:started', async () => {
+    const built = resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
+    // No start() — AgentSession.resume already landed at idle; sendMessage continues the conversation.
+    await built.session.sendMessage('again');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const types = events.map((e) => e.type);
+    expect(types).not.toContain('session:started'); // resume must not double the lifecycle-open event
+    expect(types).toContain('session:turn_completed');
+    const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
+    expect(tokens).toContain('continued');
+  });
+
+  it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', () => {
+    expect(() => resume([], record({ agentSnapshot: undefined }))).toThrow(
+      /no stored agent snapshot/,
+    );
   });
 });
 

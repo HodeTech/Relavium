@@ -15,7 +15,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
-import { chatCommand } from './chat.js';
+import { chatCommand, chatResumeCommand } from './chat.js';
 import { chatListCommand } from './chat-list.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
@@ -34,11 +34,11 @@ import { statusCommand } from './status.js';
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). `chat` (2.M) and `chat-list` (2.O) are real commands (`registerChat` /
- * `registerChatList` below); the rest of the chat family (`chat-resume`/`chat-export`/`agent run`) and
- * `budget resume` are likewise registered as clean stubs here (so the documented "not available yet" message —
- * not commander's "unknown command" — is what a user sees) until their workstreams land (2.N/2.P/2.Q; a
- * tracked follow-up).
+ * (the authoring commands at 2.J). `chat` (2.M), `chat-resume` (2.N), and `chat-list` (2.O) are real commands
+ * (`registerChat` / `registerChatResume` / `registerChatList` below); the rest of the chat family
+ * (`chat-export`/`agent run`) and `budget resume` are likewise registered as clean stubs here (so the
+ * documented "not available yet" message — not commander's "unknown command" — is what a user sees) until
+ * their workstreams land (2.P/2.Q; a tracked follow-up).
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -72,11 +72,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
   },
   { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstream 2.Q' },
   {
-    name: 'chat-resume <sessionId>',
-    summary: 'Reload a persisted session from history.db and continue the conversation.',
-    landsIn: 'workstream 2.N',
-  },
-  {
     name: 'chat-export <sessionId>',
     summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
     landsIn: 'workstream 2.P',
@@ -96,6 +91,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
 export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
   registerChat(program, ctx);
+  registerChatResume(program, ctx);
   registerChatList(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
@@ -166,6 +162,40 @@ function registerChat(program: Command, ctx?: CommandContext): void {
   chat.action(async (opts: { agent?: string }) => {
     ctx.result.exitCode = await chatCommand(
       { agent: opts.agent },
+      {
+        io: ctx.io,
+        global: ctx.global,
+        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        openSessionStore,
+        drive: selectChatDriver,
+      },
+    );
+  });
+}
+
+/**
+ * Register `relavium chat-resume <sessionId>` (2.N) — reload a persisted session from `history.db` and continue
+ * it in the same REPL. Production wires the keychain-backed key resolver (2.C) + the TTY-aware driver, like
+ * `chat`. An unknown session id is a clean exit-2 invocation fault; `/exit` ends with exit code 4.
+ */
+function registerChatResume(program: Command, ctx?: CommandContext): void {
+  const chatResume = program
+    .command('chat-resume <sessionId>')
+    .description('Reload a persisted session from history.db and continue the conversation.');
+
+  if (ctx === undefined) {
+    chatResume.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium chat-resume` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+
+  chatResume.action(async (sessionId: string) => {
+    ctx.result.exitCode = await chatResumeCommand(
+      { sessionId },
       {
         io: ctx.io,
         global: ctx.global,

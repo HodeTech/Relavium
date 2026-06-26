@@ -6,15 +6,18 @@ import {
   createSessionEventSink,
   createSessionHandle,
   createToolRegistry,
+  reconstructSessionState,
   type AgentDefinition,
   type SessionDeps,
   type SessionHandle,
+  type SessionResumeState,
   type ToolHost,
 } from '@relavium/core';
-import type { Budget, SessionContext } from '@relavium/shared';
+import type { AgentSessionRecord, Budget, SessionContext, SessionMessage } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import { CliError } from '../process/errors.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -73,20 +76,23 @@ export interface BuiltChatSession {
 /** The safe default filesystem tier when `[chat].fs_scope` is unset (mirrors the workflow default). */
 const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 
-export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSession {
-  const sessionId = opts.uuid();
-  const agent = resolveChatAgent(opts.agentRef, {
-    cwd: opts.cwd,
-    projectConfigDir: opts.projectConfigDir,
-    defaultModel: opts.chat.defaultModel,
-  });
-  const context: SessionContext = {
-    workingDir: opts.cwd,
-    fsScopeTier: opts.chat.fsScope ?? DEFAULT_FS_SCOPE,
-  };
+/** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
+type SessionRuntimeOptions = Pick<
+  BuildChatSessionOptions,
+  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning'
+>;
 
-  // A fresh bus per session: the sink attaches the sessionId, the bus stamps the per-session sequenceNumber,
-  // and the handle scopes its stream to this sessionId (ADR-0036 one-bus-two-namespaces).
+/**
+ * Build the per-session platform-capability runtime — a fresh `RunEventBus` (the sink attaches the sessionId,
+ * the bus stamps the per-session sequenceNumber, the handle scopes its stream to it; ADR-0036
+ * one-bus-two-namespaces) and the {@link SessionDeps} (provider seam, tool registry, the hard turn cap, and —
+ * when a cost cap is configured — the ADR-0028 pre-egress governor). Shared by {@link buildChatSession} (fresh)
+ * and {@link buildResumedChatSession} (2.N resume) so the two paths can never wire different capabilities.
+ */
+function buildSessionRuntime(
+  opts: SessionRuntimeOptions,
+  sessionId: string,
+): { bus: RunEventBus; deps: SessionDeps } {
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: opts.toolHost ?? {} });
@@ -110,10 +116,87 @@ export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSessio
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
   };
+  return { bus, deps };
+}
 
+export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSession {
+  const sessionId = opts.uuid();
+  const agent = resolveChatAgent(opts.agentRef, {
+    cwd: opts.cwd,
+    projectConfigDir: opts.projectConfigDir,
+    defaultModel: opts.chat.defaultModel,
+  });
+  const context: SessionContext = {
+    workingDir: opts.cwd,
+    fsScopeTier: opts.chat.fsScope ?? DEFAULT_FS_SCOPE,
+  };
+
+  const { bus, deps } = buildSessionRuntime(opts, sessionId);
   const session = new AgentSession({ sessionId, agentRef: agent.id, agent, context, deps });
   const handle = createSessionHandle(bus, sessionId, () => session.cancel());
   return { session, handle, sessionId, agent, context };
+}
+
+/** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */
+export interface BuiltResumedChatSession extends BuiltChatSession {
+  /** The reconstructed in-flight state the view seeds from (carried cost + prior completed-turn count). */
+  readonly resumeState: SessionResumeState;
+  /**
+   * The first `sequenceNumber` the persister assigns to a new message — past the persisted MAX so a continued
+   * session does not collide on the `(session_id, sequence_number)` UNIQUE index.
+   */
+  readonly nextSequenceNumber: number;
+}
+
+export interface BuildResumedChatSessionOptions {
+  /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
+  readonly chat: ResolvedChatConfig;
+  /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
+  readonly record: AgentSessionRecord;
+  /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
+  readonly messages: readonly SessionMessage[];
+  /** Wall-clock in ms (injectable for tests) — feeds the bus + the chain clock. */
+  readonly now: () => number;
+  /** The provider seam (injectable for tests); defaults to the env/keychain resolver. */
+  readonly providers?: ProviderResolver;
+  /** The tool-execution host (injectable for tests); defaults to fail-closed `{}`. */
+  readonly toolHost?: ToolHost;
+  /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
+  readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
+}
+
+/**
+ * Assemble a RESUMED `relavium chat` session (2.N) over `AgentSession.resume`: rebind the session's frozen
+ * agent + context from the loaded record, reconstruct its in-flight state from the persisted transcript
+ * ({@link reconstructSessionState} — text-only, with a trailing unanswered turn rolled back), and wire the
+ * SAME platform-capability runtime a fresh session uses. The resumed session lands directly at idle and does
+ * NOT re-emit `session:started`; the next `sendMessage` continues the conversation. A session with no stored
+ * `agentSnapshot` cannot be rebound and is a clean invalid invocation (exit 2).
+ */
+export function buildResumedChatSession(
+  opts: BuildResumedChatSessionOptions,
+): BuiltResumedChatSession {
+  const { record, messages } = opts;
+  const agent = record.agentSnapshot;
+  if (agent === undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      `session ${record.id} has no stored agent snapshot and cannot be resumed`,
+    );
+  }
+  const context = record.context;
+  const resumeState = reconstructSessionState(record, messages);
+
+  const { bus, deps } = buildSessionRuntime(opts, record.id);
+  const session = AgentSession.resume(
+    { sessionId: record.id, agentRef: agent.id, agent, context, deps },
+    resumeState,
+  );
+  const handle = createSessionHandle(bus, record.id, () => session.cancel());
+  // Seed the persister past the persisted MAX(sequence_number); an empty transcript continues from 0.
+  const nextSequenceNumber =
+    messages.length === 0 ? 0 : Math.max(...messages.map((m) => m.sequenceNumber)) + 1;
+  return { session, handle, sessionId: record.id, agent, context, resumeState, nextSequenceNumber };
 }
 
 export interface GovernorWiring {

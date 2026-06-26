@@ -79,14 +79,31 @@ export const MAX_LIVE_TOOL_CALLS = 16;
 /** Recent warnings kept for display. */
 export const MAX_WARNINGS = 6;
 
-export function initialSessionViewState(): SessionViewState {
+/**
+ * Optional header seed for a RESUMED session (2.N): a resumed `AgentSession` lands directly at idle and never
+ * re-emits `session:started`, so the view header (the bound agent/model) and the carried-over running totals
+ * (prior cost + completed-turn count) would otherwise show empty/zero until the first new turn. The command
+ * seeds them from the reconstructed state so the footer reflects the continuing session from the first frame.
+ * A fresh session passes no seed and is identical to before.
+ */
+export interface SessionViewSeed {
+  readonly agentRef?: string;
+  readonly model?: string;
+  readonly cumulativeCostMicrocents?: number;
+  readonly turnCount?: number;
+}
+
+export function initialSessionViewState(seed?: SessionViewSeed): SessionViewState {
   return {
+    // agentRef/model are required-optional under exactOptionalPropertyTypes: spread the key in only when set.
+    ...(seed?.agentRef === undefined ? {} : { agentRef: seed.agentRef }),
+    ...(seed?.model === undefined ? {} : { model: seed.model }),
     status: 'idle',
     transcript: [],
     liveTokens: '',
     liveToolCalls: [],
-    cumulativeCostMicrocents: 0,
-    turnCount: 0,
+    cumulativeCostMicrocents: seed?.cumulativeCostMicrocents ?? 0,
+    turnCount: seed?.turnCount ?? 0,
     turnStartedAtMs: undefined,
     gapDetected: false,
     warnings: [],

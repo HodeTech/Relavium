@@ -15,7 +15,15 @@ describe('command registration (specs)', () => {
     const program = buildProgram(captureIo().io);
     const names = program.commands.map((command) => command.name());
     expect(names).toEqual(
-      expect.arrayContaining(['list', 'logs', 'status', 'gate', 'chat', 'chat-list']),
+      expect.arrayContaining([
+        'list',
+        'logs',
+        'status',
+        'gate',
+        'chat',
+        'chat-resume',
+        'chat-list',
+      ]),
     );
 
     const gate = program.commands.find((command) => command.name() === 'gate');
@@ -33,6 +41,14 @@ describe('command registration (specs)', () => {
     program.exitOverride();
     expect(() => program.parse(['node', 'relavium', 'chat-list'])).toThrow(
       /`relavium chat-list` requires/,
+    );
+  });
+
+  it('routes `relavium chat-resume <id>` to its command (a clean no-context stub in a help-only program)', () => {
+    const program = buildProgram(captureIo().io);
+    program.exitOverride();
+    expect(() => program.parse(['node', 'relavium', 'chat-resume', 'sess-1'])).toThrow(
+      /`relavium chat-resume` requires/,
     );
   });
 
@@ -55,7 +71,6 @@ describe('command registration (specs)', () => {
     // commands.md promises a clean "not available yet (lands in …)" message — not commander's "unknown
     // command" — for the next chat-family / budget commands. These are registered as stubs (C1).
     for (const argv of [
-      ['chat-resume', 'sess-1'],
       ['chat-export', 'sess-1'],
       ['budget', 'resume', 'run-1'],
     ]) {

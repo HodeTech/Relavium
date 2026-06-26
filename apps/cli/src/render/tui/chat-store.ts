@@ -5,6 +5,7 @@ import {
   appendUserMessage,
   initialSessionViewState,
   reduceSessionEvent,
+  type SessionViewSeed,
   type SessionViewState,
 } from './session-view-model.js';
 
@@ -60,9 +61,9 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new
   'cost:updated',
 ]);
 
-export function createChatStore(color: boolean): ChatStoreController {
+export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatStoreController {
   const listeners = new Set<() => void>();
-  let state = initialSessionViewState();
+  let state = initialSessionViewState(seed);
   let tickCount = 0;
   let dirty = false;
   let snapshot: ChatStoreSnapshot = { state, tick: tickCount, color };

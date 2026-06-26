@@ -23,11 +23,13 @@ import { createChatStore } from '../render/tui/chat-store.js';
 import { captureIo } from '../test-support.js';
 import {
   chatCommand,
+  chatResumeCommand,
   drivePlain,
   makePlainPrinter,
   type ChatCommandDeps,
   type ChatDriveContext,
   type ChatDriver,
+  type ChatResumeCommandDeps,
 } from './chat.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
@@ -263,6 +265,158 @@ describe('chatCommand', () => {
       },
     };
     await expect(chatCommand({ agent: undefined }, bad)).rejects.toThrow(/cannot infer a provider/);
+  });
+});
+
+describe('chatResumeCommand (2.N)', () => {
+  let cwd: string;
+  let home: string;
+  let client: DbClient;
+  const savedHome = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'relavium-resume-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'relavium-resume-home-'));
+    for (const v of HOME_ENV_VARS) {
+      savedHome.set(v, process.env[v]);
+      process.env[v] = home;
+    }
+    client = createClient(':memory:');
+    runMigrations(client.db);
+  });
+  afterEach(() => {
+    client.sqlite.close();
+    for (const v of HOME_ENV_VARS) {
+      const prev = savedHome.get(v);
+      if (prev === undefined) delete process.env[v];
+      else process.env[v] = prev;
+    }
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  type Store = ReturnType<typeof createSessionStore>;
+
+  /** Fresh-session deps over a SHARED store, so a later resume reloads the SAME `history.db`. sessionId = `id-0`. */
+  function freshDeps(
+    lines: readonly string[],
+    scripts: StreamChunk[][],
+    store: Store,
+  ): ChatCommandDeps {
+    const { io } = captureIo();
+    let tick = Date.parse('2026-06-25T00:00:00.000Z');
+    let id = 0;
+    return {
+      io,
+      global: globalOptions(cwd),
+      providers: scriptedResolver(scripts),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: linesDriver(lines),
+      now: () => tick++,
+      uuid: () => `id-${id++}`,
+    };
+  }
+
+  /** Resume deps over the SAME store; resume reuses the persisted sessionId (no mint), so ids only feed messages. */
+  function resumeDeps(
+    lines: readonly string[],
+    scripts: StreamChunk[][],
+    store: Store,
+  ): { d: ChatResumeCommandDeps; err: () => string } {
+    const { io, err } = captureIo();
+    let tick = Date.parse('2026-06-25T01:00:00.000Z');
+    let id = 0;
+    return {
+      d: {
+        io,
+        global: globalOptions(cwd),
+        providers: scriptedResolver(scripts),
+        openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+        drive: linesDriver(lines),
+        now: () => tick++,
+        uuid: () => `r-${id++}`,
+      },
+      err,
+    };
+  }
+
+  it('reloads a persisted session and continues it, appending sequenced rows past the prior max', async () => {
+    const store = createSessionStore(client.db);
+    // Seed one fresh turn (id-0 = session; messages seq 0,1), then resume and add a second turn.
+    expect(
+      await chatCommand(
+        { agent: undefined },
+        freshDeps(['hello', '/exit'], [textTurn('hi')], store),
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+
+    const { d } = resumeDeps(['again', '/exit'], [textTurn('more')], store);
+    expect(await chatResumeCommand({ sessionId: 'id-0' }, d)).toBe(EXIT_CODES.chatEnded);
+
+    const full = store.loadFull('id-0');
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    // The continued turn's rows are seq 2,3 — past the persisted MAX (1), no UNIQUE collision.
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(full?.messages[2]?.content[0]).toEqual({ type: 'text', text: 'again' });
+    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'more' });
+    // Totals accumulate across the resume (the persister adopts + hydrates the prior row): 2 turns × {10,5}.
+    expect(full?.session.totalInputTokens).toBe(20);
+    expect(full?.session.totalOutputTokens).toBe(10);
+  });
+
+  it('seeds the view header (model · cost · prior turns) and the resume intro from the reconstructed state', async () => {
+    const store = createSessionStore(client.db);
+    await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
+    const seededModel = store.loadFull('id-0')?.session.agentSnapshot?.model;
+
+    let snapshot: ReturnType<ChatDriveContext['store']['getSnapshot']> | undefined;
+    let intro: string | undefined;
+    const captureDrive: ChatDriver = (ctx) => {
+      snapshot = ctx.store.getSnapshot();
+      intro = ctx.intro;
+      return Promise.resolve();
+    };
+    const { d } = resumeDeps([], [], store);
+    await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: captureDrive });
+
+    expect(snapshot?.state.turnCount).toBe(1); // one prior completed turn
+    expect(snapshot?.state.model).toBe(seededModel); // header model seeded (a fresh store would be undefined)
+    expect(seededModel).toBeDefined();
+    expect(snapshot?.state.cumulativeCostMicrocents).toBeGreaterThan(0); // carried-over cost, not zero
+    expect(intro).toContain('Resuming session id-0');
+    expect(intro).toContain('1 prior turn'); // singular, and not "1 prior turns"
+  });
+
+  it('rejects an unknown sessionId as a clean exit-2 invocation fault and closes the store', async () => {
+    let closed = false;
+    const store = createSessionStore(client.db);
+    const { d } = resumeDeps([], [], store);
+    await expect(
+      chatResumeCommand(
+        { sessionId: 'ghost' },
+        { ...d, openSessionStore: () => ({ store, db: client.db, close: () => (closed = true) }) },
+      ),
+    ).rejects.toThrow(/no session found with id ghost/);
+    expect(closed).toBe(true); // the opened db handle is not stranded on the not-found path
+  });
+
+  it('rejects a session with no stored agent snapshot as a clean exit-2 fault', async () => {
+    const store = createSessionStore(client.db);
+    store.createSession({
+      id: 'no-snap',
+      agentSlug: 'gone',
+      context: { workingDir: cwd, fsScopeTier: 'sandboxed' },
+      status: 'ended',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      createdAt: '2026-06-25T00:00:00.000Z',
+      updatedAt: '2026-06-25T00:00:00.000Z',
+    });
+    const { d } = resumeDeps([], [], store);
+    await expect(chatResumeCommand({ sessionId: 'no-snap' }, d)).rejects.toThrow(
+      /no stored agent snapshot/,
+    );
   });
 });
 
