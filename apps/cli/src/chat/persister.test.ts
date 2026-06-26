@@ -40,11 +40,7 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
-  function setup(
-    providers: ProviderResolver,
-    initialSequenceNumber?: number,
-    seeds?: { input?: number; output?: number; cost?: number },
-  ) {
+  function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
     let msgId = 0;
@@ -66,9 +62,6 @@ describe('createSessionPersister', () => {
       now,
       uuid: () => `msg-${msgId++}`,
       ...(initialSequenceNumber === undefined ? {} : { initialSequenceNumber }),
-      ...(seeds?.input === undefined ? {} : { initialTotalInputTokens: seeds.input }),
-      ...(seeds?.output === undefined ? {} : { initialTotalOutputTokens: seeds.output }),
-      ...(seeds?.cost === undefined ? {} : { initialTotalCostMicrocents: seeds.cost }),
     });
     return { built, persister };
   }
@@ -103,17 +96,14 @@ describe('createSessionPersister', () => {
     expect(() => persister.start()).not.toThrow(); // a re-INSERT would be a UNIQUE constraint failure
     const full = store.loadFull(built.sessionId);
     expect(full).toBeDefined();
-    // The existing row is adopted untouched here — its persisted totals are NOT reset to the fresh record's 0
-    // (chat-resume / 2.N seeds the persister from these before the first resumed turn).
+    // The existing row is adopted untouched here — start() hydrates the persister's running totals from it
+    // (not reset to the fresh record's 0), so the next turn flushes prior+new rather than just the delta.
     expect(full?.session.totalCostMicrocents).toBe(1300);
   });
 
-  it('resumed persister folds new-turn tokens ON TOP of the seeded prior-session totals, not from zero', async () => {
-    // Simulate 2.N resume: a row with prior totals already exists AND the persister is seeded from it.
-    const { built, persister } = setup(scriptedResolver([textTurn('go')]), 5, {
-      input: 100,
-      output: 50,
-    });
+  it('resumed persister folds new-turn tokens ON TOP of the adopted row totals, not from zero', async () => {
+    // Simulate 2.N resume: a row with prior totals already exists; start() adopts it and hydrates the totals.
+    const { built, persister } = setup(scriptedResolver([textTurn('go')]), 5);
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,
@@ -132,16 +122,16 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('go');
 
     const full = store.loadFull(built.sessionId);
-    // The scripted turn adds {input:10, output:5}; seeded 100/50 ⇒ 110/55, NOT 10/5 (the unseeded regression).
+    // The scripted turn adds {input:10, output:5}; hydrated 100/50 ⇒ 110/55, NOT 10/5 (the un-hydrated regression).
     expect(full?.session.totalInputTokens).toBe(110);
     expect(full?.session.totalOutputTokens).toBe(55);
   });
 
-  it('resumed persister carries the seeded cost through a zero-egress turn (no cost:updated ⇒ seed survives)', async () => {
-    // A turn with no provider egress emits NO cost:updated, so the cost flush relies entirely on the seed.
-    // unresolvedResolver fails the turn `internal` before any egress; the prior row cost (1300) must survive —
-    // without initialTotalCostMicrocents the unconditional flush would reset it to 0.
-    const { built, persister } = setup(unresolvedResolver(), 5, { cost: 1300 });
+  it('resumed persister carries the adopted-row cost through a zero-egress turn (no cost:updated ⇒ it survives)', async () => {
+    // A turn with no provider egress emits NO cost:updated, so the cost flush relies entirely on the hydrated
+    // total. unresolvedResolver fails the turn `internal` before any egress; the prior row cost (1300) must
+    // survive — without start()'s hydration the unconditional flush would reset it to 0.
+    const { built, persister } = setup(unresolvedResolver(), 5);
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,
@@ -160,7 +150,7 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('go'); // fails internal — no provider egress, so no cost:updated fires
 
     const full = store.loadFull(built.sessionId);
-    expect(full?.session.totalCostMicrocents).toBe(1300); // the seed survived (would be 0 if unseeded)
+    expect(full?.session.totalCostMicrocents).toBe(1300); // the hydrated cost survived (would be 0 without it)
   });
 
   it('persists a completed turn as a user + text-only assistant pair, and folds the token totals', async () => {

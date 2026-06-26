@@ -6,18 +6,22 @@ import {
   formatTurnSummary,
   stripTerminalControls,
 } from './chat-projection.js';
+import { formatDuration, formatTokens } from './format.js';
 import { initialSessionViewState } from './session-view-model.js';
 
 describe('chat-projection', () => {
   describe('formatTurnSummary', () => {
-    it('renders the stop reason, tokens, and duration for a successful turn', () => {
+    it('renders the stop reason, the token counts, and the duration for a successful turn', () => {
       const line = formatTurnSummary({
         stopReason: 'stop',
         tokensUsed: { input: 10, output: 5 },
         durationMs: 1500,
       });
-      expect(line).toContain('stop');
-      expect(line).toContain('·'); // dot-separated parts
+      const parts = line.split(' · ');
+      expect(parts).toHaveLength(3); // stop · tokens · duration
+      expect(parts[0]).toBe('stop');
+      expect(line).toContain(formatTokens({ input: 10, output: 5 })); // the token segment is rendered
+      expect(line).toContain(formatDuration(1500)); // the duration segment is rendered
     });
 
     it('surfaces the error code (not the stop reason) for a failed turn', () => {
@@ -29,9 +33,12 @@ describe('chat-projection', () => {
       expect(line).toContain('error: turn_limit');
     });
 
-    it('omits the duration when it is unknown', () => {
+    it('omits the duration segment when the duration is unknown (stop + tokens only)', () => {
       const line = formatTurnSummary({ stopReason: 'stop', tokensUsed: { input: 1, output: 1 } });
-      expect(line).toContain('stop');
+      const parts = line.split(' · ');
+      expect(parts).toHaveLength(2); // stop · tokens — the duration segment is ABSENT
+      expect(parts[0]).toBe('stop');
+      expect(parts[1]).toBe(formatTokens({ input: 1, output: 1 }));
     });
   });
 

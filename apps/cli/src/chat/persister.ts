@@ -38,21 +38,11 @@ export interface SessionPersisterDeps {
   /**
    * The first `sequenceNumber` this persister assigns (default `0`). A fresh session starts at 0; the 2.N
    * resume path seeds it past the persisted `MAX(sequence_number)` so a continued session does not collide
-   * on the `(session_id, sequence_number)` UNIQUE index. (Resume also reloads the row rather than inserting,
-   * which is the 2.N concern; this is the write-side injection point it needs.)
+   * on the `(session_id, sequence_number)` UNIQUE index. This is caller-provided because the next sequence
+   * number lives in the messages, not on the session row — unlike the running totals, which {@link
+   * SessionPersister.start} hydrates automatically from the adopted row.
    */
   readonly initialSequenceNumber?: number;
-  /**
-   * Running totals to seed the in-memory accumulators from on resume (default `0` for a fresh session). On
-   * a 2.N resume the row already carries prior-turn totals; without these seeds the first resumed
-   * `turn_completed` flush would write `record('active')` with only the new turn's delta — silently
-   * discarding the persisted totals. `totalCostMicrocents` needs seeding too: a zero-cost resumed turn emits
-   * no `cost:updated`, so the flush would otherwise reset the row's cost to 0. The 2.N command loads the
-   * record via `store.loadFull` and passes its totals here alongside {@link initialSequenceNumber}.
-   */
-  readonly initialTotalInputTokens?: number;
-  readonly initialTotalOutputTokens?: number;
-  readonly initialTotalCostMicrocents?: number;
 }
 
 export interface SessionPersister {
@@ -71,9 +61,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // const and never the `''` sentinel a pre-start record() would otherwise carry into the schema.
   const createdAt = iso();
   let sequenceNumber = deps.initialSequenceNumber ?? 0;
-  let totalInputTokens = deps.initialTotalInputTokens ?? 0;
-  let totalOutputTokens = deps.initialTotalOutputTokens ?? 0;
-  let totalCostMicrocents = deps.initialTotalCostMicrocents ?? 0;
+  // Seeded from 0 for a fresh session; on resume start() hydrates these from the adopted row (see start()).
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCostMicrocents = 0;
   let pendingUserText: string | undefined;
   let assistantText = '';
   let unsubscribe: (() => void) | undefined;
@@ -154,11 +145,18 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       if (started) return;
       started = true;
       // A resumed session's row already exists (the prior process inserted it); re-INSERTing would hit the
-      // UNIQUE primary key and crash on start. Insert only when the row is absent — an existing row is adopted
-      // in place and refreshed by the per-turn updateSession. (chat-resume / 2.N passes the loaded record's
-      // running totals via initialTotal* so the first resumed flush carries prior+new, never just the delta.)
-      if (deps.store.loadSession(deps.sessionId) === undefined) {
+      // UNIQUE primary key and crash on start. Insert only when the row is absent. When it exists (resume),
+      // ADOPT it and hydrate the running totals from it BEFORE any turn flushes — otherwise the first resumed
+      // `turn_completed` would write `record('active')` with only the new turn's delta, silently discarding the
+      // persisted totals (cost too: a zero-egress resumed turn emits no `cost:updated`, so without the seed the
+      // flush would reset the row's cost to 0).
+      const existing = deps.store.loadSession(deps.sessionId);
+      if (existing === undefined) {
         deps.store.createSession(record('active'));
+      } else {
+        totalInputTokens = existing.totalInputTokens;
+        totalOutputTokens = existing.totalOutputTokens;
+        totalCostMicrocents = existing.totalCostMicrocents;
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
