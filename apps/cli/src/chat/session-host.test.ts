@@ -194,6 +194,31 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(2);
   });
 
+  it('computes nextSequenceNumber from the MAX, not the row COUNT (a gapped transcript)', () => {
+    // A gapped transcript (seq 0,1,5 — length 3 but MAX 5) pins MAX+1 semantics: a count-based bug
+    // (`messages.length`) would yield 3 and collide; the correct answer is 6.
+    const built = resume([
+      message(0, 'user', 'hi'),
+      message(1, 'assistant', 'hello'),
+      message(5, 'user', 'later'),
+    ]);
+    expect(built.nextSequenceNumber).toBe(6);
+  });
+
+  it('rolls back a trailing unanswered user turn but still continues past its durable seq', () => {
+    // A session interrupted after the user typed (assistant never replied): the durable transcript ends in a
+    // dangling user row (seq 2). reconstruct rolls it back (so the model is not re-sent two user turns), but
+    // the persister must still continue PAST that durable row (seq 3), never overwrite it.
+    const built = resume([
+      message(0, 'user', 'hi'),
+      message(1, 'assistant', 'hello'),
+      message(2, 'user', 'dangling'),
+    ]);
+    expect(built.resumeState.turnCount).toBe(1); // only the one completed exchange survives projection
+    expect(built.resumeState.messages.at(-1)?.role).toBe('assistant'); // the dangling user turn is trimmed
+    expect(built.nextSequenceNumber).toBe(3); // continues past the durable orphan row, not over it
+  });
+
   it('starts a never-messaged session at sequence 0', () => {
     const built = resume([]);
     expect(built.nextSequenceNumber).toBe(0);

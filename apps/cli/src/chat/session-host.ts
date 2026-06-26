@@ -155,7 +155,11 @@ export interface BuildResumedChatSessionOptions {
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
   readonly messages: readonly SessionMessage[];
-  /** Wall-clock in ms (injectable for tests) — feeds the bus + the chain clock. */
+  /**
+   * Wall-clock in ms (injectable for tests) — feeds the bus + the chain clock. It clocks ONLY the continued
+   * turn(s); the carried-over rows keep their original persisted timestamps, so a post-resume `history.db`
+   * shows an expected time discontinuity at the resume boundary.
+   */
   readonly now: () => number;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver. */
   readonly providers?: ProviderResolver;
@@ -193,9 +197,13 @@ export function buildResumedChatSession(
     resumeState,
   );
   const handle = createSessionHandle(bus, record.id, () => session.cancel());
-  // Seed the persister past the persisted MAX(sequence_number); an empty transcript continues from 0.
+  // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
+  // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is
+  // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a
+  // single-writer assumption — the next seq is read at load time, so two concurrent resumes of the SAME
+  // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
   const nextSequenceNumber =
-    messages.length === 0 ? 0 : Math.max(...messages.map((m) => m.sequenceNumber)) + 1;
+    messages.reduce((max, m) => (m.sequenceNumber > max ? m.sequenceNumber : max), -1) + 1;
   return { session, handle, sessionId: record.id, agent, context, resumeState, nextSequenceNumber };
 }
 

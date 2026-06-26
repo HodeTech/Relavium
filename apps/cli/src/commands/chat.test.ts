@@ -385,6 +385,25 @@ describe('chatResumeCommand (2.N)', () => {
     expect(snapshot?.state.cumulativeCostMicrocents).toBeGreaterThan(0); // carried-over cost, not zero
     expect(intro).toContain('Resuming session id-0');
     expect(intro).toContain('1 prior turn'); // singular, and not "1 prior turns"
+    expect(intro).not.toContain('1 prior turns');
+  });
+
+  it('pluralizes the resume intro for a multi-turn session ("N prior turns")', async () => {
+    const store = createSessionStore(client.db);
+    // Seed TWO completed turns so the reconstructed turn count is 2 (plural branch of the intro).
+    await chatCommand(
+      { agent: undefined },
+      freshDeps(['hello', 'again', '/exit'], [textTurn('hi'), textTurn('yo')], store),
+    );
+
+    let intro: string | undefined;
+    const captureDrive: ChatDriver = (ctx) => {
+      intro = ctx.intro;
+      return Promise.resolve();
+    };
+    const { d } = resumeDeps([], [], store);
+    await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: captureDrive });
+    expect(intro).toContain('2 prior turns');
   });
 
   it('rejects an unknown sessionId as a clean exit-2 invocation fault and closes the store', async () => {
