@@ -1,7 +1,8 @@
 import { Box, Static, Text, render, useInput } from 'ink';
-import { createElement, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { createElement, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { drivePlain, type ChatDriveContext, type ChatDriver } from '../../commands/chat.js';
+import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps } from './projection.js';
 import { spinnerFrame } from './format.js';
 import {
@@ -63,23 +64,33 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     props.store.getSnapshot,
   );
   const [input, setInput] = useState('');
+  const cancelFired = useRef(false);
   const running = state.status === 'running';
 
   const submit = (line: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
-    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs).
-    void props.onSubmit(line).then(
-      () => {
-        if (props.shouldStop()) props.onExit();
-      },
-      (err: unknown) => props.onError(err),
-    );
+    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
+    // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
+    void props
+      .onSubmit(line)
+      .then(
+        () => {
+          if (props.shouldStop()) props.onExit();
+        },
+        (err: unknown) => props.onError(err),
+      )
+      .catch((err: unknown) => props.onError(err));
   };
 
   useInput((char, key) => {
-    // Ctrl-C reaches us (not the kernel) in raw mode — end the session via /cancel, even mid-turn.
+    // Ctrl-C reaches us (not the kernel) in raw mode — end the session via /cancel, even mid-turn. Dispatch it
+    // at most once: cancelOnce() is already idempotent, but a held Ctrl-C would otherwise fire redundant /cancel
+    // turns in quick succession.
     if (key.ctrl && char === 'c') {
-      submit('/cancel');
+      if (!cancelFired.current) {
+        cancelFired.current = true;
+        submit('/cancel');
+      }
       return;
     }
     if (running) return; // one turn at a time — ignore typing while the assistant streams
@@ -160,34 +171,62 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
     resolveExit = resolve;
     rejectExit = reject;
   });
-  const instance = render(
-    createElement(ChatApp, {
-      store: ctx.store,
-      onSubmit: ctx.processLine,
-      shouldStop: ctx.shouldStop,
-      onExit: () => resolveExit(),
-      // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
-      // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
-      onError: (err) => rejectExit(err),
-    }),
-    {
-      // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
-      exitOnCtrlC: false,
-      patchConsole: false,
-      maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
-    },
-  );
 
-  return exited
-    .then(() => {
-      // The persistent final summary — only on a CLEAN exit; an error reject skips it and propagates (exit 1).
-      ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
-    })
-    .finally(() => {
-      clearInterval(frame);
-      unsubscribe();
-      instance.unmount();
-    });
+  // An EXTERNAL SIGINT (kill -INT / a parent's signal) — a keyboard Ctrl-C is intercepted by useInput in raw
+  // mode and never reaches the kernel as SIGINT, so this covers only the out-of-band case. Register with
+  // process.on (NOT once): ink registers a signal-exit SIGINT listener that RE-RAISES SIGINT (→ exit 130) when
+  // it is the SOLE remaining listener, which would skip our finally and leave the row 'active'. Staying
+  // registered keeps signal-exit from re-raising, so the cooperative /cancel (→ session:cancelled → persister
+  // marks 'ended') wins; a second SIGINT forces a clean exit 4 rather than hang on a provider ignoring the
+  // abort. Removed LAST in the finally (after unmount), so a Ctrl-C during unmount still hits us.
+  let cancelRequested = false;
+  const onSigint = (): void => {
+    if (cancelRequested) {
+      process.exit(EXIT_CODES.chatEnded);
+    }
+    cancelRequested = true;
+    void ctx.processLine('/cancel').then(() => resolveExit(), rejectExit);
+  };
+  process.on('SIGINT', onSigint);
+
+  try {
+    const instance = render(
+      createElement(ChatApp, {
+        store: ctx.store,
+        onSubmit: ctx.processLine,
+        shouldStop: ctx.shouldStop,
+        onExit: () => resolveExit(),
+        // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
+        // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
+        onError: (err) => rejectExit(err),
+      }),
+      {
+        // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
+        exitOnCtrlC: false,
+        patchConsole: false,
+        maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+      },
+    );
+
+    return exited
+      .then(() => {
+        // The persistent final summary — only on a CLEAN exit; an error reject skips it and propagates (exit 1).
+        ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
+      })
+      .finally(() => {
+        clearInterval(frame);
+        unsubscribe();
+        instance.unmount();
+        process.removeListener('SIGINT', onSigint);
+      });
+  } catch (err) {
+    // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
+    // none leaks past the throw (the finally above is never reached when render() throws).
+    clearInterval(frame);
+    unsubscribe();
+    process.removeListener('SIGINT', onSigint);
+    throw err;
+  }
 }
 
 /** Select the chat driver by surface: a real TTY (and not `--json`, which is 2.Q) ⇒ ink; else the plain loop. */

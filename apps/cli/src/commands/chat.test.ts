@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
@@ -14,10 +15,28 @@ import {
   toolUseTurn,
   unresolvedResolver,
 } from '../chat/test-support.js';
+import type { ResolvedChatConfig } from '../config/resolve.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
+import { createChatStore } from '../render/tui/chat-store.js';
 import { captureIo } from '../test-support.js';
-import { chatCommand, makePlainPrinter, type ChatCommandDeps, type ChatDriver } from './chat.js';
+import {
+  chatCommand,
+  drivePlain,
+  makePlainPrinter,
+  type ChatCommandDeps,
+  type ChatDriveContext,
+  type ChatDriver,
+} from './chat.js';
+
+const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultModel: undefined,
+  fsScope: undefined,
+  maxTurns: undefined,
+  maxMessages: undefined,
+  maxCostMicrocents: undefined,
+  onExceed: undefined,
+};
 
 const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
 
@@ -225,6 +244,65 @@ describe('chatCommand', () => {
       },
     };
     await expect(chatCommand({ agent: undefined }, bad)).rejects.toThrow(/cannot infer a provider/);
+  });
+});
+
+describe('drivePlain', () => {
+  // A minimal driver context over a REAL session handle (no turns fire — startSession is a no-op) plus a
+  // recording processLine, so we exercise drivePlain's readline loop + teardown over the injected stdin (F1).
+  function plainCtx(stdin: NodeJS.ReadableStream) {
+    const built = buildChatSession({
+      chat: EMPTY_CHAT,
+      agentRef: undefined,
+      cwd: tmpdir(),
+      projectConfigDir: undefined,
+      now: () => 0,
+      uuid: () => 'sess-x',
+      providers: scriptedResolver([]),
+    });
+    const { io: base } = captureIo();
+    const processed: string[] = [];
+    let stop = false;
+    const ctx: ChatDriveContext = {
+      startSession: () => undefined,
+      processLine: (line) => {
+        processed.push(line);
+        if (line === '/exit') stop = true;
+        return Promise.resolve();
+      },
+      shouldStop: () => stop,
+      handle: built.handle,
+      store: createChatStore(false),
+      io: { ...base, stdin },
+      global: globalOptions(tmpdir()),
+    };
+    return { ctx, processed };
+  }
+
+  it('reads lines from the injected stdin, dispatches each, and stops on /exit', async () => {
+    const stdin = new PassThrough();
+    const { ctx, processed } = plainCtx(stdin);
+    const done = drivePlain(ctx);
+    stdin.write('hello\n');
+    stdin.write('/exit\n');
+    stdin.end();
+    await done;
+    expect(processed).toEqual(['hello', '/exit']);
+  });
+
+  it('a SIGINT closes the input so the loop ends and the finally removes the handler (teardown path)', async () => {
+    const stdin = new PassThrough();
+    const { ctx } = plainCtx(stdin);
+    const before = process.listenerCount('SIGINT');
+    const done = drivePlain(ctx);
+    expect(process.listenerCount('SIGINT')).toBe(before + 1); // our once-handler is registered
+
+    // Invoke OUR handler directly (the most-recently-added listener) — process.emit('SIGINT') would also fire
+    // the test runner's own listeners. The handler calls rl.close(), ending the for-await loop.
+    const handler = process.listeners('SIGINT').at(-1) as () => void;
+    handler();
+    await done;
+    expect(process.listenerCount('SIGINT')).toBe(before); // the finally removed it (teardown ran)
   });
 });
 

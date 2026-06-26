@@ -166,7 +166,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
  */
 export async function drivePlain(ctx: ChatDriveContext): Promise<void> {
   const unsubscribe = ctx.handle.subscribe(makePlainPrinter(ctx.io));
-  const rl = createInterface({ input: process.stdin, terminal: false });
+  const rl = createInterface({ input: ctx.io.stdin ?? process.stdin, terminal: false });
   // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
   // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
   const onSigint = (): void => rl.close();
