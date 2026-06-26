@@ -52,7 +52,16 @@ describe('chatListCommand (2.O)', () => {
     expect(out()).toBe('No agent sessions yet.\n');
   });
 
-  it('lists sessions most-recently-updated first with id, agent, status, and title', () => {
+  it('emits a pure-empty stdout for an empty history under --json (no human chrome leaks)', () => {
+    const { io, out } = captureIo();
+    expect(chatListCommand(deps(io, true))).toBe(EXIT_CODES.success);
+    // The machine contract (ADR-0049): zero sessions ⇒ zero NDJSON lines, never the human "No agent sessions" line.
+    expect(out()).toBe('');
+  });
+
+  it('lists sessions most-recently-updated first with id, agent, status, and title; closes the store', () => {
+    let closed = false;
+    opened = { ...opened, close: () => (closed = true) };
     opened.store.createSession(
       makeSession({ id: 'sess-old', updatedAt: '2026-06-17T08:00:00.000Z', title: 'First' }),
     );
@@ -64,10 +73,13 @@ describe('chatListCommand (2.O)', () => {
     expect(chatListCommand(deps(io))).toBe(EXIT_CODES.success);
     const text = out();
     expect(text).toContain('Agent sessions (2):');
-    expect(text).toContain('sess-new  coder  active  2026-06-17T10:00:00.000Z');
-    expect(text).toContain('sess-old  chatter  active  2026-06-17T08:00:00.000Z  "First"');
+    // Title-ABSENT line asserted exactly (incl. trailing newline) so a stray title suffix would fail.
+    expect(text).toContain('  sess-new  coder  active  2026-06-17T10:00:00.000Z\n');
+    expect(text).toContain('  sess-old  chatter  active  2026-06-17T08:00:00.000Z  "First"\n');
     // Most-recent-first ordering: sess-new appears before sess-old.
     expect(text.indexOf('sess-new')).toBeLessThan(text.indexOf('sess-old'));
+    // The store is closed on the POPULATED path too (not only the empty path) — no leaked SQLite handle.
+    expect(closed).toBe(true);
   });
 
   it('emits one NDJSON record per session under --json (stdout pure, null-for-absent fields)', () => {
@@ -80,6 +92,9 @@ describe('chatListCommand (2.O)', () => {
 
     const { io, out } = captureIo();
     expect(chatListCommand(deps(io, true))).toBe(EXIT_CODES.success);
+    // Stdout is pure NDJSON: exactly one line per session, no human heading mixed in.
+    expect(out().trimEnd().split('\n')).toHaveLength(2);
+    expect(out()).not.toContain('Agent sessions');
     const records = parseNdjson(out());
     expect(records).toEqual([
       {

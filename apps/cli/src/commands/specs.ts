@@ -70,16 +70,16 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     summary: 'Export a workflow/agent to a portable YAML (secrets stripped).',
     landsIn: 'workstream 2.J',
   },
-  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.N–2.Q' },
+  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstream 2.Q' },
   {
     name: 'chat-resume <sessionId>',
     summary: 'Reload a persisted session from history.db and continue the conversation.',
-    landsIn: 'workstreams 2.N–2.Q',
+    landsIn: 'workstream 2.N',
   },
   {
     name: 'chat-export <sessionId>',
     summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
-    landsIn: 'workstreams 2.N–2.Q',
+    landsIn: 'workstream 2.P',
   },
   {
     name: 'budget',

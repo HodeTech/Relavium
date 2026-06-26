@@ -112,25 +112,48 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(store.listSessions().map((s) => s.id)).toEqual(['sess-c', 'sess-b', 'sess-a']);
   });
 
-  it('listSessions excludes soft-deleted sessions and returns full records', () => {
-    store.createSession(makeSession({ id: 'sess-live', title: 'Live' }));
-    store.createSession(makeSession({ id: 'sess-gone', deletedAt: '2026-06-17T09:00:00.000Z' }));
+  it('listSessions excludes a soft-deleted session even when it is the most-recently-updated', () => {
+    store.createSession(
+      makeSession({ id: 'sess-live', title: 'Live', updatedAt: '2026-06-17T08:00:00.000Z' }),
+    );
+    // sess-gone sorts FIRST by updated_at — so its absence proves the WHERE runs, not just the ORDER BY.
+    store.createSession(
+      makeSession({
+        id: 'sess-gone',
+        updatedAt: '2026-06-17T10:00:00.000Z',
+        deletedAt: '2026-06-17T11:00:00.000Z',
+      }),
+    );
 
     const listed = store.listSessions();
     expect(listed.map((s) => s.id)).toEqual(['sess-live']);
-    expect(listed[0]).toEqual(makeSession({ id: 'sess-live', title: 'Live' }));
+    expect(listed[0]).toEqual(
+      makeSession({ id: 'sess-live', title: 'Live', updatedAt: '2026-06-17T08:00:00.000Z' }),
+    );
   });
 
   it('listSessions is empty for a fresh store', () => {
     expect(store.listSessions()).toEqual([]);
   });
 
-  it('listSessions breaks an updated_at tie deterministically by id (descending)', () => {
+  it('listSessions breaks an updated_at tie deterministically by id descending (not insert order)', () => {
     const tie = '2026-06-17T08:00:00.000Z';
-    store.createSession(makeSession({ id: 'sess-1', updatedAt: tie }));
-    store.createSession(makeSession({ id: 'sess-2', updatedAt: tie }));
+    // Insert in an order (b, a, c) that neither id-asc nor id-desc matches, so passing proves the sort is by
+    // id (descending), not the rows' insertion/rowid order: id-desc ⇒ [c, b, a]; insertion ⇒ [b, a, c].
+    store.createSession(makeSession({ id: 'sess-b', updatedAt: tie }));
+    store.createSession(makeSession({ id: 'sess-a', updatedAt: tie }));
+    store.createSession(makeSession({ id: 'sess-c', updatedAt: tie }));
 
-    expect(store.listSessions().map((s) => s.id)).toEqual(['sess-2', 'sess-1']);
+    expect(store.listSessions().map((s) => s.id)).toEqual(['sess-c', 'sess-b', 'sess-a']);
+  });
+
+  it('listSessions returns a row whose modelId references the model_catalog (FK-resolved passthrough)', () => {
+    // modelId is the catalog UUID (FK → model_catalog.id), not a raw model string — mirrors the existing
+    // FK round-trip test; this pins that listSessions' projection does not drop the column.
+    seedModelCatalog(client);
+    store.createSession(makeSession({ id: 'sess-m', modelId: 'model-1' }));
+
+    expect(store.listSessions()[0]?.modelId).toBe('model-1');
   });
 
   it('updateSession overwrites mutable fields by id', () => {
