@@ -21,7 +21,11 @@ import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
-import { formatToolCall, stripTerminalControls } from '../render/tui/chat-projection.js';
+import {
+  formatToolCall,
+  sanitizeInline,
+  stripTerminalControls,
+} from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 
 /**
@@ -223,7 +227,11 @@ export async function chatResumeCommand(
       initialSequenceNumber: resumed.nextSequenceNumber,
     });
     const turns = resumed.resumeState.turnCount;
-    intro = `Resuming session ${resumed.sessionId} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
+    // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
+    // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
+    // agent id is kebab-constrained, so safe raw). Without this the resume banner is the one chat output path
+    // that could carry a terminal escape from a crafted stored id.
+    intro = `Resuming session ${sanitizeInline(resumed.sessionId)} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
     // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
     // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
     // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't

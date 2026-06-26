@@ -166,6 +166,19 @@ describe('agentRunCommand (2.Q)', () => {
     );
   });
 
+  it('flushes session:cancelled as the LAST --json event even on a turn error (terminal before unsubscribe)', async () => {
+    // A failing turn under --json must still terminate the NDJSON stream: the finally's cancel() runs before
+    // unsubscribe, so the recorded error event rides the stream and session:cancelled is the final line.
+    const { d, out, err } = deps('hi', { json: true, providers: unresolvedResolver() });
+    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(
+      EXIT_CODES.workflowFailed,
+    );
+    const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
+    expect(types).toContain('session:turn_completed'); // the classified error rides the stream as an event
+    expect(types.at(-1)).toBe('session:cancelled'); // the terminal is the last line, not dropped
+    expect(err()).not.toContain('turn failed:'); // under --json the human stderr detail stays suppressed
+  });
+
   it('rejects --input as not-yet-supported (session prompt interpolation is a pending engine change)', async () => {
     // --input is RESERVED: a session does not interpolate {{ctx.*}} into the prompt yet, so exposing it as a
     // working flag would mislead. It fails loud (exit 2) — before reading stdin — until interpolation lands.

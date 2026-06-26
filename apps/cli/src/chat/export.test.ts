@@ -151,6 +151,27 @@ describe('exportSession (2.P)', () => {
     expect(isCliError(thrown) && thrown.message).toMatch(/not a file/);
   });
 
+  it('remaps a file-as-path-component target (ENOTDIR under --out) to a clean exit-2 fault, not a raw crash', () => {
+    seedOneTurn();
+    writeFileSync(join(cwd, 'conflict'), 'x', 'utf8'); // a regular FILE used as a NON-terminal path component
+    let thrown: unknown;
+    try {
+      // mkdirSync(dirname(path)) on `<cwd>/conflict/deeper` must traverse THROUGH the file `conflict` ⇒ ENOTDIR
+      // (a file as the terminal component would be EEXIST instead — the middle component is what forces ENOTDIR).
+      exportSession({
+        store,
+        sessionId: 's1',
+        cwd,
+        outPath: 'conflict/deeper/sub.yaml',
+        force: true,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(isCliError(thrown)).toBe(true); // the sibling ENOTDIR arm maps to exit 2, like EISDIR
+    expect(isCliError(thrown) && thrown.message).toMatch(/not a file/);
+  });
+
   it('exports a session with no completed turns as a minimal input→output scaffold', () => {
     store.createSession(record({ id: 's1', title: 'Empty' }));
     const result = exportSession({ store, sessionId: 's1', cwd, force: false });

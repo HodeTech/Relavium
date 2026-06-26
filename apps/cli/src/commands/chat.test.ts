@@ -573,6 +573,40 @@ describe('chatResumeCommand (2.N)', () => {
     expect(intro).toContain('2 prior turns');
   });
 
+  it('sanitizes a crafted session id in the resume intro banner (no terminal escape reaches the TTY)', async () => {
+    const store = createSessionStore(client.db);
+    // `history.db` is shared with other surfaces whose ids are only schema-constrained to a non-empty string,
+    // so a row may carry control bytes. Mint the session under an id bearing an OSC sequence + a newline; a
+    // fresh run persists a real agentSnapshot under it, then the resume intro must strip the escape (exactly
+    // as chat-list sanitizes its id column) — else the banner is the one chat output path that could inject.
+    const craftedId = 'evil\u001b]0;x\u0007\nFAKE-ROW';
+    let idc = 0;
+    let tick = Date.parse('2026-06-25T00:00:00.000Z');
+    const seed: ChatCommandDeps = {
+      io: captureIo().io,
+      global: globalOptions(cwd),
+      providers: scriptedResolver([textTurn('hi')]),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: linesDriver(['hello', '/exit']),
+      now: () => tick++,
+      uuid: () => (idc++ === 0 ? craftedId : `m-${idc}`), // first mint = the session id
+    };
+    expect(await chatCommand({ agent: undefined }, seed)).toBe(EXIT_CODES.chatEnded);
+
+    let intro: string | undefined;
+    const captureDrive: ChatDriver = (ctx) => {
+      intro = ctx.intro;
+      return Promise.resolve();
+    };
+    const { d } = resumeDeps([], [], store);
+    await chatResumeCommand({ sessionId: craftedId }, { ...d, drive: captureDrive });
+    expect(intro).toBeDefined();
+    expect(intro).not.toContain('\u001b'); // no ESC control byte survives into the banner
+    expect(intro).not.toContain('\u0007'); // no BEL control byte survives into the banner
+    expect(intro).not.toContain('\n'); // the smuggled newline is collapsed — the row cannot be split
+    expect(intro).toContain('Resuming session'); // the banner's static text is intact
+  });
+
   it('rejects an unknown sessionId as a clean exit-2 invocation fault and closes the store', async () => {
     let closed = false;
     const store = createSessionStore(client.db);
@@ -852,5 +886,21 @@ describe('driveJson (2.Q)', () => {
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
     expect(types.filter((t) => t === 'session:turn_completed')).toHaveLength(2); // both turns settled
     expect(types.at(-1)).toBe('session:cancelled');
+  });
+
+  it('a SIGINT closes the input so the loop ends and the finally removes the handler (teardown path)', async () => {
+    // The parallel of the drivePlain SIGINT teardown test — driveJson registers its own SIGINT handler and must
+    // remove it in the finally. Identify it by SET-DELTA (robust to any other listener the runner registers).
+    const stdin = new PassThrough();
+    const { ctx } = jsonCtx(stdin);
+    const before = process.listeners('SIGINT').slice();
+    const done = driveJson(ctx);
+    const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
+    expect(added).toHaveLength(1);
+    const handler = added[0];
+    if (typeof handler !== 'function') throw new TypeError('expected a registered SIGINT handler');
+    handler('SIGINT'); // invoke directly (not process.emit) — it closes the readline, ending the loop
+    await done;
+    expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
   });
 });

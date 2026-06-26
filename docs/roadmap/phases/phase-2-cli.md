@@ -479,7 +479,7 @@ The interactive agent entry point on the CLI ([ADR-0024](../../decisions/0024-ag
 - **2.N — `relavium chat-resume <sessionId>`.** Reload + continue a persisted session from `history.db`.
 - **2.O — `relavium chat-list`.** List session history (id, agent, title, last activity).
 - **2.P — `relavium chat-export <sessionId>`.** Export a session to a `.relavium.yaml` scaffold ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)).
-- **2.Q — `relavium chat --json` + `relavium agent run`.** A deterministic `--json` `session:*` stream (CI-friendly); and a one-shot `relavium agent run <agent> --input … [--json] [--fixture …]` on the same `AgentSession` infra. _(The `relavium gate list` multi-gate discovery command lands with the read commands in **2.I**, per [commands.md](../../reference/cli/commands.md).)_
+- **2.Q — `relavium chat --json` + `relavium agent run`.** A deterministic `--json` `session:*` stream (CI-friendly); and a one-shot `relavium agent run <agent> [--json] [--fixture …]` on the same `AgentSession` infra (`--input` reserved/rejected — see the status note). _(The `relavium gate list` multi-gate discovery command lands with the read commands in **2.I**, per [commands.md](../../reference/cli/commands.md).)_
 
 **Acceptance:** an interactive `relavium chat` streams a multi-turn conversation with a tool call, persists, and resumes; `chat --json` emits a deterministic `session:*` stream; `agent run` invokes a single agent headlessly; chat `/exit` returns exit code 4.
 
@@ -668,10 +668,10 @@ This is the status × plan view; the dependency rationale for every row lives in
 [Ordered waves](#ordered-waves-each-wave-is-internally-parallel-waves-gate-left-to-right) —
 this table does not restate them, it only sequences what remains.
 
-> **Status (2026-06-25):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H · 2.C · 2.E · 2.G · 2.I · 2.L · 2.S** done — **M3 reached, Phase-2 spine complete, all 7 Phase-3 go/no-go exit criteria hold (Phase 3 may start)**; **2.S** (media host-wiring — the first additive lane) landed PR #52 · next pickup: **2.R**.
+> **Status (2026-06-26):** ✅ **2.A · 2.B · 2.D · 2.F · 2.K · 2.H · 2.C · 2.E · 2.G · 2.I · 2.L · 2.S · 2.M · 2.N–2.Q** done — **M3 reached, Phase-2 spine complete, all 7 Phase-3 go/no-go exit criteria hold (Phase 3 may start)**; **2.S** (media host-wiring) landed PR #52 and the agent-first **chat** lane (2.M–2.Q) landed PR #54/#55 · next pickup: **2.R**.
 > (2.L shipped the published, install-verified binary (PR #49) — so go/no-go #7 holds and **every Phase-2
-> spine/gate PR is done**; **2.S** then cleared the first additive lane (PR #52). The remaining three additive
-> lanes (2.R, chat, 2.J) complete in-phase but don't block Phase 3.)
+> spine/gate PR is done**; **2.S** then cleared the first additive lane (PR #52) and the **chat** lane (2.M–2.Q)
+> landed (PR #54/#55). The remaining two additive lanes (2.R, 2.J) complete in-phase but don't block Phase 3.)
 
 | Next | Lane | Why now | Blockers (all met on arrival) |
 |---|---|---|---|
@@ -682,8 +682,9 @@ this table does not restate them, it only sequences what remains.
 
 - **Gate-closing backbone — complete (`2.L` landed, PR #49):** with the published, install-verified binary
   shipped, every exit-criteria/spine PR is done (2.K + 2.H + 2.C + 2.E + 2.G + 2.I + 2.L), so **all seven
-  Phase-3 go/no-go criteria hold and Phase 3 may start**. **2.S** then cleared the first additive lane (PR #52);
-  the remaining three (**2.R, chat, 2.J**) complete in-phase but do **not** block starting Phase 3.
+  Phase-3 go/no-go criteria hold and Phase 3 may start**. **2.S** then cleared the first additive lane (PR #52)
+  and the **chat** lane (2.M–2.Q) landed (PR #54/#55); the remaining two (**2.R, 2.J**) complete in-phase but
+  do **not** block starting Phase 3.
 - **2.K is fully closed (via 2.G).** Its deferred gate-resume scenario was exercised once the
   gate pause/resume surface shipped, which unblocked **2.L** — now landed (PR #49).
 - **The one judgement call — 2.S timing — was honored.** It landed as the *first* additive lane (PR #52,
