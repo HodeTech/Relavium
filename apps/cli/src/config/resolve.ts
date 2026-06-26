@@ -11,6 +11,30 @@ import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 type ProjectDefaults = NonNullable<ProjectConfig['defaults']>;
 type FsScope = ProjectDefaults['fs_scope'];
 type McpServerRegistration = NonNullable<GlobalConfig['mcp_servers']>[number];
+type ChatConfig = NonNullable<ProjectConfig['chat']>;
+
+/**
+ * The resolved `[chat]` block — the agent-first chat entry point's defaults (config-spec.md, ADR-0024),
+ * distinct from `[defaults]` (which governs workflow runs). Absent fields stay `undefined` so the chat
+ * host falls back to its engine defaults (e.g. an absent `maxTurns` ⇒ `SessionDeps`'s built-in 50).
+ */
+export interface ResolvedChatConfig {
+  /** `[chat].default_model` — the model a chat session binds when its agent names none. */
+  readonly defaultModel: ChatConfig['default_model'];
+  /** `[chat].fs_scope` — the filesystem permission tier for chat tool dispatch (same tiers as workflows). */
+  readonly fsScope: ChatConfig['fs_scope'];
+  /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ engine default 50;
+   *  a `positiveInt`, so 0 is rejected at the config layer, never reaching the engine's `<= 0 ⇒ default` arm);
+   *  DISTINCT from `maxMessages` (a history-trim threshold) and the within-turn `maxToolTurns` guard. */
+  readonly maxTurns: ChatConfig['max_turns'];
+  /** `[chat].max_messages` — the history-trim threshold (silently continues; trimming itself is a later phase). */
+  readonly maxMessages: ChatConfig['max_messages'];
+  /** `[chat].max_cost_microcents` — per-session pre-egress cost cap (0/absent ⇒ unbounded; same ADR-0028 governor). */
+  readonly maxCostMicrocents: ChatConfig['max_cost_microcents'];
+  /** `[chat].on_exceed` — action when the cost cap trips (in an interactive REPL, `pause_for_approval`
+   *  degrades to a loud turn-end since the prompt itself is the approval gate). */
+  readonly onExceed: ChatConfig['on_exceed'];
+}
 
 export interface ResolvedConfig {
   readonly updateChannel: GlobalConfig['update_channel'];
@@ -24,6 +48,8 @@ export interface ResolvedConfig {
   /** `[defaults].media_gc_grace_days` (2.S/D11, ADR-0042 §4c) normalized to **milliseconds** for the host media
    *  GC's grace window. Resolved last-writer-wins; absent ⇒ the GC's built-in `DEFAULT_MEDIA_GC_GRACE_MS` default. */
   readonly mediaGcGraceMs: number | undefined;
+  /** The resolved `[chat]` block (agent-first chat defaults, ADR-0024) — see {@link ResolvedChatConfig}. */
+  readonly chat: ResolvedChatConfig;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
@@ -49,6 +75,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     mediaCostEstimate:
       project?.defaults?.media_cost_estimate ?? workspace?.defaults?.media_cost_estimate,
     mediaGcGraceMs: resolveGraceMs(project, workspace),
+    chat: resolveChat(project, workspace),
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };
@@ -64,6 +91,27 @@ function resolveGraceMs(
 ): number | undefined {
   const days = project?.defaults?.media_gc_grace_days ?? workspace?.defaults?.media_gc_grace_days;
   return days === undefined ? undefined : days * MS_PER_DAY;
+}
+
+/**
+ * Resolve the `[chat]` block (last-writer-wins: project → workspace; `[chat]` is project/workspace-scoped,
+ * not global — config-spec.md). Absent at every layer ⇒ all-`undefined` fields, so the chat host falls
+ * back to its engine defaults (e.g. `maxTurns` ⇒ `SessionDeps`'s built-in 50).
+ */
+function resolveChat(
+  project: ProjectConfig | undefined,
+  workspace: ProjectConfig | undefined,
+): ResolvedChatConfig {
+  const p = project?.chat;
+  const w = workspace?.chat;
+  return {
+    defaultModel: p?.default_model ?? w?.default_model,
+    fsScope: p?.fs_scope ?? w?.fs_scope,
+    maxTurns: p?.max_turns ?? w?.max_turns,
+    maxMessages: p?.max_messages ?? w?.max_messages,
+    maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
+    onExceed: p?.on_exceed ?? w?.on_exceed,
+  };
 }
 
 /**

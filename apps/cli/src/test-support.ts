@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 
 import { createRunHistoryStore, type Db } from '@relavium/db';
 import { CapabilityFlagsSchema, type CapabilityFlags } from '@relavium/llm';
@@ -62,6 +63,9 @@ export function captureIo(): { io: CliIo; out: () => string; err: () => string }
     },
     env: {},
     stdoutIsTty: false,
+    // An empty, already-ended stub: a chat test that exercises the plain loop overrides it with its own stream;
+    // a test that forgets reads an immediate EOF here rather than silently draining the real process.stdin.
+    stdin: Readable.from([]),
   };
   return { io, out: () => outChunks.join(''), err: () => errChunks.join('') };
 }

@@ -7,12 +7,15 @@ import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
 import { createProviderResolver } from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
+import { openSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
+import { chatCommand } from './chat.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
 import { listCommand } from './list.js';
@@ -30,8 +33,10 @@ import { statusCommand } from './status.js';
  * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams
- * (the authoring commands at 2.J). The chat family (`chat`/`chat-resume`/`chat-list`/`chat-export`/`agent run`)
- * and `budget resume` land with their workstreams (2.M–2.Q; a tracked follow-up), not here.
+ * (the authoring commands at 2.J). `chat` (2.M) is a real command (`registerChat` below); the rest of the chat
+ * family (`chat-resume`/`chat-list`/`chat-export`/`agent run`) and `budget resume` are likewise registered as
+ * clean stubs here (so the documented "not available yet" message — not commander's "unknown command" — is
+ * what a user sees) until their workstreams land (2.N–2.Q; a tracked follow-up).
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -63,7 +68,27 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     summary: 'Export a workflow/agent to a portable YAML (secrets stripped).',
     landsIn: 'workstream 2.J',
   },
-  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.M–2.Q' },
+  { name: 'agent', summary: 'Manage and run agents.', landsIn: 'workstreams 2.N–2.Q' },
+  {
+    name: 'chat-resume <sessionId>',
+    summary: 'Reload a persisted session from history.db and continue the conversation.',
+    landsIn: 'workstreams 2.N–2.Q',
+  },
+  {
+    name: 'chat-list',
+    summary: 'List past agent sessions (id, agent, last activity).',
+    landsIn: 'workstreams 2.N–2.Q',
+  },
+  {
+    name: 'chat-export <sessionId>',
+    summary: 'Export a session to a .relavium.yaml scaffold (ADR-0026).',
+    landsIn: 'workstreams 2.N–2.Q',
+  },
+  {
+    name: 'budget',
+    summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
+    landsIn: 'a tracked follow-up',
+  },
   {
     name: 'init',
     summary: 'Initialize a .relavium/ directory in the current project.',
@@ -73,6 +98,7 @@ const STUB_COMMANDS: readonly StubSpec[] = [
 
 export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerRun(program, ctx);
+  registerChat(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -115,6 +141,39 @@ function registerRun(program: Command, ctx?: CommandContext): void {
         // persists to ~/.relavium/history.db and resolves keys via the OS keychain → env var.
         openRunStore: openHistoryStore,
         providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+      },
+    );
+  });
+}
+
+/**
+ * Register `relavium chat [--agent <ref>]` (2.M — the agent-first interactive REPL over `AgentSession`).
+ * Production wires the keychain-backed key resolver (2.C), durable session persistence (over the shared
+ * `history.db`, 2.H/ADR-0050), and the TTY-aware driver (ink for a real terminal, the plain line loop
+ * otherwise). `/exit` ends the session with exit code 4.
+ */
+function registerChat(program: Command, ctx?: CommandContext): void {
+  const chat = program
+    .command('chat')
+    .description('Start an interactive agent chat session (REPL).')
+    .option('--agent <ref>', 'bind a specific agent (.agent.yaml path or .relavium/ id)');
+
+  if (ctx === undefined) {
+    chat.action(() => {
+      throw new CliError('not_implemented', '`relavium chat` requires the CLI runtime context.');
+    });
+    return;
+  }
+
+  chat.action(async (opts: { agent?: string }) => {
+    ctx.result.exitCode = await chatCommand(
+      { agent: opts.agent },
+      {
+        io: ctx.io,
+        global: ctx.global,
+        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        openSessionStore,
+        drive: selectChatDriver,
       },
     );
   });

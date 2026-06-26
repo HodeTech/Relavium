@@ -149,21 +149,23 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > so D12/D15/D17 are inert end-to-end until a host (CLI/desktop, 1.AH/Phase-2) wires them. Recorded here
 > so the roadmap is not read as "live end-to-end." None is a defect in the landed policy; each is the
 > deferred mechanism/wiring half. *(1.AF is ✅ Done — all PRs merged #33/#34/#35/#36, 2026-06-20; the items
-> below remain: `read_media` (D12) is deferred to **2.M** (maintainer-approved). **D15/D17/D8 are now wired by the
+> below remain: `read_media` (D12) was deferred to 2.M, then **split into a dedicated, security-reviewed follow-up**
+> (maintainer-approved, 2026-06-26) — the 2.M chat REPL shipped without it (it is engine/db + cross-surface
+> security-sensitive work usable by both `run` and `chat`, orthogonal to the REPL). **D15/D17/D8 are now wired by the
 > CLI (✅ PR #52, 2026-06-25, checked off below)** — the desktop/VS Code surfaces reuse the same injectable ports
 > (Phase-3/Phase-4); the `save_to` multi-feeder semantics remain.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
   factory that bridges `MediaReferenceStore.describe()` + `MediaStore.readRange()` (which returns
   `Uint8Array`) into the `MediaReadAccess` the tool needs (whose `readRange` returns an in-flight **base64**
-  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; 2.M)*
+  `MediaSource`). Until a host provides one, `read_media` cannot be invoked successfully. *(packages/db; read_media D12 follow-up)*
 - [ ] **`read_media` session-scope population (D12 authz data, ADR-0044 §1)** — nothing writes
   `session`/`workspace` `media_references` rows (the only writer, `createMediaReferencePort`, writes `run`
   refs only), so `describe().allowedScopes` is always `[]` and every read denies. The input-transfer
-  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; 2.M)*
+  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; read_media D12 follow-up)*
 - [ ] **`ctx.mediaRead` / `ctx.requestingScope` not wired into the dispatch context** — the AgentRunner +
   AgentSession build `ToolDispatchContext` without these, so `read_media` always throws
-  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; 2.M)*
+  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; read_media D12 follow-up)*
 - [x] **`validateWorkflowWithCatalog` (D15) — wired by the CLI loader (✅ PR #52).** `run` and `gate` call it
   post-parse via `assertWorkflowCatalogValid` (the shared `drive.ts` helper) over the DB `model_catalog`, so an
   incapable / malformed-generative authored `output_modalities` fails fast at LOAD (exit 2) on a fresh run AND a

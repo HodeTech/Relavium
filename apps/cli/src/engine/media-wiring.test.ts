@@ -23,6 +23,14 @@ const EMPTY_CONFIG: ResolvedConfig = {
   maxTokensEstimate: undefined,
   mediaCostEstimate: undefined,
   mediaGcGraceMs: undefined,
+  chat: {
+    defaultModel: undefined,
+    fsScope: undefined,
+    maxTurns: undefined,
+    maxMessages: undefined,
+    maxCostMicrocents: undefined,
+    onExceed: undefined,
+  },
   variables: {},
   mcpServers: [],
 };

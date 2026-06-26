@@ -92,6 +92,7 @@ describe('resolveWorkflowSource', () => {
     expect(isCliError(caught)).toBe(true);
     if (isCliError(caught)) {
       expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('workflow'); // the `kind` is substituted into the diagnostic
       expect(caught.message).toContain('not a regular file');
       expect(caught.message).not.toContain('not found'); // the EACCES/EISDIR-as-miss bug regression guard
     }
@@ -109,6 +110,7 @@ describe('resolveWorkflowSource', () => {
     expect(isCliError(caught)).toBe(true);
     if (isCliError(caught)) {
       expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('workflow'); // the `kind` is substituted into the diagnostic
       expect(caught.message).toContain('size limit');
     }
   });

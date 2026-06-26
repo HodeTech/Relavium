@@ -8,6 +8,10 @@ export interface CliIo {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Whether stdout is a TTY (`process.stdout.isTTY`). */
   readonly stdoutIsTty: boolean;
+  /** Input stream for line-reading surfaces (the plain `chat` loop). Always provided — {@link processIo} wires
+   *  `process.stdin`, and `captureIo` supplies an empty stub; `drivePlain` reads it directly with no fallback,
+   *  so a miswired test cannot silently read the real `process.stdin`. */
+  readonly stdin: NodeJS.ReadableStream;
 }
 
 /** The real-process IO seam used by the `bin` entry. */
@@ -21,5 +25,6 @@ export function processIo(): CliIo {
     },
     env: process.env,
     stdoutIsTty: process.stdout.isTTY === true,
+    stdin: process.stdin,
   };
 }

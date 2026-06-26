@@ -182,6 +182,7 @@ describe('config schemas', () => {
         chat: {
           default_model: 'claude-sonnet-4-6',
           fs_scope: 'sandboxed',
+          max_turns: 50,
           max_messages: 200,
           max_cost_microcents: 5000000,
           on_exceed: 'pause_for_approval',
@@ -191,5 +192,19 @@ describe('config schemas', () => {
     expect(ProjectConfigSchema.safeParse({ chat: { on_exceed: 'explode' } }).success).toBe(false);
     // 0 = unbounded here (nonNegativeInt) — deliberately unlike the workflow budget's positiveInt.
     expect(ProjectConfigSchema.safeParse({ chat: { max_cost_microcents: 0 } }).success).toBe(true);
+  });
+
+  it('accepts [chat].max_turns (the hard turn cap → SessionDeps.maxTurns) as a positive int only', () => {
+    // max_turns is the surface-mapped hard session turn cap, DISTINCT from max_messages (history-trim).
+    expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 10 } }).success).toBe(true);
+    // positiveInt rejects 0 and negatives here at the config layer; only an ABSENT max_turns falls
+    // back to the engine default downstream (0 never reaches the engine's `<= 0 ⇒ default` arm).
+    expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 0 } }).success).toBe(false);
+    expect(ProjectConfigSchema.safeParse({ chat: { max_turns: -1 } }).success).toBe(false);
+    expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 1.5 } }).success).toBe(false);
+    // .strict() still rejects an unknown/typo key alongside the new field.
+    expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 10, max_turn: 5 } }).success).toBe(
+      false,
+    );
   });
 });
