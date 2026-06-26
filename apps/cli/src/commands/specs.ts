@@ -181,7 +181,7 @@ function registerChat(program: Command, ctx?: CommandContext): void {
 function registerChatList(program: Command, ctx?: CommandContext): void {
   const chatList = program
     .command('chat-list')
-    .description('List past agent sessions (id, agent, last activity).');
+    .description('List past agent sessions (id, agent, title, last activity).');
   if (ctx === undefined) {
     chatList.action(() => {
       throw new CliError(
@@ -192,7 +192,9 @@ function registerChatList(program: Command, ctx?: CommandContext): void {
     return;
   }
   chatList.action(() => {
-    ctx.result.exitCode = chatListCommand({ io: ctx.io, global: ctx.global });
+    // Pass the real opener explicitly (consistent with registerChat) so the production wiring is visible at
+    // the registration site and a future specs-level integration test can inject an in-memory store.
+    ctx.result.exitCode = chatListCommand({ io: ctx.io, global: ctx.global, openSessionStore });
   });
 }
 

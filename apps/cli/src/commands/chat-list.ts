@@ -49,10 +49,15 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
   }
 }
 
-/** One session as a terse human line: id, agent slug, status, last-activity timestamp, and the title (if any). */
+/**
+ * One session as a terse human line: id, agent slug, bracketed status (the `[…]` convention `relavium list`
+ * uses for its last-run status, so the column is unambiguous to a scanner), the last-activity timestamp
+ * (`updatedAt` — the "last activity" chat-session.md promises; raw ISO/UTC, deterministic and unambiguous),
+ * and the title (if any).
+ */
 function renderLine(session: AgentSessionRecord): string {
   const title = session.title === undefined ? '' : `  "${session.title}"`;
-  return `  ${session.id}  ${session.agentSlug}  ${session.status}  ${session.updatedAt}${title}\n`;
+  return `  ${session.id}  ${session.agentSlug}  [${session.status}]  ${session.updatedAt}${title}\n`;
 }
 
 /**

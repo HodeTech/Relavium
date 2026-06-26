@@ -52,11 +52,15 @@ describe('chatListCommand (2.O)', () => {
     expect(out()).toBe('No agent sessions yet.\n');
   });
 
-  it('emits a pure-empty stdout for an empty history under --json (no human chrome leaks)', () => {
+  it('emits a pure-empty stdout for an empty history under --json and closes the store', () => {
+    let closed = false;
+    opened = { ...opened, close: () => (closed = true) };
     const { io, out } = captureIo();
     expect(chatListCommand(deps(io, true))).toBe(EXIT_CODES.success);
     // The machine contract (ADR-0049): zero sessions ⇒ zero NDJSON lines, never the human "No agent sessions" line.
     expect(out()).toBe('');
+    // The store closes on the JSON+empty path too (the intersection of the two output axes).
+    expect(closed).toBe(true);
   });
 
   it('lists sessions most-recently-updated first with id, agent, status, and title; closes the store', () => {
@@ -73,9 +77,12 @@ describe('chatListCommand (2.O)', () => {
     expect(chatListCommand(deps(io))).toBe(EXIT_CODES.success);
     const text = out();
     expect(text).toContain('Agent sessions (2):');
-    // Title-ABSENT line asserted exactly (incl. trailing newline) so a stray title suffix would fail.
-    expect(text).toContain('  sess-new  coder  active  2026-06-17T10:00:00.000Z\n');
-    expect(text).toContain('  sess-old  chatter  active  2026-06-17T08:00:00.000Z  "First"\n');
+    // Title-ABSENT line asserted exactly (incl. trailing newline) so a stray title suffix would fail; the
+    // status is bracketed (`[active]`) like `relavium list`'s `[last: …]` column.
+    expect(text).toContain('  sess-new  coder  [active]  2026-06-17T10:00:00.000Z\n');
+    expect(text).toContain('  sess-old  chatter  [active]  2026-06-17T08:00:00.000Z  "First"\n');
+    // A null/undefined title must never leak as a literal into the human line (the absent branch).
+    expect(text).not.toMatch(/"(null|undefined)"/);
     // Most-recent-first ordering: sess-new appears before sess-old.
     expect(text.indexOf('sess-new')).toBeLessThan(text.indexOf('sess-old'));
     // The store is closed on the POPULATED path too (not only the empty path) — no leaked SQLite handle.
@@ -95,7 +102,9 @@ describe('chatListCommand (2.O)', () => {
     // Stdout is pure NDJSON: exactly one line per session, no human heading mixed in.
     expect(out().trimEnd().split('\n')).toHaveLength(2);
     expect(out()).not.toContain('Agent sessions');
-    const records = parseNdjson(out());
+    const records = parseNdjson<{ sessionId: string }>(out());
+    // Most-recent-first ordering pinned on the MACHINE path independently of the human test.
+    expect(records.map((r) => r.sessionId)).toEqual(['sess-2', 'sess-1']);
     expect(records).toEqual([
       {
         sessionId: 'sess-2',
