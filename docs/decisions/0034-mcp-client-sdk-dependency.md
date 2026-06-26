@@ -4,6 +4,8 @@
 - **Date**: 2026-06-10
 - **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0029](0029-tool-policy-hardening.md), [mcp-integration.md](../reference/shared-core/mcp-integration.md), [architectural-principles.md](../standards/architectural-principles.md)
 
+> Amended 2026-06-26: the implementation *shape* this ADR deferred is recorded in [ADR-0052](0052-inbound-mcp-client-package-lifecycle-registration.md) (the `@relavium/mcp` package boundary, connection lifecycle, host-side tool registration, the dependency-free schema→validator compiler, and the agent↔config reference linkage), and the network-transport egress security in [ADR-0053](0053-mcp-network-transport-egress-security.md). This ADR's dependency-and-slot decision is unchanged.
+
 ## Context
 
 Relavium's MCP integration has been **contract-complete but implementation-unscheduled** since

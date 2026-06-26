@@ -95,11 +95,13 @@ flowchart TD
 | 0049 | [CLI machine-output contract (`--json` NDJSON stream + stderr diagnostics)](0049-cli-machine-output-contract.md) | Accepted | 2026-06-22 |
 | 0050 | [CLI run-history `history.db` is unencrypted at rest, guarded by OS file permissions (refines 0005/0008 for the Node/CLI surface)](0050-cli-history-db-at-rest-posture.md) | Accepted | 2026-06-23 |
 | 0051 | [CLI distribution — an engine-inlined ESM bundle that externalizes every third-party dependency (finalizes 0047's bundle boundary)](0051-cli-distribution-thin-bundle-private-engine.md) | Accepted | 2026-06-24 |
+| 0052 | [Inbound MCP client — the `@relavium/mcp` package boundary, host-injected connection lifecycle, host-side tool registration, a dependency-free schema→validator compiler, and the agent↔config reference linkage (implements 0034)](0052-inbound-mcp-client-package-lifecycle-registration.md) | Accepted | 2026-06-26 |
+| 0053 | [MCP network-transport (`sse`/`websocket`) egress security — SSRF enforcement on the one shared primitive, and the explicit per-server local-endpoint opt-in](0053-mcp-network-transport-egress-security.md) | Accepted | 2026-06-26 |
 
 ## Creating a new ADR
 
 1. Copy the structure of an existing ADR to the next available number: `NNNN-your-slug.md`.
-2. Fill in the H1, bold **Status** / **Date** / **Related** lines, then `## Context`, `## Decision`, `## Consequences` (`### Positive` / `### Negative`).
+2. Fill in the H1, bold **Status** / **Date** / **Related** lines, then `## Context`, `## Decision`, `## Consequences` (`### Positive` / `### Negative` with mitigations / optionally `### Neutral` for scope notes, non-reversals, and forward pointers).
 3. Start at status `Accepted` once the decision is settled; cross-link sibling ADRs and reference [tech-stack.md](../tech-stack.md) for versions.
 4. If a later ADR overrides this one, mark the old one `Superseded by NNNN` and link forward. Do **not** delete or rewrite the old ADR — the historical reasoning is the point.
 5. To **refine, clarify, or reconcile** an Accepted ADR *without reversing it* (e.g. a later ADR refines its mechanism), amend it **in place** with a dated `> Amended YYYY-MM-DD: …` note that points to the driving ADR — never a silent rewrite. Reversing a decision is a supersession (step 4), not an amendment. The rule is in [documentation-style.md](../standards/documentation-style.md) §7.

@@ -13,8 +13,8 @@ This page is the **one canonical home** for the tool-execution *contract* — ho
 A tool is registered as a `ToolDef`: its identity, an **executable** args validator (not just a JSON Schema), its guardrail/capability classification, and a pure `dispatch` that runs against the injected host.
 
 ```ts
-/** Exact-match registry key. Built-ins use the fixed catalog ids; MCP/plugin tools register dynamically. */
-type ToolId = string; // e.g. 'read_file' | 'run_command' | 'mcp:<server>:<tool>' | 'plugin:<pkg>:<tool>'
+/** Exact-match registry key. Built-ins use the fixed catalog ids; MCP ToolDefs are host-side assembled (2.R, ADR-0052). */
+type ToolId = string; // e.g. 'read_file' | 'run_command' | 'mcp_{server}_{tool}' | 'plugin_{pkg}_{tool}'
 
 interface ToolDef<Args = unknown, Result = unknown> {
   readonly id: ToolId;
@@ -268,7 +268,7 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 ```ts
 // Engine-pure: register the tools, inject one host. Both entry points share one instance.
 const registry = createToolRegistry({
-  tools: BUILTIN_TOOLS,   // the ToolDef catalog (built-in-tools.md); MCP/plugin ToolDefs register dynamically (2.R)
+  tools: BUILTIN_TOOLS,   // the ToolDef catalog (built-in-tools.md); MCP ToolDefs are host-side assembled (2.R, ADR-0052)
   host: toolHost,         // the surface's ToolHost (Node fs/process/fetch; desktop Rust commands)
 });
 // Per dispatch, the node's grant + resolved config gate the call (ctx.grantedToolIds / ctx.config):
