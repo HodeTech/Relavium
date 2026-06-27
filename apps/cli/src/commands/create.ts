@@ -65,7 +65,8 @@ export async function createCommand(
   }
 
   const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
-  writeAuthoredFile(target, serializeAuthored(parsed), args.force);
-  deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${relative(cwd, target)}\n`);
+  const targetDisplay = relative(cwd, target);
+  writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
+  deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${targetDisplay}\n`);
   return EXIT_CODES.success;
 }

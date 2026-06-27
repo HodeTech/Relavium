@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createClackPrompter, type ClackCreateDeps } from './create-prompter.js';
+import { createClackPrompter, required, type ClackCreateDeps } from './create-prompter.js';
 
 const CANCEL = Symbol('cancel');
 
@@ -55,5 +55,15 @@ describe('createClackPrompter', () => {
   it('returns null when the user cancels MID-wizard (the model prompt)', async () => {
     const prompter = createClackPrompter(fakeDeps(['agent', 'anthropic'], ['Name', CANCEL]));
     expect(await prompter.gather()).toBeNull();
+  });
+});
+
+describe('required (the validate callback)', () => {
+  it('rejects an unset / empty / whitespace-only submit and accepts a non-empty one', () => {
+    const validate = required('Name');
+    expect(validate(undefined)).toBe('Name is required.'); // an empty submit is `undefined`
+    expect(validate('')).toBe('Name is required.');
+    expect(validate('   ')).toBe('Name is required.'); // whitespace-only is still empty
+    expect(validate('Reviewer')).toBeUndefined(); // a real value passes (undefined = no error)
   });
 });

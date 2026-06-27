@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
 import { exportCommand, type ExportCommandDeps } from './export.js';
+import { importCommand } from './import.js';
 
 const WORKFLOW = `schema_version: '1.0'
 workflow:
@@ -85,6 +86,38 @@ describe('exportCommand (2.J)', () => {
     expect(readFileSync(join(cwd, 'shared', 'copy.agent.yaml'), 'utf8')).toContain('id: reviewer');
     const record = JSON.parse(out().trim()) as { id: string; kind: string; path: string };
     expect(record).toMatchObject({ id: 'reviewer', kind: 'agent' });
+    expect(record.path).toBe(join('shared', 'copy.agent.yaml')); // cwd-relative, never the absolute path
+  });
+
+  it('round-trips: an exported agent re-imports cleanly into a fresh project', () => {
+    // Export the agent to a shareable copy (re-serialized, comment-free, placeholder-preserving)…
+    const { d } = deps();
+    expect(exportCommand({ id: 'reviewer', out: 'share.agent.yaml', force: false }, d)).toBe(
+      EXIT_CODES.success,
+    );
+    const exported = readFileSync(join(cwd, 'share.agent.yaml'), 'utf8');
+
+    // …then import that exact copy into a brand-new project — it must parse + land canonically (the 2.J
+    // "export re-imports cleanly" acceptance, asserted as a true round-trip, not just a `schema_version` check).
+    const fresh = mkdtempSync(join(tmpdir(), 'relavium-roundtrip-'));
+    try {
+      mkdirSync(join(fresh, '.relavium'), { recursive: true });
+      writeFileSync(join(fresh, 'incoming.agent.yaml'), exported);
+      const { io } = captureIo();
+      const global: GlobalOptions = {
+        json: false,
+        color: false,
+        cwd: fresh,
+        configPath: undefined,
+        verbosity: 'normal',
+      };
+      expect(importCommand({ path: 'incoming.agent.yaml', force: false }, { io, global })).toBe(
+        EXIT_CODES.success,
+      );
+      expect(existsSync(join(fresh, '.relavium', 'agents', 'reviewer.agent.yaml'))).toBe(true);
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
   });
 
   it('rejects an unknown id with a clean exit-2 CliError', () => {
@@ -124,9 +157,26 @@ describe('exportCommand (2.J)', () => {
     } catch (err) {
       if (!isCliError(err)) throw err;
       expect(err.message).toContain('already exists — pass --force');
+      expect(err.message).not.toContain(cwd); // the message names a cwd-relative path, never the absolute one
     }
     // With --force it overwrites cleanly.
     expect(exportCommand({ id: 'reviewer', force: true }, d)).toBe(EXIT_CODES.success);
     expect(readFileSync(target, 'utf8')).toContain('id: reviewer');
+  });
+
+  it('reports a clean exit-2 (cwd-relative, no absolute path) when the target is a directory (EISDIR)', () => {
+    // A directory sitting where the file should go fails the write `EISDIR` even under --force — exercising
+    // writeAuthoredFile's non-EEXIST error arm and its displayPath (the absolute path must NOT leak).
+    mkdirSync(join(cwd, 'blocked.agent.yaml'), { recursive: true });
+    const { d } = deps();
+    try {
+      exportCommand({ id: 'reviewer', out: 'blocked.agent.yaml', force: true }, d);
+      expect.unreachable('a directory target must throw');
+    } catch (err) {
+      if (!isCliError(err)) throw err;
+      expect(err.message).toContain('cannot write');
+      expect(err.message).toContain('the target path is not a file');
+      expect(err.message).not.toContain(cwd); // displayPath is cwd-relative — no absolute leak in the EISDIR arm
+    }
   });
 });

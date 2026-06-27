@@ -532,6 +532,6 @@ workflow:
 - The file is parsed and validated against `WorkflowSchema` (Zod, in `@relavium/shared`) at load time; invalid files throw a `WorkflowValidationError` and never start a run.
 - `schema_version` is the migration anchor. The format is a public API: breaking changes require a new `schema_version` and a migration tool. Add new optional fields freely; never repurpose or remove an existing one within `'1.0'`.
 - Node `id`s must be unique within a workflow and are referenced by edges, conditions, templates, and `run.outputs`.
-- Secrets are never embedded in the file — `secret` inputs and tool credentials are resolved from the secret store at run time (see [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
+- A **provider API key is never embedded in the file** — no schema field holds a key value (keys live in the OS keychain, resolved at run time); `secret` inputs and tool credentials are likewise resolved from the secret store at run time. MCP-server `env` secrets are referenced via `{{secrets.*}}` placeholders **by convention** — the `env` map (like `context[].value`) accepts arbitrary strings, so author placeholders, never inline a literal (see [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
 
 For the run-time event stream a workflow produces, see [sse-event-schema.md](sse-event-schema.md). For how a run is scheduled and executed, see [../../architecture/execution-model.md](../../architecture/execution-model.md).

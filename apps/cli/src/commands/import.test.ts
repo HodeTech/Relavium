@@ -74,6 +74,27 @@ describe('importCommand (2.J)', () => {
     expect(existsSync(join(cwd, '.relavium', 'workflows', 'code-review.relavium.yaml'))).toBe(true);
   });
 
+  it('sniffs a bare .yaml agent (no top-level `workflow:`) and lands it under .relavium/agents/', () => {
+    seed('thing.yaml', AGENT); // the OTHER sniff branch — workflow parse fails, agent parse succeeds
+    const { d } = deps();
+    expect(importCommand({ path: 'thing.yaml', force: false }, d)).toBe(EXIT_CODES.success);
+    expect(existsSync(join(cwd, '.relavium', 'agents', 'reviewer.agent.yaml'))).toBe(true);
+  });
+
+  it('rejects a bare .yaml that is neither a workflow nor an agent, naming both reasons (exit 2)', () => {
+    seed('mystery.yaml', 'foo: bar\n'); // valid YAML, but matches neither schema → the dual-failure branch
+    const { d } = deps();
+    try {
+      importCommand({ path: 'mystery.yaml', force: false }, d);
+      expect.unreachable('a doc that is neither must throw');
+    } catch (err) {
+      if (!isCliError(err)) throw err;
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain('workflow'); // both typed parse reasons are surfaced…
+      expect(err.message).toContain('agent'); // …so the author sees why it fit neither
+    }
+  });
+
   it('rejects a malformed YAML with a clean exit-2 CliError', () => {
     seed('broken.agent.yaml', 'id: 123\nthis: is: not: valid');
     const { d } = deps();

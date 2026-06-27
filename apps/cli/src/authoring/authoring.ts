@@ -23,9 +23,10 @@ import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
  * **surface-agnostic** — it only reads/writes git-native YAML under a project `.relavium/`, never the keychain
  * or run state — and reuses the SAME strict core parsers (`parseWorkflow` / `parseAgent`) the `run`/`list` paths
  * use, so an authored file is exactly as valid as one a run would accept. A re-serialize from the validated AST
- * (`serializeWorkflow` / `serializeAgent`) is the share-safety guarantee: a parsed document carries no resolved
- * secret VALUE by construction (keys live in the OS keychain; an MCP `env` references a secret only by a
- * `{{secrets.*}}` placeholder), and re-serializing additionally drops any authored comments.
+ * (`serializeWorkflow` / `serializeAgent`) is the share-safety guarantee: a provider key is never in the file by
+ * construction (there is no schema field that holds a key value — keys live in the OS keychain), an MCP `env`
+ * secret is referenced via a `{{secrets.*}}` placeholder by convention, and re-serializing faithfully drops any
+ * authored comments where a stray secret might otherwise hide (it preserves placeholders; it does not scrub).
  */
 
 export type AuthoredKind = 'workflow' | 'agent';
@@ -240,9 +241,15 @@ export function readAuthoredFile(path: string, displayPath: string): string {
  * Atomically write an authored YAML file, creating parent dirs. Without `force`, an existing target is a clean
  * exit-2 fault — `wx` fails `EEXIST` so there is no TOCTOU window between a separate existence check and the
  * write; `w` truncates/overwrites under `force`. A non-file target (`EISDIR`/`ENOTDIR`) is also exit 2; other
- * write faults (permissions, disk) propagate.
+ * write faults (permissions, disk) propagate. User-facing messages name only `displayPath` (a cwd-relative path
+ * the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile} (error-handling.md).
  */
-export function writeAuthoredFile(path: string, content: string, force: boolean): void {
+export function writeAuthoredFile(
+  path: string,
+  displayPath: string,
+  content: string,
+  force: boolean,
+): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content, { encoding: 'utf8', flag: force ? 'w' : 'wx' });
@@ -251,19 +258,15 @@ export function writeAuthoredFile(path: string, content: string, force: boolean)
     if (code === 'EEXIST') {
       throw new CliError(
         'invalid_invocation',
-        `${path} already exists — pass --force to overwrite`,
-        {
-          cause: err,
-        },
+        `${displayPath} already exists — pass --force to overwrite`,
+        { cause: err },
       );
     }
     if (code === 'EISDIR' || code === 'ENOTDIR') {
       throw new CliError(
         'invalid_invocation',
-        `cannot write ${path}: the target path is not a file`,
-        {
-          cause: err,
-        },
+        `cannot write ${displayPath}: the target path is not a file`,
+        { cause: err },
       );
     }
     throw err;

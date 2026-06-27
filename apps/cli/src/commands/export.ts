@@ -30,8 +30,10 @@ export interface ExportCommandDeps {
 /**
  * `relavium export <id>` (2.J) — write a portable, **share-safe** copy of a project workflow or agent. It
  * resolves `<id>` across BOTH catalogs, **re-serializes from the validated AST** (`serializeWorkflow` /
- * `serializeAgent`) so the output drops any authored comments and carries only `{{secrets.*}}` placeholders —
- * never a resolved secret VALUE (keys live in the OS keychain; [keychain-and-secrets.md](../../../../docs/reference/desktop/keychain-and-secrets.md)).
+ * `serializeAgent`) so the output drops any authored comments and re-serializes faithfully: a provider key is
+ * never in the file by construction (no schema field holds a key value; keys live in the OS keychain), and MCP
+ * `env` secrets are referenced via `{{secrets.*}}` placeholders by convention — preserved as authored, not
+ * scrubbed ([keychain-and-secrets.md](../../../../docs/reference/desktop/keychain-and-secrets.md)).
  * The default target is `<id>.<suffix>` in cwd; `--out` overrides, `--force` overwrites. **Surface-agnostic**:
  * pure YAML I/O, never the keychain or run state. An unknown/ambiguous id, an invalid source file, or an
  * existing target without `--force` is a clean exit-2 {@link CliError}.
@@ -51,12 +53,17 @@ export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps):
     args.out === undefined
       ? join(cwd, authoredFileName(parsed.kind, parsed.slug))
       : resolve(cwd, args.out);
-  writeAuthoredFile(target, serializeAuthored(parsed), args.force);
+  const targetDisplay = relative(cwd, target);
+  writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
 
+  // Emit the cwd-relative path in both modes — the same contract `import` uses, so a script consuming either
+  // command's `--json` gets the same path shape (and no absolute filesystem tree leaks into the output).
   if (deps.global.json) {
-    deps.io.writeOut(`${JSON.stringify({ id: parsed.slug, kind: parsed.kind, path: target })}\n`);
+    deps.io.writeOut(
+      `${JSON.stringify({ id: parsed.slug, kind: parsed.kind, path: targetDisplay })}\n`,
+    );
   } else {
-    deps.io.writeOut(`Exported ${parsed.kind} '${parsed.slug}' to ${target}\n`);
+    deps.io.writeOut(`Exported ${parsed.kind} '${parsed.slug}' to ${targetDisplay}\n`);
   }
   return EXIT_CODES.success;
 }

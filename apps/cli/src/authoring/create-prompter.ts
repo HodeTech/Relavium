@@ -20,7 +20,9 @@ export interface ClackCreateDeps {
   readonly text: (opts: {
     message: string;
     placeholder?: string;
-    // The value can be `undefined` (an empty submit) — matching clack's `validate` param, contravariantly.
+    // The value can be `undefined` (an empty submit) — matching clack's `validate` param, contravariantly. The
+    // return is intentionally narrowed to `string | undefined`: clack's `Validate` also allows `Error`, but this
+    // seam never returns one, so the narrowing is deliberate (a subtype of clack's signature), not an oversight.
     validate?: (value: string | undefined) => string | undefined;
   }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
@@ -45,7 +47,8 @@ const defaultDeps: ClackCreateDeps = {
   isCancel,
 };
 
-const required =
+/** A clack `validate` callback that rejects an empty / whitespace-only / unset submit. Exported for unit test. */
+export const required =
   (label: string) =>
   (value: string | undefined): string | undefined =>
     (value ?? '').trim() === '' ? `${label} is required.` : undefined;

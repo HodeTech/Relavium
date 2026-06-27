@@ -41,10 +41,10 @@ import { statusCommand } from './status.js';
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams.
  * The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), `chat-export`
- * (2.P), and `agent run` (2.Q) — via their `register*` functions below. The remaining `STUB_COMMANDS` are the
- * authoring commands `create` / `import` / `export` (2.J), `init` (a later workstream), and `budget resume`
- * (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message (not commander's
- * "unknown command") until it lands.
+ * (2.P), and `agent run` (2.Q) — and the YAML-authoring commands `create` / `import` / `export` (2.J) are live,
+ * all via their `register*` functions below. The remaining `STUB_COMMANDS` are `init` (a later workstream) and
+ * `budget resume` (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message
+ * (not commander's "unknown command") until it lands.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
