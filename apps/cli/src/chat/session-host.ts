@@ -156,8 +156,10 @@ function buildSessionRuntime(
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
-  const host: ToolHost =
-    mcp === undefined ? (opts.toolHost ?? {}) : { ...(opts.toolHost ?? {}), mcp: mcp.capability };
+  // `?? {}` is the deliberate fail-closed default (no capabilities); hoisted so the merge below doesn't spread a
+  // freshly-allocated empty object literal.
+  const baseHost: ToolHost = opts.toolHost ?? {};
+  const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const registry = createToolRegistry({ tools, host });
   const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
@@ -234,7 +236,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
-    await mcp?.close();
+    // Best-effort: a teardown rejection must NOT mask the original construction error (preserve the primary).
+    await mcp?.close().catch(() => undefined);
     throw err;
   }
 }
@@ -357,7 +360,8 @@ export async function buildResumedChatSession(
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
-    await mcp?.close();
+    // Best-effort: a teardown rejection must NOT mask the original resume error (preserve the primary).
+    await mcp?.close().catch(() => undefined);
     throw err;
   }
 }

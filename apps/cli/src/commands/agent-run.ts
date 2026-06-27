@@ -80,6 +80,7 @@ export async function agentRunCommand(
 
   // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
   // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
+  const offline = args.fixture !== undefined;
   const providers =
     args.fixture === undefined
       ? (deps.providers ?? createProviderResolver(deps.io.env))
@@ -87,7 +88,8 @@ export async function agentRunCommand(
 
   // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
   // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
-  // CliError, cause stripped) before the one-shot turn runs.
+  // CliError, cause stripped) before the one-shot turn runs. In `--fixture` (cassette) mode the run must be
+  // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
     agentRef: args.agent,
@@ -96,8 +98,10 @@ export async function agentRunCommand(
     now,
     uuid,
     providers,
-    mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-    mcpRegistrations: config.mcpServers,
+    mcpSecretResolver: offline
+      ? createMcpSecretResolver(deps.io.env)
+      : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
+    mcpRegistrations: offline ? [] : config.mcpServers,
   });
   // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
   // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.
@@ -132,7 +136,12 @@ export async function agentRunCommand(
     built.session.cancel(); // the session's terminal (session:cancelled) — closes the one-shot cleanly
     unsubscribe();
     // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
-    await built.closeMcp?.();
+    // Best-effort: a teardown rejection must NOT override the computed one-shot exit code (warn, don't throw).
+    await built.closeMcp?.().catch((e: unknown) => {
+      deps.io.writeErr(
+        `warning: MCP teardown failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    });
   }
   return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
 }

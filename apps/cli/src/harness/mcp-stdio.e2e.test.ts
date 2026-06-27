@@ -35,47 +35,72 @@ const echoServer = (id = 'echo'): McpServerRef => ({
   args: [FIXTURE],
 });
 
-/** Narrow the capability's `unknown` result to the Relavium tool-result shape for assertion. */
-const asResult = (value: unknown): McpToolResult => value as McpToolResult;
+/** Narrow an optional to its value (vitest's `expect(...).toBeDefined()` asserts but does NOT narrow the type). */
+function defined<T>(value: T | undefined, what: string): T {
+  if (value === undefined) throw new Error(`expected ${what} to be defined`);
+  return value;
+}
+
+/** Verify the capability's `unknown` result really is the Relavium tool-result shape, narrowing it (no cast). */
+function assertToolResult(value: unknown): asserts value is McpToolResult {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('content' in value) ||
+    !('isError' in value) ||
+    !Array.isArray(value.content) ||
+    typeof value.isError !== 'boolean'
+  ) {
+    throw new Error('expected an McpToolResult { content[]; isError }');
+  }
+}
 
 describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
   it('chat host: spawns the fixture, discovers + namespaces its tools, round-trips a real tools/call', async () => {
-    const client = await connectAgentMcp([echoServer()], { cwd: process.cwd() });
-    expect(client).toBeDefined();
+    const client = defined(
+      await connectAgentMcp([echoServer()], { cwd: process.cwd() }),
+      'mcp client',
+    );
     try {
       // Discovery: every fixture tool is namespaced `mcp_{server}_{tool}`, grouped under the server id.
-      expect([...(client!.toolIdsByServer.get('echo') ?? [])].sort()).toEqual([
+      expect([...(client.toolIdsByServer.get('echo') ?? [])].sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
         'mcp_echo_whoami',
       ]);
-      expect(client!.toolDefs.map((d) => d.id).sort()).toEqual([
+      expect(client.toolDefs.map((d) => d.id).sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
         'mcp_echo_whoami',
       ]);
-      expect(client!.skipped).toEqual([]);
+      expect(client.skipped).toEqual([]);
 
       // A real tools/call over the spawned child round-trips (echo returns its text verbatim).
-      const echoed = asResult(
-        await client!.capability.call({ server: 'echo', tool: 'echo', args: { text: 'pong' } }),
-      );
+      const echoed = await client.capability.call({
+        server: 'echo',
+        tool: 'echo',
+        args: { text: 'pong' },
+      });
+      assertToolResult(echoed);
       expect(echoed.isError).toBe(false);
       expect(echoed.content).toEqual([{ type: 'text', text: 'pong' }]);
 
       // The second tool proves multi-tool routing (args validated by the compiled inputSchema).
-      const sum = asResult(
-        await client!.capability.call({ server: 'echo', tool: 'add', args: { a: 2, b: 40 } }),
-      );
+      const sum = await client.capability.call({
+        server: 'echo',
+        tool: 'add',
+        args: { a: 2, b: 40 },
+      });
+      assertToolResult(sum);
       expect(sum.content).toEqual([{ type: 'text', text: '42' }]);
     } finally {
-      await client!.close(); // tears the stdio child down (idempotent)
+      await client.close(); // tears the stdio child down (idempotent)
     }
   });
 
   it('run host: augments the declaring agent grant with the discovered ids and routes a real call', async () => {
-    // The absolute spawn command + fixture path are machine-specific, so they're injected (double-quoted —
-    // valid YAML flow scalars) rather than hard-coded; the parsed workflow stays immutable.
+    // The absolute spawn command + fixture path are machine-specific, so they're injected via JSON.stringify
+    // (a valid YAML flow scalar that escapes Windows backslashes correctly); the parsed workflow stays immutable.
     const def = parseWorkflow(
       [
         "schema_version: '1.0'",
@@ -88,7 +113,7 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
         '      system_prompt: go',
         '      tools: [read_file]',
         '      mcp_servers:',
-        `        - { id: echo, transport: stdio, command: "${process.execPath}", args: ["${FIXTURE}"] }`,
+        `        - { id: echo, transport: stdio, command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(FIXTURE)}] }`,
         '  nodes:',
         '    - { id: s, type: input }',
         '    - { id: a, type: agent, agent_ref: scanner, prompt_template: go }',
@@ -100,19 +125,22 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
       ].join('\n'),
     );
 
-    const runtime = await connectWorkflowMcp(def, { cwd: process.cwd() });
-    expect(runtime).toBeDefined();
+    const runtime = defined(
+      await connectWorkflowMcp(def, { cwd: process.cwd() }),
+      'workflow runtime',
+    );
     try {
-      expect([...(runtime!.client.toolIdsByServer.get('echo') ?? [])].sort()).toEqual([
+      expect([...(runtime.client.toolIdsByServer.get('echo') ?? [])].sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
         'mcp_echo_whoami',
       ]);
 
       // The run path unions the agent's declared grant with ITS server's discovered tool ids.
-      const augmented = (runtime!.workflow.workflow.agents ?? []).find(
+      const scanner = (runtime.workflow.workflow.agents ?? []).find(
         (e): e is Agent => 'id' in e && e.id === 'scanner',
-      )!;
+      );
+      const augmented = defined(scanner, 'augmented scanner agent');
       expect([...(augmented.tools ?? [])].sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
@@ -120,16 +148,15 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
         'read_file',
       ]);
 
-      const echoed = asResult(
-        await runtime!.client.capability.call({
-          server: 'echo',
-          tool: 'echo',
-          args: { text: 'wired' },
-        }),
-      );
+      const echoed = await runtime.client.capability.call({
+        server: 'echo',
+        tool: 'echo',
+        args: { text: 'wired' },
+      });
+      assertToolResult(echoed);
       expect(echoed.content).toEqual([{ type: 'text', text: 'wired' }]);
     } finally {
-      await runtime!.client.close();
+      await runtime.client.close();
     }
   });
 
@@ -144,23 +171,24 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
       args: [FIXTURE],
       env: { MCP_FIXTURE_TOKEN: '{{secrets.t}}' },
     };
-    const client = await connectAgentMcp([server], {
-      cwd: process.cwd(),
-      resolveSecret: (name) => (name === 't' ? 'SENTINEL-abc123' : ''),
-    });
-    expect(client).toBeDefined();
+    const client = defined(
+      await connectAgentMcp([server], {
+        cwd: process.cwd(),
+        resolveSecret: (name) => (name === 't' ? 'SENTINEL-abc123' : ''),
+      }),
+      'mcp client',
+    );
     try {
       // The env injection must not perturb discovery: `whoami` is admitted as a callable LLM tool (not skipped),
       // so the round-trip below proves custody, not merely the direct-dispatch path bypassing the grant.
-      expect(client!.skipped).toEqual([]);
-      expect(client!.toolDefs.map((d) => d.id)).toContain('mcp_echo_whoami');
+      expect(client.skipped).toEqual([]);
+      expect(client.toolDefs.map((d) => d.id)).toContain('mcp_echo_whoami');
 
-      const who = asResult(
-        await client!.capability.call({ server: 'echo', tool: 'whoami', args: {} }),
-      );
+      const who = await client.capability.call({ server: 'echo', tool: 'whoami', args: {} });
+      assertToolResult(who);
       expect(who.content).toEqual([{ type: 'text', text: 'SENTINEL-abc123' }]);
     } finally {
-      await client!.close();
+      await client.close();
     }
   });
 });

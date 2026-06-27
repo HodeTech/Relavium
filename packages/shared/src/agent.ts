@@ -64,9 +64,6 @@ export type Retry = z.infer<typeof RetrySchema>;
  */
 export const McpTransportSchema = z.enum(['stdio', 'http', 'websocket', 'sse']);
 
-/** Allowed URL schemes for a network MCP server — never file:/javascript:/etc. */
-const SAFE_MCP_URL = /^(https?|wss?):\/\//i;
-
 /** The inline connection fields a by-name `ref` must NOT carry (the registration provides them). */
 const INLINE_CONNECTION_FIELDS = [
   'id',
@@ -77,6 +74,97 @@ const INLINE_CONNECTION_FIELDS = [
   'url',
   'allow_local_endpoint',
 ] as const;
+
+/** The authored shape `McpServerRefSchema.superRefine` validates (every field optional pre-refinement). */
+interface McpServerRefDraft {
+  id?: string | undefined;
+  transport?: 'stdio' | 'http' | 'websocket' | 'sse' | undefined;
+  command?: string | undefined;
+  args?: readonly string[] | undefined;
+  env?: Record<string, string> | undefined;
+  url?: string | undefined;
+  allow_local_endpoint?: boolean | undefined;
+  ref?: string | undefined;
+  tools_allowlist?: readonly string[] | undefined;
+}
+
+/** The by-name `ref` form: identity + connection come from the registration, so NO inline field may accompany it. */
+function validateRefForm(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
+  for (const field of INLINE_CONNECTION_FIELDS) {
+    if (ref[field] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `'${field}' is not allowed with 'ref' — the [[mcp_servers]] registration provides it`,
+        path: [field],
+      });
+    }
+  }
+}
+
+/** Inline `stdio`: needs a `command`, and rejects the network-only `url` / `allow_local_endpoint` (secure-by-default). */
+function validateStdioFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
+  if (!ref.command) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "command is required for the 'stdio' transport",
+      path: ['command'],
+    });
+  }
+  if (ref.url !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "url is not used by the 'stdio' transport",
+      path: ['url'],
+    });
+  }
+  if (ref.allow_local_endpoint !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
+      path: ['allow_local_endpoint'],
+    });
+  }
+}
+
+/** Inline network (`http`/`sse`/`websocket`): needs a `url` (scheme-checked, credential-free), and rejects `env`
+ *  (no child process to inject into — 2.R wires `env` ONLY into a stdio spawn; network header-auth is a follow-up). */
+function validateNetworkFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
+  if (!ref.url) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `url is required for the '${ref.transport ?? '?'}' transport`,
+      path: ['url'],
+    });
+  }
+  if (ref.env !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
+      path: ['env'],
+    });
+  }
+  if (ref.url !== undefined) {
+    // Per-transport scheme: `websocket` is WS(S); `http`/`sse` are HTTP(S). Also blocks file:/javascript:/etc.
+    const schemeOk =
+      ref.transport === 'websocket' ? /^wss?:\/\//i.test(ref.url) : /^https?:\/\//i.test(ref.url);
+    if (!schemeOk) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `url scheme is invalid for the '${ref.transport ?? '?'}' transport (http/sse → http(s), websocket → ws(s))`,
+        path: ['url'],
+      });
+    }
+    if (URL_HAS_CREDENTIALS.test(ref.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
+        path: ['url'],
+      });
+    }
+  }
+}
 
 /**
  * A reference to an MCP server an agent consumes (`McpServerRef`) — one of two mutually-exclusive forms
@@ -107,17 +195,9 @@ export const McpServerRefSchema = z
   })
   .strict()
   .superRefine((ref, ctx) => {
-    // The by-name `ref` form: identity + connection come from the registration; inline fields are forbidden.
+    // By-name `ref` vs inline are mutually exclusive; each form has its own validator (kept small for clarity).
     if (ref.ref !== undefined) {
-      for (const field of INLINE_CONNECTION_FIELDS) {
-        if (ref[field] !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `'${field}' is not allowed with 'ref' — the [[mcp_servers]] registration provides it`,
-            path: [field],
-          });
-        }
-      }
+      validateRefForm(ref, ctx);
       return;
     }
     // The inline form: `id` + `transport` are required (a `ref` is the only way to omit them).
@@ -135,81 +215,10 @@ export const McpServerRefSchema = z
         message: "an inline server requires 'transport' (or use 'ref')",
         path: ['transport'],
       });
-      return; // the per-transport checks below need a transport
+      return; // the per-transport checks need a transport
     }
-    if (ref.transport === 'stdio') {
-      if (!ref.command) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "command is required for the 'stdio' transport",
-          path: ['command'],
-        });
-      }
-      // A stdio server has no `url` — reject a stray one (a mis-declared server fails at parse, secure-by-default).
-      if (ref.url !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "url is not used by the 'stdio' transport",
-          path: ['url'],
-        });
-      }
-      // `allow_local_endpoint` is a network-only SSRF opt-in — reject it on stdio (mirrors the `url` guard).
-      if (ref.allow_local_endpoint !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
-          path: ['allow_local_endpoint'],
-        });
-      }
-    }
-    if (ref.transport !== 'stdio') {
-      if (!ref.url) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `url is required for the '${ref.transport}' transport`,
-          path: ['url'],
-        });
-      }
-      // A network transport spawns no child process, so `env` (and its `{{secrets.*}}`) has nowhere to be
-      // injected — 2.R wires `env` ONLY into the stdio spawn. Reject it loud rather than silently dropping what
-      // is almost always an auth secret (the fail-closed posture, ADR-0052 §6); network header-auth is a tracked
-      // follow-up (deferred-tasks.md). Mirrors the stdio `url` / `allow_local_endpoint` guards above.
-      if (ref.env !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
-          path: ['env'],
-        });
-      }
-    }
-    if (ref.url !== undefined && ref.transport !== 'stdio') {
-      // Per-transport scheme: `http`/`sse` are HTTP(S), `websocket` is WS(S). A stdio `url` is already rejected
-      // outright above (its scheme is irrelevant), so this scheme/credentials pass is network-only — otherwise a
-      // stray stdio url would double-issue ("url not used by stdio" AND "scheme invalid").
-      // This also blocks file:/javascript:/etc. as a side effect.
-      let schemeOk: boolean;
-      if (ref.transport === 'websocket') schemeOk = /^wss?:\/\//i.test(ref.url);
-      else if (ref.transport === 'http' || ref.transport === 'sse')
-        schemeOk = /^https?:\/\//i.test(ref.url);
-      else schemeOk = SAFE_MCP_URL.test(ref.url);
-      if (!schemeOk) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `url scheme is invalid for the '${ref.transport}' transport (http/sse → http(s), websocket → ws(s))`,
-          path: ['url'],
-        });
-      }
-      // Secret hygiene: no credentials embedded in a git-committed url.
-      if (URL_HAS_CREDENTIALS.test(ref.url)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
-          path: ['url'],
-        });
-      }
-    }
+    if (ref.transport === 'stdio') validateStdioFields(ref, ctx);
+    else validateNetworkFields(ref, ctx);
   });
 export type McpServerRef = z.infer<typeof McpServerRefSchema>;
 

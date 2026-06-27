@@ -13,6 +13,8 @@
 //                 actually reaches the spawned child process (the last hop of the secret-custody chain).
 //
 // Fail-fast: any startup error exits non-zero so the spawning host's fail-loud connect surfaces it.
+import process from 'node:process';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';

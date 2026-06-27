@@ -59,10 +59,10 @@ describe('createMcpSecretResolver', () => {
       resolve('missing');
       expect.unreachable('a missing secret must throw');
     } catch (err) {
-      expect(isCliError(err) && err.code).toBe('invalid_invocation');
-      const msg = (err as Error).message;
-      expect(msg).toContain('mcp-secret:missing'); // names the keychain account
-      expect(msg).toContain('RELAVIUM_MCP_MISSING'); // and the env var
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast)
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain('mcp-secret:missing'); // names the keychain account
+      expect(err.message).toContain('RELAVIUM_MCP_MISSING'); // and the env var
     }
   });
 

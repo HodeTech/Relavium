@@ -54,6 +54,26 @@ describe('AgentSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects duplicate `ref` names within an agent (the dedup keys on `ref ?? id`)', () => {
+    expect(
+      AgentSchema.safeParse({
+        ...summarizer,
+        mcp_servers: [{ ref: 'shared-fs' }, { ref: 'shared-fs', tools_allowlist: ['read'] }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a `ref` whose name collides with an inline server `id` (same namespace segment)', () => {
+    // `ref ?? id` makes a `{ ref: fs }` and an inline `{ id: fs }` share one namespace key — a collision the
+    // schema rejects, so the host never resolves two distinct servers onto one `mcp_fs_*` namespace.
+    expect(
+      AgentSchema.safeParse({
+        ...summarizer,
+        mcp_servers: [{ ref: 'fs' }, { id: 'fs', transport: 'stdio', command: 'npx' }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts a minimal agent with only the required fields', () => {
     expect(
       AgentSchema.safeParse({

@@ -75,7 +75,7 @@ command = "npx -y @modelcontextprotocol/server-filesystem"
 args = ["--root", "~/projects"]
 autostart = true                   # accepted, reserved for a future always-on pool — NOT acted on in 2.R (a server connects on demand)
 # url = "https://host/mcp"         # for transport = http (Streamable HTTP); a `websocket` server uses wss://
-# env = { TOKEN = "..." }          # stdio only — injected into the spawned child; rejected on a network transport (header-auth is a follow-up)
+# env = { TOKEN = "{{secrets.github_token}}" }   # stdio only — resolved from the isolated mcp-secret:* keychain, injected into the spawned child; rejected on a network transport (header-auth is a follow-up)
 # allow_local_endpoint = true      # opt into a private/loopback url (network transports only, ADR-0053 §3)
 ```
 

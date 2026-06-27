@@ -18,6 +18,85 @@ export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
 const SAFE_HTTP_URL = /^https?:\/\//i;
 const SAFE_WS_URL = /^wss?:\/\//i;
 
+/** The authored shape `McpServerRegistrationSchema.superRefine` validates (connection fields optional pre-refine). */
+interface McpRegistrationDraft {
+  name: string;
+  transport: 'stdio' | 'http' | 'websocket';
+  command?: string | undefined;
+  args?: readonly string[] | undefined;
+  autostart?: boolean | undefined;
+  url?: string | undefined;
+  env?: Record<string, string> | undefined;
+  allow_local_endpoint?: boolean | undefined;
+}
+
+/** `stdio` registration: needs a `command`; rejects the network-only `url` / `allow_local_endpoint` so a committed
+ *  registration's contract matches the inline `McpServerRefSchema` (a dead flag would also skew `serverFingerprint`). */
+function validateStdioRegistration(server: McpRegistrationDraft, ctx: z.RefinementCtx): void {
+  if (!server.command) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "command is required for the 'stdio' transport",
+      path: ['command'],
+    });
+  }
+  if (server.url !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "url is not used by the 'stdio' transport",
+      path: ['url'],
+    });
+  }
+  if (server.allow_local_endpoint !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
+      path: ['allow_local_endpoint'],
+    });
+  }
+}
+
+/** Network registration (`http`/`websocket`): needs a scheme-checked, credential-free `url`; rejects `env` (no child
+ *  process to inject into — 2.R wires `env` ONLY into a stdio spawn; network header-auth is a tracked follow-up). */
+function validateNetworkRegistration(server: McpRegistrationDraft, ctx: z.RefinementCtx): void {
+  if (!server.url) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `url is required for the '${server.transport}' transport`,
+      path: ['url'],
+    });
+  }
+  if (server.env !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
+      path: ['env'],
+    });
+  }
+  if (server.url !== undefined) {
+    const schemeOk =
+      server.transport === 'websocket'
+        ? SAFE_WS_URL.test(server.url)
+        : SAFE_HTTP_URL.test(server.url);
+    if (!schemeOk) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url scheme is invalid (http → http(s), websocket → ws(s))',
+        path: ['url'],
+      });
+    }
+    if (URL_HAS_CREDENTIALS.test(server.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
+        path: ['url'],
+      });
+    }
+  }
+}
+
 /**
  * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required connection field:
  * `stdio` needs a `command`; `http` (Streamable HTTP) / `websocket` need a `url`. Reconciled with the agent
@@ -39,69 +118,8 @@ export const McpServerRegistrationSchema = z
   // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — strict config per ADR-0033 (which amends ADR-0023's config carve-out).
   .strict()
   .superRefine((server, ctx) => {
-    if (server.transport === 'stdio' && !server.command) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "command is required for the 'stdio' transport",
-        path: ['command'],
-      });
-    }
-    // `allow_local_endpoint` is a network-only SSRF opt-in — reject it on stdio so a registration's
-    // contract matches the inline `McpServerRefSchema` (agent.ts), which rejects the same field on stdio.
-    // Without this, a committed `[[mcp_servers]]` stdio entry could carry a dead flag that silently passes
-    // here yet fails an equivalent inline declaration — and, because it is part of `serverFingerprint`, it
-    // could skew cross-agent dedup. Network transports only (ADR-0053 §3).
-    if (server.transport === 'stdio' && server.allow_local_endpoint !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
-        path: ['allow_local_endpoint'],
-      });
-    }
-    if (server.transport !== 'stdio') {
-      if (!server.url) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `url is required for the '${server.transport}' transport`,
-          path: ['url'],
-        });
-      }
-      // A network registration spawns no child process, so `env` (and its `{{secrets.*}}`) has nowhere to be
-      // injected — 2.R wires `env` ONLY into the stdio spawn. Reject it loud rather than silently dropping an
-      // auth secret (fail-closed, ADR-0052 §6); network header-auth is a tracked follow-up. Mirrors the inline
-      // `McpServerRefSchema` guard so a committed registration can't carry a dead network `env`.
-      if (server.env !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
-          path: ['env'],
-        });
-      }
-    }
-    if (server.url !== undefined) {
-      // SSRF guard: a registered url must use the transport's scheme — reject file:, javascript:, etc.
-      const schemeOk =
-        server.transport === 'websocket'
-          ? SAFE_WS_URL.test(server.url)
-          : SAFE_HTTP_URL.test(server.url);
-      if (!schemeOk) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'url scheme is invalid (http → http(s), websocket → ws(s))',
-          path: ['url'],
-        });
-      }
-      // Secret hygiene: no credentials embedded in a git-committed url.
-      if (URL_HAS_CREDENTIALS.test(server.url)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
-          path: ['url'],
-        });
-      }
-    }
+    if (server.transport === 'stdio') validateStdioRegistration(server, ctx);
+    else validateNetworkRegistration(server, ctx);
   });
 export type McpServerRegistration = z.infer<typeof McpServerRegistrationSchema>;
 

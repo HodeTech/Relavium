@@ -239,9 +239,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
     return outcomeToExitCode(outcome);
   } finally {
-    opened?.close();
-    // Tear down the inbound MCP connections (2.R) at the run terminal — present only when an inline agent
-    // declared a server; idempotent. A teardown error must never mask the run outcome (closeAll swallows).
-    await mcpRuntime?.client.close();
+    // Guarantee the MCP teardown runs EVEN IF the db close throws — a nested finally so neither resource leaks.
+    // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run
+    // outcome (closeAll swallows per-connection; the db close is best-effort here too).
+    try {
+      opened?.close();
+    } finally {
+      await mcpRuntime?.client.close();
+    }
   }
 }

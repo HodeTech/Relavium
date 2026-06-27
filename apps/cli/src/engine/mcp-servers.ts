@@ -115,7 +115,7 @@ export function resolveMcpServerRef(
  * inline `id` (already charset-safe).
  */
 function entryServerId(entry: McpServerRef): string | undefined {
-  return entry.ref !== undefined ? sanitizeServerSegment(entry.ref) : entry.id;
+  return entry.ref === undefined ? entry.id : sanitizeServerSegment(entry.ref);
 }
 
 /** Open a stdio MCP connection from a spawn spec — the real {@link openStdioConnection}, or a test spy. */
@@ -135,6 +135,11 @@ export interface ServerOpeners {
   readonly websocket?: (serverId: string, spec: WebSocketServerSpec) => Promise<McpConnection>;
 }
 
+/** The network transports — all take the same `{ url }` connect spec, so the dispatch is a keyed lookup. */
+type NetworkTransport = 'http' | 'sse' | 'websocket';
+type NetworkOpener = (serverId: string, spec: { readonly url: string }) => Promise<McpConnection>;
+type NetworkOpeners = Record<NetworkTransport, NetworkOpener>;
+
 /**
  * Map an agent's inline `mcp_servers` to {@link McpServerConfig}s, dispatching by transport — `stdio` spawns a
  * child (the declared `env` with `{{secrets.*}}` resolved), and `http` (Streamable HTTP) / `sse` (legacy
@@ -150,9 +155,11 @@ export function resolveServerConfigs(
   openers: ServerOpeners = {},
 ): McpServerConfig[] {
   const openStdio = openers.stdio ?? openStdioConnection;
-  const openHttp = openers.http ?? openHttpConnection;
-  const openSse = openers.sse ?? openSseConnection;
-  const openWs = openers.websocket ?? openWebSocketConnection;
+  const network: NetworkOpeners = {
+    http: openers.http ?? openHttpConnection,
+    sse: openers.sse ?? openSseConnection,
+    websocket: openers.websocket ?? openWebSocketConnection,
+  };
   const configs: McpServerConfig[] = [];
   for (const ref of mcpServers ?? []) {
     // A by-name `ref` must be resolved to inline (id + transport) before reaching here (resolveMcpServerRef).
@@ -162,74 +169,76 @@ export function resolveServerConfigs(
         `MCP server '${ref.ref ?? ref.id ?? '?'}': a by-name reference could not be resolved to a connection.`,
       );
     }
-    const serverId = ref.id; // capture the narrowed id so it survives into the deferred `open` closure
-    const allowlist =
-      ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist };
-
-    if (ref.transport === 'stdio') {
-      // The schema's `superRefine` already guarantees `command` for a stdio transport; re-assert so the spawn
-      // spec is total without a non-null assertion (a defensive, typed failure rather than an undefined spawn).
-      if (ref.command === undefined) {
-        throw new CliError(
-          'invalid_invocation',
-          `MCP server '${serverId}': a 'stdio' transport requires a 'command'.`,
-        );
-      }
-      const command = ref.command;
-      const env = buildChildEnv(serverId, ref.env, resolveSecret);
-      configs.push({
-        id: serverId,
-        ...allowlist,
-        open: () =>
-          openStdio(serverId, {
-            command,
-            env,
-            cwd,
-            ...(ref.args === undefined ? {} : { args: ref.args }),
-          }),
-      });
-      continue;
-    }
-
-    // Network transport (http | sse | websocket). The schema guarantees a `url` and forbids `env` here; re-assert
-    // both defensively so a programmatic caller that bypassed the schema fails loud rather than silently dropping.
-    if (ref.url === undefined) {
-      throw new CliError(
-        'invalid_invocation',
-        `MCP server '${serverId}': the '${ref.transport}' transport requires a 'url'.`,
-      );
-    }
-    if (ref.env !== undefined) {
-      // `env` (and its `{{secrets.*}}`) is injected only into a stdio child; a network transport has no process,
-      // so dropping it silently would discard an auth secret. Mirror the schema guard at the host boundary.
-      throw new CliError(
-        'invalid_invocation',
-        `MCP server '${serverId}': 'env' is not used by a network transport — it is injected only into a stdio child.`,
-      );
-    }
-    const url = ref.url;
-    const transport = ref.transport;
-    // The SSRF pre-connect floor — rejects a private/loopback/link-local host (unless opted in) and a plaintext
-    // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
-    assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
-    // Exhaustive transport dispatch — a future transport added to the schema enum trips the `never` guard at
-    // compile time rather than silently routing to Streamable HTTP.
-    let open: () => Promise<McpConnection>;
-    if (transport === 'http')
-      open = () => openHttp(serverId, { url }); // Streamable HTTP
-    else if (transport === 'sse')
-      open = () => openSse(serverId, { url }); // legacy HTTP+SSE alias of `http`
-    else if (transport === 'websocket') open = () => openWs(serverId, { url });
-    else {
-      const unsupported: never = transport;
-      throw new CliError(
-        'invalid_invocation',
-        `MCP server '${serverId}': unsupported transport '${String(unsupported)}'.`,
-      );
-    }
-    configs.push({ id: serverId, ...allowlist, open });
+    configs.push(
+      ref.transport === 'stdio'
+        ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio)
+        : buildNetworkConfig(ref.id, ref.transport, ref, network),
+    );
   }
   return configs;
+}
+
+/** The per-server `tools_allowlist` projected onto the `McpServerConfig` shape (omitted when absent — never an
+ *  explicit `undefined`, honoring exactOptionalPropertyTypes). */
+function toolsAllowlistFields(ref: McpServerRef): Pick<McpServerConfig, 'toolsAllowlist'> {
+  return ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist };
+}
+
+/** Build the {@link McpServerConfig} for a `stdio` server — a fail-loud `command` check + the spawn closure
+ *  carrying the resolved `env` ({@link buildChildEnv}). */
+function buildStdioConfig(
+  serverId: string,
+  ref: McpServerRef,
+  cwd: string,
+  resolveSecret: McpSecretResolver | undefined,
+  openStdio: OpenStdioConnection,
+): McpServerConfig {
+  // The schema's `superRefine` already guarantees `command` for a stdio transport; re-assert so the spawn spec
+  // is total without a non-null assertion (a defensive, typed failure rather than an undefined spawn).
+  if (ref.command === undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': a 'stdio' transport requires a 'command'.`,
+    );
+  }
+  const command = ref.command;
+  const env = buildChildEnv(serverId, ref.env, resolveSecret);
+  const args = ref.args;
+  return {
+    id: serverId,
+    ...toolsAllowlistFields(ref),
+    open: () => openStdio(serverId, { command, env, cwd, ...(args === undefined ? {} : { args }) }),
+  };
+}
+
+/** Build the {@link McpServerConfig} for a network server (`http`/`sse`/`websocket`) — a fail-loud `url`/`env`
+ *  check, the SSRF floor, and the transport-dispatched connect closure. */
+function buildNetworkConfig(
+  serverId: string,
+  transport: NetworkTransport,
+  ref: McpServerRef,
+  openers: NetworkOpeners,
+): McpServerConfig {
+  // The schema guarantees a `url` and forbids `env` on a network transport; re-assert both defensively so a
+  // programmatic caller that bypassed the schema fails loud rather than silently dropping (an `env` secret).
+  if (ref.url === undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': the '${transport}' transport requires a 'url'.`,
+    );
+  }
+  if (ref.env !== undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': 'env' is not used by a network transport — it is injected only into a stdio child.`,
+    );
+  }
+  const url = ref.url;
+  // The SSRF pre-connect floor — rejects a private/loopback/link-local host (unless opted in) and a plaintext
+  // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
+  assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
+  const open = openers[transport]; // `http` (Streamable HTTP) | `sse` (legacy HTTP+SSE alias) | `websocket`
+  return { id: serverId, ...toolsAllowlistFields(ref), open: () => open(serverId, { url }) };
 }
 
 /**
@@ -260,8 +269,18 @@ function assertSafeNetworkEndpoint(serverId: string, url: string, allowLocal: bo
       `MCP server '${serverId}': the url must not embed credentials (user:pass@…) — use env/keychain auth.`,
     );
   }
+  // Validate the scheme FIRST — the schema already constrains it per transport, but as a host-side floor reject
+  // anything outside the http/ws family BEFORE the `allow_local_endpoint` relaxation, so an opt-in local endpoint
+  // can never wave through a `file:`/`javascript:`/etc. scheme (defense-in-depth, ADR-0053).
+  const scheme = parsed.protocol;
+  if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': unsupported url scheme '${scheme.replace(':', '')}' (http/https/ws/wss only).`,
+    );
+  }
   const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '');
-  const isSecure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+  const isSecure = scheme === 'https:' || scheme === 'wss:';
   if (isPrivateOrLocalHost(host)) {
     if (!allowLocal) {
       throw new CliError(

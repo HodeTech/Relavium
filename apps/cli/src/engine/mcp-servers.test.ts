@@ -109,10 +109,11 @@ describe('resolveServerConfigs', () => {
       resolveServerConfigs([stdioRef({ env: { TOKEN: '{{secrets.gh}}' } })], '/work');
       expect.unreachable('a {{…}} env value must throw');
     } catch (err) {
-      expect(isCliError(err) && err.code).toBe('invalid_invocation');
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast); a non-CliError is an unexpected fault
+      expect(err.code).toBe('invalid_invocation');
       // The error names the KEY, never the value — a placeholder is not a secret, but stay disciplined.
-      expect((err as Error).message).toContain('TOKEN');
-      expect((err as Error).message).not.toContain('secrets.gh');
+      expect(err.message).toContain('TOKEN');
+      expect(err.message).not.toContain('secrets.gh');
     }
   });
 
@@ -254,9 +255,10 @@ describe('buildChildEnv (secret interpolation, 2.R Step 4)', () => {
       buildChildEnv('fs', { HOST: '{{env.HOSTNAME}}' }, () => 'x');
       expect.unreachable('an unsupported interpolation must throw');
     } catch (err) {
-      expect(isCliError(err) && err.code).toBe('invalid_invocation');
-      expect((err as Error).message).toContain('HOST'); // names the key
-      expect((err as Error).message).toContain('only {{secrets.<name>}}');
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast)
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain('HOST'); // names the key
+      expect(err.message).toContain('only {{secrets.<name>}}');
     }
   });
 
@@ -268,10 +270,11 @@ describe('buildChildEnv (secret interpolation, 2.R Step 4)', () => {
       buildChildEnv('fs', { TOKEN: '{{secrets.gh}}' });
       expect.unreachable('a {{secrets.…}} with no resolver must throw');
     } catch (err) {
-      expect(isCliError(err) && err.code).toBe('invalid_invocation');
-      expect((err as Error).message).toContain('TOKEN'); // names the key
-      expect((err as Error).message).toContain('no MCP secret resolver is wired');
-      expect((err as Error).message).not.toContain('secrets.gh'); // never echo the secret name
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast)
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain('TOKEN'); // names the key
+      expect(err.message).toContain('no MCP secret resolver is wired');
+      expect(err.message).not.toContain('secrets.gh'); // never echo the secret name
     }
   });
 
