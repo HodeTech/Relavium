@@ -246,17 +246,12 @@ function numberSchema(node: Record<string, unknown>, integer: boolean): z.ZodTyp
 
 function objectSchema(node: Record<string, unknown>, budget: Budget, depth: number): z.ZodTypeAny {
   const properties = node['properties'];
-  if (properties === undefined) {
-    // A typed object with no declared properties: any object. `additionalProperties: false` would make it
-    // empty-only, which is honored below via the same strict/passthrough switch.
-    return additionalPropsMode(node) === 'strict'
-      ? z.object({}).strict()
-      : z.object({}).passthrough();
-  }
-  if (!isPlainObject(properties)) {
+  if (properties !== undefined && !isPlainObject(properties)) {
     throw new UnsupportedSchemaError('`properties` must be an object');
   }
-  const propEntries = Object.entries(properties);
+  // An omitted `properties` is a valid object schema (possibly with a bare `required`) — treat it as no
+  // declared properties rather than short-circuiting, so a `required` name is still presence-enforced below.
+  const propEntries = properties === undefined ? [] : Object.entries(properties);
   if (propEntries.length > MAX_PROPERTIES) {
     throw new UnsupportedSchemaError(
       `object declares more than the maximum of ${MAX_PROPERTIES} properties`,
@@ -274,10 +269,39 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
     const compiled = compileNode(propSchema, budget, depth + 1);
     shape[name] = required.has(name) ? compiled : compiled.optional();
   }
-  const built = z.object(shape);
+  // A `required` name NOT declared in `properties` (or any `required` when `properties` is omitted) is still
+  // PRESENT-enforced per the JSON-Schema spec — never silently un-required. Add it to the shape as `z.unknown()`
+  // (so `additionalProperties: false`/strict still ADMITS the key), then enforce its PRESENCE via the refine
+  // below — `z.unknown()` alone is OPTIONAL inside `z.object`, so it cannot enforce presence on its own.
+  const untypedRequired: string[] = [];
+  for (const name of required) {
+    if (Object.hasOwn(shape, name)) continue;
+    if (name === '__proto__') {
+      throw new UnsupportedSchemaError('a property named "__proto__" is not allowed');
+    }
+    shape[name] = z.unknown();
+    untypedRequired.push(name);
+  }
   // Honor `additionalProperties`: `false` ⇒ reject unknown keys (`.strict()`); otherwise pass them through
   // (default JSON-Schema semantics) so the model may include extra keys the server's own schema permits.
-  return additionalPropsMode(node) === 'strict' ? built.strict() : built.passthrough();
+  const built =
+    additionalPropsMode(node) === 'strict'
+      ? z.object(shape).strict()
+      : z.object(shape).passthrough();
+  if (untypedRequired.length === 0) {
+    return built;
+  }
+  return built.superRefine((value, ctx) => {
+    for (const name of untypedRequired) {
+      if (!Object.hasOwn(value, name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `missing required property "${name}"`,
+          path: [name],
+        });
+      }
+    }
+  });
 }
 
 function additionalPropsMode(node: Record<string, unknown>): 'strict' | 'passthrough' {

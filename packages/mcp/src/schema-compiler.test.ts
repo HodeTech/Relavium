@@ -155,6 +155,36 @@ describe('compileJsonSchemaToZod — supported subset (happy paths)', () => {
     expect(compileOk({ type: 'null', const: null }).safeParse(null).success).toBe(true);
   });
 
+  it('enforces a `required` property absent from `properties` (present, any value)', () => {
+    const schema = compileOk({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['a', 'x'],
+    });
+    expect(schema.safeParse({ a: 's', x: 42 }).success).toBe(true); // x present (any value)
+    expect(schema.safeParse({ a: 's', x: null }).success).toBe(true); // x present as null
+    expect(schema.safeParse({ a: 's' }).success).toBe(false); // x is required but absent
+    expect(schema.safeParse({ x: 1 }).success).toBe(false); // the typed `a` is still required
+  });
+
+  it('enforces `required` when `properties` is omitted entirely', () => {
+    const schema = compileOk({ type: 'object', required: ['x'] });
+    expect(schema.safeParse({ x: 1 }).success).toBe(true);
+    expect(schema.safeParse({}).success).toBe(false);
+  });
+
+  it('enforces an untyped required key under additionalProperties:false (strict still admits the key)', () => {
+    const schema = compileOk({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['x'],
+      additionalProperties: false,
+    });
+    expect(schema.safeParse({ a: 's', x: 7 }).success).toBe(true); // x admitted + present
+    expect(schema.safeParse({ a: 's' }).success).toBe(false); // x absent
+    expect(schema.safeParse({ a: 's', x: 7, y: 9 }).success).toBe(false); // y is an unknown key (strict)
+  });
+
   it('keeps a consistent const + type pair (the intersection admits the in-range literal)', () => {
     const c = compileOk({ type: 'number', const: 42 });
     expect(c.safeParse(42).success).toBe(true);
@@ -192,6 +222,8 @@ describe('compileJsonSchemaToZod — supported subset (happy paths)', () => {
       '{"type":"object","properties":{"__proto__":{"type":"string"},"ok":{"type":"string"}}}',
     );
     expect(compileJsonSchemaToZod(schema).ok).toBe(false);
+    // also fail closed when `__proto__` appears only in `required` (not in `properties`)
+    expect(compileJsonSchemaToZod({ type: 'object', required: ['__proto__'] }).ok).toBe(false);
     expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
     // a sibling-clean object (no dangerous keys) still compiles + validates normally
     const clean = compileOk({
@@ -268,7 +300,7 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
     };
     const result = compileJsonSchemaToZod(build(6)); // 5^0+…+5^6 ≈ 19531 nodes ≫ MAX_NODES
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
+    expect(result.ok === false && result.reason).toContain(String(MAX_NODES));
   });
 
   it('never throws — every bad input returns a structured fail-closed result', () => {
@@ -316,7 +348,7 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
     for (const name of required.slice(0, 3)) props[name] = { type: 'string' };
     const result = compileJsonSchemaToZod({ type: 'object', properties: props, required });
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
+    expect(result.ok === false && result.reason).toContain(String(MAX_NODES));
   });
 
   it('fails closed on a within-per-node-caps but high-TOTAL-work enum schema (the DoS the budget closes)', () => {
@@ -328,7 +360,7 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
     for (let i = 0; i < 50; i += 1) props[`p${i}`] = { enum: members }; // 50 × 1000 ≫ MAX_NODES
     const result = compileJsonSchemaToZod({ type: 'object', properties: props });
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
+    expect(result.ok === false && result.reason).toContain(String(MAX_NODES));
   });
 
   it('fails closed on a non-finite (NaN/Infinity) const or enum member', () => {
@@ -343,6 +375,6 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
     const types = Array.from({ length: MAX_NODES + 5 }, () => 'string');
     const result = compileJsonSchemaToZod({ type: types });
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toMatch(new RegExp(String(MAX_NODES)));
+    expect(result.ok === false && result.reason).toContain(String(MAX_NODES));
   });
 });

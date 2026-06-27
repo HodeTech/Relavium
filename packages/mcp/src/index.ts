@@ -7,9 +7,12 @@
  * or `node:*` ([ADR-0034](../../../docs/decisions/0034-mcp-client-sdk-dependency.md) g3 /
  * [ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §1).
  *
- * Exports: the dependency-free JSON-Schema → Zod compiler (Step 1); the `McpConnection` seam + the stdio SDK
- * adapter that fences `@modelcontextprotocol/sdk` (Step 2); and the discovered-tool → `ToolDef` shaping. The
- * `McpClientManager` lifecycle + the host wiring land in the following steps.
+ * Exports: the dependency-free JSON-Schema → Zod compiler; the `McpConnection` seam + the stdio SDK adapter
+ * (`openStdioConnection`) that fences `@modelcontextprotocol/sdk`; the discovered-tool → `ToolDef` shaping
+ * (`buildServerToolDefs`); and the lifecycle manager — `startMcpClient` returns an `McpClient` (fail-loud
+ * connect-all + the aggregate `ToolDef`s + the `McpCapability` routing + `close()`). The **CLI host wiring**
+ * (composing the manager into the engine's `ToolRegistry` + `ToolHost`) + the network transports + secrets
+ * land in following steps.
  */
 export {
   compileJsonSchemaToZod,

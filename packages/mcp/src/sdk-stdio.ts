@@ -1,8 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
+import type { JsonSchema } from '@relavium/core';
+
 import type { DiscoveredTool, McpConnection, McpToolResult } from './connection.js';
-import { McpConnectError } from './errors.js';
+import { McpConnectError, McpError } from './errors.js';
 import { shapeToolResult } from './result.js';
 
 /**
@@ -29,6 +31,48 @@ export interface StdioServerSpec {
 }
 
 const CLIENT_INFO = { name: 'relavium', version: '0.1.0' } as const;
+
+/** A bound on the `tools/list` pages followed — a hostile server returning an endless cursor can't loop forever. */
+export const MAX_TOOL_PAGES = 100;
+
+/**
+ * One `tools/list` page — the SDK's result is structurally assignable to this minimal shape. The optionals
+ * carry an explicit `| undefined` (not just `?:`) so the SDK's `| undefined`-typed optionals assign under
+ * `exactOptionalPropertyTypes`.
+ */
+export interface ToolListPage {
+  readonly tools: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string | undefined;
+    readonly inputSchema: JsonSchema;
+  }>;
+  readonly nextCursor?: string | undefined;
+}
+
+/**
+ * Page through `tools/list` following `nextCursor` until exhausted (BOUNDED by {@link MAX_TOOL_PAGES}), mapping
+ * each page to {@link DiscoveredTool}. Pure + SDK-independent (the page fetch is injected), so it is
+ * unit-testable without a live server — and it fixes the single-page discovery that dropped tools past page 1.
+ */
+export async function collectAllTools(
+  listPage: (cursor: string | undefined) => Promise<ToolListPage>,
+): Promise<DiscoveredTool[]> {
+  const tools: DiscoveredTool[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_TOOL_PAGES; page += 1) {
+    const result = await listPage(cursor);
+    for (const tool of result.tools) {
+      tools.push({
+        name: tool.name,
+        ...(tool.description === undefined ? {} : { description: tool.description }),
+        inputSchema: tool.inputSchema,
+      });
+    }
+    if (result.nextCursor === undefined) return tools;
+    cursor = result.nextCursor;
+  }
+  throw new McpError(`tools/list exceeded the maximum of ${MAX_TOOL_PAGES} pages`);
+}
 
 /** Spawn + connect a stdio MCP server and run the MCP initialize handshake; returns the live connection. */
 export async function openStdioConnection(
@@ -67,13 +111,8 @@ class StdioConnection implements McpConnection {
   }
 
   async listTools(): Promise<readonly DiscoveredTool[]> {
-    const result = await this.#client.listTools();
-    return result.tools.map(
-      (tool): DiscoveredTool => ({
-        name: tool.name,
-        ...(tool.description === undefined ? {} : { description: tool.description }),
-        inputSchema: tool.inputSchema,
-      }),
+    return collectAllTools((cursor) =>
+      this.#client.listTools(cursor === undefined ? undefined : { cursor }),
     );
   }
 
