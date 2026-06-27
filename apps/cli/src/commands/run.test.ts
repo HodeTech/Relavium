@@ -1096,6 +1096,35 @@ describe('runCommand', () => {
     expect(closed).toBe(1); // the connection was torn down at the run terminal
   });
 
+  it('tears the MCP connection down even when the engine fails AFTER a successful connect (run-terminal teardown)', async () => {
+    const path = writeWorkflow('mcp-fail.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    await expect(
+      runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('unused')]),
+          // The connect succeeds, then the engine build fails — the run-terminal finally must still close the MCP child.
+          buildEngine: () => Promise.reject(new Error('engine build boom')),
+          startMcpClient: () =>
+            realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+        },
+      ),
+    ).rejects.toThrow('engine build boom');
+    expect(closed).toBe(1); // the connection connectWorkflowMcp opened was torn down despite the build failure
+  });
+
   it('renders the gate terminal as run:paused on the last NDJSON line under --json', async () => {
     const path = writeWorkflow('gated.relavium.yaml', GATED);
     const { io, out } = captureIo();

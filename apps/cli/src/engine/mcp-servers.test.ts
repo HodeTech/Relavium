@@ -220,6 +220,93 @@ describe('connectWorkflowMcp (run path)', () => {
       connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
     ).rejects.toThrow(/conflicting settings/);
   });
+
+  it('fails loud when two agents share a server id but declare DIFFERENT tools_allowlist (no escalation)', async () => {
+    // One physical connection cannot honor two allowlists — collapsing them would grant BOTH agents the union,
+    // escalating the narrower agent past its declared grant. `tools_allowlist` is part of the dedup identity.
+    const narrowVsNarrow = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, tools_allowlist: [read, write] }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, tools_allowlist: [read] }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(narrowVsNarrow, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+    ).rejects.toThrow(/conflicting settings/);
+
+    // The escalation direction: absent allowlist (all tools) vs an explicit narrow — also a conflict.
+    const absentVsNarrow = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, tools_allowlist: [read] }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(absentVsNarrow, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+    ).rejects.toThrow(/conflicting settings/);
+  });
+
+  it('shares one connection when two agents share a server id with the SAME allowlist (order-insensitive)', async () => {
+    // The allowlist is a set — declaration order must NOT spuriously conflict. `[read, write]` ≡ `[write, read]`.
+    let startedWith: readonly McpServerConfig[] | undefined;
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, tools_allowlist: [read, write] }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, tools_allowlist: [write, read] }] }',
+        '',
+      ].join('\n'),
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      startMcpClient: (servers) => {
+        startedWith = servers;
+        return Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', ['mcp_fs_read']]]) }));
+      },
+    });
+    expect(startedWith).toHaveLength(1); // same set, different order ⇒ one shared connection (no false conflict)
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_fs_read']);
+  });
+
+  it('isolates grants across agents declaring DIFFERENT servers (A gets fs only, B gets gh only)', async () => {
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: gh, transport: stdio, command: y }] }',
+        '',
+      ].join('\n'),
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      startMcpClient: fakeStart(
+        new Map([
+          ['fs', ['mcp_fs_read']],
+          ['gh', ['mcp_gh_issue']],
+        ]),
+      ),
+    });
+    // Each agent is granted ONLY its own server's tools — never the other's.
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_fs_read']);
+    expect(agentOf(runtime!.workflow, 'writer').tools).toEqual(['mcp_gh_issue']);
+  });
+
+  it('leaves a $ref agent entry byte-identical, augmenting only the inline agent', async () => {
+    const def = wf(
+      [
+        '    - { $ref: ./reviewer.agent.yaml }',
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x }] }',
+        '',
+      ].join('\n'),
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      startMcpClient: fakeStart(new Map([['fs', ['mcp_fs_read']]])),
+    });
+    const entries = runtime!.workflow.workflow.agents ?? [];
+    expect(entries[0]).toEqual({ $ref: './reviewer.agent.yaml' }); // the $ref passes through untouched
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_fs_read']);
+  });
 });
 
 describe('surfaceMcpSkipped', () => {

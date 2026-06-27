@@ -216,18 +216,32 @@ function withWorkflowMcpGrant(
 }
 
 /**
- * A stable fingerprint of a server's connection settings — equal iff two declarations describe the SAME server,
- * so a duplicate id with identical settings dedups while a conflicting one fails loud. `env` keys are sorted
- * (a map is order-insensitive); `args` order is preserved (a command line is ordered).
+ * A stable fingerprint of a server's IDENTITY for cross-agent dedup — equal iff two declarations describe the
+ * SAME server with the SAME effective grant, so a duplicate id with identical settings shares one connection
+ * while a conflicting one fails loud. `env` keys + `tools_allowlist` are sorted (both order-insensitive sets);
+ * `args` order is preserved (a command line is ordered).
+ *
+ * **`tools_allowlist` is part of the identity** (not just the connection): two agents sharing a server id resolve
+ * to ONE physical connection whose tools are discovered ONCE under ONE allowlist — it cannot honor two different
+ * allowlists. Were the allowlist excluded, a same-id pair with `[read]` vs `[read,write]` would silently collapse
+ * to whichever was declared first, granting BOTH agents the union (a privilege escalation past the narrower
+ * agent's own declared `tools_allowlist`, violating ADR-0029 narrow-only). Including it makes that pair fail
+ * loud, forcing the author to align the allowlists or give the distinct servers distinct ids. `undefined`
+ * (all-tools) is a distinct sentinel from `[]` (none).
  */
 function serverFingerprint(ref: McpServerRef): string {
   const env = Object.entries(ref.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const allowlist =
+    ref.tools_allowlist === undefined
+      ? null
+      : [...ref.tools_allowlist].sort((a, b) => a.localeCompare(b));
   return JSON.stringify({
     t: ref.transport,
     c: ref.command ?? null,
     a: ref.args ?? [],
     u: ref.url ?? null,
     e: env,
+    w: allowlist,
   });
 }
 
