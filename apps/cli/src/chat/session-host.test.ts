@@ -286,7 +286,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     expect(started).toBe(false); // failed at env resolution, before any connect
   });
 
-  it('threads the resolver: a resolvable secret lets the build proceed (no spurious fail-closed)', async () => {
+  it('threads the resolver: a resolvable secret lets the build proceed, and the value never reaches the stream', async () => {
     const conn: McpConnection = {
       listTools: () => Promise.resolve([]),
       callTool: () => Promise.resolve({ content: [], isError: false }),
@@ -294,10 +294,19 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     };
     const built = await build({
       agentRef: writeMcpAgent(['    env:', '      TOKEN: "{{secrets.gh}}"']),
-      mcpSecretResolver: createMcpSecretResolver({ RELAVIUM_MCP_GH: 'ghp_resolved' }),
+      providers: scriptedResolver([textTurn('done')]),
+      mcpSecretResolver: createMcpSecretResolver({ RELAVIUM_MCP_GH: 'ghp_SECRET_SENTINEL' }),
       startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
     });
     expect(built.closeMcp).toBeDefined(); // the secret resolved ⇒ the build proceeded to connect
+
+    // The resolved value lives ONLY in the child-env passed to the spawn — it must NEVER surface on the session
+    // event stream (ADR-0052 §6 custody guarantee). Run a turn and assert the sentinel appears nowhere.
+    built.session.start();
+    await built.session.sendMessage('go');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    expect(JSON.stringify(events)).not.toContain('ghp_SECRET_SENTINEL');
     await built.closeMcp?.();
   });
 });

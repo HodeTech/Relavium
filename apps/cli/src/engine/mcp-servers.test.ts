@@ -130,6 +130,27 @@ describe('buildChildEnv (secret interpolation, 2.R Step 4)', () => {
       /unsupported interpolation/,
     );
   });
+
+  it('does NOT false-reject a resolved secret whose VALUE itself contains "{{" (scan the pre-substitution value)', () => {
+    // A token like `a{{b` is a legitimate resolved value; the leftover-`{{` check must scan the DECLARED value
+    // (placeholders removed), not the substituted result — else a valid secret becomes unusable.
+    const env = buildChildEnv('fs', { TOKEN: '{{secrets.gh}}' }, () => 'a{{b}}c');
+    expect(env).toEqual({ TOKEN: 'a{{b}}c' });
+  });
+
+  it('rejects a malformed {{secrets …}} (invalid name) as an unsupported interpolation, before the resolver', () => {
+    // The placeholder regex pre-filters the name charset, so `{{secrets.bad name}}` never matches → it is left as
+    // a leftover `{{` and rejected as unsupported (the resolver's own charset guard is defense-in-depth for a
+    // direct/programmatic call). The resolver is therefore never invoked here.
+    let called = false;
+    expect(() =>
+      buildChildEnv('fs', { TOKEN: '{{secrets.bad name}}' }, () => {
+        called = true;
+        return 'x';
+      }),
+    ).toThrow(/unsupported interpolation/);
+    expect(called).toBe(false);
+  });
 });
 
 describe('connectAgentMcp', () => {

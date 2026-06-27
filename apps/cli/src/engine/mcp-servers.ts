@@ -22,10 +22,11 @@ import type { McpSecretResolver } from '../secrets/mcp-secret.js';
  * `node:child_process` stay fenced inside `@relavium/mcp`, and `packages/core` never sees either.
  *
  * **Stdio only for now.** A `sse`/`websocket` (network) server fails loud here — the network transports + their
- * SSRF guard are the Step-4 follow-up ([ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)),
- * and silently dropping a declared server is the opposite of secure-by-default. **No secret interpolation yet.**
- * `{{secrets.*}}` resolution into the child env is also Step 4 (ADR-0052 §6); until it lands an `env` value
- * containing `{{` is **rejected loud** so a placeholder is never passed to the server as a literal string.
+ * SSRF guard are the Step-4c follow-up ([ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)),
+ * and silently dropping a declared server is the opposite of secure-by-default. A `{{secrets.<name>}}` in a
+ * server `env` value is resolved (2.R Step 4a, ADR-0052 §6) through the injected {@link McpSecretResolver}; any
+ * other `{{…}}` (or a `{{secrets}}` with no resolver wired) is **rejected loud** so a placeholder is never
+ * passed to the server as a literal string.
  */
 
 /** Options for {@link connectAgentMcp} — the spawn working dir + an injectable client starter (tests). */
@@ -142,20 +143,24 @@ export function buildChildEnv(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(declared ?? {})) {
-    const resolved =
-      resolveSecret === undefined
-        ? value
-        : value.replace(SECRET_PLACEHOLDER, (_match, name: string) => resolveSecret(name));
-    if (resolved.includes('{{')) {
-      // A leftover `{{` is an unsupported interpolation (e.g. `{{env.X}}`/`{{ctx.Y}}`), or a `{{secrets.…}}`
-      // with no resolver wired — never pass a placeholder to the server as a literal. The KEY is named, never
-      // the value (a resolved secret must not surface).
+    // Detect an unsupported interpolation on the DECLARED value with the supported `{{secrets.<name>}}`
+    // placeholders removed (NOT on the substituted result) — so a leftover `{{` is `{{env.X}}`/`{{ctx.Y}}`, a
+    // malformed `{{secrets …}}`, or a `{{secrets}}` with no resolver wired. Scanning the pre-substitution value
+    // avoids a false reject when a legitimately-resolved secret VALUE itself contains the substring `{{`.
+    const withoutSecretRefs =
+      resolveSecret === undefined ? value : value.replace(SECRET_PLACEHOLDER, '');
+    if (withoutSecretRefs.includes('{{')) {
+      // Never pass a placeholder to the server as a literal. The KEY is named, never the value (a resolved
+      // secret must not surface), and never the resolved value either.
       throw new CliError(
         'invalid_invocation',
         `MCP server '${serverId}': unsupported interpolation in env '${key}' — only {{secrets.<name>}} is supported.`,
       );
     }
-    env[key] = resolved;
+    env[key] =
+      resolveSecret === undefined
+        ? value
+        : value.replace(SECRET_PLACEHOLDER, (_match, name: string) => resolveSecret(name));
   }
   return env;
 }
