@@ -1,5 +1,10 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
+import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -48,8 +53,8 @@ function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> = {}) 
 }
 
 describe('buildChatSession', () => {
-  it('mints the session over the default agent + a handle scoped to the same id', () => {
-    const built = build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
+  it('mints the session over the default agent + a handle scoped to the same id', async () => {
+    const built = await build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
     expect(built.sessionId).toBe('sess-test-1');
     expect(built.handle.sessionId).toBe('sess-test-1');
     expect(built.agent.id).toBe('relavium-chat');
@@ -58,15 +63,15 @@ describe('buildChatSession', () => {
     expect(built.context.fsScopeTier).toBe('sandboxed'); // default when [chat].fs_scope is unset
   });
 
-  it('honors [chat].fs_scope on the SessionContext', () => {
-    const built = build({ chat: { ...EMPTY_CHAT, fsScope: 'project' } });
+  it('honors [chat].fs_scope on the SessionContext', async () => {
+    const built = await build({ chat: { ...EMPTY_CHAT, fsScope: 'project' } });
     expect(built.context.fsScopeTier).toBe('project');
   });
 
-  it('a subscribe()-wired listener observes session:started synchronously (the driveInk ordering contract)', () => {
+  it('a subscribe()-wired listener observes session:started synchronously (the driveInk ordering contract)', async () => {
     // driveInk subscribes BEFORE startSession so the synchronous session:started (which carries the model for
     // the footer) is not raced. This locks that the bus emits session:started inline on session.start().
-    const built = build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
+    const built = await build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
     const received: SessionStreamHandleEvent[] = [];
     const off = built.handle.subscribe((e) => received.push(e));
     built.session.start();
@@ -80,7 +85,7 @@ describe('buildChatSession', () => {
   });
 
   it('streams a text turn end-to-end through the handle (started → tokens → cost → completed → cancelled)', async () => {
-    const built = build({ providers: scriptedResolver([textTurn('hello there')]) });
+    const built = await build({ providers: scriptedResolver([textTurn('hello there')]) });
     built.session.start();
     await built.session.sendMessage('hi');
     built.session.cancel();
@@ -102,7 +107,7 @@ describe('buildChatSession', () => {
   it('streams a tool-calling turn: the model calls a granted tool, the loop completes, the answer streams', async () => {
     // Turn 1 calls read_file (a default-agent grant) → dispatched through the fail-closed {} host (a
     // tool_result, unavailable) → turn 2 streams the final answer. The agent:tool_call annotation fires.
-    const built = build({
+    const built = await build({
       providers: scriptedResolver([toolUseTurn('c1', 'read_file'), textTurn('the answer')]),
     });
     built.session.start();
@@ -121,7 +126,7 @@ describe('buildChatSession', () => {
   it('enforces [chat].max_turns: an over-cap sendMessage settles loudly as turn_limit with no provider call', async () => {
     // unresolvedResolver ⇒ every turn fails fast as `internal` (a host-wiring gap) but still COUNTS toward
     // the cap, so the 3rd message past a cap of 2 is blocked as turn_limit without engaging a provider.
-    const built = build({
+    const built = await build({
       chat: { ...EMPTY_CHAT, maxTurns: 2 },
       providers: unresolvedResolver(),
     });
@@ -136,6 +141,99 @@ describe('buildChatSession', () => {
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
     );
     expect(errorCodes).toEqual(['internal', 'internal', 'turn_limit']);
+  });
+});
+
+describe('buildChatSession + MCP host wiring (2.R)', () => {
+  /** Write a throwaway `.agent.yaml` declaring one inline stdio MCP server, returning its path. */
+  function writeMcpAgent(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-mcp-'));
+    const path = join(dir, 'a.agent.yaml');
+    writeFileSync(
+      path,
+      [
+        'id: mcp-agent',
+        'model: claude-sonnet-4-6',
+        'provider: anthropic',
+        'system_prompt: test agent',
+        'tools:',
+        '  - read_file',
+        'mcp_servers:',
+        '  - id: fs',
+        '    transport: stdio',
+        '    command: my-server',
+        '',
+      ].join('\n'),
+    );
+    return path;
+  }
+
+  it('grants the discovered tool, routes a call to the connection by original name, and tears it down', async () => {
+    const calls: { name: string; args: unknown }[] = [];
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: (name, args) => {
+        calls.push({ name, args });
+        return Promise.resolve({ content: [{ type: 'text', text: 'file body' }], isError: false });
+      },
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    const built = await build({
+      agentRef: writeMcpAgent(),
+      providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+      // The injected starter runs the REAL manager over a FAKE connection — no child is spawned, but the real
+      // namespacing (`mcp_fs_read`), the dispatch routing, and the close all execute.
+      startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+    });
+
+    // The RETURNED agent is the ORIGINAL — its grant is not mutated with the dynamic id (so the persisted
+    // snapshot stays the author's agent; the runtime session binds the augmented one).
+    expect(built.agent.tools).toEqual(['read_file']);
+    expect(built.mcpSkipped).toEqual([]);
+    expect(typeof built.closeMcp).toBe('function');
+
+    built.session.start();
+    await built.session.sendMessage('go');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const toolCall = events.find((e) => e.type === 'agent:tool_call');
+    expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('mcp_fs_read');
+    expect(calls).toEqual([{ name: 'read', args: {} }]); // routed to the ORIGINAL server name, not the id
+
+    await built.closeMcp?.();
+    expect(closed).toBe(1);
+  });
+
+  it('leaves closeMcp undefined + mcpSkipped empty when the agent declares no mcp_servers', async () => {
+    const built = await build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
+    expect(built.closeMcp).toBeUndefined();
+    expect(built.mcpSkipped).toEqual([]);
+  });
+
+  it('surfaces a tool dropped at discovery via mcpSkipped (allowlist-excluded — non-fatal)', async () => {
+    const conn: McpConnection = {
+      listTools: () =>
+        Promise.resolve([
+          { name: 'read', inputSchema: { type: 'object' } },
+          { name: 'danger', inputSchema: { type: 'object' } },
+        ]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const built = await build({
+      agentRef: writeMcpAgent(),
+      startMcpClient: () =>
+        realStartMcpClient([
+          { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+        ]),
+    });
+    expect(built.mcpSkipped.map((s) => s.name)).toContain('danger'); // excluded by the allowlist
+    await built.closeMcp?.();
   });
 });
 
@@ -176,8 +274,8 @@ describe('buildResumedChatSession (2.N)', () => {
     });
   }
 
-  it('rebinds the frozen agent + context and reconstructs the carried-over state', () => {
-    const built = resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
+  it('rebinds the frozen agent + context and reconstructs the carried-over state', async () => {
+    const built = await resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
     expect(built.sessionId).toBe('sess-r');
     expect(built.agent.id).toBe(RESUME_AGENT.id);
     expect(built.agent.model).toBe('claude-sonnet-4-6');
@@ -188,16 +286,16 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(2);
   });
 
-  it('continues a transcript whose last persisted seq is computed from the MAX (order-independent)', () => {
+  it('continues a transcript whose last persisted seq is computed from the MAX (order-independent)', async () => {
     // Rows passed out of order; nextSequenceNumber must be MAX+1, not last-element+1.
-    const built = resume([message(1, 'assistant', 'hello'), message(0, 'user', 'hi')]);
+    const built = await resume([message(1, 'assistant', 'hello'), message(0, 'user', 'hi')]);
     expect(built.nextSequenceNumber).toBe(2);
   });
 
-  it('computes nextSequenceNumber from the MAX, not the row COUNT (a gapped transcript)', () => {
+  it('computes nextSequenceNumber from the MAX, not the row COUNT (a gapped transcript)', async () => {
     // A gapped transcript (seq 0,1,5 — length 3 but MAX 5) pins MAX+1 semantics: a count-based bug
     // (`messages.length`) would yield 3 and collide; the correct answer is 6.
-    const built = resume([
+    const built = await resume([
       message(0, 'user', 'hi'),
       message(1, 'assistant', 'hello'),
       message(5, 'user', 'later'),
@@ -205,11 +303,11 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(6);
   });
 
-  it('rolls back a trailing unanswered user turn but still continues past its durable seq', () => {
+  it('rolls back a trailing unanswered user turn but still continues past its durable seq', async () => {
     // A session interrupted after the user typed (assistant never replied): the durable transcript ends in a
     // dangling user row (seq 2). reconstruct rolls it back (so the model is not re-sent two user turns), but
     // the persister must still continue PAST that durable row (seq 3), never overwrite it.
-    const built = resume([
+    const built = await resume([
       message(0, 'user', 'hi'),
       message(1, 'assistant', 'hello'),
       message(2, 'user', 'dangling'),
@@ -219,14 +317,14 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(3); // continues past the durable orphan row, not over it
   });
 
-  it('starts a never-messaged session at sequence 0', () => {
-    const built = resume([]);
+  it('starts a never-messaged session at sequence 0', async () => {
+    const built = await resume([]);
     expect(built.nextSequenceNumber).toBe(0);
     expect(built.resumeState.turnCount).toBe(0);
   });
 
   it('the resumed session lands at idle and continues WITHOUT re-emitting session:started', async () => {
-    const built = resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
+    const built = await resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
     // No start() — AgentSession.resume already landed at idle; sendMessage continues the conversation.
     await built.session.sendMessage('again');
     built.session.cancel();
@@ -242,7 +340,7 @@ describe('buildResumedChatSession (2.N)', () => {
   it('rebinds the agent from the SNAPSHOT, not the record agentSlug (which may diverge after a rename)', async () => {
     // agentSlug diverges from the snapshot id; the resumed session must bind the SNAPSHOT's id, and the
     // live events' nodeId (= agentRef = agent.id) must follow the snapshot — not the stale slug.
-    const built = resume(
+    const built = await resume(
       [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
       record({ agentSlug: 'old-slug' }),
     );
@@ -259,7 +357,7 @@ describe('buildResumedChatSession (2.N)', () => {
     // A near-exhausted record (totalCostMicrocents far past a 1µ¢ cap): AgentSession.resume seeds the governor
     // via updateCost(carried), so the FIRST resumed turn's pre-egress check trips BEFORE any new cost:updated.
     // Without that seeding the carried spend would be invisible and the first turn would slip past the cap.
-    const built = buildResumedChatSession({
+    const built = await buildResumedChatSession({
       chat: { ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'fail' },
       record: record({ totalCostMicrocents: 999_999 }),
       messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
@@ -276,8 +374,9 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(errorCodes).toContain('budget_exceeded'); // tripped on the carried cost, no provider call
   });
 
-  it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', () => {
-    expect(() => resume([], record({ agentSnapshot: undefined }))).toThrow(
+  it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', async () => {
+    // The build is async now (2.R MCP connect), so the no-snapshot guard surfaces as a REJECTED promise.
+    await expect(resume([], record({ agentSnapshot: undefined }))).rejects.toThrow(
       /no stored agent snapshot/,
     );
   });

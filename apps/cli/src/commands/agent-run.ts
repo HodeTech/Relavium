@@ -11,7 +11,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { makePlainPrinter } from './chat.js';
+import { makePlainPrinter, surfaceMcpSkipped } from './chat.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
@@ -81,8 +81,10 @@ export async function agentRunCommand(
       ? (deps.providers ?? createProviderResolver(deps.io.env))
       : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
 
-  // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn.
-  const built = (deps.buildSession ?? buildChatSession)({
+  // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
+  // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
+  // CliError, cause stripped) before the one-shot turn runs.
+  const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
     agentRef: args.agent,
     cwd: deps.global.cwd,
@@ -91,6 +93,7 @@ export async function agentRunCommand(
     uuid,
     providers,
   });
+  surfaceMcpSkipped(deps.io, built.mcpSkipped);
 
   // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
   // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.
@@ -120,6 +123,8 @@ export async function agentRunCommand(
   } finally {
     built.session.cancel(); // the session's terminal (session:cancelled) — closes the one-shot cleanly
     unsubscribe();
+    // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
+    await built.closeMcp?.();
   }
   return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
 }

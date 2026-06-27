@@ -27,6 +27,7 @@ import {
   driveJson,
   drivePlain,
   makePlainPrinter,
+  surfaceMcpSkipped,
   type ChatCommandDeps,
   type ChatDriveContext,
   type ChatDriver,
@@ -643,8 +644,8 @@ describe('chatResumeCommand (2.N)', () => {
 describe('drivePlain', () => {
   // A minimal driver context over a REAL session handle (no turns fire — startSession is a no-op) plus a
   // recording processLine, so we exercise drivePlain's readline loop + teardown over the injected stdin (F1).
-  function plainCtx(stdin: NodeJS.ReadableStream) {
-    const built = buildChatSession({
+  async function plainCtx(stdin: NodeJS.ReadableStream) {
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: tmpdir(),
@@ -674,7 +675,7 @@ describe('drivePlain', () => {
 
   it('reads lines from the injected stdin, dispatches each, and stops on /exit', async () => {
     const stdin = new PassThrough();
-    const { ctx, processed } = plainCtx(stdin);
+    const { ctx, processed } = await plainCtx(stdin);
     const done = drivePlain(ctx);
     stdin.write('hello\n');
     stdin.write('/exit\n');
@@ -685,7 +686,7 @@ describe('drivePlain', () => {
 
   it('a SIGINT closes the input so the loop ends and the finally removes the handler (teardown path)', async () => {
     const stdin = new PassThrough();
-    const { ctx } = plainCtx(stdin);
+    const { ctx } = await plainCtx(stdin);
     // Identify drivePlain's handler by SET-DELTA (not `.at(-1)`), matching the run.test.ts pattern — robust to
     // any other SIGINT listener the runner/host registers around it. Invoke it directly (not process.emit,
     // which would also fire the runner's listeners); it calls rl.close(), ending the for-await loop.
@@ -782,8 +783,8 @@ describe('selectChatDriver', () => {
   // A ctx whose stdin is already at EOF, so the PLAIN driver resolves immediately. The ink driver would mount
   // and block on input forever, so a resolving promise PROVES the plain branch was chosen. If the routing
   // predicate regressed (e.g. && → ||), a non-TTY case would route to ink and hang this test.
-  function ctxWith(stdoutIsTty: boolean, json: boolean): ChatDriveContext {
-    const built = buildChatSession({
+  async function ctxWith(stdoutIsTty: boolean, json: boolean): Promise<ChatDriveContext> {
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: tmpdir(),
@@ -807,23 +808,26 @@ describe('selectChatDriver', () => {
   }
 
   it('routes a non-TTY surface to the plain driver (resolves; ink would block)', async () => {
-    await expect(selectChatDriver(ctxWith(false, false))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(false, false))).resolves.toBeUndefined();
   });
 
   it('routes --json to the headless json driver even on a TTY (resolves; ink would block)', async () => {
-    await expect(selectChatDriver(ctxWith(true, true))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(true, true))).resolves.toBeUndefined();
   });
 
   it('routes a non-TTY + --json surface to the headless json driver', async () => {
-    await expect(selectChatDriver(ctxWith(false, true))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(false, true))).resolves.toBeUndefined();
   });
 });
 
 describe('driveJson (2.Q)', () => {
   // A driver context over a REAL session handle + a recording processLine, so we exercise driveJson's
   // readline loop and its NDJSON serialization of the live event stream over the injected stdin.
-  function jsonCtx(stdin: NodeJS.ReadableStream, turns: StreamChunk[][] = [textTurn('hi there')]) {
-    const built = buildChatSession({
+  async function jsonCtx(
+    stdin: NodeJS.ReadableStream,
+    turns: StreamChunk[][] = [textTurn('hi there')],
+  ) {
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: tmpdir(),
@@ -856,7 +860,7 @@ describe('driveJson (2.Q)', () => {
 
   it('emits a pure NDJSON stream (session:started → turn events → session:cancelled terminal) on EOF', async () => {
     const stdin = new PassThrough();
-    const { ctx, out } = jsonCtx(stdin);
+    const { ctx, out } = await jsonCtx(stdin);
     const done = driveJson(ctx);
     stdin.write('hello\n');
     stdin.end(); // EOF ends the loop
@@ -876,7 +880,7 @@ describe('driveJson (2.Q)', () => {
 
   it('streams two turns, each with its own session:turn_completed, before the terminal', async () => {
     const stdin = new PassThrough();
-    const { ctx, out } = jsonCtx(stdin, [textTurn('one'), textTurn('two')]);
+    const { ctx, out } = await jsonCtx(stdin, [textTurn('one'), textTurn('two')]);
     const done = driveJson(ctx);
     stdin.write('first\n');
     stdin.write('second\n');
@@ -892,7 +896,7 @@ describe('driveJson (2.Q)', () => {
     // The parallel of the drivePlain SIGINT teardown test — driveJson registers its own SIGINT handler and must
     // remove it in the finally. Identify it by SET-DELTA (robust to any other listener the runner registers).
     const stdin = new PassThrough();
-    const { ctx } = jsonCtx(stdin);
+    const { ctx } = await jsonCtx(stdin);
     const before = process.listeners('SIGINT').slice();
     const done = driveJson(ctx);
     const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
@@ -902,5 +906,24 @@ describe('driveJson (2.Q)', () => {
     handler('SIGINT'); // invoke directly (not process.emit) — it closes the readline, ending the loop
     await done;
     expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
+  });
+});
+
+describe('surfaceMcpSkipped (2.R)', () => {
+  it('writes one secret-free stderr note per dropped tool (name + server + reason), nothing on an empty list', () => {
+    const { io, err, out } = captureIo();
+    surfaceMcpSkipped(io, []);
+    expect(err()).toBe(''); // no MCP servers / nothing dropped ⇒ silent (the common case)
+
+    surfaceMcpSkipped(io, [
+      { server: 'fs', name: 'danger', reason: 'not in tools_allowlist' },
+      { server: 'gh', name: 'bad-id!', reason: 'unsafe LLM tool name' },
+    ]);
+    const lines = err().trimEnd().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("MCP tool 'danger' (server 'fs')");
+    expect(lines[0]).toContain('not in tools_allowlist');
+    expect(lines[1]).toContain("MCP tool 'bad-id!' (server 'gh')");
+    expect(out()).toBe(''); // diagnostics stay on stderr — stdout (the --json stream) is untouched
   });
 });

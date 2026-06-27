@@ -26,6 +26,11 @@ const THIRD_PARTY_EXTERNAL = [
   '@clack/prompts',
   '@google/genai',
   '@jitl/quickjs-singlefile-mjs-release-sync',
+  // The MCP SDK is a vendor SDK like the others — externalize it (root + every subpath the stdio adapter
+  // imports, e.g. `…/client/stdio.js`) so it and its own transitive deps install via npm, never inlined.
+  // `@relavium/mcp` (inlined) is the only importer; the bundle then carries just `@modelcontextprotocol/sdk`.
+  '@modelcontextprotocol/sdk',
+  '@modelcontextprotocol/sdk/*',
   '@napi-rs/keyring',
   'better-sqlite3',
   'commander',

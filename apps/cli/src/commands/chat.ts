@@ -6,6 +6,7 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
+import type { ManagerSkippedTool } from '@relavium/mcp';
 
 import { exportSession } from '../chat/export.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
@@ -131,7 +132,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const store = createChatStore(deps.global.color);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
-  const built = (deps.buildSession ?? buildChatSession)({
+  // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
+  // fail-loud exit-2 CliError, cause stripped) before the session is live.
+  const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
     agentRef: args.agent,
     cwd: deps.global.cwd,
@@ -144,6 +147,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
       ),
   });
+  surfaceMcpSkipped(deps.io, built.mcpSkipped);
 
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
   const persister = createSessionPersister({
@@ -195,7 +199,7 @@ export async function chatResumeCommand(
     if (loaded === undefined) {
       throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
     }
-    const resumed = (deps.buildResumedSession ?? buildResumedChatSession)({
+    const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
       record: loaded.session,
       messages: loaded.messages,
@@ -206,6 +210,7 @@ export async function chatResumeCommand(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
         ),
     });
+    surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
     built = resumed;
     // Seed the view header: a resumed session never re-emits `session:started`, so without this the footer
     // would show no model and zero cost/turns until the first new turn (the durable record is unaffected).
@@ -359,9 +364,25 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'
     persister.close();
     opened.close();
+    // Tear down the MCP connections (2.R) AFTER the session terminal — no more tool calls can race the close.
+    // Present only when the agent declared `mcp_servers`; idempotent. A teardown error must not mask the exit.
+    await built.closeMcp?.();
   }
   // `/exit`, `/cancel`, and an input EOF all END the chat session — the canonical chat-session-ended code.
   return EXIT_CODES.chatEnded;
+}
+
+/**
+ * Surface MCP tools dropped at discovery (allowlist-narrowed, an unsupported schema, a cross-server id
+ * collision, or an unsafe name) to **stderr** — a non-fatal diagnostic, secret-free (a tool name + a reason),
+ * so it never pollutes the `--json` stdout event stream. A no-op when nothing was dropped (the common case).
+ */
+export function surfaceMcpSkipped(io: CliIo, skipped: readonly ManagerSkippedTool[]): void {
+  for (const tool of skipped) {
+    io.writeErr(
+      `note: MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}\n`,
+    );
+  }
 }
 
 /**

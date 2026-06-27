@@ -40,11 +40,11 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
-  function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
+  async function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
     let msgId = 0;
-    const built = buildChatSession({
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: '/workspace',
@@ -66,8 +66,8 @@ describe('createSessionPersister', () => {
     return { built, persister };
   }
 
-  it('persists the session row eagerly on start (auto-persisted from the moment it starts)', () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
+  it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();
     const full = store.loadFull('sess-1');
     expect(full).toBeDefined();
@@ -78,8 +78,8 @@ describe('createSessionPersister', () => {
     expect(full?.messages).toHaveLength(0); // no turn yet
   });
 
-  it('adopts an existing row on start instead of re-INSERTing (resume does not hit the UNIQUE pk)', () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi')]), 5);
+  it('adopts an existing row on start instead of re-INSERTing (resume does not hit the UNIQUE pk)', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5);
     // Simulate the prior process: the session row already exists in history.db before this resume starts.
     store.createSession({
       id: built.sessionId,
@@ -103,7 +103,7 @@ describe('createSessionPersister', () => {
 
   it('resumed persister folds new-turn tokens ON TOP of the adopted row totals, not from zero', async () => {
     // Simulate 2.N resume: a row with prior totals already exists; start() adopts it and hydrates the totals.
-    const { built, persister } = setup(scriptedResolver([textTurn('go')]), 5);
+    const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5);
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,
@@ -131,7 +131,7 @@ describe('createSessionPersister', () => {
     // A turn with no provider egress emits NO cost:updated, so the cost flush relies entirely on the hydrated
     // total. unresolvedResolver fails the turn `internal` before any egress; the prior row cost (1300) must
     // survive — without start()'s hydration the unconditional flush would reset it to 0.
-    const { built, persister } = setup(unresolvedResolver(), 5);
+    const { built, persister } = await setup(unresolvedResolver(), 5);
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,
@@ -154,7 +154,7 @@ describe('createSessionPersister', () => {
   });
 
   it('persists a completed turn as a user + text-only assistant pair, and folds the token totals', async () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi there')]));
     persister.start();
     built.session.start();
     persister.beginUserTurn('hello');
@@ -176,7 +176,7 @@ describe('createSessionPersister', () => {
   it('persists only the user row when a successful turn produces no assistant text', async () => {
     // A turn that emits only a stop chunk — zero text_delta, so result.text is empty; the assistantText.length
     // guard must skip the empty assistant row (mirroring the engine), leaving just the user row.
-    const { built, persister } = setup(scriptedResolver([[stop('stop')]]));
+    const { built, persister } = await setup(scriptedResolver([[stop('stop')]]));
     persister.start();
     built.session.start();
     persister.beginUserTurn('hello');
@@ -198,7 +198,9 @@ describe('createSessionPersister', () => {
       { type: 'tool_call_end', id: 'c1' },
       stop('tool_use'),
     ];
-    const { built, persister } = setup(scriptedResolver([preToolTurn, textTurn('the answer')]));
+    const { built, persister } = await setup(
+      scriptedResolver([preToolTurn, textTurn('the answer')]),
+    );
     persister.start();
     built.session.start();
     persister.beginUserTurn('go');
@@ -210,7 +212,7 @@ describe('createSessionPersister', () => {
   });
 
   it('persists nothing for a failed turn (the engine rolls its user message back)', async () => {
-    const { built, persister } = setup(unresolvedResolver()); // every turn fails `internal`
+    const { built, persister } = await setup(unresolvedResolver()); // every turn fails `internal`
     persister.start();
     built.session.start();
     persister.beginUserTurn('hello');
@@ -221,8 +223,8 @@ describe('createSessionPersister', () => {
     expect(full?.session.status).toBe('active');
   });
 
-  it('marks the session ended on cancel (its sole terminal), leaving it resumable', () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
+  it('marks the session ended on cancel (its sole terminal), leaving it resumable', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();
     built.session.start();
     built.session.cancel();
@@ -230,7 +232,7 @@ describe('createSessionPersister', () => {
   });
 
   it('produces a transcript reconstructSessionState round-trips into a resumable state', async () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi there')]));
     persister.start();
     built.session.start();
     persister.beginUserTurn('hello');
@@ -250,7 +252,7 @@ describe('createSessionPersister', () => {
   });
 
   it('accumulates sequenceNumber and token totals across consecutive turns', async () => {
-    const { built, persister } = setup(
+    const { built, persister } = await setup(
       scriptedResolver([textTurn('reply 1'), textTurn('reply 2')]),
     );
     persister.start();
@@ -272,7 +274,7 @@ describe('createSessionPersister', () => {
   });
 
   it('seeds the first sequenceNumber from initialSequenceNumber (the 2.N resume injection point)', async () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi')]), 5);
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5);
     persister.start();
     built.session.start();
     persister.beginUserTurn('go');
@@ -282,7 +284,7 @@ describe('createSessionPersister', () => {
   });
 
   it('start() is idempotent — a second call neither duplicates the row nor double-subscribes', async () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();
     persister.start(); // a duplicate createSession would PK-violate; a double-subscribe would double-write
     built.session.start();
@@ -292,7 +294,7 @@ describe('createSessionPersister', () => {
   });
 
   it('close() unsubscribes — turns after close are not persisted (the session stays in the db)', async () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('one'), textTurn('two')]));
+    const { built, persister } = await setup(scriptedResolver([textTurn('one'), textTurn('two')]));
     persister.start();
     built.session.start();
     persister.beginUserTurn('first');
@@ -308,7 +310,7 @@ describe('createSessionPersister', () => {
   it('flushes the running cost on a failed turn so a resumed budget governor sees the true spend', async () => {
     // Turn 1 succeeds and incurs a real (priced) cost; turn 2 is unscripted, so the provider throws and the
     // turn settles as an error. The d6b975b unconditional flush must keep the turn-1 cost durable (not 0).
-    const { built, persister } = setup(scriptedResolver([textTurn('hi')]));
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();
     built.session.start();
     persister.beginUserTurn('first');
@@ -325,7 +327,7 @@ describe('createSessionPersister', () => {
   });
 
   it('on cancel after a successful turn: status ended, totals retained, messages untouched', async () => {
-    const { built, persister } = setup(scriptedResolver([textTurn('hi there')]));
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi there')]));
     persister.start();
     built.session.start();
     persister.beginUserTurn('hello');
