@@ -147,18 +147,27 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
       ),
   });
-  surfaceMcpSkipped(deps.io, built.mcpSkipped);
-
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  const persister = createSessionPersister({
-    store: opened.store,
-    handle: built.handle,
-    sessionId: built.sessionId,
-    agent: built.agent,
-    context: built.context,
-    now,
-    uuid,
-  });
+  // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
+  // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
+  // tears the connections down rather than orphaning the spawned children (ADR-0052 §2 teardown-on-terminal).
+  let opened: OpenedSessionStore;
+  let persister: SessionPersister;
+  try {
+    surfaceMcpSkipped(deps.io, built.mcpSkipped);
+    opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+    persister = createSessionPersister({
+      store: opened.store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now,
+      uuid,
+    });
+  } catch (err) {
+    await built.closeMcp?.();
+    throw err;
+  }
 
   return runReplLoop(
     { built, opened, store, persister, startSession: () => built.session.start() },
@@ -192,6 +201,10 @@ export async function chatResumeCommand(
   let store: ChatStoreController;
   let persister: SessionPersister;
   let intro: string;
+  // The just-built resumed session OWNS its MCP connections; if a pre-loop step after a SUCCESSFUL build throws,
+  // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
+  // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
+  let closeMcp: (() => Promise<void>) | undefined;
   try {
     // The current `[chat]` config governs the resumed turn/cost caps; the agent, model, and context are the
     // frozen originals from the record. An absent session is a clean exit-2 invocation fault.
@@ -210,6 +223,7 @@ export async function chatResumeCommand(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
         ),
     });
+    closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
     built = resumed;
     // Seed the view header: a resumed session never re-emits `session:started`, so without this the footer
@@ -249,7 +263,9 @@ export async function chatResumeCommand(
       );
     }
   } catch (err) {
-    // A pre-loop fault (not-found, no snapshot, build failure) must not strand the open db handle.
+    // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
+    // open db handle NOR the spawned MCP children — tear both down (closeMcp is idempotent + a no-op when unset).
+    await closeMcp?.();
     opened.close();
     throw err;
   }
@@ -376,11 +392,17 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
  * Surface MCP tools dropped at discovery (allowlist-narrowed, an unsupported schema, a cross-server id
  * collision, or an unsafe name) to **stderr** — a non-fatal diagnostic, secret-free (a tool name + a reason),
  * so it never pollutes the `--json` stdout event stream. A no-op when nothing was dropped (the common case).
+ *
+ * The tool `name` and `reason` are **server-controlled** (the `name` comes verbatim from the server's
+ * `tools/list`; the `reason` can embed a server-supplied schema key/type) and the MCP server is in-threat-model
+ * untrusted (ADR-0052 §4), so both are run through {@link sanitizeInline} — the same terminal-escape strip the
+ * resume banner / slash echo / streamed tokens already use — before they reach the TTY. The `server` segment is
+ * the agent's kebab id (already safe) but is sanitized too, to stay correct under the future by-name `ref` form.
  */
 export function surfaceMcpSkipped(io: CliIo, skipped: readonly ManagerSkippedTool[]): void {
   for (const tool of skipped) {
     io.writeErr(
-      `note: MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}\n`,
+      `note: MCP tool '${sanitizeInline(tool.name)}' (server '${sanitizeInline(tool.server)}') skipped — ${sanitizeInline(tool.reason)}\n`,
     );
   }
 }

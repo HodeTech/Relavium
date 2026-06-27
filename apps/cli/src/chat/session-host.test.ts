@@ -4,7 +4,12 @@ import { join } from 'node:path';
 
 import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
+import {
+  buildServerToolDefs,
+  startMcpClient as realStartMcpClient,
+  type McpClient,
+  type McpConnection,
+} from '@relavium/mcp';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -234,6 +239,29 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     });
     expect(built.mcpSkipped.map((s) => s.name)).toContain('danger'); // excluded by the allowlist
     await built.closeMcp?.();
+  });
+
+  it('self-cleans: a post-connect construction fault tears the just-connected client down (no leak)', async () => {
+    // Force a post-connect throw: two ToolDefs sharing an id make `createToolRegistry` reject ("duplicate tool
+    // id") AFTER the client is connected. The build must close the client before the failure propagates, so a
+    // setup fault can never orphan a spawned MCP child.
+    const { defs } = buildServerToolDefs('fs', [{ name: 'read', inputSchema: { type: 'object' } }]);
+    let closed = 0;
+    const collidingClient: McpClient = {
+      capability: { call: () => Promise.resolve({ content: [], isError: false }) },
+      toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws inside buildSessionRuntime
+      skipped: [],
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    const building = build({
+      agentRef: writeMcpAgent(),
+      startMcpClient: () => Promise.resolve(collidingClient),
+    });
+    await expect(building).rejects.toThrow(/duplicate tool id/);
+    expect(closed).toBe(1); // the build closed the client it had just opened
   });
 });
 

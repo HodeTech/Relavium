@@ -926,4 +926,21 @@ describe('surfaceMcpSkipped (2.R)', () => {
     expect(lines[1]).toContain("MCP tool 'bad-id!' (server 'gh')");
     expect(out()).toBe(''); // diagnostics stay on stderr — stdout (the --json stream) is untouched
   });
+
+  it('sanitizes a hostile server-controlled tool name + reason (no terminal-escape injection reaches the TTY)', () => {
+    // `name`/`reason` are server-controlled and the MCP server is in-threat-model untrusted (ADR-0052 §4): a
+    // crafted tool returning ANSI/OSC control bytes must NOT write them raw to the operator's terminal.
+    const { io, err } = captureIo();
+    surfaceMcpSkipped(io, [
+      {
+        server: 'fs',
+        name: 'evil\x1b[2J\x1b]0;pwned\x07',
+        reason: 'bad\x1b[31m schema\x1b[0m',
+      },
+    ]);
+    const out = err();
+    // eslint-disable-next-line no-control-regex -- asserting the absence of control bytes is the point
+    expect(/[\x00-\x1f\x7f]/.test(out.replace(/\n$/, ''))).toBe(false); // no control bytes survived (besides the trailing \n)
+    expect(out).not.toContain('\x1b'); // the ESC that opens every escape sequence is gone
+  });
 });

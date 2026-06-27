@@ -188,27 +188,35 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
   });
 
-  const { bus, deps, emit } = buildSessionRuntime(opts, sessionId, mcp);
-  // The session runs against the EFFECTIVE agent (its grant unioned with the discovered MCP tool ids); the
-  // ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
-  const session = new AgentSession({
-    sessionId,
-    agentRef: agent.id,
-    agent: withMcpGrant(agent, mcp),
-    context,
-    deps,
-  });
-  const handle = createSessionHandle(bus, sessionId, () => session.cancel());
-  return {
-    session,
-    handle,
-    sessionId,
-    agent,
-    context,
-    emitSessionEvent: emit,
-    mcpSkipped: mcp?.skipped ?? [],
-    ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
-  };
+  try {
+    const { bus, deps, emit } = buildSessionRuntime(opts, sessionId, mcp);
+    // The session runs against the EFFECTIVE agent (its grant unioned with the discovered MCP tool ids); the
+    // ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
+    const session = new AgentSession({
+      sessionId,
+      agentRef: agent.id,
+      agent: withMcpGrant(agent, mcp),
+      context,
+      deps,
+    });
+    const handle = createSessionHandle(bus, sessionId, () => session.cancel());
+    return {
+      session,
+      handle,
+      sessionId,
+      agent,
+      context,
+      emitSessionEvent: emit,
+      mcpSkipped: mcp?.skipped ?? [],
+      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+    };
+  } catch (err) {
+    // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
+    // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
+    // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
+    await mcp?.close();
+    throw err;
+  }
 }
 
 /**
@@ -290,36 +298,42 @@ export async function buildResumedChatSession(
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
   });
 
-  const { bus, deps, emit } = buildSessionRuntime(opts, record.id, mcp);
-  const session = AgentSession.resume(
-    {
+  try {
+    const { bus, deps, emit } = buildSessionRuntime(opts, record.id, mcp);
+    const session = AgentSession.resume(
+      {
+        sessionId: record.id,
+        agentRef: agent.id,
+        agent: withMcpGrant(agent, mcp),
+        context,
+        deps,
+      },
+      resumeState,
+    );
+    const handle = createSessionHandle(bus, record.id, () => session.cancel());
+    // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
+    // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is
+    // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a
+    // single-writer assumption — the next seq is read at load time, so two concurrent resumes of the SAME
+    // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
+    const nextSequenceNumber = messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
+    return {
+      session,
+      handle,
       sessionId: record.id,
-      agentRef: agent.id,
-      agent: withMcpGrant(agent, mcp),
+      agent,
       context,
-      deps,
-    },
-    resumeState,
-  );
-  const handle = createSessionHandle(bus, record.id, () => session.cancel());
-  // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
-  // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is
-  // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a
-  // single-writer assumption — the next seq is read at load time, so two concurrent resumes of the SAME
-  // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
-  const nextSequenceNumber = messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
-  return {
-    session,
-    handle,
-    sessionId: record.id,
-    agent,
-    context,
-    emitSessionEvent: emit,
-    resumeState,
-    nextSequenceNumber,
-    mcpSkipped: mcp?.skipped ?? [],
-    ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
-  };
+      emitSessionEvent: emit,
+      resumeState,
+      nextSequenceNumber,
+      mcpSkipped: mcp?.skipped ?? [],
+      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+    };
+  } catch (err) {
+    // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
+    await mcp?.close();
+    throw err;
+  }
 }
 
 export interface GovernorWiring {

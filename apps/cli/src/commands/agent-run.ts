@@ -93,22 +93,24 @@ export async function agentRunCommand(
     uuid,
     providers,
   });
-  surfaceMcpSkipped(deps.io, built.mcpSkipped);
-
   // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
   // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.
   let turnErrorCode: string | undefined;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
     ? (event) => deps.io.writeOut(`${JSON.stringify(event)}\n`)
     : makePlainPrinter(deps.io);
-  const unsubscribe = built.handle.subscribe((event) => {
-    renderer(event);
-    if (event.type === 'session:turn_completed' && event.error !== undefined) {
-      turnErrorCode = event.error.code;
-    }
-  });
-
+  // The session OWNS the live MCP connections (built.closeMcp); the finally tears them down. Keep the whole
+  // post-build region (skipped-tool note + subscribe) INSIDE the try so any fault there still hits the finally
+  // rather than orphaning the spawned children (a no-op unsubscribe until the real one is wired below).
+  let unsubscribe: () => void = () => {};
   try {
+    surfaceMcpSkipped(deps.io, built.mcpSkipped);
+    unsubscribe = built.handle.subscribe((event) => {
+      renderer(event);
+      if (event.type === 'session:turn_completed' && event.error !== undefined) {
+        turnErrorCode = event.error.code;
+      }
+    });
     built.session.start();
     await built.session.sendMessage(message);
   } catch (err) {
