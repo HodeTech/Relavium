@@ -469,7 +469,8 @@ export async function connectWorkflowMcp(
     // was opened. This guard exists so that if a future throwing transform is added here, the live connection is
     // torn down rather than leaked (uniform all-or-nothing with the self-cleaning chat builders), not because the
     // current body throws. Do not assume `withWorkflowMcpGrant` can fail.
-    await client.close();
+    // Best-effort: a teardown rejection must NOT replace the original augmentation error (preserve the primary).
+    await client.close().catch(() => undefined);
     throw err;
   }
 }

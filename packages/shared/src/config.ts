@@ -21,7 +21,7 @@ const SAFE_WS_URL = /^wss?:\/\//i;
 /** The authored shape `McpServerRegistrationSchema.superRefine` validates (connection fields optional pre-refine). */
 interface McpRegistrationDraft {
   name: string;
-  transport: 'stdio' | 'http' | 'websocket';
+  transport: 'stdio' | 'http' | 'websocket' | 'sse';
   command?: string | undefined;
   args?: readonly string[] | undefined;
   autostart?: boolean | undefined;
@@ -102,14 +102,15 @@ function validateNetworkRegistration(server: McpRegistrationDraft, ctx: z.Refine
 
 /**
  * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required connection field:
- * `stdio` needs a `command`; `http` (Streamable HTTP) / `websocket` need a `url`. Reconciled with the agent
- * `McpServerRefSchema` to one vocabulary — `stdio | http | websocket`
+ * `stdio` needs a `command`; `http` (Streamable HTTP) / `websocket` need a `url`; `sse` is the deprecated alias
+ * of `http` (accepted for older servers, same `http(s)` url). Reconciled with the agent `McpServerRefSchema` to
+ * one vocabulary — `stdio | http | websocket` (+ the `sse` alias)
  * ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5).
  */
 export const McpServerRegistrationSchema = z
   .object({
     name: nonEmptyString,
-    transport: z.enum(['stdio', 'http', 'websocket']),
+    transport: z.enum(['stdio', 'http', 'websocket', 'sse']),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     autostart: z.boolean().optional(),

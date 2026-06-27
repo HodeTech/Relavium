@@ -125,17 +125,17 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
 
 There are **four** outbound-URL paths (the fourth — the multimodal media `url` carrier — is now wired
 host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s `fetchMediaBytes`;
-see the last bullet), and they share **one** vetted
-SSRF range-primitive — never a second hand-rolled parser. The same validation
-(HTTPS only, reject non-HTTP(S) schemes and credentials-in-URL, and **block
-private/loopback/link-local/metadata ranges** — `127.0.0.0/8`, `::1`, `10/8`,
-`172.16/12`, `192.168/16`, `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
-unless the user has explicitly opted into a local endpoint) applies to **all four** — including the media `url`
-carrier fetched by `fetchMediaBytes`. NOTE: the shared primitive is the **range block**; the stronger
-**connect-by-validated-IP + per-redirect revalidation** is wired for the media carrier (and is construction-time
-for the provider `baseURL` / `http_request`), but the **MCP** path is on the **pre-connect host floor** only
-until its dialer lands (see the MCP bullet) — so a DNS-rebind / redirect-to-private window is MCP-specific, not
-a property of all four.
+see the last bullet), and they share **one** vetted SSRF range-primitive — never a second hand-rolled parser.
+The **shared** rule (what every path runs through the one primitive) is the **range block**: reject
+private/loopback/link-local/metadata ranges — `127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
+`100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254` (and the IPv6 forms that embed
+those) — unless the caller has explicitly opted into a local endpoint, plus reject credentials-in-URL. The
+**scheme** requirement is per-path, NOT part of this shared summary: each transport requires its own TLS scheme
+(see the individual bullets below — e.g. provider `baseURL` / `http_request` / a remote MCP `url`). NOTE: the
+shared primitive is the **range block**; the stronger **connect-by-validated-IP + per-redirect revalidation** is
+wired for the media carrier (and is construction-time for the provider `baseURL` / `http_request`), but the
+**MCP** path is on the **pre-connect host floor** only until its dialer lands (see the MCP bullet) — so a
+DNS-rebind / redirect-to-private window is MCP-specific, not a property of all four.
 
 - **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
   user-supplied `baseURL`. Never let an agent-config URL cause the engine to call an

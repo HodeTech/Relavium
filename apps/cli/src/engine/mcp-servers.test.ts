@@ -329,8 +329,9 @@ describe('connectAgentMcp', () => {
     });
     await expect(promise).rejects.toMatchObject({ code: 'invalid_invocation' });
     await promise.catch((err: unknown) => {
-      expect((err as Error).message).toContain('spawn failed for "fs"');
-      expect((err as Error).cause).toBeUndefined(); // the opaque cause chain is never attached
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast); a non-CliError is an unexpected fault
+      expect(err.message).toContain('spawn failed for "fs"');
+      expect(err.cause).toBeUndefined(); // the opaque cause chain is never attached
     });
   });
 
@@ -504,8 +505,9 @@ describe('connectWorkflowMcp (run path)', () => {
     // The placeholder must NOT surface in the operator-facing conflict message.
     await connectWorkflowMcp(divergent, { cwd: '/w', startMcpClient: fakeStart(new Map()) }).catch(
       (err: unknown) => {
-        expect((err as Error).message).not.toContain('secrets.gh');
-        expect((err as Error).message).not.toContain('secrets.OTHER');
+        if (!isCliError(err)) throw err; // narrow to CliError (no cast)
+        expect(err.message).not.toContain('secrets.gh');
+        expect(err.message).not.toContain('secrets.OTHER');
       },
     );
   });
@@ -740,8 +742,9 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
       resolveMcpServerRef({ ref: 'nope' }, regs);
       expect.unreachable('an unknown ref must throw');
     } catch (err) {
-      expect(isCliError(err) && err.code).toBe('invalid_invocation');
-      expect((err as Error).message).toContain("ref 'nope' is not registered");
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast)
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain("ref 'nope' is not registered");
     }
   });
 

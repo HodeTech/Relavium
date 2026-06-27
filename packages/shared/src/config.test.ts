@@ -174,6 +174,21 @@ describe('config schemas', () => {
     ).toBe(false);
   });
 
+  it('accepts the deprecated `sse` alias on a registration (symmetric with the inline agent schema, ADR-0052 §5)', () => {
+    // `sse` is a deprecated alias of `http` (same http(s) url) — a `[[mcp_servers]]` registration accepts it
+    // just like an inline `agent.mcp_servers` entry, so a server can be registered once and `ref`-reused.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'legacy', transport: 'sse', url: 'https://host/sse' }],
+      }).success,
+    ).toBe(true);
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'legacy', transport: 'sse', url: 'wss://host/sse' }],
+      }).success,
+    ).toBe(false); // sse → http(s), not ws(s)
+  });
+
   it('accepts a `websocket` MCP registration with a ws(s) url, rejecting a non-ws scheme (ADR-0052 §5)', () => {
     expect(
       GlobalConfigSchema.safeParse({

@@ -65,4 +65,17 @@ describe('buildEngine MCP wiring (2.R)', () => {
     const engine = await buildEngine({ mcp: { toolDefs: defs, capability } });
     expect(engine).toBeDefined();
   });
+
+  it('actually COMPOSES the discovered ToolDefs into the registry — a duplicate id is rejected (proves the option is not ignored)', async () => {
+    // WorkflowEngine is opaque (private fields), so observe the wiring indirectly: createToolRegistry throws on a
+    // duplicate tool id, and the mcp toolDefs reach it ONLY if `options.mcp` is honored. Passing the SAME def
+    // twice therefore MUST reject — if the option were silently dropped, this would build cleanly.
+    const { defs } = buildServerToolDefs('fs', [{ name: 'read', inputSchema: { type: 'object' } }]);
+    const capability: McpCapability = {
+      call: () => Promise.resolve({ content: [], isError: false }),
+    };
+    await expect(
+      buildEngine({ mcp: { toolDefs: [...defs, ...defs], capability } }),
+    ).rejects.toThrow(/duplicate tool id/);
+  });
 });

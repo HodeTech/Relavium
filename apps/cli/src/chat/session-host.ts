@@ -76,6 +76,12 @@ export interface BuildChatSessionOptions {
    */
   readonly mcpRegistrations?: readonly McpServerRegistration[];
   /**
+   * Disable inbound MCP entirely for this session — the agent's `mcp_servers` are NOT connected (no config
+   * build, no spawn, no dial), so the session is fully offline. `relavium agent run --fixture` (cassette replay)
+   * sets this so a recorded run never touches a real server; the cassette already carries any tool results.
+   */
+  readonly disableMcp?: boolean;
+  /**
    * Session-scoped `{{ctx.*}}` variables (plaintext, NO secrets — agent-session-spec.md §Tools). `relavium
    * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
    */
@@ -202,13 +208,16 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
 
   // Connect the agent's inline stdio `mcp_servers` (2.R) — fail-loud (a connect/discovery failure throws a
   // typed exit-2 CliError). `undefined` when none are declared (no client, nothing to tear down). The spawn
-  // cwd is the session working dir, so a relative server path resolves against the workspace.
-  const mcp = await connectAgentMcp(agent.mcp_servers, {
-    cwd: opts.cwd,
-    ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
-    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
-    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
-  });
+  // cwd is the session working dir, so a relative server path resolves against the workspace. `disableMcp`
+  // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
+  const mcp = opts.disableMcp
+    ? undefined
+    : await connectAgentMcp(agent.mcp_servers, {
+        cwd: opts.cwd,
+        ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+        ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+        ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+      });
 
   try {
     const { bus, deps, emit } = buildSessionRuntime(opts, sessionId, mcp);

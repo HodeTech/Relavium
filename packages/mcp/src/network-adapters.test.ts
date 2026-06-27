@@ -59,9 +59,11 @@ describe('openWebSocketConnection (global WebSocket guard)', () => {
     Reflect.set(globalThis, 'WebSocket', saved);
   });
 
-  it('fails loud with a clear, typed error when there is no global WebSocket (Node < 22)', async () => {
+  it('fails loud with a clear, typed McpError when there is no global WebSocket (Node < 22)', async () => {
     Reflect.set(globalThis, 'WebSocket', undefined);
-    await expect(openWebSocketConnection('w', { url: 'wss://host/ws' })).rejects.toThrow(
+    const promise = openWebSocketConnection('w', { url: 'wss://host/ws' });
+    await expect(promise).rejects.toBeInstanceOf(McpError); // a TYPED error, not a plain Error
+    await expect(promise).rejects.toThrow(
       /websocket transport requires a global WebSocket \(Node 22\+\)/,
     );
   });

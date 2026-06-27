@@ -1158,8 +1158,8 @@ describe('runCommand', () => {
     if (isCliError(caught)) {
       expect(caught.code).toBe('invalid_invocation'); // a clean exit-2 invocation fault
       expect(caught.message).toContain('spawn failed for "fs"'); // the secret-free MCP summary
+      expect(caught.cause).toBeUndefined(); // the opaque MCP cause chain is never attached (narrowed — no cast)
     }
-    expect((caught as Error).cause).toBeUndefined(); // the opaque MCP cause chain is never attached
     expect(engineBuilt).toBe(false); // the connect failed before the engine was ever built (no leak)
   });
 

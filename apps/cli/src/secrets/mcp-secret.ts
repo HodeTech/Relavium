@@ -49,9 +49,12 @@ export function createMcpSecretResolver(
 ): McpSecretResolver {
   return (name) => {
     if (!SECRET_NAME.test(name)) {
+      // The name JUST failed the charset guard, so it may carry control bytes — NEVER echo it raw into a
+      // terminal/log. Show a sanitized, length-bounded form (the same posture as the unknown-slash echo).
+      const safe = name.replace(/[^A-Za-z0-9._-]/g, '?').slice(0, 64);
       throw new CliError(
         'invalid_invocation',
-        `invalid MCP secret name '${name}' — use only letters, digits, '.', '_' or '-'.`,
+        `invalid MCP secret name '${safe}' — use only letters, digits, '.', '_' or '-'.`,
       );
     }
     // 1. OS keychain — the isolated `mcp-secret:<name>` account (NEVER a provider key). An unavailable backend
