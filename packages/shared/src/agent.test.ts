@@ -266,6 +266,47 @@ describe('McpServerRefSchema', () => {
     ).toBe(true);
   });
 
+  it('rejects the stdio-only fields `command`/`args` on a network transport (strict + symmetric)', () => {
+    // A network transport spawns no child, so command/args are inert; rejecting them keeps the schema strict
+    // and symmetric with the stdio branch (which rejects url/allow_local) and keeps the dedup fingerprint clean.
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'http',
+        url: 'https://docs.example/mcp',
+        command: 'npx',
+      }).success,
+    ).toBe(false);
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'websocket',
+        url: 'wss://docs.example/ws',
+        args: ['--stdio'],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an EMPTY `tools_allowlist` (an empty list silently grants zero tools — omit it to admit all)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        tools_allowlist: [],
+      }).success,
+    ).toBe(false);
+    // A non-empty allowlist still parses.
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        tools_allowlist: ['read'],
+      }).success,
+    ).toBe(true);
+  });
+
   it('rejects `allow_local_endpoint` on a stdio transport (network-only field)', () => {
     expect(
       McpServerRefSchema.safeParse({

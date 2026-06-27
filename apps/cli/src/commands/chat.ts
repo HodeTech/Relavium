@@ -91,6 +91,13 @@ export interface ChatDriveContext {
    * event (the command's own teardown fires the terminal only AFTER the driver has unsubscribed). Idempotent.
    */
   readonly finalize?: () => void;
+  /**
+   * Best-effort teardown to run on a driver's HARD-exit path (the ink driver's second-SIGINT `process.exit`,
+   * which bypasses the command's `runReplLoop` finally). It tears the live MCP connections down so a forced quit
+   * never orphans a spawned stdio child. The command wires it to `built.closeMcp`; a driver awaits it (bounded)
+   * before `process.exit`. Absent ⇒ nothing to force-close.
+   */
+  readonly onForceExit?: () => Promise<void>;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -409,6 +416,9 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the command's own
       // cancelOnce below is then a no-op (idempotent). Other drivers ignore it — the command fires it.
       finalize: cancelOnce,
+      // The ink driver's second-SIGINT hard `process.exit` bypasses the finally below — give it a best-effort
+      // MCP teardown to run first so a forced quit never orphans a spawned stdio child (no-op when no servers).
+      ...(built.closeMcp === undefined ? {} : { onForceExit: built.closeMcp }),
       ...(intro === undefined ? {} : { intro }),
     });
   } finally {

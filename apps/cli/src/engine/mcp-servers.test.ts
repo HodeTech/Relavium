@@ -781,7 +781,13 @@ describe('surfaceMcpSkipped', () => {
     // crafted tool returning ANSI/OSC control bytes must NOT write them raw to the operator's terminal.
     const { io, err } = captureIo();
     surfaceMcpSkipped(io, [
-      { server: 'fs', name: 'evil\x1b[2J\x1b]0;pwned\x07', reason: 'bad\x1b[31m schema\x1b[0m' },
+      // The `server` segment is ALSO sanitized (the by-name `ref` form derives it from a free registration name,
+      // ADR-0052 §4/§5), so feed it control bytes too — all three segments must be scrubbed.
+      {
+        server: 'srv\x1b[2J\x1b]0;x\x07',
+        name: 'evil\x1b[2J\x1b]0;pwned\x07',
+        reason: 'bad\x1b[31m schema\x1b[0m',
+      },
     ]);
     const written = err();
     // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes is the point

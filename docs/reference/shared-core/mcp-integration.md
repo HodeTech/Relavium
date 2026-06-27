@@ -31,7 +31,7 @@ An agent declares the MCP servers it uses in its `mcp_servers` list (see [../con
 4. Results stream back as `agent:tool_result` events (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 5. The host keeps the MCP server connections alive for the session/run duration, then tears them down.
 
-The `mcp_call` built-in tool is the lower-level path for invoking a registered server's tool by name directly from a `tool` node (see [built-in-tools.md](built-in-tools.md)).
+The `mcp_call` built-in tool is the lower-level path for invoking a registered server's tool by name (see [built-in-tools.md](built-in-tools.md)). In Phase-1/2 it is reached as a granted built-in **inside an agent node**; the dedicated `tool`-node form is an engine-internal node type, not yet an authorable workflow node (see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#node-types)).
 
 ### `McpServerRef` shape
 
@@ -58,7 +58,7 @@ mcp_servers:
     tools_allowlist: [read_file]  # the only field allowed alongside `ref`
 ```
 
-The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers); `websocket` uses a `wss://` url. A network `url` is SSRF-guarded (below).
+The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers); `websocket` uses a `wss://` url. A network `url` is SSRF-guarded (below). **`sse` is accepted only on an inline `agent.mcp_servers` entry (the legacy-alias surface) — a `[[mcp_servers]]` config registration takes only `stdio | http | websocket`** (register with `http` instead). The stdio-only fields (`command`/`args`/`env`) are rejected on a network transport, and the network-only fields (`url`/`allow_local_endpoint`) on stdio — symmetric across both schemas.
 
 Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries, so a server can be registered once and referenced **by name** (`ref:`) from many agents. A referenced server connects **on demand** when an agent that uses it starts; the registration's `autostart` field is accepted by the schema but reserved for a future always-on pool (not acted on in 2.R). The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
 
@@ -73,7 +73,7 @@ Server **registrations** also live globally in `~/.relavium/config.toml` under r
 
 > **Not yet shipped (2.R):** tool-list **caching** (re-spawn avoidance via a `(command, args)` hash) is a tracked follow-up — 2.R re-runs `tools/list` on each connect. There is no curated catalog of "built-in" servers either; any server is declared explicitly (a `command: npx …` entry is fetched on first spawn by `npx` itself, not by Relavium). Common choices: `@modelcontextprotocol/server-filesystem`, `…-github`, `…-postgres`, `…-brave-search`, `…-puppeteer`.
 
-On the desktop, stdio MCP servers are managed as child processes by the Rust backend, which owns their lifecycle (start on demand, keep alive for the session, restart on crash). In the CLI and VS Code surfaces the same servers are spawned by the Node.js host. The pooling/lifecycle design narrative is in [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md).
+On the desktop, stdio MCP servers are managed as child processes by the Rust backend, which owns their lifecycle (start on demand, keep alive for the session, restart on crash). In the CLI and VS Code surfaces the same servers are spawned by the Node.js host. The host-side connection-lifecycle narrative (concurrent fail-loud connect, keep-alive, teardown, and the no-pool/no-cache 2.R reality) is in [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md#inbound-mcp-connection-lifecycle).
 
 ## Agents as MCP servers (outbound)
 

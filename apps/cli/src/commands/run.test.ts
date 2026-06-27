@@ -1096,6 +1096,41 @@ describe('runCommand', () => {
     expect(closed).toBe(1); // the connection was torn down at the run terminal
   });
 
+  it('routes an MCP tool RESULT with isError:true through dispatch → engine as a RECOVERABLE error (run still completes)', async () => {
+    // The result contract's recoverable-error arm, end-to-end through the real manager + engine: a server tool that
+    // returns `{ isError: true }` is a tool-LEVEL (recoverable) error — the agent receives it and replies, the run
+    // does NOT fail. (The engine's tool_result event reports transport success; the isError rides in the content.)
+    const path = writeWorkflow('mcp-toolerror.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let calls = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => {
+        calls += 1;
+        return Promise.resolve({
+          content: [{ type: 'text', text: 'the server tool failed internally' }],
+          isError: true,
+        });
+      },
+      close: () => Promise.resolve(),
+    };
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      {
+        io,
+        global: globalOptions(),
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('recovered')]),
+        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success); // the recoverable isError did NOT fail the run
+    expect(calls).toBe(1); // the call routed to the connection and returned the isError result
+  });
+
   it('a failed MCP connect is a clean fail-loud exit-2 CliError (cause stripped) before the engine is built', async () => {
     const path = writeWorkflow('mcp-connect-fail.relavium.yaml', MCP_WF);
     const { io } = captureIo();

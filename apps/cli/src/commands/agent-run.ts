@@ -3,6 +3,8 @@ import { StringDecoder } from 'node:string_decoder';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
+import { startMcpClient } from '@relavium/mcp';
+
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { buildChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -102,6 +104,10 @@ export async function agentRunCommand(
       ? createMcpSecretResolver(deps.io.env)
       : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
     mcpRegistrations: offline ? [] : config.mcpServers,
+    // FULLY offline in `--fixture` mode: even if the agent declares inline stdio `mcp_servers`, never spawn a
+    // real child — inject an empty client (the configs are still built in-memory + env-only, but `open()` is
+    // never called). The cassette already carries any recorded tool results, so the replay needs no live MCP.
+    ...(offline ? { startMcpClient: () => startMcpClient([]) } : {}),
   });
   // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
   // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.

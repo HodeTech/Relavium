@@ -67,13 +67,16 @@ function validateNetworkRegistration(server: McpRegistrationDraft, ctx: z.Refine
       path: ['url'],
     });
   }
-  if (server.env !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
-      path: ['env'],
-    });
+  // Reject the stdio-only fields `command`/`args`/`env` on a network registration — symmetric with the inline
+  // `McpServerRefSchema`; a network transport spawns no child, so they are inert (and would skew the fingerprint).
+  for (const field of ['command', 'args', 'env'] as const) {
+    if (server[field] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${field} is not used by a network transport — it applies only to a stdio server process${field === 'env' ? ' (network header-auth is a follow-up)' : ''}`,
+        path: [field],
+      });
+    }
   }
   if (server.url !== undefined) {
     const schemeOk =

@@ -109,10 +109,12 @@ journeys, not exhaustive logic — exhaustive logic belongs in engine unit tests
 
 ## Coverage expectations
 
-- `packages/core` and `packages/llm`: high line **and branch** coverage (target ≥ 90%),
-  because branch coverage is what catches the error/fallback/edge paths that matter here.
-  Coverage is a floor and a signal, not the goal — an uncovered branch is a question to
-  answer, not a number to game.
+- `packages/core`, `packages/llm`, and `packages/mcp`: high line **and branch** coverage
+  (enforced floor ≥ 90%), because branch coverage is what catches the error/fallback/edge
+  paths that matter here — and `packages/mcp` fences a security-critical seam (the SDK +
+  `node:child_process`) plus the dependency-free JSON-Schema→Zod compiler. Coverage is a
+  floor and a signal, not the goal — an uncovered branch is a question to answer, not a
+  number to game.
 - Every bug fix lands with a regression test that fails before the fix.
 - Surfaces (`apps/*`, `packages/ui`): smoke + critical-journey coverage; deep logic is
   pushed down into the engine and tested there.

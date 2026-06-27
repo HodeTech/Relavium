@@ -148,10 +148,17 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
   return nullableFlag ? base.nullable() : base;
 }
 
-/** `const` → a single literal; `enum` → a union of literal members (budget-charged); neither ⇒ `undefined`. */
+/** `const` → a single literal; `enum` → a union of literal members (budget-charged); BOTH ⇒ their INTERSECTION
+ *  (JSON-Schema semantics: both value-constraints must hold, so a contradictory pair accepts nothing); neither ⇒
+ *  `undefined`. */
 function readConstOrEnum(node: Record<string, unknown>, budget: Budget): z.ZodTypeAny | undefined {
-  if ('const' in node) return literalSchema(node['const']);
-  if ('enum' in node) return enumSchema(node['enum'], budget);
+  const hasConst = 'const' in node;
+  const hasEnum = 'enum' in node;
+  if (hasConst && hasEnum) {
+    return z.intersection(literalSchema(node['const']), enumSchema(node['enum'], budget));
+  }
+  if (hasConst) return literalSchema(node['const']);
+  if (hasEnum) return enumSchema(node['enum'], budget);
   return undefined;
 }
 

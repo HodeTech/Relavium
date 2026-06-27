@@ -464,8 +464,11 @@ export async function connectWorkflowMcp(
     };
     return { client, workflow };
   } catch (err) {
-    // The connection is live but assembling the augmented workflow failed — tear it down so a spawned child /
-    // open socket never leaks past this throw (uniform all-or-nothing with the self-cleaning chat builders).
+    // DEFENSIVE: the augmentation above is pure today (map + spreads + a regex `sanitizeServerSegment`) and
+    // cannot throw — the genuinely-throwing assembly (resolveServerConfigs / the dedup) ran BEFORE the client
+    // was opened. This guard exists so that if a future throwing transform is added here, the live connection is
+    // torn down rather than leaked (uniform all-or-nothing with the self-cleaning chat builders), not because the
+    // current body throws. Do not assume `withWorkflowMcpGrant` can fail.
     await client.close();
     throw err;
   }

@@ -81,8 +81,11 @@ autostart = true                   # accepted, reserved for a future always-on p
 
 A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
 `websocket`); the url is SSRF-guarded (a private/loopback host is rejected unless `allow_local_endpoint` is set;
-a remote host must be `https`/`wss`) and must not embed credentials. An agent consumes a registration with
-`- ref: filesystem` (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
+a remote host must be `https`/`wss`) and must not embed credentials. A registration's transport is
+**`stdio | http | websocket`** — the deprecated `sse` alias is accepted only on an inline `agent.mcp_servers`
+entry (for older servers), not here; register with `http` instead. The stdio-only fields (`command`/`args`/`env`)
+are rejected on a network registration, and the network-only fields (`url`/`allow_local_endpoint`) on a stdio one.
+An agent consumes a registration with `- ref: filesystem` (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
 ## `project.toml` / `workspace.toml` (project) — keys
 

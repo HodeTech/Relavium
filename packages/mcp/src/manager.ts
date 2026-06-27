@@ -68,24 +68,41 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
     seenServerIds.add(server.id);
   }
 
-  for (const server of servers) {
-    try {
-      const connection = await server.open();
-      connections.set(server.id, connection);
-      const tools = await connection.listTools();
-      const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist, seenToolIds);
-      toolDefs.push(...shaped.defs);
-      toolIdsByServer.set(
-        server.id,
-        shaped.defs.map((def) => def.id),
-      );
-      for (const s of shaped.skipped) {
-        skipped.push({ server: server.id, name: s.name, reason: s.reason });
+  // Connect every server CONCURRENTLY: a slow/hung server no longer serializes startup to N×(its connect bound)
+  // — total startup is now bounded by the SLOWEST single server, not their sum. Each task registers its
+  // connection as soon as `open()` resolves, so a later `listTools()` failure still has it in `connections` for
+  // the fail-loud teardown; and each wraps its own failure into a typed, secret-free error carrying the server id.
+  const settled = await Promise.allSettled(
+    servers.map(async (server) => {
+      try {
+        const connection = await server.open();
+        connections.set(server.id, connection);
+        const tools = await connection.listTools();
+        return { server, tools };
+      } catch (err) {
+        throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
       }
-    } catch (err) {
-      // Fail-loud: tear down everything opened so far, then surface a typed, secret-free error.
-      await closeAll(connections);
-      throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
+    }),
+  );
+  const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failure !== undefined) {
+    // Fail-loud: tear down everything opened, then surface the (already typed + secret-free) first failure.
+    await closeAll(connections);
+    throw failure.reason;
+  }
+  // Assemble the tool defs in DECLARATION order (not connect-completion order) so the cross-server namespacing +
+  // collision resolution (shared `seenToolIds`, first-wins) stays deterministic regardless of who connected first.
+  for (const result of settled) {
+    if (result.status !== 'fulfilled') continue; // unreachable — a rejection already threw above
+    const { server, tools } = result.value;
+    const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist, seenToolIds);
+    toolDefs.push(...shaped.defs);
+    toolIdsByServer.set(
+      server.id,
+      shaped.defs.map((def) => def.id),
+    );
+    for (const s of shaped.skipped) {
+      skipped.push({ server: server.id, name: s.name, reason: s.reason });
     }
   }
 

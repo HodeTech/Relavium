@@ -128,6 +128,33 @@ nodes and joins them at aggregator/merge points. Each node type maps to a handle
 How a single run progresses node-by-node — including streaming and the human gate
 — is covered in [execution-model.md](execution-model.md).
 
+## Inbound MCP connection lifecycle
+
+The engine consumes external MCP servers' tools, but it never owns the connection — the
+**host** does (the CLI/VS Code Node process, or the desktop Rust backend), so `packages/core`
+stays platform-pure and never imports the SDK or `node:child_process`
+([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §1).
+The lifecycle, as shipped in 2.R:
+
+- **Connect (host, at session/run start).** The host resolves each declared server, then
+  connects them **concurrently** and **fail-loud** (a failed spawn or `tools/list` fails the
+  whole start — never a silent capability loss; a partial connect tears down everything
+  opened). It namespaces the discovered tools as `mcp_{server}_{tool}`, narrows by any
+  `tools_allowlist`, fails a post-namespace collision closed, and hands the engine the
+  assembled `ToolDef`s + an `McpCapability` it routes through.
+- **Keep-alive (for the session/run duration).** Connections stay open; the engine routes
+  each tool call through `host.mcp.call`. There is **no cross-invocation pool or tool-list
+  cache yet** (each process re-runs discovery on connect) and the registration `autostart`
+  field is **reserved, not acted on** — a referenced server connects on demand.
+- **Teardown (at the terminal).** The host closes the connections after the session/run's
+  sole terminal — idempotent, best-effort, and never allowed to mask the run outcome (the
+  CLI's force-quit path also tears them down so a spawned stdio child is never orphaned).
+
+The full contract (the `McpServerRef` shape, the SSRF floor, named secrets, the transport
+vocabulary) lives in its canonical home,
+[../reference/shared-core/mcp-integration.md](../reference/shared-core/mcp-integration.md);
+this section is only the connection-lifecycle narrative that page points back to.
+
 ## The orchestrator-as-node concept
 
 Relavium supports two complementary control styles in the *same* engine:

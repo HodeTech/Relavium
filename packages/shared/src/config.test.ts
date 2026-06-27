@@ -139,6 +139,19 @@ describe('config schemas', () => {
     ).toBe(true);
   });
 
+  it('rejects the stdio-only fields `command`/`args` on a network MCP registration (symmetric with the inline schema)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'docs', transport: 'http', url: 'https://h/mcp', command: 'npx' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'docs', transport: 'websocket', url: 'wss://h/ws', args: ['--x'] }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects a stray `url` on a stdio MCP registration (network-only — matches the inline ref schema)', () => {
     // The inline `McpServerRefSchema` rejects a url on stdio; the registration schema must agree so a committed
     // config can't carry a mis-declared stdio server (its scheme is irrelevant — its mere presence is the error).

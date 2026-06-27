@@ -127,8 +127,9 @@ function validateStdioFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): void
   }
 }
 
-/** Inline network (`http`/`sse`/`websocket`): needs a `url` (scheme-checked, credential-free), and rejects `env`
- *  (no child process to inject into — 2.R wires `env` ONLY into a stdio spawn; network header-auth is a follow-up). */
+/** Inline network (`http`/`sse`/`websocket`): needs a `url` (scheme-checked, credential-free), and rejects the
+ *  stdio-only fields `command`/`args`/`env` — a network transport spawns no child, so they are inert; rejecting
+ *  them keeps the schema strict + symmetric with the stdio branch and keeps `serverFingerprint` clean. */
 function validateNetworkFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
   if (!ref.url) {
     ctx.addIssue({
@@ -137,13 +138,14 @@ function validateNetworkFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): vo
       path: ['url'],
     });
   }
-  if (ref.env !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
-      path: ['env'],
-    });
+  for (const field of ['command', 'args', 'env'] as const) {
+    if (ref[field] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${field} is not used by a network transport — it applies only to a stdio server process${field === 'env' ? ' (network header-auth is a follow-up)' : ''}`,
+        path: [field],
+      });
+    }
   }
   if (ref.url !== undefined) {
     // Per-transport scheme: `websocket` is WS(S); `http`/`sse` are HTTP(S). Also blocks file:/javascript:/etc.
@@ -191,7 +193,12 @@ export const McpServerRefSchema = z
     // SSRF range-block AND permits plaintext for THAT local endpoint only. Network transports only.
     allow_local_endpoint: z.boolean().optional(),
     ref: nonEmptyString.optional(),
-    tools_allowlist: z.array(nonEmptyString).optional(),
+    // A declared allowlist must name at least one tool — an empty `[]` would silently grant the agent ZERO tools
+    // from that server (a footgun); OMIT the field to admit all discovered tools.
+    tools_allowlist: z
+      .array(nonEmptyString)
+      .min(1, 'tools_allowlist must name at least one tool (omit it to admit all)')
+      .optional(),
   })
   .strict()
   .superRefine((ref, ctx) => {

@@ -160,6 +160,74 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
     }
   });
 
+  it('run host: TWO agents each declaring a distinct server get ONLY their own tools (cross-agent isolation)', async () => {
+    // The run path's distinctive property, proven against REAL spawns: agent `a` declares `echo-a`, agent `b`
+    // declares `echo-b` (both spawn the same fixture under distinct ids). Each agent's grant must contain ONLY
+    // its own server's namespaced ids — never the other's — so a second agent can't reach a server it didn't ask for.
+    const node = process.execPath;
+    const def = parseWorkflow(
+      [
+        "schema_version: '1.0'",
+        'workflow:',
+        '  id: wf',
+        '  agents:',
+        '    - id: a',
+        '      model: claude-sonnet-4-6',
+        '      provider: anthropic',
+        '      system_prompt: go',
+        '      mcp_servers:',
+        `        - { id: echo-a, transport: stdio, command: ${JSON.stringify(node)}, args: [${JSON.stringify(FIXTURE)}] }`,
+        '    - id: b',
+        '      model: claude-sonnet-4-6',
+        '      provider: anthropic',
+        '      system_prompt: go',
+        '      mcp_servers:',
+        `        - { id: echo-b, transport: stdio, command: ${JSON.stringify(node)}, args: [${JSON.stringify(FIXTURE)}] }`,
+        '  nodes:',
+        '    - { id: s, type: input }',
+        '    - { id: na, type: agent, agent_ref: a, prompt_template: go }',
+        '    - { id: nb, type: agent, agent_ref: b, prompt_template: go }',
+        '    - { id: o, type: output }',
+        '  edges:',
+        '    - { from: s, to: na }',
+        '    - { from: na, to: nb }',
+        '    - { from: nb, to: o }',
+        '',
+      ].join('\n'),
+    );
+
+    const runtime = defined(
+      await connectWorkflowMcp(def, { cwd: process.cwd() }),
+      'workflow runtime',
+    );
+    try {
+      const agents = runtime.workflow.workflow.agents ?? [];
+      const agentA = defined(
+        agents.find((e): e is Agent => 'id' in e && e.id === 'a'),
+        'agent a',
+      );
+      const agentB = defined(
+        agents.find((e): e is Agent => 'id' in e && e.id === 'b'),
+        'agent b',
+      );
+      // Each agent sees ONLY its own server's namespaced ids — the other's are absent (per-agent isolation).
+      expect([...(agentA.tools ?? [])].sort()).toEqual([
+        'mcp_echo-a_add',
+        'mcp_echo-a_echo',
+        'mcp_echo-a_whoami',
+      ]);
+      expect([...(agentB.tools ?? [])].sort()).toEqual([
+        'mcp_echo-b_add',
+        'mcp_echo-b_echo',
+        'mcp_echo-b_whoami',
+      ]);
+      expect((agentA.tools ?? []).some((t) => t.startsWith('mcp_echo-b_'))).toBe(false);
+      expect((agentB.tools ?? []).some((t) => t.startsWith('mcp_echo-a_'))).toBe(false);
+    } finally {
+      await runtime.client.close();
+    }
+  });
+
   it('chat host: resolves {{secrets.*}} into the spawned child env (the last hop of the secret-custody chain)', async () => {
     // The secret custody chain end-to-end against a REAL process: a `{{secrets.t}}` env placeholder is resolved
     // by the injected resolver, the host injects it into the spawned child's env, and the child's `whoami` tool
