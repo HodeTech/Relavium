@@ -153,6 +153,15 @@ export const McpServerRefSchema = z
           path: ['url'],
         });
       }
+      // `allow_local_endpoint` is a network-only SSRF opt-in — reject it on stdio (mirrors the `url` guard).
+      if (ref.allow_local_endpoint !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
+          path: ['allow_local_endpoint'],
+        });
+      }
     }
     if (ref.transport !== 'stdio' && !ref.url) {
       ctx.addIssue({

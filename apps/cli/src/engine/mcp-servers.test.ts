@@ -166,6 +166,21 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
     }
   });
 
+  it('rejects canonical SSRF bypass-encodings of a loopback host (the shared primitive normalizes them)', () => {
+    // Lock the gate's host-extraction + the reuse of `isPrivateOrLocalHost` against an encoding-based bypass.
+    for (const url of [
+      'http://2130706433/mcp', // decimal 127.0.0.1
+      'http://0x7f000001/mcp', // hex 127.0.0.1
+      'http://0177.0.0.1/mcp', // octal-leading 127.0.0.1
+      'http://127.1/mcp', // inet_aton short form
+      'http://LOCALHOST./mcp', // uppercase + trailing FQDN dot
+      'http://[::ffff:127.0.0.1]/mcp', // IPv4-mapped IPv6
+      'http://0.0.0.0/mcp', // the "this host" wildcard
+    ]) {
+      expect(() => build({ url })).toThrow(/private\/loopback/);
+    }
+  });
+
   it('permits a private/loopback endpoint AND plaintext WITH allow_local_endpoint', () => {
     expect(build({ url: 'http://localhost:4000/mcp', allow_local_endpoint: true })).toHaveLength(1);
     expect(
@@ -426,6 +441,21 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     await expect(
       connectWorkflowMcp(absentVsNarrow, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+    ).rejects.toThrow(/conflicting settings/);
+  });
+
+  it('fails loud when two agents share a server id but DIFFER on allow_local_endpoint (no silent opt-in sharing)', async () => {
+    // The SSRF opt-in is part of the server identity (ADR-0053 §3): one agent's allow_local_endpoint must NOT be
+    // silently inherited by another sharing the id — the divergent pair fails loud.
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: local, transport: http, url: "http://localhost:4000/mcp", allow_local_endpoint: true }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: local, transport: http, url: "http://localhost:4000/mcp" }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
     ).rejects.toThrow(/conflicting settings/);
   });
 

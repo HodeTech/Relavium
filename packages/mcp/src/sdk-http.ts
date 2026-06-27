@@ -34,7 +34,12 @@ export async function openHttpConnection(
   }
   // The SDK's StreamableHTTP transport declares `get sessionId(): string | undefined`, which TS rejects against
   // `Transport.sessionId?: string` under exactOptionalPropertyTypes — a vendor getter-vs-interface inconsistency,
-  // not a real incompatibility (the class `implements Transport`). Assert to the interface it implements.
-  const transport: Transport = new StreamableHTTPClientTransport(endpoint) as Transport;
+  // not a real incompatibility (the class `implements Transport`). Rather than a whole-object `as Transport`
+  // (which would also silently mask a future MISSING-method drift), narrow to the load-bearing methods: those ARE
+  // the only required `Transport` members, so the value still satisfies `Transport` (its optionals may be absent)
+  // WITHOUT the getter comparison, and this assignment compile-guards against a dropped method on an SDK upgrade.
+  const transport: Pick<Transport, 'start' | 'send' | 'close'> = new StreamableHTTPClientTransport(
+    endpoint,
+  );
   return connectSdkTransport(serverId, transport);
 }

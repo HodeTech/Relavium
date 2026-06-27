@@ -246,6 +246,17 @@ describe('McpServerRefSchema', () => {
     ).toBe(true);
   });
 
+  it('rejects `allow_local_endpoint` on a stdio transport (network-only field)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        allow_local_endpoint: true,
+      }).success,
+    ).toBe(false);
+  });
+
   describe('by-name `ref` form (ADR-0052 §5)', () => {
     it('accepts a bare { ref } and { ref, tools_allowlist } (the registration provides the connection)', () => {
       expect(McpServerRefSchema.safeParse({ ref: 'github' }).success).toBe(true);

@@ -220,8 +220,14 @@ export function resolveServerConfigs(
  * link-local/metadata host is rejected UNLESS `allow_local_endpoint` is set (which, for that local endpoint,
  * also permits plaintext `http`/`ws` — a local-dev server is typically plaintext); a **remote** host must use
  * `https`/`wss` regardless of the flag. The no-embedded-credentials check is enforced here too (the flag never
- * relaxes it). This is the host-validated FLOOR; the SDK transport opens its own socket, so the DNS-rebind
- * connect-by-validated-IP upgrade is a tracked follow-up (deferred-tasks.md).
+ * relaxes it).
+ *
+ * **Scope (ADR-0053 §3 / SEC-EGRESS-3):** the opt-in relaxes exactly the **authored `host:port`** — the SDK
+ * transport dials precisely the validated `url`, so today the relaxation cannot reach a sibling private port
+ * (e.g. `:6379`/`:22`) on the same host. This is the host-validated **FLOOR**: it checks the AUTHORED host, so a
+ * hostname that DNS-resolves to a private IP, and a redirect-to-private, are NOT caught here — the
+ * connect-by-validated-IP dialer + per-hop re-validation (which **must** re-block any resolved/redirected
+ * `host:port` other than the authored one) is the tracked follow-up (deferred-tasks.md).
  */
 function assertSafeNetworkEndpoint(serverId: string, url: string, allowLocal: boolean): void {
   let parsed: URL;
@@ -444,7 +450,9 @@ function withWorkflowMcpGrant(
  * to whichever was declared first, granting BOTH agents the union (a privilege escalation past the narrower
  * agent's own declared `tools_allowlist`, violating ADR-0029 narrow-only). Including it makes that pair fail
  * loud, forcing the author to align the allowlists or give the distinct servers distinct ids. `undefined`
- * (all-tools) is a distinct sentinel from `[]` (none).
+ * (all-tools) is a distinct sentinel from `[]` (none). **`allow_local_endpoint` is part of the identity too**
+ * (ADR-0053 §3): a same-id pair where one opts into a local endpoint and the other does not would otherwise
+ * collapse first-wins, silently granting (or denying) BOTH the SSRF relaxation — so it must fail loud.
  */
 function serverFingerprint(ref: McpServerRef): string {
   const env = Object.entries(ref.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -459,6 +467,7 @@ function serverFingerprint(ref: McpServerRef): string {
     u: ref.url ?? null,
     e: env,
     w: allowlist,
+    l: ref.allow_local_endpoint ?? false,
   });
 }
 
