@@ -154,6 +154,17 @@ describe('McpServerRefSchema', () => {
     expect(McpServerRefSchema.safeParse({ id: 'github', transport: 'stdio' }).success).toBe(false);
   });
 
+  it('rejects a stray url on a stdio transport (a mis-declared server fails at parse)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'github',
+        transport: 'stdio',
+        command: 'npx',
+        url: 'https://host/mcp',
+      }).success,
+    ).toBe(false);
+  });
+
   it('requires url for sse / websocket transports', () => {
     expect(
       McpServerRefSchema.safeParse({

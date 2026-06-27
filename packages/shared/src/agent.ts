@@ -126,12 +126,22 @@ export const McpServerRefSchema = z
       });
       return; // the per-transport checks below need a transport
     }
-    if (ref.transport === 'stdio' && !ref.command) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "command is required for the 'stdio' transport",
-        path: ['command'],
-      });
+    if (ref.transport === 'stdio') {
+      if (!ref.command) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "command is required for the 'stdio' transport",
+          path: ['command'],
+        });
+      }
+      // A stdio server has no `url` — reject a stray one (a mis-declared server fails at parse, secure-by-default).
+      if (ref.url !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "url is not used by the 'stdio' transport",
+          path: ['url'],
+        });
+      }
     }
     if (ref.transport !== 'stdio' && !ref.url) {
       ctx.addIssue({
@@ -213,8 +223,11 @@ export const AgentSchema = z
   .strict()
   .superRefine((agent, ctx) => {
     // MCP server identities must be unique within an agent (they namespace the registered tools). The identity
-    // is the inline `id` or, for a by-name entry, the `ref` registration name — both resolve to one server. (The
-    // `superRefine` on each ref guarantees exactly one is present; the filter only narrows the type for TS.)
+    // here is the EXACT inline `id` or by-name `ref` registration name. This catches the common exact-duplicate
+    // case at parse; a host-side *sanitization* collision (two distinct free-form registration names that map to
+    // the same namespace segment, e.g. `a.b` and `a b`) is NOT visible to the schema and is caught fail-loud at
+    // discovery instead (ADR-0052 §4 — the manager's duplicate-id/collision guards). (The `superRefine` on each
+    // ref guarantees exactly one of `ref`/`id` is present; the filter only narrows the type for TS.)
     const ids = (agent.mcp_servers ?? [])
       .map((server) => server.ref ?? server.id)
       .filter((identity): identity is string => identity !== undefined);
