@@ -17,7 +17,7 @@ import {
   runMigrations,
   type Db,
 } from '@relavium/db';
-import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
+import { McpError, startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1094,6 +1094,38 @@ describe('runCommand', () => {
     expect(calls).toEqual([{ name: 'read', args: {} }]); // the agent's MCP call routed to the connection
     expect(err()).toContain("MCP tool 'danger'"); // the allowlist-dropped tool surfaced on stderr
     expect(closed).toBe(1); // the connection was torn down at the run terminal
+  });
+
+  it('a failed MCP connect is a clean fail-loud exit-2 CliError (cause stripped) before the engine is built', async () => {
+    const path = writeWorkflow('mcp-connect-fail.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let engineBuilt = false;
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('unused')]),
+          buildEngine: () => {
+            engineBuilt = true;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+          // The connect fails — `connectWorkflowMcp` runs BEFORE the engine is built, so this fails loud first.
+          startMcpClient: () => Promise.reject(new McpError('spawn failed for "fs"')),
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation'); // a clean exit-2 invocation fault
+      expect(caught.message).toContain('spawn failed for "fs"'); // the secret-free MCP summary
+    }
+    expect((caught as Error).cause).toBeUndefined(); // the opaque MCP cause chain is never attached
+    expect(engineBuilt).toBe(false); // the connect failed before the engine was ever built (no leak)
   });
 
   it('tears the MCP connection down even when the engine fails AFTER a successful connect (run-terminal teardown)', async () => {
