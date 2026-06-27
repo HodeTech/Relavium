@@ -408,6 +408,82 @@ describe('buildResumedChatSession (2.N)', () => {
       /no stored agent snapshot/,
     );
   });
+
+  describe('MCP re-discovery on resume (2.R)', () => {
+    // The snapshot stores the AUTHOR's agent (mcp_servers, NOT the dynamic ids); resume re-discovers fresh.
+    const mcpSnapshot = {
+      ...RESUME_AGENT,
+      mcp_servers: [{ id: 'fs', transport: 'stdio' as const, command: 'my-server' }],
+    };
+
+    it('re-discovers the snapshot mcp_servers: original grant returned, the discovered tool routes, teardown closes', async () => {
+      const calls: { name: string; args: unknown }[] = [];
+      let closed = 0;
+      const conn: McpConnection = {
+        listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+        callTool: (name, args) => {
+          calls.push({ name, args });
+          return Promise.resolve({ content: [{ type: 'text', text: 'ok' }], isError: false });
+        },
+        close: () => {
+          closed += 1;
+          return Promise.resolve();
+        },
+      };
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record({ agentSnapshot: mcpSnapshot }),
+        messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+        startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+      });
+
+      // The RETURNED agent is the ORIGINAL snapshot — its grant is not baked with the dynamic id, and it still
+      // carries mcp_servers so a FUTURE resume re-discovers again (the persistence contract).
+      expect(built.agent.tools).toEqual(mcpSnapshot.tools);
+      expect(built.agent.mcp_servers).toEqual(mcpSnapshot.mcp_servers);
+      expect(typeof built.closeMcp).toBe('function');
+
+      // A resumed session is already idle — no start(); sendMessage continues. The call routing PROVES
+      // withMcpGrant ran on the snapshot agent (else the call would be denied not_granted).
+      await built.session.sendMessage('go');
+      built.session.cancel();
+      const events = await drainHandle(built.handle.events);
+      const toolCall = events.find((e) => e.type === 'agent:tool_call');
+      expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('mcp_fs_read');
+      expect(calls).toEqual([{ name: 'read', args: {} }]);
+
+      await built.closeMcp?.();
+      expect(closed).toBe(1);
+    });
+
+    it('self-cleans on resume: a post-connect construction fault tears the just-connected client down', async () => {
+      const { defs } = buildServerToolDefs('fs', [
+        { name: 'read', inputSchema: { type: 'object' } },
+      ]);
+      let closed = 0;
+      const collidingClient: McpClient = {
+        capability: { call: () => Promise.resolve({ content: [], isError: false }) },
+        toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws post-connect
+        skipped: [],
+        close: () => {
+          closed += 1;
+          return Promise.resolve();
+        },
+      };
+      const building = buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record({ agentSnapshot: mcpSnapshot }),
+        messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([textTurn('unused')]),
+        startMcpClient: () => Promise.resolve(collidingClient),
+      });
+      await expect(building).rejects.toThrow(/duplicate tool id/);
+      expect(closed).toBe(1);
+    });
+  });
 });
 
 describe('buildGovernorWiring', () => {

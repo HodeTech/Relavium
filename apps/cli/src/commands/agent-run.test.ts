@@ -5,6 +5,9 @@ import { Readable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
+
+import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn, unresolvedResolver } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
@@ -82,6 +85,45 @@ describe('agentRunCommand (2.Q)', () => {
     });
     expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
     expect(out()).toContain('the summary');
+  });
+
+  it('an MCP-declaring agent: surfaces dropped tools to stderr and tears the connection down after the turn (2.R)', async () => {
+    // The one-shot's OWN command-level MCP wiring: surfaceMcpSkipped (→ stderr, not the --json stdout) + the
+    // closeMcp teardown in the finally. Drives the REAL buildChatSession over a fake connection (no spawn).
+    writeFileSync(
+      join(cwd, 'mcp.agent.yaml'),
+      `${AGENT_YAML}\nmcp_servers:\n  - id: fs\n    transport: stdio\n    command: x`,
+    );
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () =>
+        Promise.resolve([
+          { name: 'read', inputSchema: { type: 'object' } },
+          { name: 'danger', inputSchema: { type: 'object' } },
+        ]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    const { d, out, err } = deps('go', { providers: scriptedResolver([textTurn('done')]) });
+    const buildSession: typeof buildChatSession = (o) =>
+      buildChatSession({
+        ...o,
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      });
+    const code = await agentRunCommand(
+      { agent: join(cwd, 'mcp.agent.yaml'), input: [] },
+      { ...d, buildSession },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(err()).toContain("MCP tool 'danger'"); // the allowlist-dropped tool note went to stderr
+    expect(out()).not.toContain('danger'); // …never to stdout (the --json stream stays pure)
+    expect(closed).toBe(1); // the connection was torn down once, after the turn (finally)
   });
 
   it('emits a pure NDJSON session stream under --json (no human chrome, no key leak)', async () => {
