@@ -15,7 +15,13 @@ import {
   type ToolHost,
 } from '@relavium/core';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
-import type { AgentSessionRecord, Budget, SessionContext, SessionMessage } from '@relavium/shared';
+import type {
+  AgentSessionRecord,
+  Budget,
+  McpServerRegistration,
+  SessionContext,
+  SessionMessage,
+} from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { connectAgentMcp } from '../engine/mcp-servers.js';
@@ -64,6 +70,11 @@ export interface BuildChatSessionOptions {
    * is rejected loud.
    */
   readonly mcpSecretResolver?: McpSecretResolver;
+  /**
+   * The merged config `[[mcp_servers]]` registrations (2.R Step 4b) — resolves a by-name `{ ref }` server
+   * entry on the bound agent. Absent ⇒ a `ref` entry fails loud.
+   */
+  readonly mcpRegistrations?: readonly McpServerRegistration[];
   /**
    * Session-scoped `{{ctx.*}}` variables (plaintext, NO secrets — agent-session-spec.md §Tools). `relavium
    * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
@@ -194,6 +205,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     cwd: opts.cwd,
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
   });
 
   try {
@@ -273,6 +285,8 @@ export interface BuildResumedChatSessionOptions {
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
   /** Resolve `{{secrets.<name>}}` in an MCP server `env` (2.R Step 4; see {@link BuildChatSessionOptions.mcpSecretResolver}). */
   readonly mcpSecretResolver?: McpSecretResolver;
+  /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
+  readonly mcpRegistrations?: readonly McpServerRegistration[];
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
 }
@@ -307,6 +321,7 @@ export async function buildResumedChatSession(
     cwd: context.workingDir,
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
   });
 
   try {

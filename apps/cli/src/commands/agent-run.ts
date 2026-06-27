@@ -97,6 +97,7 @@ export async function agentRunCommand(
     uuid,
     providers,
     mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+    mcpRegistrations: config.mcpServers,
   });
   // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
   // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.

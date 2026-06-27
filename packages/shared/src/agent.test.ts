@@ -211,4 +211,46 @@ describe('McpServerRefSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('accepts the reconciled `http` (Streamable HTTP) transport with an http(s) url (ADR-0052 §5)', () => {
+    expect(
+      McpServerRefSchema.safeParse({ id: 'docs', transport: 'http', url: 'https://host/mcp' })
+        .success,
+    ).toBe(true);
+    expect(McpServerRefSchema.safeParse({ id: 'docs', transport: 'http' }).success).toBe(false); // needs url
+    expect(
+      McpServerRefSchema.safeParse({ id: 'docs', transport: 'http', url: 'wss://host/mcp' })
+        .success,
+    ).toBe(false); // http → http(s), not ws(s)
+  });
+
+  describe('by-name `ref` form (ADR-0052 §5)', () => {
+    it('accepts a bare { ref } and { ref, tools_allowlist } (the registration provides the connection)', () => {
+      expect(McpServerRefSchema.safeParse({ ref: 'github' }).success).toBe(true);
+      expect(
+        McpServerRefSchema.safeParse({ ref: 'github', tools_allowlist: ['create_issue'] }).success,
+      ).toBe(true);
+    });
+
+    it('rejects a `ref` mixed with ANY inline connection field (mutual exclusivity)', () => {
+      for (const inline of [
+        { id: 'gh' },
+        { transport: 'stdio' as const },
+        { command: 'npx' },
+        { args: ['-y', 'pkg'] },
+        { env: { TOKEN: 'x' } },
+        { url: 'https://h/mcp' },
+      ]) {
+        expect(McpServerRefSchema.safeParse({ ref: 'github', ...inline }).success).toBe(false);
+      }
+    });
+
+    it('rejects an inline entry missing id or transport (a ref is the only way to omit them)', () => {
+      expect(McpServerRefSchema.safeParse({ transport: 'stdio', command: 'npx' }).success).toBe(
+        false,
+      ); // no id
+      expect(McpServerRefSchema.safeParse({ id: 'gh', command: 'npx' }).success).toBe(false); // no transport
+      expect(McpServerRefSchema.safeParse({}).success).toBe(false); // neither inline nor ref
+    });
+  });
 });

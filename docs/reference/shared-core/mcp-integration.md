@@ -35,22 +35,28 @@ The `mcp_call` built-in tool is the lower-level path for invoking a registered s
 
 ### `McpServerRef` shape
 
-In an agent (or workflow) declaration, each entry is an `McpServerRef`:
+In an **agent** declaration (`agent.mcp_servers`), each entry is an `McpServerRef` — one of two mutually-exclusive forms ([ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5):
 
 ```yaml
 mcp_servers:
+  # 1. INLINE — self-contained
   - id: github
-    transport: stdio              # stdio | sse | websocket
+    transport: stdio              # stdio | http | websocket   (sse = deprecated alias of http)
     command: npx                  # stdio: the server binary
     args: ['-y', '@modelcontextprotocol/server-github']
     env:                          # env vars injected into the server process
-      GITHUB_TOKEN: '{{secrets.github_token}}'
+      GITHUB_TOKEN: '{{secrets.github_token}}'   # resolved from the isolated mcp-secret:* keychain (§6)
   - id: docs
-    transport: sse                # sse / websocket use url instead of command
-    url: 'http://localhost:4000/mcp'
+    transport: http               # http (Streamable HTTP) / websocket use `url` instead of `command`
+    url: 'https://docs.example/mcp'
+  # 2. BY-NAME `ref` — identity + connection come from a [[mcp_servers]] registration
+  - ref: shared-fs                # mutually exclusive with id/transport/command/url/env
+    tools_allowlist: [read_file]  # the only field allowed alongside `ref`
 ```
 
-Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries (with `autostart`), so a server can be registered once and referenced by id from many agents. The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
+The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers); `websocket` uses a `wss://` url. A network `url` is SSRF-guarded (below).
+
+Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries (with `autostart`), so a server can be registered once and referenced **by name** (`ref:`) from many agents. The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
 
 ### Tool discovery
 
@@ -85,7 +91,7 @@ import { createMcpAdapter } from '@relavium/core/mcp';
 
 const adapter = createMcpAdapter(engine, {
   workflows: ['security-review', 'refactor-agent'],
-  transport: 'stdio',   // or 'sse'
+  transport: 'stdio',   // or 'http' / 'websocket' (outbound is a later workstream)
 });
 adapter.listen();        // registers each workflow as an MCP tool
 ```

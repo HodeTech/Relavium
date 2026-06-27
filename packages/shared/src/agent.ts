@@ -55,35 +55,77 @@ export const RetrySchema = z
   .strict();
 export type Retry = z.infer<typeof RetrySchema>;
 
-/** Transport for an agent-declared MCP server (mcp-integration.md). */
-export const McpTransportSchema = z.enum(['stdio', 'sse', 'websocket']);
+/**
+ * Transport for an agent-declared MCP server (mcp-integration.md), reconciled to the current MCP spec
+ * ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5): `http` is the
+ * **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias**
+ * of `http` (the legacy HTTP+SSE transport, accepted for older servers). Both schemas (this + the config
+ * `McpServerRegistrationSchema`) converge on `stdio | http | websocket`.
+ */
+export const McpTransportSchema = z.enum(['stdio', 'http', 'websocket', 'sse']);
 
 /** Allowed URL schemes for a network MCP server — never file:/javascript:/etc. */
 const SAFE_MCP_URL = /^(https?|wss?):\/\//i;
 
+/** The inline connection fields a by-name `ref` must NOT carry (the registration provides them). */
+const INLINE_CONNECTION_FIELDS = ['id', 'transport', 'command', 'args', 'env', 'url'] as const;
+
 /**
- * A reference to an MCP server an agent consumes (`McpServerRef`). The transport
- * dictates which connection field is required (mcp-integration.md): `stdio` needs a
- * `command`; `sse`/`websocket` need a `url`. Enforced at the contract boundary so a
- * mis-declared server is rejected at parse time, not at engine connect time.
+ * A reference to an MCP server an agent consumes (`McpServerRef`) — one of two mutually-exclusive forms
+ * ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5):
  *
- * Intentionally distinct from the **config-level** `McpServerRegistrationSchema`
- * (config.ts), which *registers* a server by `name` with a `stdio | http` transport
- * (config-spec.md). These are separate contracts (agent consumption vs global
- * registration) and are kept apart on purpose rather than factored together.
+ * - **Inline**: a self-contained `{ id, transport, … }` where the transport dictates the required connection
+ *   field — `stdio` needs a `command`; `http`/`sse`/`websocket` need a `url`.
+ * - **By-name `ref`**: `{ ref: <registration-name>, tools_allowlist? }` — identity AND connection come from a
+ *   config `[[mcp_servers]]` registration (config.ts), so the inline `id`/`transport`/`command`/`url`/`env`
+ *   fields are forbidden (the registration provides them). This realizes "register once, reference from many
+ *   agents"; the host resolves the `ref` against the merged config at connect time.
+ *
+ * Enforced at the contract boundary so a mis-declared server is rejected at parse time, not at engine connect time.
  */
 export const McpServerRefSchema = z
   .object({
-    id: kebabIdSchema,
-    transport: McpTransportSchema,
+    id: kebabIdSchema.optional(),
+    transport: McpTransportSchema.optional(),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
     url: z.string().url().optional(),
+    ref: nonEmptyString.optional(),
     tools_allowlist: z.array(nonEmptyString).optional(),
   })
   .strict()
   .superRefine((ref, ctx) => {
+    // The by-name `ref` form: identity + connection come from the registration; inline fields are forbidden.
+    if (ref.ref !== undefined) {
+      for (const field of INLINE_CONNECTION_FIELDS) {
+        if (ref[field] !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `'${field}' is not allowed with 'ref' — the [[mcp_servers]] registration provides it`,
+            path: [field],
+          });
+        }
+      }
+      return;
+    }
+    // The inline form: `id` + `transport` are required (a `ref` is the only way to omit them).
+    if (ref.id === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "an inline server requires 'id' (or use 'ref' to reference a [[mcp_servers]] registration)",
+        path: ['id'],
+      });
+    }
+    if (ref.transport === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "an inline server requires 'transport' (or use 'ref')",
+        path: ['transport'],
+      });
+      return; // the per-transport checks below need a transport
+    }
     if (ref.transport === 'stdio' && !ref.command) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -91,7 +133,7 @@ export const McpServerRefSchema = z
         path: ['command'],
       });
     }
-    if ((ref.transport === 'sse' || ref.transport === 'websocket') && !ref.url) {
+    if (ref.transport !== 'stdio' && !ref.url) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `url is required for the '${ref.transport}' transport`,
@@ -99,16 +141,17 @@ export const McpServerRefSchema = z
       });
     }
     if (ref.url !== undefined) {
-      // Per-transport scheme: `sse` is HTTP(S), `websocket` is WS(S) (stdio carries no url).
+      // Per-transport scheme: `http`/`sse` are HTTP(S), `websocket` is WS(S) (stdio carries no url).
       // This also blocks file:/javascript:/etc. as a side effect.
       let schemeOk: boolean;
       if (ref.transport === 'websocket') schemeOk = /^wss?:\/\//i.test(ref.url);
-      else if (ref.transport === 'sse') schemeOk = /^https?:\/\//i.test(ref.url);
+      else if (ref.transport === 'http' || ref.transport === 'sse')
+        schemeOk = /^https?:\/\//i.test(ref.url);
       else schemeOk = SAFE_MCP_URL.test(ref.url);
       if (!schemeOk) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `url scheme is invalid for the '${ref.transport}' transport (sse → http(s), websocket → ws(s))`,
+          message: `url scheme is invalid for the '${ref.transport}' transport (http/sse → http(s), websocket → ws(s))`,
           path: ['url'],
         });
       }
@@ -169,8 +212,12 @@ export const AgentSchema = z
   })
   .strict()
   .superRefine((agent, ctx) => {
-    // MCP server ids must be unique within an agent (they namespace the registered tools).
-    const ids = (agent.mcp_servers ?? []).map((server) => server.id);
+    // MCP server identities must be unique within an agent (they namespace the registered tools). The identity
+    // is the inline `id` or, for a by-name entry, the `ref` registration name — both resolve to one server. (The
+    // `superRefine` on each ref guarantees exactly one is present; the filter only narrows the type for TS.)
+    const ids = (agent.mcp_servers ?? [])
+      .map((server) => server.ref ?? server.id)
+      .filter((identity): identity is string => identity !== undefined);
     const duplicates = findDuplicates(ids);
     if (duplicates.length > 0) {
       ctx.addIssue({

@@ -14,17 +14,20 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 /** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
 export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
 
-/** A registered `http` MCP server must use http(s) — never file:/javascript:/etc. */
+/** A registered network MCP server must use http(s) (`http`) or ws(s) (`websocket`) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
+const SAFE_WS_URL = /^wss?:\/\//i;
 
 /**
- * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required
- * connection field: `stdio` needs a `command`; `http` needs a `url`.
+ * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required connection field:
+ * `stdio` needs a `command`; `http` (Streamable HTTP) / `websocket` need a `url`. Reconciled with the agent
+ * `McpServerRefSchema` to one vocabulary — `stdio | http | websocket`
+ * ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5).
  */
 export const McpServerRegistrationSchema = z
   .object({
     name: nonEmptyString,
-    transport: z.enum(['stdio', 'http']),
+    transport: z.enum(['stdio', 'http', 'websocket']),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     autostart: z.boolean().optional(),
@@ -41,30 +44,37 @@ export const McpServerRegistrationSchema = z
         path: ['command'],
       });
     }
-    if (server.transport === 'http' && !server.url) {
+    if (server.transport !== 'stdio' && !server.url) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "url is required for the 'http' transport",
+        message: `url is required for the '${server.transport}' transport`,
         path: ['url'],
       });
     }
-    // SSRF guard: a registered url must be http(s) — reject file:, javascript:, etc.
-    if (server.url !== undefined && !SAFE_HTTP_URL.test(server.url)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'url must use http or https',
-        path: ['url'],
-      });
-    }
-    // Secret hygiene: no credentials embedded in a git-committed url.
-    if (server.url !== undefined && URL_HAS_CREDENTIALS.test(server.url)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
-        path: ['url'],
-      });
+    if (server.url !== undefined) {
+      // SSRF guard: a registered url must use the transport's scheme — reject file:, javascript:, etc.
+      const schemeOk =
+        server.transport === 'websocket'
+          ? SAFE_WS_URL.test(server.url)
+          : SAFE_HTTP_URL.test(server.url);
+      if (!schemeOk) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'url scheme is invalid (http → http(s), websocket → ws(s))',
+          path: ['url'],
+        });
+      }
+      // Secret hygiene: no credentials embedded in a git-committed url.
+      if (URL_HAS_CREDENTIALS.test(server.url)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
+          path: ['url'],
+        });
+      }
     }
   });
+export type McpServerRegistration = z.infer<typeof McpServerRegistrationSchema>;
 
 /** `~/.relavium/config.toml` — global preferences + MCP registrations.
  *  `.strict()`: a typo in a committed config key fails loudly rather than being silently dropped —

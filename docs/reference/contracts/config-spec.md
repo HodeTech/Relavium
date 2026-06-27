@@ -68,15 +68,19 @@ update_channel = "stable"          # stable | beta
 default_model = "claude-sonnet-4-6"
 theme = "dark"
 
-[[mcp_servers]]                    # repeatable
+[[mcp_servers]]                    # repeatable — an agent references one by name via `ref:` (ADR-0052 §5)
 name = "filesystem"
-transport = "stdio"                # stdio | http
+transport = "stdio"                # stdio | http | websocket
 command = "npx -y @modelcontextprotocol/server-filesystem"
 args = ["--root", "~/projects"]
 autostart = true
-# url = "http://localhost:4000"    # for transport = http
+# url = "https://host/mcp"         # for transport = http (Streamable HTTP); a `websocket` server uses wss://
 # env = { TOKEN = "..." }
 ```
+
+A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
+`websocket`); the url is SSRF-guarded and must not embed credentials. An agent consumes a registration with
+`- ref: filesystem` (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
 ## `project.toml` / `workspace.toml` (project) — keys
 

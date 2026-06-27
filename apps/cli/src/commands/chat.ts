@@ -147,6 +147,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     uuid,
     providers,
     mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+    mcpRegistrations: config.mcpServers,
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -224,6 +225,7 @@ export async function chatResumeCommand(
       now,
       providers,
       mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      mcpRegistrations: config.mcpServers,
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,

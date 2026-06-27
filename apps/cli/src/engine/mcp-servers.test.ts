@@ -1,6 +1,6 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import { McpError, type McpClient, type McpConnection, type McpServerConfig } from '@relavium/mcp';
-import type { Agent, McpServerRef } from '@relavium/shared';
+import type { Agent, McpServerRef, McpServerRegistration } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError } from '../process/errors.js';
@@ -9,6 +9,7 @@ import {
   buildChildEnv,
   connectAgentMcp,
   connectWorkflowMcp,
+  resolveMcpServerRef,
   resolveStdioServerConfigs,
   surfaceMcpSkipped,
 } from './mcp-servers.js';
@@ -217,6 +218,23 @@ describe('connectAgentMcp', () => {
       connectAgentMcp([stdioRef()], { cwd: '/work', startMcpClient: () => Promise.reject(boom) }),
     ).rejects.toBe(boom);
   });
+
+  it('resolves a by-name `ref` against the registrations before connecting (chat path, Step 4b)', async () => {
+    let seen: readonly McpServerConfig[] | undefined;
+    const registrations: McpServerRegistration[] = [
+      { name: 'github', transport: 'stdio', command: 'gh-mcp' },
+    ];
+    const client = await connectAgentMcp([{ ref: 'github' }], {
+      cwd: '/work',
+      registrations,
+      startMcpClient: (servers) => {
+        seen = servers;
+        return Promise.resolve(fakeClient());
+      },
+    });
+    expect(seen?.[0]?.id).toBe('github'); // the ref resolved to a stdio connection keyed by the registration name
+    expect(client).toBeDefined();
+  });
 });
 
 describe('connectWorkflowMcp (run path)', () => {
@@ -392,6 +410,75 @@ describe('connectWorkflowMcp (run path)', () => {
     const entries = runtime!.workflow.workflow.agents ?? [];
     expect(entries[0]).toEqual({ $ref: './reviewer.agent.yaml' }); // the $ref passes through untouched
     expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_fs_read']);
+  });
+
+  it('resolves a by-name `ref` against the config registrations and augments the agent grant (Step 4b)', async () => {
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: github }] }\n`,
+    );
+    const registrations: McpServerRegistration[] = [
+      { name: 'github', transport: 'stdio', command: 'gh-mcp' },
+    ];
+    let startedWith: readonly McpServerConfig[] | undefined;
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      registrations,
+      startMcpClient: (servers) => {
+        startedWith = servers;
+        return Promise.resolve(
+          fakeClient({ toolIdsByServer: new Map([['github', ['mcp_github_issue']]]) }),
+        );
+      },
+    });
+    expect(startedWith?.[0]?.id).toBe('github'); // the ref resolved to a connection keyed by the registration name
+    // The agent's grant is augmented with the RESOLVED server's discovered tools (keyed by the ref name).
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_github_issue']);
+  });
+
+  it('fails loud when a by-name `ref` is not registered in [[mcp_servers]]', async () => {
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: unknown }] }\n`,
+    );
+    await expect(
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        registrations: [],
+        startMcpClient: fakeStart(new Map()),
+      }),
+    ).rejects.toThrow(/ref 'unknown' is not registered/);
+  });
+});
+
+describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
+  const regs: McpServerRegistration[] = [
+    { name: 'github', transport: 'stdio', command: 'gh-mcp', args: ['--stdio'], env: { GH: '1' } },
+  ];
+
+  it('passes an inline entry through unchanged (same object)', () => {
+    const inline: McpServerRef = { id: 'fs', transport: 'stdio', command: 'x' };
+    expect(resolveMcpServerRef(inline, regs)).toBe(inline);
+  });
+
+  it('resolves a { ref } to the registration connection (id = the registration name), carrying its allowlist', () => {
+    const resolved = resolveMcpServerRef({ ref: 'github', tools_allowlist: ['issue'] }, regs);
+    expect(resolved).toEqual({
+      id: 'github',
+      transport: 'stdio',
+      command: 'gh-mcp',
+      args: ['--stdio'],
+      env: { GH: '1' },
+      tools_allowlist: ['issue'],
+    });
+  });
+
+  it('fails loud (typed exit-2 CliError) when the ref names no registration', () => {
+    try {
+      resolveMcpServerRef({ ref: 'nope' }, regs);
+      expect.unreachable('an unknown ref must throw');
+    } catch (err) {
+      expect(isCliError(err) && err.code).toBe('invalid_invocation');
+      expect((err as Error).message).toContain("ref 'nope' is not registered");
+    }
   });
 });
 

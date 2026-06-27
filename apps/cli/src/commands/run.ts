@@ -165,6 +165,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     mcpRuntime = await connectWorkflowMcp(def, {
       cwd: deps.global.cwd,
       resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      registrations: config.mcpServers,
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
     if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);

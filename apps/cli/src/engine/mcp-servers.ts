@@ -9,7 +9,7 @@ import {
   type McpServerConfig,
   type StdioServerSpec,
 } from '@relavium/mcp';
-import type { Agent, AgentRef, McpServerRef } from '@relavium/shared';
+import type { Agent, AgentRef, McpServerRef, McpServerRegistration } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
@@ -42,6 +42,45 @@ export interface ConnectAgentMcpOptions {
    * any `{{…}}` in an `env` value is rejected loud (a placeholder is never passed to the child as a literal).
    */
   readonly resolveSecret?: McpSecretResolver;
+  /**
+   * The merged config `[[mcp_servers]]` registrations (2.R Step 4b, ADR-0052 §5) — used to resolve a by-name
+   * `{ ref: <name> }` server entry to its self-contained connection. Absent ⇒ a `ref` entry fails loud.
+   */
+  readonly registrations?: readonly McpServerRegistration[];
+}
+
+/**
+ * Resolve a by-name `{ ref: <registration-name> }` server entry to a self-contained inline {@link McpServerRef}
+ * against the merged config `[[mcp_servers]]` registrations (2.R Step 4b, ADR-0052 §5) — an inline entry passes
+ * through unchanged. The resolved server's routing/namespace `id` is the registration `name`, so two agents
+ * referencing the same registration dedup to one connection. An unknown `ref` is a fail-loud {@link CliError}.
+ */
+export function resolveMcpServerRef(
+  entry: McpServerRef,
+  registrations: readonly McpServerRegistration[],
+): McpServerRef {
+  if (entry.ref === undefined) return entry; // inline — self-contained (the schema guarantees id + transport)
+  const reg = registrations.find((r) => r.name === entry.ref);
+  if (reg === undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server ref '${entry.ref}' is not registered — add a [[mcp_servers]] entry named '${entry.ref}' to your config.`,
+    );
+  }
+  return {
+    id: reg.name,
+    transport: reg.transport,
+    ...(reg.command === undefined ? {} : { command: reg.command }),
+    ...(reg.args === undefined ? {} : { args: reg.args }),
+    ...(reg.env === undefined ? {} : { env: reg.env }),
+    ...(reg.url === undefined ? {} : { url: reg.url }),
+    ...(entry.tools_allowlist === undefined ? {} : { tools_allowlist: entry.tools_allowlist }),
+  };
+}
+
+/** The routing/namespace id of an agent's mcp_servers ENTRY (before resolution) — the `ref` name or inline `id`. */
+function entryServerId(entry: McpServerRef): string | undefined {
+  return entry.ref ?? entry.id;
 }
 
 /** Open a stdio MCP connection from a spawn spec — the real {@link openStdioConnection}, or a test spy. */
@@ -64,10 +103,18 @@ export function resolveStdioServerConfigs(
 ): McpServerConfig[] {
   const configs: McpServerConfig[] = [];
   for (const ref of mcpServers ?? []) {
+    // A by-name `ref` must be resolved to inline (id + transport) before reaching here (resolveMcpServerRef).
+    if (ref.id === undefined) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${ref.ref ?? '?'}': a by-name reference could not be resolved to a connection.`,
+      );
+    }
+    const serverId = ref.id; // capture the narrowed id so it survives into the deferred `open` closure
     if (ref.transport !== 'stdio') {
       throw new CliError(
         'invalid_invocation',
-        `MCP server '${ref.id}': the '${ref.transport}' transport is not wired yet (stdio only for now). ` +
+        `MCP server '${serverId}': the '${ref.transport ?? '?'}' transport is not wired yet (stdio only for now). ` +
           `Network MCP transports land in a follow-up.`,
       );
     }
@@ -76,16 +123,16 @@ export function resolveStdioServerConfigs(
     if (ref.command === undefined) {
       throw new CliError(
         'invalid_invocation',
-        `MCP server '${ref.id}': a 'stdio' transport requires a 'command'.`,
+        `MCP server '${serverId}': a 'stdio' transport requires a 'command'.`,
       );
     }
     const command = ref.command;
-    const env = buildChildEnv(ref.id, ref.env, resolveSecret);
+    const env = buildChildEnv(serverId, ref.env, resolveSecret);
     configs.push({
-      id: ref.id,
+      id: serverId,
       ...(ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist }),
       open: () =>
-        openConnection(ref.id, {
+        openConnection(serverId, {
           command,
           env,
           cwd,
@@ -107,7 +154,12 @@ export async function connectAgentMcp(
   mcpServers: readonly McpServerRef[] | undefined,
   opts: ConnectAgentMcpOptions,
 ): Promise<McpClient | undefined> {
-  const configs = resolveStdioServerConfigs(mcpServers, opts.cwd, opts.resolveSecret);
+  // Resolve any by-name `ref` entries to inline against the config registrations (Step 4b) BEFORE building the
+  // stdio configs — so the rest of the pipeline always sees a self-contained, inline server.
+  const inline = (mcpServers ?? []).map((entry) =>
+    resolveMcpServerRef(entry, opts.registrations ?? []),
+  );
+  const configs = resolveStdioServerConfigs(inline, opts.cwd, opts.resolveSecret);
   if (configs.length === 0) return undefined;
   return startMcpClientFailLoud(configs, opts.startMcpClient);
 }
@@ -189,6 +241,8 @@ export interface ConnectWorkflowMcpOptions {
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
   /** Resolve `{{secrets.<name>}}` in a server `env` value (2.R Step 4, ADR-0052 §6); see {@link ConnectAgentMcpOptions}. */
   readonly resolveSecret?: McpSecretResolver;
+  /** The merged config `[[mcp_servers]]` registrations (Step 4b) — resolves a by-name `ref` entry; see {@link ConnectAgentMcpOptions}. */
+  readonly registrations?: readonly McpServerRegistration[];
 }
 
 /**
@@ -206,12 +260,17 @@ export async function connectWorkflowMcp(
   opts: ConnectWorkflowMcpOptions,
 ): Promise<WorkflowMcpRuntime | undefined> {
   const inlineAgents = (def.workflow.agents ?? []).filter(isInlineAgent);
+  const registrations = opts.registrations ?? [];
 
-  // Dedup the declared servers by id across agents: identical spec ⇒ one shared connection; same id with a
-  // conflicting spec ⇒ fail loud (the namespaced tool ids would otherwise collide across two different servers).
+  // Resolve each entry's by-name `ref` to inline (Step 4b), then dedup the servers by id across agents: identical
+  // spec ⇒ one shared connection; same id with a conflicting spec ⇒ fail loud (the namespaced tool ids would
+  // otherwise collide across two different servers). The resolved id (a registration name for a `ref`) is also
+  // the per-agent grant key below.
   const byId = new Map<string, McpServerRef>();
   for (const agent of inlineAgents) {
-    for (const ref of agent.mcp_servers ?? []) {
+    for (const entry of agent.mcp_servers ?? []) {
+      const ref = resolveMcpServerRef(entry, registrations);
+      if (ref.id === undefined) continue; // unreachable (resolved refs carry an id); narrows for the Map key
       const existing = byId.get(ref.id);
       if (existing === undefined) {
         byId.set(ref.id, ref);
@@ -250,7 +309,12 @@ function withWorkflowMcpGrant(
   agent: Agent,
   toolIdsByServer: ReadonlyMap<string, readonly string[]>,
 ): Agent {
-  const ids = (agent.mcp_servers ?? []).flatMap((server) => toolIdsByServer.get(server.id) ?? []);
+  // The grant key is the entry's server id — its `ref` registration name (Step 4b) or inline `id` — which is the
+  // same id `resolveMcpServerRef` assigned the connection, so `toolIdsByServer` is keyed by it.
+  const ids = (agent.mcp_servers ?? []).flatMap((server) => {
+    const serverId = entryServerId(server);
+    return serverId === undefined ? [] : (toolIdsByServer.get(serverId) ?? []);
+  });
   if (ids.length === 0) return agent;
   return { ...agent, tools: [...new Set([...(agent.tools ?? []), ...ids])] };
 }

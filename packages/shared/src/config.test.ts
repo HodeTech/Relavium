@@ -103,6 +103,23 @@ describe('config schemas', () => {
     ).toBe(false); // http needs url
   });
 
+  it('accepts a `websocket` MCP registration with a ws(s) url, rejecting a non-ws scheme (ADR-0052 §5)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'live', transport: 'websocket', url: 'wss://host/mcp' }],
+      }).success,
+    ).toBe(true);
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'live', transport: 'websocket', url: 'https://host/mcp' }],
+      }).success,
+    ).toBe(false); // websocket → ws(s), not http(s)
+    expect(
+      GlobalConfigSchema.safeParse({ mcp_servers: [{ name: 'live', transport: 'websocket' }] })
+        .success,
+    ).toBe(false); // websocket needs url
+  });
+
   it('accepts project-scoped MCP registrations (merge with global)', () => {
     expect(
       ProjectConfigSchema.safeParse({
