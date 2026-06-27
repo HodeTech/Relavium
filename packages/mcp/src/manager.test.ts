@@ -43,6 +43,32 @@ describe('startMcpClient', () => {
     await client.close();
   });
 
+  it('groups the granted tool ids by server (toolIdsByServer) — the host augments the right agent grant', async () => {
+    const client = await startMcpClient([
+      { id: 'github', open: () => Promise.resolve(fakeConnection([t('create_issue')])) },
+      { id: 'fs', open: () => Promise.resolve(fakeConnection([t('read_file'), t('write')])) },
+    ]);
+    expect(client.toolIdsByServer.get('github')).toEqual(['mcp_github_create_issue']);
+    expect(client.toolIdsByServer.get('fs')).toEqual(['mcp_fs_read_file', 'mcp_fs_write']);
+    // The grouping covers exactly the connected servers (a declared id always has an entry).
+    expect([...client.toolIdsByServer.keys()].sort()).toEqual(['fs', 'github']);
+    await client.close();
+  });
+
+  it('keeps an empty grouping entry for a server whose tools were all dropped (a declared id is always present)', async () => {
+    // `fs` exposes only a tool excluded by its allowlist ⇒ zero granted defs, but the id must still map (to []).
+    const client = await startMcpClient([
+      {
+        id: 'fs',
+        toolsAllowlist: ['keep'],
+        open: () => Promise.resolve(fakeConnection([t('drop')])),
+      },
+    ]);
+    expect(client.toolIdsByServer.get('fs')).toEqual([]);
+    expect(client.toolDefs).toEqual([]);
+    await client.close();
+  });
+
   it('routes a tool call to the owning connection (by server id)', async () => {
     const calls: string[] = [];
     const conn = (id: string): McpConnection =>

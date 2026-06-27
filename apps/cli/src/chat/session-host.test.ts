@@ -250,6 +250,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     const collidingClient: McpClient = {
       capability: { call: () => Promise.resolve({ content: [], isError: false }) },
       toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws inside buildSessionRuntime
+      toolIdsByServer: new Map(),
       skipped: [],
       close: () => {
         closed += 1;
@@ -466,6 +467,7 @@ describe('buildResumedChatSession (2.N)', () => {
       const collidingClient: McpClient = {
         capability: { call: () => Promise.resolve({ content: [], isError: false }) },
         toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws post-connect
+        toolIdsByServer: new Map(),
         skipped: [],
         close: () => {
           closed += 1;

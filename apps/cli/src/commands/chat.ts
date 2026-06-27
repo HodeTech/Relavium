@@ -6,8 +6,6 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
-import type { ManagerSkippedTool } from '@relavium/mcp';
-
 import { exportSession } from '../chat/export.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
@@ -16,6 +14,7 @@ import {
   type BuiltChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
@@ -386,25 +385,6 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
   }
   // `/exit`, `/cancel`, and an input EOF all END the chat session — the canonical chat-session-ended code.
   return EXIT_CODES.chatEnded;
-}
-
-/**
- * Surface MCP tools dropped at discovery (allowlist-narrowed, an unsupported schema, a cross-server id
- * collision, or an unsafe name) to **stderr** — a non-fatal diagnostic, secret-free (a tool name + a reason),
- * so it never pollutes the `--json` stdout event stream. A no-op when nothing was dropped (the common case).
- *
- * The tool `name` and `reason` are **server-controlled** (the `name` comes verbatim from the server's
- * `tools/list`; the `reason` can embed a server-supplied schema key/type) and the MCP server is in-threat-model
- * untrusted (ADR-0052 §4), so both are run through {@link sanitizeInline} — the same terminal-escape strip the
- * resume banner / slash echo / streamed tokens already use — before they reach the TTY. The `server` segment is
- * the agent's kebab id (already safe) but is sanitized too, to stay correct under the future by-name `ref` form.
- */
-export function surfaceMcpSkipped(io: CliIo, skipped: readonly ManagerSkippedTool[]): void {
-  for (const tool of skipped) {
-    io.writeErr(
-      `note: MCP tool '${sanitizeInline(tool.name)}' (server '${sanitizeInline(tool.server)}') skipped — ${sanitizeInline(tool.reason)}\n`,
-    );
-  }
 }
 
 /**

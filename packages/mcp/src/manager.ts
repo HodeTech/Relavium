@@ -37,6 +37,13 @@ export interface McpClient {
   readonly capability: McpCapability;
   /** The aggregate namespaced `ToolDef`s across all servers — compose into `createToolRegistry({ tools })`. */
   readonly toolDefs: readonly ToolDef[];
+  /**
+   * The granted (post-allowlist, post-collision) namespaced tool ids **grouped by server id** — the host uses
+   * this to augment the RIGHT agent's tool grant when several agents in one workflow declare different servers
+   * ([ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3). A server
+   * that contributed no usable tool still has an entry (an empty array), so a declared id is always present.
+   */
+  readonly toolIdsByServer: ReadonlyMap<string, readonly string[]>;
   /** Tools dropped at discovery, per server. */
   readonly skipped: readonly ManagerSkippedTool[];
   /** Tear down every connection (idempotent). */
@@ -46,6 +53,7 @@ export interface McpClient {
 export async function startMcpClient(servers: readonly McpServerConfig[]): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
   const toolDefs: ToolDef[] = [];
+  const toolIdsByServer = new Map<string, readonly string[]>();
   const skipped: ManagerSkippedTool[] = [];
   // Shared ACROSS servers so a namespaced id colliding across two servers (e.g. server `a`+tool `b_x` and
   // server `a_b`+tool `x` both → `mcp_a_b_x`) fails closed — never a duplicate id reaching `createToolRegistry`.
@@ -67,6 +75,10 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
       const tools = await connection.listTools();
       const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist, seenToolIds);
       toolDefs.push(...shaped.defs);
+      toolIdsByServer.set(
+        server.id,
+        shaped.defs.map((def) => def.id),
+      );
       for (const s of shaped.skipped) {
         skipped.push({ server: server.id, name: s.name, reason: s.reason });
       }
@@ -90,7 +102,7 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
     },
   };
 
-  return { capability, toolDefs, skipped, close: () => closeAll(connections) };
+  return { capability, toolDefs, toolIdsByServer, skipped, close: () => closeAll(connections) };
 }
 
 /** Close every connection, swallowing teardown errors (the children are exiting); clears the map (idempotent). */

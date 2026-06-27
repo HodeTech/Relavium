@@ -1,15 +1,23 @@
+import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import { McpError, type McpClient, type McpServerConfig } from '@relavium/mcp';
-import type { McpServerRef } from '@relavium/shared';
+import type { Agent, McpServerRef } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
-import { connectAgentMcp, resolveStdioServerConfigs } from './mcp-servers.js';
+import { captureIo } from '../test-support.js';
+import {
+  connectAgentMcp,
+  connectWorkflowMcp,
+  resolveStdioServerConfigs,
+  surfaceMcpSkipped,
+} from './mcp-servers.js';
 
 /** A fake live client — the injected `startMcpClient` returns it, so no child is ever spawned. */
 function fakeClient(overrides: Partial<McpClient> = {}): McpClient {
   return {
     capability: { call: () => Promise.resolve({ content: [], isError: false }) },
     toolDefs: [],
+    toolIdsByServer: new Map(),
     skipped: [],
     close: () => Promise.resolve(),
     ...overrides,
@@ -122,5 +130,126 @@ describe('connectAgentMcp', () => {
     await expect(
       connectAgentMcp([stdioRef()], { cwd: '/work', startMcpClient: () => Promise.reject(boom) }),
     ).rejects.toBe(boom);
+  });
+});
+
+describe('connectWorkflowMcp (run path)', () => {
+  // A minimal valid workflow whose inline `agents:` block is the parameter under test.
+  const wf = (agentsYaml: string): WorkflowDefinition =>
+    parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n${agentsYaml}  nodes:\n    - { id: s, type: input }\n    - { id: a, type: agent, agent_ref: scanner, prompt_template: go }\n    - { id: o, type: output }\n  edges:\n    - { from: s, to: a }\n    - { from: a, to: o }\n`,
+    );
+  const agentOf = (def: WorkflowDefinition, id: string): Agent =>
+    (def.workflow.agents ?? []).find((e): e is Agent => 'id' in e && e.id === id)!;
+  // A fake client whose per-server grouping the augmentation reads (the configs reaching it are ignored).
+  const fakeStart =
+    (toolIdsByServer: ReadonlyMap<string, readonly string[]>) => (): Promise<McpClient> =>
+      Promise.resolve(fakeClient({ toolIdsByServer }));
+
+  it('returns undefined when no inline agent declares a server', async () => {
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go }\n`,
+    );
+    expect(
+      await connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+    ).toBeUndefined();
+  });
+
+  it('augments ONLY the declaring agent grant with ITS server tool ids (per-agent isolation)', async () => {
+    const def = wf(
+      [
+        '    - id: scanner',
+        '      model: claude-sonnet-4-6',
+        '      provider: anthropic',
+        '      system_prompt: go',
+        '      tools: [read_file]',
+        '      mcp_servers: [{ id: fs, transport: stdio, command: x }]',
+        '    - id: other',
+        '      model: claude-sonnet-4-6',
+        '      provider: anthropic',
+        '      system_prompt: go',
+        '      tools: [git_status]',
+        '',
+      ].join('\n'),
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      startMcpClient: fakeStart(new Map([['fs', ['mcp_fs_read', 'mcp_fs_write']]])),
+    });
+    expect(runtime).toBeDefined();
+    // The declaring agent's grant gains its server's ids (union with the original); the other is untouched.
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual([
+      'read_file',
+      'mcp_fs_read',
+      'mcp_fs_write',
+    ]);
+    expect(agentOf(runtime!.workflow, 'other').tools).toEqual(['git_status']);
+  });
+
+  it('shares ONE connection when two agents declare an identical server (dedup by id)', async () => {
+    let startedWith: readonly McpServerConfig[] | undefined;
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x }] }',
+        '',
+      ].join('\n'),
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      startMcpClient: (servers) => {
+        startedWith = servers;
+        return Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', ['mcp_fs_read']]]) }));
+      },
+    });
+    expect(startedWith).toHaveLength(1); // the duplicate `fs` declaration collapsed to one connection
+    // BOTH agents are granted the shared server's tools.
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_fs_read']);
+    expect(agentOf(runtime!.workflow, 'writer').tools).toEqual(['mcp_fs_read']);
+  });
+
+  it('fails loud when two agents declare the same server id with conflicting settings', async () => {
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: DIFFERENT }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+    ).rejects.toThrow(/conflicting settings/);
+  });
+});
+
+describe('surfaceMcpSkipped', () => {
+  it('writes one stderr note per dropped tool (name + server + reason), nothing on an empty list', () => {
+    const { io, err, out } = captureIo();
+    surfaceMcpSkipped(io, []);
+    expect(err()).toBe(''); // nothing dropped ⇒ silent (the common case)
+
+    surfaceMcpSkipped(io, [
+      { server: 'fs', name: 'danger', reason: 'not in tools_allowlist' },
+      { server: 'gh', name: 'bad-id!', reason: 'unsafe LLM tool name' },
+    ]);
+    const lines = err().trimEnd().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("MCP tool 'danger' (server 'fs')");
+    expect(lines[0]).toContain('not in tools_allowlist');
+    expect(lines[1]).toContain("MCP tool 'bad-id!' (server 'gh')");
+    expect(out()).toBe(''); // diagnostics stay on stderr — stdout (the --json stream) is untouched
+  });
+
+  it('sanitizes a hostile server-controlled tool name + reason (no terminal-escape injection reaches the TTY)', () => {
+    // `name`/`reason` are server-controlled and the MCP server is in-threat-model untrusted (ADR-0052 §4): a
+    // crafted tool returning ANSI/OSC control bytes must NOT write them raw to the operator's terminal.
+    const { io, err } = captureIo();
+    surfaceMcpSkipped(io, [
+      { server: 'fs', name: 'evil\x1b[2J\x1b]0;pwned\x07', reason: 'bad\x1b[31m schema\x1b[0m' },
+    ]);
+    const written = err();
+    // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes is the point
+    expect(/[\x00-\x1f\x7f]/.test(written.replace(/\n$/, ''))).toBe(false); // none survived (besides the \n)
+    expect(written).not.toContain('\x1b'); // the ESC that opens every escape sequence is gone
   });
 });

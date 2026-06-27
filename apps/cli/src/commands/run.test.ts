@@ -17,9 +17,11 @@ import {
   runMigrations,
   type Db,
 } from '@relavium/db';
+import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { scriptedResolver, textTurn, toolUseTurn } from '../chat/test-support.js';
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
@@ -112,6 +114,28 @@ const AGENT_WF_GEMINI = AGENT_WF.replace('id: cli-run-agent', 'id: cli-run-agent
   'model: claude-opus-4-8, provider: anthropic',
   'model: gemini-2.5-flash, provider: gemini',
 );
+
+// An agent declaring an inline stdio MCP server — the 2.R run acceptance fixture. The agent grant is
+// `[read_file]`; declaring `mcp_servers` implicitly grants the server's discovered tools, so the agent can call
+// `mcp_fs_read`.
+const MCP_WF = `schema_version: '1.0'
+workflow:
+  id: cli-run-mcp
+  agents:
+    - id: scanner
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: inspect
+      tools: [read_file]
+      mcp_servers: [{ id: fs, transport: stdio, command: x }]
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: scanner, prompt_template: 'go' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
+`;
 
 // An agent node whose authored output_modalities ([text, image]) exceed what the catalog model `chat-text`
 // supports (text only) — parses fine, but the D15 catalog load-check (2.S Step 7) must reject it at LOAD via the
@@ -1028,6 +1052,48 @@ describe('runCommand', () => {
     );
     expect(engineBuilt).toBe(true); // the present key did NOT false-fail the pre-flight
     expect(code).toBe(EXIT_CODES.success);
+  });
+
+  it('a workflow agent declaring an inline stdio MCP server round-trips a tool call via run (2.R acceptance)', async () => {
+    const path = writeWorkflow('mcp.relavium.yaml', MCP_WF);
+    const { io, err } = captureIo();
+    const calls: { name: string; args: unknown }[] = [];
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () =>
+        Promise.resolve([
+          { name: 'read', inputSchema: { type: 'object' } },
+          { name: 'danger', inputSchema: { type: 'object' } }, // dropped by the allowlist below
+        ]),
+      callTool: (name, args) => {
+        calls.push({ name, args });
+        return Promise.resolve({ content: [{ type: 'text', text: 'fs result' }], isError: false });
+      },
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      {
+        io,
+        global: globalOptions(),
+        // The agent turn calls the namespaced MCP tool, then replies — driven by the scripted provider.
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+        // Forward the engine options (incl. the composed `mcp`) but pin the deterministic in-memory host.
+        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        // The REAL manager over a FAKE connection — no child spawns, but the real namespacing + routing run.
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(calls).toEqual([{ name: 'read', args: {} }]); // the agent's MCP call routed to the connection
+    expect(err()).toContain("MCP tool 'danger'"); // the allowlist-dropped tool surfaced on stderr
+    expect(closed).toBe(1); // the connection was torn down at the run terminal
   });
 
   it('renders the gate terminal as run:paused on the last NDJSON line under --json', async () => {

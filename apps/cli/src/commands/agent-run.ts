@@ -6,12 +6,13 @@ import type { SessionStreamHandleEvent } from '@relavium/core';
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { buildChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { makePlainPrinter, surfaceMcpSkipped } from './chat.js';
+import { makePlainPrinter } from './chat.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same

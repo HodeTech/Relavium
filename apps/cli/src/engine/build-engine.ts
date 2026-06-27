@@ -6,6 +6,9 @@ import {
   createToolRegistry,
   type AgentRunnerDeps,
   type ExecutionHost,
+  type McpCapability,
+  type ToolDef,
+  type ToolHost,
 } from '@relavium/core';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
@@ -29,6 +32,13 @@ export interface BuildEngineOptions {
    * unit estimate is used. Media still folds at 0 until a verified catalog rate lands (never fabricated).
    */
   readonly mediaCostEstimate?: MediaCostEstimate;
+  /**
+   * The inbound MCP wiring (2.R Step 3b) — the discovered namespaced `ToolDef`s + the `McpCapability` to route
+   * `tools/call`. Absent ⇒ the registry/host carry built-ins only. The defs are composed into BOTH the registry
+   * and `AgentRunnerDeps.tools` (so the granted set is surfaced to the LLM); the capability is wired onto
+   * `ToolHost.mcp`. The host owns the connections' lifecycle (teardown at the run terminal) — see `run.ts`.
+   */
+  readonly mcp?: { readonly toolDefs: readonly ToolDef[]; readonly capability: McpCapability };
 }
 
 /**
@@ -36,17 +46,25 @@ export interface BuildEngineOptions {
  * (the six non-agent handlers + the agent arm), the expression sandbox, and a **fail-closed**
  * `ToolHost`. `host`/`providers` are injectable so tests drive a stub provider + the in-memory host.
  *
- * The `ToolHost` is `{}` — every capability (fs / process / egress / …) is absent, so a built-in
- * tool that needs one is cleanly "unavailable" rather than an insecure stub. Wiring those
- * capabilities (with a dedicated security review; egress SSRF is already deferred per
- * deferred-tasks/§2.S) is a follow-up workstream, not 2.D.
+ * The `ToolHost` carries only what is explicitly wired: when `options.mcp` is present (2.R Step 3b) it
+ * gets the `McpCapability` (so a granted MCP tool can `tools/call`); otherwise it is `{}` — every
+ * capability (fs / process / egress / …) absent, so a built-in tool that needs one is cleanly
+ * "unavailable" rather than an insecure stub. Wiring the remaining capabilities (with a dedicated
+ * security review; egress SSRF is already deferred per deferred-tasks/§2.S) is a follow-up workstream.
  */
 export async function buildEngine(options: BuildEngineOptions = {}): Promise<WorkflowEngine> {
   const host = options.host ?? createCliHost();
   const providers = options.providers ?? createProviderResolver();
   const sandbox = await createExpressionSandbox();
 
-  const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: {} });
+  // Compose the inbound MCP tools (2.R Step 3b): the discovered namespaced ToolDefs join the built-ins in the
+  // registry AND `AgentRunnerDeps.tools` below (so a granted MCP tool is surfaced to the LLM), and the
+  // McpCapability is wired onto the registry's `ToolHost.mcp` so a `tools/call` routes to the owning connection.
+  // Absent ⇒ built-ins only + a fail-closed `{}` host (the engine's pre-2.R posture, unchanged).
+  const tools =
+    options.mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...options.mcp.toolDefs];
+  const toolHost: ToolHost = options.mcp === undefined ? {} : { mcp: options.mcp.capability };
+  const registry = createToolRegistry({ tools, host: toolHost });
 
   // The single host CAS (`host.mediaStore`) also backs the D8 failover re-materialization: resolve a durable
   // handle in a transcript message to the in-flight source a provider needs, before egress. Bound here (when a
@@ -57,7 +75,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
     registry,
-    tools: BUILTIN_TOOLS,
+    tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
     now: () => Date.now(),
     // The media routing/cost/egress deps (2.S) — each present only when its source is wired (`undefined` is
