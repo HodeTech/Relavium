@@ -93,7 +93,7 @@ before parsing the subcommand).
 
 ## Commands
 
-The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), and the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — are all **live**; the authoring commands (`create` / `import` / `export`) land at **2.J**, and `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
+The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — and the YAML-lifecycle authoring commands **`create`** / **`import`** / **`export`** (2.J) are all **live**; `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
 
 | Command | Purpose |
 |---------|---------|
@@ -104,9 +104,9 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium chat-export <sessionId>` | Export a session to a `.relavium.yaml` scaffold for review ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
 | `relavium agent run <agent> [--fixture <path>] [--json]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
-| `relavium create` | Scaffold a new workflow or agent YAML via an interactive wizard. |
-| `relavium import <path>` | Import an external `.relavium.yaml` / `.agent.yaml` into the project. |
-| `relavium export <id>` | Export a workflow/agent to a portable YAML file (secret references stripped). |
+| `relavium create [--force]` | Scaffold a new agent or a minimal single-agent workflow YAML via an interactive wizard (schema-validated before write). |
+| `relavium import <path> [--force]` | Import an external `.relavium.yaml` / `.agent.yaml` into the project, validated + slug-deduplicated. |
+| `relavium export <id> [--out <path>] [--force]` | Export a workflow/agent to a portable, canonical YAML copy (re-serialized from the validated AST — no secret values, comments dropped). |
 | `relavium logs <runId>` | Print the persisted event/log stream for a past run. |
 | `relavium status` | Show active runs and their per-node status. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
@@ -144,11 +144,18 @@ Under `--json`, each entry is one NDJSON record — `{ kind, slug, name, tags, p
 
 ### `relavium create`
 
-Interactive scaffolder (`@clack/prompts`) that writes a new `.relavium.yaml` or `.agent.yaml` from answers (name, model, system prompt, tools). The result is a plain YAML file ready to commit.
+Interactive scaffolder (`@clack/prompts`) that asks **kind** (an **agent** → `.agent.yaml`, or a **minimal single-agent workflow** → `.relavium.yaml`, i.e. an `input → agent → output` scaffold wrapping one inline agent), then **name → provider → model → system prompt → tools** (comma-separated, optional). The id is the slugified name; the file lands at `.relavium/agents/<id>.agent.yaml` or `.relavium/workflows/<id>.relavium.yaml`.
+
+The answers are assembled into a typed definition and **validated against the [`@relavium/shared`](../contracts/agent-yaml-spec.md) schema before any write** — a bad model/provider/name is the same clean exit-`2` fault a `run` would raise (a name with no usable id characters is rejected up front). A name colliding with an existing project entry is exit `2` unless `--force`. The wizard needs an interactive TTY, so it **fails loud** (exit `2`) under `--json` or a non-TTY pipe; a cancel (Ctrl-C / ESC) writes nothing and exits `0`. The result is a plain YAML file ready to commit — pure file I/O, no keychain, no run state.
 
 ### `relavium import` / `relavium export`
 
-`import` brings an external YAML into the project's `.relavium/`. `export` writes a portable copy with all secret references stripped/placeholdered (see [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md)) — safe to share via PR. This is the "workflow file is the invite" distribution mechanism.
+Both are **surface-agnostic** git-native YAML operations — they read/write `.relavium/` files only, never the keychain or run state. A document's kind is detected from its filename suffix (`.agent.yaml` / `.relavium.yaml`), falling back to a content sniff; a file that is neither a valid workflow nor a valid agent is a clean exit-`2` fault naming both parse failures.
+
+- **`import <path> [--force]`** copies an external `.relavium.yaml` / `.agent.yaml` into the project after validating it against the schema. It writes the **re-serialized canonical form** to `.relavium/<workflows|agents>/<slug>.<suffix>`. A slug already present **for that kind** is an id collision — exit `2` unless `--force` overwrites it.
+- **`export <id> [--out <path>] [--force]`** resolves `<id>` across **both** catalogs (an id naming neither is exit `2`; an id that is *both* a workflow and an agent is exit `2`, "rename one"), re-validates it, and writes a portable copy. The default destination is `./<id>.<suffix>` in the cwd (a copy to share, outside the catalog); `--out` overrides it. Under `--json` it emits a single `{ id, kind, path }` record.
+
+**Why it is safe to share** (see [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md)): an agent/workflow file carries **no secret values by construction** — the schema permits only `{{secrets.*}}` *references*, never literals. `export` (and `import`) **re-serialize from the validated AST**, the canonical form, which preserves those `{{secrets.*}}` placeholders and **drops all free-form comments** (where a stray secret might otherwise hide). The exported file re-imports cleanly. This is the "workflow file is the invite" distribution mechanism.
 
 ### `relavium logs <runId>`
 

@@ -70,7 +70,7 @@ The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with 
 | Surface | Guarantee |
 |---------|-----------|
 | Frontend / WebView | Receives only a key hint (last 4 chars). Never the key. |
-| Workflow YAML (`.relavium.yaml`) | Tools reference secrets by env-var name / keychain ref, never inline. Export strips/placeholders any secret reference. |
+| Workflow / agent YAML (`.relavium.yaml` / `.agent.yaml`) | Holds no secret values by construction — the schema permits only `{{secrets.*}}` references, never literals. `relavium export`/`import` re-serialize from the validated AST (the canonical form), preserving those references and dropping all free-form comments where a stray secret might hide. See [../cli/commands.md](../cli/commands.md#relavium-import--relavium-export). |
 | Run records, `messages`, `run_events` | Tool inputs are sanitized before persistence; no `Authorization` value is ever logged. |
 | VS Code IPC (desktop-enhanced mode) | The VS Code extension is **standalone** and keeps its own keys in `vscode.SecretStorage`; the loopback desktop↔extension channel **never carries a raw key in either direction**. The handshake (dynamic port + bearer token) is canonical in [../contracts/ipc-contract.md](../contracts/ipc-contract.md#vs-code-mirror-loopback-http). |
 | Tray / notifications | Never include secret material. |
