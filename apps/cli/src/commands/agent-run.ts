@@ -4,7 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
-import { buildChatSession } from '../chat/session-host.js';
+import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
@@ -58,25 +58,8 @@ export async function agentRunCommand(
     configPath: deps.global.configPath,
   });
 
-  // `--input k=v` is REJECTED for now: a session does not yet interpolate `{{ctx.*}}` into the agent prompt
-  // (the engine passes `system_prompt` verbatim; wiring `resolveTemplate` into the session turn core is a
-  // deferred, security-relevant change — it would also throw on existing prompts' unresolved placeholders).
-  // Exposing an inert flag is misleading, so fail loud until the interpolation wiring lands. *(deferred-tasks.md)*
-  if (args.input.length > 0) {
-    throw new CliError(
-      'invalid_invocation',
-      '`--input` is not supported yet — a session does not interpolate {{ctx.*}} into the agent prompt (a tracked engine follow-up). Omit it for now.',
-    );
-  }
-
-  // The one-shot prompt is the piped stdin; an empty stdin is a clean invocation fault (nothing to run).
-  const message = (await readAllStdin(deps.io.stdin)).trim();
-  if (message.length === 0) {
-    throw new CliError(
-      'invalid_invocation',
-      'no input message — pipe the prompt on stdin (e.g. `echo "…" | relavium agent run <agent>`)',
-    );
-  }
+  // Validate the invocation + read the one-shot prompt from stdin (the two pre-run faults live in the helper).
+  const message = await resolveOneShotInput(args, deps);
 
   // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
   // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
@@ -107,15 +90,53 @@ export async function agentRunCommand(
     // recorded tool results, so the replay needs no live MCP.
     ...(offline ? { disableMcp: true } : {}),
   });
-  // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
-  // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.
+
+  // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+  const turnErrorCode = await runOneShotTurn(built, message, deps);
+  return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+}
+
+/** Validate the one-shot invocation and read the prompt from stdin — the two pre-run faults (exit-2 CliError). */
+async function resolveOneShotInput(
+  args: AgentRunCommandArgs,
+  deps: AgentRunCommandDeps,
+): Promise<string> {
+  // `--input k=v` is REJECTED for now: a session does not yet interpolate `{{ctx.*}}` into the agent prompt
+  // (the engine passes `system_prompt` verbatim; wiring `resolveTemplate` into the session turn core is a
+  // deferred, security-relevant change — it would also throw on existing prompts' unresolved placeholders).
+  // Exposing an inert flag is misleading, so fail loud until the interpolation wiring lands. *(deferred-tasks.md)*
+  if (args.input.length > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      '`--input` is not supported yet — a session does not interpolate {{ctx.*}} into the agent prompt (a tracked engine follow-up). Omit it for now.',
+    );
+  }
+  // The one-shot prompt is the piped stdin; an empty stdin is a clean invocation fault (nothing to run).
+  const message = (await readAllStdin(deps.io.stdin)).trim();
+  if (message.length === 0) {
+    throw new CliError(
+      'invalid_invocation',
+      'no input message — pipe the prompt on stdin (e.g. `echo "…" | relavium agent run <agent>`)',
+    );
+  }
+  return message;
+}
+
+/**
+ * Render the live stream (NDJSON under `--json`, else the plain token/tool printer), run the single turn, and
+ * tear down — returning the classified turn-error code (or `undefined` on success). The whole post-build region
+ * is inside the try so any fault still hits the finally (the session OWNS the MCP connections; teardown there is
+ * best-effort and must never override the computed exit code) rather than orphaning the spawned children.
+ */
+async function runOneShotTurn(
+  built: BuiltChatSession,
+  message: string,
+  deps: AgentRunCommandDeps,
+): Promise<string | undefined> {
   let turnErrorCode: string | undefined;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
     ? (event) => deps.io.writeOut(`${JSON.stringify(event)}\n`)
     : makePlainPrinter(deps.io);
-  // The session OWNS the live MCP connections (built.closeMcp); the finally tears them down. Keep the whole
-  // post-build region (skipped-tool note + subscribe) INSIDE the try so any fault there still hits the finally
-  // rather than orphaning the spawned children (a no-op unsubscribe until the real one is wired below).
   let unsubscribe: () => void = () => {};
   try {
     surfaceMcpSkipped(deps.io, built.mcpSkipped);
@@ -147,7 +168,7 @@ export async function agentRunCommand(
       );
     });
   }
-  return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+  return turnErrorCode;
 }
 
 /** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). Exported for a focused unit test. */
