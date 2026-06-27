@@ -34,6 +34,9 @@ export { McpError, McpConnectError, McpHostUnavailableError } from './errors.js'
 export { shapeToolResult } from './result.js';
 export { buildServerToolDefs, type ServerToolDefs, type SkippedTool } from './tool-mapping.js';
 export { openStdioConnection, type StdioServerSpec } from './sdk-stdio.js';
+export { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
+export { openSseConnection, type SseServerSpec } from './sdk-sse.js';
+export { openWebSocketConnection, type WebSocketServerSpec } from './sdk-websocket.js';
 export {
   startMcpClient,
   type McpClient,

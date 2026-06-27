@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 import type { JsonSchema } from '@relavium/core';
 
@@ -93,6 +94,20 @@ export async function openStdioConnection(
     ...(spec.args === undefined ? {} : { args: [...spec.args] }),
     ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
   });
+  return connectSdkTransport(serverId, transport);
+}
+
+/**
+ * Create an MCP {@link Client}, run the initialize handshake over the given SDK transport, and wrap it as the
+ * SDK-type-free {@link McpConnection} seam. Shared by every transport adapter (stdio + the network adapters in
+ * `sdk-http.ts`/`sdk-websocket.ts`) so the Client lifecycle + tool shaping live in ONE place. A connect failure
+ * tears the client down and surfaces a typed, secret-free {@link McpConnectError} (its `cause` is opaque — the
+ * host strips it). The `transport` type is internal to the SDK fence; nothing outside `@relavium/mcp` sees it.
+ */
+export async function connectSdkTransport(
+  serverId: string,
+  transport: Transport,
+): Promise<McpConnection> {
   const client = new Client(CLIENT_INFO, { capabilities: {} });
   try {
     await client.connect(transport);
@@ -100,10 +115,10 @@ export async function openStdioConnection(
     await safeClose(client);
     throw new McpConnectError(serverId, { cause: err });
   }
-  return new StdioConnection(client);
+  return new SdkConnection(client);
 }
 
-class StdioConnection implements McpConnection {
+class SdkConnection implements McpConnection {
   readonly #client: Client;
 
   constructor(client: Client) {

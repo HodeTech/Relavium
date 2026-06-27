@@ -76,10 +76,12 @@ args = ["--root", "~/projects"]
 autostart = true
 # url = "https://host/mcp"         # for transport = http (Streamable HTTP); a `websocket` server uses wss://
 # env = { TOKEN = "..." }
+# allow_local_endpoint = true      # opt into a private/loopback url (network transports only, ADR-0053 §3)
 ```
 
 A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
-`websocket`); the url is SSRF-guarded and must not embed credentials. An agent consumes a registration with
+`websocket`); the url is SSRF-guarded (a private/loopback host is rejected unless `allow_local_endpoint` is set;
+a remote host must be `https`/`wss`) and must not embed credentials. An agent consumes a registration with
 `- ref: filesystem` (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
 ## `project.toml` / `workspace.toml` (project) — keys

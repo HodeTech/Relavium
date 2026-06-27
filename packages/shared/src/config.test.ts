@@ -103,6 +103,21 @@ describe('config schemas', () => {
     ).toBe(false); // http needs url
   });
 
+  it('accepts `allow_local_endpoint` on a network MCP registration (ADR-0053 §3)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [
+          {
+            name: 'local',
+            transport: 'http',
+            url: 'http://localhost:4000/mcp',
+            allow_local_endpoint: true,
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts a `websocket` MCP registration with a ws(s) url, rejecting a non-ws scheme (ADR-0052 §5)', () => {
     expect(
       GlobalConfigSchema.safeParse({

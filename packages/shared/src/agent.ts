@@ -68,7 +68,15 @@ export const McpTransportSchema = z.enum(['stdio', 'http', 'websocket', 'sse']);
 const SAFE_MCP_URL = /^(https?|wss?):\/\//i;
 
 /** The inline connection fields a by-name `ref` must NOT carry (the registration provides them). */
-const INLINE_CONNECTION_FIELDS = ['id', 'transport', 'command', 'args', 'env', 'url'] as const;
+const INLINE_CONNECTION_FIELDS = [
+  'id',
+  'transport',
+  'command',
+  'args',
+  'env',
+  'url',
+  'allow_local_endpoint',
+] as const;
 
 /**
  * A reference to an MCP server an agent consumes (`McpServerRef`) — one of two mutually-exclusive forms
@@ -91,6 +99,9 @@ export const McpServerRefSchema = z
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
     url: z.string().url().optional(),
+    // Opt into a private/loopback network endpoint (ADR-0053 §3), scoped to the declared host:port — relaxes the
+    // SSRF range-block AND permits plaintext for THAT local endpoint only. Network transports only.
+    allow_local_endpoint: z.boolean().optional(),
     ref: nonEmptyString.optional(),
     tools_allowlist: z.array(nonEmptyString).optional(),
   })

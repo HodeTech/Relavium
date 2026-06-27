@@ -33,6 +33,8 @@ export const McpServerRegistrationSchema = z
     autostart: z.boolean().optional(),
     url: z.string().url().optional(),
     env: z.record(z.string(), z.string()).optional(),
+    // Opt into a private/loopback network endpoint (ADR-0053 §3) — see `McpServerRefSchema`. Network transports only.
+    allow_local_endpoint: z.boolean().optional(),
   })
   // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — strict config per ADR-0033 (which amends ADR-0023's config carve-out).
   .strict()

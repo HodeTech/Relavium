@@ -235,6 +235,17 @@ describe('McpServerRefSchema', () => {
     ).toBe(false); // http → http(s), not ws(s)
   });
 
+  it('accepts `allow_local_endpoint` on an inline network server (ADR-0053 §3)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'local',
+        transport: 'http',
+        url: 'http://localhost:4000/mcp',
+        allow_local_endpoint: true,
+      }).success,
+    ).toBe(true);
+  });
+
   describe('by-name `ref` form (ADR-0052 §5)', () => {
     it('accepts a bare { ref } and { ref, tools_allowlist } (the registration provides the connection)', () => {
       expect(McpServerRefSchema.safeParse({ ref: 'github' }).success).toBe(true);
@@ -251,9 +262,16 @@ describe('McpServerRefSchema', () => {
         { args: ['-y', 'pkg'] },
         { env: { TOKEN: 'x' } },
         { url: 'https://h/mcp' },
+        { allow_local_endpoint: true },
       ]) {
         expect(McpServerRefSchema.safeParse({ ref: 'github', ...inline }).success).toBe(false);
       }
+    });
+
+    it('accepts `tools_allowlist` alongside `ref` (the only field allowed with it)', () => {
+      expect(
+        McpServerRefSchema.safeParse({ ref: 'github', tools_allowlist: ['read'] }).success,
+      ).toBe(true);
     });
 
     it('rejects an inline entry missing id or transport (a ref is the only way to omit them)', () => {

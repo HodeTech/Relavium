@@ -1,15 +1,27 @@
 import type { WorkflowDefinition } from '@relavium/core';
 import {
   McpError,
+  openHttpConnection,
+  openSseConnection,
   openStdioConnection,
+  openWebSocketConnection,
   startMcpClient as defaultStartMcpClient,
+  type HttpServerSpec,
   type ManagerSkippedTool,
   type McpClient,
   type McpConnection,
   type McpServerConfig,
+  type SseServerSpec,
   type StdioServerSpec,
+  type WebSocketServerSpec,
 } from '@relavium/mcp';
-import type { Agent, AgentRef, McpServerRef, McpServerRegistration } from '@relavium/shared';
+import {
+  isPrivateOrLocalHost,
+  type Agent,
+  type AgentRef,
+  type McpServerRef,
+  type McpServerRegistration,
+} from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
@@ -17,18 +29,18 @@ import { sanitizeInline } from '../render/tui/chat-projection.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 
 /**
- * Resolve an agent's inline `mcp_servers` into a live {@link McpClient} (2.R Step 3 — CLI host wiring). This is
- * the Node-host arm that ADR-0052 §2 delegates to the host: it turns each declared **stdio** server into an
- * {@link McpServerConfig} whose `open()` spawns + connects via `@relavium/mcp`'s SDK-fenced `openStdioConnection`,
- * then hands the set to `startMcpClient` (fail-loud connect-all). Only Relavium shapes cross back — the SDK and
- * `node:child_process` stay fenced inside `@relavium/mcp`, and `packages/core` never sees either.
+ * Resolve an agent's inline `mcp_servers` into a live {@link McpClient} (2.R — CLI host wiring). This is the
+ * Node-host arm that ADR-0052 §2 delegates to the host: it turns each declared server into an
+ * {@link McpServerConfig} whose `open()` spawns (`stdio`) or connects (`http`/`sse`/`websocket`) via
+ * `@relavium/mcp`'s SDK-fenced adapters, then hands the set to `startMcpClient` (fail-loud connect-all). Only
+ * Relavium shapes cross back — the SDK and `node:child_process` stay fenced inside `@relavium/mcp`, and
+ * `packages/core` never sees either.
  *
- * **Stdio only for now.** A `sse`/`websocket` (network) server fails loud here — the network transports + their
- * SSRF guard are the Step-4c follow-up ([ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)),
- * and silently dropping a declared server is the opposite of secure-by-default. A `{{secrets.<name>}}` in a
- * server `env` value is resolved (2.R Step 4a, ADR-0052 §6) through the injected {@link McpSecretResolver}; any
- * other `{{…}}` (or a `{{secrets}}` with no resolver wired) is **rejected loud** so a placeholder is never
- * passed to the server as a literal string.
+ * A **network** (`http`/`sse`/`websocket`) `url` passes the {@link assertSafeNetworkEndpoint} SSRF floor
+ * (ADR-0053) before connecting. A `{{secrets.<name>}}` in a server `env` value is resolved (2.R Step 4a,
+ * ADR-0052 §6) through the injected {@link McpSecretResolver}; any other `{{…}}` (or a `{{secrets}}` with no
+ * resolver wired) is **rejected loud** so a placeholder is never passed to the server as a literal string. A
+ * by-name `ref` is resolved against the config registrations ({@link resolveMcpServerRef}).
  */
 
 /** Options for {@link connectAgentMcp} — the spawn working dir + an injectable client starter (tests). */
@@ -90,6 +102,9 @@ export function resolveMcpServerRef(
     ...(reg.args === undefined ? {} : { args: reg.args }),
     ...(reg.env === undefined ? {} : { env: reg.env }),
     ...(reg.url === undefined ? {} : { url: reg.url }),
+    ...(reg.allow_local_endpoint === undefined
+      ? {}
+      : { allow_local_endpoint: reg.allow_local_endpoint }),
     ...(entry.tools_allowlist === undefined ? {} : { tools_allowlist: entry.tools_allowlist }),
   };
 }
@@ -110,57 +125,135 @@ export type OpenStdioConnection = (
 ) => Promise<McpConnection>;
 
 /**
- * Map an agent's inline `mcp_servers` to {@link McpServerConfig}s (stdio only). Throws a typed, exit-2
- * {@link CliError} for a not-yet-wired transport or an unsupported (`{{…}}`) env value — never a silent skip.
- * `openConnection` defaults to the real {@link openStdioConnection}; a test injects a spy to observe the spawn
- * spec (the resolved-secret `env`) at the boundary without spawning a real child.
+ * Injectable transport openers — defaults are the real `@relavium/mcp` adapters; a test injects spies to
+ * observe the built spec (or assert the SSRF gate) without a real spawn/connect.
  */
-export function resolveStdioServerConfigs(
+export interface ServerOpeners {
+  readonly stdio?: OpenStdioConnection;
+  readonly http?: (serverId: string, spec: HttpServerSpec) => Promise<McpConnection>;
+  readonly sse?: (serverId: string, spec: SseServerSpec) => Promise<McpConnection>;
+  readonly websocket?: (serverId: string, spec: WebSocketServerSpec) => Promise<McpConnection>;
+}
+
+/**
+ * Map an agent's inline `mcp_servers` to {@link McpServerConfig}s, dispatching by transport — `stdio` spawns a
+ * child (the declared `env` with `{{secrets.*}}` resolved), and `http` (Streamable HTTP) / `sse` (legacy
+ * HTTP+SSE alias) / `websocket` open a network connection through the **SSRF gate** ({@link
+ * assertSafeNetworkEndpoint}). Throws a typed, exit-2 {@link CliError} for an unresolved ref, an unsupported
+ * (`{{…}}`) env, or an unsafe network endpoint — never a silent skip. A by-name `ref` must already be resolved
+ * to inline ({@link resolveMcpServerRef}).
+ */
+export function resolveServerConfigs(
   mcpServers: readonly McpServerRef[] | undefined,
   cwd: string,
   resolveSecret?: McpSecretResolver,
-  openConnection: OpenStdioConnection = openStdioConnection,
+  openers: ServerOpeners = {},
 ): McpServerConfig[] {
+  const openStdio = openers.stdio ?? openStdioConnection;
+  const openHttp = openers.http ?? openHttpConnection;
+  const openSse = openers.sse ?? openSseConnection;
+  const openWs = openers.websocket ?? openWebSocketConnection;
   const configs: McpServerConfig[] = [];
   for (const ref of mcpServers ?? []) {
     // A by-name `ref` must be resolved to inline (id + transport) before reaching here (resolveMcpServerRef).
-    if (ref.id === undefined) {
+    if (ref.id === undefined || ref.transport === undefined) {
       throw new CliError(
         'invalid_invocation',
-        `MCP server '${ref.ref ?? '?'}': a by-name reference could not be resolved to a connection.`,
+        `MCP server '${ref.ref ?? ref.id ?? '?'}': a by-name reference could not be resolved to a connection.`,
       );
     }
     const serverId = ref.id; // capture the narrowed id so it survives into the deferred `open` closure
-    if (ref.transport !== 'stdio') {
+    const allowlist =
+      ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist };
+
+    if (ref.transport === 'stdio') {
+      // The schema's `superRefine` already guarantees `command` for a stdio transport; re-assert so the spawn
+      // spec is total without a non-null assertion (a defensive, typed failure rather than an undefined spawn).
+      if (ref.command === undefined) {
+        throw new CliError(
+          'invalid_invocation',
+          `MCP server '${serverId}': a 'stdio' transport requires a 'command'.`,
+        );
+      }
+      const command = ref.command;
+      const env = buildChildEnv(serverId, ref.env, resolveSecret);
+      configs.push({
+        id: serverId,
+        ...allowlist,
+        open: () =>
+          openStdio(serverId, {
+            command,
+            env,
+            cwd,
+            ...(ref.args === undefined ? {} : { args: ref.args }),
+          }),
+      });
+      continue;
+    }
+
+    // Network transport (http | sse | websocket). The schema guarantees a `url`; re-assert defensively.
+    if (ref.url === undefined) {
       throw new CliError(
         'invalid_invocation',
-        `MCP server '${serverId}': the '${ref.transport ?? '?'}' transport is not wired yet (stdio only for now). ` +
-          `Network MCP transports land in a follow-up.`,
+        `MCP server '${serverId}': the '${ref.transport}' transport requires a 'url'.`,
       );
     }
-    // The schema's `superRefine` already guarantees `command` for a stdio transport; re-assert so the spawn
-    // spec is total without a non-null assertion (a defensive, typed failure rather than an undefined spawn).
-    if (ref.command === undefined) {
-      throw new CliError(
-        'invalid_invocation',
-        `MCP server '${serverId}': a 'stdio' transport requires a 'command'.`,
-      );
-    }
-    const command = ref.command;
-    const env = buildChildEnv(serverId, ref.env, resolveSecret);
-    configs.push({
-      id: serverId,
-      ...(ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist }),
-      open: () =>
-        openConnection(serverId, {
-          command,
-          env,
-          cwd,
-          ...(ref.args === undefined ? {} : { args: ref.args }),
-        }),
-    });
+    const url = ref.url;
+    const transport = ref.transport;
+    // The SSRF pre-connect floor — rejects a private/loopback/link-local host (unless opted in) and a plaintext
+    // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
+    assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
+    const open =
+      transport === 'websocket'
+        ? () => openWs(serverId, { url })
+        : transport === 'sse'
+          ? () => openSse(serverId, { url })
+          : () => openHttp(serverId, { url }); // 'http' (Streamable HTTP)
+    configs.push({ id: serverId, ...allowlist, open });
   }
   return configs;
+}
+
+/**
+ * The **SSRF pre-connect floor** for a network MCP `url` (2.R Step 4c, [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)).
+ * Reuses the ONE shared `isPrivateOrLocalHost` range-block primitive (never re-implemented). A private/loopback/
+ * link-local/metadata host is rejected UNLESS `allow_local_endpoint` is set (which, for that local endpoint,
+ * also permits plaintext `http`/`ws` — a local-dev server is typically plaintext); a **remote** host must use
+ * `https`/`wss` regardless of the flag. The no-embedded-credentials check is enforced here too (the flag never
+ * relaxes it). This is the host-validated FLOOR; the SDK transport opens its own socket, so the DNS-rebind
+ * connect-by-validated-IP upgrade is a tracked follow-up (deferred-tasks.md).
+ */
+function assertSafeNetworkEndpoint(serverId: string, url: string, allowLocal: boolean): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new CliError('invalid_invocation', `MCP server '${serverId}': malformed url.`);
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': the url must not embed credentials (user:pass@…) — use env/keychain auth.`,
+    );
+  }
+  const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '');
+  const isSecure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+  if (isPrivateOrLocalHost(host)) {
+    if (!allowLocal) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': '${host}' is a private/loopback/link-local address. ` +
+          `Set 'allow_local_endpoint: true' on the server to permit a local MCP endpoint.`,
+      );
+    }
+    return; // a local endpoint with the explicit opt-in — plaintext is permitted for it (ADR-0053 §3).
+  }
+  if (!isSecure) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': a remote MCP url must use https/wss (got '${parsed.protocol.replace(':', '')}').`,
+    );
+  }
 }
 
 /**
@@ -179,7 +272,7 @@ export async function connectAgentMcp(
   const inline = (mcpServers ?? []).map((entry) =>
     resolveMcpServerRef(entry, opts.registrations ?? []),
   );
-  const configs = resolveStdioServerConfigs(inline, opts.cwd, opts.resolveSecret);
+  const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret);
   if (configs.length === 0) return undefined;
   return startMcpClientFailLoud(configs, opts.startMcpClient);
 }
@@ -217,7 +310,7 @@ const SECRET_PLACEHOLDER = /\{\{\s*secrets\.([A-Za-z0-9._-]+)\s*\}\}/g;
  * resolver is wired) is rejected loud, so an unsupported/unresolved placeholder is never passed as a literal.
  *
  * Exported for a focused unit test of the interpolation/fail-closed behavior (the resolved value is otherwise
- * hidden inside the spawn closure of {@link resolveStdioServerConfigs}).
+ * hidden inside the spawn closure of {@link resolveServerConfigs}).
  */
 export function buildChildEnv(
   serverId: string,
@@ -272,8 +365,8 @@ export interface ConnectWorkflowMcpOptions {
  * server share one connection; the same id with conflicting connection settings is a fail-loud {@link CliError}),
  * starts them fail-loud, and returns the live {@link McpClient} plus a workflow whose inline agents each have
  * their `tools` grant unioned with ONLY their own declared servers' discovered tool ids (per-agent isolation via
- * the manager's `toolIdsByServer`). Returns `undefined` when no inline agent declares a server. Stdio only —
- * a network transport fails loud in {@link resolveStdioServerConfigs} (the Step-4 follow-up).
+ * the manager's `toolIdsByServer`). Returns `undefined` when no inline agent declares a server. Each transport
+ * (stdio + the network ones) is dispatched + SSRF-gated by {@link resolveServerConfigs}.
  */
 export async function connectWorkflowMcp(
   def: WorkflowDefinition,
@@ -305,7 +398,7 @@ export async function connectWorkflowMcp(
   }
   if (byId.size === 0) return undefined;
 
-  const configs = resolveStdioServerConfigs([...byId.values()], opts.cwd, opts.resolveSecret);
+  const configs = resolveServerConfigs([...byId.values()], opts.cwd, opts.resolveSecret);
   const client = await startMcpClientFailLoud(configs, opts.startMcpClient);
 
   // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).

@@ -48,7 +48,11 @@ mcp_servers:
       GITHUB_TOKEN: '{{secrets.github_token}}'   # resolved from the isolated mcp-secret:* keychain (§6)
   - id: docs
     transport: http               # http (Streamable HTTP) / websocket use `url` instead of `command`
-    url: 'https://docs.example/mcp'
+    url: 'https://docs.example/mcp'   # remote ⇒ must be https/wss
+  - id: local-dev
+    transport: http
+    url: 'http://localhost:4000/mcp'
+    allow_local_endpoint: true    # opt into a private/loopback url (relaxes the SSRF block + plaintext for it)
   # 2. BY-NAME `ref` — identity + connection come from a [[mcp_servers]] registration
   - ref: shared-fs                # mutually exclusive with id/transport/command/url/env
     tools_allowlist: [read_file]  # the only field allowed alongside `ref`

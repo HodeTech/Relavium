@@ -10,7 +10,7 @@ import {
   connectAgentMcp,
   connectWorkflowMcp,
   resolveMcpServerRef,
-  resolveStdioServerConfigs,
+  resolveServerConfigs,
   surfaceMcpSkipped,
 } from './mcp-servers.js';
 
@@ -33,9 +33,9 @@ const stdioRef = (over: Partial<McpServerRef> = {}): McpServerRef => ({
   ...over,
 });
 
-describe('resolveStdioServerConfigs', () => {
+describe('resolveServerConfigs', () => {
   it('maps a stdio ref to a config carrying its id + allowlist (open is a deferred spawn closure)', () => {
-    const configs = resolveStdioServerConfigs(
+    const configs = resolveServerConfigs(
       [stdioRef({ tools_allowlist: ['read', 'write'] })],
       '/work',
     );
@@ -46,37 +46,55 @@ describe('resolveStdioServerConfigs', () => {
   });
 
   it('omits toolsAllowlist when the ref declares none (exactOptionalPropertyTypes — never an explicit undefined)', () => {
-    const configs = resolveStdioServerConfigs([stdioRef()], '/work');
+    const configs = resolveServerConfigs([stdioRef()], '/work');
     expect('toolsAllowlist' in configs[0]!).toBe(false);
   });
 
   it('returns an empty list for undefined / empty mcp_servers', () => {
-    expect(resolveStdioServerConfigs(undefined, '/work')).toEqual([]);
-    expect(resolveStdioServerConfigs([], '/work')).toEqual([]);
+    expect(resolveServerConfigs(undefined, '/work')).toEqual([]);
+    expect(resolveServerConfigs([], '/work')).toEqual([]);
   });
 
-  it('rejects a network transport as a typed exit-2 CliError (stdio only until the Step-4 follow-up)', () => {
-    // `sse`/`websocket` are valid schema transports but not yet wired — fail loud, never a silent skip.
-    for (const transport of ['sse', 'websocket'] as const) {
-      try {
-        resolveStdioServerConfigs([{ id: 'x', transport, url: 'https://h/mcp' }], '/work');
-        expect.unreachable('a network transport must throw');
-      } catch (err) {
-        expect(isCliError(err) && err.code).toBe('invalid_invocation');
-        expect((err as Error).message).toContain(transport);
-      }
-    }
+  it('dispatches each network transport to its opener (http → Streamable HTTP, sse → legacy, websocket → ws)', async () => {
+    const calls: string[] = [];
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const spy =
+      (label: string) =>
+      (serverId: string, spec: { url: string }): Promise<McpConnection> => {
+        calls.push(`${label}:${serverId}:${spec.url}`);
+        return Promise.resolve(conn);
+      };
+    const configs = resolveServerConfigs(
+      [
+        { id: 'a', transport: 'http', url: 'https://h/mcp' },
+        { id: 'b', transport: 'sse', url: 'https://h/sse' },
+        { id: 'c', transport: 'websocket', url: 'wss://h/ws' },
+      ],
+      '/work',
+      undefined,
+      { http: spy('http'), sse: spy('sse'), websocket: spy('ws') },
+    );
+    await Promise.all(configs.map((c) => c.open()));
+    expect(calls.sort()).toEqual([
+      'http:a:https://h/mcp',
+      'sse:b:https://h/sse',
+      'ws:c:wss://h/ws',
+    ]);
   });
 
   it('rejects a stdio ref with no command (defensive — the schema guarantees it, but the spawn must be total)', () => {
     // Construct the ref directly (bypassing the schema superRefine) to exercise the host-side guard.
     const bad: McpServerRef = { id: 'fs', transport: 'stdio' };
-    expect(() => resolveStdioServerConfigs([bad], '/work')).toThrow(/requires a 'command'/);
+    expect(() => resolveServerConfigs([bad], '/work')).toThrow(/requires a 'command'/);
   });
 
   it('rejects an env value carrying a {{…}} marker when NO secret resolver is wired', () => {
     try {
-      resolveStdioServerConfigs([stdioRef({ env: { TOKEN: '{{secrets.gh}}' } })], '/work');
+      resolveServerConfigs([stdioRef({ env: { TOKEN: '{{secrets.gh}}' } })], '/work');
       expect.unreachable('a {{…}} env value must throw');
     } catch (err) {
       expect(isCliError(err) && err.code).toBe('invalid_invocation');
@@ -88,7 +106,7 @@ describe('resolveStdioServerConfigs', () => {
 
   it('accepts a literal env value (the common case)', () => {
     expect(() =>
-      resolveStdioServerConfigs([stdioRef({ env: { LOG_LEVEL: 'debug' } })], '/work'),
+      resolveServerConfigs([stdioRef({ env: { LOG_LEVEL: 'debug' } })], '/work'),
     ).not.toThrow();
   });
 
@@ -102,18 +120,77 @@ describe('resolveStdioServerConfigs', () => {
       callTool: () => Promise.resolve({ content: [], isError: false }),
       close: () => Promise.resolve(),
     };
-    const configs = resolveStdioServerConfigs(
+    const configs = resolveServerConfigs(
       [stdioRef({ env: { TOKEN: 'Bearer {{secrets.gh}}' } })],
       '/work',
       (name) => (name === 'gh' ? 'ghp_SENTINEL' : 'OTHER'),
-      (_serverId, spec) => {
-        capturedSpec = spec;
-        return Promise.resolve(conn);
+      {
+        stdio: (_serverId, spec) => {
+          capturedSpec = spec;
+          return Promise.resolve(conn);
+        },
       },
     );
     void configs[0]!.open(); // invoke the spawn closure → calls the spy with the built spec
     expect(capturedSpec?.env).toEqual({ TOKEN: 'Bearer ghp_SENTINEL' }); // the resolved value reached the spawn env
     expect(capturedSpec?.command).toBe('my-server');
+  });
+});
+
+describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)', () => {
+  const netRef = (over: Partial<McpServerRef> = {}): McpServerRef => ({
+    id: 'n',
+    transport: 'http',
+    url: 'https://api.example/mcp',
+    ...over,
+  });
+  // The gate runs synchronously at config build (before any connect), so a throw surfaces from resolveServerConfigs.
+  const build = (over: Partial<McpServerRef> = {}): McpServerConfig[] =>
+    resolveServerConfigs([netRef(over)], '/work');
+
+  it('accepts a remote https/wss endpoint', () => {
+    expect(build({ url: 'https://api.example/mcp' })).toHaveLength(1);
+    expect(build({ transport: 'websocket', url: 'wss://api.example/ws' })).toHaveLength(1);
+  });
+
+  it('rejects a private/loopback/link-local host without allow_local_endpoint', () => {
+    for (const url of [
+      'http://127.0.0.1:4000/mcp',
+      'http://localhost:4000/mcp',
+      'http://10.0.0.5/mcp',
+      'http://192.168.1.2/mcp',
+      'http://169.254.169.254/latest', // the cloud metadata endpoint
+      'http://[::1]/mcp',
+    ]) {
+      expect(() => build({ url })).toThrow(/private\/loopback/);
+    }
+  });
+
+  it('permits a private/loopback endpoint AND plaintext WITH allow_local_endpoint', () => {
+    expect(build({ url: 'http://localhost:4000/mcp', allow_local_endpoint: true })).toHaveLength(1);
+    expect(
+      build({ transport: 'websocket', url: 'ws://127.0.0.1:4000/ws', allow_local_endpoint: true }),
+    ).toHaveLength(1);
+  });
+
+  it('rejects a REMOTE plaintext endpoint regardless of allow_local_endpoint (the flag is local-only)', () => {
+    expect(() => build({ url: 'http://api.example/mcp' })).toThrow(/must use https\/wss/);
+    expect(() => build({ url: 'http://api.example/mcp', allow_local_endpoint: true })).toThrow(
+      /must use https\/wss/,
+    );
+    expect(() => build({ transport: 'websocket', url: 'ws://api.example/ws' })).toThrow(
+      /must use https\/wss/,
+    );
+  });
+
+  it('rejects an embedded-credentials url (the flag never relaxes it)', () => {
+    expect(() =>
+      build({ url: 'https://user:pass@api.example/mcp', allow_local_endpoint: true }),
+    ).toThrow(/must not embed credentials/);
+  });
+
+  it('rejects a malformed url', () => {
+    expect(() => build({ url: 'not a url' })).toThrow(/malformed url/);
   });
 });
 
@@ -472,17 +549,30 @@ describe('connectWorkflowMcp (run path)', () => {
     expect(agentOf(runtime!.workflow, 'writer').tools).toEqual(['mcp_github_issue']);
   });
 
-  it('fails loud when a `ref` resolves to a NON-stdio registration (network not wired until Step 4c)', async () => {
+  it('resolves a `ref` to a remote https http registration through the SSRF gate (the network path is wired)', async () => {
     const def = wf(
       `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: remote }] }\n`,
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      registrations: [{ name: 'remote', transport: 'http', url: 'https://api.example/mcp' }],
+      startMcpClient: fakeStart(new Map([['remote', ['mcp_remote_x']]])),
+    });
+    expect(runtime).toBeDefined(); // a remote https ref resolves + passes the SSRF floor (no fail-loud)
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_remote_x']);
+  });
+
+  it('fails loud at the SSRF floor when a `ref` resolves to a private http url without allow_local_endpoint', async () => {
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: local }] }\n`,
     );
     await expect(
       connectWorkflowMcp(def, {
         cwd: '/w',
-        registrations: [{ name: 'remote', transport: 'http', url: 'https://h/mcp' }],
+        registrations: [{ name: 'local', transport: 'http', url: 'http://127.0.0.1:4000/mcp' }],
         startMcpClient: fakeStart(new Map()),
       }),
-    ).rejects.toThrow(/transport is not wired yet/); // identical to an inline non-stdio server
+    ).rejects.toThrow(/private\/loopback/);
   });
 });
 
