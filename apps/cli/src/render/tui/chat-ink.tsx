@@ -206,9 +206,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
       if (forceExit === undefined) {
         process.exit(EXIT_CODES.chatEnded);
       }
-      const bounded = new Promise<void>((resolve) =>
-        setTimeout(resolve, FORCE_TEARDOWN_MS).unref(),
-      );
+      // The fallback timer is deliberately REFERENCED (no `.unref()`): it must keep the event loop alive until it
+      // fires so the hard exit is GUARANTEED even if `forceExit()` hangs (an unref'd timer could let the loop
+      // drain first, skipping the exit). On the happy path `forceExit()` resolves first → `process.exit` runs
+      // immediately and reclaims this still-pending timer, so there is no spurious FORCE_TEARDOWN_MS wait.
+      const bounded = new Promise<void>((resolve) => {
+        setTimeout(resolve, FORCE_TEARDOWN_MS);
+      });
       void Promise.race([forceExit().catch(() => undefined), bounded]).finally(() =>
         process.exit(EXIT_CODES.chatEnded),
       );
