@@ -1,5 +1,5 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
-import { McpError, type McpClient, type McpServerConfig } from '@relavium/mcp';
+import { McpError, type McpClient, type McpConnection, type McpServerConfig } from '@relavium/mcp';
 import type { Agent, McpServerRef } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -89,6 +89,30 @@ describe('resolveStdioServerConfigs', () => {
     expect(() =>
       resolveStdioServerConfigs([stdioRef({ env: { LOG_LEVEL: 'debug' } })], '/work'),
     ).not.toThrow();
+  });
+
+  it('carries the RESOLVED secret into the spawn-spec env (and only there) — ties resolver → buildChildEnv → open', () => {
+    // The genuine custody tie: inject a spy `openConnection`, invoke the config's `open()`, and assert the
+    // resolved value reached the spawn boundary's `env`. In production that spec.env is the ONLY place the value
+    // flows (sdk-stdio.ts `env: {...spec.env}`); nothing else observes it.
+    let capturedSpec: { command: string; env: Record<string, string>; cwd?: string } | undefined;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const configs = resolveStdioServerConfigs(
+      [stdioRef({ env: { TOKEN: 'Bearer {{secrets.gh}}' } })],
+      '/work',
+      (name) => (name === 'gh' ? 'ghp_SENTINEL' : 'OTHER'),
+      (_serverId, spec) => {
+        capturedSpec = spec;
+        return Promise.resolve(conn);
+      },
+    );
+    void configs[0]!.open(); // invoke the spawn closure → calls the spy with the built spec
+    expect(capturedSpec?.env).toEqual({ TOKEN: 'Bearer ghp_SENTINEL' }); // the resolved value reached the spawn env
+    expect(capturedSpec?.command).toBe('my-server');
   });
 });
 

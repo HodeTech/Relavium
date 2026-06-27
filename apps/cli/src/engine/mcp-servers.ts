@@ -5,7 +5,9 @@ import {
   startMcpClient as defaultStartMcpClient,
   type ManagerSkippedTool,
   type McpClient,
+  type McpConnection,
   type McpServerConfig,
+  type StdioServerSpec,
 } from '@relavium/mcp';
 import type { Agent, AgentRef, McpServerRef } from '@relavium/shared';
 
@@ -42,14 +44,23 @@ export interface ConnectAgentMcpOptions {
   readonly resolveSecret?: McpSecretResolver;
 }
 
+/** Open a stdio MCP connection from a spawn spec — the real {@link openStdioConnection}, or a test spy. */
+export type OpenStdioConnection = (
+  serverId: string,
+  spec: StdioServerSpec,
+) => Promise<McpConnection>;
+
 /**
  * Map an agent's inline `mcp_servers` to {@link McpServerConfig}s (stdio only). Throws a typed, exit-2
  * {@link CliError} for a not-yet-wired transport or an unsupported (`{{…}}`) env value — never a silent skip.
+ * `openConnection` defaults to the real {@link openStdioConnection}; a test injects a spy to observe the spawn
+ * spec (the resolved-secret `env`) at the boundary without spawning a real child.
  */
 export function resolveStdioServerConfigs(
   mcpServers: readonly McpServerRef[] | undefined,
   cwd: string,
   resolveSecret?: McpSecretResolver,
+  openConnection: OpenStdioConnection = openStdioConnection,
 ): McpServerConfig[] {
   const configs: McpServerConfig[] = [];
   for (const ref of mcpServers ?? []) {
@@ -74,7 +85,7 @@ export function resolveStdioServerConfigs(
       id: ref.id,
       ...(ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist }),
       open: () =>
-        openStdioConnection(ref.id, {
+        openConnection(ref.id, {
           command,
           env,
           cwd,

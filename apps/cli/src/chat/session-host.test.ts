@@ -300,8 +300,9 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     });
     expect(built.closeMcp).toBeDefined(); // the secret resolved ⇒ the build proceeded to connect
 
-    // The resolved value lives ONLY in the child-env passed to the spawn — it must NEVER surface on the session
-    // event stream (ADR-0052 §6 custody guarantee). Run a turn and assert the sentinel appears nowhere.
+    // Complementary half of the ADR-0052 §6 custody guarantee: the session EVENT STREAM carries no secret. (The
+    // value→spawn-env tie is proven directly in mcp-servers.test.ts "carries the RESOLVED secret into the
+    // spawn-spec env"; the injected fake client here does not spawn, so this asserts only stream-cleanliness.)
     built.session.start();
     await built.session.sendMessage('go');
     built.session.cancel();
