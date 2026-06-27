@@ -447,6 +447,43 @@ describe('connectWorkflowMcp (run path)', () => {
       }),
     ).rejects.toThrow(/ref 'unknown' is not registered/);
   });
+
+  it('dedups two agents each referencing the SAME registration by name to one connection (both granted)', async () => {
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: github }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: github }] }',
+        '',
+      ].join('\n'),
+    );
+    let startedWith: readonly McpServerConfig[] | undefined;
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      registrations: [{ name: 'github', transport: 'stdio', command: 'gh' }],
+      startMcpClient: (servers) => {
+        startedWith = servers;
+        return Promise.resolve(
+          fakeClient({ toolIdsByServer: new Map([['github', ['mcp_github_issue']]]) }),
+        );
+      },
+    });
+    expect(startedWith).toHaveLength(1); // the two refs to `github` collapse to one connection
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_github_issue']);
+    expect(agentOf(runtime!.workflow, 'writer').tools).toEqual(['mcp_github_issue']);
+  });
+
+  it('fails loud when a `ref` resolves to a NON-stdio registration (network not wired until Step 4c)', async () => {
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: remote }] }\n`,
+    );
+    await expect(
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        registrations: [{ name: 'remote', transport: 'http', url: 'https://h/mcp' }],
+        startMcpClient: fakeStart(new Map()),
+      }),
+    ).rejects.toThrow(/transport is not wired yet/); // identical to an inline non-stdio server
+  });
 });
 
 describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
@@ -479,6 +516,18 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
       expect(isCliError(err) && err.code).toBe('invalid_invocation');
       expect((err as Error).message).toContain("ref 'nope' is not registered");
     }
+  });
+
+  it('SANITIZES a non-charset registration name into a namespace-safe id (no silent total tool loss)', () => {
+    // A `[[mcp_servers]]` name is a free string (`github:prod`, `my server`); the namespace charset is
+    // `[A-Za-z0-9_-]`. The resolved id must be sanitized so `mcp_{server}_{tool}` stays valid and the server's
+    // tools are namespaced — NOT dropped at discovery (ADR-0052 §4/§5).
+    const messy: McpServerRegistration[] = [
+      { name: 'github:prod', transport: 'stdio', command: 'gh' },
+      { name: 'my server', transport: 'stdio', command: 'x' },
+    ];
+    expect(resolveMcpServerRef({ ref: 'github:prod' }, messy).id).toBe('github_prod');
+    expect(resolveMcpServerRef({ ref: 'my server' }, messy).id).toBe('my_server');
   });
 });
 

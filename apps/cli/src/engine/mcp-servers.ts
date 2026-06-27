@@ -50,10 +50,26 @@ export interface ConnectAgentMcpOptions {
 }
 
 /**
+ * Sanitize a registration `name` into a namespace-safe server segment for `mcp_{server}_{tool}` (ADR-0052 §4/§5
+ * — "a sanitized form of the registration name"). A `[[mcp_servers]]` `name` is a free `nonEmptyString` (spaces,
+ * `:`, `.`, `/`, …), but the LLM-visible id charset is `[A-Za-z0-9_-]`; an UNsanitized segment would make
+ * `namespacedId` reject every tool of that server and silently drop them. Mirrors the tool-name sanitization in
+ * `@relavium/mcp`. (An inline `id` is already `kebab-case` ⊂ this charset, so sanitizing it is a no-op.) Two
+ * names that collapse to the same segment fail closed at discovery (the manager's duplicate-id/collision guards).
+ */
+function sanitizeServerSegment(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+/**
  * Resolve a by-name `{ ref: <registration-name> }` server entry to a self-contained inline {@link McpServerRef}
  * against the merged config `[[mcp_servers]]` registrations (2.R Step 4b, ADR-0052 §5) — an inline entry passes
- * through unchanged. The resolved server's routing/namespace `id` is the registration `name`, so two agents
- * referencing the same registration dedup to one connection. An unknown `ref` is a fail-loud {@link CliError}.
+ * through unchanged. The resolved server's routing/namespace `id` is the **sanitized** registration `name`
+ * ({@link sanitizeServerSegment}), so two agents referencing the same registration dedup to one connection and
+ * its tools namespace cleanly. An unknown `ref` is a fail-loud {@link CliError}.
+ *
+ * NOTE: the resolved `id` is host-internal and namespace-safe (may carry `_`/uppercase) — it is deliberately NOT
+ * re-validated through `McpServerRefSchema` (whose `id` is the stricter `kebabIdSchema`); it is never re-parsed.
  */
 export function resolveMcpServerRef(
   entry: McpServerRef,
@@ -68,7 +84,7 @@ export function resolveMcpServerRef(
     );
   }
   return {
-    id: reg.name,
+    id: sanitizeServerSegment(reg.name),
     transport: reg.transport,
     ...(reg.command === undefined ? {} : { command: reg.command }),
     ...(reg.args === undefined ? {} : { args: reg.args }),
@@ -78,9 +94,13 @@ export function resolveMcpServerRef(
   };
 }
 
-/** The routing/namespace id of an agent's mcp_servers ENTRY (before resolution) — the `ref` name or inline `id`. */
+/**
+ * The routing/namespace id of an agent's mcp_servers ENTRY (before resolution) — the **sanitized** `ref`
+ * registration name (matching {@link resolveMcpServerRef}, so the grant key aligns with the connection id) or the
+ * inline `id` (already charset-safe).
+ */
 function entryServerId(entry: McpServerRef): string | undefined {
-  return entry.ref ?? entry.id;
+  return entry.ref !== undefined ? sanitizeServerSegment(entry.ref) : entry.id;
 }
 
 /** Open a stdio MCP connection from a spawn spec — the real {@link openStdioConnection}, or a test spy. */

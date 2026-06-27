@@ -145,8 +145,9 @@ carrier fetched by `fetchMediaBytes`:
   binding rule — not a second home. See
   [ADR-0029](../decisions/0029-tool-policy-hardening.md) and
   [built-in-tools.md](../reference/shared-core/built-in-tools.md).
-- **MCP server URLs.** *(Security tightening — ADR-0029(d).)* An MCP `sse`/`websocket`
-  server URL is a second egress path that **injects secrets** into headers, so leaving it
+- **MCP server URLs.** *(Security tightening — ADR-0029(d); transport vocab reconciled by ADR-0052 §5.)* An MCP
+  `http` (Streamable HTTP) / `websocket` server URL (`sse` is a deprecated alias of `http`)
+  is a second egress path that **injects secrets** into headers, so leaving it
   scheme-checked-only while hardening `http_request` would be strictly worse. MCP server
   URLs run the **same** SSRF range-primitive (no second parser). See
   [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
