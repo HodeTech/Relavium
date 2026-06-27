@@ -92,6 +92,18 @@ describe('resolveServerConfigs', () => {
     expect(() => resolveServerConfigs([bad], '/work')).toThrow(/requires a 'command'/);
   });
 
+  it('rejects `env` on a network ref at the host boundary (defense-in-depth below the schema)', () => {
+    // The schema already rejects network `env`; this re-asserts at the host so a programmatic caller that
+    // bypassed the schema fails loud rather than silently discarding what is almost always an auth secret.
+    const bad: McpServerRef = {
+      id: 'docs',
+      transport: 'http',
+      url: 'https://docs.example/mcp',
+      env: { TOKEN: '{{secrets.gh}}' },
+    };
+    expect(() => resolveServerConfigs([bad], '/work')).toThrow(/'env' is not used by a network/);
+  });
+
   it('rejects an env value carrying a {{…}} marker when NO secret resolver is wired', () => {
     try {
       resolveServerConfigs([stdioRef({ env: { TOKEN: '{{secrets.gh}}' } })], '/work');
@@ -110,7 +122,7 @@ describe('resolveServerConfigs', () => {
     ).not.toThrow();
   });
 
-  it('carries the RESOLVED secret into the spawn-spec env (and only there) — ties resolver → buildChildEnv → open', () => {
+  it('carries the RESOLVED secret into the spawn-spec env (and only there) — ties resolver → buildChildEnv → open', async () => {
     // The genuine custody tie: inject a spy `openConnection`, invoke the config's `open()`, and assert the
     // resolved value reached the spawn boundary's `env`. In production that spec.env is the ONLY place the value
     // flows (sdk-stdio.ts `env: {...spec.env}`); nothing else observes it.
@@ -131,7 +143,7 @@ describe('resolveServerConfigs', () => {
         },
       },
     );
-    void configs[0]!.open(); // invoke the spawn closure → calls the spy with the built spec
+    await configs[0]!.open(); // invoke the spawn closure → calls the spy with the built spec (await: surface a reject)
     expect(capturedSpec?.env).toEqual({ TOKEN: 'Bearer ghp_SENTINEL' }); // the resolved value reached the spawn env
     expect(capturedSpec?.command).toBe('my-server');
   });
@@ -184,6 +196,9 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
   it('permits a private/loopback endpoint AND plaintext WITH allow_local_endpoint', () => {
     expect(build({ url: 'http://localhost:4000/mcp', allow_local_endpoint: true })).toHaveLength(1);
     expect(
+      build({ transport: 'sse', url: 'http://127.0.0.1:4000/sse', allow_local_endpoint: true }),
+    ).toHaveLength(1); // the sse alias runs the same floor as http
+    expect(
       build({ transport: 'websocket', url: 'ws://127.0.0.1:4000/ws', allow_local_endpoint: true }),
     ).toHaveLength(1);
   });
@@ -193,6 +208,9 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
     expect(() => build({ url: 'http://api.example/mcp', allow_local_endpoint: true })).toThrow(
       /must use https\/wss/,
     );
+    expect(() => build({ transport: 'sse', url: 'http://api.example/sse' })).toThrow(
+      /must use https\/wss/,
+    ); // the sse alias is gated identically
     expect(() => build({ transport: 'websocket', url: 'ws://api.example/ws' })).toThrow(
       /must use https\/wss/,
     );
@@ -242,10 +260,19 @@ describe('buildChildEnv (secret interpolation, 2.R Step 4)', () => {
     }
   });
 
-  it('rejects a {{secrets.…}} when no resolver is wired (the value is never passed literally)', () => {
-    expect(() => buildChildEnv('fs', { TOKEN: '{{secrets.gh}}' })).toThrow(
-      /unsupported interpolation/,
-    );
+  it('rejects a {{secrets.…}} when no resolver is wired with a WIRING-GAP message (not a syntax red herring)', () => {
+    // A correctly-written `{{secrets.gh}}` that fails only because no resolver was wired must say exactly that —
+    // "no MCP secret resolver is wired" — not "unsupported interpolation" (which would mislead the operator into
+    // suspecting their syntax). The key is named; the secret name is never echoed.
+    try {
+      buildChildEnv('fs', { TOKEN: '{{secrets.gh}}' });
+      expect.unreachable('a {{secrets.…}} with no resolver must throw');
+    } catch (err) {
+      expect(isCliError(err) && err.code).toBe('invalid_invocation');
+      expect((err as Error).message).toContain('TOKEN'); // names the key
+      expect((err as Error).message).toContain('no MCP secret resolver is wired');
+      expect((err as Error).message).not.toContain('secrets.gh'); // never echo the secret name
+    }
   });
 
   it('does NOT false-reject a resolved secret whose VALUE itself contains "{{" (scan the pre-substitution value)', () => {
@@ -442,6 +469,42 @@ describe('connectWorkflowMcp (run path)', () => {
     await expect(
       connectWorkflowMcp(absentVsNarrow, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
     ).rejects.toThrow(/conflicting settings/);
+  });
+
+  it('shares one connection for an identical env (incl. {{secrets.*}}) and fails loud — without leaking the value — on a divergent env', async () => {
+    // `env` is part of the dedup fingerprint, so an identical placeholder shares one connection; a divergent one
+    // fails loud. The conflict error names ONLY the server id — the `{{secrets.*}}` placeholder must never surface.
+    const identical = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, env: { TOKEN: "{{secrets.gh}}" } }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, env: { TOKEN: "{{secrets.gh}}" } }] }',
+        '',
+      ].join('\n'),
+    );
+    const runtime = await connectWorkflowMcp(identical, {
+      cwd: '/w',
+      startMcpClient: fakeStart(new Map([['fs', ['mcp_fs_read']]])),
+      resolveSecret: () => 'unused', // never invoked: the injected client ignores the spawn closures
+    });
+    expect(runtime).toBeDefined(); // identical env ⇒ one shared connection (no conflict)
+
+    const divergent = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, env: { TOKEN: "{{secrets.gh}}" } }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, env: { TOKEN: "{{secrets.OTHER}}" } }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(divergent, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+    ).rejects.toThrow(/conflicting settings/);
+    // The placeholder must NOT surface in the operator-facing conflict message.
+    await connectWorkflowMcp(divergent, { cwd: '/w', startMcpClient: fakeStart(new Map()) }).catch(
+      (err: unknown) => {
+        expect((err as Error).message).not.toContain('secrets.gh');
+        expect((err as Error).message).not.toContain('secrets.OTHER');
+      },
+    );
   });
 
   it('fails loud when two agents share a server id but DIFFER on allow_local_endpoint (no silent opt-in sharing)', async () => {

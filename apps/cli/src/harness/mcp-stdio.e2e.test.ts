@@ -150,6 +150,11 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
     });
     expect(client).toBeDefined();
     try {
+      // The env injection must not perturb discovery: `whoami` is admitted as a callable LLM tool (not skipped),
+      // so the round-trip below proves custody, not merely the direct-dispatch path bypassing the grant.
+      expect(client!.skipped).toEqual([]);
+      expect(client!.toolDefs.map((d) => d.id)).toContain('mcp_echo_whoami');
+
       const who = asResult(
         await client!.capability.call({ server: 'echo', tool: 'whoami', args: {} }),
       );

@@ -257,17 +257,20 @@ describe('McpServerRefSchema', () => {
     ).toBe(false);
   });
 
-  it('rejects `env` on a network transport (2.R injects env only into a stdio child; fail-closed not silent-drop)', () => {
+  it('rejects `env` on EVERY network transport (2.R injects env only into a stdio child; fail-closed not silent-drop)', () => {
     // env carries `{{secrets.*}}`; a network transport spawns no child, so the host would silently discard it —
-    // rejecting at parse keeps the fail-closed posture (ADR-0052 §6). `env` on stdio still parses.
-    expect(
-      McpServerRefSchema.safeParse({
-        id: 'docs',
-        transport: 'http',
-        url: 'https://docs.example/mcp',
-        env: { TOKEN: '{{secrets.gh}}' },
-      }).success,
-    ).toBe(false);
+    // rejecting at parse keeps the fail-closed posture (ADR-0052 §6) for http, its sse alias, AND websocket.
+    for (const net of [
+      { transport: 'http' as const, url: 'https://docs.example/mcp' },
+      { transport: 'sse' as const, url: 'https://docs.example/sse' },
+      { transport: 'websocket' as const, url: 'wss://docs.example/ws' },
+    ]) {
+      expect(
+        McpServerRefSchema.safeParse({ id: 'docs', ...net, env: { TOKEN: '{{secrets.gh}}' } })
+          .success,
+      ).toBe(false);
+    }
+    // `env` on stdio still parses.
     expect(
       McpServerRefSchema.safeParse({
         id: 'fs',

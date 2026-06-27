@@ -184,8 +184,10 @@ export const McpServerRefSchema = z
         });
       }
     }
-    if (ref.url !== undefined) {
-      // Per-transport scheme: `http`/`sse` are HTTP(S), `websocket` is WS(S) (stdio carries no url).
+    if (ref.url !== undefined && ref.transport !== 'stdio') {
+      // Per-transport scheme: `http`/`sse` are HTTP(S), `websocket` is WS(S). A stdio `url` is already rejected
+      // outright above (its scheme is irrelevant), so this scheme/credentials pass is network-only — otherwise a
+      // stray stdio url would double-issue ("url not used by stdio" AND "scheme invalid").
       // This also blocks file:/javascript:/etc. as a side effect.
       let schemeOk: boolean;
       if (ref.transport === 'websocket') schemeOk = /^wss?:\/\//i.test(ref.url);

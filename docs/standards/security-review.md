@@ -157,7 +157,8 @@ carrier fetched by `fetchMediaBytes`:
   window the connect-by-validated-IP dialer closes — tracked in
   [deferred-tasks.md](../roadmap/deferred-tasks.md) ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2/§3).
   (A `stdio` server takes no URL; its secrets are injected into the spawned child's `env` — a network
-  transport has no process, so `env` is rejected there, header-auth being a follow-up.) See
+  transport (`http`, its deprecated `sse` alias, or `websocket`) has no process, so `env` is rejected
+  there, header-auth being a follow-up.) See
   [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
   and [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
 - **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7 / [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)) — a fourth path, now wired host-side.**

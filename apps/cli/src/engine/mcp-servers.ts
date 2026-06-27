@@ -191,11 +191,20 @@ export function resolveServerConfigs(
       continue;
     }
 
-    // Network transport (http | sse | websocket). The schema guarantees a `url`; re-assert defensively.
+    // Network transport (http | sse | websocket). The schema guarantees a `url` and forbids `env` here; re-assert
+    // both defensively so a programmatic caller that bypassed the schema fails loud rather than silently dropping.
     if (ref.url === undefined) {
       throw new CliError(
         'invalid_invocation',
         `MCP server '${serverId}': the '${ref.transport}' transport requires a 'url'.`,
+      );
+    }
+    if (ref.env !== undefined) {
+      // `env` (and its `{{secrets.*}}`) is injected only into a stdio child; a network transport has no process,
+      // so dropping it silently would discard an auth secret. Mirror the schema guard at the host boundary.
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': 'env' is not used by a network transport — it is injected only into a stdio child.`,
       );
     }
     const url = ref.url;
@@ -203,12 +212,21 @@ export function resolveServerConfigs(
     // The SSRF pre-connect floor — rejects a private/loopback/link-local host (unless opted in) and a plaintext
     // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
     assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
-    const open =
-      transport === 'websocket'
-        ? () => openWs(serverId, { url })
-        : transport === 'sse'
-          ? () => openSse(serverId, { url })
-          : () => openHttp(serverId, { url }); // 'http' (Streamable HTTP)
+    // Exhaustive transport dispatch — a future transport added to the schema enum trips the `never` guard at
+    // compile time rather than silently routing to Streamable HTTP.
+    let open: () => Promise<McpConnection>;
+    if (transport === 'http')
+      open = () => openHttp(serverId, { url }); // Streamable HTTP
+    else if (transport === 'sse')
+      open = () => openSse(serverId, { url }); // legacy HTTP+SSE alias of `http`
+    else if (transport === 'websocket') open = () => openWs(serverId, { url });
+    else {
+      const unsupported: never = transport;
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': unsupported transport '${String(unsupported)}'.`,
+      );
+    }
     configs.push({ id: serverId, ...allowlist, open });
   }
   return configs;
@@ -333,10 +351,17 @@ export function buildChildEnv(
       resolveSecret === undefined ? value : value.replace(SECRET_PLACEHOLDER, '');
     if (withoutSecretRefs.includes('{{')) {
       // Never pass a placeholder to the server as a literal. The KEY is named, never the value (a resolved
-      // secret must not surface), and never the resolved value either.
+      // secret must not surface), and never the resolved value either. Distinguish the two causes: a
+      // correctly-written `{{secrets.X}}` with NO resolver wired (a host wiring gap) vs an unsupported
+      // placeholder kind (`{{env.X}}`, malformed) — so the operator gets actionable guidance, not a syntax red
+      // herring. The `{{secrets.…}}` test below the un-substituted detection tells them apart.
+      const looksLikeSecretRef = resolveSecret === undefined && SECRET_PLACEHOLDER.test(value);
+      SECRET_PLACEHOLDER.lastIndex = 0; // `/g` test() advances lastIndex — reset before the substitution below
       throw new CliError(
         'invalid_invocation',
-        `MCP server '${serverId}': unsupported interpolation in env '${key}' — only {{secrets.<name>}} is supported.`,
+        looksLikeSecretRef
+          ? `MCP server '${serverId}': env '${key}' uses {{secrets.<name>}} but no MCP secret resolver is wired.`
+          : `MCP server '${serverId}': unsupported interpolation in env '${key}' — only {{secrets.<name>}} is supported.`,
       );
     }
     env[key] =
