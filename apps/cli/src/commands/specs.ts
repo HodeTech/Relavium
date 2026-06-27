@@ -23,6 +23,7 @@ import { chatListCommand } from './chat-list.js';
 import { exportCommand } from './export.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
+import { importCommand } from './import.js';
 import { listCommand } from './list.js';
 import { logsCommand } from './logs.js';
 import {
@@ -65,11 +66,6 @@ const STUB_COMMANDS: readonly StubSpec[] = [
     landsIn: 'workstream 2.J',
   },
   {
-    name: 'import <path>',
-    summary: 'Import an external workflow/agent YAML into the project.',
-    landsIn: 'workstream 2.J',
-  },
-  {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
     landsIn: 'a tracked follow-up',
@@ -88,6 +84,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerChatList(program, ctx);
   registerChatExport(program, ctx);
   registerExport(program, ctx);
+  registerImport(program, ctx);
   registerAgent(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
@@ -285,6 +282,32 @@ function registerExport(program: Command, ctx?: CommandContext): void {
   exportCmd.action((id: string, opts: { out?: string; force?: boolean }) => {
     ctx.result.exitCode = exportCommand(
       { id, ...(opts.out === undefined ? {} : { out: opts.out }), force: opts.force ?? false },
+      { io: ctx.io, global: ctx.global },
+    );
+  });
+}
+
+/**
+ * Register `relavium import <path>` (2.J) — copy an external workflow/agent YAML into the project `.relavium/`,
+ * validating schema + slug uniqueness, writing the re-serialized doc to `.relavium/<kind>/<id>.<suffix>`. A
+ * collision is exit 2 unless `--force`. Pure YAML I/O — no keychain/db.
+ */
+function registerImport(program: Command, ctx?: CommandContext): void {
+  const importCmd = program
+    .command('import <path>')
+    .description(
+      'Import an external workflow/agent YAML into the project (validated, deduplicated).',
+    )
+    .option('--force', 'overwrite an existing project entry with the same id');
+  if (ctx === undefined) {
+    importCmd.action(() => {
+      throw new CliError('not_implemented', '`relavium import` requires the CLI runtime context.');
+    });
+    return;
+  }
+  importCmd.action((path: string, opts: { force?: boolean }) => {
+    ctx.result.exitCode = importCommand(
+      { path, force: opts.force ?? false },
       { io: ctx.io, global: ctx.global },
     );
   });
