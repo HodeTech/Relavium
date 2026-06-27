@@ -145,11 +145,19 @@ carrier fetched by `fetchMediaBytes`:
   binding rule — not a second home. See
   [ADR-0029](../decisions/0029-tool-policy-hardening.md) and
   [built-in-tools.md](../reference/shared-core/built-in-tools.md).
-- **MCP server URLs.** *(Security tightening — ADR-0029(d); transport vocab reconciled by ADR-0052 §5.)* An MCP
+- **MCP server URLs.** *(Security tightening — ADR-0029(d); transport vocab reconciled by ADR-0052 §5; network egress per ADR-0053.)* An MCP
   `http` (Streamable HTTP) / `websocket` server URL (`sse` is a deprecated alias of `http`)
-  is a second egress path that **injects secrets** into headers, so leaving it
-  scheme-checked-only while hardening `http_request` would be strictly worse. MCP server
-  URLs run the **same** SSRF range-primitive (no second parser). See
+  is a second egress path, so leaving it scheme-checked-only while hardening `http_request`
+  would be strictly worse. MCP server URLs run the **same** SSRF range-primitive (no second
+  parser): private/loopback/link-local/metadata hosts are rejected and a remote host must use
+  `https`/`wss`, **unless** the per-server `allow_local_endpoint` opt-in is set — which relaxes
+  the block AND permits plaintext for exactly the **authored `host:port`** (and never relaxes the
+  no-embedded-credentials check). 2.R ships this as a **pre-connect host floor** (the SDK opens its
+  own socket): a hostname that DNS-resolves to a private IP, or a redirect to one, is the residual
+  window the connect-by-validated-IP dialer closes — tracked in
+  [deferred-tasks.md](../roadmap/deferred-tasks.md) ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2/§3).
+  (A `stdio` server takes no URL; its secrets are injected into the spawned child's `env` — a network
+  transport has no process, so `env` is rejected there, header-auth being a follow-up.) See
   [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
   and [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
 - **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7 / [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)) — a fourth path, now wired host-side.**

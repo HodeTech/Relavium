@@ -6,9 +6,11 @@
 // `packages/mcp` because that is the only workspace where the SDK resolves (the seam owner); the SDK +
 // `node:*` confinement that the four `sdk-*.ts` adapters enforce does not apply to a standalone test process.
 //
-// Two tools, both deterministic and offline:
-//   - `echo`  → returns its `text` argument verbatim (the round-trip proof);
-//   - `add`   → returns `a + b` as text (a second tool, so multi-tool discovery is asserted).
+// Three tools, all deterministic and offline:
+//   - `echo`    → returns its `text` argument verbatim (the round-trip proof);
+//   - `add`     → returns `a + b` as text (a second tool, so multi-tool discovery is asserted);
+//   - `whoami`  → returns the `MCP_FIXTURE_TOKEN` env var the host injected — proves a `{{secrets.*}}` value
+//                 actually reaches the spawned child process (the last hop of the secret-custody chain).
 //
 // Fail-fast: any startup error exits non-zero so the spawning host's fail-loud connect surfaces it.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -30,6 +32,14 @@ server.registerTool(
     inputSchema: { a: z.number(), b: z.number() },
   },
   ({ a, b }) => ({ content: [{ type: 'text', text: String(a + b) }] }),
+);
+
+server.registerTool(
+  'whoami',
+  {
+    description: 'Return the MCP_FIXTURE_TOKEN env var the host injected into this child process.',
+  },
+  () => ({ content: [{ type: 'text', text: process.env.MCP_FIXTURE_TOKEN ?? '' }] }),
 );
 
 await server.connect(new StdioServerTransport());

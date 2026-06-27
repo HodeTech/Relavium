@@ -43,12 +43,17 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
     const client = await connectAgentMcp([echoServer()], { cwd: process.cwd() });
     expect(client).toBeDefined();
     try {
-      // Discovery: both fixture tools are namespaced `mcp_{server}_{tool}`, grouped under the server id.
+      // Discovery: every fixture tool is namespaced `mcp_{server}_{tool}`, grouped under the server id.
       expect([...(client!.toolIdsByServer.get('echo') ?? [])].sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
+        'mcp_echo_whoami',
       ]);
-      expect(client!.toolDefs.map((d) => d.id).sort()).toEqual(['mcp_echo_add', 'mcp_echo_echo']);
+      expect(client!.toolDefs.map((d) => d.id).sort()).toEqual([
+        'mcp_echo_add',
+        'mcp_echo_echo',
+        'mcp_echo_whoami',
+      ]);
       expect(client!.skipped).toEqual([]);
 
       // A real tools/call over the spawned child round-trips (echo returns its text verbatim).
@@ -101,6 +106,7 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
       expect([...(runtime!.client.toolIdsByServer.get('echo') ?? [])].sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
+        'mcp_echo_whoami',
       ]);
 
       // The run path unions the agent's declared grant with ITS server's discovered tool ids.
@@ -110,6 +116,7 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
       expect([...(augmented.tools ?? [])].sort()).toEqual([
         'mcp_echo_add',
         'mcp_echo_echo',
+        'mcp_echo_whoami',
         'read_file',
       ]);
 
@@ -123,6 +130,32 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
       expect(echoed.content).toEqual([{ type: 'text', text: 'wired' }]);
     } finally {
       await runtime!.client.close();
+    }
+  });
+
+  it('chat host: resolves {{secrets.*}} into the spawned child env (the last hop of the secret-custody chain)', async () => {
+    // The secret custody chain end-to-end against a REAL process: a `{{secrets.t}}` env placeholder is resolved
+    // by the injected resolver, the host injects it into the spawned child's env, and the child's `whoami` tool
+    // round-trips exactly that value back — proving the resolved secret reaches the process (and only there).
+    const server: McpServerRef = {
+      id: 'echo',
+      transport: 'stdio',
+      command: process.execPath,
+      args: [FIXTURE],
+      env: { MCP_FIXTURE_TOKEN: '{{secrets.t}}' },
+    };
+    const client = await connectAgentMcp([server], {
+      cwd: process.cwd(),
+      resolveSecret: (name) => (name === 't' ? 'SENTINEL-abc123' : ''),
+    });
+    expect(client).toBeDefined();
+    try {
+      const who = asResult(
+        await client!.capability.call({ server: 'echo', tool: 'whoami', args: {} }),
+      );
+      expect(who.content).toEqual([{ type: 'text', text: 'SENTINEL-abc123' }]);
+    } finally {
+      await client!.close();
     }
   });
 });

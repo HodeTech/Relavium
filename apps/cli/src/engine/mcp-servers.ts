@@ -397,7 +397,9 @@ export async function connectWorkflowMcp(
         throw new CliError(
           'invalid_invocation',
           `MCP server '${ref.id}' is declared with conflicting settings by more than one agent — ` +
-            `give the distinct servers distinct ids.`,
+            `give the distinct servers distinct ids. (A by-name 'ref' uses the registration name sanitized ` +
+            `to the [A-Za-z0-9_-] charset, so two different names can collapse to the same id — if that is the ` +
+            `cause, make the registration names charset-distinct.)`,
         );
       }
     }
@@ -407,15 +409,22 @@ export async function connectWorkflowMcp(
   const configs = resolveServerConfigs([...byId.values()], opts.cwd, opts.resolveSecret);
   const client = await startMcpClientFailLoud(configs, opts.startMcpClient);
 
-  // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
-  const agents = (def.workflow.agents ?? []).map((entry) =>
-    isInlineAgent(entry) ? withWorkflowMcpGrant(entry, client.toolIdsByServer) : entry,
-  );
-  const workflow: WorkflowDefinition = {
-    ...def,
-    workflow: { ...def.workflow, agents },
-  };
-  return { client, workflow };
+  try {
+    // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
+    const agents = (def.workflow.agents ?? []).map((entry) =>
+      isInlineAgent(entry) ? withWorkflowMcpGrant(entry, client.toolIdsByServer) : entry,
+    );
+    const workflow: WorkflowDefinition = {
+      ...def,
+      workflow: { ...def.workflow, agents },
+    };
+    return { client, workflow };
+  } catch (err) {
+    // The connection is live but assembling the augmented workflow failed — tear it down so a spawned child /
+    // open socket never leaks past this throw (uniform all-or-nothing with the self-cleaning chat builders).
+    await client.close();
+    throw err;
+  }
 }
 
 /** True for an inline agent definition (carries an `id`), false for a `{ $ref }` external reference. */

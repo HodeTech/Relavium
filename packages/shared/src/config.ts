@@ -59,12 +59,26 @@ export const McpServerRegistrationSchema = z
         path: ['allow_local_endpoint'],
       });
     }
-    if (server.transport !== 'stdio' && !server.url) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `url is required for the '${server.transport}' transport`,
-        path: ['url'],
-      });
+    if (server.transport !== 'stdio') {
+      if (!server.url) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `url is required for the '${server.transport}' transport`,
+          path: ['url'],
+        });
+      }
+      // A network registration spawns no child process, so `env` (and its `{{secrets.*}}`) has nowhere to be
+      // injected — 2.R wires `env` ONLY into the stdio spawn. Reject it loud rather than silently dropping an
+      // auth secret (fail-closed, ADR-0052 §6); network header-auth is a tracked follow-up. Mirrors the inline
+      // `McpServerRefSchema` guard so a committed registration can't carry a dead network `env`.
+      if (server.env !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
+          path: ['env'],
+        });
+      }
     }
     if (server.url !== undefined) {
       // SSRF guard: a registered url must use the transport's scheme — reject file:, javascript:, etc.

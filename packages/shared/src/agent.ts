@@ -163,12 +163,26 @@ export const McpServerRefSchema = z
         });
       }
     }
-    if (ref.transport !== 'stdio' && !ref.url) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `url is required for the '${ref.transport}' transport`,
-        path: ['url'],
-      });
+    if (ref.transport !== 'stdio') {
+      if (!ref.url) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `url is required for the '${ref.transport}' transport`,
+          path: ['url'],
+        });
+      }
+      // A network transport spawns no child process, so `env` (and its `{{secrets.*}}`) has nowhere to be
+      // injected — 2.R wires `env` ONLY into the stdio spawn. Reject it loud rather than silently dropping what
+      // is almost always an auth secret (the fail-closed posture, ADR-0052 §6); network header-auth is a tracked
+      // follow-up (deferred-tasks.md). Mirrors the stdio `url` / `allow_local_endpoint` guards above.
+      if (ref.env !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'env is not used by a network transport — it is injected only into a stdio server process (network header-auth is a follow-up)',
+          path: ['env'],
+        });
+      }
     }
     if (ref.url !== undefined) {
       // Per-transport scheme: `http`/`sse` are HTTP(S), `websocket` is WS(S) (stdio carries no url).

@@ -118,6 +118,24 @@ describe('config schemas', () => {
     ).toBe(true);
   });
 
+  it('rejects `env` on a network MCP registration (env is injected only into a stdio child — fail-closed)', () => {
+    // Mirrors the inline `McpServerRefSchema` guard: a committed network registration can't carry a dead `env`
+    // whose `{{secrets.*}}` would be silently discarded.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [
+          { name: 'docs', transport: 'http', url: 'https://docs.example/mcp', env: { TOKEN: 'x' } },
+        ],
+      }).success,
+    ).toBe(false);
+    // env on a stdio registration is still accepted.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'fs', transport: 'stdio', command: 'npx', env: { TOKEN: 'x' } }],
+      }).success,
+    ).toBe(true);
+  });
+
   it('rejects `allow_local_endpoint` on a stdio MCP registration (network-only — matches the inline ref schema)', () => {
     // The inline `McpServerRefSchema` (agent.ts) rejects the network-only flag on stdio; the registration
     // schema must agree, so a committed config can't carry a dead opt-in that an equivalent inline entry refuses.

@@ -257,6 +257,27 @@ describe('McpServerRefSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects `env` on a network transport (2.R injects env only into a stdio child; fail-closed not silent-drop)', () => {
+    // env carries `{{secrets.*}}`; a network transport spawns no child, so the host would silently discard it —
+    // rejecting at parse keeps the fail-closed posture (ADR-0052 §6). `env` on stdio still parses.
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'http',
+        url: 'https://docs.example/mcp',
+        env: { TOKEN: '{{secrets.gh}}' },
+      }).success,
+    ).toBe(false);
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        env: { TOKEN: '{{secrets.gh}}' },
+      }).success,
+    ).toBe(true);
+  });
+
   describe('by-name `ref` form (ADR-0052 §5)', () => {
     it('accepts a bare { ref } and { ref, tools_allowlist } (the registration provides the connection)', () => {
       expect(McpServerRefSchema.safeParse({ ref: 'github' }).success).toBe(true);
