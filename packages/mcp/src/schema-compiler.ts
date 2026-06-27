@@ -244,6 +244,37 @@ function numberSchema(node: Record<string, unknown>, integer: boolean): z.ZodTyp
   return schema;
 }
 
+/**
+ * Reject a `__proto__` property/required name (a prototype-pollution guard) — never a legitimate tool
+ * parameter; `shape['__proto__'] = …` would corrupt the shape via the prototype setter, and zod special-cases
+ * `__proto__` on input, so admitting it yields a poisoned/dead validator. Fail closed.
+ */
+function rejectProtoKey(name: string): void {
+  if (name === '__proto__') {
+    throw new UnsupportedSchemaError('a property named "__proto__" is not allowed');
+  }
+}
+
+/**
+ * Add each `required` name NOT already in `shape` as an untyped (`z.unknown()`) key — so
+ * `additionalProperties: false`/strict still ADMITS the key — and return those names for the caller's presence
+ * refine (`z.unknown()` alone is OPTIONAL inside `z.object`, so it cannot enforce presence on its own). Fails
+ * closed on a `__proto__` required name.
+ */
+function addUntypedRequired(
+  shape: Record<string, z.ZodTypeAny>,
+  required: ReadonlySet<string>,
+): string[] {
+  const untyped: string[] = [];
+  for (const name of required) {
+    if (Object.hasOwn(shape, name)) continue;
+    rejectProtoKey(name);
+    shape[name] = z.unknown();
+    untyped.push(name);
+  }
+  return untyped;
+}
+
 function objectSchema(node: Record<string, unknown>, budget: Budget, depth: number): z.ZodTypeAny {
   const properties = node['properties'];
   if (properties !== undefined && !isPlainObject(properties)) {
@@ -260,28 +291,13 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
   const required = readRequired(node, budget);
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const [name, propSchema] of propEntries) {
-    // Reject a `__proto__` property outright (a prototype-pollution guard): it is never a legitimate tool
-    // parameter, `shape['__proto__'] = …` would corrupt the shape object via the prototype setter, and zod
-    // special-cases `__proto__` on input — so admitting it yields a poisoned/dead validator. Fail closed.
-    if (name === '__proto__') {
-      throw new UnsupportedSchemaError('a property named "__proto__" is not allowed');
-    }
+    rejectProtoKey(name);
     const compiled = compileNode(propSchema, budget, depth + 1);
     shape[name] = required.has(name) ? compiled : compiled.optional();
   }
-  // A `required` name NOT declared in `properties` (or any `required` when `properties` is omitted) is still
-  // PRESENT-enforced per the JSON-Schema spec — never silently un-required. Add it to the shape as `z.unknown()`
-  // (so `additionalProperties: false`/strict still ADMITS the key), then enforce its PRESENCE via the refine
-  // below — `z.unknown()` alone is OPTIONAL inside `z.object`, so it cannot enforce presence on its own.
-  const untypedRequired: string[] = [];
-  for (const name of required) {
-    if (Object.hasOwn(shape, name)) continue;
-    if (name === '__proto__') {
-      throw new UnsupportedSchemaError('a property named "__proto__" is not allowed');
-    }
-    shape[name] = z.unknown();
-    untypedRequired.push(name);
-  }
+  // A `required` name not declared in `properties` (or any `required` when `properties` is omitted) is still
+  // present-enforced per the JSON-Schema spec — added to the shape as `z.unknown()` here, presence enforced below.
+  const untypedRequired = addUntypedRequired(shape, required);
   // Honor `additionalProperties`: `false` ⇒ reject unknown keys (`.strict()`); otherwise pass them through
   // (default JSON-Schema semantics) so the model may include extra keys the server's own schema permits.
   const built =
