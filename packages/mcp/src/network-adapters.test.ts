@@ -31,4 +31,12 @@ describe('openWebSocketConnection (global WebSocket guard)', () => {
       /websocket transport requires a global WebSocket \(Node 22\+\)/,
     );
   });
+
+  it('a malformed url is a typed McpConnectError (past the guard, before any connect)', async () => {
+    // Stub a global WebSocket so the Node-22 guard passes; the malformed url then trips the adapter's own
+    // `new URL()` parse — a typed McpConnectError — BEFORE `new WebSocketClientTransport` is ever reached,
+    // so no socket is opened. This covers the websocket adapter's error-surface arm the http/sse test covers.
+    Reflect.set(globalThis, 'WebSocket', function StubWebSocket() {});
+    await expect(openWebSocketConnection('w', { url: ':::bad' })).rejects.toThrow(McpError);
+  });
 });

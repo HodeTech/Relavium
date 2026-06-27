@@ -46,6 +46,19 @@ export const McpServerRegistrationSchema = z
         path: ['command'],
       });
     }
+    // `allow_local_endpoint` is a network-only SSRF opt-in — reject it on stdio so a registration's
+    // contract matches the inline `McpServerRefSchema` (agent.ts), which rejects the same field on stdio.
+    // Without this, a committed `[[mcp_servers]]` stdio entry could carry a dead flag that silently passes
+    // here yet fails an equivalent inline declaration — and, because it is part of `serverFingerprint`, it
+    // could skew cross-agent dedup. Network transports only (ADR-0053 §3).
+    if (server.transport === 'stdio' && server.allow_local_endpoint !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
+        path: ['allow_local_endpoint'],
+      });
+    }
     if (server.transport !== 'stdio' && !server.url) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

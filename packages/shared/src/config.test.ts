@@ -118,6 +118,18 @@ describe('config schemas', () => {
     ).toBe(true);
   });
 
+  it('rejects `allow_local_endpoint` on a stdio MCP registration (network-only — matches the inline ref schema)', () => {
+    // The inline `McpServerRefSchema` (agent.ts) rejects the network-only flag on stdio; the registration
+    // schema must agree, so a committed config can't carry a dead opt-in that an equivalent inline entry refuses.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [
+          { name: 'fs', transport: 'stdio', command: 'npx', allow_local_endpoint: true },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts a `websocket` MCP registration with a ws(s) url, rejecting a non-ws scheme (ADR-0052 §5)', () => {
     expect(
       GlobalConfigSchema.safeParse({

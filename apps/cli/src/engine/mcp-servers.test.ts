@@ -604,6 +604,28 @@ describe('connectWorkflowMcp (run path)', () => {
       }),
     ).rejects.toThrow(/private\/loopback/);
   });
+
+  it('PERMITS a `ref` to a private http url when the registration opts in via allow_local_endpoint (the accept arm)', async () => {
+    // The accept counterpart to the fail-loud floor test: the opt-in flows registration → resolveMcpServerRef
+    // → the SSRF gate, which permits exactly the authored private host:port without throwing (ADR-0053 §3).
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ ref: local }] }\n`,
+    );
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/w',
+      registrations: [
+        {
+          name: 'local',
+          transport: 'http',
+          url: 'http://127.0.0.1:4000/mcp',
+          allow_local_endpoint: true,
+        },
+      ],
+      startMcpClient: fakeStart(new Map([['local', ['mcp_local_x']]])),
+    });
+    expect(runtime).toBeDefined(); // the opt-in lets the private ref pass the floor (no fail-loud)
+    expect(agentOf(runtime!.workflow, 'scanner').tools).toEqual(['mcp_local_x']);
+  });
 });
 
 describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
@@ -625,6 +647,25 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
       args: ['--stdio'],
       env: { GH: '1' },
       tools_allowlist: ['issue'],
+    });
+  });
+
+  it('preserves a registration `allow_local_endpoint` opt-in on the resolved network ref', () => {
+    // The SSRF opt-in must survive resolution so the host-side floor honors it (ADR-0053 §3) — assert the
+    // flag is carried through, not dropped, so the connectWorkflowMcp accept-arm above is grounded in unit code.
+    const netRegs: McpServerRegistration[] = [
+      {
+        name: 'local',
+        transport: 'http',
+        url: 'http://127.0.0.1:4000/mcp',
+        allow_local_endpoint: true,
+      },
+    ];
+    expect(resolveMcpServerRef({ ref: 'local' }, netRegs)).toEqual({
+      id: 'local',
+      transport: 'http',
+      url: 'http://127.0.0.1:4000/mcp',
+      allow_local_endpoint: true,
     });
   });
 
