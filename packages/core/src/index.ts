@@ -204,9 +204,10 @@ export { createSessionHandle, createSessionEventSink } from './engine/session-ha
 export type { SessionHandle, SessionStreamHandleEvent } from './engine/session-handle.js';
 
 // Session export-to-workflow (1.Z) — the inverse of parseWorkflow (1.L is parse-only). `serializeWorkflow`
-// emits a WorkflowDefinition as deterministic, round-trippable YAML; `sessionToWorkflow` maps a persisted
+// emits a WorkflowDefinition as deterministic, round-trippable YAML; `serializeAgent` is its `.agent.yaml`
+// counterpart (the CLI authoring 2.J `create`/`import`/`export` path); `sessionToWorkflow` maps a persisted
 // session + transcript into a linear-chain scaffold (ADR-0026; agent-session-spec.md §"Export to workflow").
-export { serializeWorkflow, sessionToWorkflow } from './export/serializer.js';
+export { serializeWorkflow, serializeAgent, sessionToWorkflow } from './export/serializer.js';
 
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one
