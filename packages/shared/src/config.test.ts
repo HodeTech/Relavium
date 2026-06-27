@@ -103,6 +103,109 @@ describe('config schemas', () => {
     ).toBe(false); // http needs url
   });
 
+  it('accepts `allow_local_endpoint` on a network MCP registration (ADR-0053 §3)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [
+          {
+            name: 'local',
+            transport: 'http',
+            url: 'http://localhost:4000/mcp',
+            allow_local_endpoint: true,
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects `env` on EVERY network MCP registration (env is injected only into a stdio child — fail-closed)', () => {
+    // Mirrors the inline `McpServerRefSchema` guard for http AND websocket: a committed network registration
+    // can't carry a dead `env` whose `{{secrets.*}}` would be silently discarded.
+    for (const net of [
+      { transport: 'http', url: 'https://docs.example/mcp' },
+      { transport: 'websocket', url: 'wss://docs.example/ws' },
+    ] as const) {
+      expect(
+        GlobalConfigSchema.safeParse({
+          mcp_servers: [{ name: 'docs', ...net, env: { TOKEN: 'x' } }],
+        }).success,
+      ).toBe(false);
+    }
+    // env on a stdio registration is still accepted.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'fs', transport: 'stdio', command: 'npx', env: { TOKEN: 'x' } }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects the stdio-only fields `command`/`args` on a network MCP registration (symmetric with the inline schema)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'docs', transport: 'http', url: 'https://h/mcp', command: 'npx' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'docs', transport: 'websocket', url: 'wss://h/ws', args: ['--x'] }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a stray `url` on a stdio MCP registration (network-only — matches the inline ref schema)', () => {
+    // The inline `McpServerRefSchema` rejects a url on stdio; the registration schema must agree so a committed
+    // config can't carry a mis-declared stdio server (its scheme is irrelevant — its mere presence is the error).
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'fs', transport: 'stdio', command: 'npx', url: 'https://host/mcp' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects `allow_local_endpoint` on a stdio MCP registration (network-only — matches the inline ref schema)', () => {
+    // The inline `McpServerRefSchema` (agent.ts) rejects the network-only flag on stdio; the registration
+    // schema must agree, so a committed config can't carry a dead opt-in that an equivalent inline entry refuses.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [
+          { name: 'fs', transport: 'stdio', command: 'npx', allow_local_endpoint: true },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts the deprecated `sse` alias on a registration (symmetric with the inline agent schema, ADR-0052 §5)', () => {
+    // `sse` is a deprecated alias of `http` (same http(s) url) — a `[[mcp_servers]]` registration accepts it
+    // just like an inline `agent.mcp_servers` entry, so a server can be registered once and `ref`-reused.
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'legacy', transport: 'sse', url: 'https://host/sse' }],
+      }).success,
+    ).toBe(true);
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'legacy', transport: 'sse', url: 'wss://host/sse' }],
+      }).success,
+    ).toBe(false); // sse → http(s), not ws(s)
+  });
+
+  it('accepts a `websocket` MCP registration with a ws(s) url, rejecting a non-ws scheme (ADR-0052 §5)', () => {
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'live', transport: 'websocket', url: 'wss://host/mcp' }],
+      }).success,
+    ).toBe(true);
+    expect(
+      GlobalConfigSchema.safeParse({
+        mcp_servers: [{ name: 'live', transport: 'websocket', url: 'https://host/mcp' }],
+      }).success,
+    ).toBe(false); // websocket → ws(s), not http(s)
+    expect(
+      GlobalConfigSchema.safeParse({ mcp_servers: [{ name: 'live', transport: 'websocket' }] })
+        .success,
+    ).toBe(false); // websocket needs url
+  });
+
   it('accepts project-scoped MCP registrations (merge with global)', () => {
     expect(
       ProjectConfigSchema.safeParse({

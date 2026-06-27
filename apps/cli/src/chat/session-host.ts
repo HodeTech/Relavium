@@ -14,11 +14,20 @@ import {
   type SessionResumeState,
   type ToolHost,
 } from '@relavium/core';
-import type { AgentSessionRecord, Budget, SessionContext, SessionMessage } from '@relavium/shared';
+import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
+import type {
+  AgentSessionRecord,
+  Budget,
+  McpServerRegistration,
+  SessionContext,
+  SessionMessage,
+} from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import { connectAgentMcp } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
+import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -50,6 +59,29 @@ export interface BuildChatSessionOptions {
   /** The tool-execution host (injectable for tests); defaults to fail-closed `{}` (capabilities are a follow-up). */
   readonly toolHost?: ToolHost;
   /**
+   * Injectable MCP connect-all (2.R) — tests pass a fake that never spawns a child; production uses the real
+   * `@relavium/mcp` `startMcpClient`. Threads through to {@link connectAgentMcp} so the agent's inline stdio
+   * `mcp_servers` discover their tools without a live server in the unit path.
+   */
+  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * Resolve a `{{secrets.<name>}}` placeholder in an MCP server `env` value (2.R Step 4, ADR-0052 §6). The
+   * command wires the isolated `mcp-secret:*` keychain → `RELAVIUM_MCP_*` env chain; absent ⇒ a `{{` env value
+   * is rejected loud.
+   */
+  readonly mcpSecretResolver?: McpSecretResolver;
+  /**
+   * The merged config `[[mcp_servers]]` registrations (2.R Step 4b) — resolves a by-name `{ ref }` server
+   * entry on the bound agent. Absent ⇒ a `ref` entry fails loud.
+   */
+  readonly mcpRegistrations?: readonly McpServerRegistration[];
+  /**
+   * Disable inbound MCP entirely for this session — the agent's `mcp_servers` are NOT connected (no config
+   * build, no spawn, no dial), so the session is fully offline. `relavium agent run --fixture` (cassette replay)
+   * sets this so a recorded run never touches a real server; the cassette already carries any tool results.
+   */
+  readonly disableMcp?: boolean;
+  /**
    * Session-scoped `{{ctx.*}}` variables (plaintext, NO secrets — agent-session-spec.md §Tools). `relavium
    * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
    */
@@ -73,7 +105,13 @@ export interface BuiltChatSession {
   readonly session: AgentSession;
   readonly handle: SessionHandle;
   readonly sessionId: string;
-  /** The bound agent (resolved `--agent` or the built-in default) — its `id` is the session's `agentRef`. */
+  /**
+   * The bound agent — its `id` is the session's `agentRef`. This is the **ORIGINAL** resolved agent (it carries
+   * `mcp_servers` but NOT the dynamically-discovered MCP tool ids), so the persisted snapshot and the
+   * export-to-workflow scaffold record the author's agent — a `chat-resume` re-discovers the live tools from
+   * `mcp_servers` rather than replaying a stale baked grant. The runtime session is bound to an *effective* agent
+   * whose `tools` is unioned with the discovered MCP ids (2.R), constructed internally and not surfaced here.
+   */
   readonly agent: AgentDefinition;
   /** The frozen session context (working dir + fs-scope tier) the session ran against. */
   readonly context: SessionContext;
@@ -83,6 +121,16 @@ export interface BuiltChatSession {
    * `--json`; the bus stamps the `sessionId`/`sequenceNumber`/`timestamp`.
    */
   readonly emitSessionEvent: SessionEventSink;
+  /**
+   * Tear down the session's MCP connections (2.R) — present only when the agent declared `mcp_servers`. The
+   * command MUST `await` it on session teardown (its `finally`), mirroring `persister.close()`. Idempotent.
+   */
+  readonly closeMcp?: () => Promise<void>;
+  /**
+   * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
+   * diagnostic the command surfaces to the user (stderr). Empty when no MCP server is declared.
+   */
+  readonly mcpSkipped: readonly ManagerSkippedTool[];
 }
 
 /** The safe default filesystem tier when `[chat].fs_scope` is unset (mirrors the workflow default). */
@@ -100,14 +148,25 @@ type SessionRuntimeOptions = Pick<
  * one-bus-two-namespaces) and the {@link SessionDeps} (provider seam, tool registry, the hard turn cap, and —
  * when a cost cap is configured — the ADR-0028 pre-egress governor). Shared by {@link buildChatSession} (fresh)
  * and {@link buildResumedChatSession} (2.N resume) so the two paths can never wire different capabilities.
+ *
+ * When the agent declared `mcp_servers` (2.R), the live {@link McpClient}'s namespaced `ToolDef`s are composed
+ * into BOTH the registry (so dispatch can resolve them) and `deps.tools` (so the granted set is surfaced to the
+ * LLM), and its `McpCapability` is wired onto `ToolHost.mcp` (so a `tools/call` routes to the owning connection)
+ * — host-side static assembly with zero engine change ([ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3).
  */
 function buildSessionRuntime(
   opts: SessionRuntimeOptions,
   sessionId: string,
+  mcp: McpClient | undefined,
 ): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink } {
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
-  const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: opts.toolHost ?? {} });
+  const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
+  // `?? {}` is the deliberate fail-closed default (no capabilities); hoisted so the merge below doesn't spread a
+  // freshly-allocated empty object literal.
+  const baseHost: ToolHost = opts.toolHost ?? {};
+  const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
+  const registry = createToolRegistry({ tools, host });
   const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
@@ -117,7 +176,7 @@ function buildSessionRuntime(
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
     registry,
-    tools: BUILTIN_TOOLS,
+    tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
@@ -134,7 +193,7 @@ function buildSessionRuntime(
   return { bus, deps, emit };
 }
 
-export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSession {
+export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
   const sessionId = opts.uuid();
   const agent = resolveChatAgent(opts.agentRef, {
     cwd: opts.cwd,
@@ -147,10 +206,63 @@ export function buildChatSession(opts: BuildChatSessionOptions): BuiltChatSessio
     ...(opts.variables === undefined ? {} : { variables: opts.variables }),
   };
 
-  const { bus, deps, emit } = buildSessionRuntime(opts, sessionId);
-  const session = new AgentSession({ sessionId, agentRef: agent.id, agent, context, deps });
-  const handle = createSessionHandle(bus, sessionId, () => session.cancel());
-  return { session, handle, sessionId, agent, context, emitSessionEvent: emit };
+  // Connect the agent's inline stdio `mcp_servers` (2.R) — fail-loud (a connect/discovery failure throws a
+  // typed exit-2 CliError). `undefined` when none are declared (no client, nothing to tear down). The spawn
+  // cwd is the session working dir, so a relative server path resolves against the workspace. `disableMcp`
+  // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
+  const mcp = opts.disableMcp
+    ? undefined
+    : await connectAgentMcp(agent.mcp_servers, {
+        cwd: opts.cwd,
+        ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+        ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+        ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+      });
+
+  try {
+    const { bus, deps, emit } = buildSessionRuntime(opts, sessionId, mcp);
+    // The session runs against the EFFECTIVE agent (its grant unioned with the discovered MCP tool ids); the
+    // ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
+    const session = new AgentSession({
+      sessionId,
+      agentRef: agent.id,
+      agent: withMcpGrant(agent, mcp),
+      context,
+      deps,
+    });
+    const handle = createSessionHandle(bus, sessionId, () => session.cancel());
+    return {
+      session,
+      handle,
+      sessionId,
+      agent,
+      context,
+      emitSessionEvent: emit,
+      mcpSkipped: mcp?.skipped ?? [],
+      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+    };
+  } catch (err) {
+    // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
+    // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
+    // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
+    // Best-effort: a teardown rejection must NOT mask the original construction error (preserve the primary).
+    await mcp?.close().catch(() => undefined);
+    throw err;
+  }
+}
+
+/**
+ * Return the agent the runtime session binds: the original `agent` with its `tools` grant **unioned** with the
+ * discovered MCP tool ids (2.R). Declaring an `mcp_servers` entry implicitly grants that server's discovered
+ * (already `tools_allowlist`-narrowed) tools — the only coherent grant, since the namespaced ids are discovered
+ * dynamically and cannot be pre-listed in `tools:` ([ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3,
+ * "the agent's `tools:` grant AND `tools_allowlist` narrow … with zero engine-interface change"). Built-ins stay
+ * governed by `tools:`. Returns the agent unchanged when no MCP tools were discovered.
+ */
+function withMcpGrant(agent: AgentDefinition, mcp: McpClient | undefined): AgentDefinition {
+  if (mcp === undefined || mcp.toolDefs.length === 0) return agent;
+  const tools = [...new Set([...(agent.tools ?? []), ...mcp.toolDefs.map((def) => def.id)])];
+  return { ...agent, tools };
 }
 
 /** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */
@@ -181,6 +293,12 @@ export interface BuildResumedChatSessionOptions {
   readonly providers?: ProviderResolver;
   /** The tool-execution host (injectable for tests); defaults to fail-closed `{}`. */
   readonly toolHost?: ToolHost;
+  /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
+  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /** Resolve `{{secrets.<name>}}` in an MCP server `env` (2.R Step 4; see {@link BuildChatSessionOptions.mcpSecretResolver}). */
+  readonly mcpSecretResolver?: McpSecretResolver;
+  /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
+  readonly mcpRegistrations?: readonly McpServerRegistration[];
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
 }
@@ -193,9 +311,9 @@ export interface BuildResumedChatSessionOptions {
  * NOT re-emit `session:started`; the next `sendMessage` continues the conversation. A session with no stored
  * `agentSnapshot` cannot be rebound and is a clean invalid invocation (exit 2).
  */
-export function buildResumedChatSession(
+export async function buildResumedChatSession(
   opts: BuildResumedChatSessionOptions,
-): BuiltResumedChatSession {
+): Promise<BuiltResumedChatSession> {
   const { record, messages } = opts;
   const agent = record.agentSnapshot;
   if (agent === undefined) {
@@ -207,28 +325,54 @@ export function buildResumedChatSession(
   const context = record.context;
   const resumeState = reconstructSessionState(record, messages);
 
-  const { bus, deps, emit } = buildSessionRuntime(opts, record.id);
-  const session = AgentSession.resume(
-    { sessionId: record.id, agentRef: agent.id, agent, context, deps },
-    resumeState,
-  );
-  const handle = createSessionHandle(bus, record.id, () => session.cancel());
-  // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
-  // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is
-  // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a
-  // single-writer assumption — the next seq is read at load time, so two concurrent resumes of the SAME
-  // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
-  const nextSequenceNumber = messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
-  return {
-    session,
-    handle,
-    sessionId: record.id,
-    agent,
-    context,
-    emitSessionEvent: emit,
-    resumeState,
-    nextSequenceNumber,
-  };
+  // Re-discover the frozen agent's `mcp_servers` fresh each resume (2.R) — the snapshot stored the author's
+  // agent, NOT a baked tool grant, so a server whose tool set changed is picked up correctly. The spawn cwd is
+  // the session's frozen working dir. Connect last (after the sync reconstruct/validate) so a reconstruct fault
+  // never leaks an opened connection.
+  const mcp = await connectAgentMcp(agent.mcp_servers, {
+    cwd: context.workingDir,
+    ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+  });
+
+  try {
+    const { bus, deps, emit } = buildSessionRuntime(opts, record.id, mcp);
+    const session = AgentSession.resume(
+      {
+        sessionId: record.id,
+        agentRef: agent.id,
+        agent: withMcpGrant(agent, mcp),
+        context,
+        deps,
+      },
+      resumeState,
+    );
+    const handle = createSessionHandle(bus, record.id, () => session.cancel());
+    // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
+    // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is
+    // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a
+    // single-writer assumption — the next seq is read at load time, so two concurrent resumes of the SAME
+    // session would collide on the `(session_id, sequence_number)` UNIQUE index (a loud failure, not corruption).
+    const nextSequenceNumber = messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
+    return {
+      session,
+      handle,
+      sessionId: record.id,
+      agent,
+      context,
+      emitSessionEvent: emit,
+      resumeState,
+      nextSequenceNumber,
+      mcpSkipped: mcp?.skipped ?? [],
+      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+    };
+  } catch (err) {
+    // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
+    // Best-effort: a teardown rejection must NOT mask the original resume error (preserve the primary).
+    await mcp?.close().catch(() => undefined);
+    throw err;
+  }
 }
 
 export interface GovernorWiring {

@@ -146,6 +146,9 @@ importers:
       '@jitl/quickjs-singlefile-mjs-release-sync':
         specifier: 'catalog:'
         version: 0.32.0
+      '@modelcontextprotocol/sdk':
+        specifier: 'catalog:'
+        version: 1.29.0(zod@3.25.76)
       '@napi-rs/keyring':
         specifier: 'catalog:'
         version: 1.3.0
@@ -189,6 +192,9 @@ importers:
       '@relavium/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@relavium/mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@relavium/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -68,15 +68,25 @@ update_channel = "stable"          # stable | beta
 default_model = "claude-sonnet-4-6"
 theme = "dark"
 
-[[mcp_servers]]                    # repeatable
+[[mcp_servers]]                    # repeatable — an agent references one by name via `ref:` (ADR-0052 §5)
 name = "filesystem"
-transport = "stdio"                # stdio | http
+transport = "stdio"                # stdio | http | websocket
 command = "npx -y @modelcontextprotocol/server-filesystem"
 args = ["--root", "~/projects"]
-autostart = true
-# url = "http://localhost:4000"    # for transport = http
-# env = { TOKEN = "..." }
+autostart = true                   # accepted, reserved for a future always-on pool — NOT acted on in 2.R (a server connects on demand)
+# url = "https://host/mcp"         # for transport = http (Streamable HTTP); a `websocket` server uses wss://
+# env = { TOKEN = "{{secrets.github_token}}" }   # stdio only — resolved from the isolated mcp-secret:* keychain, injected into the spawned child; rejected on a network transport (header-auth is a follow-up)
+# allow_local_endpoint = true      # opt into a private/loopback url (network transports only, ADR-0053 §3)
 ```
+
+A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
+`websocket`); the url is SSRF-guarded (a private/loopback host is rejected unless `allow_local_endpoint` is set;
+a remote host must be `https`/`wss`) and must not embed credentials. A registration's transport is
+**`stdio | http | websocket`**, plus the deprecated **`sse`** alias of `http` (accepted for older servers, same
+`http(s)` url) — symmetric with an inline `agent.mcp_servers` entry; prefer `http` for new servers. The
+stdio-only fields (`command`/`args`/`env`) are rejected on a network registration, and the network-only fields
+(`url`/`allow_local_endpoint`) on a stdio one. An agent consumes a registration with `- ref: filesystem` (see
+[../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
 ## `project.toml` / `workspace.toml` (project) — keys
 

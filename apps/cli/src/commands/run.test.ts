@@ -17,9 +17,11 @@ import {
   runMigrations,
   type Db,
 } from '@relavium/db';
+import { McpError, startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { scriptedResolver, textTurn, toolUseTurn } from '../chat/test-support.js';
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
@@ -112,6 +114,28 @@ const AGENT_WF_GEMINI = AGENT_WF.replace('id: cli-run-agent', 'id: cli-run-agent
   'model: claude-opus-4-8, provider: anthropic',
   'model: gemini-2.5-flash, provider: gemini',
 );
+
+// An agent declaring an inline stdio MCP server — the 2.R run acceptance fixture. The agent grant is
+// `[read_file]`; declaring `mcp_servers` implicitly grants the server's discovered tools, so the agent can call
+// `mcp_fs_read`.
+const MCP_WF = `schema_version: '1.0'
+workflow:
+  id: cli-run-mcp
+  agents:
+    - id: scanner
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: inspect
+      tools: [read_file]
+      mcp_servers: [{ id: fs, transport: stdio, command: x }]
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: scanner, prompt_template: 'go' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
+`;
 
 // An agent node whose authored output_modalities ([text, image]) exceed what the catalog model `chat-text`
 // supports (text only) — parses fine, but the D15 catalog load-check (2.S Step 7) must reject it at LOAD via the
@@ -1028,6 +1052,144 @@ describe('runCommand', () => {
     );
     expect(engineBuilt).toBe(true); // the present key did NOT false-fail the pre-flight
     expect(code).toBe(EXIT_CODES.success);
+  });
+
+  it('a workflow agent declaring an inline stdio MCP server round-trips a tool call via run (2.R acceptance)', async () => {
+    const path = writeWorkflow('mcp.relavium.yaml', MCP_WF);
+    const { io, err } = captureIo();
+    const calls: { name: string; args: unknown }[] = [];
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () =>
+        Promise.resolve([
+          { name: 'read', inputSchema: { type: 'object' } },
+          { name: 'danger', inputSchema: { type: 'object' } }, // dropped by the allowlist below
+        ]),
+      callTool: (name, args) => {
+        calls.push({ name, args });
+        return Promise.resolve({ content: [{ type: 'text', text: 'fs result' }], isError: false });
+      },
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      {
+        io,
+        global: globalOptions(),
+        // The agent turn calls the namespaced MCP tool, then replies — driven by the scripted provider.
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+        // Forward the engine options (incl. the composed `mcp`) but pin the deterministic in-memory host.
+        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        // The REAL manager over a FAKE connection — no child spawns, but the real namespacing + routing run.
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(calls).toEqual([{ name: 'read', args: {} }]); // the agent's MCP call routed to the connection
+    expect(err()).toContain("MCP tool 'danger'"); // the allowlist-dropped tool surfaced on stderr
+    expect(closed).toBe(1); // the connection was torn down at the run terminal
+  });
+
+  it('routes an MCP tool RESULT with isError:true through dispatch → engine as a RECOVERABLE error (run still completes)', async () => {
+    // The result contract's recoverable-error arm, end-to-end through the real manager + engine: a server tool that
+    // returns `{ isError: true }` is a tool-LEVEL (recoverable) error — the agent receives it and replies, the run
+    // does NOT fail. (The engine's tool_result event reports transport success; the isError rides in the content.)
+    const path = writeWorkflow('mcp-toolerror.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let calls = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => {
+        calls += 1;
+        return Promise.resolve({
+          content: [{ type: 'text', text: 'the server tool failed internally' }],
+          isError: true,
+        });
+      },
+      close: () => Promise.resolve(),
+    };
+    const code = await runCommand(
+      { workflow: path, input: [] },
+      {
+        io,
+        global: globalOptions(),
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('recovered')]),
+        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success); // the recoverable isError did NOT fail the run
+    expect(calls).toBe(1); // the call routed to the connection and returned the isError result
+  });
+
+  it('a failed MCP connect is a clean fail-loud exit-2 CliError (cause stripped) before the engine is built', async () => {
+    const path = writeWorkflow('mcp-connect-fail.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let engineBuilt = false;
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('unused')]),
+          buildEngine: () => {
+            engineBuilt = true;
+            return buildEngine({ host: createInMemoryHost() });
+          },
+          // The connect fails — `connectWorkflowMcp` runs BEFORE the engine is built, so this fails loud first.
+          startMcpClient: () => Promise.reject(new McpError('spawn failed for "fs"')),
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation'); // a clean exit-2 invocation fault
+      expect(caught.message).toContain('spawn failed for "fs"'); // the secret-free MCP summary
+      expect(caught.cause).toBeUndefined(); // the opaque MCP cause chain is never attached (narrowed — no cast)
+    }
+    expect(engineBuilt).toBe(false); // the connect failed before the engine was ever built (no leak)
+  });
+
+  it('tears the MCP connection down even when the engine fails AFTER a successful connect (run-terminal teardown)', async () => {
+    const path = writeWorkflow('mcp-fail.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    await expect(
+      runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('unused')]),
+          // The connect succeeds, then the engine build fails — the run-terminal finally must still close the MCP child.
+          buildEngine: () => Promise.reject(new Error('engine build boom')),
+          startMcpClient: () =>
+            realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+        },
+      ),
+    ).rejects.toThrow('engine build boom');
+    expect(closed).toBe(1); // the connection connectWorkflowMcp opened was torn down despite the build failure
   });
 
   it('renders the gate terminal as run:paused on the last NDJSON line under --json', async () => {

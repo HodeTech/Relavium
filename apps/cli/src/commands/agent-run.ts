@@ -4,13 +4,15 @@ import { StringDecoder } from 'node:string_decoder';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
-import { buildChatSession } from '../chat/session-host.js';
+import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
 
 /**
@@ -39,6 +41,8 @@ export interface AgentRunCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable session builder (tests). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
   readonly now?: () => number;
   readonly uuid?: () => string;
 }
@@ -54,6 +58,49 @@ export async function agentRunCommand(
     configPath: deps.global.configPath,
   });
 
+  // Validate the invocation + read the one-shot prompt from stdin (the two pre-run faults live in the helper).
+  const message = await resolveOneShotInput(args, deps);
+
+  // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
+  // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
+  const offline = args.fixture !== undefined;
+  const providers =
+    args.fixture === undefined
+      ? (deps.providers ?? createProviderResolver(deps.io.env))
+      : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
+
+  // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
+  // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
+  // CliError, cause stripped) before the one-shot turn runs. In `--fixture` (cassette) mode the run must be
+  // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
+  const built = await (deps.buildSession ?? buildChatSession)({
+    chat: config.chat,
+    agentRef: args.agent,
+    cwd: deps.global.cwd,
+    projectConfigDir,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver: offline
+      ? createMcpSecretResolver(deps.io.env)
+      : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
+    mcpRegistrations: offline ? [] : config.mcpServers,
+    // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
+    // `mcp_servers` are never connected (no config build, no spawn, no dial). The cassette already carries any
+    // recorded tool results, so the replay needs no live MCP.
+    ...(offline ? { disableMcp: true } : {}),
+  });
+
+  // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+  const turnErrorCode = await runOneShotTurn(built, message, deps);
+  return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+}
+
+/** Validate the one-shot invocation and read the prompt from stdin — the two pre-run faults (exit-2 CliError). */
+async function resolveOneShotInput(
+  args: AgentRunCommandArgs,
+  deps: AgentRunCommandDeps,
+): Promise<string> {
   // `--input k=v` is REJECTED for now: a session does not yet interpolate `{{ctx.*}}` into the agent prompt
   // (the engine passes `system_prompt` verbatim; wiring `resolveTemplate` into the session turn core is a
   // deferred, security-relevant change — it would also throw on existing prompts' unresolved placeholders).
@@ -64,7 +111,6 @@ export async function agentRunCommand(
       '`--input` is not supported yet — a session does not interpolate {{ctx.*}} into the agent prompt (a tracked engine follow-up). Omit it for now.',
     );
   }
-
   // The one-shot prompt is the piped stdin; an empty stdin is a clean invocation fault (nothing to run).
   const message = (await readAllStdin(deps.io.stdin)).trim();
   if (message.length === 0) {
@@ -73,39 +119,33 @@ export async function agentRunCommand(
       'no input message — pipe the prompt on stdin (e.g. `echo "…" | relavium agent run <agent>`)',
     );
   }
+  return message;
+}
 
-  // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
-  // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
-  const providers =
-    args.fixture === undefined
-      ? (deps.providers ?? createProviderResolver(deps.io.env))
-      : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
-
-  // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn.
-  const built = (deps.buildSession ?? buildChatSession)({
-    chat: config.chat,
-    agentRef: args.agent,
-    cwd: deps.global.cwd,
-    projectConfigDir,
-    now,
-    uuid,
-    providers,
-  });
-
-  // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
-  // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.
+/**
+ * Render the live stream (NDJSON under `--json`, else the plain token/tool printer), run the single turn, and
+ * tear down — returning the classified turn-error code (or `undefined` on success). The whole post-build region
+ * is inside the try so any fault still hits the finally (the session OWNS the MCP connections; teardown there is
+ * best-effort and must never override the computed exit code) rather than orphaning the spawned children.
+ */
+async function runOneShotTurn(
+  built: BuiltChatSession,
+  message: string,
+  deps: AgentRunCommandDeps,
+): Promise<string | undefined> {
   let turnErrorCode: string | undefined;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
     ? (event) => deps.io.writeOut(`${JSON.stringify(event)}\n`)
     : makePlainPrinter(deps.io);
-  const unsubscribe = built.handle.subscribe((event) => {
-    renderer(event);
-    if (event.type === 'session:turn_completed' && event.error !== undefined) {
-      turnErrorCode = event.error.code;
-    }
-  });
-
+  let unsubscribe: () => void = () => {};
   try {
+    surfaceMcpSkipped(deps.io, built.mcpSkipped);
+    unsubscribe = built.handle.subscribe((event) => {
+      renderer(event);
+      if (event.type === 'session:turn_completed' && event.error !== undefined) {
+        turnErrorCode = event.error.code;
+      }
+    });
     built.session.start();
     await built.session.sendMessage(message);
   } catch (err) {
@@ -120,8 +160,15 @@ export async function agentRunCommand(
   } finally {
     built.session.cancel(); // the session's terminal (session:cancelled) — closes the one-shot cleanly
     unsubscribe();
+    // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
+    // Best-effort: a teardown rejection must NOT override the computed one-shot exit code (warn, don't throw).
+    await built.closeMcp?.().catch((e: unknown) => {
+      deps.io.writeErr(
+        `warning: MCP teardown failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    });
   }
-  return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+  return turnErrorCode;
 }
 
 /** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). Exported for a focused unit test. */

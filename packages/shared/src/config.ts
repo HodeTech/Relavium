@@ -14,57 +14,118 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 /** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
 export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
 
-/** A registered `http` MCP server must use http(s) — never file:/javascript:/etc. */
+/** A registered network MCP server must use http(s) (`http`) or ws(s) (`websocket`) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
+const SAFE_WS_URL = /^wss?:\/\//i;
 
-/**
- * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required
- * connection field: `stdio` needs a `command`; `http` needs a `url`.
- */
-export const McpServerRegistrationSchema = z
-  .object({
-    name: nonEmptyString,
-    transport: z.enum(['stdio', 'http']),
-    command: z.string().optional(),
-    args: z.array(z.string()).optional(),
-    autostart: z.boolean().optional(),
-    url: z.string().url().optional(),
-    env: z.record(z.string(), z.string()).optional(),
-  })
-  // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — strict config per ADR-0033 (which amends ADR-0023's config carve-out).
-  .strict()
-  .superRefine((server, ctx) => {
-    if (server.transport === 'stdio' && !server.command) {
+/** The authored shape `McpServerRegistrationSchema.superRefine` validates (connection fields optional pre-refine). */
+interface McpRegistrationDraft {
+  name: string;
+  transport: 'stdio' | 'http' | 'websocket' | 'sse';
+  command?: string | undefined;
+  args?: readonly string[] | undefined;
+  autostart?: boolean | undefined;
+  url?: string | undefined;
+  env?: Record<string, string> | undefined;
+  allow_local_endpoint?: boolean | undefined;
+}
+
+/** `stdio` registration: needs a `command`; rejects the network-only `url` / `allow_local_endpoint` so a committed
+ *  registration's contract matches the inline `McpServerRefSchema` (a dead flag would also skew `serverFingerprint`). */
+function validateStdioRegistration(server: McpRegistrationDraft, ctx: z.RefinementCtx): void {
+  if (!server.command) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "command is required for the 'stdio' transport",
+      path: ['command'],
+    });
+  }
+  if (server.url !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "url is not used by the 'stdio' transport",
+      path: ['url'],
+    });
+  }
+  if (server.allow_local_endpoint !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "allow_local_endpoint is not used by the 'stdio' transport (network transports only)",
+      path: ['allow_local_endpoint'],
+    });
+  }
+}
+
+/** Network registration (`http`/`websocket`): needs a scheme-checked, credential-free `url`; rejects `env` (no child
+ *  process to inject into — 2.R wires `env` ONLY into a stdio spawn; network header-auth is a tracked follow-up). */
+function validateNetworkRegistration(server: McpRegistrationDraft, ctx: z.RefinementCtx): void {
+  if (!server.url) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `url is required for the '${server.transport}' transport`,
+      path: ['url'],
+    });
+  }
+  // Reject the stdio-only fields `command`/`args`/`env` on a network registration — symmetric with the inline
+  // `McpServerRefSchema`; a network transport spawns no child, so they are inert (and would skew the fingerprint).
+  for (const field of ['command', 'args', 'env'] as const) {
+    if (server[field] !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "command is required for the 'stdio' transport",
-        path: ['command'],
+        message: `${field} is not used by a network transport — it applies only to a stdio server process${field === 'env' ? ' (network header-auth is a follow-up)' : ''}`,
+        path: [field],
       });
     }
-    if (server.transport === 'http' && !server.url) {
+  }
+  if (server.url !== undefined) {
+    const schemeOk =
+      server.transport === 'websocket'
+        ? SAFE_WS_URL.test(server.url)
+        : SAFE_HTTP_URL.test(server.url);
+    if (!schemeOk) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "url is required for the 'http' transport",
+        message: 'url scheme is invalid (http → http(s), websocket → ws(s))',
         path: ['url'],
       });
     }
-    // SSRF guard: a registered url must be http(s) — reject file:, javascript:, etc.
-    if (server.url !== undefined && !SAFE_HTTP_URL.test(server.url)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'url must use http or https',
-        path: ['url'],
-      });
-    }
-    // Secret hygiene: no credentials embedded in a git-committed url.
-    if (server.url !== undefined && URL_HAS_CREDENTIALS.test(server.url)) {
+    if (URL_HAS_CREDENTIALS.test(server.url)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'url must not embed credentials (user:pass@…) — use env/keychain auth',
         path: ['url'],
       });
     }
+  }
+}
+
+/**
+ * An MCP server registration (`[[mcp_servers]]`). The transport dictates the required connection field:
+ * `stdio` needs a `command`; `http` (Streamable HTTP) / `websocket` need a `url`; `sse` is the deprecated alias
+ * of `http` (accepted for older servers, same `http(s)` url). Reconciled with the agent `McpServerRefSchema` to
+ * one vocabulary — `stdio | http | websocket` (+ the `sse` alias)
+ * ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5).
+ */
+export const McpServerRegistrationSchema = z
+  .object({
+    name: nonEmptyString,
+    transport: z.enum(['stdio', 'http', 'websocket', 'sse']),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    autostart: z.boolean().optional(),
+    url: z.string().url().optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    // Opt into a private/loopback network endpoint (ADR-0053 §3) — see `McpServerRefSchema`. Network transports only.
+    allow_local_endpoint: z.boolean().optional(),
+  })
+  // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — strict config per ADR-0033 (which amends ADR-0023's config carve-out).
+  .strict()
+  .superRefine((server, ctx) => {
+    if (server.transport === 'stdio') validateStdioRegistration(server, ctx);
+    else validateNetworkRegistration(server, ctx);
   });
+export type McpServerRegistration = z.infer<typeof McpServerRegistrationSchema>;
 
 /** `~/.relavium/config.toml` — global preferences + MCP registrations.
  *  `.strict()`: a typo in a committed config key fails loudly rather than being silently dropped —

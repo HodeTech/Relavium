@@ -13,6 +13,7 @@ import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
+import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { agentRunCommand } from './agent-run.js';
@@ -124,6 +125,8 @@ function registerRun(program: Command, ctx?: CommandContext): void {
   }
 
   run.action(async (workflow: string, opts: { input?: readonly string[] }) => {
+    // One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6).
+    const keychain = createOsKeychainStore();
     ctx.result.exitCode = await runCommand(
       { workflow, input: opts.input ?? [] },
       {
@@ -132,7 +135,8 @@ function registerRun(program: Command, ctx?: CommandContext): void {
         // Production wires durable run history (2.H) + the keychain-backed key resolver (2.C): the real CLI
         // persists to ~/.relavium/history.db and resolves keys via the OS keychain → env var.
         openRunStore: openHistoryStore,
-        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        providers: createProviderResolver(ctx.io.env, keychain),
+        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
       },
     );
   });
@@ -158,12 +162,14 @@ function registerChat(program: Command, ctx?: CommandContext): void {
   }
 
   chat.action(async (opts: { agent?: string }) => {
+    const keychain = createOsKeychainStore();
     ctx.result.exitCode = await chatCommand(
       { agent: opts.agent },
       {
         io: ctx.io,
         global: ctx.global,
-        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        providers: createProviderResolver(ctx.io.env, keychain),
+        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
         openSessionStore,
         drive: selectChatDriver,
       },
@@ -192,12 +198,14 @@ function registerChatResume(program: Command, ctx?: CommandContext): void {
   }
 
   chatResume.action(async (sessionId: string) => {
+    const keychain = createOsKeychainStore();
     ctx.result.exitCode = await chatResumeCommand(
       { sessionId },
       {
         io: ctx.io,
         global: ctx.global,
-        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        providers: createProviderResolver(ctx.io.env, keychain),
+        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
         openSessionStore,
         drive: selectChatDriver,
       },
@@ -288,6 +296,7 @@ function registerAgent(program: Command, ctx?: CommandContext): void {
   }
 
   run.action(async (agentRef: string, opts: { input?: readonly string[]; fixture?: string }) => {
+    const keychain = createOsKeychainStore();
     ctx.result.exitCode = await agentRunCommand(
       {
         agent: agentRef,
@@ -298,7 +307,8 @@ function registerAgent(program: Command, ctx?: CommandContext): void {
         io: ctx.io,
         global: ctx.global,
         // A non-fixture run resolves keys via the OS keychain → env var (2.C), like `run`/`chat`.
-        providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+        providers: createProviderResolver(ctx.io.env, keychain),
+        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
       },
     );
   });

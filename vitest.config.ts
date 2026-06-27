@@ -42,6 +42,7 @@ export default defineConfig({
       thresholds: {
         'packages/llm/src/**/*.ts': { lines: 90, branches: 90 },
         'packages/core/src/**/*.ts': { lines: 90, branches: 90 }, // engine floor — core landed at 1.L
+        'packages/mcp/src/**/*.ts': { lines: 90, branches: 90 }, // the inbound-MCP fence + compiler — 2.R
       },
     },
   },

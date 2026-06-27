@@ -737,6 +737,10 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['2002:7f00:0001::', '6to4-embedded loopback (= 127.0.0.1)'],
     ['2002:a9fe:a9fe::', '6to4-embedded cloud metadata (= 169.254.169.254)'],
     ['2002:0a00:0001::', '6to4-embedded private 10/8 (= 10.0.0.1)'],
+    // Deprecated IPv4-COMPATIBLE IPv6 (::a.b.c.d, RFC 4291 §2.5.5.1) — high 96 bits zero, NOT ::ffff:.
+    ['::127.0.0.1', 'IPv4-compatible loopback (= ::7f00:1)'],
+    ['::169.254.169.254', 'IPv4-compatible cloud metadata (= ::a9fe:a9fe)'],
+    ['::10.0.0.1', 'IPv4-compatible private 10/8'],
     ['localhost', 'hostname localhost'],
     ['myapp.localhost', 'hostname .localhost suffix'],
     ['myapp.local', 'hostname .local suffix'],
@@ -766,6 +770,7 @@ describe('SSRF range-block (isPrivateOrLocalHost)', () => {
     ['api.openai.com', 'public hostname'],
     ['2001:4860:4860::8888', 'public IPv6'],
     ['2002:0808:0808::', '6to4-embedded public 8.8.8.8 — must not over-block'],
+    ['::8.8.8.8', 'IPv4-compatible public 8.8.8.8 (= ::808:808) — must not over-block'],
     ['172.15.0.1', 'just below 172.16/12 range'],
     ['172.32.0.1', 'just above 172.16/12 range'],
     ['100.63.255.255', 'just below CGNAT range'],

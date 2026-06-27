@@ -54,6 +54,26 @@ describe('AgentSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects duplicate `ref` names within an agent (the dedup keys on `ref ?? id`)', () => {
+    expect(
+      AgentSchema.safeParse({
+        ...summarizer,
+        mcp_servers: [{ ref: 'shared-fs' }, { ref: 'shared-fs', tools_allowlist: ['read'] }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a `ref` whose name collides with an inline server `id` (same namespace segment)', () => {
+    // `ref ?? id` makes a `{ ref: fs }` and an inline `{ id: fs }` share one namespace key — a collision the
+    // schema rejects, so the host never resolves two distinct servers onto one `mcp_fs_*` namespace.
+    expect(
+      AgentSchema.safeParse({
+        ...summarizer,
+        mcp_servers: [{ ref: 'fs' }, { id: 'fs', transport: 'stdio', command: 'npx' }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts a minimal agent with only the required fields', () => {
     expect(
       AgentSchema.safeParse({
@@ -154,6 +174,17 @@ describe('McpServerRefSchema', () => {
     expect(McpServerRefSchema.safeParse({ id: 'github', transport: 'stdio' }).success).toBe(false);
   });
 
+  it('rejects a stray url on a stdio transport (a mis-declared server fails at parse)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'github',
+        transport: 'stdio',
+        command: 'npx',
+        url: 'https://host/mcp',
+      }).success,
+    ).toBe(false);
+  });
+
   it('requires url for sse / websocket transports', () => {
     expect(
       McpServerRefSchema.safeParse({
@@ -210,5 +241,141 @@ describe('McpServerRefSchema', () => {
         url: 'https://user:pass@host/mcp',
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts the reconciled `http` (Streamable HTTP) transport with an http(s) url (ADR-0052 §5)', () => {
+    expect(
+      McpServerRefSchema.safeParse({ id: 'docs', transport: 'http', url: 'https://host/mcp' })
+        .success,
+    ).toBe(true);
+    expect(McpServerRefSchema.safeParse({ id: 'docs', transport: 'http' }).success).toBe(false); // needs url
+    expect(
+      McpServerRefSchema.safeParse({ id: 'docs', transport: 'http', url: 'wss://host/mcp' })
+        .success,
+    ).toBe(false); // http → http(s), not ws(s)
+  });
+
+  it('accepts `allow_local_endpoint` on an inline network server (ADR-0053 §3)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'local',
+        transport: 'http',
+        url: 'http://localhost:4000/mcp',
+        allow_local_endpoint: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects the stdio-only fields `command`/`args` on a network transport (strict + symmetric)', () => {
+    // A network transport spawns no child, so command/args are inert; rejecting them keeps the schema strict
+    // and symmetric with the stdio branch (which rejects url/allow_local) and keeps the dedup fingerprint clean.
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'http',
+        url: 'https://docs.example/mcp',
+        command: 'npx',
+      }).success,
+    ).toBe(false);
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'websocket',
+        url: 'wss://docs.example/ws',
+        args: ['--stdio'],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an EMPTY `tools_allowlist` (an empty list silently grants zero tools — omit it to admit all)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        tools_allowlist: [],
+      }).success,
+    ).toBe(false);
+    // A non-empty allowlist still parses.
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        tools_allowlist: ['read'],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects `allow_local_endpoint` on a stdio transport (network-only field)', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        allow_local_endpoint: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects `env` on EVERY network transport (2.R injects env only into a stdio child; fail-closed not silent-drop)', () => {
+    // env carries `{{secrets.*}}`; a network transport spawns no child, so the host would silently discard it —
+    // rejecting at parse keeps the fail-closed posture (ADR-0052 §6) for http, its sse alias, AND websocket.
+    for (const net of [
+      { transport: 'http' as const, url: 'https://docs.example/mcp' },
+      { transport: 'sse' as const, url: 'https://docs.example/sse' },
+      { transport: 'websocket' as const, url: 'wss://docs.example/ws' },
+    ]) {
+      expect(
+        McpServerRefSchema.safeParse({ id: 'docs', ...net, env: { TOKEN: '{{secrets.gh}}' } })
+          .success,
+      ).toBe(false);
+    }
+    // `env` on stdio still parses.
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'fs',
+        transport: 'stdio',
+        command: 'npx',
+        env: { TOKEN: '{{secrets.gh}}' },
+      }).success,
+    ).toBe(true);
+  });
+
+  describe('by-name `ref` form (ADR-0052 §5)', () => {
+    it('accepts a bare { ref } and { ref, tools_allowlist } (the registration provides the connection)', () => {
+      expect(McpServerRefSchema.safeParse({ ref: 'github' }).success).toBe(true);
+      expect(
+        McpServerRefSchema.safeParse({ ref: 'github', tools_allowlist: ['create_issue'] }).success,
+      ).toBe(true);
+    });
+
+    it('rejects a `ref` mixed with ANY inline connection field (mutual exclusivity)', () => {
+      for (const inline of [
+        { id: 'gh' },
+        { transport: 'stdio' as const },
+        { command: 'npx' },
+        { args: ['-y', 'pkg'] },
+        { env: { TOKEN: 'x' } },
+        { url: 'https://h/mcp' },
+        { allow_local_endpoint: true },
+      ]) {
+        expect(McpServerRefSchema.safeParse({ ref: 'github', ...inline }).success).toBe(false);
+      }
+    });
+
+    it('accepts `tools_allowlist` alongside `ref` (the only field allowed with it)', () => {
+      expect(
+        McpServerRefSchema.safeParse({ ref: 'github', tools_allowlist: ['read'] }).success,
+      ).toBe(true);
+    });
+
+    it('rejects an inline entry missing id or transport (a ref is the only way to omit them)', () => {
+      expect(McpServerRefSchema.safeParse({ transport: 'stdio', command: 'npx' }).success).toBe(
+        false,
+      ); // no id
+      expect(McpServerRefSchema.safeParse({ id: 'gh', command: 'npx' }).success).toBe(false); // no transport
+      expect(McpServerRefSchema.safeParse({}).success).toBe(false); // neither inline nor ref
+    });
   });
 });

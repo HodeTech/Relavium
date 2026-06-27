@@ -125,13 +125,17 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
 
 There are **four** outbound-URL paths (the fourth — the multimodal media `url` carrier — is now wired
 host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s `fetchMediaBytes`;
-see the last bullet), and they share **one** vetted
-SSRF range-primitive — never a second hand-rolled parser. The same validation
-(HTTPS only, reject non-HTTP(S) schemes and credentials-in-URL, and **block
-private/loopback/link-local/metadata ranges** — `127.0.0.0/8`, `::1`, `10/8`,
-`172.16/12`, `192.168/16`, `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254`,
-unless the user has explicitly opted into a local endpoint) applies to **all four** — including the media `url`
-carrier fetched by `fetchMediaBytes`:
+see the last bullet), and they share **one** vetted SSRF range-primitive — never a second hand-rolled parser.
+The **shared** rule (what every path runs through the one primitive) is the **range block**: reject
+private/loopback/link-local/metadata ranges — `127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
+`100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254` (and the IPv6 forms that embed
+those) — unless the caller has explicitly opted into a local endpoint, plus reject credentials-in-URL. The
+**scheme** requirement is per-path, NOT part of this shared summary: each transport requires its own TLS scheme
+(see the individual bullets below — e.g. provider `baseURL` / `http_request` / a remote MCP `url`). NOTE: the
+shared primitive is the **range block**; the stronger **connect-by-validated-IP + per-redirect revalidation** is
+wired for the media carrier (and is construction-time for the provider `baseURL` / `http_request`), but the
+**MCP** path is on the **pre-connect host floor** only until its dialer lands (see the MCP bullet) — so a
+DNS-rebind / redirect-to-private window is MCP-specific, not a property of all four.
 
 - **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
   user-supplied `baseURL`. Never let an agent-config URL cause the engine to call an
@@ -145,12 +149,19 @@ carrier fetched by `fetchMediaBytes`:
   binding rule — not a second home. See
   [ADR-0029](../decisions/0029-tool-policy-hardening.md) and
   [built-in-tools.md](../reference/shared-core/built-in-tools.md).
-- **MCP server URLs.** *(Security tightening — ADR-0029(d).)* An MCP `sse`/`websocket`
-  server URL is a second egress path that **injects secrets** into headers, so leaving it
-  scheme-checked-only while hardening `http_request` would be strictly worse. MCP server
-  URLs run the **same** SSRF range-primitive (no second parser). See
-  [mcp-integration.md](../reference/shared-core/mcp-integration.md) for the MCP contract
-  and [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
+- **MCP server URLs.** *(Security tightening — ADR-0029(d); network egress per ADR-0053.)* A network MCP
+  (`http`/`websocket`) server URL is a second egress path, so leaving it scheme-checked-only while hardening
+  `http_request` would be strictly worse. MCP server URLs run the **same** SSRF range-primitive (no second
+  parser): private/loopback/link-local/metadata hosts are rejected and a remote host must use `https`/`wss`,
+  unless the per-server `allow_local_endpoint` opt-in is set (which never relaxes the no-credentials check).
+  **MCP is a temporary exception to the full egress guarantee:** 2.R ships only the **pre-connect host floor**
+  (the SDK opens its own socket), so a hostname that DNS-resolves to a private IP — or a redirect to one —
+  remains a residual window until the connect-by-validated-IP dialer (resolve → validate → connect-by-IP →
+  re-validate per redirect) lands; tracked in [deferred-tasks.md](../roadmap/deferred-tasks.md)
+  ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2/§3). The transport vocabulary,
+  the `allow_local_endpoint` host:port scope, and the `env`-injection scoping are specified in their canonical
+  home — [mcp-integration.md](../reference/shared-core/mcp-integration.md); see
+  [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
 - **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7 / [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)) — a fourth path, now wired host-side.**
   A media `url` source (a provider-returned output URL re-hosted to a handle, or a user-supplied input URL) is
   fetched through the **host** `fetchMedia` port — `@relavium/db`'s **`fetchMediaBytes`**, the one vetted

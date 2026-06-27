@@ -6,7 +6,6 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
-
 import { exportSession } from '../chat/export.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
@@ -15,6 +14,7 @@ import {
   type BuiltChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
@@ -27,6 +27,7 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -40,6 +41,24 @@ import { createChatStore, type ChatStoreController } from '../render/tui/chat-st
 export interface ChatCommandArgs {
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agent: string | undefined;
+}
+
+/** Surface a teardown failure as a stderr warning (never silently swallowed, never thrown — the primary
+ *  command outcome must survive a cleanup fault). Shared by the chat command + resume teardown paths. */
+function warnTeardown(io: CliIo, label: string, err: unknown): void {
+  io.writeErr(
+    `warning: ${label} teardown failed: ${err instanceof Error ? err.message : String(err)}\n`,
+  );
+}
+
+/** Best-effort SYNC close: run it, but a reject/throw only warns — so one resource's failure never skips the
+ *  next teardown step nor masks the primary outcome (attempt-all, preserve-primary). */
+function closeQuietly(io: CliIo, label: string, close: () => void): void {
+  try {
+    close();
+  } catch (err) {
+    warnTeardown(io, label, err);
+  }
 }
 
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
@@ -72,6 +91,13 @@ export interface ChatDriveContext {
    * event (the command's own teardown fires the terminal only AFTER the driver has unsubscribed). Idempotent.
    */
   readonly finalize?: () => void;
+  /**
+   * Best-effort teardown to run on a driver's HARD-exit path (the ink driver's second-SIGINT `process.exit`,
+   * which bypasses the command's `runReplLoop` finally). It tears the live MCP connections down so a forced quit
+   * never orphans a spawned stdio child. The command wires it to `built.closeMcp`; a driver awaits it (bounded)
+   * before `process.exit`. Absent ⇒ nothing to force-close.
+   */
+  readonly onForceExit?: () => Promise<void>;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -83,6 +109,8 @@ export interface ChatCommandDeps {
   readonly buildSession?: typeof buildChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -103,6 +131,8 @@ export interface ChatResumeCommandDeps {
   readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -131,7 +161,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const store = createChatStore(deps.global.color);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
-  const built = (deps.buildSession ?? buildChatSession)({
+  // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
+  // fail-loud exit-2 CliError, cause stripped) before the session is live.
+  const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
     agentRef: args.agent,
     cwd: deps.global.cwd,
@@ -139,22 +171,42 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     now,
     uuid,
     providers,
+    mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+    mcpRegistrations: config.mcpServers,
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
       ),
   });
-
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  const persister = createSessionPersister({
-    store: opened.store,
-    handle: built.handle,
-    sessionId: built.sessionId,
-    agent: built.agent,
-    context: built.context,
-    now,
-    uuid,
-  });
+  // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
+  // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
+  // tears the connections down rather than orphaning the spawned children (ADR-0052 §2 teardown-on-terminal).
+  surfaceMcpSkipped(deps.io, built.mcpSkipped);
+  // Acquire the store first; on failure tear the MCP children down (best-effort — never mask the open error).
+  let opened: OpenedSessionStore;
+  try {
+    opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+  } catch (err) {
+    await built.closeMcp?.().catch(() => undefined);
+    throw err;
+  }
+  // Then the persister; on failure tear down EVERY acquired resource (the store too) before rethrowing.
+  let persister: SessionPersister;
+  try {
+    persister = createSessionPersister({
+      store: opened.store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now,
+      uuid,
+    });
+  } catch (err) {
+    closeQuietly(deps.io, 'session store', () => opened.close());
+    await built.closeMcp?.().catch(() => undefined);
+    throw err;
+  }
 
   return runReplLoop(
     { built, opened, store, persister, startSession: () => built.session.start() },
@@ -188,6 +240,10 @@ export async function chatResumeCommand(
   let store: ChatStoreController;
   let persister: SessionPersister;
   let intro: string;
+  // The just-built resumed session OWNS its MCP connections; if a pre-loop step after a SUCCESSFUL build throws,
+  // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
+  // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
+  let closeMcp: (() => Promise<void>) | undefined;
   try {
     // The current `[chat]` config governs the resumed turn/cost caps; the agent, model, and context are the
     // frozen originals from the record. An absent session is a clean exit-2 invocation fault.
@@ -195,17 +251,21 @@ export async function chatResumeCommand(
     if (loaded === undefined) {
       throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
     }
-    const resumed = (deps.buildResumedSession ?? buildResumedChatSession)({
+    const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
       record: loaded.session,
       messages: loaded.messages,
       now,
       providers,
+      mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      mcpRegistrations: config.mcpServers,
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
         ),
     });
+    closeMcp = resumed.closeMcp;
+    surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
     built = resumed;
     // Seed the view header: a resumed session never re-emits `session:started`, so without this the footer
     // would show no model and zero cost/turns until the first new turn (the durable record is unaffected).
@@ -244,8 +304,11 @@ export async function chatResumeCommand(
       );
     }
   } catch (err) {
-    // A pre-loop fault (not-found, no snapshot, build failure) must not strand the open db handle.
-    opened.close();
+    // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
+    // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
+    // never let a cleanup fault mask the primary error (best-effort; closeMcp is idempotent + a no-op when unset).
+    await closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
+    closeQuietly(deps.io, 'session store', () => opened.close());
     throw err;
   }
 
@@ -353,12 +416,19 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the command's own
       // cancelOnce below is then a no-op (idempotent). Other drivers ignore it — the command fires it.
       finalize: cancelOnce,
+      // The ink driver's second-SIGINT hard `process.exit` bypasses the finally below — give it a best-effort
+      // MCP teardown to run first so a forced quit never orphans a spawned stdio child (no-op when no servers).
+      ...(built.closeMcp === undefined ? {} : { onForceExit: built.closeMcp }),
       ...(intro === undefined ? {} : { intro }),
     });
   } finally {
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'
-    persister.close();
-    opened.close();
+    // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
+    // loop's exit outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST,
+    // AFTER the session terminal, so no tool call can race the close (idempotent; present only with `mcp_servers`).
+    closeQuietly(deps.io, 'persister', () => persister.close());
+    closeQuietly(deps.io, 'session store', () => opened.close());
+    await built.closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
   }
   // `/exit`, `/cancel`, and an input EOF all END the chat session — the canonical chat-session-ended code.
   return EXIT_CODES.chatEnded;

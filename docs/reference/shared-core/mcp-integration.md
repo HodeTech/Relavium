@@ -23,58 +23,57 @@ flowchart LR
 
 ## Agents consuming MCP tools (inbound)
 
-An agent declares the MCP servers it uses in its `mcp_servers` list (see [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md)). At agent startup the engine:
+An agent declares the MCP servers it uses in its `mcp_servers` list (see [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md)). Connection is **host-side assembly** ([ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §1): the **host** (the CLI/VS Code Node process, or the desktop Rust backend) owns the MCP client and the SDK + child processes — the engine (`packages/core`) stays platform-pure and never imports the SDK or `node:child_process`. At session/run startup the host:
 
-1. **Spawns** (stdio transport) or **connects to** (SSE / WebSocket) each declared MCP server.
-2. Calls `tools/list` on each server and registers the discovered tools into the agent's tool namespace as `mcp_{server_id}_{tool_name}`.
-3. Routes any tool call the agent makes to the correct MCP server using that registered mapping.
-4. Streams results back as `agent:tool_result` events (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
-5. Keeps the MCP server processes alive for the run duration, then tears them down.
+1. **Spawns** (stdio transport) or **connects to** (Streamable HTTP / WebSocket) each declared MCP server, **fail-loud** — a failed spawn or `tools/list` fails the whole start, never a silent capability loss.
+2. Calls `tools/list` on each server and shapes the discovered tools into namespaced Relavium `ToolDef`s — `mcp_{server_id}_{tool_name}` — assembling them plus an `McpCapability` it hands to the engine's tool registry.
+3. The engine routes any tool call the agent makes through that `McpCapability` (`host.mcp.call`) to the correct server — it never touches the SDK.
+4. Results stream back as `agent:tool_result` events (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
+5. The host keeps the MCP server connections alive for the session/run duration, then tears them down.
 
-The `mcp_call` built-in tool is the lower-level path for invoking a registered server's tool by name directly from a `tool` node (see [built-in-tools.md](built-in-tools.md)).
+The `mcp_call` built-in tool is the lower-level path for invoking a registered server's tool by name (see [built-in-tools.md](built-in-tools.md)). In Phase-1/2 it is reached as a granted built-in **inside an agent node**; the dedicated `tool`-node form is an engine-internal node type, not yet an authorable workflow node (see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#node-types)).
 
 ### `McpServerRef` shape
 
-In an agent (or workflow) declaration, each entry is an `McpServerRef`:
+In an **agent** declaration (`agent.mcp_servers`), each entry is an `McpServerRef` — one of two mutually-exclusive forms ([ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5):
 
 ```yaml
 mcp_servers:
+  # 1. INLINE — self-contained
   - id: github
-    transport: stdio              # stdio | sse | websocket
+    transport: stdio              # stdio | http | websocket   (sse = deprecated alias of http)
     command: npx                  # stdio: the server binary
     args: ['-y', '@modelcontextprotocol/server-github']
-    env:                          # env vars injected into the server process
-      GITHUB_TOKEN: '{{secrets.github_token}}'
+    env:                          # stdio only: env vars injected into the spawned server process
+      GITHUB_TOKEN: '{{secrets.github_token}}'   # resolved from the isolated mcp-secret:* keychain (§6)
   - id: docs
-    transport: sse                # sse / websocket use url instead of command
+    transport: http               # http (Streamable HTTP) / websocket use `url` instead of `command`
+    url: 'https://docs.example/mcp'   # remote ⇒ must be https/wss
+  - id: local-dev
+    transport: http
     url: 'http://localhost:4000/mcp'
+    allow_local_endpoint: true    # opt into a private/loopback url (relaxes the SSRF block + plaintext for it)
+  # 2. BY-NAME `ref` — identity + connection come from a [[mcp_servers]] registration
+  - ref: shared-fs                # mutually exclusive with id/transport/command/url/env
+    tools_allowlist: [read_file]  # the only field allowed alongside `ref`
 ```
 
-Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries (with `autostart`), so a server can be registered once and referenced by id from many agents. The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
+The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers, same `http(s)` url); `websocket` uses a `wss://` url. A network `url` is SSRF-guarded (below). The vocabulary is the **same on both surfaces** — an inline `agent.mcp_servers` entry and a `[[mcp_servers]]` config registration both accept `stdio | http | websocket` plus the `sse` alias (prefer `http` for new servers). The stdio-only fields (`command`/`args`/`env`) are rejected on a network transport, and the network-only fields (`url`/`allow_local_endpoint`) on stdio — symmetric across both schemas.
+
+Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries, so a server can be registered once and referenced **by name** (`ref:`) from many agents. A referenced server connects **on demand** when an agent that uses it starts; the registration's `autostart` field is accepted by the schema but reserved for a future always-on pool (not acted on in 2.R). The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
 
 ### Tool discovery
 
 | Mode | When | Behavior |
 | --- | --- | --- |
-| **Static** | a `tools_allowlist` is declared on the server entry | tools are pre-resolved at workflow load time — fast, deterministic. |
-| **Dynamic** | no allowlist | the engine calls `tools/list` at agent init and registers every available tool. |
-| **Caching** | always | tool lists are cached per `(server_command, args)` hash for ~1 hour to avoid re-spawning. |
-| **Conflict resolution** | two servers expose the same tool name | the engine prefixes with the server id (`mcp_github_create_issue` vs `mcp_jira_create_issue`) — the same `mcp_{server}_{tool}` namespacing used everywhere, which is what disambiguates the collision. |
-| **Schema validation** | every call | the engine validates each MCP tool call against the server-reported JSON Schema before sending — malformed calls are rejected early. |
+| **Dynamic** | no `tools_allowlist` | the host calls `tools/list` at connect and admits every discovered tool. |
+| **Allowlisted** | a `tools_allowlist` is declared on the server entry | the host still calls `tools/list`, then **narrows** the admitted set to the named tools (the rest are skipped + surfaced) — deterministic in *which* tools an agent may call. |
+| **Conflict resolution** | two servers expose the same tool name | the host namespaces every tool as `mcp_{server}_{tool}` (`mcp_github_create_issue` vs `mcp_jira_create_issue`), which disambiguates the collision; a residual collision *after* namespacing **fails closed** (the colliding tool is skipped, never silently shadowing another). |
+| **Schema validation** | every call | the host compiles the server-reported JSON Schema into a validator at discovery — an `inputSchema` outside the supported subset **drops the tool** (fail-closed, never admitted unvalidated) — and each call's args are validated against it before dispatch. |
 
-### Built-in MCP servers
+> **Not yet shipped (2.R):** tool-list **caching** (re-spawn avoidance via a `(command, args)` hash) is a tracked follow-up — 2.R re-runs `tools/list` on each connect. There is no curated catalog of "built-in" servers either; any server is declared explicitly (a `command: npx …` entry is fetched on first spawn by `npx` itself, not by Relavium). Common choices: `@modelcontextprotocol/server-filesystem`, `…-github`, `…-postgres`, `…-brave-search`, `…-puppeteer`.
 
-These are available out of the box and auto-installed on first use (via `npx`):
-
-| Server | Capability |
-| --- | --- |
-| `@modelcontextprotocol/server-filesystem` | read/write local files |
-| `@modelcontextprotocol/server-brave-search` | web search |
-| `@modelcontextprotocol/server-puppeteer` | browser automation |
-| `@modelcontextprotocol/server-github` | GitHub API |
-| `@modelcontextprotocol/server-postgres` | database access |
-
-On the desktop, stdio MCP servers are managed as child processes by the Rust backend, which owns their lifecycle (start on demand, keep alive for the session, restart on crash). In the CLI and VS Code surfaces the same servers are spawned by the Node.js host. The pooling/lifecycle design narrative is in [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md).
+On the desktop, stdio MCP servers are managed as child processes by the Rust backend, which owns their lifecycle (start on demand, keep alive for the session, restart on crash). In the CLI and VS Code surfaces the same servers are spawned by the Node.js host. The host-side connection-lifecycle narrative (concurrent fail-loud connect, keep-alive, teardown, and the no-pool/no-cache 2.R reality) is in [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md#inbound-mcp-connection-lifecycle).
 
 ## Agents as MCP servers (outbound)
 
@@ -85,7 +84,7 @@ import { createMcpAdapter } from '@relavium/core/mcp';
 
 const adapter = createMcpAdapter(engine, {
   workflows: ['security-review', 'refactor-agent'],
-  transport: 'stdio',   // or 'sse'
+  transport: 'stdio',   // or 'http' / 'websocket' (outbound is a later workstream)
 });
 adapter.listen();        // registers each workflow as an MCP tool
 ```
@@ -99,7 +98,7 @@ This is also how the `mcp_call` workflow **trigger** works: a workflow with `tri
 
 ## Security
 
-- **MCP server URLs are SSRF-guarded ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** A declared MCP `url` is validated against the **same** vetted range-block as a provider base URL and the `http_request` tool — private/loopback/link-local/metadata ranges (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`) are rejected, and remote hosts must use `https`/`wss`, **unless the user explicitly opts into a local endpoint**. The `http://localhost:4000` examples in this doc are exactly such a local endpoint and require that explicit opt-in. The one SSRF primitive is reused, never re-implemented — see [security-review.md](../../standards/security-review.md).
-- MCP server credentials are injected from the secret store via the server's `env` (e.g. `{{secrets.github_token}}`) and are **never** written into the workflow file or any event payload. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+- **MCP server URLs are SSRF-guarded ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** A declared MCP `url` is validated against the **same** vetted range-block as a provider base URL and the `http_request` tool — private/loopback/link-local/metadata ranges (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`) are rejected, and remote hosts must use `https`/`wss`, **unless the user explicitly opts into a local endpoint** (the per-server `allow_local_endpoint` flag). A `http://localhost`/loopback `url` is exactly such a local endpoint and requires that explicit opt-in; the opt-in permits exactly the **authored `host:port`** (and plaintext for it). 2.R ships this as a **pre-connect floor** validating the authored host — a hostname that DNS-resolves to a private IP, or a redirect to one, is the residual window the connect-by-validated-IP dialer (per-hop re-validation against the authored `host:port`) closes; tracked in [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md) ([ADR-0053](../../decisions/0053-mcp-network-transport-egress-security.md) §2). The one SSRF primitive is reused, never re-implemented — see [security-review.md](../../standards/security-review.md).
+- MCP server credentials are injected from the secret store via a **stdio** server's `env` (e.g. `{{secrets.github_token}}`, resolved from the isolated `mcp-secret:*` namespace) and are **never** written into the workflow file or any event payload. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md). `env` applies to the spawned stdio child only — a network (`http`, its deprecated `sse` alias, or `websocket`) transport has no process to inject into, so `env` is **rejected at parse** there (header-based auth for network MCP servers is a tracked follow-up, [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md)).
 - Outbound (workflow-as-MCP) exposure is opt-in per workflow (only those listed in the adapter config are published).
 - All inbound MCP tool calls are schema-validated before dispatch, and tool inputs in events are sanitized — see [built-in-tools.md](built-in-tools.md) and [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md).

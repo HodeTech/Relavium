@@ -6,9 +6,10 @@ import { PassThrough, Readable } from 'node:stream';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildChatSession } from '../chat/session-host.js';
+import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import {
   scriptedResolver,
   textTurn,
@@ -57,6 +58,36 @@ function linesDriver(lines: readonly string[]): ChatDriver {
       if (ctx.shouldStop()) break;
     }
   };
+}
+
+/** An --agent file declaring one stdio MCP server (the injected startMcpClient never spawns `command: x`). */
+const MCP_AGENT_YAML = [
+  'id: mcpcoder',
+  'provider: anthropic',
+  'model: claude-sonnet-4-6',
+  'system_prompt: You are a coder.',
+  'mcp_servers:',
+  '  - id: fs',
+  '    transport: stdio',
+  '    command: x',
+].join('\n');
+
+/** A fake MCP connection whose `close` counts teardowns; `read` is allowed, `danger` is dropped (skip note). */
+function mcpConn(): { conn: McpConnection; closed: () => number } {
+  let n = 0;
+  const conn: McpConnection = {
+    listTools: () =>
+      Promise.resolve([
+        { name: 'read', inputSchema: { type: 'object' } },
+        { name: 'danger', inputSchema: { type: 'object' } },
+      ]),
+    callTool: () => Promise.resolve({ content: [], isError: false }),
+    close: () => {
+      n += 1;
+      return Promise.resolve();
+    },
+  };
+  return { conn, closed: () => n };
 }
 
 describe('chatCommand', () => {
@@ -362,6 +393,63 @@ describe('chatCommand', () => {
     };
     await expect(chatCommand({ agent: undefined }, bad)).rejects.toThrow(/cannot infer a provider/);
   });
+
+  /** Write an --agent file declaring one stdio MCP server (the injected startMcpClient never spawns it). */
+  function writeMcpAgent(): string {
+    const p = join(cwd, 'mcp.agent.yaml');
+    writeFileSync(p, MCP_AGENT_YAML);
+    return p;
+  }
+
+  it('an MCP-declaring chat agent: surfaces dropped tools to stderr and tears the connection down at REPL teardown (2.R)', async () => {
+    // chat.ts's OWN command-level MCP wiring: surfaceMcpSkipped (→ stderr, never the stdout chrome) + the
+    // closeMcp teardown in runReplLoop's finally. Drives the REAL buildChatSession over a fake connection.
+    const agentPath = writeMcpAgent();
+    const { conn, closed } = mcpConn();
+    const { d, out, err } = deps(['/exit'], [textTurn('done')]);
+    const buildSession: typeof buildChatSession = (o) =>
+      buildChatSession({
+        ...o,
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      });
+    const code = await chatCommand({ agent: agentPath }, { ...d, buildSession });
+    expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(err()).toContain("MCP tool 'danger'"); // the allowlist-dropped tool note went to stderr
+    expect(out()).not.toContain('danger'); // …never to stdout
+    expect(closed()).toBe(1); // torn down exactly once at REPL teardown (runReplLoop finally)
+  });
+
+  it('tears the MCP connection down when opening the session store throws AFTER a successful build (orphan guard, 2.R)', async () => {
+    // The build→loop window: the session already OWNS the live connection, but openSessionStore throws before the
+    // REPL loop's steady-state finally — chat.ts's catch must close the connection (no orphaned child) and rethrow.
+    const agentPath = writeMcpAgent();
+    const { conn, closed } = mcpConn();
+    const { d } = deps(['/exit'], [textTurn('x')]);
+    const buildSession: typeof buildChatSession = (o) =>
+      buildChatSession({
+        ...o,
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+      });
+    await expect(
+      chatCommand(
+        { agent: agentPath },
+        {
+          ...d,
+          buildSession,
+          openSessionStore: () => {
+            throw new Error('db open boom');
+          },
+        },
+      ),
+    ).rejects.toThrow('db open boom');
+    expect(closed()).toBe(1); // the pre-loop catch tore the live connection down before rethrowing
+  });
 });
 
 describe('chatResumeCommand (2.N)', () => {
@@ -638,13 +726,49 @@ describe('chatResumeCommand (2.N)', () => {
       /no stored agent snapshot/,
     );
   });
+
+  it('re-discovers the resumed agent MCP servers and tears the connection down at teardown (2.R)', async () => {
+    // The snapshot persists the author's `mcp_servers` (not the baked grant), so resume RE-connects them fresh
+    // each time and OWNS the new connection — runReplLoop's finally must close it. Distinct conns/counters for
+    // the seed vs the resume isolate the resume teardown.
+    const store = createSessionStore(client.db);
+    const agentPath = join(cwd, 'mcp.agent.yaml');
+    writeFileSync(agentPath, MCP_AGENT_YAML);
+
+    const seed = mcpConn();
+    const seedBuild: typeof buildChatSession = (o) =>
+      buildChatSession({
+        ...o,
+        startMcpClient: () =>
+          realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(seed.conn) }]),
+      });
+    expect(
+      await chatCommand(
+        { agent: agentPath },
+        { ...freshDeps(['hello', '/exit'], [textTurn('hi')], store), buildSession: seedBuild },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+
+    const resume = mcpConn();
+    const resumeBuild: typeof buildResumedChatSession = (o) =>
+      buildResumedChatSession({
+        ...o,
+        startMcpClient: () =>
+          realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(resume.conn) }]),
+      });
+    const { d } = resumeDeps(['again', '/exit'], [textTurn('more')], store);
+    expect(
+      await chatResumeCommand({ sessionId: 'id-0' }, { ...d, buildResumedSession: resumeBuild }),
+    ).toBe(EXIT_CODES.chatEnded);
+    expect(resume.closed()).toBe(1); // the RESUMED session's connection torn down once at teardown
+  });
 });
 
 describe('drivePlain', () => {
   // A minimal driver context over a REAL session handle (no turns fire — startSession is a no-op) plus a
   // recording processLine, so we exercise drivePlain's readline loop + teardown over the injected stdin (F1).
-  function plainCtx(stdin: NodeJS.ReadableStream) {
-    const built = buildChatSession({
+  async function plainCtx(stdin: NodeJS.ReadableStream) {
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: tmpdir(),
@@ -674,7 +798,7 @@ describe('drivePlain', () => {
 
   it('reads lines from the injected stdin, dispatches each, and stops on /exit', async () => {
     const stdin = new PassThrough();
-    const { ctx, processed } = plainCtx(stdin);
+    const { ctx, processed } = await plainCtx(stdin);
     const done = drivePlain(ctx);
     stdin.write('hello\n');
     stdin.write('/exit\n');
@@ -685,7 +809,7 @@ describe('drivePlain', () => {
 
   it('a SIGINT closes the input so the loop ends and the finally removes the handler (teardown path)', async () => {
     const stdin = new PassThrough();
-    const { ctx } = plainCtx(stdin);
+    const { ctx } = await plainCtx(stdin);
     // Identify drivePlain's handler by SET-DELTA (not `.at(-1)`), matching the run.test.ts pattern — robust to
     // any other SIGINT listener the runner/host registers around it. Invoke it directly (not process.emit,
     // which would also fire the runner's listeners); it calls rl.close(), ending the for-await loop.
@@ -782,8 +906,8 @@ describe('selectChatDriver', () => {
   // A ctx whose stdin is already at EOF, so the PLAIN driver resolves immediately. The ink driver would mount
   // and block on input forever, so a resolving promise PROVES the plain branch was chosen. If the routing
   // predicate regressed (e.g. && → ||), a non-TTY case would route to ink and hang this test.
-  function ctxWith(stdoutIsTty: boolean, json: boolean): ChatDriveContext {
-    const built = buildChatSession({
+  async function ctxWith(stdoutIsTty: boolean, json: boolean): Promise<ChatDriveContext> {
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: tmpdir(),
@@ -807,23 +931,26 @@ describe('selectChatDriver', () => {
   }
 
   it('routes a non-TTY surface to the plain driver (resolves; ink would block)', async () => {
-    await expect(selectChatDriver(ctxWith(false, false))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(false, false))).resolves.toBeUndefined();
   });
 
   it('routes --json to the headless json driver even on a TTY (resolves; ink would block)', async () => {
-    await expect(selectChatDriver(ctxWith(true, true))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(true, true))).resolves.toBeUndefined();
   });
 
   it('routes a non-TTY + --json surface to the headless json driver', async () => {
-    await expect(selectChatDriver(ctxWith(false, true))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(false, true))).resolves.toBeUndefined();
   });
 });
 
 describe('driveJson (2.Q)', () => {
   // A driver context over a REAL session handle + a recording processLine, so we exercise driveJson's
   // readline loop and its NDJSON serialization of the live event stream over the injected stdin.
-  function jsonCtx(stdin: NodeJS.ReadableStream, turns: StreamChunk[][] = [textTurn('hi there')]) {
-    const built = buildChatSession({
+  async function jsonCtx(
+    stdin: NodeJS.ReadableStream,
+    turns: StreamChunk[][] = [textTurn('hi there')],
+  ) {
+    const built = await buildChatSession({
       chat: EMPTY_CHAT,
       agentRef: undefined,
       cwd: tmpdir(),
@@ -856,7 +983,7 @@ describe('driveJson (2.Q)', () => {
 
   it('emits a pure NDJSON stream (session:started → turn events → session:cancelled terminal) on EOF', async () => {
     const stdin = new PassThrough();
-    const { ctx, out } = jsonCtx(stdin);
+    const { ctx, out } = await jsonCtx(stdin);
     const done = driveJson(ctx);
     stdin.write('hello\n');
     stdin.end(); // EOF ends the loop
@@ -876,7 +1003,7 @@ describe('driveJson (2.Q)', () => {
 
   it('streams two turns, each with its own session:turn_completed, before the terminal', async () => {
     const stdin = new PassThrough();
-    const { ctx, out } = jsonCtx(stdin, [textTurn('one'), textTurn('two')]);
+    const { ctx, out } = await jsonCtx(stdin, [textTurn('one'), textTurn('two')]);
     const done = driveJson(ctx);
     stdin.write('first\n');
     stdin.write('second\n');
@@ -892,7 +1019,7 @@ describe('driveJson (2.Q)', () => {
     // The parallel of the drivePlain SIGINT teardown test — driveJson registers its own SIGINT handler and must
     // remove it in the finally. Identify it by SET-DELTA (robust to any other listener the runner registers).
     const stdin = new PassThrough();
-    const { ctx } = jsonCtx(stdin);
+    const { ctx } = await jsonCtx(stdin);
     const before = process.listeners('SIGINT').slice();
     const done = driveJson(ctx);
     const added = process.listeners('SIGINT').filter((l) => !before.includes(l));

@@ -69,6 +69,16 @@ describe('compileJsonSchemaToZod — supported subset (happy paths)', () => {
     expect(c.safeParse(43).success).toBe(false);
   });
 
+  it('INTERSECTS `const` with `enum` when both are present (JSON-Schema: both value-constraints must hold)', () => {
+    // A consistent pair accepts only the shared member; a contradictory pair accepts nothing (not const-wins).
+    const consistent = compileOk({ const: 'a', enum: ['a', 'b'] });
+    expect(consistent.safeParse('a').success).toBe(true);
+    expect(consistent.safeParse('b').success).toBe(false); // const narrows the enum
+    const contradictory = compileOk({ const: 'a', enum: ['b', 'c'] });
+    expect(contradictory.safeParse('a').success).toBe(false); // const not in enum ⇒ nothing matches
+    expect(contradictory.safeParse('b').success).toBe(false);
+  });
+
   it('compiles nullability via a [T, null] union and via nullable:true', () => {
     const viaUnion = compileOk({ type: ['string', 'null'] });
     expect(viaUnion.safeParse('x').success).toBe(true);

@@ -7,12 +7,14 @@
  * or `node:*` ([ADR-0034](../../../docs/decisions/0034-mcp-client-sdk-dependency.md) g3 /
  * [ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §1).
  *
- * Exports: the dependency-free JSON-Schema → Zod compiler; the `McpConnection` seam + the stdio SDK adapter
- * (`openStdioConnection`) that fences `@modelcontextprotocol/sdk`; the discovered-tool → `ToolDef` shaping
- * (`buildServerToolDefs`); and the lifecycle manager — `startMcpClient` returns an `McpClient` (fail-loud
- * connect-all + the aggregate `ToolDef`s + the `McpCapability` routing + `close()`). The **CLI host wiring**
- * (composing the manager into the engine's `ToolRegistry` + `ToolHost`) + the network transports + secrets
- * land in following steps.
+ * Exports: the dependency-free JSON-Schema → Zod compiler; the `McpConnection` seam + the four SDK adapters
+ * that fence `@modelcontextprotocol/sdk` — `openStdioConnection` (stdio) plus `openHttpConnection` (Streamable
+ * HTTP), `openSseConnection` (its legacy alias), and `openWebSocketConnection` (ws); the discovered-tool →
+ * `ToolDef` shaping (`buildServerToolDefs`); and the lifecycle manager — `startMcpClient` returns an
+ * `McpClient` (fail-loud connect-all + the aggregate `ToolDef`s + the `McpCapability` routing + `close()`).
+ * The CLI host wiring that composes the manager into the engine's `ToolRegistry` + `ToolHost`, the SSRF floor,
+ * and the named-secret resolution all live in `apps/cli` (the host owns the SDK + child processes; this
+ * package never imports them outward).
  */
 export {
   compileJsonSchemaToZod,
@@ -34,6 +36,9 @@ export { McpError, McpConnectError, McpHostUnavailableError } from './errors.js'
 export { shapeToolResult } from './result.js';
 export { buildServerToolDefs, type ServerToolDefs, type SkippedTool } from './tool-mapping.js';
 export { openStdioConnection, type StdioServerSpec } from './sdk-stdio.js';
+export { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
+export { openSseConnection, type SseServerSpec } from './sdk-sse.js';
+export { openWebSocketConnection, type WebSocketServerSpec } from './sdk-websocket.js';
 export {
   startMcpClient,
   type McpClient,

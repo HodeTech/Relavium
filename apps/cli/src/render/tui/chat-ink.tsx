@@ -32,6 +32,8 @@ import type { TranscriptEntry } from './session-view-model.js';
  */
 
 const FRAME_MS = 80;
+/** The bound on the best-effort MCP teardown a forced (double-SIGINT) quit waits for before hard-exiting. */
+const FORCE_TEARDOWN_MS = 2000;
 
 function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean }>): ReactElement {
   const { entry, color } = props;
@@ -194,11 +196,27 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
   const onSigint = (): void => {
     if (cancelRequested) {
       // A second SIGINT while the cooperative /cancel is still draining (e.g. a provider ignoring the abort):
-      // unmount ink FIRST so the terminal is restored from raw mode, THEN force a clean exit 4. (Process death
-      // reclaims the unref'd frame interval, the subscription, and this listener — the terminal restore is the
-      // one piece of cleanup that must not be skipped on the hard-exit path.)
+      // unmount ink FIRST so the terminal is restored from raw mode, then tear the live MCP connections down
+      // (best-effort, BOUNDED — a forced quit must not orphan a spawned stdio child, but must also not hang on a
+      // teardown), THEN force a clean exit 4. (Process death reclaims the unref'd frame interval, the
+      // subscription, and this listener; the terminal restore + MCP teardown are the cleanup that must not be
+      // skipped on the hard-exit path — the command's runReplLoop finally never runs after process.exit.)
       instance?.unmount();
-      process.exit(EXIT_CODES.chatEnded);
+      const forceExit = ctx.onForceExit;
+      if (forceExit === undefined) {
+        process.exit(EXIT_CODES.chatEnded);
+      }
+      // The fallback timer is deliberately REFERENCED (no `.unref()`): it must keep the event loop alive until it
+      // fires so the hard exit is GUARANTEED even if `forceExit()` hangs (an unref'd timer could let the loop
+      // drain first, skipping the exit). On the happy path `forceExit()` resolves first → `process.exit` runs
+      // immediately and reclaims this still-pending timer, so there is no spurious FORCE_TEARDOWN_MS wait.
+      const bounded = new Promise<void>((resolve) => {
+        setTimeout(resolve, FORCE_TEARDOWN_MS);
+      });
+      void Promise.race([forceExit().catch(() => undefined), bounded]).finally(() =>
+        process.exit(EXIT_CODES.chatEnded),
+      );
+      return;
     }
     cancelRequested = true;
     void ctx.processLine('/cancel').then(() => resolveExit(), rejectExit);

@@ -37,6 +37,13 @@ export interface McpClient {
   readonly capability: McpCapability;
   /** The aggregate namespaced `ToolDef`s across all servers — compose into `createToolRegistry({ tools })`. */
   readonly toolDefs: readonly ToolDef[];
+  /**
+   * The granted (post-allowlist, post-collision) namespaced tool ids **grouped by server id** — the host uses
+   * this to augment the RIGHT agent's tool grant when several agents in one workflow declare different servers
+   * ([ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3). A server
+   * that contributed no usable tool still has an entry (an empty array), so a declared id is always present.
+   */
+  readonly toolIdsByServer: ReadonlyMap<string, readonly string[]>;
   /** Tools dropped at discovery, per server. */
   readonly skipped: readonly ManagerSkippedTool[];
   /** Tear down every connection (idempotent). */
@@ -46,6 +53,7 @@ export interface McpClient {
 export async function startMcpClient(servers: readonly McpServerConfig[]): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
   const toolDefs: ToolDef[] = [];
+  const toolIdsByServer = new Map<string, readonly string[]>();
   const skipped: ManagerSkippedTool[] = [];
   // Shared ACROSS servers so a namespaced id colliding across two servers (e.g. server `a`+tool `b_x` and
   // server `a_b`+tool `x` both → `mcp_a_b_x`) fails closed — never a duplicate id reaching `createToolRegistry`.
@@ -60,20 +68,41 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
     seenServerIds.add(server.id);
   }
 
-  for (const server of servers) {
-    try {
-      const connection = await server.open();
-      connections.set(server.id, connection);
-      const tools = await connection.listTools();
-      const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist, seenToolIds);
-      toolDefs.push(...shaped.defs);
-      for (const s of shaped.skipped) {
-        skipped.push({ server: server.id, name: s.name, reason: s.reason });
+  // Connect every server CONCURRENTLY: a slow/hung server no longer serializes startup to N×(its connect bound)
+  // — total startup is now bounded by the SLOWEST single server, not their sum. Each task registers its
+  // connection as soon as `open()` resolves, so a later `listTools()` failure still has it in `connections` for
+  // the fail-loud teardown; and each wraps its own failure into a typed, secret-free error carrying the server id.
+  const settled = await Promise.allSettled(
+    servers.map(async (server) => {
+      try {
+        const connection = await server.open();
+        connections.set(server.id, connection);
+        const tools = await connection.listTools();
+        return { server, tools };
+      } catch (err) {
+        throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
       }
-    } catch (err) {
-      // Fail-loud: tear down everything opened so far, then surface a typed, secret-free error.
-      await closeAll(connections);
-      throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
+    }),
+  );
+  const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failure !== undefined) {
+    // Fail-loud: tear down everything opened, then surface the (already typed + secret-free) first failure.
+    await closeAll(connections);
+    throw failure.reason;
+  }
+  // Assemble the tool defs in DECLARATION order (not connect-completion order) so the cross-server namespacing +
+  // collision resolution (shared `seenToolIds`, first-wins) stays deterministic regardless of who connected first.
+  for (const result of settled) {
+    if (result.status !== 'fulfilled') continue; // unreachable — a rejection already threw above
+    const { server, tools } = result.value;
+    const shaped = buildServerToolDefs(server.id, tools, server.toolsAllowlist, seenToolIds);
+    toolDefs.push(...shaped.defs);
+    toolIdsByServer.set(
+      server.id,
+      shaped.defs.map((def) => def.id),
+    );
+    for (const s of shaped.skipped) {
+      skipped.push({ server: server.id, name: s.name, reason: s.reason });
     }
   }
 
@@ -90,7 +119,7 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
     },
   };
 
-  return { capability, toolDefs, skipped, close: () => closeAll(connections) };
+  return { capability, toolDefs, toolIdsByServer, skipped, close: () => closeAll(connections) };
 }
 
 /** Close every connection, swallowing teardown errors (the children are exiting); clears the map (idempotent). */

@@ -6,7 +6,7 @@ import { McpHostUnavailableError } from './errors.js';
 import { buildServerToolDefs } from './tool-mapping.js';
 
 /** A minimal valid dispatch context (dispatch only reads `ctx.signal`; the rest are required-but-inert). */
-function ctx(): ToolDispatchContext {
+function ctx(signal?: ToolDispatchContext['signal']): ToolDispatchContext {
   return {
     nodeId: 'n1',
     grantedToolIds: new Set<string>(),
@@ -14,6 +14,7 @@ function ctx(): ToolDispatchContext {
     toolPolicy: {},
     fsScope: 'sandboxed',
     gateApproved: false,
+    ...(signal === undefined ? {} : { signal }),
   };
 }
 
@@ -65,6 +66,25 @@ describe('buildServerToolDefs', () => {
     expect(calls).toEqual([
       { input: { server: 'github', tool: 'create-issue!', args: { a: 1 } }, signal: undefined },
     ]);
+  });
+
+  it('forwards the dispatch ctx.signal verbatim to host.mcp.call (the EXACT instance, not just undefined)', async () => {
+    // The routing test above asserts `signal: undefined`; this pins the forwarding with a REAL AbortSignal, so a
+    // regression that hard-coded `undefined` (dropping cancellation) would fail here.
+    const seen: unknown[] = [];
+    const host: ToolHost = {
+      mcp: {
+        call: (_input, signal) => {
+          seen.push(signal);
+          return Promise.resolve({ ok: true });
+        },
+      },
+    };
+    const realSignal = new AbortController().signal;
+    const { defs } = buildServerToolDefs('s', [tool('t')]);
+    await defs[0]!.dispatch({ a: 1 }, host, ctx(realSignal));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(realSignal); // the SAME instance, not a copy / not undefined
   });
 
   it('dispatch throws McpHostUnavailableError when the host MCP capability is not wired', () => {

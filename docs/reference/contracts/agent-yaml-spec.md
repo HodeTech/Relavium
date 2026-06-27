@@ -86,6 +86,15 @@ fallback_chain:
 
 The resolution order **within one attempt** is: primary `model` → first `fallback_chain` entry (with its `max_attempts`) → next entry → … ; the node `retry` budget ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)) then re-runs this whole sequence, above the chain, on a retryable failure. The `model`/`provider` pair and the `fallback_chain` are resolved against Relavium's provider-agnostic `LLMProvider` seam: each entry selects a provider adapter and a canonical model id, and the fallback is executed by the `withFallback` runner that sits *outside* the adapters (the adapters stay dumb). Provider-key resolution and cross-provider tool-schema normalization are likewise handled by `@relavium/llm`. The immovable contract for all of this — the request/result/stream types, the normalization rules, and where `fallback_chain` `max_attempts` is enforced — is [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md); the rationale and supported-model matrix are in [../../architecture/multi-llm-providers.md](../../architecture/multi-llm-providers.md).
 
+## MCP servers (`mcp_servers`)
+
+Each entry of `mcp_servers` is an **`McpServerRef`** — one of two mutually-exclusive forms ([ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §5):
+
+- **Inline** — self-contained: `{ id, transport, … }`, where the transport (`stdio | http | websocket`, plus the deprecated `sse` alias of `http` for older servers) dictates the required connection field — `stdio` needs a `command` (with optional `args`/`env`); a network transport needs a `url` (and may set `allow_local_endpoint` to opt into a private/loopback endpoint).
+- **By-name `ref`** — `{ ref: <registration-name>, tools_allowlist? }`: identity AND connection come from a `[[mcp_servers]]` registration ([config-spec.md](config-spec.md)); the inline connection fields are forbidden alongside `ref` (the registration provides them).
+
+Declaring a server implicitly grants that agent its (allowlist-narrowed) discovered tools, namespaced `mcp_{server}_{tool}`. Entries are unique per agent on `ref ?? id`. Declaring `mcp_servers` is a JSON-Schema-validated shape; the **full contract** (the field-by-field schema, the SSRF floor, named-secret resolution, transport reconciliation) lives in its canonical home, [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md) — this section is only the agent-surface summary.
+
 ## Example
 
 ```yaml

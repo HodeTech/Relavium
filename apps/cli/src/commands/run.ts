@@ -6,6 +6,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
+import type { McpClient, McpServerConfig } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -13,6 +14,11 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
+import {
+  connectWorkflowMcp,
+  surfaceMcpSkipped,
+  type WorkflowMcpRuntime,
+} from '../engine/mcp-servers.js';
 import {
   sweepHostMediaBestEffort as defaultSweepMedia,
   sweepMediaAtTerminal,
@@ -32,6 +38,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
@@ -78,6 +85,13 @@ export interface RunCommandDeps {
    * assert the run-end invocation without touching a real CAS, and the in-memory unit path never reaches it.
    */
   readonly sweepMedia?: typeof defaultSweepMedia;
+  /**
+   * Injectable MCP connect-all (2.R Step 3b) — tests pass a fake that never spawns a child; production uses the
+   * real `@relavium/mcp` `startMcpClient`. Threads through to {@link connectWorkflowMcp}.
+   */
+  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
 }
 
 /**
@@ -142,13 +156,36 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       { cause: err },
     );
   }
+  let mcpRuntime: WorkflowMcpRuntime | undefined;
   try {
+    // Inbound MCP (2.R Step 3b): aggregate the `mcp_servers` declared by the workflow's INLINE agents, start
+    // them fail-loud (a connect/discovery failure is an exit-2 CliError, cause stripped), and rewrite the
+    // workflow so each inline agent's grant includes ONLY its own servers' discovered tools. `undefined` ⇒ no
+    // inline agent declared a server. The spawned children are torn down at the run terminal (the finally).
+    mcpRuntime = await connectWorkflowMcp(def, {
+      cwd: deps.global.cwd,
+      resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      registrations: config.mcpServers,
+      ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
+    });
+    if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
+    const runWorkflow = mcpRuntime?.workflow ?? def;
+    const mcpOption =
+      mcpRuntime === undefined
+        ? {}
+        : {
+            mcp: {
+              toolDefs: mcpRuntime.client.toolDefs,
+              capability: mcpRuntime.client.capability,
+            },
+          };
+
     // Media host-wiring (2.S): when durable history is open, the SAME `~/.relavium/history.db` connection
     // backs the `model_catalog` reader (→ `resolveMediaSurface` routing) + the `media_references` retention
     // junction, and the host gets the global CAS root (`~/.relavium/media/`) + the project-relative `save_to`
     // root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
     // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
-    let engineOptions: BuildEngineOptions = { providers };
+    let engineOptions: BuildEngineOptions = { providers, ...mcpOption };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
@@ -166,10 +203,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         ...(wiring.mediaCostEstimate === undefined
           ? {}
           : { mediaCostEstimate: wiring.mediaCostEstimate }),
+        ...mcpOption,
       };
     }
     const engine = await build(engineOptions);
-    const handle = engine.start({ workflow: def, inputs });
+    // Run the AUGMENTED workflow (each inline agent's grant unioned with its MCP tool ids); the catalog/store
+    // were validated against the original, which is identical except for those `tools` grants.
+    const handle = engine.start({ workflow: runWorkflow, inputs });
 
     // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel
     // contract, the renderer lifecycle (constructed inside, after SIGINT registration — output mode per
@@ -199,6 +239,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
     return outcomeToExitCode(outcome);
   } finally {
-    opened?.close();
+    // Guarantee the MCP teardown runs EVEN IF the db close throws — a nested finally so neither resource leaks.
+    // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run
+    // outcome (closeAll swallows per-connection; the db close is best-effort here too).
+    try {
+      opened?.close();
+    } finally {
+      await mcpRuntime?.client.close();
+    }
   }
 }
