@@ -46,6 +46,13 @@ Each secret is stored as a **separate** keychain entry so individual keys can be
 
 The built-in web-search tool stores its key the same way under `account = search-provider` (see [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md)).
 
+**Inbound MCP named secrets** (2.R, [ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6) live in a **separate, isolated namespace**:
+
+- `account` = `mcp-secret:<name>` (e.g. `mcp-secret:github-token`)
+- env-var fallback = `RELAVIUM_MCP_<NAME>` (the name upper-cased, non-`[A-Z0-9]` → `_`), mirroring the provider `RELAVIUM_<PROVIDER>_API_KEY` chain.
+
+A `{{secrets.<name>}}` placeholder in an MCP server's `env` resolves **only** within this `mcp-secret:*` namespace (keychain → env var → fail-closed) and is injected **only** into the spawned server's child environment — never a committed YAML, a log, an event, or a `--json` line. The isolation is load-bearing: `{{secrets.*}}` can **never** reach a provider-key account (`{providerId}:{keyId}`) or `search-provider`, so a hostile imported workflow naming a *provider* key resolves an unrelated (normally-empty) `mcp-secret:*` account instead of the real key — closing the exfiltration path under the "a shared/imported workflow is the invite" distribution model.
+
 The `llm_providers` table stores only an `api_key_keychain_ref` (the `account` identifier) — **never the key value** (see [database-schema.md](database-schema.md)).
 
 ## Encrypted-file fallback — deferred past v1.0

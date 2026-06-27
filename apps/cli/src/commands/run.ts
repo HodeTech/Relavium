@@ -38,6 +38,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
@@ -89,6 +90,8 @@ export interface RunCommandDeps {
    * real `@relavium/mcp` `startMcpClient`. Threads through to {@link connectWorkflowMcp}.
    */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
 }
 
 /**
@@ -161,6 +164,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // inline agent declared a server. The spawned children are torn down at the run terminal (the finally).
     mcpRuntime = await connectWorkflowMcp(def, {
       cwd: deps.global.cwd,
+      resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
     if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);

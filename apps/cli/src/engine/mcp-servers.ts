@@ -12,6 +12,7 @@ import type { Agent, AgentRef, McpServerRef } from '@relavium/shared';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
+import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 
 /**
  * Resolve an agent's inline `mcp_servers` into a live {@link McpClient} (2.R Step 3 — CLI host wiring). This is
@@ -33,6 +34,11 @@ export interface ConnectAgentMcpOptions {
   readonly cwd: string;
   /** Injectable connect-all (tests pass a fake that never spawns); defaults to the real `startMcpClient`. */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * Resolve a `{{secrets.<name>}}` placeholder in a server `env` value (2.R Step 4, ADR-0052 §6). When absent,
+   * any `{{…}}` in an `env` value is rejected loud (a placeholder is never passed to the child as a literal).
+   */
+  readonly resolveSecret?: McpSecretResolver;
 }
 
 /**
@@ -42,6 +48,7 @@ export interface ConnectAgentMcpOptions {
 export function resolveStdioServerConfigs(
   mcpServers: readonly McpServerRef[] | undefined,
   cwd: string,
+  resolveSecret?: McpSecretResolver,
 ): McpServerConfig[] {
   const configs: McpServerConfig[] = [];
   for (const ref of mcpServers ?? []) {
@@ -61,7 +68,7 @@ export function resolveStdioServerConfigs(
       );
     }
     const command = ref.command;
-    const env = buildChildEnv(ref.id, ref.env);
+    const env = buildChildEnv(ref.id, ref.env, resolveSecret);
     configs.push({
       id: ref.id,
       ...(ref.tools_allowlist === undefined ? {} : { toolsAllowlist: ref.tools_allowlist }),
@@ -88,7 +95,7 @@ export async function connectAgentMcp(
   mcpServers: readonly McpServerRef[] | undefined,
   opts: ConnectAgentMcpOptions,
 ): Promise<McpClient | undefined> {
-  const configs = resolveStdioServerConfigs(mcpServers, opts.cwd);
+  const configs = resolveStdioServerConfigs(mcpServers, opts.cwd, opts.resolveSecret);
   if (configs.length === 0) return undefined;
   return startMcpClientFailLoud(configs, opts.startMcpClient);
 }
@@ -115,25 +122,40 @@ async function startMcpClientFailLoud(
   }
 }
 
+/** Matches a `{{secrets.<name>}}` placeholder (tolerant of inner whitespace) — the ONLY supported env interpolation. */
+const SECRET_PLACEHOLDER = /\{\{\s*secrets\.([A-Za-z0-9._-]+)\s*\}\}/g;
+
 /**
- * Build the child env for a stdio server from its declared `env` (verbatim for now). Rejects any value carrying
- * a `{{…}}` interpolation marker: `{{secrets.*}}` resolution is the Step-4 follow-up (ADR-0052 §6), and passing
- * an unresolved placeholder to the server as a literal is a silent-misconfig footgun, so it fails loud instead.
+ * Build the child env for a stdio server from its declared `env`, resolving `{{secrets.<name>}}` placeholders
+ * (2.R Step 4, ADR-0052 §6) through the injected {@link McpSecretResolver} (keychain `mcp-secret:<name>` →
+ * `RELAVIUM_MCP_<NAME>` → fail-closed). The resolved value is injected ONLY here, into the explicit child env at
+ * spawn — never a committed file, a log, an event, or `--json`. Any **other** `{{…}}` (or any `{{` left when no
+ * resolver is wired) is rejected loud, so an unsupported/unresolved placeholder is never passed as a literal.
+ *
+ * Exported for a focused unit test of the interpolation/fail-closed behavior (the resolved value is otherwise
+ * hidden inside the spawn closure of {@link resolveStdioServerConfigs}).
  */
-function buildChildEnv(
+export function buildChildEnv(
   serverId: string,
   declared: Readonly<Record<string, string>> | undefined,
+  resolveSecret?: McpSecretResolver,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(declared ?? {})) {
-    if (value.includes('{{')) {
+    const resolved =
+      resolveSecret === undefined
+        ? value
+        : value.replace(SECRET_PLACEHOLDER, (_match, name: string) => resolveSecret(name));
+    if (resolved.includes('{{')) {
+      // A leftover `{{` is an unsupported interpolation (e.g. `{{env.X}}`/`{{ctx.Y}}`), or a `{{secrets.…}}`
+      // with no resolver wired — never pass a placeholder to the server as a literal. The KEY is named, never
+      // the value (a resolved secret must not surface).
       throw new CliError(
         'invalid_invocation',
-        `MCP server '${serverId}': env interpolation (e.g. {{secrets.…}}) in '${key}' is not wired yet. ` +
-          `Set a literal value for now, or omit it.`,
+        `MCP server '${serverId}': unsupported interpolation in env '${key}' — only {{secrets.<name>}} is supported.`,
       );
     }
-    env[key] = value;
+    env[key] = resolved;
   }
   return env;
 }
@@ -149,6 +171,8 @@ export interface WorkflowMcpRuntime {
 export interface ConnectWorkflowMcpOptions {
   readonly cwd: string;
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /** Resolve `{{secrets.<name>}}` in a server `env` value (2.R Step 4, ADR-0052 §6); see {@link ConnectAgentMcpOptions}. */
+  readonly resolveSecret?: McpSecretResolver;
 }
 
 /**
@@ -186,7 +210,7 @@ export async function connectWorkflowMcp(
   }
   if (byId.size === 0) return undefined;
 
-  const configs = resolveStdioServerConfigs([...byId.values()], opts.cwd);
+  const configs = resolveStdioServerConfigs([...byId.values()], opts.cwd, opts.resolveSecret);
   const client = await startMcpClientFailLoud(configs, opts.startMcpClient);
 
   // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).

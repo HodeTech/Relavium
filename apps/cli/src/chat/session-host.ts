@@ -21,6 +21,7 @@ import type { ResolvedChatConfig } from '../config/resolve.js';
 import { connectAgentMcp } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
+import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -57,6 +58,12 @@ export interface BuildChatSessionOptions {
    * `mcp_servers` discover their tools without a live server in the unit path.
    */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * Resolve a `{{secrets.<name>}}` placeholder in an MCP server `env` value (2.R Step 4, ADR-0052 §6). The
+   * command wires the isolated `mcp-secret:*` keychain → `RELAVIUM_MCP_*` env chain; absent ⇒ a `{{` env value
+   * is rejected loud.
+   */
+  readonly mcpSecretResolver?: McpSecretResolver;
   /**
    * Session-scoped `{{ctx.*}}` variables (plaintext, NO secrets — agent-session-spec.md §Tools). `relavium
    * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
@@ -186,6 +193,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   const mcp = await connectAgentMcp(agent.mcp_servers, {
     cwd: opts.cwd,
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
   });
 
   try {
@@ -263,6 +271,8 @@ export interface BuildResumedChatSessionOptions {
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /** Resolve `{{secrets.<name>}}` in an MCP server `env` (2.R Step 4; see {@link BuildChatSessionOptions.mcpSecretResolver}). */
+  readonly mcpSecretResolver?: McpSecretResolver;
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
 }
@@ -296,6 +306,7 @@ export async function buildResumedChatSession(
   const mcp = await connectAgentMcp(agent.mcp_servers, {
     cwd: context.workingDir,
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
   });
 
   try {

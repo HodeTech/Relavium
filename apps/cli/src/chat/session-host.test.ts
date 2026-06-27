@@ -14,6 +14,7 @@ import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession,
@@ -150,8 +151,8 @@ describe('buildChatSession', () => {
 });
 
 describe('buildChatSession + MCP host wiring (2.R)', () => {
-  /** Write a throwaway `.agent.yaml` declaring one inline stdio MCP server, returning its path. */
-  function writeMcpAgent(): string {
+  /** Write a throwaway `.agent.yaml` declaring one inline stdio MCP server (optional extra server lines). */
+  function writeMcpAgent(extraServerLines: readonly string[] = []): string {
     const dir = mkdtempSync(join(tmpdir(), 'relavium-mcp-'));
     const path = join(dir, 'a.agent.yaml');
     writeFileSync(
@@ -167,6 +168,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
         '  - id: fs',
         '    transport: stdio',
         '    command: my-server',
+        ...extraServerLines,
         '',
       ].join('\n'),
     );
@@ -263,6 +265,40 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     });
     await expect(building).rejects.toThrow(/duplicate tool id/);
     expect(closed).toBe(1); // the build closed the client it had just opened
+  });
+
+  it('threads the secret resolver to the child env: a MISSING {{secrets}} fails the build closed, never spawns', async () => {
+    // The resolver runs in resolveStdioServerConfigs (inside connectAgentMcp) BEFORE startMcpClient — so a
+    // missing secret fails the build loud, never reaching the (fake) client. Proves the full
+    // command→build→connect→env-resolution threading + the fail-closed posture.
+    let started = false;
+    const building = build({
+      agentRef: writeMcpAgent(['    env:', '      TOKEN: "{{secrets.missing}}"']),
+      mcpSecretResolver: createMcpSecretResolver({}), // empty env, no keychain ⇒ 'missing' is unresolvable
+      startMcpClient: () => {
+        started = true;
+        return Promise.reject(
+          new Error('startMcpClient must not be reached on a fail-closed secret'),
+        );
+      },
+    });
+    await expect(building).rejects.toThrow(/secret 'missing' is not set/);
+    expect(started).toBe(false); // failed at env resolution, before any connect
+  });
+
+  it('threads the resolver: a resolvable secret lets the build proceed (no spurious fail-closed)', async () => {
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const built = await build({
+      agentRef: writeMcpAgent(['    env:', '      TOKEN: "{{secrets.gh}}"']),
+      mcpSecretResolver: createMcpSecretResolver({ RELAVIUM_MCP_GH: 'ghp_resolved' }),
+      startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+    });
+    expect(built.closeMcp).toBeDefined(); // the secret resolved ⇒ the build proceeded to connect
+    await built.closeMcp?.();
   });
 });
 

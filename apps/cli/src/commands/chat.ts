@@ -27,6 +27,7 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -83,6 +84,8 @@ export interface ChatCommandDeps {
   readonly buildSession?: typeof buildChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -103,6 +106,8 @@ export interface ChatResumeCommandDeps {
   readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -141,6 +146,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     now,
     uuid,
     providers,
+    mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -217,6 +223,7 @@ export async function chatResumeCommand(
       messages: loaded.messages,
       now,
       providers,
+      mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,

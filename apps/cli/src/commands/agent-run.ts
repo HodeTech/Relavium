@@ -12,6 +12,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
 
 /**
@@ -40,6 +41,8 @@ export interface AgentRunCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable session builder (tests). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
+  /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
+  readonly mcpSecretResolver?: McpSecretResolver;
   readonly now?: () => number;
   readonly uuid?: () => string;
 }
@@ -93,6 +96,7 @@ export async function agentRunCommand(
     now,
     uuid,
     providers,
+    mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
   });
   // Render the live stream (NDJSON under --json, else the plain token/tool printer) and capture the turn
   // outcome — a classified turn failure completes with `session:turn_completed.error`, mapping to exit 1.

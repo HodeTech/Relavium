@@ -3,9 +3,10 @@ import { McpError, type McpClient, type McpServerConfig } from '@relavium/mcp';
 import type { Agent, McpServerRef } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
-import { isCliError } from '../process/errors.js';
+import { CliError, isCliError } from '../process/errors.js';
 import { captureIo } from '../test-support.js';
 import {
+  buildChildEnv,
   connectAgentMcp,
   connectWorkflowMcp,
   resolveStdioServerConfigs,
@@ -72,7 +73,7 @@ describe('resolveStdioServerConfigs', () => {
     expect(() => resolveStdioServerConfigs([bad], '/work')).toThrow(/requires a 'command'/);
   });
 
-  it('rejects an env value carrying a {{…}} marker (secret interpolation is a Step-4 follow-up)', () => {
+  it('rejects an env value carrying a {{…}} marker when NO secret resolver is wired', () => {
     try {
       resolveStdioServerConfigs([stdioRef({ env: { TOKEN: '{{secrets.gh}}' } })], '/work');
       expect.unreachable('a {{…}} env value must throw');
@@ -88,6 +89,46 @@ describe('resolveStdioServerConfigs', () => {
     expect(() =>
       resolveStdioServerConfigs([stdioRef({ env: { LOG_LEVEL: 'debug' } })], '/work'),
     ).not.toThrow();
+  });
+});
+
+describe('buildChildEnv (secret interpolation, 2.R Step 4)', () => {
+  it('resolves {{secrets.<name>}} into the child env value via the resolver (whole + embedded)', () => {
+    const env = buildChildEnv(
+      'fs',
+      { TOKEN: '{{secrets.gh}}', AUTH: 'Bearer {{ secrets.gh }}' },
+      (name) => (name === 'gh' ? 'ghp_resolved' : 'OTHER'),
+    );
+    expect(env).toEqual({ TOKEN: 'ghp_resolved', AUTH: 'Bearer ghp_resolved' });
+  });
+
+  it('passes a literal env value through unchanged', () => {
+    expect(buildChildEnv('fs', { LOG: 'debug' }, () => 'x')).toEqual({ LOG: 'debug' });
+  });
+
+  it('propagates the resolver fail-closed throw (a missing secret fails the build, never a literal)', () => {
+    expect(() =>
+      buildChildEnv('fs', { TOKEN: '{{secrets.missing}}' }, () => {
+        throw new CliError('invalid_invocation', "MCP secret 'missing' is not set");
+      }),
+    ).toThrow(/is not set/);
+  });
+
+  it('rejects a non-secret interpolation (only {{secrets.<name>}} is supported), even with a resolver', () => {
+    try {
+      buildChildEnv('fs', { HOST: '{{env.HOSTNAME}}' }, () => 'x');
+      expect.unreachable('an unsupported interpolation must throw');
+    } catch (err) {
+      expect(isCliError(err) && err.code).toBe('invalid_invocation');
+      expect((err as Error).message).toContain('HOST'); // names the key
+      expect((err as Error).message).toContain('only {{secrets.<name>}}');
+    }
+  });
+
+  it('rejects a {{secrets.…}} when no resolver is wired (the value is never passed literally)', () => {
+    expect(() => buildChildEnv('fs', { TOKEN: '{{secrets.gh}}' })).toThrow(
+      /unsupported interpolation/,
+    );
   });
 });
 
