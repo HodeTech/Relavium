@@ -63,7 +63,7 @@ describe('run', () => {
 
   it('keeps stderr a single JSON envelope under --json even with --verbose (no raw stack)', async () => {
     const { io, out, err } = captureIo();
-    expect(await run(argv('create', '--json', '--verbose'), io)).toBe(2); // `create` is a stub (2.J)
+    expect(await run(argv('init', '--json', '--verbose'), io)).toBe(2); // `init` is a stub (2.J landed `create`)
     expect(out()).toBe('');
     // stderr is exactly one parseable JSON line — --verbose adds no raw stack text under --json.
     const lines = err().trimEnd().split('\n');
@@ -93,7 +93,7 @@ describe('run', () => {
 
   it('exits 2 with a clean not-implemented message for a stub command (no stack leak)', async () => {
     const { io, out, err } = captureIo();
-    expect(await run(argv('create'), io)).toBe(2); // `create` is still a stub (2.J)
+    expect(await run(argv('init'), io)).toBe(2); // `init` is still a stub (2.J landed `create`)
     expect(err()).toContain('not available yet');
     // No stack frame as primary output — a Node frame line is `    at …` (string check, no regex).
     const hasStackFrame = err()
@@ -105,7 +105,7 @@ describe('run', () => {
 
   it('emits the structured JSON error envelope on stderr under --json, stdout empty (ADR-0049)', async () => {
     const { io, out, err } = captureIo();
-    const code = await run(argv('create', '--json'), io); // `create` is still a stub (2.J)
+    const code = await run(argv('init', '--json'), io); // `init` is still a stub (2.J landed `create`)
     expect(code).toBe(2);
     expect(out()).toBe(''); // stdout stays pure: a CLI fault is a stderr diagnostic
     const parsed: unknown = JSON.parse(err().trim());

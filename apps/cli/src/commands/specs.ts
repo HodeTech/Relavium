@@ -20,6 +20,7 @@ import { agentRunCommand } from './agent-run.js';
 import { chatCommand, chatResumeCommand } from './chat.js';
 import { chatExportCommand } from './chat-export.js';
 import { chatListCommand } from './chat-list.js';
+import { createCommand } from './create.js';
 import { exportCommand } from './export.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
@@ -61,11 +62,6 @@ interface StubSpec {
 
 const STUB_COMMANDS: readonly StubSpec[] = [
   {
-    name: 'create',
-    summary: 'Scaffold a new workflow or agent via an interactive wizard.',
-    landsIn: 'workstream 2.J',
-  },
-  {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
     landsIn: 'a tracked follow-up',
@@ -83,6 +79,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerChatResume(program, ctx);
   registerChatList(program, ctx);
   registerChatExport(program, ctx);
+  registerCreate(program, ctx);
   registerExport(program, ctx);
   registerImport(program, ctx);
   registerAgent(program, ctx);
@@ -256,6 +253,30 @@ function registerChatExport(program: Command, ctx?: CommandContext): void {
         force: opts.force ?? false,
       },
       { io: ctx.io, global: ctx.global, openSessionStore },
+    );
+  });
+}
+
+/**
+ * Register `relavium create` (2.J) — an interactive `@clack/prompts` wizard that scaffolds a new agent or a
+ * minimal single-agent workflow as schema-validated, git-ready YAML under `.relavium/`. Needs an interactive
+ * terminal (fails loud under `--json` / non-TTY); a name collision is exit 2 unless `--force`. No keychain/db.
+ */
+function registerCreate(program: Command, ctx?: CommandContext): void {
+  const create = program
+    .command('create')
+    .description('Scaffold a new agent or workflow via an interactive wizard.')
+    .option('--force', 'overwrite an existing project entry with the same id');
+  if (ctx === undefined) {
+    create.action(() => {
+      throw new CliError('not_implemented', '`relavium create` requires the CLI runtime context.');
+    });
+    return;
+  }
+  create.action(async (opts: { force?: boolean }) => {
+    ctx.result.exitCode = await createCommand(
+      { force: opts.force ?? false },
+      { io: ctx.io, global: ctx.global },
     );
   });
 }

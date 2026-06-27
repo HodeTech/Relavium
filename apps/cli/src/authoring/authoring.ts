@@ -12,6 +12,7 @@ import {
   type AgentDefinition,
   type WorkflowDefinition,
 } from '@relavium/core';
+import { SCHEMA_VERSION } from '@relavium/shared';
 
 import { findProjectConfigDir } from '../config/paths.js';
 import { CliError } from '../process/errors.js';
@@ -124,6 +125,84 @@ function asWorkflow(definition: WorkflowDefinition): ParsedAuthored {
 }
 function asAgent(definition: AgentDefinition): ParsedAuthored {
   return { kind: 'agent', slug: definition.id, definition };
+}
+
+/** The answers a `create` wizard gathers (the surface-agnostic core; the clack TTY layer is a separate module). */
+export interface CreateSpec {
+  readonly kind: AuthoredKind;
+  readonly name: string;
+  readonly provider: AgentDefinition['provider'];
+  readonly model: string;
+  readonly systemPrompt: string;
+  readonly tools: readonly string[];
+}
+
+/**
+ * The interactive `create` wizard seam — gather a {@link CreateSpec}, or `null` when the user cancels the prompt
+ * itself (Ctrl-C / ESC). The `@clack/prompts`-backed implementation lives in its own module (the ONLY place the
+ * prompt library is imported, mirroring the gate prompter + the ink renderer split); tests inject a fake.
+ */
+export interface CreatePrompter {
+  gather(): Promise<CreateSpec | null>;
+}
+
+/**
+ * Derive a kebab-case id from a human name — lowercase, ASCII-alphanumeric runs joined by single dashes (the
+ * `kebabIdSchema` charset). A name with no usable `[a-z0-9]` (e.g. only punctuation / non-ASCII) yields an empty
+ * slug, which is a clean exit-2 {@link CliError} (the name is NOT echoed — it is arbitrary user input).
+ */
+export function toSlug(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((segment) => segment.length > 0)
+    .join('-');
+  if (slug.length === 0) {
+    throw new CliError(
+      'invalid_invocation',
+      'the name needs at least one ASCII letter or digit to form an id.',
+    );
+  }
+  return slug;
+}
+
+/**
+ * Build a new authored document from a {@link CreateSpec} and VALIDATE it by round-tripping through the strict
+ * parser — a bad model/provider/system_prompt (or a slug the schema rejects) surfaces as the SAME typed exit-2
+ * {@link CliError} a `run` would raise. A `workflow` wraps the agent in a minimal `input → agent → output`
+ * scaffold (the inline agent, a single agent node, the two edges). Returns the validated {@link ParsedAuthored}.
+ */
+export function buildAuthored(spec: CreateSpec): ParsedAuthored {
+  const id = toSlug(spec.name);
+  const agent: AgentDefinition = {
+    id,
+    ...(spec.name === id ? {} : { name: spec.name }),
+    provider: spec.provider,
+    model: spec.model,
+    system_prompt: spec.systemPrompt,
+    ...(spec.tools.length === 0 ? {} : { tools: [...spec.tools] }),
+  };
+  if (spec.kind === 'agent') {
+    return detectAndParse(serializeAgent(agent), `<new agent>`, '.agent.yaml');
+  }
+  const definition: WorkflowDefinition = {
+    schema_version: SCHEMA_VERSION,
+    workflow: {
+      id,
+      ...(agent.name === undefined ? {} : { name: agent.name }),
+      agents: [agent],
+      nodes: [
+        { id: 'input', type: 'input' },
+        { id: 'main', type: 'agent', agent_ref: id },
+        { id: 'output', type: 'output' },
+      ],
+      edges: [
+        { from: 'input', to: 'main' },
+        { from: 'main', to: 'output' },
+      ],
+    },
+  };
+  return detectAndParse(serializeWorkflow(definition), `<new workflow>`, '.relavium.yaml');
 }
 
 /**
