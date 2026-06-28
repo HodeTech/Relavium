@@ -127,6 +127,28 @@ describe('importCommand (2.J)', () => {
     );
   });
 
+  it('rejects an import whose id is already used by the OTHER catalog (cross-kind), even with --force', () => {
+    // A workflow `reviewer` exists; importing an AGENT `reviewer` collides project-globally — rejected, and
+    // --force cannot resolve a cross-kind clash (it would leave both files and make `export reviewer` ambiguous).
+    mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'workflows', 'reviewer.relavium.yaml'),
+      "schema_version: '1.0'\nworkflow:\n  id: reviewer\n  nodes:\n    - { id: i, type: input }\n    - { id: o, type: output }\n  edges:\n    - { from: i, to: o }\n",
+    );
+    seed('incoming.agent.yaml', AGENT); // AGENT declares `id: reviewer`
+    const { d } = deps();
+    for (const force of [false, true]) {
+      try {
+        importCommand({ path: 'incoming.agent.yaml', force }, d);
+        expect.unreachable('a cross-kind id must throw');
+      } catch (err) {
+        if (!isCliError(err)) throw err;
+        expect(err.message).toContain('already exists as a workflow');
+      }
+    }
+    expect(existsSync(join(cwd, '.relavium', 'agents'))).toBe(false); // nothing written
+  });
+
   it('rejects a missing source path with exit 2', () => {
     const { d } = deps();
     try {

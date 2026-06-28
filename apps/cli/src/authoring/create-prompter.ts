@@ -64,7 +64,11 @@ export function createClackPrompter(deps: ClackCreateDeps = defaultDeps): Create
         ],
       });
       if (deps.isCancel(kindValue)) return null;
-      const kind: AuthoredKind = kindValue === 'workflow' ? 'workflow' : 'agent';
+      // Match the chosen option explicitly (no silent default-to-`agent`) — symmetric with the provider
+      // narrowing below; `select` only ever yields a listed option, so an unlisted value is impossible here.
+      const kind: AuthoredKind | undefined =
+        kindValue === 'agent' ? 'agent' : kindValue === 'workflow' ? 'workflow' : undefined;
+      if (kind === undefined) return null;
 
       const name = await deps.text({ message: 'Name', validate: required('Name') });
       if (deps.isCancel(name)) return null;

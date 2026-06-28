@@ -8,9 +8,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CreatePrompter, CreateSpec } from '../authoring/authoring.js';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
+import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
 import { createCommand, type CreateCommandDeps } from './create.js';
+
+/** A minimal valid workflow YAML for a given id — to seed a cross-kind catalog entry. */
+const workflowYaml = (id: string): string =>
+  `schema_version: '1.0'\nworkflow:\n  id: ${id}\n  nodes:\n    - { id: i, type: input }\n    - { id: o, type: output }\n  edges:\n    - { from: i, to: o }\n`;
 
 const AGENT_SPEC: CreateSpec = {
   kind: 'agent',
@@ -75,7 +80,7 @@ describe('createCommand (2.J)', () => {
     const yaml = readFileSync(join(cwd, '.relavium', 'workflows', 'triage.relavium.yaml'), 'utf8');
     const def = parseWorkflow(yaml);
     expect(def.workflow.id).toBe('triage');
-    expect((def.workflow.agents ?? []).length).toBe(1); // the inline agent
+    expect(def.workflow.agents ?? []).toHaveLength(1); // the inline agent
     expect(def.workflow.nodes.map((n) => n.type)).toEqual(['input', 'agent', 'output']);
   });
 
@@ -117,11 +122,53 @@ describe('createCommand (2.J)', () => {
     ).toContain('Review the code precisely.');
   });
 
+  it('rejects an id already used by the OTHER catalog (cross-kind) — even with --force', async () => {
+    // A workflow `triage` exists; scaffolding an AGENT `triage` collides project-globally (`export triage` would
+    // be ambiguous), so it is rejected — and --force cannot resolve a cross-kind clash (it would leave both).
+    mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'workflows', 'triage.relavium.yaml'),
+      workflowYaml('triage'),
+    );
+    const { d } = deps(scriptedPrompter({ ...AGENT_SPEC, kind: 'agent', name: 'triage' }));
+    for (const force of [false, true]) {
+      try {
+        await createCommand({ force }, d);
+        expect.unreachable('a cross-kind id must throw');
+      } catch (err) {
+        if (!isCliError(err)) throw err;
+        expect(err.message).toContain('already exists as a workflow');
+      }
+    }
+    expect(existsSync(join(cwd, '.relavium', 'agents'))).toBe(false); // nothing written
+  });
+
   it('fails loud (exit 2) under --json with no injected prompter — a wizard needs an interactive terminal', async () => {
     const { d } = deps(undefined, true); // no prompter + --json ⇒ the headless guard fires before any clack call
     try {
       await createCommand({ force: false }, d);
       expect.unreachable('a headless create must throw');
+    } catch (err) {
+      if (!isCliError(err)) throw err;
+      expect(err.message).toContain('needs an interactive terminal');
+    }
+  });
+
+  it('fails loud (exit 2) when stdin is not a TTY even though stdout is — clack needs interactive stdin', async () => {
+    // A TTY stdout but a piped/redirected stdin (stdinIsTty=false) must still fail the guard — clack's raw-mode
+    // setup throws on a non-TTY stdin, so the wizard can never run. No prompter, no --json ⇒ only the stdin guard.
+    const { io } = captureIo();
+    const ttyOutPipedStdin: CliIo = { ...io, stdoutIsTty: true, stdinIsTty: false };
+    const global: GlobalOptions = {
+      json: false,
+      color: false,
+      cwd,
+      configPath: undefined,
+      verbosity: 'normal',
+    };
+    try {
+      await createCommand({ force: false }, { io: ttyOutPipedStdin, global });
+      expect.unreachable('a non-TTY stdin must throw');
     } catch (err) {
       if (!isCliError(err)) throw err;
       expect(err.message).toContain('needs an interactive terminal');

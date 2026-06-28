@@ -1,11 +1,11 @@
 import { relative } from 'node:path';
 
 import {
+  assertSlugAvailable,
   buildAuthored,
   catalogPath,
   resolveProjectConfigDir,
   serializeAuthored,
-  slugExists,
   writeAuthoredFile,
   type CreatePrompter,
 } from '../authoring/authoring.js';
@@ -38,9 +38,14 @@ export async function createCommand(
   args: CreateCommandArgs,
   deps: CreateCommandDeps,
 ): Promise<ExitCode> {
-  // The clack wizard needs an interactive TTY; under --json or a non-TTY stdout there is no way to prompt, so
-  // fail loud. (An injected prompter — a test, or a future non-interactive flag path — bypasses this gate.)
-  if (deps.prompter === undefined && (deps.global.json || !deps.io.stdoutIsTty)) {
+  // The clack wizard needs an interactive TTY on BOTH ends: stdout to render the prompt and stdin to read
+  // keystrokes (a non-TTY stdin makes clack's raw-mode setup throw, not hang). Under --json or either stream
+  // piped there is no way to prompt, so fail loud. (An injected prompter — a test, or a future non-interactive
+  // flag path — bypasses this gate.)
+  if (
+    deps.prompter === undefined &&
+    (deps.global.json || !deps.io.stdoutIsTty || !deps.io.stdinIsTty)
+  ) {
     throw new CliError(
       'invalid_invocation',
       '`relavium create` needs an interactive terminal — it is not available under --json or a non-TTY pipe.',
@@ -57,12 +62,14 @@ export async function createCommand(
   const parsed = buildAuthored(spec); // build + validate (a bad combination is a typed exit-2 CliError)
   const cwd = deps.global.cwd;
   const projectConfigDir = resolveProjectConfigDir(cwd);
-  if (!args.force && slugExists({ projectConfigDir, cwd, kind: parsed.kind, slug: parsed.slug })) {
-    throw new CliError(
-      'invalid_invocation',
-      `${parsed.kind} '${parsed.slug}' already exists in this project — pass --force to overwrite.`,
-    );
-  }
+  // Project-global id uniqueness (across both catalogs) — a cross-kind collision is rejected even with --force.
+  assertSlugAvailable({
+    projectConfigDir,
+    cwd,
+    kind: parsed.kind,
+    slug: parsed.slug,
+    force: args.force,
+  });
 
   const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
   const targetDisplay = relative(cwd, target);

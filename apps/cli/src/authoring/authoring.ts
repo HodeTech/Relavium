@@ -309,7 +309,7 @@ export function resolveById(opts: { projectConfigDir: string; cwd: string; id: s
   return matches[0]!;
 }
 
-/** True if a VALID catalog entry of `kind` already has this `slug` (the `import`/`create` collision check). */
+/** True if a VALID catalog entry of `kind` already has this `slug` (a single-catalog membership check). */
 export function slugExists(opts: {
   projectConfigDir: string;
   cwd: string;
@@ -321,6 +321,37 @@ export function slugExists(opts: {
     cwd: opts.cwd,
     kind: KIND_DIR[opts.kind],
   }).some((e) => e.valid && e.slug === opts.slug);
+}
+
+/**
+ * The id-uniqueness guard shared by `create` + `import`. An id is a PROJECT-GLOBAL handle — `resolveById` /
+ * `export <id>` resolve a bare id across BOTH catalogs — so a slug must be unique across agents AND workflows,
+ * not merely within one kind. Throws a typed exit-2 {@link CliError}, or returns cleanly if the write may go:
+ *  - the slug already exists as the OTHER kind → always reject: a `--force` overwrite of *this* kind would leave
+ *    the other file in place and `export <id>` permanently ambiguous, so the user must rename/remove one;
+ *  - the slug exists as the SAME kind → reject unless `force` (an in-place, unambiguous overwrite).
+ */
+export function assertSlugAvailable(opts: {
+  projectConfigDir: string;
+  cwd: string;
+  kind: AuthoredKind;
+  slug: string;
+  force: boolean;
+}): void {
+  const { projectConfigDir, cwd, kind, slug, force } = opts;
+  const otherKind: AuthoredKind = kind === 'agent' ? 'workflow' : 'agent';
+  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug })) {
+    throw new CliError(
+      'invalid_invocation',
+      `'${slug}' already exists as a ${otherKind} in this project — an id must be unique across agents and workflows; rename one.`,
+    );
+  }
+  if (!force && slugExists({ projectConfigDir, cwd, kind, slug })) {
+    throw new CliError(
+      'invalid_invocation',
+      `${kind} '${slug}' already exists in this project — pass --force to overwrite.`,
+    );
+  }
 }
 
 /** The `errno` code of a Node fs error (`ENOENT`, `EACCES`, …), or `undefined` if it is not one. */

@@ -84,9 +84,13 @@ describe('exportCommand (2.J)', () => {
       EXIT_CODES.success,
     );
     expect(readFileSync(join(cwd, 'shared', 'copy.agent.yaml'), 'utf8')).toContain('id: reviewer');
-    const record = JSON.parse(out().trim()) as { id: string; kind: string; path: string };
-    expect(record).toMatchObject({ id: 'reviewer', kind: 'agent' });
-    expect(record.path).toBe(join('shared', 'copy.agent.yaml')); // cwd-relative, never the absolute path
+    const record: unknown = JSON.parse(out().trim());
+    // The cwd-relative path is folded into the shape check — no unsafe cast, no property access on `unknown`.
+    expect(record).toMatchObject({
+      id: 'reviewer',
+      kind: 'agent',
+      path: join('shared', 'copy.agent.yaml'),
+    });
   });
 
   it('round-trips: an exported agent re-imports cleanly into a fresh project', () => {
