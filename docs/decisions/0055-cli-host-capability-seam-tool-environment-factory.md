@@ -1,10 +1,10 @@
 # ADR-0055: Shared CLI tool-environment factory — `ToolHost`, `ToolPolicy`, and dispatch context as separate channels
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-06-28
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0043](0043-media-egress-failover-rematerialization-ssrf.md), [ADR-0053](0053-mcp-network-transport-egress-security.md), [ADR-0052](0052-inbound-mcp-client-package-lifecycle-registration.md), [phase-2.5-cli-consolidation.md](../roadmap/phases/phase-2.5-cli-consolidation.md) (2.5.A), [architectural-principles.md](../standards/architectural-principles.md)
 
-> **Draft.** Proposed alongside the Phase 2.5 plan; to be reviewed and finalized (→ Accepted) when workstream 2.5.A begins. **Security review is mandatory before Accept.**
+> **Accepted (2.5.A landed).** Drafted alongside the Phase 2.5 plan and finalized when workstream 2.5.A landed: the engine amendments EA1 (`tool_unavailable`) + EA2 (real failed-turn usage), the node-backed jailed `fs` + `process` capabilities, the factory, the advertise-filter, and the both-path wiring (chat / run / gate) all shipped. The **mandatory security review passed** (a consolidated adversarial pass over the whole seam — fs jail, process env/group-kill, the read-only chat + `full`-tier clamp, the classification ladder, and secret/I3 hygiene).
 
 ## Context
 
@@ -23,11 +23,14 @@ the per-dispatch `ToolDispatchContext` (`fsScope`).
 
 ## Decision
 
-**We will add one shared factory `assembleToolEnv(mode, fsScopeTier)` that returns `{ host: ToolHost,
-policy: ToolPolicy }`, wired into both the chat and run paths, with `fsScope` flowing through the
-dispatch context — keeping the three concepts in three channels.** The factory always uses conditional
-spread (`exactOptionalPropertyTypes`-clean) so the MCP arm is a true **merge** on both paths, deleting
-the two divergent inline host expressions. The default chat profile wires **`fs` read-only and the
+**We will add one shared factory `assembleToolEnv({ profile, fsScopeTier, workspaceDir })` that returns
+`{ host: ToolHost, policy: ToolPolicy }`, wired into both the chat and run paths, with `fsScope` flowing
+through the dispatch context — keeping the three concepts in three channels.** (As shipped, the parameter
+that selects which host arms are wired is `profile` — `'chat-read-only'` vs `'workflow-read-write'` — not
+`mode`; the future per-turn `mode` of [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) drives the
+`ToolPolicy` allowlists, never the host-arm selection, preserving the responsibility boundary below.) The
+factory always uses conditional spread (`exactOptionalPropertyTypes`-clean) so the MCP arm is a true
+**merge** on both paths, deleting the two divergent inline host expressions. The default chat profile wires **`fs` read-only and the
 `process` arm** — `read_file` / `list_directory` use `fs`, but `git_status` spawns `git` through
 `requireProcess`, so an `fs`-only host would still fail it with `capability_unavailable` (the exact root
 cause). `run_command` is kept unadvertised (the mode advertise-filter,
@@ -62,9 +65,9 @@ EA1/EA2): **EA1** maps the dispatch-layer `capability_unavailable` to a new port
 `ErrorCode` (`@relavium/shared` `ERROR_CODES`; `codeForToolError` in `agent-turn.ts` is the single change
 point) instead of `internal`, so a missing capability surfaces with the tool name; and **EA2** carries the
 real accumulated usage on a failed turn (a `usage` field on `AgentTurnError`), touching only the two
-provider-engaged branches in `agent-session.ts`. Both are recorded by this ADR. *(EA1/EA2 land first, in
-Step 1 of 2.5.A, under this still-**Proposed** ADR; the factory wiring and the mandatory security review —
-the precondition for Accept — follow in the later steps, at which point this ADR flips to Accepted.)*
+provider-engaged branches in `agent-session.ts`. Both are recorded by this ADR. *(EA1/EA2 landed first, in
+Step 1 of 2.5.A; the jailed `fs`/`process` capabilities, the factory + advertise-filter, and the both-path
+wiring landed in the later steps, and the mandatory security review then passed — this ADR is Accepted.)*
 
 Considered the conflated signature `createCliToolHost({ fsScope, allowedCommands, egress })` (rejected:
 `fsScope` is dispatch-context, `allowedCommands` is `ToolPolicy` — three types crammed into one); wiring

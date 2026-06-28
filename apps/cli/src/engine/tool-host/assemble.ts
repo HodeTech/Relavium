@@ -57,12 +57,18 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
   const readOnly = opts.profile === 'chat-read-only';
   const tier: FsScopeTier = readOnly ? clampChatTier(opts.fsScopeTier) : opts.fsScopeTier;
   const host: ToolHost = {
+    // NOTE: the factory does not yet pass `extraRoots`, so the `project` tier behaves as workspace-only in
+    // 2.5.A (it can only NARROW the jail — never a hole). The `project` path-allowlist is wired with the
+    // approval-gated surface in 2.5.E; until then `project` == `sandboxed`-minus-tmp.
     fs: createNodeFsCapability({
       tier,
       workspaceDir: opts.workspaceDir,
       readOnly,
       ...(opts.tmpDir === undefined ? {} : { tmpDir: opts.tmpDir }),
     }),
+    // The process arm itself has no read-only notion — chat-safety rests ENTIRELY on the policy layer above:
+    // the empty `allowedCommands` default denies `run_command`, and `git_status` exposes no model-controlled
+    // command. Loosening the chat `allowedCommands` in a future profile is therefore a security-review trigger.
     process: createNodeProcessCapability({ workspaceDir: opts.workspaceDir }),
     // egress / os are intentionally absent in 2.5.A (deferred to ADR-0057/2.5.E behind the approval floor).
   };
