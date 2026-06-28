@@ -2,12 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  createClient,
-  createSessionStore,
-  runMigrations,
-  type DbClient,
-} from '@relavium/db';
+import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
@@ -16,16 +11,23 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
+import { ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
 /**
- * `driveHome` wires the durable db, the {@link createHomeStore} read seam, the deferred chat build, and the
- * single-ink mount into one lifecycle. These drive it through an **injected** ink mount (no real TTY) so the
- * contract is asserted directly: a clean Home exit resolves exit 0 and closes the shared db exactly once; an
- * escaping chat error rejects but STILL closes the db; and a deferred `startChat` builds a real chat session
- * (the default agent, the resolved chat config) and persists its row. The pure pieces (the gate, the strip
- * projection, the store) are unit-tested elsewhere — this covers only the imperative wiring `driveHome` owns.
+ * `driveHome` owns the PROCESS lifetime: it opens the durable db once, wires the controller + the single-ink
+ * mount, the SIGINT/SIGTERM lifecycle, and the bracketed-paste DECSET toggles. These drive it through an injected
+ * ink mount (no real TTY) and assert the contract directly: a clean Home exit resolves 0 and closes the shared db
+ * once with paste-mode restored; an external signal tears the live chat down and exits `128+signo`; `startChat`
+ * builds a real default-agent session. The session state machine itself is unit-tested in home-controller.test.ts.
  */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const type = (props: RootAppProps, text: string): void => {
+  for (const ch of text) props.controller.handleKey(ch, {});
+};
+const ENTER = { return: true } as const;
+const CTRL_C = { ctrl: true } as const;
+
 describe('driveHome (2.5.B / ADR-0054)', () => {
   let client: DbClient;
   let closeSpy: ReturnType<typeof vi.fn>;
@@ -60,106 +62,139 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     verbosity: 'normal',
   };
 
-  /** Build {@link HomeDeps} over the in-memory db with an injected ink mount that captures the {@link RootApp} props. */
   function makeDeps(
-    render: (props: RootAppProps) => { unmount: () => void },
+    capture: (props: RootAppProps) => void,
     overrides: Partial<HomeDeps> = {},
-  ): HomeDeps {
+  ): { deps: HomeDeps; unmount: ReturnType<typeof vi.fn>; writeControl: ReturnType<typeof vi.fn> } {
     const opened: OpenedSessionStore = {
       store: createSessionStore(client.db),
       db: client.db,
       close: closeSpy,
     };
-    return {
+    const unmount = vi.fn();
+    const writeControl = vi.fn();
+    let uuidN = 0;
+    const deps: HomeDeps = {
       io,
       global,
       providers: scriptedResolver([textTurn('hello from the agent')]),
       openSessionStore: () => opened,
       now: () => 1_750_000_000_000,
-      uuid: () => 'sess-home-1',
-      render,
+      uuid: () => `id-${uuidN++}`, // unique per call (mirrors production randomUUID): the session id + message ids never collide
+      render: (props) => {
+        capture(props);
+        return { unmount };
+      },
       getSize: () => ({ cols: 120, rows: 40 }),
       subscribeResize: () => () => undefined,
+      subscribeSignals: () => () => undefined, // no real process listeners in the default tests
+      writeControl,
+      exit: () => undefined,
       ...overrides,
     };
+    return { deps, unmount, writeControl };
   }
 
-  it('resolves exit 0 on a clean Home exit and closes the shared db exactly once', async () => {
-    const unmount = vi.fn();
-    const code = await driveHome(
-      makeDeps((props) => {
-        props.onExit(); // a clean Home exit (Ctrl-C / EOF in Home mode)
-        return { unmount };
-      }),
-    );
-    expect(code).toBe(EXIT_CODES.success);
-    expect(closeSpy).toHaveBeenCalledTimes(1);
-    expect(unmount).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects on an escaping chat error but STILL closes the shared db (the finally)', async () => {
-    const unmount = vi.fn();
-    const boom = new Error('a turn-core bug escaped');
-    await expect(
-      driveHome(
-        makeDeps((props) => {
-          props.onError(boom);
-          return { unmount };
-        }),
-      ),
-    ).rejects.toThrow('a turn-core bug escaped');
-    expect(closeSpy).toHaveBeenCalledTimes(1); // the db is closed even on the failure path
-    expect(unmount).toHaveBeenCalledTimes(1);
-  });
-
-  it('hands RootApp a homeStore that reads the live strip snapshot', async () => {
+  it('a clean Home exit (Ctrl-C) resolves 0, closes the db once, and restores paste mode', async () => {
     let captured: RootAppProps | undefined;
-    const code = await driveHome(
-      makeDeps((props) => {
-        captured = props;
-        const snapshot = props.homeStore.read(); // exercises the real createHomeStore over the in-memory db
-        expect(snapshot.attention.gates).toEqual([]);
-        expect(snapshot.attention.failedRuns).toEqual([]);
-        expect(snapshot.recentSessions).toEqual([]);
-        expect(snapshot.isEmpty).toBe(true); // a fresh db ⇒ a first-run welcome strip, not a throw
-        props.onExit();
-        return { unmount: () => undefined };
-      }),
-    );
-    expect(code).toBe(EXIT_CODES.success);
-    expect(captured?.color).toBe(false);
-  });
+    const { deps, unmount, writeControl } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
 
-  it('startChat builds the default-agent session and persists its row; teardown closes cleanly', async () => {
-    let captured: RootAppProps | undefined;
-    // Hold the mount open (no onExit) so the test can drive startChat, then exit explicitly at the end.
-    const drivePromise = driveHome(
-      makeDeps((props) => {
-        captured = props;
-        return { unmount: () => undefined };
-      }),
-    );
-
-    // The Promise executor (hence render) runs synchronously before driveHome awaits, so props are captured now.
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    const session = await props.startChat();
-    expect(typeof session.processLine).toBe('function');
-    expect(session.shouldStop()).toBe(false);
+    props.controller.handleKey('c', CTRL_C); // Ctrl-C on the Home ⇒ clean exit
 
-    // persister.start() inserted the session row (the default chat agent slug) on the shared store.
-    const sessions = createSessionStore(client.db);
-    expect(sessions.loadSession('sess-home-1')?.id).toBe('sess-home-1');
-    expect(sessions.loadSession('sess-home-1')?.status).toBe('active');
-
-    // teardown marks the row 'ended' (the session's sole terminal) and is idempotent — a second call (an
-    // error-path teardown racing an endChat) neither throws nor re-mutates.
-    await expect(session.teardown()).resolves.toBeUndefined();
-    expect(sessions.loadSession('sess-home-1')?.status).toBe('ended');
-    await expect(session.teardown()).resolves.toBeUndefined();
-    expect(sessions.loadSession('sess-home-1')?.status).toBe('ended');
-
-    props.onExit(); // now let the mount resolve
     expect(await drivePromise).toBe(EXIT_CODES.success);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(unmount).toHaveBeenCalledTimes(1);
+    // DECSET 2004 enabled on mount, disabled on exit.
+    expect(writeControl.mock.calls[0]?.[0]).toBe(ENABLE_BRACKETED_PASTE);
+    expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
+  });
+
+  it('hands the controller a homeStore that reads the live (empty) strip snapshot', async () => {
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    const snap = props.controller.getSnapshot().snapshot;
+    expect(snap.isEmpty).toBe(true);
+    expect(snap.attention.gates).toEqual([]);
+
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('startChat builds the default-agent session and persists its row; a clean return ends it', async () => {
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ build + first turn
+    await flush();
+    expect(props.controller.getSnapshot().mode).toBe('chat');
+
+    const sessions = createSessionStore(client.db);
+    expect(sessions.listSessions({ limit: 10 })).toHaveLength(1); // the chat persisted its row
+
+    props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+    await flush();
+    props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+    expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
+  });
+
+  it('an external SIGINT tears the live chat down and exits 130 (128+SIGINT)', async () => {
+    let captured: RootAppProps | undefined;
+    let signal: ((signo: number) => void) | undefined;
+    const exitSpy = vi.fn();
+    const { deps, unmount, writeControl } = makeDeps((p) => (captured = p), {
+      subscribeSignals: (onSignal) => {
+        signal = onSignal;
+        return () => undefined;
+      },
+      exit: exitSpy,
+    });
+    void driveHome(deps); // never resolves on the signal path — hold it, assert the side effects
+    const props = captured;
+    if (props === undefined || signal === undefined) throw new Error('render/signal not wired');
+
+    type(props, 'hi');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    expect(props.controller.getSnapshot().mode).toBe('chat');
+
+    signal(2); // an external SIGINT
+    await flush();
+
+    expect(unmount).toHaveBeenCalledTimes(1); // terminal restored first
+    expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledWith(130);
+    expect(createSessionStore(client.db).listSessions({ limit: 10 })[0]?.status).toBe('ended');
+  });
+
+  it('an external SIGTERM exits 143 (128+SIGTERM)', async () => {
+    let signal: ((signo: number) => void) | undefined;
+    const exitSpy = vi.fn();
+    const { deps } = makeDeps(() => undefined, {
+      subscribeSignals: (onSignal) => {
+        signal = onSignal;
+        return () => undefined;
+      },
+      exit: exitSpy,
+    });
+    void driveHome(deps);
+    if (signal === undefined) throw new Error('signal not wired');
+
+    signal(15); // SIGTERM with no live chat
+    await flush();
+    expect(exitSpy).toHaveBeenCalledWith(143);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 });

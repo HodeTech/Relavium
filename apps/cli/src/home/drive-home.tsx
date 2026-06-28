@@ -16,23 +16,34 @@ import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import {
-  RootApp,
-  FRAME_MS,
+  createHomeController,
   type HomeChatSession,
-  type RootAppProps,
-} from '../render/tui/home-app.js';
+  type HomeController,
+} from '../render/tui/home-controller.js';
+import {
+  DISABLE_BRACKETED_PASTE,
+  ENABLE_BRACKETED_PASTE,
+} from '../render/tui/home-input.js';
+import { RootApp, FRAME_MS, type RootAppProps } from '../render/tui/home-app.js';
 import { createHomeStore } from './home-store.js';
+
+/** The bound on the best-effort MCP teardown a signal-driven quit waits for before hard-exiting (mirrors the chat driver). */
+const FORCE_TEARDOWN_MS = 2000;
 
 /**
  * `driveHome` — the imperative entry behind a bare `relavium` in a TTY (2.5.B / [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
- * It opens the durable `history.db` ONCE, wires the {@link createHomeStore} read seam, and mounts the single-ink
- * tree {@link RootApp}. The Home defers the per-chat build to a submit: `startChat` builds a fresh chat session
- * (the default agent, the chat config, inline MCP) AFTER the mount, so the strip shows immediately and a slow /
- * failed build surfaces as a loading state / a Home-banner rather than blocking the entry. A chat's teardown
- * closes only ITS resources (persister + frame loop + subscription + MCP); the shared db is closed once here.
+ * It opens the durable `history.db` ONCE, wires the {@link createHomeStore} read seam + the {@link createHomeController}
+ * session state machine, and mounts the single-ink tree {@link RootApp}. The per-chat build is deferred to a submit
+ * (`startChat`) so the strip shows immediately and a slow/failed build degrades to a loading state / a Home banner.
  *
- * The signal lifecycle (an external SIGINT/SIGTERM → 128+signo, the unified MCP teardown) is refined in 2.5.B
- * step 3; here a keyboard Ctrl-C is intercepted by `RootApp`'s `useInput` (Home → clean exit 0; chat → /cancel).
+ * Process lifetime lives here (the controller owns the session lifetime):
+ * - **Signals** — one SIGINT/SIGTERM handler covering the Home, the in-Home chat, and MCP teardown: a clean Home
+ *   exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink, tears the live chat down
+ *   (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the conventional `128+signo`
+ *   (`130` SIGINT / `143` SIGTERM) so a shell pipeline still sees the interruption. A chat's own exit-code-4 is
+ *   consumed by the controller loop (a chat ending returns to Home), never leaked.
+ * - **Bracketed paste** — DECSET 2004 is enabled on mount and disabled on every exit path, so a pasted multi-line
+ *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
   readonly io: CliIo;
@@ -49,6 +60,25 @@ export interface HomeDeps {
   readonly render?: (props: RootAppProps) => { unmount: () => void };
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
+  /** Subscribe to SIGINT(2)/SIGTERM(15); returns an unsubscribe. Default registers on `process`. */
+  readonly subscribeSignals?: (onSignal: (signo: number) => void) => () => void;
+  /** Exit the process (tests inject a capture; production `process.exit`). */
+  readonly exit?: (code: number) => void;
+  /** Write a terminal control sequence (the bracketed-paste DECSET toggles). Default `process.stdout`. */
+  readonly writeControl?: (sequence: string) => void;
+}
+
+/** The default external-signal source: SIGINT(2) + SIGTERM(15) on `process`, registered with `on` (not `once`)
+ *  so ink's signal-exit listener never re-raises while we still hold the cooperative teardown. */
+function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
+  const onSigint = (): void => onSignal(2);
+  const onSigterm = (): void => onSignal(15);
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+  return () => {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  };
 }
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
@@ -65,8 +95,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     runs: createRunHistoryReader(opened.db),
   });
 
-  // Build + wire + START a fresh chat session (the Home sends the first message on transition). Mirrors the chat
-  // command's build, but defers it to a Home submit and drives it inside the already-mounted RootApp.
+  // Build + wire + START a fresh chat session (the controller sends the first message on transition).
   const startChat = async (): Promise<HomeChatSession> => {
     const store = createChatStore(deps.global.color);
     const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
@@ -128,31 +157,79 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       process.stdout.on('resize', onResize);
       return () => process.stdout.off('resize', onResize);
     });
+  const writeControl =
+    deps.writeControl ??
+    ((sequence: string) => {
+      process.stdout.write(sequence);
+    });
+  const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
 
   let instance: { unmount: () => void } | undefined;
+  let controller: HomeController | undefined;
+  let dbClosed = false;
+  const closeDb = (): void => {
+    if (dbClosed) return;
+    dbClosed = true;
+    opened.close();
+  };
+
+  writeControl(ENABLE_BRACKETED_PASTE); // ask the terminal to bracket pastes (DECSET 2004)
+
+  // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
+  let signaled = false;
+  const onSignal = (signo: number): void => {
+    if (signaled) {
+      exitProcess(128 + signo); // a second signal forces an immediate exit (a teardown ignoring the abort)
+      return;
+    }
+    signaled = true;
+    instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
+    writeControl(DISABLE_BRACKETED_PASTE);
+    // The bound is REFERENCED until the race settles so the exit is guaranteed even if teardown hangs; it is
+    // cleared the instant the race resolves so a fast teardown (the common case) neither waits nor dangles.
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    const bounded = new Promise<void>((resolve) => {
+      bound = setTimeout(resolve, FORCE_TEARDOWN_MS);
+    });
+    void Promise.race([controller?.teardownActive() ?? Promise.resolve(), bounded]).finally(() => {
+      if (bound !== undefined) clearTimeout(bound);
+      closeDb();
+      exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
+    });
+  };
+  const unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
+
   try {
     return await new Promise<ExitCode>((resolve, reject) => {
-      const props: RootAppProps = {
-        homeStore,
+      controller = createHomeController({
         startChat,
+        homeStore,
+        onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
+        onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
+      });
+      const props: RootAppProps = {
+        controller,
         nowMs: now,
         color: deps.global.color,
         getSize,
         subscribeResize,
-        onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
-        onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       };
       instance =
         deps.render !== undefined
           ? deps.render(props)
           : render(createElement(RootApp, props), {
-              exitOnCtrlC: false, // RootApp's useInput drives Ctrl-C, not ink's process.exit
+              exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
             });
     });
   } finally {
+    // The clean-exit / error path (NOT the signal path, which exits the process directly): undo the terminal
+    // state, reclaim a live session, and close the shared db ONCE.
+    unsubscribeSignals();
+    writeControl(DISABLE_BRACKETED_PASTE);
     instance?.unmount();
-    opened.close(); // close the shared db ONCE, after the Home (and any chat) has torn down
+    await controller?.teardownActive().catch(() => undefined);
+    closeDb();
   }
 }

@@ -32,3 +32,31 @@ export function reduceHomeKey(char: string, key: HomeKey): HomeKeyAction {
   if (char.length > 0 && key.ctrl !== true && key.meta !== true) return { kind: 'append', char };
   return { kind: 'none' };
 }
+
+/**
+ * Bracketed-paste support (DECSET 2004, 2.5.B). The control strings the host writes to ENABLE the mode on
+ * mount and DISABLE it on teardown — with the mode on, a terminal wraps a paste in `ESC[200~ … ESC[201~`, so a
+ * pasted multi-line block is delivered as bracketed literal text instead of its embedded newlines submitting
+ * early. (ink 6.8 has no native 2004 support, so the host owns the enable/disable + the marker handling.)
+ */
+export const ENABLE_BRACKETED_PASTE = '[?2004h';
+export const DISABLE_BRACKETED_PASTE = '[?2004l';
+
+/**
+ * The paste-boundary markers as `useInput` surfaces them. ink's input layer strips the single leading ESC from
+ * an unrecognized escape sequence, so `ESC[200~` arrives as the literal `[200~`; the raw form is matched too for
+ * defence across terminals/ink builds. A real user can only produce these as one coalesced event via an actual
+ * paste (typing the five chars sends five single-char events), so a whole-string match cannot false-trigger.
+ */
+const PASTE_START_FORMS = ['[200~', '[200~'] as const;
+const PASTE_END_FORMS = ['[201~', '[201~'] as const;
+
+/** Whether this whole `useInput` chunk is the paste-start marker (host enters literal paste mode). */
+export function isPasteStart(input: string): boolean {
+  return (PASTE_START_FORMS as readonly string[]).includes(input);
+}
+
+/** Whether this whole `useInput` chunk is the paste-end marker (host leaves literal paste mode). */
+export function isPasteEnd(input: string): boolean {
+  return (PASTE_END_FORMS as readonly string[]).includes(input);
+}

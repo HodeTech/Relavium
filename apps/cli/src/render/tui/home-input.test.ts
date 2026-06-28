@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { reduceHomeKey, type HomeKey } from './home-input.js';
+import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 
 const KEY = (over: Partial<HomeKey> = {}): HomeKey => ({ ...over });
 
@@ -35,5 +35,22 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
 
   it('Ctrl-C takes precedence over a coincident return flag', () => {
     expect(reduceHomeKey('c', KEY({ ctrl: true, return: true }))).toEqual({ kind: 'exit' });
+  });
+});
+
+describe('bracketed-paste markers (DECSET 2004)', () => {
+  it('recognizes the paste-start marker in both the ink-stripped and the raw form', () => {
+    expect(isPasteStart('[200~')).toBe(true); // ink strips the leading ESC
+    expect(isPasteStart('\x1b[200~')).toBe(true); // raw, defensive
+    expect(isPasteStart('[201~')).toBe(false);
+    expect(isPasteStart('[200~x')).toBe(false); // a whole-string match only — no substring false-trigger
+    expect(isPasteStart('hello')).toBe(false);
+  });
+
+  it('recognizes the paste-end marker in both forms', () => {
+    expect(isPasteEnd('[201~')).toBe(true);
+    expect(isPasteEnd('\x1b[201~')).toBe(true);
+    expect(isPasteEnd('[200~')).toBe(false);
+    expect(isPasteEnd('')).toBe(false);
   });
 });
