@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
+import {
+  DISABLE_BRACKETED_PASTE,
+  ENABLE_BRACKETED_PASTE,
+  isPasteEnd,
+  isPasteStart,
+  reduceHomeKey,
+  type HomeKey,
+} from './home-input.js';
 
 const KEY = (over: Partial<HomeKey> = {}): HomeKey => ({ ...over });
 
@@ -52,5 +59,14 @@ describe('bracketed-paste markers (DECSET 2004)', () => {
     expect(isPasteEnd('\x1b[201~')).toBe(true);
     expect(isPasteEnd('[200~')).toBe(false);
     expect(isPasteEnd('')).toBe(false);
+  });
+
+  it('the DECSET 2004 enable/disable strings are REAL CSI sequences (first byte ESC, not a literal "[")', () => {
+    // A non-tautological guard: the first byte MUST be ESC (0x1b), else the terminal prints `[?2004h` as garbage
+    // and bracketed paste is silently never enabled (the whole feature dies on a real TTY).
+    expect(ENABLE_BRACKETED_PASTE.charCodeAt(0)).toBe(0x1b);
+    expect(DISABLE_BRACKETED_PASTE.charCodeAt(0)).toBe(0x1b);
+    expect(ENABLE_BRACKETED_PASTE).toBe('\x1b[?2004h');
+    expect(DISABLE_BRACKETED_PASTE).toBe('\x1b[?2004l');
   });
 });

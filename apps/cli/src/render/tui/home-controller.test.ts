@@ -230,6 +230,101 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(made.lines).toEqual([]);
   });
 
+  it('a signal during an in-flight endChat awaits the GRACEFUL teardown and skips the closed-db read', async () => {
+    let releaseTeardown: () => void = () => undefined;
+    const teardown = vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))); // a slow (graceful MCP) close
+    const session: HomeChatSession = {
+      store: createChatStore(false),
+      processLine: () => Promise.resolve(),
+      shouldStop: () => true, // the first turn ends the session ⇒ endChat fires
+      teardown,
+    };
+    const startChat = vi.fn(() => Promise.resolve(session));
+    const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush(); // first turn settles ⇒ endChat starts the slow teardown (pending)
+    const readsBefore = reads;
+
+    const signal = c.teardownActive(); // tearingDown === session ⇒ it must AWAIT the in-flight teardown
+    releaseTeardown(); // the graceful close completes
+    await signal;
+
+    expect(teardown).toHaveBeenCalledTimes(1); // a single graceful teardown, awaited by the signal path
+    expect(reads).toBe(readsBefore); // endChat's deferred finally hit the `exiting` guard — no read on the closing db
+  });
+
+  it('ignores a keystroke that arrives while a chat session is tearing down (no sendMessage on a cancelled session)', async () => {
+    let releaseTeardown: () => void = () => undefined;
+    const lines: string[] = [];
+    const session: HomeChatSession = {
+      store: createChatStore(false),
+      processLine: (line) => {
+        lines.push(line);
+        return Promise.resolve();
+      },
+      shouldStop: () => true,
+      teardown: vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))),
+    };
+    const c = createHomeController({
+      startChat: vi.fn(() => Promise.resolve(session)),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush(); // endChat in flight (teardown pending), mode still 'chat', session still mounted
+    lines.length = 0;
+
+    c.handleKey('x', {}); // a key arriving mid-teardown
+    c.handleKey('', ENTER); // a submit arriving mid-teardown
+    expect(lines).toEqual([]); // the tearingDown guard ignored both — no line driven onto the cancelled session
+
+    releaseTeardown();
+    await flush();
+  });
+
+  it('does not re-settle driveHome after a turn error (the shared `exiting` guard)', async () => {
+    const made = makeSession({ onProcess: () => Promise.reject(new Error('boom')) });
+    const onExit = vi.fn();
+    const onError = vi.fn();
+    const c = createHomeController({
+      startChat: vi.fn(() => Promise.resolve(made.session)),
+      homeStore,
+      onExit,
+      onError,
+    });
+    type(c, 'go');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(onError).toHaveBeenCalledTimes(1); // failHome fired once
+
+    c.handleKey('c', CTRL_C); // a later Ctrl-C must NOT re-settle (exiting is already true)
+    expect(onExit).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl-D (EOF) on an empty Home prompt exits; with text in the buffer it does not (no data loss)', () => {
+    const onExit = vi.fn();
+    const c = createHomeController({ startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+    type(c, 'draft');
+    c.handleKey('d', { ctrl: true }); // Ctrl-D with a non-empty buffer → ignored
+    expect(onExit).not.toHaveBeenCalled();
+    expect(c.getSnapshot().input).toBe('draft'); // the buffer is preserved
+
+    type(c, ''); // (no-op)
+    c.handleKey('', { backspace: true });
+    c.handleKey('', { backspace: true });
+    c.handleKey('', { backspace: true });
+    c.handleKey('', { backspace: true });
+    c.handleKey('', { backspace: true }); // empty the buffer
+    expect(c.getSnapshot().input).toBe('');
+    c.handleKey('d', { ctrl: true }); // Ctrl-D on the empty buffer → clean exit (EOF)
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
   describe('bracketed paste (DECSET 2004)', () => {
     it('appends a multi-line paste literally (newlines kept) and does NOT submit early', () => {
       const startChat = vi.fn();
@@ -315,6 +410,40 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('type-ahead block', {});
       c.handleKey(PASTE_END, {});
       expect(c.getSnapshot().input).toBe(''); // dropped mid-turn, like every other key
+    });
+
+    it('drops paste content during the `loading` build window, matching the keystroke gate (no leak into the chat prompt)', async () => {
+      const made = makeSession();
+      let resolveBuild: (s: HomeChatSession) => void = () => undefined;
+      const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
+      const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      type(c, 'hi');
+      c.handleKey('', ENTER); // → loading, build pending
+      expect(c.getSnapshot().mode).toBe('loading');
+
+      c.handleKey(PASTE_START, {});
+      c.handleKey('pasted-while-loading', {}); // a key typed here is dropped — so must a paste be
+      c.handleKey(PASTE_END, {});
+
+      resolveBuild(made.session);
+      await flush();
+      expect(c.getSnapshot().mode).toBe('chat');
+      expect(c.getSnapshot().input).toBe(''); // the paste did NOT leak into the freshly-mounted chat prompt
+    });
+
+    it('drops EVERY chunk of a multi-chunk paste while a turn runs', async () => {
+      const made = makeSession({ running: true });
+      const startChat = vi.fn(() => Promise.resolve(made.session));
+      const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      type(c, 'go');
+      c.handleKey('', ENTER);
+      await flush(); // chat, running (stub)
+
+      c.handleKey(PASTE_START, {});
+      c.handleKey('chunk1\n', {});
+      c.handleKey('chunk2', {});
+      c.handleKey(PASTE_END, {});
+      expect(c.getSnapshot().input).toBe(''); // all chunks dropped, not just the first
     });
   });
 });

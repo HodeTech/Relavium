@@ -39,8 +39,9 @@ export function reduceHomeKey(char: string, key: HomeKey): HomeKeyAction {
  * pasted multi-line block is delivered as bracketed literal text instead of its embedded newlines submitting
  * early. (ink 6.8 has no native 2004 support, so the host owns the enable/disable + the marker handling.)
  */
-export const ENABLE_BRACKETED_PASTE = '[?2004h';
-export const DISABLE_BRACKETED_PASTE = '[?2004l';
+const ESC = '\x1b';
+export const ENABLE_BRACKETED_PASTE = `${ESC}[?2004h`;
+export const DISABLE_BRACKETED_PASTE = `${ESC}[?2004l`;
 
 /**
  * The paste-boundary markers as `useInput` surfaces them. ink's input layer strips the single leading ESC from
@@ -48,7 +49,6 @@ export const DISABLE_BRACKETED_PASTE = '[?2004l';
  * defence across terminals/ink builds. A real user can only produce these as one coalesced event via an actual
  * paste (typing the five chars sends five single-char events), so a whole-string match cannot false-trigger.
  */
-const ESC = '\x1b';
 const PASTE_START_FORMS = ['[200~', `${ESC}[200~`] as const; // ink-stripped form + the raw (ESC-prefixed) form
 const PASTE_END_FORMS = ['[201~', `${ESC}[201~`] as const;
 

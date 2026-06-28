@@ -74,6 +74,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let cancelFired = false;
   let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
   let tearingDown: HomeChatSession | undefined;
+  let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let pasting = false; // inside a bracketed paste (DECSET 2004) — content is buffered literally, never submitted
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
 
@@ -105,9 +106,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const endChat = (ended: HomeChatSession): void => {
     if (tearingDown === ended) return; // already ending this session (the two-pending-promise race)
     tearingDown = ended;
-    void ended.teardown().finally(() => {
+    const td = ended.teardown();
+    activeTeardown = td; // a concurrent signal awaits THIS graceful close rather than hard-killing the MCP child
+    void td.finally(() => {
+      if (activeTeardown === td) activeTeardown = undefined;
       tearingDown = undefined;
       cancelFired = false;
+      pasting = false; // a lost paste-end marker must not leak the latch into the returned Home
       if (exiting) return; // an error/exit closed the db while we awaited teardown — do not read it
       set({
         session: undefined,
@@ -129,7 +134,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       },
       (err: unknown) => {
         tearingDown = active; // align with endChat's single-shot guard (the session closure is idempotent)
-        void active.teardown().finally(() => {
+        const td = active.teardown();
+        activeTeardown = td; // a concurrent signal awaits this teardown too
+        void td.finally(() => {
+          if (activeTeardown === td) activeTeardown = undefined;
           tearingDown = undefined; // clear for symmetry with endChat (failHome is terminal, but stay consistent)
           failHome(err);
         });
@@ -161,6 +169,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       (err: unknown) => {
         if (buildInFlight === build) buildInFlight = undefined;
         if (exiting) return;
+        pasting = false; // a paste latched during the build window must not leak into the returned Home
         set({
           errorText: err instanceof Error ? err.message : String(err),
           pendingMessage: '',
@@ -195,6 +204,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   const handleHomeKey = (input: string, key: HomeKey): void => {
+    // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
+    if (key.ctrl === true && input === 'd' && state.input.length === 0) {
+      exitHome();
+      return;
+    }
     const action = reduceHomeKey(input, key);
     if (action.kind === 'exit') {
       exitHome();
@@ -240,9 +254,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // Escape hatch: Ctrl-C ALWAYS breaks out (a lost paste-end marker must never trap the user with no way
         // to exit/submit) — clear the latch and fall through to the normal dispatch (Home → exit, chat → /cancel).
         if (!(key.ctrl === true && input === 'c')) {
-          // Literal content. Drop it mid-turn to match the keystroke gate (type-ahead is deferred, 2.5.B); else
-          // append verbatim so a multi-line block keeps its newlines and never submits early.
-          if (input.length > 0 && !chatRunning()) set({ input: state.input + input });
+          // Literal content. Append verbatim (newlines kept) ONLY when the buffer is editable — drop it while a
+          // session builds (`loading`) or a chat turn streams (`chatRunning`), exactly as the keystroke gate does,
+          // so paste never diverges from typing (type-ahead is deferred, 2.5.B).
+          const editable = state.mode !== 'loading' && !chatRunning();
+          if (input.length > 0 && editable) set({ input: state.input + input });
           return;
         }
         pasting = false;
@@ -256,9 +272,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     async teardownActive() {
       exiting = true; // terminating: a deferred endChat skips the (about-to-close) db; an in-flight build reclaims itself
       const active = state.session;
-      if (active !== undefined && tearingDown !== active) {
-        tearingDown = active; // idempotent vs a concurrent endChat (the session closure is itself idempotent)
-        await active.teardown().catch(() => undefined);
+      if (active !== undefined) {
+        if (tearingDown === active) {
+          // A teardown is ALREADY in flight (an endChat / error-arm) — await THAT graceful close rather than
+          // returning early, so the bounded signal race waits for the MCP handshake instead of hard-killing it.
+          await (activeTeardown ?? Promise.resolve());
+        } else {
+          tearingDown = active;
+          const td = active.teardown();
+          activeTeardown = td;
+          await td.catch(() => undefined);
+        }
         return;
       }
       // No live session yet — a signal during the `loading` build window. Await + reap the in-flight build so its

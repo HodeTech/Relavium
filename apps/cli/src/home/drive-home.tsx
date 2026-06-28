@@ -210,8 +210,13 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     });
     void Promise.race([controller?.teardownActive() ?? Promise.resolve(), bounded]).finally(() => {
       if (bound !== undefined) clearTimeout(bound);
-      closeDb();
-      exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
+      // exitProcess MUST always run — guard the db close so a (effectively non-throwing) close fault can never
+      // strand the process without exiting.
+      try {
+        closeDb();
+      } finally {
+        exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
+      }
     });
   };
   const unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
