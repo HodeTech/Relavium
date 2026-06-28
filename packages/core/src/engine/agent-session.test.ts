@@ -321,6 +321,11 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     );
     // No egress happened (the pause was pre-egress).
     expect(typesOf(events)).not.toContain('agent:token');
+    // EA2: a pre-egress pause engaged NO provider — truthful zero usage (the budget-pause branch hardcodes
+    // `{0,0}` by design; pin it so a regression can't start reporting fabricated tokens here).
+    expect(
+      completed?.type === 'session:turn_completed' ? completed.tokensUsed : undefined,
+    ).toEqual({ input: 0, output: 0 });
   });
 
   it('reports the turn’s REAL accumulated usage on a failed turn (EA2) — not a hardcoded zero', async () => {
@@ -359,6 +364,11 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(completed?.type === 'session:turn_completed' ? completed.stopReason : undefined).toBe(
       'error',
     );
+    // EA2 regression: a NO-egress hard-cap block reports a TRUTHFUL zero — it must never start fabricating
+    // usage (the hard-cap branch hardcodes `{0,0}` by design, distinct from the within-turn turn_limit above).
+    expect(
+      completed?.type === 'session:turn_completed' ? completed.tokensUsed : undefined,
+    ).toEqual({ input: 0, output: 0 });
     // The blocked turn still brackets turn_started → turn_completed, and emits NOTHING else (no egress —
     // no streamed token / tool / cost). Pinning the EXACT sequence stops a refactor from moving the
     // turn_started emission after the cap check, which would silently break the observable contract.
@@ -377,9 +387,12 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     await s.sendMessage('loop please');
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'turn_limit',
-    );
+    if (completed?.type !== 'session:turn_completed') throw new Error('expected a turn_completed');
+    expect(completed.error?.code).toBe('turn_limit');
+    // EA2: the WITHIN-turn turn_limit is thrown from runAgentTurn AFTER the first tool turn streamed (usage
+    // 4/2 accumulated), so — unlike the session HARD cap below (no egress) — it reports the REAL spent tokens,
+    // not a zero. Pins the within-turn-vs-hard-cap usage distinction so it cannot silently drift.
+    expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
   });
 
   it('completes a turn with an error (stopReason error) when the provider chain is exhausted', async () => {

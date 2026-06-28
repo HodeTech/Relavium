@@ -533,10 +533,59 @@ describe('runAgentTurn — tool loop', () => {
       throw new ToolUnavailableError('echo', 'egress');
     });
     const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
-    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
-      code: 'tool_unavailable',
-      retryable: false,
+    const err: unknown = await runAgentTurn(baseParams(provider, { registry })).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AgentTurnError);
+    if (err instanceof AgentTurnError) {
+      expect(err.code).toBe('tool_unavailable');
+      expect(err.retryable).toBe(false);
+      // EA1's value over a bare `internal`: the surfaced message names the tool + the unwired arm actionably.
+      expect(err.message).toContain('echo');
+      expect(err.message).toContain('egress');
+    }
+  });
+
+  it('attaches accumulated usage when a LATER turn fails after a settled tool round (EA2, provider path)', async () => {
+    // Turn 1's tool_use STOP settles usage 10/5 and the tool dispatches OK; turn 2's stream errors
+    // (chain-exhausted) → provider_unavailable. The accumulated 10/5 rides the thrown error (the real payoff:
+    // a provider failure that already burned tokens reports them, not a zero).
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'echo' },
+        { type: 'tool_call_end', id: 'c1' },
+        STOP('tool_use'),
+      ],
+      [
+        {
+          type: 'error',
+          error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
+        },
+      ],
+    ]);
+    await expect(runAgentTurn(baseParams(provider))).rejects.toMatchObject({
+      code: 'provider_unavailable',
+      usage: { input: 10, output: 5 },
     });
+  });
+
+  it('leaves usage undefined when the FIRST attempt fails with no usage (provider error → truthful zero)', async () => {
+    // A chain-exhausted failure on the first attempt accumulated NO usage (a failed FallbackChain attempt
+    // carries none) — so the wrapper leaves `usage` undefined and the caller reports a truthful zero.
+    const provider = scriptedProvider('anthropic', [
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'bad key' },
+        },
+      ],
+    ]);
+    const err: unknown = await runAgentTurn(baseParams(provider)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentTurnError);
+    if (err instanceof AgentTurnError) {
+      expect(err.code).toBe('provider_auth');
+      expect(err.usage).toBeUndefined();
+    }
   });
 
   it('maps ToolExecutionError to tool_failed (retryable — the 1.S node-retry signal)', async () => {
