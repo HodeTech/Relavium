@@ -3,8 +3,14 @@ import { constants } from 'node:fs';
 import { access, realpath } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 
-import { ToolDispatchError, type ProcessCapability, type ProcessResult } from '@relavium/core';
-import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
+import type { ProcessCapability, ProcessResult } from '@relavium/core';
+import type { AbortSignalLike } from '@relavium/shared';
+
+import {
+  HostCapabilityError,
+  HostDeniedError,
+  throwIfAborted as throwIfAbortedShared,
+} from './errors.js';
 
 /**
  * The Node host **mechanism** half of the `ToolHost.process` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
@@ -76,30 +82,16 @@ export interface NodeProcessCapabilityConfig {
 
 /**
  * A **transient** process-capability failure (a timeout, a spawn fault) naming a **reason only** — never a
- * command value / output / env (the I3 boundary). Maps to the retryable `tool_failed`.
+ * command value / output / env (the I3 boundary). Maps to the retryable `tool_failed` (shared {@link HostCapabilityError}).
  */
-export class ProcessCapabilityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ProcessCapabilityError';
-  }
-}
+export class ProcessCapabilityError extends HostCapabilityError {}
 
 /**
- * A **deterministic host refusal** — an empty/not-found command, or a declared env var the host forbids. It is
- * a {@link ToolDispatchError} (passed through by the registry) mapping to the **fatal**, non-retryable
- * `tool_denied`: re-issuing the same command re-fails identically, so it must NOT burn the node-retry budget
- * (error-handling.md §tool-dispatch codes). Mirrors the fs arm's `FsScopeDeniedError`.
+ * A **deterministic host refusal** — an empty/not-found command, or a declared env var the host forbids —
+ * mapping to the **fatal**, non-retryable `tool_denied` (the shared {@link HostDeniedError}): re-issuing the same
+ * command re-fails identically, so it must NOT burn the node-retry budget (error-handling.md §tool-dispatch codes).
  */
-export class ProcessDeniedError extends ToolDispatchError {
-  readonly code = 'tool_denied';
-  readonly runErrorCode: ErrorCode = 'tool_denied';
-  readonly retryable = false;
-  constructor(message: string) {
-    super(message, undefined, undefined);
-    this.name = 'ProcessDeniedError';
-  }
-}
+export class ProcessDeniedError extends HostDeniedError {}
 
 /**
  * Declared env vars the host **forbids** even from a workflow author: keys that would run attacker code in
@@ -120,8 +112,7 @@ const FORBIDDEN_DECLARED_ENV: ReadonlySet<string> = new Set([
   'NODE_OPTIONS',
   'NODE_PATH',
   'NODE_V8_COVERAGE',
-  'PYTHONPATH',
-  'PYTHONSTARTUP',
+  // (every `PYTHON*` var is covered by the `PYTHON` prefix below — listed by name for nothing, so omitted)
   'PERL5LIB',
   'PERL5OPT',
   'RUBYLIB',
@@ -146,7 +137,10 @@ const FORBIDDEN_DECLARED_ENV: ReadonlySet<string> = new Set([
   'PATH',
 ]);
 /** Forbidden key prefixes: the dynamic loaders (`DYLD_*`, `LD_*`) and the ENTIRE git env namespace (`GIT_*`). */
-const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_', 'GIT_'];
+// `PYTHON` (no trailing `_`) sweeps the whole interpreter-config namespace — `PYTHONHOME`/`PYTHONPATH`/
+// `PYTHONINSPECT`/`PYTHONEXECUTABLE`/… — none of which carry an underscore after `PYTHON`, so a `PYTHON_`
+// prefix would miss them all.
+const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_', 'GIT_', 'PYTHON'] as const;
 
 /**
  * Build a node-backed {@link ProcessCapability}. The returned object is the value a host wires onto
@@ -288,29 +282,32 @@ function killTree(child: ChildProcess): void {
 /** A byte-bounded UTF-8 accumulator: appends until the cap, then drops the rest and marks the output truncated. */
 class BoundedBuffer {
   readonly #chunks: Buffer[] = [];
+  readonly #max: number;
   #bytes = 0;
   #truncated = false;
-  constructor(private readonly max: number) {}
+  constructor(max: number) {
+    this.#max = max;
+  }
 
   push(chunk: Buffer): void {
-    if (this.#bytes >= this.max) {
+    if (this.#bytes >= this.#max) {
       this.#truncated = true;
       return;
     }
-    const room = this.max - this.#bytes;
+    const room = this.#max - this.#bytes;
     if (chunk.length <= room) {
       this.#chunks.push(chunk);
       this.#bytes += chunk.length;
     } else {
       this.#chunks.push(chunk.subarray(0, room));
-      this.#bytes = this.max;
+      this.#bytes = this.#max;
       this.#truncated = true;
     }
   }
 
   text(): string {
     const body = Buffer.concat(this.#chunks).toString('utf8');
-    return this.#truncated ? `${body}\n…[output truncated at ${this.max} bytes]` : body;
+    return this.#truncated ? `${body}\n…[output truncated at ${this.#max} bytes]` : body;
   }
 }
 
@@ -371,25 +368,32 @@ function assertSafeDeclaredEnv(declaredEnv: Readonly<Record<string, string>>): v
 
 /**
  * Resolve the spawn cwd against the workspace and confine it there (a config `cwd` may not escape the sandbox
- * root). `workspaceDir` is normalized via `resolve` so a trailing separator can't make a cwd equal to the root
- * itself spuriously fail the boundary check. The candidate is then **realpath**-checked — matching the fs arm's
- * posture — so a symlink inside the workspace pointing outside cannot pass a purely lexical prefix test and then
- * be followed by `spawn`. Absent ⇒ the workspace root.
+ * root). The workspace root is **realpath**-canonicalized once (mirroring the fs arm's `realScopeRoots`) so the
+ * jail boundary is expressed in REAL paths — on macOS the workspace usually lives under a symlinked prefix
+ * (`/var`→`/private/var`, `/tmp`→`/private/tmp`), and a purely lexical root would reject every realpath'd child
+ * spuriously. The candidate is checked against that canonical root both lexically (cheap, catches an obvious
+ * `../` escape) and after its own `realpath` (a symlink inside the workspace pointing outside passes the lexical
+ * test but resolves beyond the jail at spawn time). Absent ⇒ the workspace root.
  */
 async function jailCwd(workspaceDir: string, cwd: string | undefined): Promise<string> {
-  const root = resolve(workspaceDir); // strip any trailing sep / canonicalize
+  // Canonicalize the root through realpath; if it does not resolve (missing dir) fall back to the lexical resolve
+  // so both branches still produce an absolute, trailing-sep-stripped boundary.
+  const resolvedRoot = resolve(workspaceDir);
+  const root = await realpath(resolvedRoot).catch(() => resolvedRoot);
   if (cwd === undefined) return root;
-  const prefix = root + sep;
+  // Guard the trailing separator (mirrors fs.ts buildScopeChecker): a filesystem/drive root (`/`, `C:\`) keeps
+  // its trailing sep, so a bare `root + sep` would double it and reject a valid child.
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  const inRoot = (p: string): boolean => p === root || p.startsWith(prefix);
   const lexical = resolve(root, cwd);
-  if (lexical !== root && !lexical.startsWith(prefix)) {
+  if (!inRoot(lexical)) {
     throw new ProcessDeniedError('the working directory is outside the workspace');
   }
-  // Realpath the resolved candidate and re-check: a symlink inside the workspace that points outside would pass
-  // the lexical guard above but resolve beyond the jail at spawn time.
+  // Realpath the resolved candidate and re-check against the SAME canonical root.
   const real = await realpath(lexical).catch(() => {
     throw new ProcessDeniedError('the working directory is not accessible');
   });
-  if (real !== root && !real.startsWith(prefix)) {
+  if (!inRoot(real)) {
     throw new ProcessDeniedError('the working directory is outside the workspace');
   }
   return real;
@@ -406,9 +410,7 @@ function minimalBaseEnv(): Record<string, string> {
   return base;
 }
 
-/** Cooperative cancellation — reject before spawning if the run already aborted. */
+/** Cooperative cancellation — reject before spawning if the run already aborted (shared reason-only helper). */
 function throwIfAborted(signal: AbortSignalLike | undefined): void {
-  if (signal?.aborted === true) {
-    throw new ProcessCapabilityError('the command was aborted');
-  }
+  throwIfAbortedShared(signal, 'the command was aborted');
 }

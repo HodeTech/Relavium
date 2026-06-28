@@ -138,6 +138,9 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
       { LD_CUSTOM_INJECTOR: '/evil' }, // only the `LD_` PREFIX arm blocks this — exercises it independently
       { DYLD_INSERT_LIBRARIES: '/tmp/x' }, // only the `DYLD_` prefix arm
       { JAVA_TOOL_OPTIONS: '-javaagent:/tmp/x.jar' },
+      { PYTHONSTARTUP: '/tmp/evil.py' }, // `PYTHON` PREFIX arm (no underscore) — pins the prefix correction
+      { PYTHONHOME: '/tmp/fake-python' }, // `PYTHON` prefix — stdlib-redirection (would match nothing under `PYTHON_`)
+      { PYTHONPATH: '/tmp/evil-modules' }, // `PYTHON` prefix — import hijack
       { PERL5OPT: '-Mevil' },
       { PATH: '/nonexistent' },
       { GIT_SSH_COMMAND: 'evil' }, // GIT_ prefix
@@ -213,12 +216,14 @@ describe('createNodeProcessCapability — bounds', () => {
   it('kills the process on a mid-run abort — rejects promptly, proving the kill landed', async () => {
     const { signal, abort } = controllableSignal();
     const started = Date.now();
-    const pending = proc().spawn(NODE, ['-e', 'setTimeout(() => {}, 10000)'], {}, {}, signal);
+    // The child idles for 30s. If the SIGKILL (of the whole process group) did NOT land, `close` would not fire
+    // until that timer, so the spawn promise would resolve, not reject — the prompt rejection is the evidence the
+    // kill landed. The 30s-child / 5s-assert split gives a wide margin on BOTH sides (the abort fires at 50ms and
+    // a real kill lands in well under a second, ~25s below the child timer), so the proof holds without flaking.
+    const pending = proc().spawn(NODE, ['-e', 'setTimeout(() => {}, 30000)'], {}, {}, signal);
     setTimeout(abort, 50);
     await expect(pending).rejects.toThrow(/abort/);
-    // If the child were NOT actually killed, `close` would not fire until the child's 10s timer — the prompt
-    // rejection is the evidence the SIGKILL (of the whole process group) landed.
-    expect(Date.now() - started).toBeLessThan(3000);
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 
   it('truncates stderr past the per-stream cap (symmetric with stdout)', async () => {

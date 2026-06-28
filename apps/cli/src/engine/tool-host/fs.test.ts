@@ -1,4 +1,13 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -248,6 +257,19 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     ).rejects.toBeInstanceOf(FsScopeDeniedError);
     expect(await readFile(join(outside, 'target.txt'), 'utf8')).toBe('original'); // never clobbered
   });
+
+  it('cleans up the temp file when the atomic publish fails — no `.relavium-write.*.tmp` orphan', async () => {
+    // Force the rename to fail by pointing the final target at an existing NON-EMPTY directory: `rename(tmp,
+    // dir)` throws (ENOTEMPTY/EISDIR/EEXIST). The write must reject, AND the `finally` must remove the temp it
+    // created — so a failed publish never strands a `.relavium-write.*.tmp` in the workspace.
+    await mkdir(join(workspace, 'busy'), { recursive: true });
+    await writeFile(join(workspace, 'busy', 'keep.txt'), 'x'); // non-empty ⇒ the rename onto it always fails
+    await expect(sandboxed().writeFile('busy', 'data', {})).rejects.toBeInstanceOf(
+      FsCapabilityError,
+    );
+    const orphans = (await readdir(workspace)).filter((n) => n.startsWith('.relavium-write.'));
+    expect(orphans).toEqual([]);
+  });
 });
 
 describe('createNodeFsCapability — read-only profile (2.5.A chat)', () => {
@@ -301,6 +323,9 @@ describe('createNodeFsCapability — list_directory', () => {
     // The symlink itself shows as an entry, but its contents are never walked into.
     expect(entries.map((e) => e.name)).toContain('linkdir');
     expect(entries.map((e) => e.name)).not.toContain('linkdir/secret.txt');
+    // And it is reported as a `file`, never `directory` — `dirent.isDirectory()` is false for a symlink, so the
+    // reported type can never invite a caller to treat it as recursable (defense in depth beside the walk skip).
+    expect(entries.find((e) => e.name === 'linkdir')?.type).toBe('file');
   });
 
   it('rejects listing a path outside the workspace', async () => {

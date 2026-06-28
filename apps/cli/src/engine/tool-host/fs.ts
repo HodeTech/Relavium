@@ -27,7 +27,13 @@ import {
   type FsScopeTier,
   type FsWriteOpts,
 } from '@relavium/core';
-import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
+import type { AbortSignalLike } from '@relavium/shared';
+
+import {
+  HostCapabilityError,
+  HostDeniedError,
+  throwIfAborted as throwIfAbortedShared,
+} from './errors.js';
 
 /**
  * The Node host **mechanism** half of the `ToolHost.fs` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
@@ -80,31 +86,16 @@ export interface NodeFsCapabilityConfig {
 
 /**
  * An operational filesystem failure (not-found, a directory read as a file, binary/oversize, an empty glob)
- * naming a **reason only** — never a path / the bytes (mirrors `MediaWriteError`). Maps to `tool_failed`.
+ * naming a **reason only** — never a path / the bytes. Maps to `tool_failed` (the shared {@link HostCapabilityError}).
  */
-export class FsCapabilityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'FsCapabilityError';
-  }
-}
+export class FsCapabilityError extends HostCapabilityError {}
 
 /**
- * A **deterministic scope/security denial** — a path escapes the tier, a UNC path, or a refusal to write
- * through a symlink. It is a {@link ToolDispatchError} (so the registry passes it through, registry.ts) mapping
- * to the **fatal**, non-retryable `tool_denied`: re-issuing the same denied path just re-denies, so it must NOT
- * burn the node-retry budget (error-handling.md §tool-dispatch codes). Mirrors the engine's `ToolPolicyError`
- * shape without needing the dispatched tool id (the host capability is tool-agnostic).
+ * A **deterministic scope/security denial** — a path escapes the tier, a UNC path, or a refusal to write through
+ * a symlink — mapping to the **fatal**, non-retryable `tool_denied` (the shared {@link HostDeniedError}): a
+ * denied path just re-denies, so it must NOT burn the node-retry budget (error-handling.md §tool-dispatch codes).
  */
-export class FsScopeDeniedError extends ToolDispatchError {
-  readonly code = 'tool_denied';
-  readonly runErrorCode: ErrorCode = 'tool_denied';
-  readonly retryable = false;
-  constructor(message: string) {
-    super(message, undefined, undefined);
-    this.name = 'FsScopeDeniedError';
-  }
-}
+export class FsScopeDeniedError extends HostDeniedError {}
 
 /**
  * Build a node-backed {@link FsCapability} jailed to `config`'s scope tier. The returned object is the value a
@@ -135,7 +126,7 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
     // A typed engine error (ToolUnavailableError = read-only fail-close → tool_unavailable; FsScopeDeniedError
     // = a scope denial → tool_denied) and an already-reason-only FsCapabilityError pass through verbatim. Any
     // RAW Node fs error (whose message/path leaks the absolute path) is replaced with a reason-only one (I3).
-    if (error instanceof ToolDispatchError || error instanceof FsCapabilityError) {
+    if (error instanceof ToolDispatchError || error instanceof HostCapabilityError) {
       throw error;
     }
     throw new FsCapabilityError('the filesystem operation failed');
@@ -210,15 +201,16 @@ async function readGlob(
   let latest = 0;
   for (const m of matches) {
     throwIfAborted(signal);
-    const bytes = await readFile(m.real);
-    if (isBinary(bytes)) continue; // a binary match is skipped, not fatal — and must NOT charge the budget
-    // Apply the budget ONLY to text matches that actually count toward the result, so a skipped binary file
-    // can never fail an otherwise-in-budget glob read.
+    // Probe binary with a BOUNDED prefix read (not a full load): a binary match is skipped, not fatal, and
+    // must NOT charge the budget. Then enforce the budget against the known `stat` size BEFORE the full read,
+    // so a large or over-budget text file is never loaded into memory just to be rejected.
+    if (await fileLooksBinary(m.real)) continue;
     if (totalBytes + m.size > maxReadBytes) {
       throw new FsCapabilityError(
         `read_file: the glob result exceeds the ${maxReadBytes}-byte read limit`,
       );
     }
+    const bytes = await readFile(m.real);
     totalBytes += m.size;
     latest = Math.max(latest, m.mtimeMs);
     parts.push(`===== ${m.rel} =====\n${bytes.toString('utf8')}`);
@@ -275,7 +267,7 @@ async function writeOne(
     ).catch((error: unknown) => {
       const code = errnoCode(error);
       if (code === 'ELOOP' || code === 'ENOTDIR') {
-        throw new FsScopeDeniedError('refusing to write through a symlink');
+        throw new FsScopeDeniedError('write_file: refusing to write through a symlink');
       }
       throw error;
     });
@@ -443,10 +435,10 @@ async function assertNotSymlink(target: string): Promise<void> {
   const info = await lstat(target).catch((error: unknown) => {
     if (errnoCode(error) === 'ENOENT') return undefined; // not present yet — the common case
     // Self-defending: re-wrap any other raw fs error (its message/path would leak) rather than rethrow it.
-    throw new FsCapabilityError('the final path could not be inspected');
+    throw new FsCapabilityError('write_file: the final path could not be inspected');
   });
   if (info?.isSymbolicLink() === true) {
-    throw new FsScopeDeniedError('refusing to write through a symlink');
+    throw new FsScopeDeniedError('write_file: refusing to write through a symlink');
   }
 }
 
@@ -460,7 +452,14 @@ function relWorkspace(config: NodeFsCapabilityConfig, real: string): string {
  * Bounded directory walk + glob collection. Never follows a symlinked directory (no escape, no loop).
  * ------------------------------------------------------------------------------------------------ */
 
-/** Walk `root` (optionally recursive), invoking `visit(real, rel, dirent)`; `visit` returns false to stop. */
+/**
+ * Walk `root` (optionally recursive), invoking `visit(real, rel, dirent)`; `visit` returns false to stop. Each
+ * queued directory is re-resolved (`realpath`) + scope-checked **immediately before** its `readdir` — closing the
+ * TOCTOU between the time it was queued and the time it is read: a directory atomically swapped for an out-of-jail
+ * symlink in that window is dropped, and the read targets the freshly-resolved canonical path, not the stale one.
+ * `root` is already a canonical in-scope path (the caller realpath'd it). A symlinked subdir is never followed
+ * (`dirent.isDirectory()` is false for one), so the recursion stays inside the jail with no symlink loop.
+ */
 async function walk(
   root: string,
   recursive: boolean,
@@ -471,24 +470,23 @@ async function walk(
   const stack: string[] = [root];
   while (stack.length > 0) {
     throwIfAborted(signal);
-    const dir = stack.pop();
-    if (dir === undefined) break;
+    const queued = stack.pop();
+    if (queued === undefined) break;
+    const dir = queued === root ? root : await resolveInScope(queued, inScope);
+    if (dir === undefined) continue; // swapped out-of-jail or vanished between queue and read — skip
     const dirents = await readdir(dir, { withFileTypes: true }).catch((): Dirent[] => []);
     for (const dirent of dirents) {
       const real = join(dir, dirent.name);
-      const keepGoing = await visit(real, posixRel(root, real), dirent);
-      if (!keepGoing) return;
-      // Recurse into REAL directories only — a symlinked dir is never followed (no escape, no symlink loop).
-      // Re-resolve + re-scope-check the subdir BEFORE descending: a genuine directory at parent-`readdir` time
-      // could be atomically swapped for an out-of-jail symlink before THIS `readdir`, which would otherwise
-      // follow it (a TOCTOU between the parent snapshot and the child read). Push the realpath'd path so the
-      // walk stays anchored to resolved paths and a later swap cannot redirect a deeper read.
-      if (recursive && dirent.isDirectory()) {
-        const realSub = await realpath(real).catch(() => undefined);
-        if (realSub !== undefined && inScope(realSub)) stack.push(realSub);
-      }
+      if (!(await visit(real, posixRel(root, real), dirent))) return;
+      if (recursive && dirent.isDirectory()) stack.push(real); // re-resolved + re-checked when it is popped
     }
   }
+}
+
+/** Resolve `dir` through `realpath` and return it only if still in scope (else `undefined`) — the walk's jail guard. */
+async function resolveInScope(dir: string, inScope: ScopeChecker): Promise<string | undefined> {
+  const real = await realpath(dir).catch(() => undefined);
+  return real !== undefined && inScope(real) ? real : undefined;
 }
 
 /** Collect the files under the workspace matching `pattern` (bounded), each jail-checked, for a glob read. */
@@ -585,9 +583,26 @@ function matchSegment(glob: string, value: string): boolean {
  * Small helpers.
  * ------------------------------------------------------------------------------------------------ */
 
-/** Heuristic binary detection: a NUL byte in the first 8 KiB marks a non-text file (the git convention). */
+/**
+ * Heuristic binary detection: a NUL byte in the first 8 KiB marks a non-text file (the git convention).
+ * CAVEAT: a NUL-free file in a legacy single-byte encoding (Latin-1 / CP1252 / MacRoman) passes as "text" and
+ * is decoded as UTF-8, yielding U+FFFD replacement characters for its high bytes — an accepted v1 limitation
+ * (the durable-media-handle path that would carry such files faithfully is the deferred follow-up).
+ */
 function isBinary(bytes: Buffer): boolean {
   return bytes.subarray(0, 8192).includes(0);
+}
+
+/** Probe whether a file is binary by reading only a BOUNDED prefix (no full load) — a NUL byte ⇒ binary. */
+async function fileLooksBinary(path: string): Promise<boolean> {
+  const handle = await open(path, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(8192);
+    const { bytesRead } = await handle.read(buf, 0, 8192, 0);
+    return buf.subarray(0, bytesRead).includes(0);
+  } finally {
+    await handle.close();
+  }
 }
 
 /** The forward-slash relative path of `real` under `root` (the model-facing, OS-agnostic entry name). */
@@ -632,7 +647,5 @@ function errnoCode(error: unknown): string | undefined {
 
 /** Cooperative cancellation — throw a reason-only error before a (potentially slow) filesystem step. */
 function throwIfAborted(signal: AbortSignalLike | undefined): void {
-  if (signal?.aborted === true) {
-    throw new FsCapabilityError('the filesystem operation was aborted');
-  }
+  throwIfAbortedShared(signal, 'the filesystem operation was aborted');
 }

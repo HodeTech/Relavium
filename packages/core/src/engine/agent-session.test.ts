@@ -375,6 +375,43 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(typesOf(events)).toEqual(['session:turn_started', 'session:turn_completed']);
   });
 
+  it('does NOT count a pre-egress failure against max_turns — only an engaged turn burns the cap (F7)', async () => {
+    // F7 (ADR-0055): the hard cap counts ONLY turns where a provider actually engaged. A turn that fails BEFORE
+    // any egress — here a fixed host-wiring gap (`resolveProvider → undefined`, which the session memoizes) —
+    // must never consume one of `max_turns`. With maxTurns 1 we drive THREE such turns: under the engaged-gate
+    // every one fails identically with `internal` and NONE is ever blocked by `turn_limit`. The pre-gate
+    // UNCONDITIONAL increment would have counted turn 1 and blocked turn 2 with `turn_limit` — so this also pins
+    // the regression: a pre-flight failure can no longer silently exhaust the cap without a single provider call.
+    const events: SessionStreamEvent[] = [];
+    const deps: SessionDeps = {
+      resolveProvider: () => undefined, // a fixed wiring gap — every turn fails pre-egress, none engages
+      registry: noToolRegistry,
+      tools: [],
+      keyFor: () => 'key',
+      sleep: () => Promise.resolve(),
+      newAbortController: createAbortController,
+      maxTurns: 1,
+      emit: (e) => {
+        events.push(e);
+      },
+    };
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('one');
+    await s.sendMessage('two');
+    await s.sendMessage('three');
+
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(3);
+    const codes = completes.map((e) =>
+      e.type === 'session:turn_completed' ? e.error?.code : undefined,
+    );
+    // Every turn fails with the SAME pre-egress internal error — and the cap is NEVER tripped, because no turn
+    // engaged a provider to count.
+    expect(codes).toEqual(['internal', 'internal', 'internal']);
+    expect(codes).not.toContain('turn_limit');
+  });
+
   it('maps a within-turn turn_limit (maxToolTurns exceeded) to session:turn_completed{turn_limit}', async () => {
     // maxToolTurns 0: a tool_use turn exceeds the within-turn loop guard → AgentTurnError('turn_limit').
     const { deps, events } = harness(

@@ -175,8 +175,31 @@ describe('buildChatSession', () => {
   });
 
   it('enforces [chat].max_turns: an over-cap sendMessage settles loudly as turn_limit with no provider call', async () => {
-    // unresolvedResolver ⇒ every turn fails fast as `internal` (a host-wiring gap) but still COUNTS toward
-    // the cap, so the 3rd message past a cap of 2 is blocked as turn_limit without engaging a provider.
+    // Two ENGAGED (successful) turns reach the cap of 2; the 3rd is blocked as turn_limit WITHOUT a provider
+    // call. Only an engaged turn counts toward the cap (F7, ADR-0055) — so the cap is reached by real turns,
+    // not by pre-egress failures (that gate is pinned in packages/core agent-session.test.ts and below).
+    const built = await build({
+      chat: { ...EMPTY_CHAT, maxTurns: 2 },
+      providers: scriptedResolver([textTurn('first'), textTurn('second')]),
+    });
+    built.session.start();
+    await built.session.sendMessage('one');
+    await built.session.sendMessage('two');
+    await built.session.sendMessage('three — over the cap');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const errorCodes = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errorCodes).toEqual(['turn_limit']); // turns 1+2 succeeded; only the over-cap 3rd errors
+  });
+
+  it('a pre-egress failure does NOT count against [chat].max_turns — only an engaged turn burns the cap (F7)', async () => {
+    // The corrected behavior (ADR-0055): with `unresolvedResolver` every turn fails fast as `internal` BEFORE
+    // engaging a provider, so NONE counts toward the cap. Three messages past a cap of 2 therefore all settle as
+    // `internal` and `turn_limit` is NEVER reached — the old code counted the pre-egress failures and wrongly
+    // blocked the 3rd. This is the surface-level regression guard for the engine gate.
     const built = await build({
       chat: { ...EMPTY_CHAT, maxTurns: 2 },
       providers: unresolvedResolver(),
@@ -191,7 +214,8 @@ describe('buildChatSession', () => {
     const errorCodes = events.flatMap((e) =>
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
     );
-    expect(errorCodes).toEqual(['internal', 'internal', 'turn_limit']);
+    expect(errorCodes).toEqual(['internal', 'internal', 'internal']);
+    expect(errorCodes).not.toContain('turn_limit');
   });
 });
 
@@ -439,6 +463,18 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
     // The persister continues PAST the persisted MAX(sequence_number) = 1.
     expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('CLAMPS a persisted full fs-scope tier down to project on resume (read-only chat ceiling, ADR-0055)', async () => {
+    // SECURITY regression: a session persisted (e.g. pre-2.5.A) with the broad `full` tier must resume at the
+    // read-only chat ceiling — `project`, never `full` — so a resumed chat can't read `~/.ssh` / `~/.aws` back
+    // to the model. The resumed `context.fsScopeTier` is what both the host jail and the dispatch context use,
+    // so clamping it here keeps all three channels consistent (the same clamp `buildChatSession` applies fresh).
+    const built = await resume(
+      [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      record({ context: { workingDir: '/workspace', fsScopeTier: 'full' } }),
+    );
+    expect(built.context.fsScopeTier).toBe('project');
   });
 
   it('continues a transcript whose last persisted seq is computed from the MAX (order-independent)', async () => {

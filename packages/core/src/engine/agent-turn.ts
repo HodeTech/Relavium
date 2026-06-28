@@ -175,6 +175,15 @@ export class AgentTurnError extends Error {
   // NOT `readonly`: {@link runAgentTurn} attaches the accumulated usage IN PLACE on the original instance (so
   // the real throw-site stack is preserved) when a provider had engaged. The nested counts stay immutable.
   usage?: { readonly input: number; readonly output: number };
+  /**
+   * Whether a provider actually **engaged** this turn — i.e. at least one non-skipped fallback attempt ran
+   * (set the instant {@link runAgentTurn}'s attempt tracker fires, even for an attempt that then errored at
+   * zero usage, which the `usage > 0` proxy would miss). `AgentSession` counts ONLY engaged turns against
+   * `max_turns`, so a failure BEFORE any egress (no plan entries, a pre-egress budget refusal, a pre-flight
+   * cancel) does not burn a turn the model never got to take. Set IN PLACE by {@link runAgentTurn}; left
+   * `undefined` only for an error that never passed through that wrapper.
+   */
+  engaged?: boolean;
   constructor(
     readonly code: ErrorCode,
     message: string,
@@ -621,20 +630,21 @@ async function dispatchToolUseTurn(
  * turn-core tracker); this wrapper reads it on the failure path.
  */
 export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
-  const usage = { input: 0, output: 0 };
+  const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
   try {
-    return await driveAgentTurn(params, usage);
+    return await driveAgentTurn(params, acc);
   } catch (err) {
-    // Attach the real accumulated usage to a classified failure that engaged a provider, but ONLY when the
-    // driver did not already set it AND a provider actually ran. `usage` still `{0,0}` ⇒ no egress (a
-    // no-plan-entries or pre-egress failure), so leave `AgentTurnError.usage` undefined and let the caller
-    // report a truthful zero rather than a fabricated count.
-    if (
-      err instanceof AgentTurnError &&
-      err.usage === undefined &&
-      (usage.input > 0 || usage.output > 0)
-    ) {
-      err.usage = { input: usage.input, output: usage.output }; // enrich IN PLACE — keep the real throw-site stack
+    if (err instanceof AgentTurnError) {
+      // Record whether a provider engaged this turn (a non-skipped attempt ran) so the session's turn-cap can
+      // count ONLY engaged turns — set IN PLACE to keep the real throw-site stack. This is an explicit signal,
+      // not the `usage > 0` proxy: an attempt that connected and then errored at zero usage still "engaged".
+      err.engaged = acc.engaged;
+      // Attach the real accumulated usage too, but ONLY when the driver did not already set it AND a provider
+      // actually ran. `acc` still `{0,0}` ⇒ no egress (a no-plan-entries / pre-egress failure), so leave
+      // `AgentTurnError.usage` undefined and let the caller report a truthful zero rather than a fabricated count.
+      if (err.usage === undefined && (acc.input > 0 || acc.output > 0)) {
+        err.usage = { input: acc.input, output: acc.output };
+      }
       throw err;
     }
     // A non-AgentTurnError escaping here is either a `BudgetPauseError` (a pre-egress `pause_for_approval` —
@@ -645,6 +655,13 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
   }
 }
 
+/** The per-turn accumulator shared with {@link driveAgentTurn}: summed usage plus whether a provider engaged. */
+interface TurnUsageAccumulator {
+  input: number;
+  output: number;
+  engaged: boolean;
+}
+
 /**
  * The provider-engaging turn driver (extracted from {@link runAgentTurn} for EA2). Accumulates token usage
  * into the shared `usage` ref as non-skipped attempts settle, so the wrapper can report real usage on a
@@ -652,7 +669,7 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
  */
 async function driveAgentTurn(
   params: AgentTurnParams,
-  usage: { input: number; output: number },
+  usage: TurnUsageAccumulator,
 ): Promise<AgentTurnResult> {
   const primaryModel = params.planEntries[0]?.model;
   if (primaryModel === undefined) {
@@ -671,6 +688,7 @@ async function driveAgentTurn(
     if (record.outcome === 'skipped') return;
     activeModel = record.model;
     nonSkippedAttempts += 1;
+    usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
     if (record.usage === undefined) return;
     usage.input += record.usage.inputTokens;
     usage.output += record.usage.outputTokens;

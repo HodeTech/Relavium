@@ -593,6 +593,10 @@ describe('runAgentTurn — tool loop', () => {
     if (err instanceof AgentTurnError) {
       expect(err.code).toBe('provider_auth');
       expect(err.usage).toBeUndefined();
+      // The provider WAS contacted (it returned an auth error) — so the turn ENGAGED, even though it produced no
+      // usage. This is exactly the case the explicit `engaged` flag captures that the `usage > 0` proxy would
+      // miss: the session's turn-cap must count a contacted-but-errored turn, not mistake it for pre-egress.
+      expect(err.engaged).toBe(true);
     }
   });
 
@@ -618,18 +622,23 @@ describe('runAgentTurn — tool loop', () => {
     await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
       code: 'tool_failed',
       usage: { input: 10, output: 5 },
+      engaged: true, // a provider engaged (the tool-use turn settled) — the session counts it against the cap
     });
   });
 
-  it('leaves usage undefined on a failure with NO provider engagement (no plan entries)', async () => {
+  it('leaves usage undefined AND marks engaged:false on a failure with NO provider engagement (no plan entries)', async () => {
     // A pre-egress / wiring failure never ran a provider — `usage` stays {0,0}, so the wrapper leaves
-    // AgentTurnError.usage undefined and the caller reports a truthful zero (never a fabricated count).
+    // AgentTurnError.usage undefined and the caller reports a truthful zero (never a fabricated count). The
+    // explicit `engaged:false` is what tells AgentSession NOT to count this turn against `max_turns`.
     const provider = scriptedProvider('anthropic', []);
     const err: unknown = await runAgentTurn({ ...baseParams(provider), planEntries: [] }).catch(
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(AgentTurnError);
-    if (err instanceof AgentTurnError) expect(err.usage).toBeUndefined();
+    if (err instanceof AgentTurnError) {
+      expect(err.usage).toBeUndefined();
+      expect(err.engaged).toBe(false);
+    }
   });
 
   it('redacts the raw model args on the error-path agent:tool_call (toolInput {})', async () => {

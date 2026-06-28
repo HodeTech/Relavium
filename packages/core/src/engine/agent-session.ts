@@ -172,7 +172,11 @@ export class AgentSession {
 
   /** The in-memory conversation (in-flight `ContentPart` form); the turn core copies it, never mutates it. */
   readonly #messages: LlmMessage[] = [];
-  /** Turns that engaged the provider (success or failure) — the hard cap counts these. */
+  /**
+   * Turns where a provider actually engaged — a success, or a failure whose {@link AgentTurnError.engaged} is
+   * `true` (a non-skipped attempt ran). The hard cap counts ONLY these, so a pre-egress failure (no plan
+   * entries, a budget refusal, a pre-flight cancel) never burns a turn the model never took.
+   */
   #turnCount = 0;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
   #cumulativeCostMicrocents = 0;
@@ -312,7 +316,12 @@ export class AgentSession {
       this.#messages.pop();
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
       if (err instanceof AgentTurnError) {
-        this.#turnCount += 1; // the turn engaged a provider — it counts toward the cap
+        // Count the turn against the cap ONLY when a provider actually engaged (an explicit signal the turn core
+        // attaches — a non-skipped attempt ran). A failure BEFORE any egress — no plan entries, a pre-egress
+        // budget refusal, a pre-flight cancel — must not burn a turn the model never got to take; otherwise a
+        // mis-configured session could exhaust `max_turns` without a single provider call. `engaged !== true`
+        // (covering an undefined from an error that bypassed the wrapper) leaves the counter untouched.
+        if (err.engaged === true) this.#turnCount += 1;
         // EA2 (ADR-0055): report the turn's REAL accumulated usage (the turn core attaches it to the error
         // when a provider engaged), not a hardcoded zero — so a failed turn's tokens are accounted for.
         // `?? {0,0}` covers a failure that never engaged a provider (the turn core leaves `usage` undefined).

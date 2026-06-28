@@ -1,8 +1,26 @@
 import type { FsScopeTier, ToolDef, ToolHost } from '@relavium/core';
 import type { ToolPolicy } from '@relavium/shared';
 
-import { createNodeFsCapability } from './fs.js';
-import { createNodeProcessCapability } from './process.js';
+import { HostCapabilityError, HostDeniedError } from './errors.js';
+import { createNodeFsCapability, FsCapabilityError, FsScopeDeniedError } from './fs.js';
+import {
+  createNodeProcessCapability,
+  ProcessCapabilityError,
+  ProcessDeniedError,
+} from './process.js';
+
+// Re-export the host-arm error vocabulary from the factory so a consumer narrowing on a denial/transient failure
+// has ONE import site — the seam's public entry point — rather than reaching past it into each arm module. The
+// shared bases let a caller catch the whole class (`HostDeniedError` = every fatal `tool_denied`) or a specific
+// arm (`FsScopeDeniedError`).
+export {
+  HostCapabilityError,
+  HostDeniedError,
+  FsCapabilityError,
+  FsScopeDeniedError,
+  ProcessCapabilityError,
+  ProcessDeniedError,
+};
 
 /**
  * The shared CLI **tool-environment factory** ([ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md),

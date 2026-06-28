@@ -166,15 +166,15 @@ function buildSessionRuntime(
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
   // 2.5.A (ADR-0055): the shared factory wires the READ-ONLY chat host (fs read+list, process for the
-  // pre-approved git_status) jailed to the session's fs-scope tier. A test may inject its own `toolHost`
-  // (e.g. a fail-closed `{}` for a capability-gap assertion); production uses the factory.
-  const baseHost: ToolHost =
-    opts.toolHost ??
-    assembleToolEnv({
-      profile: 'chat-read-only',
-      fsScopeTier: context.fsScopeTier,
-      workspaceDir: context.workingDir,
-    }).host;
+  // pre-approved git_status) jailed to the session's fs-scope tier AND the chat-default `ToolPolicy`. Building
+  // it is pure construction (no I/O), so we always assemble it for the policy even when a test injects its own
+  // `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion); production also takes its host.
+  const factoryEnv = assembleToolEnv({
+    profile: 'chat-read-only',
+    fsScopeTier: context.fsScopeTier,
+    workspaceDir: context.workingDir,
+  });
+  const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const registry = createToolRegistry({ tools, host });
@@ -193,9 +193,12 @@ function buildSessionRuntime(
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
     emit,
-    // No toolPolicy ⇒ the AgentSession default `{}` applies: gated tools deny-all and `run_command` is
-    // disabled (empty allowedCommands). A standalone chat has no workflow allowedCommands to inherit, so
-    // empty is the secure default (config-spec.md `[chat]` "empty/absent ⇒ run_command disabled").
+    // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
+    // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
+    // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`
+    // "empty/absent ⇒ run_command disabled"). Wiring it now means a 2.5.E/ADR-0057 per-mode allowlist flows
+    // through automatically rather than being silently dropped by reading only the factory's `host`.
+    toolPolicy: factoryEnv.policy,
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     ...(governor === undefined
       ? {}
