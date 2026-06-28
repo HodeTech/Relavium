@@ -72,13 +72,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     session: undefined,
   };
   let cancelFired = false;
-  let exiting = false; // set on BOTH the clean-exit and the error path — guards deferred reads of a closed db
+  let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
   let tearingDown: HomeChatSession | undefined;
   let pasting = false; // inside a bracketed paste (DECSET 2004) — content is buffered literally, never submitted
+  let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
 
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
+  /** Whether a chat turn is streaming — paste content (like every other key) is gated mid-turn. */
+  const chatRunning = (): boolean =>
+    state.mode === 'chat' &&
+    state.session !== undefined &&
+    state.session.store.getSnapshot().state.status === 'running';
   const set = (patch: Partial<HomeControllerState>): void => {
     state = { ...state, ...patch };
     notify();
@@ -123,7 +129,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       },
       (err: unknown) => {
         tearingDown = active; // align with endChat's single-shot guard (the session closure is idempotent)
-        void active.teardown().finally(() => failHome(err));
+        void active.teardown().finally(() => {
+          tearingDown = undefined; // clear for symmetry with endChat (failHome is terminal, but stay consistent)
+          failHome(err);
+        });
       },
     );
   };
@@ -135,8 +144,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     set({ input: '', errorText: undefined, pendingMessage: trimmed, mode: 'loading' });
-    void deps.startChat().then(
+    // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
+    // session — its MCP child / frame loop — rather than orphan it (see teardownActive).
+    const build = deps.startChat();
+    buildInFlight = build;
+    void build.then(
       (built) => {
+        if (buildInFlight === build) buildInFlight = undefined;
         if (exiting) {
           void built.teardown().catch(() => undefined); // exited mid-build ⇒ reclaim the just-built session
           return;
@@ -145,6 +159,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         sendChatLine(built, trimmed); // the first turn streams in the chat region
       },
       (err: unknown) => {
+        if (buildInFlight === build) buildInFlight = undefined;
         if (exiting) return;
         set({
           errorText: err instanceof Error ? err.message : String(err),
@@ -156,6 +171,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
+    if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
     const action = reduceChatKey(input, key, state.input, running);
     switch (action.kind) {
@@ -221,8 +237,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       }
       if (pasting) {
-        if (input.length > 0) set({ input: state.input + input });
-        return;
+        // Escape hatch: Ctrl-C ALWAYS breaks out (a lost paste-end marker must never trap the user with no way
+        // to exit/submit) — clear the latch and fall through to the normal dispatch (Home → exit, chat → /cancel).
+        if (!(key.ctrl === true && input === 'c')) {
+          // Literal content. Drop it mid-turn to match the keystroke gate (type-ahead is deferred, 2.5.B); else
+          // append verbatim so a multi-line block keeps its newlines and never submits early.
+          if (input.length > 0 && !chatRunning()) set({ input: state.input + input });
+          return;
+        }
+        pasting = false;
       }
       if (state.mode === 'chat' && state.session !== undefined) {
         handleChatKey(state.session, input, key);
@@ -231,10 +254,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       handleHomeKey(input, key);
     },
     async teardownActive() {
+      exiting = true; // terminating: a deferred endChat skips the (about-to-close) db; an in-flight build reclaims itself
       const active = state.session;
       if (active !== undefined && tearingDown !== active) {
         tearingDown = active; // idempotent vs a concurrent endChat (the session closure is itself idempotent)
         await active.teardown().catch(() => undefined);
+        return;
+      }
+      // No live session yet — a signal during the `loading` build window. Await + reap the in-flight build so its
+      // spawned MCP child / frame loop is never orphaned (bounded by driveHome's force-teardown race). submit's
+      // exiting-arm may also reap it once it resolves; both call the SAME idempotent teardown, so the overlap is
+      // harmless — awaiting here guarantees the reap completes within the bound.
+      const pending = buildInFlight;
+      if (pending !== undefined) {
+        const built = await pending.catch(() => undefined);
+        if (built !== undefined) await built.teardown().catch(() => undefined);
       }
     },
   };

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
-import { createChatStore } from './chat-store.js';
+import { createChatStore, type ChatStoreController } from './chat-store.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -11,6 +11,13 @@ import {
 // The paste-boundary markers exactly as ink 6.8's input layer surfaces them (the leading ESC is stripped).
 const PASTE_START = '[200~';
 const PASTE_END = '[201~';
+
+/** A minimal chat store stub reporting `running` — the controller only reads `getSnapshot().state.status`. */
+const runningStore = (): ChatStoreController =>
+  ({
+    ...createChatStore(false),
+    getSnapshot: () => ({ state: { status: 'running' }, tick: 0, color: false }),
+  }) as unknown as ChatStoreController;
 
 const EMPTY: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },
@@ -22,7 +29,9 @@ const EMPTY: HomeSnapshot = {
 
 /** A controllable {@link HomeChatSession} fake: records the lines it processes, exposes a teardown spy, and lets a
  *  test script `shouldStop` (the /exit·/cancel signal) and the turn outcome (resolve vs reject). */
-function makeSession(opts: { onProcess?: () => Promise<void>; stop?: () => boolean } = {}): {
+function makeSession(
+  opts: { onProcess?: () => Promise<void>; stop?: () => boolean; running?: boolean } = {},
+): {
   session: HomeChatSession;
   teardown: ReturnType<typeof vi.fn>;
   lines: string[];
@@ -30,7 +39,7 @@ function makeSession(opts: { onProcess?: () => Promise<void>; stop?: () => boole
   const lines: string[] = [];
   const teardown = vi.fn(() => Promise.resolve());
   const session: HomeChatSession = {
-    store: createChatStore(false), // a real store; starts 'idle' ⇒ the running-gate is false
+    store: opts.running === true ? runningStore() : createChatStore(false), // idle ⇒ the running-gate is false
     processLine: async (line) => {
       lines.push(line);
       if (opts.onProcess) await opts.onProcess();
@@ -201,6 +210,26 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(made.teardown).toHaveBeenCalledTimes(1);
   });
 
+  it('teardownActive during a build-in-flight (a signal while loading) reaps the just-built session — no orphan', async () => {
+    let resolveBuild: (s: HomeChatSession) => void = () => undefined;
+    const made = makeSession();
+    const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
+    const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+
+    type(c, 'hi');
+    c.handleKey('', ENTER); // → loading, build pending, NO session yet
+    const teardown = c.teardownActive(); // the signal handler runs while still loading
+    resolveBuild(made.session); // the build resolves into the terminating controller
+    await teardown;
+
+    // The in-flight build's session is reaped, not orphaned. (teardownActive AND submit's exiting-arm may each
+    // reap it — both call the SAME idempotent real teardown, so the second is a benign no-op; only the fake counts
+    // both. The guarantee that matters is "reaped ≥1 / no orphan", and that the chat was never mounted.)
+    expect(made.teardown).toHaveBeenCalled();
+    expect(c.getSnapshot().mode).not.toBe('chat'); // and never mounted
+    expect(made.lines).toEqual([]);
+  });
+
   describe('bracketed paste (DECSET 2004)', () => {
     it('appends a multi-line paste literally (newlines kept) and does NOT submit early', () => {
       const startChat = vi.fn();
@@ -236,6 +265,56 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       await flush();
       expect(startChat).toHaveBeenCalledTimes(1);
       expect(made.lines).toEqual(['deploy.yaml contents']);
+    });
+
+    it('reassembles a paste delivered across MULTIPLE chunks (none submits, order + newlines preserved)', () => {
+      const startChat = vi.fn();
+      const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      c.handleKey(PASTE_START, {});
+      c.handleKey('first\n', {}); // ink can split a large paste across stdin reads
+      c.handleKey('\r', { return: true }); // even a lone CR chunk INSIDE the paste is literal, not a submit
+      c.handleKey('second', {});
+      c.handleKey(PASTE_END, {});
+      expect(c.getSnapshot().input).toBe('first\n\rsecond');
+      expect(startChat).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl-C ALWAYS escapes a stuck paste (a lost end-marker must never trap the user) — Home exits', () => {
+      const onExit = vi.fn();
+      const c = createHomeController({ startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      c.handleKey(PASTE_START, {});
+      c.handleKey('half a paste', {}); // the [201~ end marker never arrives
+      c.handleKey('c', CTRL_C); // the user bails out
+      expect(onExit).toHaveBeenCalledTimes(1); // the latch is cleared and the Home exits cleanly
+    });
+
+    it('Ctrl-C escapes a stuck paste inside a chat as a /cancel (not swallowed)', async () => {
+      const made = makeSession();
+      const startChat = vi.fn(() => Promise.resolve(made.session));
+      const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      made.lines.length = 0;
+
+      c.handleKey(PASTE_START, {});
+      c.handleKey('oops', {}); // end marker lost mid-chat
+      c.handleKey('c', CTRL_C);
+      expect(made.lines).toEqual(['/cancel']); // the chat cancels rather than wedging
+    });
+
+    it('drops paste content while a chat turn is running (matches the mid-turn keystroke gate)', async () => {
+      const made = makeSession({ running: true });
+      const startChat = vi.fn(() => Promise.resolve(made.session));
+      const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      type(c, 'go');
+      c.handleKey('', ENTER);
+      await flush(); // mode 'chat', the (stubbed) store reports running
+
+      c.handleKey(PASTE_START, {});
+      c.handleKey('type-ahead block', {});
+      c.handleKey(PASTE_END, {});
+      expect(c.getSnapshot().input).toBe(''); // dropped mid-turn, like every other key
     });
   });
 });

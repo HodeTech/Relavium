@@ -197,4 +197,25 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(exitSpy).toHaveBeenCalledWith(143);
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('a second signal force-exits immediately; the db is still closed only once', async () => {
+    let signal: ((signo: number) => void) | undefined;
+    const exitSpy = vi.fn();
+    const { deps } = makeDeps(() => undefined, {
+      subscribeSignals: (onSignal) => {
+        signal = onSignal;
+        return () => undefined;
+      },
+      exit: exitSpy,
+    });
+    void driveHome(deps);
+    if (signal === undefined) throw new Error('signal not wired');
+
+    signal(2); // first: starts the bounded teardown race
+    signal(2); // second while the race is still pending: the `signaled` latch force-exits immediately
+    await flush();
+    expect(exitSpy).toHaveBeenCalledWith(130);
+    expect(exitSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // the force-exit + the race-settled exit
+    expect(closeSpy).toHaveBeenCalledTimes(1); // closeDb is idempotent across both signals
+  });
 });

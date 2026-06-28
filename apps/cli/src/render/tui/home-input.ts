@@ -1,9 +1,9 @@
 /**
  * The Home-mode key reducer for the bare-invocation Home (2.5.B / ADR-0054) — the read-only-strip counterpart of
  * {@link reduceChatKey}. Like the chat reducer it is a PURE `(char, key) → action` mapping so the keystroke
- * contract is unit-tested without mounting ink, and the single `useInput` owner (`RootApp`) just folds the action
- * into its ref-shadowed buffer. Home mode has no "running" notion (the strip is read-only): Ctrl-C exits the
- * Home, Return submits the buffer (the caller reads the latest committed value), and the rest edit the buffer.
+ * contract is unit-tested without mounting ink; `HomeController` folds the action into its plain prompt-buffer
+ * field. Home mode has no "running" notion (the strip is read-only): Ctrl-C exits the Home, Return submits the
+ * buffer (the caller reads the latest committed value), and the rest edit the buffer.
  */
 
 /** The subset of ink's `Key` the Home cares about (kept minimal + structurally testable). */
@@ -48,8 +48,9 @@ export const DISABLE_BRACKETED_PASTE = '[?2004l';
  * defence across terminals/ink builds. A real user can only produce these as one coalesced event via an actual
  * paste (typing the five chars sends five single-char events), so a whole-string match cannot false-trigger.
  */
-const PASTE_START_FORMS = ['[200~', '[200~'] as const;
-const PASTE_END_FORMS = ['[201~', '[201~'] as const;
+const ESC = '\x1b';
+const PASTE_START_FORMS = ['[200~', `${ESC}[200~`] as const; // ink-stripped form + the raw (ESC-prefixed) form
+const PASTE_END_FORMS = ['[201~', `${ESC}[201~`] as const;
 
 /** Whether this whole `useInput` chunk is the paste-start marker (host enters literal paste mode). */
 export function isPasteStart(input: string): boolean {

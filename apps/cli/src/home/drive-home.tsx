@@ -6,7 +6,7 @@ import { createElement } from 'react';
 
 import { createChatLineHandler } from '../commands/chat.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
-import { createSessionPersister } from '../chat/persister.js';
+import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -113,39 +113,56 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
         ),
     });
-    const persister = createSessionPersister({
-      store: opened.store,
-      handle: built.handle,
-      sessionId: built.sessionId,
-      agent: built.agent,
-      context: built.context,
-      now,
-      uuid,
-    });
-    const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
-      { built, opened, store, persister },
-      deps,
-    );
-    // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
-    const unsubscribe = built.handle.subscribe((event) => store.apply(event));
-    const frame = setInterval(() => store.tick(), FRAME_MS);
-    frame.unref();
-    persister.start();
-    built.session.start();
-    let torn = false;
-    const teardown = async (): Promise<void> => {
-      if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
-      torn = true;
-      cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
-      clearInterval(frame);
-      unsubscribe();
+    // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring
+    // (persister.start()'s insert, session.start()) must reclaim them — and any spawned MCP child — rather than
+    // leak the timer/subscription, mirroring chatCommand's post-build guard.
+    let frame: ReturnType<typeof setInterval> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let persister: SessionPersister | undefined;
+    try {
+      persister = createSessionPersister({
+        store: opened.store,
+        handle: built.handle,
+        sessionId: built.sessionId,
+        agent: built.agent,
+        context: built.context,
+        now,
+        uuid,
+      });
+      const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
+        { built, opened, store, persister },
+        deps,
+      );
+      // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
+      unsubscribe = built.handle.subscribe((event) => store.apply(event));
+      frame = setInterval(() => store.tick(), FRAME_MS);
+      frame.unref();
+      persister.start();
+      built.session.start();
+      let torn = false;
+      const teardown = async (): Promise<void> => {
+        if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
+        torn = true;
+        cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
+        clearInterval(frame);
+        unsubscribe?.();
+        try {
+          persister?.close();
+        } finally {
+          await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
+        }
+      };
+      return { store, processLine, shouldStop, teardown };
+    } catch (err) {
+      clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
+      unsubscribe?.();
       try {
-        persister.close();
+        persister?.close();
       } finally {
-        await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
+        await built.closeMcp?.().catch(() => undefined);
       }
-    };
-    return { store, processLine, shouldStop, teardown };
+      throw err;
+    }
   };
 
   const getSize =
@@ -225,10 +242,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     });
   } finally {
     // The clean-exit / error path (NOT the signal path, which exits the process directly): undo the terminal
-    // state, reclaim a live session, and close the shared db ONCE.
+    // state, reclaim a live session, and close the shared db ONCE. Unmount BEFORE disabling paste — the same
+    // order as the signal path (restore ink's terminal first, then emit the DECSET toggle).
     unsubscribeSignals();
-    writeControl(DISABLE_BRACKETED_PASTE);
     instance?.unmount();
+    writeControl(DISABLE_BRACKETED_PASTE);
     await controller?.teardownActive().catch(() => undefined);
     closeDb();
   }
