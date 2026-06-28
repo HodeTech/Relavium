@@ -21,8 +21,8 @@ import { colorProps, dimProps } from './projection.js';
  * Lifecycle invariants this shell upholds (each closes a reviewed defect):
  * - A turn that throws tears its session down BEFORE propagating, so the spawned MCP child / frame loop / session
  *   row are never orphaned on the error path (`driveHome` itself holds no session handle).
- * - `endChat` is single-shot per session, so a `/cancel` racing a settling turn cannot double-tear-down or clobber
- *   a freshly-started session.
+ * - `endChat` is single-shot per session, and its deferred state-reset is skipped once the Home is `exiting`, so a
+ *   teardown that completes after the db has closed (an error racing a `/cancel`) cannot read a closed db.
  * - Ctrl-C escapes the `loading` state, so a hung build is never an unkillable hang; and a `startChat` that
  *   resolves after the user has exited reclaims (tears down) the just-built session instead of mounting it.
  */
@@ -74,12 +74,13 @@ function ChatRegion(props: Readonly<{ store: ChatStoreController; input: string 
 }
 
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
+  const { subscribeResize, getSize, onExit, onError } = props;
   const [mode, setMode] = useState<Mode>('home');
   const [snapshot, setSnapshot] = useState<HomeSnapshot>(() => props.homeStore.read());
   const [session, setSession] = useState<HomeChatSession | undefined>();
   const [errorText, setErrorText] = useState<string | undefined>();
   const [pendingMessage, setPendingMessage] = useState('');
-  const [size, setSize] = useState(props.getSize);
+  const [size, setSize] = useState(getSize);
   // The prompt buffer with a ref shadow (see ChatApp): a coalesced stdin chunk dispatches synchronously with no
   // render flush, so reading `inputRef.current` keeps edits + a same-chunk submit on the latest committed value.
   const [input, setInputState] = useState('');
@@ -92,20 +93,26 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     });
   };
   const cancelFired = useRef(false);
-  // True once the Home has exited — guards async continuations (a late `startChat` resolve / reject) from mounting
-  // into or mutating an exited tree.
-  const exited = useRef(false);
+  // True once the Home is going away — set on BOTH the clean-exit and the error path, so a deferred `endChat`
+  // teardown that completes after `driveHome` has closed the shared db skips its state-reset / db-read.
+  const exiting = useRef(false);
   // The session currently being torn down — makes `endChat` single-shot so two settled turn promises (a `/cancel`
   // racing the turn it aborts) cannot double-tear-down or clobber a freshly-started session.
   const tearingDown = useRef<HomeChatSession | undefined>(undefined);
 
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
-  useEffect(() => props.subscribeResize(() => setSize(props.getSize())), [props]);
+  useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
 
   const exitHome = (): void => {
-    if (exited.current) return; // idempotent — a second Ctrl-C (or a race) must not resolve `driveHome` twice
-    exited.current = true;
-    props.onExit();
+    if (exiting.current) return; // idempotent — a second Ctrl-C (or a race) must not settle `driveHome` twice
+    exiting.current = true;
+    onExit();
+  };
+
+  const failHome = (err: unknown): void => {
+    if (exiting.current) return; // an exit/error already settled `driveHome` — drop this late failure
+    exiting.current = true;
+    onError(err);
   };
 
   const endChat = (ended: HomeChatSession): void => {
@@ -114,6 +121,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     void ended.teardown().finally(() => {
       tearingDown.current = undefined;
       cancelFired.current = false;
+      if (exiting.current) return; // an error/exit closed the db while we awaited teardown — do not read it
       setSession(undefined);
       setInput(() => '');
       setErrorText(undefined); // a stale build-failure banner must not haunt a clean return from a good chat
@@ -131,7 +139,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         if (active.shouldStop()) endChat(active);
       },
       (err: unknown) => {
-        void active.teardown().finally(() => props.onError(err));
+        tearingDown.current = active; // align with endChat's single-shot guard (the session closure is idempotent)
+        void active.teardown().finally(() => failHome(err));
       },
     );
   };
@@ -145,7 +154,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     setMode('loading');
     void props.startChat().then(
       (built) => {
-        if (exited.current) {
+        if (exiting.current) {
           void built.teardown().catch(() => undefined); // exited mid-build ⇒ reclaim the just-built session
           return;
         }
@@ -154,7 +163,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         sendChatLine(built, trimmed); // the first turn streams in the chat region
       },
       (err: unknown) => {
-        if (exited.current) return;
+        if (exiting.current) return;
         setErrorText(err instanceof Error ? err.message : String(err));
         setPendingMessage('');
         setMode('home'); // route a build failure back to Home with the banner
@@ -185,7 +194,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         case 'none':
           return;
       }
-      return;
+      return; // separate the chat key domain from the Home reducer below (never fall through)
     }
 
     // Home + loading modes share the Home reducer. Ctrl-C always exits (so a hung build is never unkillable);
@@ -214,34 +223,29 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   if (mode === 'chat' && session !== undefined) {
     return <ChatRegion store={session.store} input={input} />;
   }
+  if (mode === 'loading') {
+    return (
+      <Box flexDirection="column">
+        <Text {...colorProps(props.color, 'cyan')} wrap="truncate-end">
+          {'> '}
+          {sanitizeInline(pendingMessage)}
+        </Text>
+        <Text {...dimProps(props.color)} wrap="truncate-end">
+          Starting chat…
+        </Text>
+      </Box>
+    );
+  }
   return (
-    <Box flexDirection="column">
-      {errorText !== undefined && (
-        <Box marginBottom={1}>
-          <Text {...colorProps(props.color, 'red')} wrap="truncate-end">
-            couldn’t start the chat: {errorText}
-          </Text>
-        </Box>
-      )}
-      {mode === 'loading' ? (
-        <Box flexDirection="column">
-          <Text {...colorProps(props.color, 'cyan')} wrap="truncate-end">
-            {'> '}
-            {sanitizeInline(pendingMessage)}
-          </Text>
-          <Text {...dimProps(props.color)}>Starting chat…</Text>
-        </Box>
-      ) : (
-        <HomeView
-          snapshot={snapshot}
-          input={input}
-          nowMs={props.nowMs()}
-          cols={size.cols}
-          rows={size.rows}
-          color={props.color}
-        />
-      )}
-    </Box>
+    <HomeView
+      snapshot={snapshot}
+      input={input}
+      errorText={errorText}
+      nowMs={props.nowMs()}
+      cols={size.cols}
+      rows={size.rows}
+      color={props.color}
+    />
   );
 }
 

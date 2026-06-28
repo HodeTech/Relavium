@@ -115,7 +115,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             {'> '}
             {sanitizeInline(input)}
           </Text>
-          <Text inverse> </Text>
+          {color && <Text inverse> </Text>}
         </Text>
       )}
 

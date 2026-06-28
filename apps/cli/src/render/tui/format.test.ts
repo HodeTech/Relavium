@@ -29,6 +29,11 @@ describe('formatCostShort (2.5.B Home)', () => {
     expect(formatCostShort(120_000_000)).toBe('$1.2000');
     expect(formatCostShort(5_000_000)).toBe('$0.0500');
   });
+
+  it('is "free" (never "$NaN"/"$∞") for a non-finite value — the Number.isFinite guard holds', () => {
+    expect(formatCostShort(Number.NaN)).toBe('free');
+    expect(formatCostShort(Number.POSITIVE_INFINITY)).toBe('free'); // positive but non-finite
+  });
 });
 
 describe('formatDuration', () => {

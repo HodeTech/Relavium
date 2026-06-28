@@ -26,13 +26,16 @@ import { colorProps, dimProps } from './projection.js';
  * Every dynamic row is `wrap="truncate-end"` — a long title / slug / message truncates with an ellipsis at the
  * terminal edge rather than soft-wrapping into a second physical row (which would shatter the glanceable strip),
  * mirroring the sibling run TUI. An overdue (expired) gate is escalated yellow → red so the most time-critical
- * item in "Attention required" catches the eye.
+ * item in "Attention required" catches the eye. A build-failure banner is rendered adjacent to the prompt (not
+ * at the top) so it stays in view even when a full strip scrolls the header off a short terminal.
  */
 
 interface HomeViewProps {
   readonly snapshot: HomeSnapshot;
   /** The current prompt buffer (owned by the `RootApp`). */
   readonly input: string;
+  /** A build-failure message to show above the prompt (cleared on the next submit / a clean return). */
+  readonly errorText?: string | undefined;
   /** Injected clock for the relative-time labels (the projection is clock-free). */
   readonly nowMs: number;
   readonly cols: number;
@@ -48,7 +51,11 @@ function Section(
   if (props.lines.length === 0) return null;
   return (
     <Box flexDirection="column" marginLeft={2}>
-      {props.title.length > 0 && <Text {...dimProps(props.color)}>{props.title}</Text>}
+      {props.title.length > 0 && (
+        <Text {...dimProps(props.color)} wrap="truncate-end">
+          {props.title}
+        </Text>
+      )}
       {props.lines.map((line, i) => (
         <Text
           key={i}
@@ -63,7 +70,8 @@ function Section(
   );
 }
 
-/** The live prompt line — a sanitized echo of the buffer with a trailing block cursor so it reads as a live field. */
+/** The live prompt line — a sanitized echo of the buffer with a trailing block cursor so it reads as a live
+ *  field. The inverse-space cursor is a terminal attribute, so it is gated on `color` like every other style. */
 function Prompt(props: Readonly<{ input: string; color: boolean }>): ReactElement {
   return (
     <Text wrap="truncate-end">
@@ -71,13 +79,13 @@ function Prompt(props: Readonly<{ input: string; color: boolean }>): ReactElemen
         {'> '}
         {sanitizeInline(props.input)}
       </Text>
-      <Text inverse> </Text>
+      {props.color && <Text inverse> </Text>}
     </Text>
   );
 }
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, input, nowMs, cols, rows, color } = props;
+  const { snapshot, input, errorText, nowMs, cols, rows, color } = props;
 
   // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
   // until a resize arrives, so the user must still be able to leave without resizing.
@@ -105,7 +113,9 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
   return (
     <Box flexDirection="column">
-      <Text {...colorProps(color, 'cyan')}>relavium</Text>
+      <Text {...colorProps(color, 'cyan')} bold wrap="truncate-end">
+        relavium
+      </Text>
 
       {snapshot.isEmpty ? (
         <Box flexDirection="column" marginLeft={2} marginTop={1}>
@@ -116,14 +126,16 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
             Start an agent chat, then graduate it into a saved workflow.
           </Text>
           <Text {...dimProps(color)} wrap="truncate-end">
-            Try: summarize the files in this folder
+            e.g. “summarize the files in this folder”
           </Text>
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
           {(gateRows.length > 0 || failed.length > 0) && (
             <Box flexDirection="column" marginBottom={1}>
-              <Text {...colorProps(color, 'yellow')}>Attention required</Text>
+              <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+                Attention required
+              </Text>
               <Box flexDirection="column" marginLeft={2}>
                 {gateRows.map((g, i) => (
                   <Text
@@ -144,16 +156,28 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               </Box>
             </Box>
           )}
-          <Text {...dimProps(color)}>Continue</Text>
+          <Text {...dimProps(color)} wrap="truncate-end">
+            Continue
+          </Text>
           <Section title="Sessions" lines={sessions} color={color} />
           <Section title="Runs" lines={runs} color={color} />
           <Section title="Agents" lines={agents} color={color} />
         </Box>
       )}
 
+      {errorText !== undefined && (
+        <Box marginTop={1}>
+          <Text {...colorProps(color, 'red')} wrap="truncate-end">
+            couldn’t start the chat: {errorText}
+          </Text>
+        </Box>
+      )}
+
       <Box marginTop={1} flexDirection="column">
         <Prompt input={input} color={color} />
-        <Text {...dimProps(color)}>type a message to start a new chat · Ctrl-C to exit</Text>
+        <Text {...dimProps(color)} wrap="truncate-end">
+          type a message to start a new chat · Ctrl-C to exit
+        </Text>
       </Box>
     </Box>
   );
