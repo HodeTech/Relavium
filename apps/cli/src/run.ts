@@ -1,5 +1,7 @@
 import { CommanderError } from 'commander';
 
+import { driveHome, type HomeDeps } from './home/drive-home.js';
+import { shouldOpenHome } from './home/should-open-home.js';
 import { CliError, toUserFacing } from './process/errors.js';
 import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
 import type { CliIo } from './process/io.js';
@@ -11,6 +13,9 @@ import {
 import { renderError } from './process/render-error.js';
 import { buildProgram } from './program.js';
 
+/** The bare-invocation Home opener — injectable so a test can assert the TTY gate routes here (default {@link driveHome}). */
+export type OpenHome = (deps: HomeDeps) => Promise<ExitCode>;
+
 /**
  * The CLI's top-level boundary: extract the position-independent global flags, resolve them, build the
  * program with the command runtime context, parse the remaining argv (node-style), and translate every
@@ -18,7 +23,11 @@ import { buildProgram } from './program.js';
  * A command's exit code is set on the shared `result` holder; pre-parse and parse faults are rendered
  * here. Designed to **never reject**.
  */
-export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode> {
+export async function run(
+  argv: readonly string[],
+  io: CliIo,
+  openHome: OpenHome = driveHome,
+): Promise<ExitCode> {
   const { raw, rest, error: extractError } = extractGlobalOptions(argv);
   // `raw` is fully populated by extraction (it never throws), so the render honors any
   // `--json`/`--verbose` even when a later global flag is the thing that failed.
@@ -43,9 +52,18 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode>
     context: { io, global, result },
   });
 
-  // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`):
-  // print help and exit 0 rather than letting commander error.
+  // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`).
   if (!rest.slice(2).some((token) => token !== '--')) {
+    // Open the interactive Home in a genuine TTY (2.5.B / ADR-0054); every non-interactive path keeps the
+    // byte-for-byte help + exit 0 meta-op (ADR-0049). A Home build/config fault renders like a command fault.
+    if (shouldOpenHome({ stdoutIsTty: io.stdoutIsTty, stdinIsTty: io.stdinIsTty, json: global.json, env: io.env })) {
+      try {
+        return await openHome({ io, global });
+      } catch (err) {
+        renderError(err, renderCtx, io);
+        return toUserFacing(err).exitCode;
+      }
+    }
     io.writeOut(program.helpInformation());
     return EXIT_CODES.success;
   }
