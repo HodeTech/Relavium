@@ -2,7 +2,13 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-05
-- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0025-agent-surface-refines-desktop-scope.md](0025-agent-surface-refines-desktop-scope.md), [0026-session-export-to-workflow.md](0026-session-export-to-workflow.md), [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md), [../reference/contracts/sse-event-schema.md](../reference/contracts/sse-event-schema.md), [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)
+- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0025-agent-surface-refines-desktop-scope.md](0025-agent-surface-refines-desktop-scope.md), [0026-session-export-to-workflow.md](0026-session-export-to-workflow.md), [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md), [../reference/contracts/sse-event-schema.md](../reference/contracts/sse-event-schema.md), [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md), [0050-cli-history-db-at-rest-posture.md](0050-cli-history-db-at-rest-posture.md)
+
+> Amended 2026-06-28: the `history.db` is **not** encrypted at rest on the **CLI** surface — it is
+> guarded by `0700`/`0600` OS file permissions with API keys in the keychain only (see
+> [ADR-0050](0050-cli-history-db-at-rest-posture.md)). Only the **desktop** surface uses a SQLCipher-encrypted
+> store. The Context below originally said "encrypted" without that surface distinction; read it as
+> surface-specific.
 
 ## Context
 
@@ -28,8 +34,9 @@ engine before any engine code exists — the cheapest possible moment.
   the event bus — rather than a parallel implementation;
 - emits on a **`session:*` event namespace**, disjoint from the workflow `run:*` namespace, on the
   same bus (the canonical event home is [sse-event-schema.md](../reference/contracts/sse-event-schema.md));
-- **auto-persists and is resumable** — sessions and their messages live in the existing encrypted
-  `history.db` (new `agent_sessions` + `session_messages` tables; see
+- **auto-persists and is resumable** — sessions and their messages live in the existing
+  `history.db` (CLI: unencrypted at rest, `0700`/`0600`-guarded per [ADR-0050](0050-cli-history-db-at-rest-posture.md);
+  desktop: SQLCipher-encrypted) (new `agent_sessions` + `session_messages` tables; see
   [database-schema.md](../reference/desktop/database-schema.md));
 - binds **one agent (and its `fallback_chain`) per session** in Phase 1 — no mid-session agent
   switching; multi-agent orchestration remains a workflow concern;
