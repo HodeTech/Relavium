@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,9 +41,12 @@ describe('assembleToolEnv', () => {
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
     });
-    const written = await host.fs!.writeFile('out.txt', 'data', {});
+    const fs = host.fs;
+    expect(fs).toBeDefined();
+    if (fs === undefined) return;
+    const written = await fs.writeFile('out.txt', 'data', {});
     expect(written.bytesWritten).toBe(4);
-    expect((await host.fs!.readFile('out.txt', {})).content).toBe('data');
+    expect((await fs.readFile('out.txt', {})).content).toBe('data');
   });
 
   it('does NOT wire egress or os in 2.5.A (deferred to 2.5.E)', () => {
@@ -59,16 +62,24 @@ describe('assembleToolEnv', () => {
   it('clamps the `full` tier to `project` for chat (read-only does not stop whole-FS exfiltration)', async () => {
     const outside = join(workspace, '..', 'outside-clamp');
     await rm(outside, { recursive: true, force: true }).catch(() => undefined);
-    const { mkdir } = await import('node:fs/promises');
     await mkdir(outside, { recursive: true });
     await writeFile(join(outside, 'secret.txt'), 'SECRET');
+    await writeFile(join(workspace, 'in.txt'), 'INSIDE');
     try {
-      // chat-read-only + full ⇒ clamped to project (workspace-only): the outside read is REJECTED.
+      // chat-read-only + full ⇒ clamped to project (workspace-only): the OUTSIDE read is REJECTED, but an
+      // IN-workspace read still works (so the clamp landed at project/workspace-only, not something stricter).
       const chat = assembleToolEnv({ profile: 'chat-read-only', fsScopeTier: 'full', workspaceDir: workspace });
-      await expect(chat.host.fs!.readFile(join(outside, 'secret.txt'), {})).rejects.toThrow();
+      const chatFs = chat.host.fs;
+      expect(chatFs).toBeDefined();
+      if (chatFs === undefined) return;
+      await expect(chatFs.readFile(join(outside, 'secret.txt'), {})).rejects.toThrow();
+      expect((await chatFs.readFile('in.txt', {})).content).toBe('INSIDE');
       // workflow-read-write + full ⇒ NOT clamped (author-trusted): the outside read succeeds.
       const run = assembleToolEnv({ profile: 'workflow-read-write', fsScopeTier: 'full', workspaceDir: workspace });
-      expect((await run.host.fs!.readFile(join(outside, 'secret.txt'), {})).content).toBe('SECRET');
+      const runFs = run.host.fs;
+      expect(runFs).toBeDefined();
+      if (runFs === undefined) return;
+      expect((await runFs.readFile(join(outside, 'secret.txt'), {})).content).toBe('SECRET');
     } finally {
       await rm(outside, { recursive: true, force: true }).catch(() => undefined);
     }

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -259,6 +259,40 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
 
     await built.closeMcp?.();
     expect(closed).toBe(1);
+  });
+
+  it('MERGE-not-replace: a session with MCP keeps the fs arm too — read_file AND an MCP tool both dispatch', async () => {
+    // The keystone 2.5.A fix (ADR-0055): the inbound-MCP arm is MERGED onto the factory fs+process host, never
+    // REPLACING it. Proven end-to-end: in ONE session, read_file routes via host.fs (real file) AND mcp_fs_read
+    // routes via host.mcp — both succeed, so neither arm displaced the other.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-merge-'));
+    writeFileSync(join(workspace, 'r.txt'), 'merged');
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => Promise.resolve({ content: [{ type: 'text', text: 'mcp body' }], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeMcpAgent(), // grants read_file + declares the fs MCP server
+      providers: scriptedResolver([
+        callWithArgs('c1', 'read_file', { path: 'r.txt' }),
+        toolUseTurn('c2', 'mcp_fs_read'),
+        textTurn('done'),
+      ]),
+      startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+    });
+    built.session.start();
+    await built.session.sendMessage('read both ways');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const results = events.flatMap((e) =>
+      e.type === 'agent:tool_result' ? [{ id: e.toolId, ok: e.success }] : [],
+    );
+    expect(results).toContainEqual({ id: 'read_file', ok: true }); // host.fs survived the merge
+    expect(results).toContainEqual({ id: 'mcp_fs_read', ok: true }); // host.mcp survived the merge
+    await built.closeMcp?.();
   });
 
   it('leaves closeMcp undefined + mcpSkipped empty when the agent declares no mcp_servers', async () => {
@@ -704,8 +738,9 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_unavailable', // the read-only fs writeFile fail-closed; never wrote (proven by no file on disk)
+      'tool_unavailable', // the read-only fs writeFile fail-closed (EA1)
     );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // it fail-closed BEFORE any write — no file on disk
   });
 
   it('the advertise-filter drops an unwired tool from the EFFECTIVE grant; the original keeps it', async () => {

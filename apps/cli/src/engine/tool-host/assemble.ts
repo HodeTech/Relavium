@@ -40,14 +40,22 @@ export interface AssembledToolEnv {
   readonly policy: ToolPolicy;
 }
 
+/**
+ * The EFFECTIVE fs-scope tier for a chat (read-only) session: `full` clamps to `project` (workspace-only).
+ * SECURITY — read-only does NOT neutralize `full` for the lowest-trust surface: an unjailed READ can
+ * exfiltrate `~/.ssh` / `~/.aws/credentials` back to the model/provider. `full` stays for the author-trusted
+ * `workflow-read-write` profile. (Tracked: a 2.5.E approval-gated `full` chat.) Exported so the caller can
+ * stamp the SAME effective tier on the `SessionContext.fsScope` it persists — keeping the dispatch-context
+ * tier and the host jail consistent (ADR-0055's "three channels").
+ */
+export function clampChatTier(tier: FsScopeTier): FsScopeTier {
+  return tier === 'full' ? 'project' : tier;
+}
+
 /** Assemble the `ToolHost` + chat-default `ToolPolicy` for a profile. Pure construction — no I/O here. */
 export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv {
   const readOnly = opts.profile === 'chat-read-only';
-  // SECURITY: `full` is unjailed. Read-only does NOT neutralize it for chat — an unjailed READ can exfiltrate
-  // `~/.ssh`, `~/.aws/credentials`, etc. back to the model/provider. So the lowest-trust surface (a chat
-  // session, possibly a third-party `--agent`) is clamped to `project` (workspace-only); `full` stays
-  // available to the author-trusted `workflow-read-write` profile. (Tracked: a 2.5.E approval-gated `full` chat.)
-  const tier: FsScopeTier = readOnly && opts.fsScopeTier === 'full' ? 'project' : opts.fsScopeTier;
+  const tier: FsScopeTier = readOnly ? clampChatTier(opts.fsScopeTier) : opts.fsScopeTier;
   const host: ToolHost = {
     fs: createNodeFsCapability({
       tier,

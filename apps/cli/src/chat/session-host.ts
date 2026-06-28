@@ -27,7 +27,7 @@ import type {
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { connectAgentMcp } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
-import { assembleToolEnv, wiredToolIds } from '../engine/tool-host/assemble.js';
+import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveChatAgent } from './agent-source.js';
@@ -213,7 +213,10 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   });
   const context: SessionContext = {
     workingDir: opts.cwd,
-    fsScopeTier: opts.chat.fsScope ?? DEFAULT_FS_SCOPE,
+    // The EFFECTIVE tier (full→project clamped for the read-only chat surface) — the SAME value the factory
+    // jails the host to, so the dispatch-context `fsScope` and the host jail stay consistent (ADR-0055), and
+    // the persisted `SessionContext.fsScope` records what the session actually ran at (a resume re-reads it).
+    fsScopeTier: clampChatTier(opts.chat.fsScope ?? DEFAULT_FS_SCOPE),
     ...(opts.variables === undefined ? {} : { variables: opts.variables }),
   };
 

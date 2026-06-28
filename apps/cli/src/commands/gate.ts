@@ -216,6 +216,10 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
+      // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
+      // to the resumer's cwd at the resolved `fs_scope` — so a tool-using agent node on the FAR side of a human
+      // gate dispatches identically to an uninterrupted run (checkpoint/resume parity), not `tool_unavailable`.
+      toolEnv: { workspaceDir: deps.global.cwd, fsScopeTier: config.fsScope ?? 'sandboxed' },
       host: createCliHost(store, { checkpointer, media: wiring.media }),
       resolveMediaSurface: wiring.resolveMediaSurface,
       ...(wiring.mediaCostEstimate === undefined
