@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -117,7 +117,14 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
 
   it('REJECTS a forbidden declared env var (injection vectors + PATH) — fatal tool_denied', async () => {
     const fs = proc();
-    for (const env of [{ NODE_OPTIONS: '--require /tmp/evil.js' }, { LD_PRELOAD: '/tmp/evil.so' }, { DYLD_INSERT_LIBRARIES: '/tmp/x' }, { PATH: '/nonexistent' }, { GIT_SSH_COMMAND: 'evil' }]) {
+    for (const env of [
+      { NODE_OPTIONS: '--require /tmp/evil.js' },
+      { LD_PRELOAD: '/tmp/evil.so' }, // exact-set member
+      { LD_CUSTOM_INJECTOR: '/evil' }, // only the `LD_` PREFIX arm blocks this — exercises it independently
+      { DYLD_INSERT_LIBRARIES: '/tmp/x' }, // only the `DYLD_` prefix arm
+      { PATH: '/nonexistent' },
+      { GIT_SSH_COMMAND: 'evil' },
+    ]) {
       await expect(fs.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(ProcessDeniedError);
     }
   });
@@ -205,8 +212,11 @@ describe('createNodeProcessCapability — cwd + streams + signal exit', () => {
     expect(await realpath(r.stdout)).toBe(await realpath(join(workspace, 'sub')));
   });
 
-  it('rejects a cwd that escapes the workspace — fatal tool_denied', async () => {
+  it('rejects a cwd that escapes the workspace — relative AND absolute — fatal tool_denied', async () => {
     await expect(proc().spawn(NODE, ['-e', '1'], {}, { cwd: '../../..' })).rejects.toBeInstanceOf(
+      ProcessDeniedError,
+    );
+    await expect(proc().spawn(NODE, ['-e', '1'], {}, { cwd: '/tmp' })).rejects.toBeInstanceOf(
       ProcessDeniedError,
     );
   });
@@ -228,4 +238,24 @@ describe('createNodeProcessCapability — cwd + streams + signal exit', () => {
     const r = await proc().spawn(NODE, ['-e', 'process.kill(process.pid, "SIGTERM")'], {}, {});
     expect(r.exitCode).toBe(1);
   });
+
+  // POSIX only — Windows has no process groups; the single-child kill is the documented best-effort there.
+  it.skipIf(process.platform === 'win32')(
+    'kills a forked GRANDCHILD on abort (process-group SIGKILL) — its marker file is never written',
+    async () => {
+      const marker = join(workspace, 'grandchild-alive');
+      // The spawned parent forks a same-group grandchild that would write `marker` after 500ms; the parent
+      // then stays alive. Killing only the parent PID would orphan (not kill) the grandchild — the
+      // process-group SIGKILL must reap it, so the marker must NOT appear.
+      const parentScript = `const { spawn } = require('node:child_process');
+        spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").writeFileSync(' + ${JSON.stringify(JSON.stringify(marker))} + ', "1"), 500)'], { stdio: 'ignore' });
+        setTimeout(() => {}, 60000);`;
+      const { signal, abort } = controllableSignal();
+      const pending = proc().spawn(NODE, ['-e', parentScript], {}, {}, signal);
+      setTimeout(abort, 150); // abort after the grandchild has been forked, before its 500ms write
+      await expect(pending).rejects.toThrow(/abort/);
+      await new Promise((r) => setTimeout(r, 700)); // wait past the would-be write window
+      await expect(access(marker)).rejects.toThrow(); // the grandchild was reaped — no marker
+    },
+  );
 });
