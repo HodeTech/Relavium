@@ -4,6 +4,7 @@ import type { HomeGateRow, HomeRunRow, HomeSessionRow } from '../../home/home-st
 import {
   agentLabel,
   expiryLabel,
+  gateExpired,
   gateLabel,
   homeFitsTerminal,
   HOME_MIN_COLS,
@@ -98,8 +99,9 @@ describe('row labels', () => {
     expect(sessionLabel(sessionRow(), NOW)).toBe(
       'Plan the launch  ·  planner  ·  5m ago  ·  $1.2000',
     );
+    // Untitled ⇒ the agent slug is the label, shown ONCE (not doubled as title-fallback + trailing field).
     expect(sessionLabel(sessionRow({ title: undefined }), NOW)).toBe(
-      'planner  ·  planner  ·  5m ago  ·  $1.2000',
+      'planner  ·  5m ago  ·  $1.2000',
     );
   });
 
@@ -149,6 +151,22 @@ describe('row labels', () => {
     expect(injected).not.toMatch(/[\n\t]/);
     expect(injected).not.toContain('\x1b');
     expect(injected).toContain('Approve? FAKE PROMPT:');
+  });
+
+  it('gateLabel + gateExpired flag an overdue gate (the renderer escalates it yellow → red)', () => {
+    const base: HomeGateRow = {
+      runId: 'r1',
+      workflowSlug: 'deploy',
+      gateId: 'g1',
+      gateType: 'approval',
+      nodeId: 'g',
+      message: 'ship it?',
+      expiresAt: ago(MIN), // a minute past its deadline
+    };
+    expect(gateLabel(base, NOW)).toBe('deploy  ·  approval  ·  ship it?  ·  expired');
+    expect(gateExpired(base, NOW)).toBe(true);
+    expect(gateExpired({ ...base, expiresAt: ahead(5 * MIN) }, NOW)).toBe(false); // still has time
+    expect(gateExpired({ ...base, expiresAt: undefined }, NOW)).toBe(false); // no deadline ⇒ not overdue
   });
 
   it('agentLabel: slug · last used', () => {

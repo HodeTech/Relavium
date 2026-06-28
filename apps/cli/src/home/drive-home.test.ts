@@ -148,10 +148,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(session.shouldStop()).toBe(false);
 
     // persister.start() inserted the session row (the default chat agent slug) on the shared store.
-    const persisted = createSessionStore(client.db).loadSession('sess-home-1');
-    expect(persisted?.id).toBe('sess-home-1');
+    const sessions = createSessionStore(client.db);
+    expect(sessions.loadSession('sess-home-1')?.id).toBe('sess-home-1');
+    expect(sessions.loadSession('sess-home-1')?.status).toBe('active');
 
-    await expect(session.teardown()).resolves.toBeUndefined(); // best-effort teardown never throws
+    // teardown marks the row 'ended' (the session's sole terminal) and is idempotent — a second call (an
+    // error-path teardown racing an endChat) neither throws nor re-mutates.
+    await expect(session.teardown()).resolves.toBeUndefined();
+    expect(sessions.loadSession('sess-home-1')?.status).toBe('ended');
+    await expect(session.teardown()).resolves.toBeUndefined();
+    expect(sessions.loadSession('sess-home-1')?.status).toBe('ended');
+
     props.onExit(); // now let the mount resolve
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });

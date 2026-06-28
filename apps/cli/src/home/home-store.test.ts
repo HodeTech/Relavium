@@ -168,6 +168,30 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     expect(snap.recentRuns).toEqual([]); // the gated run is not repeated in Continue
   });
 
+  it('orders gates across MULTIPLE paused runs by the run’s recency (newest paused run’s gate first)', async () => {
+    // Two paused-with-human-gate runs at different times; the Attention gate order must track the paused run’s
+    // created_at DESC (the documented Phase-1 proxy), so the newest run’s gate leads — a guard against an
+    // accidental reorder of the underlying paused-run list.
+    await seedRun(client.db, {
+      slug: 'older',
+      runId: 'run-old',
+      state: 'paused',
+      atMs: T0 + 1_000,
+      gate: { gateId: 'g-old', gateType: 'approval', message: 'approve old?' },
+    });
+    await seedRun(client.db, {
+      slug: 'newer',
+      runId: 'run-new',
+      state: 'paused',
+      atMs: T0 + 5_000,
+      gate: { gateId: 'g-new', gateType: 'approval', message: 'approve new?' },
+    });
+
+    const snap = buildHomeSnapshot(deps);
+    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g-new', 'g-old']);
+    expect(snap.attention.gates.map((g) => g.runId)).toEqual(['run-new', 'run-old']);
+  });
+
   it('on a run with BOTH a budget and a human gate: surfaces only the human gate, excludes the run from Continue', async () => {
     await seedRun(client.db, {
       slug: 'a',

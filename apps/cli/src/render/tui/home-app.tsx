@@ -3,18 +3,28 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } 
 
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { ChatView } from './chat-ink.js';
+import { sanitizeInline } from './chat-projection.js';
 import { applyChatEdit, reduceChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
-import { colorProps, dimProps } from './projection.js';
+import { reduceHomeKey } from './home-input.js';
 import { HomeView } from './home-view.js';
+import { colorProps, dimProps } from './projection.js';
 
 /**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
  * `home | loading | chat` mode machine. The Home strip and the chat region render conditionally in the SAME tree
  * (never two mounted apps), so the raw-mode owner never conflicts. On a Home submit it asks `driveHome` to build
- * a chat session AFTER the mount (an explicit "Starting…" loading state); a build failure routes back to Home
- * with a banner; a chat that ends returns to a freshly-read Home. The clock + terminal size are injected so the
- * strip degrade (<80×24) and the relative times are testable.
+ * a chat session AFTER the mount (an explicit "Starting…" loading state that echoes the pending message); a build
+ * failure routes back to Home with a banner; a chat that ends returns to a freshly-read Home. The clock + terminal
+ * size are injected so the strip degrade (<80×24) and the relative times are testable.
+ *
+ * Lifecycle invariants this shell upholds (each closes a reviewed defect):
+ * - A turn that throws tears its session down BEFORE propagating, so the spawned MCP child / frame loop / session
+ *   row are never orphaned on the error path (`driveHome` itself holds no session handle).
+ * - `endChat` is single-shot per session, so a `/cancel` racing a settling turn cannot double-tear-down or clobber
+ *   a freshly-started session.
+ * - Ctrl-C escapes the `loading` state, so a hung build is never an unkillable hang; and a `startChat` that
+ *   resolves after the user has exited reclaims (tears down) the just-built session instead of mounting it.
  */
 
 const FRAME_MS = 80;
@@ -27,7 +37,7 @@ export interface HomeChatSession {
   readonly processLine: (line: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` has run — the chat ends and the Home returns. */
   readonly shouldStop: () => boolean;
-  /** Best-effort teardown of THIS chat (persister + frame loop + subscription + MCP), never the shared db. */
+  /** Best-effort, IDEMPOTENT teardown of THIS chat (persister + frame loop + subscription + MCP), never the shared db. */
   readonly teardown: () => Promise<void>;
 }
 
@@ -68,6 +78,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const [snapshot, setSnapshot] = useState<HomeSnapshot>(() => props.homeStore.read());
   const [session, setSession] = useState<HomeChatSession | undefined>();
   const [errorText, setErrorText] = useState<string | undefined>();
+  const [pendingMessage, setPendingMessage] = useState('');
   const [size, setSize] = useState(props.getSize);
   // The prompt buffer with a ref shadow (see ChatApp): a coalesced stdin chunk dispatches synchronously with no
   // render flush, so reading `inputRef.current` keeps edits + a same-chunk submit on the latest committed value.
@@ -81,25 +92,48 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     });
   };
   const cancelFired = useRef(false);
+  // True once the Home has exited — guards async continuations (a late `startChat` resolve / reject) from mounting
+  // into or mutating an exited tree.
+  const exited = useRef(false);
+  // The session currently being torn down — makes `endChat` single-shot so two settled turn promises (a `/cancel`
+  // racing the turn it aborts) cannot double-tear-down or clobber a freshly-started session.
+  const tearingDown = useRef<HomeChatSession | undefined>(undefined);
 
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
   useEffect(() => props.subscribeResize(() => setSize(props.getSize())), [props]);
 
+  const exitHome = (): void => {
+    if (exited.current) return; // idempotent — a second Ctrl-C (or a race) must not resolve `driveHome` twice
+    exited.current = true;
+    props.onExit();
+  };
+
   const endChat = (ended: HomeChatSession): void => {
+    if (tearingDown.current === ended) return; // already ending this session (the two-pending-promise race)
+    tearingDown.current = ended;
     void ended.teardown().finally(() => {
+      tearingDown.current = undefined;
       cancelFired.current = false;
       setSession(undefined);
       setInput(() => '');
+      setErrorText(undefined); // a stale build-failure banner must not haunt a clean return from a good chat
+      setPendingMessage('');
       setSnapshot(props.homeStore.read()); // the just-finished chat now shows in the refreshed strip
       setMode('home');
     });
   };
 
-  // Drive one chat turn from a submitted line; when it settles, end the chat if `/exit`/`/cancel` ran.
+  // Drive one chat turn from a submitted line; on success end the chat if `/exit`/`/cancel` ran, on an escaping
+  // error tear the session down BEFORE propagating so its MCP child / frame loop / row are never orphaned.
   const sendChatLine = (active: HomeChatSession, line: string): void => {
-    void active.processLine(line).then(() => {
-      if (active.shouldStop()) endChat(active);
-    }, props.onError);
+    void active.processLine(line).then(
+      () => {
+        if (active.shouldStop()) endChat(active);
+      },
+      (err: unknown) => {
+        void active.teardown().finally(() => props.onError(err));
+      },
+    );
   };
 
   const submitHome = (message: string): void => {
@@ -107,23 +141,29 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     setInput(() => '');
     if (trimmed.length === 0) return; // an empty prompt stays on the Home (no chat)
     setErrorText(undefined);
+    setPendingMessage(trimmed); // echoed under "Starting chat…" so the typed message never visually vanishes
     setMode('loading');
     void props.startChat().then(
       (built) => {
+        if (exited.current) {
+          void built.teardown().catch(() => undefined); // exited mid-build ⇒ reclaim the just-built session
+          return;
+        }
         setSession(built);
         setMode('chat');
         sendChatLine(built, trimmed); // the first turn streams in the chat region
       },
       (err: unknown) => {
+        if (exited.current) return;
         setErrorText(err instanceof Error ? err.message : String(err));
+        setPendingMessage('');
         setMode('home'); // route a build failure back to Home with the banner
       },
     );
   };
 
   useInput((char, key) => {
-    if (mode === 'loading') return; // ignore typing while the session builds (Step 3 adds an abort)
-
+    // Chat mode: delegate to the chat reducer (which knows the running state) — Ctrl-C maps to /cancel there.
     if (mode === 'chat' && session !== undefined) {
       const running = session.store.getSnapshot().state.status === 'running';
       const action = reduceChatKey(char, key, inputRef.current, running);
@@ -145,23 +185,29 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         case 'none':
           return;
       }
+      return;
     }
 
-    // Home mode: Ctrl-C exits the Home (clean → exit 0); Return starts a chat; else edit the prompt buffer.
-    if (key.ctrl && char === 'c') {
-      props.onExit();
+    // Home + loading modes share the Home reducer. Ctrl-C always exits (so a hung build is never unkillable);
+    // while loading, every OTHER key is ignored (the session is still building — Step 3 adds an in-build abort).
+    const action = reduceHomeKey(char, key);
+    if (action.kind === 'exit') {
+      exitHome();
       return;
     }
-    if (key.return) {
-      submitHome(inputRef.current);
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setInput((current) => current.slice(0, -1));
-      return;
-    }
-    if (char.length > 0 && !key.ctrl && !key.meta) {
-      setInput((current) => current + char);
+    if (mode === 'loading') return;
+    switch (action.kind) {
+      case 'submit':
+        submitHome(inputRef.current);
+        return;
+      case 'append':
+        setInput((current) => current + action.char);
+        return;
+      case 'backspace':
+        setInput((current) => current.slice(0, -1));
+        return;
+      case 'none':
+        return;
     }
   });
 
@@ -178,7 +224,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         </Box>
       )}
       {mode === 'loading' ? (
-        <Text {...dimProps(props.color)}>Starting chat…</Text>
+        <Box flexDirection="column">
+          <Text {...colorProps(props.color, 'cyan')} wrap="truncate-end">
+            {'> '}
+            {sanitizeInline(pendingMessage)}
+          </Text>
+          <Text {...dimProps(props.color)}>Starting chat…</Text>
+        </Box>
       ) : (
         <HomeView
           snapshot={snapshot}

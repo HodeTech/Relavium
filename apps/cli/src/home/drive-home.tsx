@@ -103,8 +103,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     frame.unref();
     persister.start();
     built.session.start();
+    let torn = false;
     const teardown = async (): Promise<void> => {
-      cancelOnce(); // the session's sole terminal (idempotent) — persister marks the row 'ended'
+      if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
+      torn = true;
+      cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
       clearInterval(frame);
       unsubscribe();
       try {

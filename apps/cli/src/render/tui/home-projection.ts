@@ -61,6 +61,11 @@ export function expiryLabel(expiresAt: string | undefined, nowMs: number): strin
   return `expires ${relativeIn(deadlineMs - nowMs)}`;
 }
 
+/** Whether a gate's deadline is already past — the renderer escalates an overdue gate from yellow to red. */
+export function gateExpired(row: HomeGateRow, nowMs: number): boolean {
+  return expiryLabel(row.expiresAt, nowMs) === 'expired';
+}
+
 /** "in 30s" / "in 5m" / "in 2h" / "in 3d" — the forward-looking counterpart of {@link relativeTime}. */
 function relativeIn(deltaMs: number): string {
   const sec = Math.max(1, Math.floor(deltaMs / 1000)); // floor a sub-second remaining to "in 1s", never "in 0s"
@@ -74,17 +79,12 @@ function relativeIn(deltaMs: number): string {
 
 const SEP = '  ·  ';
 
-/** A recent session row → its glanceable line: title (or agent) · agent · when · cost. An UNTITLED session
- *  shows the agent slug as both the title fallback and the trailing agent field (by design — the row stays
- *  uniform: a label, then the agent it ran). */
+/** A recent session row → its glanceable line: title · agent · when · cost. An UNTITLED session shows the agent
+ *  slug ONCE (the slug is its own label) rather than doubling it as a title fallback AND the trailing field. */
 export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
-  const title = sanitizeInline(row.title ?? row.agentSlug);
-  return [
-    title,
-    row.agentSlug,
-    relativeTime(row.updatedAt, nowMs),
-    formatCostShort(row.totalCostMicrocents),
-  ]
+  // Titled: the user-derived label, then the agent it ran. Untitled: just the agent slug (shown once).
+  const head = row.title === undefined ? [row.agentSlug] : [sanitizeInline(row.title), row.agentSlug];
+  return [...head, relativeTime(row.updatedAt, nowMs), formatCostShort(row.totalCostMicrocents)]
     .filter((s) => s.trim().length > 0) // a sanitized-to-whitespace field must not leave a dangling separator
     .join(SEP);
 }

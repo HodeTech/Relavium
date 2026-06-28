@@ -107,11 +107,15 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       )}
 
       {/* The input prompt (idle) and the persistent footer. The live input echo is sanitized so a paste
-          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. */}
+          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. A trailing
+          inverse-space block cursor marks the prompt as a live field (shared with the Home's prompt). */}
       {!running && (
-        <Text {...colorProps(color, 'cyan')}>
-          {'> '}
-          {sanitizeInline(input)}
+        <Text>
+          <Text {...colorProps(color, 'cyan')}>
+            {'> '}
+            {sanitizeInline(input)}
+          </Text>
+          <Text inverse> </Text>
         </Text>
       )}
 
