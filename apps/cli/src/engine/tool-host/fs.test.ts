@@ -1,11 +1,19 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ToolUnavailableError } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createNodeFsCapability, FsCapabilityError, type NodeFsCapabilityConfig } from './fs.js';
+import {
+  createNodeFsCapability,
+  FsCapabilityError,
+  FsScopeDeniedError,
+  type NodeFsCapabilityConfig,
+} from './fs.js';
+
+/** An aborted signal for cancellation tests (AbortSignalLike: aborted + the two listener no-ops). */
+const ABORTED = { aborted: true, addEventListener: () => undefined, removeEventListener: () => undefined };
 
 /**
  * The node `fs` capability is the 2.5.A security surface — the tests are heavy on the JAIL: traversal,
@@ -49,17 +57,23 @@ describe('createNodeFsCapability — read (jailed)', () => {
     expect((await sandboxed().readFile('sub/x.txt', {})).content).toBe('deep');
   });
 
-  it('rejects a `..` traversal that escapes the workspace', async () => {
+  it('rejects a `..` traversal that escapes the workspace — FATAL tool_denied, not retryable', async () => {
     await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
-    await expect(sandboxed().readFile('../outside/secret.txt', {})).rejects.toBeInstanceOf(
-      FsCapabilityError,
-    );
+    const err: unknown = await sandboxed()
+      .readFile('../outside/secret.txt', {})
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FsScopeDeniedError);
+    // A deterministic scope denial must be fatal so it never burns the node-retry budget (error-handling.md).
+    if (err instanceof FsScopeDeniedError) {
+      expect(err.code).toBe('tool_denied');
+      expect(err.retryable).toBe(false);
+    }
   });
 
   it('rejects an absolute path outside the workspace', async () => {
     await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
     await expect(sandboxed().readFile(join(outside, 'secret.txt'), {})).rejects.toBeInstanceOf(
-      FsCapabilityError,
+      FsScopeDeniedError,
     );
   });
 
@@ -67,7 +81,16 @@ describe('createNodeFsCapability — read (jailed)', () => {
     await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
     await symlink(join(outside, 'secret.txt'), join(workspace, 'link.txt'));
     // The path is lexically in-workspace, but realpath resolves it to `outside` — the jail must reject it.
-    await expect(sandboxed().readFile('link.txt', {})).rejects.toBeInstanceOf(FsCapabilityError);
+    await expect(sandboxed().readFile('link.txt', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('rejects reading through a symlinked ANCESTOR directory escaping the workspace', async () => {
+    await writeFile(join(outside, 'secret.txt'), 'SECRET');
+    await symlink(outside, join(workspace, 'linkdir'), 'dir');
+    // realpath resolves the ancestor symlink before the scope check, so the read is blocked.
+    await expect(sandboxed().readFile('linkdir/secret.txt', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
   });
 
   it('rejects a binary (NUL-containing) file', async () => {
@@ -143,23 +166,32 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     expect((await sandboxed().readFile('log.txt', {})).content).toBe('ab');
   });
 
-  it('rejects a write that escapes the workspace via `..`', async () => {
+  it('overwrites (replaces, not appends) an existing file', async () => {
+    await sandboxed().writeFile('f.txt', 'old', {});
+    await sandboxed().writeFile('f.txt', 'new', {});
+    expect((await sandboxed().readFile('f.txt', {})).content).toBe('new');
+  });
+
+  it('rejects a write that escapes the workspace via `..` — FATAL tool_denied', async () => {
     await expect(sandboxed().writeFile('../outside/evil.txt', 'x', {})).rejects.toBeInstanceOf(
-      FsCapabilityError,
+      FsScopeDeniedError,
     );
   });
 
   it('refuses to write THROUGH a symlink at the final component', async () => {
     await writeFile(join(outside, 'target.txt'), 'original');
     await symlink(join(outside, 'target.txt'), join(workspace, 'evil.txt'));
-    await expect(sandboxed().writeFile('evil.txt', 'pwned', {})).rejects.toThrow(/symlink/);
+    await expect(sandboxed().writeFile('evil.txt', 'pwned', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    expect(await readFile(join(outside, 'target.txt'), 'utf8')).toBe('original'); // never clobbered
   });
 
   it('refuses a write through a symlinked ANCESTOR directory escaping the workspace', async () => {
     await symlink(outside, join(workspace, 'linkdir'), 'dir');
     await expect(
       sandboxed().writeFile('linkdir/evil.txt', 'x', { createDirs: true }),
-    ).rejects.toBeInstanceOf(FsCapabilityError);
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
   });
 });
 
@@ -167,6 +199,14 @@ describe('createNodeFsCapability — read-only profile (2.5.A chat)', () => {
   it('fail-closes write_file as ToolUnavailableError (→ tool_unavailable), never touching disk', async () => {
     const fs = sandboxed({ readOnly: true });
     await expect(fs.writeFile('x.txt', 'data', {})).rejects.toBeInstanceOf(ToolUnavailableError);
+  });
+
+  it('fail-closes an APPEND too (append is a write)', async () => {
+    await writeFile(join(workspace, 'log.txt'), 'a');
+    await expect(
+      sandboxed({ readOnly: true }).writeFile('log.txt', 'b', { append: true }),
+    ).rejects.toBeInstanceOf(ToolUnavailableError);
+    expect(await readFile(join(workspace, 'log.txt'), 'utf8')).toBe('a'); // untouched
   });
 
   it('still allows reads in the read-only profile', async () => {
@@ -210,7 +250,41 @@ describe('createNodeFsCapability — list_directory', () => {
 
   it('rejects listing a path outside the workspace', async () => {
     await expect(sandboxed().listDirectory('../outside', {})).rejects.toBeInstanceOf(
-      FsCapabilityError,
+      FsScopeDeniedError,
+    );
+  });
+
+  it('matches `?`, mid-path `**`, and a literal tail across a recursive listing', async () => {
+    await mkdir(join(workspace, 'a', 'mid'), { recursive: true });
+    await writeFile(join(workspace, 'a', 'mid', 'x.ts'), 'x');
+    await writeFile(join(workspace, 'a', 'y.ts'), 'y');
+    const r = await sandboxed().listDirectory('.', { recursive: true, glob: 'a/**/x.ts' });
+    expect(r.entries.map((e) => e.name)).toEqual(['a/mid/x.ts']);
+    const q = await sandboxed().listDirectory('.', { recursive: true, glob: 'a/?.ts' });
+    expect(q.entries.map((e) => e.name)).toEqual(['a/y.ts']); // `?` is one char, does not cross `/`
+  });
+
+  it('caps the number of listed entries', async () => {
+    for (let i = 0; i < 5; i += 1) await writeFile(join(workspace, `f${i}.txt`), 'x');
+    const { entries } = await sandboxed({ maxGlobMatches: 3 }).listDirectory('.', {});
+    expect(entries.length).toBe(3);
+  });
+});
+
+describe('createNodeFsCapability — cancellation + malformed paths', () => {
+  it('aborts read / write / list on an already-aborted signal', async () => {
+    await writeFile(join(workspace, 'a.txt'), 'x');
+    const fs = sandboxed();
+    await expect(fs.readFile('a.txt', {}, ABORTED)).rejects.toThrow(/abort/);
+    await expect(fs.listDirectory('.', {}, ABORTED)).rejects.toThrow(/abort/);
+    await expect(fs.writeFile('new.txt', 'y', {}, ABORTED)).rejects.toThrow(/abort/);
+    await expect(fs.readFile('new.txt', {})).rejects.toBeInstanceOf(FsCapabilityError); // never created
+  });
+
+  it('rejects an empty path and a UNC path', async () => {
+    await expect(sandboxed().readFile('', {})).rejects.toBeInstanceOf(FsCapabilityError);
+    await expect(sandboxed().readFile('\\\\server\\share', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
     );
   });
 });
@@ -239,5 +313,20 @@ describe('createNodeFsCapability — tiers', () => {
       readOnly: false,
     });
     expect((await fs.readFile(join(outside, 'allowed.txt'), {})).content).toBe('in-allowlist');
+  });
+
+  it('project tier rejects a path in NEITHER the workspace NOR extraRoots', async () => {
+    const third = join(workspace, '..', 'third');
+    await mkdir(third, { recursive: true });
+    await writeFile(join(third, 'secret.txt'), 'NOT ALLOWED');
+    const fs = createNodeFsCapability({
+      tier: 'project',
+      workspaceDir: workspace,
+      extraRoots: [outside], // `third` is deliberately NOT in the allowlist
+      readOnly: false,
+    });
+    await expect(fs.readFile(join(third, 'secret.txt'), {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
   });
 });

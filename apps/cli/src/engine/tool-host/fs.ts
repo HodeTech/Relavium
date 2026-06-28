@@ -1,9 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import type { Dirent } from 'node:fs';
-import { lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants, type Dirent } from 'node:fs';
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { ToolUnavailableError, type FsScopeTier } from '@relavium/core';
+import { ToolDispatchError, ToolUnavailableError, type FsScopeTier } from '@relavium/core';
 import type {
   DirEntry,
   DirListing,
@@ -14,7 +25,7 @@ import type {
   FsReadOpts,
   FsWriteOpts,
 } from '@relavium/core';
-import type { AbortSignalLike } from '@relavium/shared';
+import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
 
 /**
  * The Node host **mechanism** half of the `ToolHost.fs` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
@@ -65,11 +76,31 @@ export interface NodeFsCapabilityConfig {
   readonly maxGlobMatches?: number;
 }
 
-/** A filesystem-capability failure naming a **reason only** — never a path / the bytes (mirrors MediaWriteError). */
+/**
+ * An operational filesystem failure (not-found, a directory read as a file, binary/oversize, an empty glob)
+ * naming a **reason only** — never a path / the bytes (mirrors `MediaWriteError`). Maps to `tool_failed`.
+ */
 export class FsCapabilityError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'FsCapabilityError';
+  }
+}
+
+/**
+ * A **deterministic scope/security denial** — a path escapes the tier, a UNC path, or a refusal to write
+ * through a symlink. It is a {@link ToolDispatchError} (so the registry passes it through, registry.ts) mapping
+ * to the **fatal**, non-retryable `tool_denied`: re-issuing the same denied path just re-denies, so it must NOT
+ * burn the node-retry budget (error-handling.md §tool-dispatch codes). Mirrors the engine's `ToolPolicyError`
+ * shape without needing the dispatched tool id (the host capability is tool-agnostic).
+ */
+export class FsScopeDeniedError extends ToolDispatchError {
+  readonly code = 'tool_denied';
+  readonly runErrorCode: ErrorCode = 'tool_denied';
+  readonly retryable = false;
+  constructor(message: string) {
+    super(message, undefined, undefined);
+    this.name = 'FsScopeDeniedError';
   }
 }
 
@@ -98,7 +129,10 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (error) {
-    if (error instanceof ToolUnavailableError || error instanceof FsCapabilityError) {
+    // A typed engine error (ToolUnavailableError = read-only fail-close → tool_unavailable; FsScopeDeniedError
+    // = a scope denial → tool_denied) and an already-reason-only FsCapabilityError pass through verbatim. Any
+    // RAW Node fs error (whose message/path leaks the absolute path) is replaced with a reason-only one (I3).
+    if (error instanceof ToolDispatchError || error instanceof FsCapabilityError) {
       throw error;
     }
     throw new FsCapabilityError('the filesystem operation failed');
@@ -218,8 +252,18 @@ async function writeOne(
   throwIfAborted(signal);
   const bytes = Buffer.from(data, 'utf8');
   if (opts.append === true) {
-    // Append must follow the existing (already-symlink-checked) file; an atomic temp+rename cannot append.
-    await writeFile(finalTarget, bytes, { flag: 'a' });
+    // Append cannot use the atomic temp+rename (that replaces, never appends). Open with O_NOFOLLOW so the
+    // kernel refuses a final-component symlink AT OPEN TIME — closing the TOCTOU window between the
+    // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of scope).
+    const handle = await open(
+      finalTarget,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+    );
+    try {
+      await handle.write(bytes);
+    } finally {
+      await handle.close();
+    }
     return { path: relWorkspace(config, finalTarget), bytesWritten: bytes.length };
   }
   // Atomic publish: a unique temp in the same (in-root) dir, then rename — never follows a final-component
@@ -340,10 +384,10 @@ async function jailWriteTarget(
   return { realDir, finalTarget: join(realDir, basename(lexical)) };
 }
 
-/** Throw a reason-only error if `real` is not in scope (the authoritative post-realpath jail). */
+/** Throw a fatal scope denial if `real` is not in scope (the authoritative post-realpath jail). */
 function assertInScope(inScope: ScopeChecker, real: string): void {
   if (!inScope(real)) {
-    throw new FsCapabilityError('the path escapes the allowed filesystem scope');
+    throw new FsScopeDeniedError('the path escapes the allowed filesystem scope');
   }
 }
 
@@ -353,7 +397,7 @@ function lexicalTarget(config: NodeFsCapabilityConfig, path: string): string {
     throw new FsCapabilityError('the path is empty');
   }
   if (path.startsWith('\\\\')) {
-    throw new FsCapabilityError('a UNC path is not allowed'); // `\\server\share`
+    throw new FsScopeDeniedError('a UNC path is not allowed'); // `\\server\share`
   }
   // An absolute tool path is allowed (it is jail-checked after realpath); a relative one anchors at the
   // workspace. `resolve` normalizes any `..`; the post-realpath `assertInScope` is the authoritative jail.
@@ -378,10 +422,11 @@ async function deepestExistingReal(startDir: string): Promise<string> {
 async function assertNotSymlink(target: string): Promise<void> {
   const info = await lstat(target).catch((error: unknown) => {
     if (errnoCode(error) === 'ENOENT') return undefined; // not present yet — the common case
-    throw error;
+    // Self-defending: re-wrap any other raw fs error (its message/path would leak) rather than rethrow it.
+    throw new FsCapabilityError('the final path could not be inspected');
   });
   if (info?.isSymbolicLink() === true) {
-    throw new FsCapabilityError('refusing to write through a symlink');
+    throw new FsScopeDeniedError('refusing to write through a symlink');
   }
 }
 
@@ -407,7 +452,7 @@ async function walk(
     throwIfAborted(signal);
     const dir = stack.pop();
     if (dir === undefined) break;
-    const dirents = await readdir(dir, { withFileTypes: true }).catch(() => [] as Dirent[]);
+    const dirents = await readdir(dir, { withFileTypes: true }).catch((): Dirent[] => []);
     for (const dirent of dirents) {
       const real = join(dir, dirent.name);
       const keepGoing = await visit(real, posixRel(root, real), dirent);
