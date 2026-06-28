@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-06-26
+> Last updated: 2026-06-29
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)

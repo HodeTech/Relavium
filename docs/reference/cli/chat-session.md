@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-06-26
+> Last updated: 2026-06-29
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**)
 - **Surface**: CLI (`relavium chat`)
