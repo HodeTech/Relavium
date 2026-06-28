@@ -337,7 +337,12 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
       planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
       outputModalities: ['text', 'image'],
     });
-    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'provider_unavailable' });
+    // EA2: generate() settled (reporting usage 10/5) BEFORE the anomalous stop was classified — so the real
+    // tokens ride the thrown error rather than being dropped on the media-out path.
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'provider_unavailable',
+      usage: { input: 10, output: 5 },
+    });
   });
 
   it('maps a generate() chain failure into the turn error taxonomy (symmetric with the stream path)', async () => {
@@ -543,6 +548,9 @@ describe('runAgentTurn — tool loop', () => {
       // EA1's value over a bare `internal`: the surfaced message names the tool + the unwired arm actionably.
       expect(err.message).toContain('echo');
       expect(err.message).toContain('egress');
+      // EA1×EA2 intersection: the tool_use STOP settled usage 10/5 before the dispatch threw, so even a
+      // missing-capability failure reports the real spent tokens — pin it so a throw-path refactor can't drop it.
+      expect(err.usage).toEqual({ input: 10, output: 5 });
     }
   });
 

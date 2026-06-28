@@ -62,7 +62,9 @@ EA1/EA2): **EA1** maps the dispatch-layer `capability_unavailable` to a new port
 `ErrorCode` (`@relavium/shared` `ERROR_CODES`; `codeForToolError` in `agent-turn.ts` is the single change
 point) instead of `internal`, so a missing capability surfaces with the tool name; and **EA2** carries the
 real accumulated usage on a failed turn (a `usage` field on `AgentTurnError`), touching only the two
-provider-engaged branches in `agent-session.ts`. Both are recorded by this ADR.
+provider-engaged branches in `agent-session.ts`. Both are recorded by this ADR. *(EA1/EA2 land first, in
+Step 1 of 2.5.A, under this still-**Proposed** ADR; the factory wiring and the mandatory security review —
+the precondition for Accept — follow in the later steps, at which point this ADR flips to Accepted.)*
 
 Considered the conflated signature `createCliToolHost({ fsScope, allowedCommands, egress })` (rejected:
 `fsScope` is dispatch-context, `allowedCommands` is `ToolPolicy` — three types crammed into one); wiring

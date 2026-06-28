@@ -634,9 +634,10 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     ) {
       throw new AgentTurnError(err.code, err.message, err.retryable, { ...usage });
     }
-    // A non-AgentTurnError escaping here is, by construction, an unexpected engine bug (the driver classifies
-    // every reachable failure into an AgentTurnError) — re-thrown bare, it lands in AgentSession's unclassified
-    // branch and reports `{0,0}`; that truthful-on-the-unclassified-path zero is intentional, not an oversight.
+    // A non-AgentTurnError escaping here is either a `BudgetPauseError` (a pre-egress `pause_for_approval` —
+    // the session/runner handles it in its own catch branch; it engaged no provider) or an unexpected engine
+    // bug (the driver classifies every other reachable failure into an AgentTurnError). Both re-throw bare and
+    // report a truthful `{0,0}` — the pause did no egress, and an unclassified bug has no usage to attach.
     throw err;
   }
 }

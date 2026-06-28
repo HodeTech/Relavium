@@ -114,8 +114,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // keeping the transcript to completed exchanges. But the session COST (the cumulative from
         // cost:updated) is real even for a failed turn — the engine never decrements it — so flush the row
         // UNCONDITIONALLY so a resumed budget governor seeds from the true spend (ADR-0028), not an
-        // understated one. (Failed-turn token usage is 0, mirroring the engine, so the token columns are
-        // unaffected.)
+        // understated one. The token COLUMNS, by contrast, are NOT accumulated on a failed turn — that is
+        // gated below on `event.error === undefined`. (EA2/ADR-0055 now delivers a real, non-zero `tokensUsed`
+        // on a failed turn, but those tokens belong to a rolled-back exchange and must not inflate the
+        // session-wide token totals; only the cost, from `cost:updated`, is kept.)
         // A completed exchange always has a user message (the REPL calls beginUserTurn before sendMessage);
         // gating the whole exchange on it prevents an orphaned assistant row with no preceding user row.
         if (event.error === undefined && pendingUserText !== undefined) {

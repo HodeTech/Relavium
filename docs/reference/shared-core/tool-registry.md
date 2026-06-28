@@ -259,7 +259,7 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 | `UnknownToolError` | id not an exact match | `tool_failed` | fatal (loop-correctable first) |
 | `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required`, `media_scope_denied` (the full `ToolPolicyDenyReason` union; `media_scope_denied` is `read_media`'s scope-set denial, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) | `tool_denied` | **fatal** (never retried) |
 | `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint | `validation` | fatal (loop-correctable first) |
-| `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `internal` | fatal |
+| `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `tool_unavailable` | **fatal** (names the tool + the unwired arm actionably — never a bare `internal`; EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |
 | *(AbortSignal abort)* | the run was cancelled mid-tool | `cancelled` | fatal (cancel path, not `tool_failed`) |
 

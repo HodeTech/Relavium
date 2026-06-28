@@ -49,7 +49,7 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 | `ToolPolicyError` | `tool_denied` | false | **not** fed back as a correctable result (re-asking a denied tool burns budget) |
 | `UnknownToolError` / `ToolArgsInvalidError` | (model-correctable) | — | converted to an `isError` tool result fed back, within a bounded correction budget; after it ⇒ `tool_failed` |
 | `ToolExecutionError` | `tool_failed` | true | |
-| absent host capability | `internal` | false | |
+| absent host capability (`ToolUnavailableError`) | `tool_unavailable` | false | a host/config gap — names the unwired arm actionably, never a bare `internal` (EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | chain-exhausted `LlmError` | `provider_auth` / `provider_rate_limit` / `provider_unavailable` / `content_filter` (content_filter, 1.AG/ADR-0045 §6) / `validation` (bad_request) / `internal` (unknown) | per `LlmError.retryable` | classified from `error.kind`, never `error.message` |
 | max-tool-turns hit | `turn_limit` | false | |
 
