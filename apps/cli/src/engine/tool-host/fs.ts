@@ -254,11 +254,21 @@ async function writeOne(
   if (opts.append === true) {
     // Append cannot use the atomic temp+rename (that replaces, never appends). Open with O_NOFOLLOW so the
     // kernel refuses a final-component symlink AT OPEN TIME — closing the TOCTOU window between the
-    // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of scope).
+    // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of
+    // scope). A symlink there fails ELOOP/ENOTDIR, which we map to the FATAL `tool_denied` (not the retryable
+    // `tool_failed` `guarded` would otherwise assign a raw fs error). NOTE: `O_NOFOLLOW` is `0` on Windows (no
+    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case, and append is the
+    // author-trusted workflow-run path (chat is read-only), so the residual Windows race is accepted for 2.5.A.
     const handle = await open(
       finalTarget,
       constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
-    );
+    ).catch((error: unknown) => {
+      const code = errnoCode(error);
+      if (code === 'ELOOP' || code === 'ENOTDIR') {
+        throw new FsScopeDeniedError('refusing to write through a symlink');
+      }
+      throw error;
+    });
     try {
       await handle.write(bytes);
     } finally {
@@ -482,7 +492,9 @@ async function collectGlobFiles(
     // Defense in depth: a matched FILE is realpath-jailed (a symlinked file could still point outside scope).
     const realResolved = await realpath(real).catch(() => undefined);
     if (realResolved === undefined || !inScope(realResolved)) return true; // skip, never read out of scope
-    const info = await lstat(real).catch(() => undefined);
+    // stat the RESOLVED target (not the walk path) so an in-scope symlink TO a regular file still reads — a
+    // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
+    const info = await stat(realResolved).catch(() => undefined);
     if (info === undefined || !info.isFile()) return true;
     out.push({ real: realResolved, rel, size: info.size, mtimeMs: info.mtimeMs });
     return true;

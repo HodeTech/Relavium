@@ -144,6 +144,34 @@ describe('createNodeFsCapability — glob read', () => {
     expect(result.content).toContain('REAL');
     expect(result.content).not.toContain('LEAKED');
   });
+
+  it('skips a binary match but still returns the text matches', async () => {
+    await writeFile(join(workspace, 'text.ts'), 'TEXT');
+    await writeFile(join(workspace, 'bin.ts'), Buffer.from([0x41, 0x00, 0x42]));
+    const result = await sandboxed().readFile('*.ts', { glob: true });
+    expect(result.content).toContain('TEXT');
+    expect(result.content).not.toContain('bin.ts');
+  });
+
+  it('throws when every match is binary', async () => {
+    await writeFile(join(workspace, 'only.ts'), Buffer.from([0x00, 0x01]));
+    await expect(sandboxed().readFile('*.ts', { glob: true })).rejects.toThrow(/binary/);
+  });
+
+  it('rejects when the ACCUMULATED glob size exceeds maxReadBytes', async () => {
+    await writeFile(join(workspace, 'a.ts'), 'AAAA'); // 4 bytes
+    await writeFile(join(workspace, 'b.ts'), 'BBBB'); // 4 bytes — 8 total > 6
+    await expect(sandboxed({ maxReadBytes: 6 }).readFile('*.ts', { glob: true })).rejects.toThrow(
+      /limit/,
+    );
+  });
+
+  it('caps the glob read at maxGlobMatches', async () => {
+    for (let i = 0; i < 5; i += 1) await writeFile(join(workspace, `f${i}.ts`), 'x');
+    const result = await sandboxed({ maxGlobMatches: 2 }).readFile('*.ts', { glob: true });
+    // each match contributes one `===== fN.ts =====` header; the cap bounds the surfaced set to 2 of the 5.
+    expect(result.content.match(/===== f\d\.ts =====/g)?.length).toBe(2);
+  });
 });
 
 describe('createNodeFsCapability — write (read-write profile)', () => {
@@ -192,6 +220,15 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     await expect(
       sandboxed().writeFile('linkdir/evil.txt', 'x', { createDirs: true }),
     ).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses to APPEND through a symlink at the final component (the append path)', async () => {
+    await writeFile(join(outside, 'target.txt'), 'original');
+    await symlink(join(outside, 'target.txt'), join(workspace, 'evil.txt'));
+    await expect(
+      sandboxed().writeFile('evil.txt', 'appended', { append: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    expect(await readFile(join(outside, 'target.txt'), 'utf8')).toBe('original'); // never clobbered
   });
 });
 
@@ -290,12 +327,15 @@ describe('createNodeFsCapability — cancellation + malformed paths', () => {
 });
 
 describe('createNodeFsCapability — tiers', () => {
-  it('sandboxed tier allows the optional tmp root', async () => {
+  it('sandboxed tier allows the optional tmp root (read + write)', async () => {
     const tmp = join(workspace, '..', 'tmproot');
     await mkdir(tmp, { recursive: true });
     await writeFile(join(tmp, 't.txt'), 'tmp-ok');
     const fs = sandboxed({ tmpDir: tmp });
     expect((await fs.readFile(join(tmp, 't.txt'), {})).content).toBe('tmp-ok');
+    const written = await fs.writeFile(join(tmp, 'w.txt'), 'tmp-written', {});
+    expect(written.bytesWritten).toBe('tmp-written'.length);
+    expect((await fs.readFile(join(tmp, 'w.txt'), {})).content).toBe('tmp-written');
   });
 
   it('full tier reads outside the workspace (the power-user opt-in)', async () => {
