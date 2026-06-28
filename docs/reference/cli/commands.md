@@ -5,7 +5,7 @@
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
 - **Scope**: Phase 1, local-first. Same `@relavium/core` engine as every other surface.
-- **Related**: [../vscode/extension-api.md](../vscode/extension-api.md), [../desktop/routes-and-screens.md](../desktop/routes-and-screens.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../../tutorials/cli/run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md)
+- **Related**: [home.md](home.md), [chat-session.md](chat-session.md), [../vscode/extension-api.md](../vscode/extension-api.md), [../desktop/routes-and-screens.md](../desktop/routes-and-screens.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../../tutorials/cli/run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md)
 
 The `relavium` CLI is the terminal surface of the platform and the fastest way to run a workflow non-interactively (scripts, CI/CD). It embeds the **same** `@relavium/core` engine as the desktop app and VS Code extension — there is no separate "CLI engine," so behavior is identical across surfaces (see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)). The CLI is built **second** (right after the engine) and serves as the engine's canonical integration-test harness.
 
@@ -46,7 +46,10 @@ no-TTY / `CI=true`, and to NDJSON only on `--json`.
 Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert
 on ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). The contract covers a workflow
 **run**; `--help`, `--version`, and a bare no-command invocation are exit-`0` meta-operations that
-print their human text (usage / version) to stdout as usual, `--json` notwithstanding.
+print their human text (usage / version) to stdout as usual, `--json` notwithstanding. (On a genuine
+interactive TTY a bare `relavium` instead opens the **interactive Home** — see [home.md](home.md) for
+the gate; the help + exit-`0` meta-op is preserved byte-for-byte on every non-interactive path: `--json`,
+a pipe/redirect, or `CI`.)
 
 - **stdout is a pure NDJSON stream of [RunEvent](../contracts/sse-event-schema.md)s** — one event
   serialized verbatim per line, in `sequenceNumber` order. The line *is* the stable envelope
@@ -270,6 +273,8 @@ CI relies on deterministic exit codes:
 > Under `--json`, a pre-run fault (exit `2`) writes its structured `{ "type": "error", … }` detail to **stderr** while stdout stays empty ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) — the exit code is the primary fault signal; read stderr for the detail.
 >
 > Exit code `4` is the canonical **chat-session-ended** code: it marks a deliberate `/exit` (or its `--json` equivalent, a final `session:cancelled`/end event) from the `relavium chat` REPL, kept distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user quit the chat" apart from either. Other docs reference it as `4`.
+>
+> The bare-invocation **interactive Home** (2.5.B, [home.md](home.md)) is a long-lived mode whose **clean exit is `0`** (Ctrl-C / Ctrl-D on an empty prompt). A chat launched from inside the Home has its own exit code `4`, which the **Home loop consumes** — a chat ending returns to the Home, never leaked. An external signal to the Home runs teardown then exits the conventional `128+signo` (**`130`** SIGINT / **`143`** SIGTERM) so a pipeline still detects the interruption.
 
 ## CI/CD usage
 
