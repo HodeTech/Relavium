@@ -9,6 +9,7 @@ import {
 } from '../../commands/chat.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps } from './projection.js';
+import { reduceChatKey } from './chat-input.js';
 import { spinnerFrame } from './format.js';
 import {
   formatSessionFooter,
@@ -17,7 +18,7 @@ import {
   stripTerminalControls,
 } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
-import type { TranscriptEntry } from './session-view-model.js';
+import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
 /**
  * The `ink` TTY driver + `ChatApp` for `relavium chat` (2.M) — the session counterpart of the 2.E run TUI
@@ -65,57 +66,24 @@ interface ChatAppProps {
   readonly onError: (err: unknown) => void;
 }
 
-export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
-  const { state, tick, color } = useSyncExternalStore(
-    props.store.subscribe,
-    props.store.getSnapshot,
-  );
-  const [input, setInput] = useState('');
-  const cancelFired = useRef(false);
-  const running = state.status === 'running';
+interface ChatViewProps {
+  readonly state: SessionViewState;
+  readonly tick: number;
+  readonly color: boolean;
+  /** The current prompt buffer (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
+  readonly input: string;
+  readonly running: boolean;
+}
 
-  const submit = (line: string): void => {
-    // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
-    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
-    // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
-    void props
-      .onSubmit(line)
-      .then(
-        () => {
-          if (props.shouldStop()) props.onExit();
-        },
-        (err: unknown) => props.onError(err),
-      )
-      .catch((err: unknown) => props.onError(err));
-  };
-
-  useInput((char, key) => {
-    // Ctrl-C reaches us (not the kernel) in raw mode — end the session via /cancel, even mid-turn. Dispatch it
-    // at most once: cancelOnce() is already idempotent, but a held Ctrl-C would otherwise fire redundant /cancel
-    // turns in quick succession.
-    if (key.ctrl && char === 'c') {
-      if (!cancelFired.current) {
-        cancelFired.current = true;
-        submit('/cancel');
-      }
-      return;
-    }
-    if (running) return; // one turn at a time — ignore typing while the assistant streams
-    if (key.return) {
-      const line = input;
-      setInput('');
-      submit(line);
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setInput((current) => current.slice(0, -1));
-      return;
-    }
-    if (char.length > 0 && !key.ctrl && !key.meta) {
-      setInput((current) => current + char);
-    }
-  });
-
+/**
+ * The PURE chat render — transcript / in-flight turn / prompt echo / warnings / footer — with no `useInput`,
+ * no state, and no store subscription. Extracted from `ChatApp` so the 2.5.B Home can render the chat region
+ * inside its OWN single-`useInput` tree (one raw-mode owner) without duplicating this JSX. The live input echo
+ * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
+ * sequence cannot corrupt the terminal or inject ANSI/OSC.
+ */
+export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
+  const { state, tick, color, input, running } = props;
   return (
     <Box flexDirection="column">
       {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
@@ -158,6 +126,56 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       <Text {...colorProps(color, 'gray')}>{formatSessionFooter(state)}</Text>
     </Box>
   );
+}
+
+export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const { state, tick, color } = useSyncExternalStore(
+    props.store.subscribe,
+    props.store.getSnapshot,
+  );
+  const [input, setInput] = useState('');
+  const cancelFired = useRef(false);
+  const running = state.status === 'running';
+
+  const submit = (line: string): void => {
+    // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
+    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
+    // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
+    void props
+      .onSubmit(line)
+      .then(
+        () => {
+          if (props.shouldStop()) props.onExit();
+        },
+        (err: unknown) => props.onError(err),
+      )
+      .catch((err: unknown) => props.onError(err));
+  };
+
+  // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
+  // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
+  useInput((char, key) => {
+    const action = reduceChatKey(char, key, input, running);
+    switch (action.kind) {
+      case 'cancel':
+        if (!cancelFired.current) {
+          cancelFired.current = true;
+          submit('/cancel');
+        }
+        return;
+      case 'input':
+        setInput(action.value);
+        return;
+      case 'submit':
+        setInput('');
+        submit(action.line);
+        return;
+      case 'none':
+        return;
+    }
+  });
+
+  return <ChatView state={state} tick={tick} color={color} input={input} running={running} />;
 }
 
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. */
