@@ -1,10 +1,10 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 
-import type { ProcessCapability, ProcessResult } from '@relavium/core';
-import type { AbortSignalLike } from '@relavium/shared';
+import { ToolDispatchError, type ProcessCapability, type ProcessResult } from '@relavium/core';
+import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
 
 /**
  * The Node host **mechanism** half of the `ToolHost.process` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
@@ -65,13 +65,60 @@ export interface NodeProcessCapabilityConfig {
   readonly maxBufferBytes?: number;
 }
 
-/** A process-capability failure naming a **reason only** — never a command value / output / env (the I3 boundary). */
+/**
+ * A **transient** process-capability failure (a timeout, a spawn fault) naming a **reason only** — never a
+ * command value / output / env (the I3 boundary). Maps to the retryable `tool_failed`.
+ */
 export class ProcessCapabilityError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ProcessCapabilityError';
   }
 }
+
+/**
+ * A **deterministic host refusal** — an empty/not-found command, or a declared env var the host forbids. It is
+ * a {@link ToolDispatchError} (passed through by the registry) mapping to the **fatal**, non-retryable
+ * `tool_denied`: re-issuing the same command re-fails identically, so it must NOT burn the node-retry budget
+ * (error-handling.md §tool-dispatch codes). Mirrors the fs arm's `FsScopeDeniedError`.
+ */
+export class ProcessDeniedError extends ToolDispatchError {
+  readonly code = 'tool_denied';
+  readonly runErrorCode: ErrorCode = 'tool_denied';
+  readonly retryable = false;
+  constructor(message: string) {
+    super(message, undefined, undefined);
+    this.name = 'ProcessDeniedError';
+  }
+}
+
+/**
+ * Declared env vars the host **forbids** even from a trusted workflow author: code/library **injection**
+ * vectors that would run attacker code in the child (or a grandchild) regardless of the allowlisted binary.
+ * `PATH`/`Path` are rejected too — executable resolution deliberately ignores a declared `PATH`, so accepting
+ * one would only mislead. A declared var is merged on top of the audited base env; this is the audit
+ * (built-in-tools.md §Subprocess environment names `NODE_OPTIONS` as a hijack vector).
+ */
+const FORBIDDEN_DECLARED_ENV = new Set([
+  'NODE_OPTIONS',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'LD_AUDIT',
+  'BASH_ENV',
+  'ENV',
+  'IFS',
+  'PYTHONPATH',
+  'PERL5LIB',
+  'RUBYLIB',
+  'GIT_SSH_COMMAND',
+  'GIT_EXTERNAL_DIFF',
+  'GIT_PAGER',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'PATH',
+  'Path',
+]);
+/** Dynamic-loader prefixes (`DYLD_INSERT_LIBRARIES`, `LD_*`) — any declared key starting with one is forbidden. */
+const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_'];
 
 /**
  * Build a node-backed {@link ProcessCapability}. The returned object is the value a host wires onto
@@ -84,9 +131,10 @@ export function createNodeProcessCapability(config: NodeProcessCapabilityConfig)
   return {
     spawn: async (command, args, declaredEnv, opts, signal) => {
       throwIfAborted(signal);
+      assertSafeDeclaredEnv(declaredEnv);
       const executable = await resolveExecutable(command);
       const timeoutMs = Math.min(opts.timeoutMs ?? defaultTimeoutMs, maxTimeoutMs);
-      const cwd = opts.cwd === undefined ? config.workspaceDir : resolve(config.workspaceDir, opts.cwd);
+      const cwd = jailCwd(config.workspaceDir, opts.cwd);
       return runChild({
         executable,
         args: [...args],
@@ -121,6 +169,10 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
         env: opts.env,
         shell: false, // SECURITY: no shell — no metacharacter/quoting injection (the command is pre-allowlisted)
         windowsHide: true,
+        // POSIX: make the child a process-group leader so a timeout/abort can SIGKILL the WHOLE group (the
+        // child AND any grandchildren it forked) — a single-pid kill would leak a forking subprocess. Not
+        // unref'd: we await `close`. Windows has no POSIX groups, so kill falls back to the single child.
+        detached: process.platform !== 'win32',
       });
     } catch {
       reject(new ProcessCapabilityError('the command could not be started'));
@@ -135,12 +187,12 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killTree(child);
     }, opts.timeoutMs);
 
     const onAbort = (): void => {
       aborted = true;
-      child.kill('SIGKILL');
+      killTree(child);
     };
     if (opts.signal !== undefined) opts.signal.addEventListener('abort', onAbort);
 
@@ -161,14 +213,18 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
     child.on('error', () => finish(() => reject(new ProcessCapabilityError('the command failed to run'))));
     child.on('close', (code) => {
       finish(() => {
+        // `code === null` ⇒ the process was signal-killed. A timeout/abort kill lands here with null code; a
+        // process that exited NATURALLY at the same tick the timer fired keeps its real `code`, so gate the
+        // timeout label on a null code — a same-tick natural exit is reported with its true exit code, not a
+        // spurious timeout.
         if (aborted) {
           reject(new ProcessCapabilityError('the command was aborted'));
-        } else if (timedOut) {
+        } else if (timedOut && code === null) {
           reject(new ProcessCapabilityError(`the command timed out after ${opts.timeoutMs}ms`));
         } else {
           resolvePromise({
-            // A signal-killed (non-timeout) exit has `code === null` — report a conventional non-zero so the
-            // model sees a failure exit rather than a misleading `0`.
+            // An (external) signal-kill exit has `code === null` — report a conventional non-zero so the model
+            // sees a failure exit rather than a misleading `0`.
             exitCode: code ?? 1,
             stdout: stdout.text(),
             stderr: stderr.text(),
@@ -178,6 +234,19 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
       });
     });
   });
+}
+
+/** SIGKILL the child and (on POSIX) its whole process group, so a forked grandchild can't survive the kill. */
+function killTree(child: ChildProcess): void {
+  if (process.platform !== 'win32' && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, 'SIGKILL'); // negative pid ⇒ the process group (the detached child is its leader)
+      return;
+    } catch {
+      // The group is already gone, or the kill is not permitted — fall back to the single child below.
+    }
+  }
+  child.kill('SIGKILL');
 }
 
 /** A byte-bounded UTF-8 accumulator: appends until the cap, then drops the rest and marks the output truncated. */
@@ -217,7 +286,7 @@ class BoundedBuffer {
  */
 async function resolveExecutable(command: string): Promise<string> {
   if (command === '') {
-    throw new ProcessCapabilityError('the command is empty');
+    throw new ProcessDeniedError('the command is empty'); // deterministic — fatal, never retried
   }
   if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
     return command; // an explicit path — spawn fails cleanly if it is missing / not executable
@@ -239,7 +308,27 @@ async function resolveExecutable(command: string): Promise<string> {
       }
     }
   }
-  throw new ProcessCapabilityError('the command was not found on PATH');
+  throw new ProcessDeniedError('the command was not found on PATH'); // deterministic — fatal, never retried
+}
+
+/** Reject a declared env var the host forbids (injection vectors / `PATH`) — fail-closed and visible (the audit). */
+function assertSafeDeclaredEnv(declaredEnv: Readonly<Record<string, string>>): void {
+  for (const key of Object.keys(declaredEnv)) {
+    if (FORBIDDEN_DECLARED_ENV.has(key) || FORBIDDEN_DECLARED_ENV_PREFIX.some((p) => key.startsWith(p))) {
+      throw new ProcessDeniedError('a declared environment variable is not permitted');
+    }
+  }
+}
+
+/** Resolve the spawn cwd against the workspace and confine it there (a config `cwd` may not escape the sandbox root). */
+function jailCwd(workspaceDir: string, cwd: string | undefined): string {
+  if (cwd === undefined) return workspaceDir;
+  const resolved = resolve(workspaceDir, cwd);
+  const prefix = workspaceDir.endsWith(sep) ? workspaceDir : workspaceDir + sep;
+  if (resolved !== workspaceDir && !resolved.startsWith(prefix)) {
+    throw new ProcessDeniedError('the working directory is outside the workspace');
+  }
+  return resolved;
 }
 
 /** The audited platform-minimal base env: only the allowlisted ambient keys (never the full `process.env`). */

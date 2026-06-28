@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createNodeProcessCapability,
   ProcessCapabilityError,
+  ProcessDeniedError,
   type NodeProcessCapabilityConfig,
 } from './process.js';
 
@@ -98,7 +99,7 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
     }
   });
 
-  it('merges the engine-declared env on top of the base env', async () => {
+  it('merges a SAFE engine-declared env var on top of the base env', async () => {
     const r = await proc().spawn(
       NODE,
       ['-e', 'process.stdout.write(process.env.MY_DECLARED ?? "none")'],
@@ -108,25 +109,42 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
     expect(r.stdout).toBe('declared-value');
   });
 
-  it('resolves the executable via the AMBIENT PATH — a declared env.PATH cannot redirect which binary runs', async () => {
-    // Resolve `node` by bare name (ambient PATH), while declaring a bogus env.PATH — the bogus PATH only
-    // reaches the subprocess env, never the executable resolution, so the real node still runs.
-    const r = await proc().spawn('node', ['-e', 'process.stdout.write("ran")'], { PATH: '/nonexistent' }, {});
+  it('resolves the executable via the AMBIENT PATH by bare name', async () => {
+    // `node` is resolved to an absolute path against the ambient PATH, independent of any declared env.
+    const r = await proc().spawn('node', ['-e', 'process.stdout.write("ran")'], {}, {});
     expect(r.stdout).toBe('ran');
   });
 
-  it('fails closed when the command is not found on PATH', async () => {
-    await expect(
-      proc().spawn('definitely-not-a-real-command-xyz', [], {}, {}),
-    ).rejects.toBeInstanceOf(ProcessCapabilityError);
+  it('REJECTS a forbidden declared env var (injection vectors + PATH) — fatal tool_denied', async () => {
+    const fs = proc();
+    for (const env of [{ NODE_OPTIONS: '--require /tmp/evil.js' }, { LD_PRELOAD: '/tmp/evil.so' }, { DYLD_INSERT_LIBRARIES: '/tmp/x' }, { PATH: '/nonexistent' }, { GIT_SSH_COMMAND: 'evil' }]) {
+      await expect(fs.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(ProcessDeniedError);
+    }
+  });
+
+  it('fails closed (FATAL tool_denied) when the command is not found on PATH', async () => {
+    const err: unknown = await proc()
+      .spawn('definitely-not-a-real-command-xyz', [], {}, {})
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProcessDeniedError);
+    if (err instanceof ProcessDeniedError) {
+      expect(err.code).toBe('tool_denied');
+      expect(err.retryable).toBe(false);
+    }
+  });
+
+  it('rejects an empty command', async () => {
+    await expect(proc().spawn('', [], {}, {})).rejects.toBeInstanceOf(ProcessDeniedError);
   });
 });
 
 describe('createNodeProcessCapability — bounds', () => {
-  it('kills a command that exceeds the timeout', async () => {
-    await expect(
-      proc().spawn(NODE, ['-e', 'setTimeout(() => {}, 10000)'], {}, { timeoutMs: 100 }),
-    ).rejects.toThrow(/timed out/);
+  it('kills a command that exceeds the timeout (retryable ProcessCapabilityError, not a fatal denial)', async () => {
+    const err: unknown = await proc()
+      .spawn(NODE, ['-e', 'setTimeout(() => {}, 10000)'], {}, { timeoutMs: 100 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProcessCapabilityError); // a timeout is transient → tool_failed (retryable)
+    if (err instanceof ProcessCapabilityError) expect(err.message).toMatch(/timed out/);
   });
 
   it('caps the timeout at the configured ceiling', async () => {
@@ -152,10 +170,62 @@ describe('createNodeProcessCapability — bounds', () => {
     await expect(proc().spawn(NODE, ['-e', '1'], {}, {}, aborted)).rejects.toThrow(/abort/);
   });
 
-  it('kills the process on a mid-run abort', async () => {
+  it('kills the process on a mid-run abort — rejects promptly, proving the kill landed', async () => {
     const { signal, abort } = controllableSignal();
+    const started = Date.now();
     const pending = proc().spawn(NODE, ['-e', 'setTimeout(() => {}, 10000)'], {}, {}, signal);
     setTimeout(abort, 50);
     await expect(pending).rejects.toThrow(/abort/);
+    // If the child were NOT actually killed, `close` would not fire until the child's 10s timer — the prompt
+    // rejection is the evidence the SIGKILL (of the whole process group) landed.
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('truncates stderr past the per-stream cap (symmetric with stdout)', async () => {
+    const r = await proc({ maxBufferBytes: 10 }).spawn(
+      NODE,
+      ['-e', 'process.stderr.write("y".repeat(1000))'],
+      {},
+      {},
+    );
+    expect(r.stderr).toMatch(/truncated/);
+  });
+
+  it('applies the configured defaultTimeoutMs when the call pins none', async () => {
+    await expect(
+      proc({ defaultTimeoutMs: 100 }).spawn(NODE, ['-e', 'setTimeout(() => {}, 10000)'], {}, {}),
+    ).rejects.toThrow(/timed out/);
+  });
+});
+
+describe('createNodeProcessCapability — cwd + streams + signal exit', () => {
+  it('resolves opts.cwd relative to the workspace', async () => {
+    await mkdir(join(workspace, 'sub'), { recursive: true });
+    const r = await proc().spawn(NODE, ['-e', 'process.stdout.write(process.cwd())'], {}, { cwd: 'sub' });
+    expect(await realpath(r.stdout)).toBe(await realpath(join(workspace, 'sub')));
+  });
+
+  it('rejects a cwd that escapes the workspace — fatal tool_denied', async () => {
+    await expect(proc().spawn(NODE, ['-e', '1'], {}, { cwd: '../../..' })).rejects.toBeInstanceOf(
+      ProcessDeniedError,
+    );
+  });
+
+  it('captures stdout and stderr independently in one run', async () => {
+    const r = await proc().spawn(
+      NODE,
+      ['-e', 'process.stdout.write("OUT"); process.stderr.write("ERR")'],
+      {},
+      {},
+    );
+    expect(r.stdout).toBe('OUT');
+    expect(r.stderr).toBe('ERR');
+  });
+
+  it('reports a non-zero exit for a process killed by an EXTERNAL signal (code null)', async () => {
+    // The child SIGTERMs itself — our timer/abort never fire, so `close(null, "SIGTERM")` resolves with the
+    // `code ?? 1` fallback (a signal-kill has a null exit code), never a misleading 0.
+    const r = await proc().spawn(NODE, ['-e', 'process.kill(process.pid, "SIGTERM")'], {}, {});
+    expect(r.exitCode).toBe(1);
   });
 });
