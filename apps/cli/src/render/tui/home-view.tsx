@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import { type ReactElement } from 'react';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
-import { stripTerminalControls } from './chat-projection.js';
+import { sanitizeInline } from './chat-projection.js';
 import type { StatusColor } from './format.js';
 import {
   agentLabel,
@@ -100,7 +100,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       <Box marginTop={1} flexDirection="column">
         <Text {...colorProps(color, 'cyan')}>
           {'> '}
-          {stripTerminalControls(input)}
+          {sanitizeInline(input)}
         </Text>
         <Text {...dimProps(color)}>type a message to start a new chat · Ctrl-C to exit</Text>
       </Box>

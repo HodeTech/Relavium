@@ -15,6 +15,7 @@ import {
   formatSessionFooter,
   formatToolCall,
   formatTurnSummary,
+  sanitizeInline,
   stripTerminalControls,
 } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -110,7 +111,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       {!running && (
         <Text {...colorProps(color, 'cyan')}>
           {'> '}
-          {stripTerminalControls(input)}
+          {sanitizeInline(input)}
         </Text>
       )}
 
@@ -133,7 +134,19 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     props.store.subscribe,
     props.store.getSnapshot,
   );
-  const [input, setInput] = useState('');
+  const [input, setInputState] = useState('');
+  // A ref SHADOW of the buffer: in a coalesced stdin chunk ink dispatches every event synchronously with no
+  // render flush, so the `input` closure stays stale across the burst. Reading `inputRef.current` gives the
+  // latest COMMITTED value, so even a Return that arrives in the same chunk as a preceding char submits the full
+  // buffer (not the stale render capture). The `setInput` wrapper keeps the ref in lockstep with the state.
+  const inputRef = useRef('');
+  const setInput = (next: (current: string) => string): void => {
+    setInputState((prev) => {
+      const value = next(prev);
+      inputRef.current = value;
+      return value;
+    });
+  };
   const cancelFired = useRef(false);
   const running = state.status === 'running';
 
@@ -155,7 +168,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
-    const action = reduceChatKey(char, key, input, running);
+    const action = reduceChatKey(char, key, inputRef.current, running);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired.current) {
@@ -165,12 +178,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'append':
       case 'backspace':
-        // Apply the EDIT through the functional updater so a coalesced multi-event stdin chunk composes onto the
-        // latest buffer (ink dispatches the chunk's events synchronously with no render flush between them).
         setInput((current) => applyChatEdit(current, action));
         return;
       case 'submit':
-        setInput('');
+        setInput(() => '');
         submit(action.line);
         return;
       case 'none':

@@ -50,6 +50,7 @@ describe('applyChatEdit (the functional-updater body)', () => {
     expect(applyChatEdit('', { kind: 'backspace' })).toBe(''); // no-op on an empty buffer
     expect(applyChatEdit('ab', { kind: 'cancel' })).toBe('ab');
     expect(applyChatEdit('ab', { kind: 'none' })).toBe('ab');
+    expect(applyChatEdit('ab', { kind: 'submit', line: 'ab' })).toBe('ab'); // submit is a non-edit
   });
 
   it('REGRESSION: a coalesced multi-event chunk composes onto the LATEST buffer (no dropped char)', () => {
@@ -69,5 +70,24 @@ describe('applyChatEdit (the functional-updater body)', () => {
       buffer = applyChatEdit(buffer, action); // functional fold over the ACCUMULATED buffer
     }
     expect(buffer).toBe('ab'); // not 'b' — the 'a' is not dropped
+
+    // Anti-proof: the OLD value-form (a precomputed `value: STALE + char` applied by REPLACING the buffer) drops
+    // 'a' — proving the op-form + functional fold is what fixes it, not just that the test produces 'ab'.
+    let staleResult = STALE;
+    for (const [char, key] of events) {
+      if (char.length > 0 && key.ctrl !== true && key.meta !== true) staleResult = STALE + char; // last write wins
+    }
+    expect(staleResult).toBe('b'); // the regression the op-refactor fixed
+  });
+
+  it('NOTE: a same-chunk [type, Return] submits the stale render-captured buffer (the known [append, Return] limit)', () => {
+    // reduceChatKey bakes the submit line from the `input` argument (the render capture), NOT the accumulated
+    // buffer — so a Return arriving in the same chunk as a preceding char submits the PRE-edit buffer. The
+    // ChatApp ref-shadow (inputRef.current) mitigates this for the real component by passing the latest committed
+    // value; at the pure-reducer level the line is whatever `input` it was called with.
+    expect(reduceChatKey('', { return: true }, 'partial', false)).toEqual({
+      kind: 'submit',
+      line: 'partial',
+    });
   });
 });

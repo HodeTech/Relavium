@@ -4,8 +4,8 @@
  * session (so `relavium chat` and a Home-started chat both get one). An LLM-summarised title is Phase 3.
  *
  * The title is STORAGE-shaped here (whitespace collapsed to one line, trimmed, truncated to ~40 chars with an
- * ellipsis); CONTROL-char sanitization is the display's job (the Home projection runs `stripTerminalControls` on
- * the title when it renders), mirroring the chat transcript's "raw in storage, sanitized at the boundary" rule.
+ * ellipsis); CONTROL-char sanitization is the display's job (the Home projection runs `sanitizeInline` on the
+ * title when it renders), mirroring the chat transcript's "raw in storage, sanitized at the boundary" rule.
  */
 
 /** The max length of a derived session title, in Unicode code points — the readable width of the Home strip. */

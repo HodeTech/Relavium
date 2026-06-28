@@ -15,7 +15,9 @@ describe('deriveSessionTitle', () => {
   it('truncates an over-long message with an ellipsis, staying within the code-point max', () => {
     const title = deriveSessionTitle('a'.repeat(100));
     expect(title).toBeDefined();
-    expect([...(title ?? '')].length).toBe(SESSION_TITLE_MAX); // 39 kept code points + the 1 ellipsis
+    // `<=` not `===`: a trailing-whitespace cut is trimmed off BEFORE the ellipsis, so the result can be shorter
+    // than the cap. (The all-'a' input here happens to land exactly at the cap.)
+    expect([...(title ?? '')].length).toBeLessThanOrEqual(SESSION_TITLE_MAX);
     expect(title?.endsWith('…')).toBe(true);
   });
 

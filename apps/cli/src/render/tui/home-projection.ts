@@ -63,7 +63,7 @@ export function expiryLabel(expiresAt: string | undefined, nowMs: number): strin
 
 /** "in 30s" / "in 5m" / "in 2h" / "in 3d" — the forward-looking counterpart of {@link relativeTime}. */
 function relativeIn(deltaMs: number): string {
-  const sec = Math.floor(deltaMs / 1000);
+  const sec = Math.max(1, Math.floor(deltaMs / 1000)); // floor a sub-second remaining to "in 1s", never "in 0s"
   if (sec < 60) return `in ${sec}s`;
   const min = Math.floor(sec / 60);
   if (min < 60) return `in ${min}m`;
@@ -74,7 +74,9 @@ function relativeIn(deltaMs: number): string {
 
 const SEP = '  ·  ';
 
-/** A recent session row → its glanceable line: title (or agent) · agent · when · cost. */
+/** A recent session row → its glanceable line: title (or agent) · agent · when · cost. An UNTITLED session
+ *  shows the agent slug as both the title fallback and the trailing agent field (by design — the row stays
+ *  uniform: a label, then the agent it ran). */
 export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
   const title = sanitizeInline(row.title ?? row.agentSlug);
   return [
@@ -83,7 +85,7 @@ export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
     relativeTime(row.updatedAt, nowMs),
     formatCostShort(row.totalCostMicrocents),
   ]
-    .filter((s) => s.length > 0)
+    .filter((s) => s.trim().length > 0) // a sanitized-to-whitespace field must not leave a dangling separator
     .join(SEP);
 }
 
@@ -97,7 +99,7 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
     relativeTime(anchor ?? row.createdAt, nowMs),
     formatCostShort(row.totalCostMicrocents),
   ]
-    .filter((s) => s.length > 0)
+    .filter((s) => s.trim().length > 0)
     .join(SEP);
 }
 
@@ -111,11 +113,13 @@ export function gateLabel(row: HomeGateRow, nowMs: number): string {
     sanitizeInline(row.message),
     ...(expiry === undefined ? [] : [expiry]),
   ]
-    .filter((s) => s.length > 0)
+    .filter((s) => s.trim().length > 0) // a whitespace-only (sanitized) gate message must not dangle a separator
     .join(SEP);
 }
 
 /** A recently-used agent → slug · when last used. */
 export function agentLabel(row: HomeAgentRow, nowMs: number): string {
-  return [row.agentSlug, relativeTime(row.lastUsedAt, nowMs)].filter((s) => s.length > 0).join(SEP);
+  return [row.agentSlug, relativeTime(row.lastUsedAt, nowMs)]
+    .filter((s) => s.trim().length > 0)
+    .join(SEP);
 }

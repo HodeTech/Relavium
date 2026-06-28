@@ -68,12 +68,14 @@ export function formatCostUsd(microcents: number): string {
 }
 
 /**
- * The Home-strip cost label (2.5.B): "free" at zero (the common zero-cost chat reads better than `$0.0000`),
- * else {@link formatCostUsd}. Reuses the canonical µ¢→USD conversion so there is exactly one home for that math
- * (CLAUDE.md rule 8) — never a second hand-rolled divisor that could drift by a factor of 100.
+ * The Home-strip cost label (2.5.B): "free" at zero/non-finite (the common zero-cost chat reads better than
+ * `$0.0000`), else {@link formatCostUsd}. Reuses the canonical µ¢→USD conversion so there is exactly one home for
+ * that math (CLAUDE.md rule 8) — never a second hand-rolled divisor that could drift by a factor of 100. NOTE: a
+ * tiny nonzero cost below 5000 µ¢ (sub-$0.0001) rounds to `$0.0000`, not `free` — nonzero is not free.
  */
 export function formatCostShort(microcents: number): string {
-  return microcents <= 0 ? 'free' : formatCostUsd(microcents);
+  // `<= 0 || !isFinite` ⇒ "free": guards a NaN (which `<= 0` alone would miss → "$NaN") to a safe label.
+  return microcents > 0 && Number.isFinite(microcents) ? formatCostUsd(microcents) : 'free';
 }
 
 /** Format a millisecond duration compactly: `420ms`, `3.2s`, `1m04s`. Negatives (clock skew) clamp to 0. */

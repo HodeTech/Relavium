@@ -43,6 +43,11 @@ describe('relativeTime', () => {
     expect(relativeTime(ago(2 * DAY), NOW)).toBe('2d ago');
   });
 
+  it('pins the 60-second bucket boundary (59s is "just now", 60s is "1m ago")', () => {
+    expect(relativeTime(ago(59_000), NOW)).toBe('just now');
+    expect(relativeTime(ago(60_000), NOW)).toBe('1m ago');
+  });
+
   it('returns "" for an unparseable timestamp (the strip renders nothing, never NaN)', () => {
     expect(relativeTime('not-a-date', NOW)).toBe('');
   });
@@ -58,6 +63,11 @@ describe('expiryLabel', () => {
     expect(expiryLabel(ago(MIN), NOW)).toBe('expired');
     expect(expiryLabel(ahead(5 * MIN), NOW)).toBe('expires in 5m');
     expect(expiryLabel(ahead(2 * HR), NOW)).toBe('expires in 2h');
+  });
+
+  it('is "expired" exactly at now, and floors a sub-second remaining to "in 1s" (never "in 0s")', () => {
+    expect(expiryLabel(ahead(0), NOW)).toBe('expired'); // deadline == now ⇒ already due
+    expect(expiryLabel(ahead(500), NOW)).toBe('expires in 1s'); // sub-second ⇒ floored to 1s
   });
 });
 
