@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
@@ -10,6 +11,9 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/** POSIX-only tests (a FIFO is created via `mkfifo`); Windows has no equivalent special file. */
+const itPosix = process.platform === 'win32' ? it.skip : it;
 
 import { ToolUnavailableError } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -140,6 +144,18 @@ describe('createNodeFsCapability — read (jailed)', () => {
     await mkdir(join(workspace, 'd'), { recursive: true });
     await expect(sandboxed().readFile('d', {})).rejects.toThrow(/directory/);
   });
+
+  itPosix(
+    'rejects a FIFO (non-regular file) WITHOUT blocking the open — fail-closed, not a hang',
+    async () => {
+      // A reader-less FIFO opened O_RDONLY without O_NONBLOCK would BLOCK forever (and `fs.open` takes no signal,
+      // so the dispatch could not be cancelled). The fix opens non-blocking + fstat-rejects the non-regular file.
+      // If this regresses to a blocking open, the test times out (fail) — it never hangs the suite indefinitely.
+      execFileSync('mkfifo', [join(workspace, 'pipe')]);
+      await expect(sandboxed().readFile('pipe', {})).rejects.toThrow(/not a regular file/);
+    },
+    10_000,
+  );
 });
 
 /**
@@ -185,6 +201,15 @@ describe('readJailedFile — the post-jail fd read guard', () => {
     await mkdir(join(workspace, 'dir'), { recursive: true });
     expect((await readJailedFile(join(workspace, 'dir'), 1 << 20)).kind).toBe('directory');
   });
+
+  itPosix(
+    'flags a FIFO as special (opened O_NONBLOCK, so a reader-less pipe never blocks the fstat guard)',
+    async () => {
+      execFileSync('mkfifo', [join(workspace, 'pipe')]);
+      expect((await readJailedFile(join(workspace, 'pipe'), 1 << 20)).kind).toBe('special');
+    },
+    10_000,
+  );
 });
 
 describe('createNodeFsCapability — glob read', () => {

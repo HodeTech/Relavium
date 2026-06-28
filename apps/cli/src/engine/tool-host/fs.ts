@@ -154,6 +154,9 @@ async function readOne(
   if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
   }
+  if (result.kind === 'special') {
+    throw new FsCapabilityError('read_file: the path is not a regular file');
+  }
   if (result.kind === 'binary') {
     // The durable-media-handle path (ADR-0031) needs a wired media store; the 2.5.A fs arm has none, so a
     // binary/media file fail-closes (never inline base64) rather than corrupting the text channel.
@@ -194,7 +197,10 @@ async function readGlob(
     // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
     // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
     const result = await readJailedFile(m.real, maxReadBytes - totalBytes);
-    if (result.kind === 'directory' || result.kind === 'binary') continue; // skip; never charge the budget
+    // skip a non-text match (dir / special / binary); never charge the budget. (collectGlobFiles already filters
+    // to regular files, so `special` is belt-and-suspenders — a swap to a FIFO after the walk would land here.)
+    if (result.kind === 'directory' || result.kind === 'special' || result.kind === 'binary')
+      continue;
     if (result.kind === 'oversize') {
       throw new FsCapabilityError(
         `read_file: the glob result exceeds the ${maxReadBytes}-byte read limit`,
@@ -218,9 +224,10 @@ async function readGlob(
 /** Prefix length for binary detection — a NUL byte in the first 8 KiB marks a non-text file (the git convention). */
 const BINARY_PROBE_BYTES = 8192;
 
-/** The outcome of a single jailed read: a directory, a binary/oversize fail-class, or the text content + stat. */
+/** The outcome of a single jailed read: a directory, a non-regular/binary/oversize fail-class, or text + stat. */
 export type JailedRead =
   | { kind: 'directory' }
+  | { kind: 'special' }
   | { kind: 'binary' }
   | { kind: 'oversize'; size: number }
   | { kind: 'file'; bytes: Buffer; size: number; mtimeMs: number };
@@ -233,8 +240,10 @@ export type JailedRead =
  * is already canonical, so its final component is NEVER legitimately a symlink (the callers resolved any
  * in-scope symlink to its target first), and `O_NOFOLLOW` therefore rejects ONLY a swap — never a valid target.
  * It is a no-op on Windows (the same residual the append/temp write paths document; Node exposes no `openat` to
- * also pin the PARENT directory). `sizeLimit` bounds the read so an over-budget file is never loaded just to be
- * rejected.
+ * also pin the PARENT directory). `O_NONBLOCK` opens a FIFO/device WITHOUT blocking — a reader-less FIFO would
+ * otherwise hang the open indefinitely (and `fs.open` takes no `AbortSignal`, so the dispatch could not even be
+ * cancelled) — and the fstat below then fails any non-regular file closed. `sizeLimit` bounds the read so an
+ * over-budget file is never loaded just to be rejected.
  *
  * CAVEAT (binary heuristic): a NUL-free file in a legacy single-byte encoding (Latin-1 / CP1252 / MacRoman)
  * passes as "text" and is decoded as UTF-8, yielding U+FFFD replacements for its high bytes — an accepted v1
@@ -244,23 +253,29 @@ export type JailedRead =
  * black-box `readFile` test cannot reach because the jail already resolves any symlink to its canonical target.
  */
 export async function readJailedFile(real: string, sizeLimit: number): Promise<JailedRead> {
-  const handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
-    (error: unknown) => {
-      const code = errnoCode(error);
-      if (code === 'ELOOP' || code === 'ENOTDIR') {
-        throw new FsScopeDeniedError('read_file: refusing to read through a symlink');
-      }
-      if (code === 'EISDIR') {
-        // Some platforms reject `open(dir, O_RDONLY)` outright (Linux/macOS allow it; we detect the dir from the
-        // fd's fstat below). Normalize to the same directory outcome so the caller sees one behavior everywhere.
-        throw new FsCapabilityError('read_file: the path is a directory, not a file');
-      }
-      throw error;
-    },
-  );
+  const handle = await open(
+    real,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: unknown) => {
+    const code = errnoCode(error);
+    if (code === 'ELOOP' || code === 'ENOTDIR') {
+      throw new FsScopeDeniedError('read_file: refusing to read through a symlink');
+    }
+    if (code === 'EISDIR') {
+      // Some platforms reject `open(dir, O_RDONLY)` outright (Linux/macOS allow it; we detect the dir from the
+      // fd's fstat below). Normalize to the same directory outcome so the caller sees one behavior everywhere.
+      throw new FsCapabilityError('read_file: the path is a directory, not a file');
+    }
+    throw error;
+  });
   try {
     const st = await handle.stat();
     if (st.isDirectory()) return { kind: 'directory' };
+    // Only a REGULAR file is readable. A FIFO / socket / device fails closed here — and because the open used
+    // O_NONBLOCK, a reader-less FIFO returned the fd immediately rather than blocking the dispatch. The fstat is
+    // authoritative on the OPENED inode, so this guard needs no pre-open path-stat (which would reintroduce the
+    // read TOCTOU the single-fd design closes).
+    if (!st.isFile()) return { kind: 'special' };
     const probeLen = Math.min(BINARY_PROBE_BYTES, st.size);
     if (probeLen > 0) {
       const probe = Buffer.allocUnsafe(probeLen);
