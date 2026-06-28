@@ -315,50 +315,61 @@ export class AgentSession {
       // orphaning it.
       this.#messages.pop();
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
-      if (err instanceof AgentTurnError) {
-        // Count the turn against the cap ONLY when a provider actually engaged (an explicit signal the turn core
-        // attaches — a non-skipped attempt ran). A failure BEFORE any egress — no plan entries, a pre-egress
-        // budget refusal, a pre-flight cancel — must not burn a turn the model never got to take; otherwise a
-        // mis-configured session could exhaust `max_turns` without a single provider call. `engaged !== true`
-        // (covering an undefined from an error that bypassed the wrapper) leaves the counter untouched.
-        if (err.engaged === true) this.#turnCount += 1;
-        // EA2 (ADR-0055): report the turn's REAL accumulated usage (the turn core attaches it to the error
-        // when a provider engaged), not a hardcoded zero — so a failed turn's tokens are accounted for.
-        // `?? {0,0}` covers a failure that never engaged a provider (the turn core leaves `usage` undefined).
-        this.#emitTurnCompleted('error', err.usage ?? { input: 0, output: 0 }, {
-          code: err.code,
-          message: err.message,
-          retryable: err.retryable,
-        });
-      } else if (err instanceof BudgetPauseError) {
-        // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred
-        // 1.V×1.AC item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded`
-        // rather than escaping `sendMessage` as a raw throw — which would leave the turn with no terminal
-        // `session:turn_completed`, breaking the session event contract (M1). It engaged NO provider (the
-        // pause is pre-egress), so — like the hard-cap block — it does NOT increment the turn counter.
-        this.#emitTurnCompleted(
-          'error',
-          { input: 0, output: 0 },
-          { code: 'budget_exceeded', message: err.message, retryable: false },
-        );
-      } else {
-        // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced
-        // (every session:turn_started gets a terminal), then re-raise so the caller still sees the bug.
-        this.#emitTurnCompleted(
-          'error',
-          { input: 0, output: 0 },
-          {
-            code: 'internal',
-            message: 'the session turn failed with an unexpected error',
-            retryable: false,
-          },
-        );
-        throw err;
-      }
+      this.#settleTurnError(err); // emits the terminal by error class; RE-THROWS an unclassified error
     } finally {
       this.#abort = undefined;
       if (this.#statusIs('running')) this.#status = 'idle';
     }
+  }
+
+  /**
+   * Settle a turn that ended in a throw onto a terminal `session:turn_completed`, by error class. The caller has
+   * already rolled the user message back and ruled out a cancel-during-turn.
+   * - A classified {@link AgentTurnError} completes with its mapped code, counting the turn against the cap ONLY
+   *   when a provider engaged (see {@link AgentTurnError.engaged}) and reporting its real EA2 usage.
+   * - A pre-egress {@link BudgetPauseError} completes as `budget_exceeded` (it engaged no provider → uncounted).
+   * - Any other (unclassified) error completes as `internal` and is **re-thrown** so the caller still sees the bug.
+   */
+  #settleTurnError(err: unknown): void {
+    if (err instanceof AgentTurnError) {
+      // Count the turn against the cap ONLY when a provider actually engaged (a non-skipped attempt ran — an
+      // explicit signal the turn core attaches). A failure BEFORE any egress (no plan entries, a pre-egress
+      // budget refusal, a pre-flight cancel) must not burn a turn the model never got to take; `engaged !== true`
+      // (covering an undefined from an error that bypassed the wrapper) leaves the counter untouched.
+      if (err.engaged === true) this.#turnCount += 1;
+      // EA2 (ADR-0055): report the turn's REAL accumulated usage when a provider engaged (the turn core attaches
+      // it), not a hardcoded zero — `?? {0,0}` covers a failure that never engaged a provider.
+      this.#emitTurnCompleted('error', err.usage ?? { input: 0, output: 0 }, {
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+      });
+      return;
+    }
+    if (err instanceof BudgetPauseError) {
+      // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred 1.V×1.AC
+      // item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded` rather than
+      // escaping `sendMessage` as a raw throw — which would leave the turn with no terminal, breaking the M1
+      // event contract. It engaged NO provider (the pause is pre-egress), so it does NOT count.
+      this.#emitTurnCompleted(
+        'error',
+        { input: 0, output: 0 },
+        { code: 'budget_exceeded', message: err.message, retryable: false },
+      );
+      return;
+    }
+    // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every
+    // session:turn_started gets a terminal), then re-raise so the caller still sees the bug.
+    this.#emitTurnCompleted(
+      'error',
+      { input: 0, output: 0 },
+      {
+        code: 'internal',
+        message: 'the session turn failed with an unexpected error',
+        retryable: false,
+      },
+    );
+    throw err;
   }
 
   /**

@@ -582,10 +582,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   not by the profile's *read-only* posture — `write_file` is still advertised on a read-only chat host and only
   fail-closes at dispatch (`tool_unavailable`). Correct and safe (the dispatch backstop is authoritative), but a
   profile-aware advertise-filter would stop offering an always-denied tool. *(low · apps/cli/src/engine/tool-host/assemble.ts)*
-- [ ] **Windows `O_NOFOLLOW` is a no-op (residual append-race).** `O_NOFOLLOW` is `0` on Windows, so the
-  symlink-swap TOCTOU on the append path rests on the pre-write `lstat` alone (the non-race case). Append is the
-  author-trusted workflow-run path (chat is read-only), so the residual race is accepted for 2.5.A; revisit if a
-  write-capable chat lands on Windows. *(low · apps/cli/src/engine/tool-host/fs.ts; Windows-only)*
+- [ ] **Residual fs TOCTOU on the PARENT directory (no `openat` in Node).** The read path (`readJailedFile`)
+  and the write paths (append + temp/rename) all open the FINAL component with `O_NOFOLLOW`, so a final-component
+  symlink swapped in after the jail's `realpath` fails closed. The unclosable residual is a swap of a PARENT
+  directory component to an out-of-jail symlink between the `realpath` and the open — Node exposes no
+  `openat`/`openat2` (nor Linux `RESOLVE_BENEATH`) to pin the parent by fd, so a pure-path open re-walks the
+  (possibly swapped) parents. The window is narrowed to the gap between `jailExisting`/`jailWriteTarget`'s
+  `realpath` and the immediately-following open. Additionally, `O_NOFOLLOW` is `0` on **Windows**, so even the
+  final-component guard there rests on the pre-op `lstat` alone (the non-race case). Reads are bounded and the
+  write arm is the author-trusted workflow-run path (chat is read-only), so both residuals are accepted for
+  2.5.A; close the parent-swap gap with a native `openat`-based helper (or a Rust-side resolver) if a
+  write-capable / untrusted-read surface raises the bar. *(low · apps/cli/src/engine/tool-host/fs.ts)*
 - [ ] **Deliberate non-fixes from the PR #60 excellence review (recorded, not bugs).** Each was weighed and
   skipped with a reason: (a) **no host-arm memoization** (fs scope-checker, process base-env, exec cache) —
   each would cache a security-relevant `realpath` on an I/O-dominated cold path, defeating the per-call

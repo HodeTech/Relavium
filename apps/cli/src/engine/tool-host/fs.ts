@@ -5,7 +5,6 @@ import {
   mkdir,
   open,
   readdir,
-  readFile,
   realpath,
   rename,
   rm,
@@ -151,36 +150,25 @@ async function readOne(
   }
   const inScope = await buildScopeChecker(config);
   const real = await jailExisting(config, inScope, path);
-  const info = await stat(real);
-  if (info.isDirectory()) {
+  const result = await readJailedFile(real, maxReadBytes);
+  if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
   }
-  return readTextFile(real, info.size, info.mtime, maxReadBytes);
-}
-
-/** Read one existing, in-jail, in-budget text file into a {@link FileRead} (binary/media is fail-closed). */
-async function readTextFile(
-  real: string,
-  size: number,
-  mtime: Date,
-  maxReadBytes: number,
-): Promise<FileRead> {
-  if (size > maxReadBytes) {
-    throw new FsCapabilityError(`read_file: the file exceeds the ${maxReadBytes}-byte read limit`);
-  }
-  const bytes = await readFile(real);
-  if (isBinary(bytes)) {
+  if (result.kind === 'binary') {
     // The durable-media-handle path (ADR-0031) needs a wired media store; the 2.5.A fs arm has none, so a
     // binary/media file fail-closes (never inline base64) rather than corrupting the text channel.
     throw new FsCapabilityError(
       'read_file: binary/media files are not supported in this session — read a text file',
     );
   }
+  if (result.kind === 'oversize') {
+    throw new FsCapabilityError(`read_file: the file exceeds the ${maxReadBytes}-byte read limit`);
+  }
   return {
-    content: bytes.toString('utf8'),
+    content: result.bytes.toString('utf8'),
     mimeType: mimeForPath(real),
-    sizeBytes: size,
-    lastModified: mtime.toISOString(),
+    sizeBytes: result.size,
+    lastModified: new Date(result.mtimeMs).toISOString(),
   };
 }
 
@@ -201,19 +189,20 @@ async function readGlob(
   let latest = 0;
   for (const m of matches) {
     throwIfAborted(signal);
-    // Probe binary with a BOUNDED prefix read (not a full load): a binary match is skipped, not fatal, and
-    // must NOT charge the budget. Then enforce the budget against the known `stat` size BEFORE the full read,
-    // so a large or over-budget text file is never loaded into memory just to be rejected.
-    if (await fileLooksBinary(m.real)) continue;
-    if (totalBytes + m.size > maxReadBytes) {
+    // ONE read fd per match (probe + size + content from the single open) — so a swap after the walk's realpath
+    // can neither redirect the read nor make the size charged diverge from the bytes read. The bounded prefix
+    // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
+    // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
+    const result = await readJailedFile(m.real, maxReadBytes - totalBytes);
+    if (result.kind === 'directory' || result.kind === 'binary') continue; // skip; never charge the budget
+    if (result.kind === 'oversize') {
       throw new FsCapabilityError(
         `read_file: the glob result exceeds the ${maxReadBytes}-byte read limit`,
       );
     }
-    const bytes = await readFile(m.real);
-    totalBytes += m.size;
-    latest = Math.max(latest, m.mtimeMs);
-    parts.push(`===== ${m.rel} =====\n${bytes.toString('utf8')}`);
+    totalBytes += result.size;
+    latest = Math.max(latest, result.mtimeMs);
+    parts.push(`===== ${m.rel} =====\n${result.bytes.toString('utf8')}`);
   }
   if (parts.length === 0) {
     throw new FsCapabilityError('read_file: the glob matched only binary/media files');
@@ -224,6 +213,74 @@ async function readGlob(
     sizeBytes: totalBytes,
     lastModified: new Date(latest).toISOString(),
   };
+}
+
+/** Prefix length for binary detection — a NUL byte in the first 8 KiB marks a non-text file (the git convention). */
+const BINARY_PROBE_BYTES = 8192;
+
+/** The outcome of a single jailed read: a directory, a binary/oversize fail-class, or the text content + stat. */
+export type JailedRead =
+  | { kind: 'directory' }
+  | { kind: 'binary' }
+  | { kind: 'oversize'; size: number }
+  | { kind: 'file'; bytes: Buffer; size: number; mtimeMs: number };
+
+/**
+ * Read an already-jailed canonical path through a **single read fd** — the stat, the bounded binary probe, and
+ * the content all come from the one open handle, so a path swapped AFTER the jail's `realpath` can neither make
+ * the checked size diverge from the bytes read nor be reached through a probe→read reopen window. `O_NOFOLLOW`
+ * fails the open closed if the final component was swapped to a symlink between the resolve and the open: `real`
+ * is already canonical, so its final component is NEVER legitimately a symlink (the callers resolved any
+ * in-scope symlink to its target first), and `O_NOFOLLOW` therefore rejects ONLY a swap — never a valid target.
+ * It is a no-op on Windows (the same residual the append/temp write paths document; Node exposes no `openat` to
+ * also pin the PARENT directory). `sizeLimit` bounds the read so an over-budget file is never loaded just to be
+ * rejected.
+ *
+ * CAVEAT (binary heuristic): a NUL-free file in a legacy single-byte encoding (Latin-1 / CP1252 / MacRoman)
+ * passes as "text" and is decoded as UTF-8, yielding U+FFFD replacements for its high bytes — an accepted v1
+ * limitation (the durable-media-handle path that would carry such files faithfully is the deferred follow-up).
+ *
+ * Exported for direct security testing of the post-jail fd guard (the no-follow / single-fd properties), which a
+ * black-box `readFile` test cannot reach because the jail already resolves any symlink to its canonical target.
+ */
+export async function readJailedFile(real: string, sizeLimit: number): Promise<JailedRead> {
+  const handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
+    (error: unknown) => {
+      const code = errnoCode(error);
+      if (code === 'ELOOP' || code === 'ENOTDIR') {
+        throw new FsScopeDeniedError('read_file: refusing to read through a symlink');
+      }
+      if (code === 'EISDIR') {
+        // Some platforms reject `open(dir, O_RDONLY)` outright (Linux/macOS allow it; we detect the dir from the
+        // fd's fstat below). Normalize to the same directory outcome so the caller sees one behavior everywhere.
+        throw new FsCapabilityError('read_file: the path is a directory, not a file');
+      }
+      throw error;
+    },
+  );
+  try {
+    const st = await handle.stat();
+    if (st.isDirectory()) return { kind: 'directory' };
+    const probeLen = Math.min(BINARY_PROBE_BYTES, st.size);
+    if (probeLen > 0) {
+      const probe = Buffer.allocUnsafe(probeLen);
+      const { bytesRead } = await handle.read(probe, 0, probeLen, 0);
+      if (probe.subarray(0, bytesRead).includes(0)) return { kind: 'binary' };
+    }
+    if (st.size > sizeLimit) return { kind: 'oversize', size: st.size };
+    // Read from explicit position 0 (not the handle's running offset, which the probe advanced) into a sized
+    // buffer — avoids `FileHandle.readFile()` position ambiguity and keeps content pinned to the fstat'd inode.
+    const content = Buffer.allocUnsafe(st.size);
+    const { bytesRead } = await handle.read(content, 0, st.size, 0);
+    return {
+      kind: 'file',
+      bytes: content.subarray(0, bytesRead),
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -283,7 +340,14 @@ async function writeOne(
   const tmp = join(realDir, `.relavium-write.${randomUUID()}.tmp`);
   let published = false;
   try {
-    await writeFile(tmp, bytes, { flag: 'wx' }); // O_CREAT|O_EXCL — refuses to follow/create through a symlink
+    // O_CREAT|O_EXCL|O_WRONLY (the 'wx' flag) plus O_NOFOLLOW — no-follow PARITY with the append path: the open
+    // refuses to follow a final-component symlink even though the random temp name already makes a pre-placed
+    // symlink there implausible (defense in depth). The residual gap is a PARENT-dir swap between `jailWriteTarget`'s
+    // realpath and this write — not closable in Node (no `openat`); the write arm is the author-trusted
+    // workflow-run path (chat is read-only), so that residual is accepted for 2.5.A.
+    await writeFile(tmp, bytes, {
+      flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    });
     await rename(tmp, finalTarget);
     published = true;
   } finally {
@@ -472,7 +536,9 @@ async function walk(
     throwIfAborted(signal);
     const queued = stack.pop();
     if (queued === undefined) break;
-    const dir = queued === root ? root : await resolveInScope(queued, inScope);
+    // Re-resolve + re-scope-check EVERY popped dir (including `root`, already canonical — a no-op resolve) right
+    // before its `readdir`, closing the queue→read TOCTOU; a dir swapped out-of-jail in that window drops here.
+    const dir = await resolveInScope(queued, inScope);
     if (dir === undefined) continue; // swapped out-of-jail or vanished between queue and read — skip
     const dirents = await readdir(dir, { withFileTypes: true }).catch((): Dirent[] => []);
     for (const dirent of dirents) {
@@ -582,28 +648,6 @@ function matchSegment(glob: string, value: string): boolean {
 /* ------------------------------------------------------------------------------------------------ *
  * Small helpers.
  * ------------------------------------------------------------------------------------------------ */
-
-/**
- * Heuristic binary detection: a NUL byte in the first 8 KiB marks a non-text file (the git convention).
- * CAVEAT: a NUL-free file in a legacy single-byte encoding (Latin-1 / CP1252 / MacRoman) passes as "text" and
- * is decoded as UTF-8, yielding U+FFFD replacement characters for its high bytes — an accepted v1 limitation
- * (the durable-media-handle path that would carry such files faithfully is the deferred follow-up).
- */
-function isBinary(bytes: Buffer): boolean {
-  return bytes.subarray(0, 8192).includes(0);
-}
-
-/** Probe whether a file is binary by reading only a BOUNDED prefix (no full load) — a NUL byte ⇒ binary. */
-async function fileLooksBinary(path: string): Promise<boolean> {
-  const handle = await open(path, 'r');
-  try {
-    const buf = Buffer.allocUnsafe(8192);
-    const { bytesRead } = await handle.read(buf, 0, 8192, 0);
-    return buf.subarray(0, bytesRead).includes(0);
-  } finally {
-    await handle.close();
-  }
-}
 
 /** The forward-slash relative path of `real` under `root` (the model-facing, OS-agnostic entry name). */
 function posixRel(root: string, real: string): string {

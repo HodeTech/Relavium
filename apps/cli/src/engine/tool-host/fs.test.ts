@@ -18,6 +18,7 @@ import {
   createNodeFsCapability,
   FsCapabilityError,
   FsScopeDeniedError,
+  readJailedFile,
   type NodeFsCapabilityConfig,
 } from './fs.js';
 
@@ -113,6 +114,14 @@ describe('createNodeFsCapability — read (jailed)', () => {
     );
   });
 
+  it('follows an IN-SCOPE symlink to its target — the fd read path preserves symlink-read semantics', async () => {
+    // The jail resolves an in-scope symlink to its canonical target and reads THAT (not the link) — so the
+    // O_NOFOLLOW on the read fd, which targets the resolved file, never rejects a legitimate in-scope symlink.
+    await writeFile(join(workspace, 'inside.txt'), 'INSIDE');
+    await symlink(join(workspace, 'inside.txt'), join(workspace, 'alias.txt'));
+    expect((await sandboxed().readFile('alias.txt', {})).content).toBe('INSIDE');
+  });
+
   it('rejects a binary (NUL-containing) file', async () => {
     await writeFile(join(workspace, 'bin'), Buffer.from([0x41, 0x00, 0x42]));
     await expect(sandboxed().readFile('bin', {})).rejects.toThrow(/binary/);
@@ -130,6 +139,51 @@ describe('createNodeFsCapability — read (jailed)', () => {
   it('rejects a directory path for read_file', async () => {
     await mkdir(join(workspace, 'd'), { recursive: true });
     await expect(sandboxed().readFile('d', {})).rejects.toThrow(/directory/);
+  });
+});
+
+/**
+ * Direct coverage of the post-jail fd read guard (`readJailedFile`) — the IO boundary the jail's `realpath`
+ * cannot reach in a black-box `readFile` test (it resolves any symlink to its target first). These pin the
+ * TOCTOU-relevant properties: a symlink at the resolved path (a swap after validation) is refused at the fd
+ * layer by `O_NOFOLLOW`, and the stat / binary probe / content all come from one open handle.
+ */
+describe('readJailedFile — the post-jail fd read guard', () => {
+  it('refuses a final-component symlink at the fd layer (O_NOFOLLOW) — the swap-after-validation guard', async () => {
+    // A symlink at the path readJailedFile is handed (i.e. a swap of the post-realpath target) must fail closed
+    // — even though the link points IN-scope, the fd open never follows it (ELOOP/ENOTDIR → fatal tool_denied).
+    await writeFile(join(workspace, 'inside.txt'), 'INSIDE');
+    const link = join(workspace, 'swapped.txt');
+    await symlink(join(workspace, 'inside.txt'), link);
+    await expect(readJailedFile(link, 1 << 20)).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('reads a normal file — content, size, and mtime all from the single fd', async () => {
+    await writeFile(join(workspace, 'f.txt'), 'hello');
+    const result = await readJailedFile(join(workspace, 'f.txt'), 1 << 20);
+    expect(result.kind).toBe('file');
+    if (result.kind === 'file') {
+      expect(result.bytes.toString('utf8')).toBe('hello');
+      expect(result.size).toBe(5);
+      expect(typeof result.mtimeMs).toBe('number');
+    }
+  });
+
+  it('flags a binary file from the bounded prefix probe (never charging a full load)', async () => {
+    await writeFile(join(workspace, 'bin'), Buffer.from([0x41, 0x00, 0x42]));
+    expect((await readJailedFile(join(workspace, 'bin'), 1 << 20)).kind).toBe('binary');
+  });
+
+  it('flags an oversize file against the size limit BEFORE reading its content', async () => {
+    await writeFile(join(workspace, 'big.txt'), 'xxxxxx'); // 6 bytes
+    const result = await readJailedFile(join(workspace, 'big.txt'), 3);
+    expect(result.kind).toBe('oversize');
+    if (result.kind === 'oversize') expect(result.size).toBe(6);
+  });
+
+  it('flags a directory (the caller rejects read_file on a directory)', async () => {
+    await mkdir(join(workspace, 'dir'), { recursive: true });
+    expect((await readJailedFile(join(workspace, 'dir'), 1 << 20)).kind).toBe('directory');
   });
 });
 
