@@ -2,7 +2,7 @@
 
 > Last updated: 2026-06-29
 
-- **Status**: Reference — the Home surface lands in **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste). The in-app slash palette / `/help` / `/doctor` (2.5.C), the reseat-less mode keymap + per-tool approval (2.5.E), and the Home-side `/models` picker land in later 2.5 workstreams and **extend** this same canonical home.
+- **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste). The in-app slash palette / `/help` / `/doctor` (2.5.C), the reseat-less mode keymap + per-tool approval (2.5.E), and the Home-side `/models` picker land in later 2.5 workstreams and **extend** this same canonical home.
 - **Surface**: CLI (a bare `relavium` with no subcommand, on a TTY)
 - **Scope**: Phase 2.5, local-first. The Home is a thin surface over the **same** `@relavium/core` engine + `AgentSession` as `relavium chat` — it is a management + chat shell, never an IDE.
 - **Related**: [commands.md](commands.md), [chat-session.md](chat-session.md), [../contracts/config-spec.md](../contracts/config-spec.md), [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md), [../../decisions/0054-cli-bare-invocation-interactive-home.md](../../decisions/0054-cli-bare-invocation-interactive-home.md), [../../decisions/0049-cli-machine-output-contract.md](../../decisions/0049-cli-machine-output-contract.md), [../../decisions/0047-cli-framework-commander-ink-clack.md](../../decisions/0047-cli-framework-commander-ink-clack.md), [../../decisions/0024-agent-first-entry-point-agentsession.md](../../decisions/0024-agent-first-entry-point-agentsession.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md)
@@ -21,7 +21,7 @@ stdoutIsTty && stdinIsTty && !json && !isCiEnv(env)
 - `--json` never opens the Home (the machine contract wins).
 - The CI guard reuses the existing `isCiEnv` helper ([output-mode.ts](../../../apps/cli/src/process/output-mode.ts)), which treats `CI=true`, `CI=1`, or any truthy `CI` as CI — so a runner that sets `CI=1` or allocates a pseudo-TTY cannot accidentally open an interactive Home and stall the pipeline.
 
-**Every non-interactive path is byte-for-byte unchanged**: a piped, `--json`, or CI bare invocation prints `program.helpInformation()` and exits `0`, exactly as before ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md) — `--help` / `--version` / a bare no-command invocation are exit-`0` meta-operations). The Home adds a TTY-gated branch and **no** new IO surface. A Home build/config fault renders like any command fault (a `CliError` → exit `2`; an unexpected throw → exit `1` with a generic message, no raw leak).
+**Every non-interactive path is byte-for-byte unchanged**: a piped, `--json`, or CI bare invocation prints `program.helpInformation()` and exits `0`, exactly as before ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md) — `--help` / `--version` / a bare no-command invocation are exit-`0` meta-operations). The Home adds a TTY-gated branch and **no** new IO surface. A Home build/config fault renders like any command fault (a config/invocation `CliError` → exit `2`; any unexpected throw, or an `internal` fault, → exit `1` with a generic message, no raw leak).
 
 ## The management strip
 
@@ -73,12 +73,14 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | Key | `home` | `chat` | `loading` |
 | --- | --- | --- | --- |
 | printable | append to the prompt buffer | append (idle) / ignored mid-turn | ignored |
-| Return | submit → start a chat | submit the turn | ignored |
-| Backspace / Delete | erase one char | erase one char | ignored |
+| Return | submit → start a chat | submit the turn (idle) / ignored mid-turn | ignored |
+| Backspace / Delete | erase one char | erase one char (idle) / ignored mid-turn | ignored |
 | **Ctrl-C** | **clean exit (`0`)** | **`/cancel`** → end the chat, return to Home | **bail out** (exit) |
 | **Ctrl-D** (EOF) | **clean exit (`0`)** on an **empty** prompt (a non-empty buffer keeps it — no data loss) | — | **clean exit (`0`)** (the prompt is empty while building, so EOF bails the build like Ctrl-C) |
 
 Ctrl-C is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge) and even mid-bracketed-paste (so a dropped paste-end marker can never trap the user). The richer slash palette, `@`-mention, `!`-shell, `Ctrl+J` multiline, history recall, and the ask/plan/accept-edits/auto **mode keymap** with per-tool approval are forthcoming (2.5.C / 2.5.E) and extend this table.
+
+The **footer hint-bar** in 2.5.B is the single fixed line under the prompt — `type a message to start a new chat · Ctrl-C to exit` — plus the `Ctrl-C to exit` line on the degrade frame. The context-aware hint-bar (the two or three most-relevant keys per context/mode) lands in 2.5.C and extends this fixed footer.
 
 ## Bracketed paste (DECSET 2004)
 
