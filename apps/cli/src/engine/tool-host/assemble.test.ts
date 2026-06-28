@@ -68,14 +68,22 @@ describe('assembleToolEnv', () => {
     try {
       // chat-read-only + full ⇒ clamped to project (workspace-only): the OUTSIDE read is REJECTED, but an
       // IN-workspace read still works (so the clamp landed at project/workspace-only, not something stricter).
-      const chat = assembleToolEnv({ profile: 'chat-read-only', fsScopeTier: 'full', workspaceDir: workspace });
+      const chat = assembleToolEnv({
+        profile: 'chat-read-only',
+        fsScopeTier: 'full',
+        workspaceDir: workspace,
+      });
       const chatFs = chat.host.fs;
       expect(chatFs).toBeDefined();
       if (chatFs === undefined) return;
       await expect(chatFs.readFile(join(outside, 'secret.txt'), {})).rejects.toThrow();
       expect((await chatFs.readFile('in.txt', {})).content).toBe('INSIDE');
       // workflow-read-write + full ⇒ NOT clamped (author-trusted): the outside read succeeds.
-      const run = assembleToolEnv({ profile: 'workflow-read-write', fsScopeTier: 'full', workspaceDir: workspace });
+      const run = assembleToolEnv({
+        profile: 'workflow-read-write',
+        fsScopeTier: 'full',
+        workspaceDir: workspace,
+      });
       const runFs = run.host.fs;
       expect(runFs).toBeDefined();
       if (runFs === undefined) return;

@@ -13,7 +13,11 @@ import {
 } from './fs.js';
 
 /** An aborted signal for cancellation tests (AbortSignalLike: aborted + the two listener no-ops). */
-const ABORTED = { aborted: true, addEventListener: () => undefined, removeEventListener: () => undefined };
+const ABORTED = {
+  aborted: true,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+};
 
 /**
  * The node `fs` capability is the 2.5.A security surface — the tests are heavy on the JAIL: traversal,
@@ -36,8 +40,15 @@ afterEach(async () => {
   await rm(join(workspace, '..'), { recursive: true, force: true }).catch(() => undefined);
 });
 
-function sandboxed(over: Partial<NodeFsCapabilityConfig> = {}): ReturnType<typeof createNodeFsCapability> {
-  return createNodeFsCapability({ tier: 'sandboxed', workspaceDir: workspace, readOnly: false, ...over });
+function sandboxed(
+  over: Partial<NodeFsCapabilityConfig> = {},
+): ReturnType<typeof createNodeFsCapability> {
+  return createNodeFsCapability({
+    tier: 'sandboxed',
+    workspaceDir: workspace,
+    readOnly: false,
+    ...over,
+  });
 }
 
 describe('createNodeFsCapability — read (jailed)', () => {
@@ -164,6 +175,13 @@ describe('createNodeFsCapability — glob read', () => {
     await expect(sandboxed({ maxReadBytes: 6 }).readFile('*.ts', { glob: true })).rejects.toThrow(
       /limit/,
     );
+  });
+
+  it('a binary match does NOT charge the budget — a text match in budget still reads', async () => {
+    await writeFile(join(workspace, 'big.ts'), Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00])); // 6-byte binary
+    await writeFile(join(workspace, 'small.ts'), 'OK'); // 2-byte text, within a 3-byte budget
+    const result = await sandboxed({ maxReadBytes: 3 }).readFile('*.ts', { glob: true });
+    expect(result.content).toContain('OK'); // the binary is skipped before its size is tested against the budget
   });
 
   it('caps the glob read at maxGlobMatches', async () => {
@@ -304,7 +322,7 @@ describe('createNodeFsCapability — list_directory', () => {
   it('caps the number of listed entries', async () => {
     for (let i = 0; i < 5; i += 1) await writeFile(join(workspace, `f${i}.txt`), 'x');
     const { entries } = await sandboxed({ maxGlobMatches: 3 }).listDirectory('.', {});
-    expect(entries.length).toBe(3);
+    expect(entries).toHaveLength(3);
   });
 });
 

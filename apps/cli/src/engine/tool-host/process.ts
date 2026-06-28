@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 
 import { ToolDispatchError, type ProcessCapability, type ProcessResult } from '@relavium/core';
@@ -34,7 +34,16 @@ const DEFAULT_MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
 
 /** The audited platform-minimal base env: only these ambient keys reach a subprocess (never the full env). */
-const POSIX_ENV_KEYS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TERM'] as const;
+const POSIX_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'TMPDIR',
+  'TERM',
+] as const;
 const WINDOWS_ENV_KEYS = [
   'PATH',
   'Path',
@@ -124,12 +133,15 @@ const FORBIDDEN_DECLARED_ENV: ReadonlySet<string> = new Set([
   'BASH_ENV',
   'ENV',
   'IFS',
-  // config-home redirection (repoints ~/.gitconfig, rc files, …)
+  // config-home redirection (repoints ~/.gitconfig, rc files, …; APPDATA/LOCALAPPDATA are the Windows
+  // per-user config roots — git reads %APPDATA%\Git\config, many tools read %APPDATA%\<tool>\)
   'HOME',
   'XDG_CONFIG_HOME',
   'USERPROFILE',
   'HOMEDRIVE',
   'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
   // executable resolution ignores a declared PATH — reject it rather than mislead
   'PATH',
 ]);
@@ -140,7 +152,9 @@ const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_', 'GIT_'];
  * Build a node-backed {@link ProcessCapability}. The returned object is the value a host wires onto
  * `ToolHost.process`; it holds no ambient state beyond the immutable config.
  */
-export function createNodeProcessCapability(config: NodeProcessCapabilityConfig): ProcessCapability {
+export function createNodeProcessCapability(
+  config: NodeProcessCapabilityConfig,
+): ProcessCapability {
   const defaultTimeoutMs = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxTimeoutMs = config.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS;
   const maxBufferBytes = config.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
@@ -150,7 +164,7 @@ export function createNodeProcessCapability(config: NodeProcessCapabilityConfig)
       assertSafeDeclaredEnv(declaredEnv);
       const executable = await resolveExecutable(command);
       const timeoutMs = Math.min(opts.timeoutMs ?? defaultTimeoutMs, maxTimeoutMs);
-      const cwd = jailCwd(config.workspaceDir, opts.cwd);
+      const cwd = await jailCwd(config.workspaceDir, opts.cwd);
       return runChild({
         executable,
         args: [...args],
@@ -226,7 +240,9 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
     child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
     // A spawn-time failure (e.g. ENOENT if the executable vanished after resolution) arrives as 'error'.
-    child.on('error', () => finish(() => reject(new ProcessCapabilityError('the command failed to run'))));
+    child.on('error', () =>
+      finish(() => reject(new ProcessCapabilityError('the command failed to run'))),
+    );
     child.on('close', (code) => {
       finish(() => {
         // `code === null` ⇒ the process was signal-killed. A timeout/abort kill lands here with null code; a
@@ -238,6 +254,10 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
         } else if (timedOut && code === null) {
           reject(new ProcessCapabilityError(`the command timed out after ${opts.timeoutMs}ms`));
         } else {
+          // Reap the whole process group on a NORMAL exit too — a backgrounded grandchild the command forked
+          // must not outlive the tool call. killTree is idempotent on an already-exited group (the ESRCH is
+          // swallowed), so this is a no-op when nothing survives and a clean reaping when something does.
+          killTree(child);
           resolvePromise({
             // An (external) signal-kill exit has `code === null` — report a conventional non-zero so the model
             // sees a failure exit rather than a misleading `0`.
@@ -309,10 +329,19 @@ async function resolveExecutable(command: string): Promise<string> {
   }
   const pathVar = process.env['PATH'] ?? process.env['Path'] ?? '';
   const dirs = pathVar.split(delimiter).filter((d) => d !== '');
-  const exts =
-    process.platform === 'win32'
-      ? (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT;.COM').split(';').filter((e) => e !== '')
-      : [''];
+  let exts: string[];
+  if (process.platform === 'win32') {
+    const pathExts = (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT;.COM')
+      .split(';')
+      .filter((e) => e !== '');
+    // If the command ALREADY carries a recognized PATHEXT extension (e.g. `node.exe`), try the bare name first —
+    // otherwise every candidate would be `node.exe.EXE` etc. and the real binary would never be found.
+    const upper = command.toUpperCase();
+    const hasExt = pathExts.some((e) => upper.endsWith(e.toUpperCase()));
+    exts = hasExt ? ['', ...pathExts] : pathExts;
+  } else {
+    exts = [''];
+  }
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = join(dir, command + ext);
@@ -331,21 +360,39 @@ async function resolveExecutable(command: string): Promise<string> {
 function assertSafeDeclaredEnv(declaredEnv: Readonly<Record<string, string>>): void {
   for (const key of Object.keys(declaredEnv)) {
     const k = key.toUpperCase(); // Windows env names are case-insensitive; normalize so `node_options` can't slip past
-    if (FORBIDDEN_DECLARED_ENV.has(k) || FORBIDDEN_DECLARED_ENV_PREFIX.some((p) => k.startsWith(p))) {
+    if (
+      FORBIDDEN_DECLARED_ENV.has(k) ||
+      FORBIDDEN_DECLARED_ENV_PREFIX.some((p) => k.startsWith(p))
+    ) {
       throw new ProcessDeniedError('a declared environment variable is not permitted');
     }
   }
 }
 
-/** Resolve the spawn cwd against the workspace and confine it there (a config `cwd` may not escape the sandbox root). */
-function jailCwd(workspaceDir: string, cwd: string | undefined): string {
-  if (cwd === undefined) return workspaceDir;
-  const resolved = resolve(workspaceDir, cwd);
-  const prefix = workspaceDir.endsWith(sep) ? workspaceDir : workspaceDir + sep;
-  if (resolved !== workspaceDir && !resolved.startsWith(prefix)) {
+/**
+ * Resolve the spawn cwd against the workspace and confine it there (a config `cwd` may not escape the sandbox
+ * root). `workspaceDir` is normalized via `resolve` so a trailing separator can't make a cwd equal to the root
+ * itself spuriously fail the boundary check. The candidate is then **realpath**-checked — matching the fs arm's
+ * posture — so a symlink inside the workspace pointing outside cannot pass a purely lexical prefix test and then
+ * be followed by `spawn`. Absent ⇒ the workspace root.
+ */
+async function jailCwd(workspaceDir: string, cwd: string | undefined): Promise<string> {
+  const root = resolve(workspaceDir); // strip any trailing sep / canonicalize
+  if (cwd === undefined) return root;
+  const prefix = root + sep;
+  const lexical = resolve(root, cwd);
+  if (lexical !== root && !lexical.startsWith(prefix)) {
     throw new ProcessDeniedError('the working directory is outside the workspace');
   }
-  return resolved;
+  // Realpath the resolved candidate and re-check: a symlink inside the workspace that points outside would pass
+  // the lexical guard above but resolve beyond the jail at spawn time.
+  const real = await realpath(lexical).catch(() => {
+    throw new ProcessDeniedError('the working directory is not accessible');
+  });
+  if (real !== root && !real.startsWith(prefix)) {
+    throw new ProcessDeniedError('the working directory is outside the workspace');
+  }
+  return real;
 }
 
 /** The audited platform-minimal base env: only the allowlisted ambient keys (never the full `process.env`). */

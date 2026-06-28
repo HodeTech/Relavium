@@ -14,16 +14,18 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { ToolDispatchError, ToolUnavailableError, type FsScopeTier } from '@relavium/core';
-import type {
-  DirEntry,
-  DirListing,
-  FileRead,
-  FileWritten,
-  FsCapability,
-  FsListOpts,
-  FsReadOpts,
-  FsWriteOpts,
+import {
+  ToolDispatchError,
+  ToolUnavailableError,
+  type DirEntry,
+  type DirListing,
+  type FileRead,
+  type FileWritten,
+  type FsCapability,
+  type FsListOpts,
+  type FsReadOpts,
+  type FsScopeTier,
+  type FsWriteOpts,
 } from '@relavium/core';
 import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
 
@@ -114,7 +116,8 @@ export function createNodeFsCapability(config: NodeFsCapabilityConfig): FsCapabi
   return {
     readFile: (path, opts, signal) =>
       guarded(() => readOne(config, maxReadBytes, maxGlobMatches, path, opts, signal)),
-    writeFile: (path, data, opts, signal) => guarded(() => writeOne(config, path, data, opts, signal)),
+    writeFile: (path, data, opts, signal) =>
+      guarded(() => writeOne(config, path, data, opts, signal)),
     listDirectory: (path, opts, signal) =>
       guarded(() => listOne(config, maxGlobMatches, path, opts, signal)),
   };
@@ -207,13 +210,15 @@ async function readGlob(
   let latest = 0;
   for (const m of matches) {
     throwIfAborted(signal);
+    const bytes = await readFile(m.real);
+    if (isBinary(bytes)) continue; // a binary match is skipped, not fatal — and must NOT charge the budget
+    // Apply the budget ONLY to text matches that actually count toward the result, so a skipped binary file
+    // can never fail an otherwise-in-budget glob read.
     if (totalBytes + m.size > maxReadBytes) {
       throw new FsCapabilityError(
         `read_file: the glob result exceeds the ${maxReadBytes}-byte read limit`,
       );
     }
-    const bytes = await readFile(m.real);
-    if (isBinary(bytes)) continue; // a binary match is skipped, not fatal — the text matches still read
     totalBytes += m.size;
     latest = Math.max(latest, m.mtimeMs);
     parts.push(`===== ${m.rel} =====\n${bytes.toString('utf8')}`);
@@ -247,7 +252,12 @@ async function writeOne(
   }
   throwIfAborted(signal);
   const inScope = await buildScopeChecker(config);
-  const { realDir, finalTarget } = await jailWriteTarget(config, inScope, path, opts.createDirs === true);
+  const { realDir, finalTarget } = await jailWriteTarget(
+    config,
+    inScope,
+    path,
+    opts.createDirs === true,
+  );
   await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
   throwIfAborted(signal);
   const bytes = Buffer.from(data, 'utf8');
@@ -311,7 +321,7 @@ async function listOne(
   const matcher = opts.glob === undefined ? undefined : compileGlob(opts.glob);
   const cap = Math.min(maxEntries, MAX_LIST_ENTRIES);
   const entries: DirEntry[] = [];
-  await walk(realRoot, opts.recursive === true, signal, async (real, rel, dirent) => {
+  await walk(realRoot, opts.recursive === true, signal, inScope, async (real, rel, dirent) => {
     if (entries.length >= cap) return false; // stop the walk once the listing cap is hit
     if (matcher !== undefined && !matcher(rel)) return true;
     const info = await lstat(real).catch(() => undefined);
@@ -455,6 +465,7 @@ async function walk(
   root: string,
   recursive: boolean,
   signal: AbortSignalLike | undefined,
+  inScope: ScopeChecker,
   visit: (real: string, rel: string, dirent: Dirent) => Promise<boolean>,
 ): Promise<void> {
   const stack: string[] = [root];
@@ -468,7 +479,14 @@ async function walk(
       const keepGoing = await visit(real, posixRel(root, real), dirent);
       if (!keepGoing) return;
       // Recurse into REAL directories only — a symlinked dir is never followed (no escape, no symlink loop).
-      if (recursive && dirent.isDirectory()) stack.push(real);
+      // Re-resolve + re-scope-check the subdir BEFORE descending: a genuine directory at parent-`readdir` time
+      // could be atomically swapped for an out-of-jail symlink before THIS `readdir`, which would otherwise
+      // follow it (a TOCTOU between the parent snapshot and the child read). Push the realpath'd path so the
+      // walk stays anchored to resolved paths and a later swap cannot redirect a deeper read.
+      if (recursive && dirent.isDirectory()) {
+        const realSub = await realpath(real).catch(() => undefined);
+        if (realSub !== undefined && inScope(realSub)) stack.push(realSub);
+      }
     }
   }
 }
@@ -486,7 +504,7 @@ async function collectGlobFiles(
   });
   const matcher = compileGlob(pattern);
   const out: { real: string; rel: string; size: number; mtimeMs: number }[] = [];
-  await walk(base, true, signal, async (real, rel, dirent) => {
+  await walk(base, true, signal, inScope, async (real, rel, dirent) => {
     if (out.length >= maxMatches) return false;
     if (dirent.isDirectory() || !matcher(rel)) return true;
     // Defense in depth: a matched FILE is realpath-jailed (a symlinked file could still point outside scope).

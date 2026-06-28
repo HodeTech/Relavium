@@ -172,7 +172,9 @@ export class AgentTurnError extends Error {
    * caller reports a truthful zero rather than a fabricated count. `AgentSession` emits it on the failed
    * `session:turn_completed` so a failed turn reports real, not zeroed, usage.
    */
-  readonly usage?: { readonly input: number; readonly output: number };
+  // NOT `readonly`: {@link runAgentTurn} attaches the accumulated usage IN PLACE on the original instance (so
+  // the real throw-site stack is preserved) when a provider had engaged. The nested counts stay immutable.
+  usage?: { readonly input: number; readonly output: number };
   constructor(
     readonly code: ErrorCode,
     message: string,
@@ -632,7 +634,8 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
       err.usage === undefined &&
       (usage.input > 0 || usage.output > 0)
     ) {
-      throw new AgentTurnError(err.code, err.message, err.retryable, { ...usage });
+      err.usage = { input: usage.input, output: usage.output }; // enrich IN PLACE — keep the real throw-site stack
+      throw err;
     }
     // A non-AgentTurnError escaping here is either a `BudgetPauseError` (a pre-egress `pause_for_approval` —
     // the session/runner handles it in its own catch branch; it engaged no provider) or an unexpected engine

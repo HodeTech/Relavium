@@ -269,7 +269,8 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     writeFileSync(join(workspace, 'r.txt'), 'merged');
     const conn: McpConnection = {
       listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
-      callTool: () => Promise.resolve({ content: [{ type: 'text', text: 'mcp body' }], isError: false }),
+      callTool: () =>
+        Promise.resolve({ content: [{ type: 'text', text: 'mcp body' }], isError: false }),
       close: () => Promise.resolve(),
     };
     const built = await build({
@@ -707,7 +708,10 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     writeFileSync(join(workspace, 'note.txt'), 'the file body');
     const built = await build({
       cwd: workspace,
-      providers: scriptedResolver([callWithArgs('c1', 'read_file', { path: 'note.txt' }), textTurn('done')]),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'read_file', { path: 'note.txt' }),
+        textTurn('done'),
+      ]),
     });
     built.session.start();
     await built.session.sendMessage('read note.txt');
@@ -729,7 +733,9 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     const built = await build({
       cwd: workspace,
       agentRef: writeAgent(['write_file']),
-      providers: scriptedResolver([callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' })]),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+      ]),
     });
     built.session.start();
     await built.session.sendMessage('write a file');

@@ -27,13 +27,19 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
 });
 
-function proc(over: Partial<NodeProcessCapabilityConfig> = {}): ReturnType<typeof createNodeProcessCapability> {
+function proc(
+  over: Partial<NodeProcessCapabilityConfig> = {},
+): ReturnType<typeof createNodeProcessCapability> {
   return createNodeProcessCapability({ workspaceDir: workspace, ...over });
 }
 
 /** A signal whose `abort()` flips `aborted` and fires registered listeners (for mid-run abort tests). */
 function controllableSignal(): {
-  signal: { aborted: boolean; addEventListener: (t: 'abort', l: () => void) => void; removeEventListener: (t: 'abort', l: () => void) => void };
+  signal: {
+    aborted: boolean;
+    addEventListener: (t: 'abort', l: () => void) => void;
+    removeEventListener: (t: 'abort', l: () => void) => void;
+  };
   abort: () => void;
 } {
   let aborted = false;
@@ -73,7 +79,12 @@ describe('createNodeProcessCapability — execution', () => {
 
   it('passes args literally — shell:false, no metacharacter interpretation', async () => {
     // `&&` / `whoami` are inert literal argv entries, not shell operators (with `-e`, extra args start at argv[1]).
-    const r = await proc().spawn(NODE, ['-e', 'process.stdout.write(process.argv.slice(1).join("|"))', '&&', 'whoami'], {}, {});
+    const r = await proc().spawn(
+      NODE,
+      ['-e', 'process.stdout.write(process.argv.slice(1).join("|"))', '&&', 'whoami'],
+      {},
+      {},
+    );
     expect(r.stdout).toBe('&&|whoami');
   });
 
@@ -89,7 +100,10 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
     try {
       const r = await proc().spawn(
         NODE,
-        ['-e', 'process.stdout.write(`${process.env.RELAVIUM_TEST_SECRET ?? "absent"}:${process.env.PATH ? "has-path" : "no-path"}`)'],
+        [
+          '-e',
+          'process.stdout.write(`${process.env.RELAVIUM_TEST_SECRET ?? "absent"}:${process.env.PATH ? "has-path" : "no-path"}`)',
+        ],
         {},
         {},
       );
@@ -133,7 +147,9 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
       { HOME: '/tmp/fake-home' }, // config-home redirection (~/.gitconfig)
       { XDG_CONFIG_HOME: '/tmp/x' },
     ]) {
-      await expect(cap.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(ProcessDeniedError);
+      await expect(cap.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(
+        ProcessDeniedError,
+      );
     }
   });
 
@@ -165,7 +181,12 @@ describe('createNodeProcessCapability — bounds', () => {
   it('caps the timeout at the configured ceiling', async () => {
     // maxTimeoutMs 100 clamps a tool-supplied 10s timeout, so the long process is still killed promptly.
     await expect(
-      proc({ maxTimeoutMs: 100 }).spawn(NODE, ['-e', 'setTimeout(() => {}, 10000)'], {}, { timeoutMs: 10_000 }),
+      proc({ maxTimeoutMs: 100 }).spawn(
+        NODE,
+        ['-e', 'setTimeout(() => {}, 10000)'],
+        {},
+        { timeoutMs: 10_000 },
+      ),
     ).rejects.toThrow(/timed out/);
   });
 
@@ -181,7 +202,11 @@ describe('createNodeProcessCapability — bounds', () => {
   });
 
   it('rejects on an already-aborted signal (no spawn)', async () => {
-    const aborted = { aborted: true, addEventListener: () => undefined, removeEventListener: () => undefined };
+    const aborted = {
+      aborted: true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
     await expect(proc().spawn(NODE, ['-e', '1'], {}, {}, aborted)).rejects.toThrow(/abort/);
   });
 
@@ -216,7 +241,12 @@ describe('createNodeProcessCapability — bounds', () => {
 describe('createNodeProcessCapability — cwd + streams + signal exit', () => {
   it('resolves opts.cwd relative to the workspace', async () => {
     await mkdir(join(workspace, 'sub'), { recursive: true });
-    const r = await proc().spawn(NODE, ['-e', 'process.stdout.write(process.cwd())'], {}, { cwd: 'sub' });
+    const r = await proc().spawn(
+      NODE,
+      ['-e', 'process.stdout.write(process.cwd())'],
+      {},
+      { cwd: 'sub' },
+    );
     expect(await realpath(r.stdout)).toBe(await realpath(join(workspace, 'sub')));
   });
 
@@ -227,6 +257,29 @@ describe('createNodeProcessCapability — cwd + streams + signal exit', () => {
     await expect(proc().spawn(NODE, ['-e', '1'], {}, { cwd: '/tmp' })).rejects.toBeInstanceOf(
       ProcessDeniedError,
     );
+  });
+
+  it('rejects a cwd that is a SYMLINK pointing outside the workspace (realpath-checked, not just lexical)', async () => {
+    const { symlink } = await import('node:fs/promises');
+    const outside = await realpath(await mkdtemp(join(tmpdir(), 'relavium-proc-out-')));
+    try {
+      await symlink(outside, join(workspace, 'link'), 'dir'); // an in-workspace symlink resolving outside
+      await expect(proc().spawn(NODE, ['-e', '1'], {}, { cwd: 'link' })).rejects.toBeInstanceOf(
+        ProcessDeniedError,
+      );
+    } finally {
+      await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('accepts a cwd EQUAL to the workspace even when workspaceDir has a trailing slash', async () => {
+    const r = await createNodeProcessCapability({ workspaceDir: workspace + '/' }).spawn(
+      NODE,
+      ['-e', 'process.stdout.write(process.cwd())'],
+      {},
+      { cwd: '.' },
+    );
+    expect(await realpath(r.stdout)).toBe(workspace); // no spurious ProcessDeniedError from the trailing slash
   });
 
   it('captures stdout and stderr independently in one run', async () => {

@@ -287,7 +287,11 @@ function withMcpGrant(agent: AgentDefinition, mcp: McpClient | undefined): Agent
  * the original (persisted/exported) agent keeps the author's full grant. The dispatch `tool_unavailable`
  * backstop (EA1) still fail-closes anything that slips through.
  */
-function narrowToWired(agent: AgentDefinition, host: ToolHost, defs: readonly ToolDef[]): AgentDefinition {
+function narrowToWired(
+  agent: AgentDefinition,
+  host: ToolHost,
+  defs: readonly ToolDef[],
+): AgentDefinition {
   return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
 }
 
@@ -348,7 +352,13 @@ export async function buildResumedChatSession(
       `session ${record.id} has no stored agent snapshot and cannot be resumed`,
     );
   }
-  const context = record.context;
+  // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the read-only chat surface),
+  // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
+  // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
+  const context: SessionContext = {
+    ...record.context,
+    fsScopeTier: clampChatTier(record.context.fsScopeTier),
+  };
   const resumeState = reconstructSessionState(record, messages);
 
   // Re-discover the frozen agent's `mcp_servers` fresh each resume (2.R) — the snapshot stored the author's
