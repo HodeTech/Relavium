@@ -58,7 +58,7 @@ export interface BuildChatSessionOptions {
   readonly uuid: () => string;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver, like `relavium run`. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to fail-closed `{}` (capabilities are a follow-up). */
+  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
   readonly toolHost?: ToolHost;
   /**
    * Injectable MCP connect-all (2.R) — tests pass a fake that never spawns a child; production uses the real
@@ -314,7 +314,7 @@ export interface BuildResumedChatSessionOptions {
   readonly now: () => number;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to fail-closed `{}`. */
+  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;

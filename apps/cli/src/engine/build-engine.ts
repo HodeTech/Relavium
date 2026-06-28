@@ -100,6 +100,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
     now: () => Date.now(),
+    // Keep the dispatch-context `fsScope` consistent with the tier the fs host jails to (ADR-0055's
+    // "three concepts, three channels"); absent ⇒ the engine default `sandboxed`.
+    ...(options.toolEnv === undefined ? {} : { fsScope: options.toolEnv.fsScopeTier }),
     // The media routing/cost/egress deps (2.S) — each present only when its source is wired (`undefined` is
     // OMITTED, not assigned — the fields are `?:`, exactOptionalPropertyTypes). resolveMediaSurface routes a
     // generative model to generateMedia (ADR-0045 §1); resolveForEgress re-materializes a handle on failover

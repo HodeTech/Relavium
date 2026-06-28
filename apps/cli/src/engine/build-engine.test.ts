@@ -78,4 +78,19 @@ describe('buildEngine MCP wiring (2.R)', () => {
       buildEngine({ mcp: { toolDefs: [...defs, ...defs], capability } }),
     ).rejects.toThrow(/duplicate tool id/);
   });
+
+  it('MERGES the mcp arm onto the toolEnv host — both reach the registry (the 2.5.A merge-not-replace, ADR-0055)', async () => {
+    // The prior bug REPLACED the host with `{ mcp }`, dropping a sibling fs/process arm. With `toolEnv` now
+    // wiring fs+process, the duplicate-id rejection still firing proves the mcp toolDefs reach the SAME registry
+    // — i.e. `toolEnv` did not displace the mcp arm and the mcp arm did not displace `toolEnv` (a true merge).
+    const { defs } = buildServerToolDefs('fs', [{ name: 'read', inputSchema: { type: 'object' } }]);
+    const capability: McpCapability = {
+      call: () => Promise.resolve({ content: [], isError: false }),
+    };
+    const toolEnv = { workspaceDir: tmpdir(), fsScopeTier: 'sandboxed' as const };
+    await expect(buildEngine({ toolEnv, mcp: { toolDefs: defs, capability } })).resolves.toBeDefined();
+    await expect(
+      buildEngine({ toolEnv, mcp: { toolDefs: [...defs, ...defs], capability } }),
+    ).rejects.toThrow(/duplicate tool id/);
+  });
 });

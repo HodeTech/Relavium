@@ -43,9 +43,14 @@ export interface AssembledToolEnv {
 /** Assemble the `ToolHost` + chat-default `ToolPolicy` for a profile. Pure construction — no I/O here. */
 export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv {
   const readOnly = opts.profile === 'chat-read-only';
+  // SECURITY: `full` is unjailed. Read-only does NOT neutralize it for chat — an unjailed READ can exfiltrate
+  // `~/.ssh`, `~/.aws/credentials`, etc. back to the model/provider. So the lowest-trust surface (a chat
+  // session, possibly a third-party `--agent`) is clamped to `project` (workspace-only); `full` stays
+  // available to the author-trusted `workflow-read-write` profile. (Tracked: a 2.5.E approval-gated `full` chat.)
+  const tier: FsScopeTier = readOnly && opts.fsScopeTier === 'full' ? 'project' : opts.fsScopeTier;
   const host: ToolHost = {
     fs: createNodeFsCapability({
-      tier: opts.fsScopeTier,
+      tier,
       workspaceDir: opts.workspaceDir,
       readOnly,
       ...(opts.tmpDir === undefined ? {} : { tmpDir: opts.tmpDir }),
@@ -54,8 +59,10 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
     // egress / os are intentionally absent in 2.5.A (deferred to ADR-0057/2.5.E behind the approval floor).
   };
   // Chat default: empty allowedCommands ⇒ `run_command` denied; `git_status` is pre-approved and exposes no
-  // model-controlled command, so an empty allowlist never blocks it (ADR-0055). The run path replaces this
-  // with the workflow's `spec.tools` policy per node — the factory policy is the chat/session default only.
+  // model-controlled command, so an empty allowlist never blocks it (ADR-0055). NOTE: this is inert today —
+  // the chat path relies on the `AgentSession` default `{}` and the run path uses the workflow's per-node
+  // policy; the `{ host, policy }` shape is the ADR-0055 seam that 2.5.E/ADR-0057 populates with per-mode
+  // allowlists. Pinned by the factory test so the chat default can't silently drift.
   const policy: ToolPolicy = {};
   return { host, policy };
 }
@@ -93,5 +100,8 @@ function requiredArmPresent(def: ToolDef, host: ToolHost): boolean {
   if (def.policy.spawnsProcess) return host.process !== undefined;
   if (def.policy.egress === 'mcp') return host.mcp !== undefined; // the `mcp_call` built-in also uses host.mcp
   if (def.policy.egress !== undefined) return host.egress !== undefined; // `http` / `search` → host.egress
+  // `os` (read_clipboard/notify → host.os) + delegate-backed tools (read_media → ctx.mediaRead, invoke_agent →
+  // ctx.invokeAgent) carry no policy-class arm here: keep them and let the dispatch `tool_unavailable` backstop
+  // (EA1) handle an absent arm/delegate — the filter is a best-effort complement, not a substitute.
   return true;
 }

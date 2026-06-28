@@ -15,6 +15,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
+import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
+
+import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
+import type { ProviderResolver } from '../engine/providers.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession,
@@ -25,10 +29,50 @@ import {
 import {
   drainHandle,
   scriptedResolver,
+  stop,
   textTurn,
   toolUseTurn,
   unresolvedResolver,
 } from './test-support.js';
+
+/** A tool-call turn that carries JSON args (the `toolUseTurn` helper sends none) — for read_file/write_file. */
+const callWithArgs = (id: string, name: string, args: unknown): StreamChunk[] => [
+  { type: 'tool_call_start', id, name },
+  { type: 'tool_call_delta', id, argsJsonDelta: JSON.stringify(args) },
+  { type: 'tool_call_end', id },
+  stop('tool_use'),
+];
+
+/** A resolver whose provider records each request's advertised `tools` — for the advertise-filter assertion. */
+function capturingResolver(scripts: StreamChunk[][]): {
+  providers: ProviderResolver;
+  requests: LlmRequest[];
+} {
+  const requests: LlmRequest[] = [];
+  let call = 0;
+  const provider: LlmProvider = {
+    id: 'anthropic',
+    supports: CHAT_TEXT_CAPABILITY_FLAGS,
+    generate: () => {
+      throw new Error('capturingResolver.generate is not used');
+    },
+    stream: (req) => {
+      requests.push(req);
+      const chunks = scripts[call++] ?? [];
+      return (async function* () {
+        await Promise.resolve();
+        for (const c of chunks) yield c;
+      })();
+    },
+  };
+  return {
+    providers: {
+      resolveProvider: (id) => (id === 'anthropic' ? provider : undefined),
+      keyFor: () => 'test-key',
+    },
+    requests,
+  };
+}
 
 const EMPTY_CHAT: ResolvedChatConfig = {
   defaultModel: undefined,
@@ -601,5 +645,85 @@ describe('buildGovernorWiring', () => {
     wiring?.updateCost(999_999);
     // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed.
     await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
+  });
+});
+
+describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
+  /** Write a throwaway `.agent.yaml` granting `tools` (for the read-only + advertise-filter assertions). */
+  function writeAgent(tools: readonly string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-agent-'));
+    const path = join(dir, 'a.agent.yaml');
+    writeFileSync(
+      path,
+      [
+        'id: custom-agent',
+        'model: claude-sonnet-4-6',
+        'provider: anthropic',
+        'system_prompt: test agent',
+        'tools:',
+        ...tools.map((t) => `  - ${t}`),
+        '',
+      ].join('\n'),
+    );
+    return path;
+  }
+
+  it('read_file actually reads a real file through the wired fs host (end-to-end, not just the factory)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    writeFileSync(join(workspace, 'note.txt'), 'the file body');
+    const built = await build({
+      cwd: workspace,
+      providers: scriptedResolver([callWithArgs('c1', 'read_file', { path: 'note.txt' }), textTurn('done')]),
+    });
+    built.session.start();
+    await built.session.sendMessage('read note.txt');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const result = events.find((e) => e.type === 'agent:tool_result');
+    expect(result?.type === 'agent:tool_result' && result.toolId).toBe('read_file');
+    expect(result?.type === 'agent:tool_result' && result.success).toBe(true); // the wired read SUCCEEDED
+    // No capability gap surfaced — the turn completed normally and the post-tool answer streamed.
+    const errors = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it('write_file in a chat session fail-closes as tool_unavailable (chat is read-only until 2.5.E)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' })]),
+    });
+    built.session.start();
+    await built.session.sendMessage('write a file');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_unavailable', // the read-only fs writeFile fail-closed; never wrote (proven by no file on disk)
+    );
+  });
+
+  it('the advertise-filter drops an unwired tool from the EFFECTIVE grant; the original keeps it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const { providers, requests } = capturingResolver([textTurn('hi')]);
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['read_file', 'http_request']), // http_request needs egress — NOT wired in 2.5.A
+      providers,
+    });
+    built.session.start();
+    await built.session.sendMessage('go');
+    built.session.cancel();
+    await drainHandle(built.handle.events);
+
+    const advertised = (requests[0]?.tools ?? []).map((t) => t.name);
+    expect(advertised).toContain('read_file'); // fs wired ⇒ advertised
+    expect(advertised).not.toContain('http_request'); // egress unwired ⇒ NOT advertised
+    expect(built.agent.tools).toEqual(['read_file', 'http_request']); // the ORIGINAL keeps the author's grant
   });
 });

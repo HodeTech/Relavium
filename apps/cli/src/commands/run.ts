@@ -190,7 +190,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // path, so a workflow's read_file / write_file / run_command / git_status work (the MCP arm merges on top).
     const toolEnv = {
       workspaceDir: deps.global.cwd,
-      fsScopeTier: config.fsScope ?? ('sandboxed' as const),
+      fsScopeTier: config.fsScope ?? 'sandboxed',
     };
     let engineOptions: BuildEngineOptions = { providers, toolEnv, ...mcpOption };
     let mediaCasRoot: string | undefined;

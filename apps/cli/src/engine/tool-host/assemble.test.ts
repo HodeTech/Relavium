@@ -55,6 +55,24 @@ describe('assembleToolEnv', () => {
     expect(host.egress).toBeUndefined();
     expect(host.os).toBeUndefined();
   });
+
+  it('clamps the `full` tier to `project` for chat (read-only does not stop whole-FS exfiltration)', async () => {
+    const outside = join(workspace, '..', 'outside-clamp');
+    await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'secret.txt'), 'SECRET');
+    try {
+      // chat-read-only + full ⇒ clamped to project (workspace-only): the outside read is REJECTED.
+      const chat = assembleToolEnv({ profile: 'chat-read-only', fsScopeTier: 'full', workspaceDir: workspace });
+      await expect(chat.host.fs!.readFile(join(outside, 'secret.txt'), {})).rejects.toThrow();
+      // workflow-read-write + full ⇒ NOT clamped (author-trusted): the outside read succeeds.
+      const run = assembleToolEnv({ profile: 'workflow-read-write', fsScopeTier: 'full', workspaceDir: workspace });
+      expect((await run.host.fs!.readFile(join(outside, 'secret.txt'), {})).content).toBe('SECRET');
+    } finally {
+      await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
 });
 
 describe('wiredToolIds (advertise-filter)', () => {
