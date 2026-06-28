@@ -22,6 +22,15 @@ describe('error-code classification', () => {
       expect(ERROR_CODES).toContain(code);
     }
   });
+
+  it('tool_unavailable is a member of the closed ErrorCode union (EA1/ADR-0055)', () => {
+    expect(ERROR_CODES).toContain('tool_unavailable');
+  });
+
+  it('tool_unavailable is FATAL — never in RETRYABLE_ERROR_CODES (re-issuing re-fails on the same host)', () => {
+    // Pins the classification so a future edit cannot silently make a missing-capability gap retryable.
+    expect(RETRYABLE_ERROR_CODES).not.toContain('tool_unavailable');
+  });
 });
 
 describe('media constants', () => {

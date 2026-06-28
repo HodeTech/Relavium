@@ -12,6 +12,7 @@ import {
   type SessionEventSink,
   type SessionHandle,
   type SessionResumeState,
+  type ToolDef,
   type ToolHost,
 } from '@relavium/core';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
@@ -26,6 +27,7 @@ import type {
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { connectAgentMcp } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveChatAgent } from './agent-source.js';
@@ -56,7 +58,7 @@ export interface BuildChatSessionOptions {
   readonly uuid: () => string;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver, like `relavium run`. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to fail-closed `{}` (capabilities are a follow-up). */
+  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
   readonly toolHost?: ToolHost;
   /**
    * Injectable MCP connect-all (2.R) — tests pass a fake that never spawns a child; production uses the real
@@ -158,13 +160,22 @@ function buildSessionRuntime(
   opts: SessionRuntimeOptions,
   sessionId: string,
   mcp: McpClient | undefined,
-): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink } {
+  context: SessionContext,
+): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink; host: ToolHost } {
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
-  // `?? {}` is the deliberate fail-closed default (no capabilities); hoisted so the merge below doesn't spread a
-  // freshly-allocated empty object literal.
-  const baseHost: ToolHost = opts.toolHost ?? {};
+  // 2.5.A (ADR-0055): the shared factory wires the READ-ONLY chat host (fs read+list, process for the
+  // pre-approved git_status) jailed to the session's fs-scope tier AND the chat-default `ToolPolicy`. Building
+  // it is pure construction (no I/O), so we always assemble it for the policy even when a test injects its own
+  // `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion); production also takes its host.
+  const factoryEnv = assembleToolEnv({
+    profile: 'chat-read-only',
+    fsScopeTier: context.fsScopeTier,
+    workspaceDir: context.workingDir,
+  });
+  const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
+  // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const registry = createToolRegistry({ tools, host });
   const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
@@ -182,15 +193,18 @@ function buildSessionRuntime(
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
     emit,
-    // No toolPolicy ⇒ the AgentSession default `{}` applies: gated tools deny-all and `run_command` is
-    // disabled (empty allowedCommands). A standalone chat has no workflow allowedCommands to inherit, so
-    // empty is the secure default (config-spec.md `[chat]` "empty/absent ⇒ run_command disabled").
+    // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
+    // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
+    // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`
+    // "empty/absent ⇒ run_command disabled"). Wiring it now means a 2.5.E/ADR-0057 per-mode allowlist flows
+    // through automatically rather than being silently dropped by reading only the factory's `host`.
+    toolPolicy: factoryEnv.policy,
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     ...(governor === undefined
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
   };
-  return { bus, deps, emit };
+  return { bus, deps, emit, host };
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
@@ -202,7 +216,10 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   });
   const context: SessionContext = {
     workingDir: opts.cwd,
-    fsScopeTier: opts.chat.fsScope ?? DEFAULT_FS_SCOPE,
+    // The EFFECTIVE tier (full→project clamped for the read-only chat surface) — the SAME value the factory
+    // jails the host to, so the dispatch-context `fsScope` and the host jail stay consistent (ADR-0055), and
+    // the persisted `SessionContext.fsScope` records what the session actually ran at (a resume re-reads it).
+    fsScopeTier: clampChatTier(opts.chat.fsScope ?? DEFAULT_FS_SCOPE),
     ...(opts.variables === undefined ? {} : { variables: opts.variables }),
   };
 
@@ -220,13 +237,14 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       });
 
   try {
-    const { bus, deps, emit } = buildSessionRuntime(opts, sessionId, mcp);
-    // The session runs against the EFFECTIVE agent (its grant unioned with the discovered MCP tool ids); the
-    // ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
+    const { bus, deps, emit, host } = buildSessionRuntime(opts, sessionId, mcp, context);
+    // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
+    // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
+    // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
     const session = new AgentSession({
       sessionId,
       agentRef: agent.id,
-      agent: withMcpGrant(agent, mcp),
+      agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
       context,
       deps,
     });
@@ -265,6 +283,21 @@ function withMcpGrant(agent: AgentDefinition, mcp: McpClient | undefined): Agent
   return { ...agent, tools };
 }
 
+/**
+ * Narrow a runtime agent's `tools` grant to those whose required {@link ToolHost} arm is wired (the 2.5.A
+ * advertise-filter, ADR-0055): an unwired tool is never offered to the model, so the agent's "say so plainly"
+ * path applies and the model cannot call a capability that isn't there. Applied to the EFFECTIVE agent only —
+ * the original (persisted/exported) agent keeps the author's full grant. The dispatch `tool_unavailable`
+ * backstop (EA1) still fail-closes anything that slips through.
+ */
+function narrowToWired(
+  agent: AgentDefinition,
+  host: ToolHost,
+  defs: readonly ToolDef[],
+): AgentDefinition {
+  return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
+}
+
 /** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */
 export interface BuiltResumedChatSession extends BuiltChatSession {
   /** The reconstructed in-flight state the view seeds from (carried cost + prior completed-turn count). */
@@ -291,7 +324,7 @@ export interface BuildResumedChatSessionOptions {
   readonly now: () => number;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to fail-closed `{}`. */
+  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
@@ -322,7 +355,13 @@ export async function buildResumedChatSession(
       `session ${record.id} has no stored agent snapshot and cannot be resumed`,
     );
   }
-  const context = record.context;
+  // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the read-only chat surface),
+  // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
+  // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
+  const context: SessionContext = {
+    ...record.context,
+    fsScopeTier: clampChatTier(record.context.fsScopeTier),
+  };
   const resumeState = reconstructSessionState(record, messages);
 
   // Re-discover the frozen agent's `mcp_servers` fresh each resume (2.R) — the snapshot stored the author's
@@ -337,12 +376,12 @@ export async function buildResumedChatSession(
   });
 
   try {
-    const { bus, deps, emit } = buildSessionRuntime(opts, record.id, mcp);
+    const { bus, deps, emit, host } = buildSessionRuntime(opts, record.id, mcp, context);
     const session = AgentSession.resume(
       {
         sessionId: record.id,
         agentRef: agent.id,
-        agent: withMcpGrant(agent, mcp),
+        agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
         context,
         deps,
       },

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-27
+> Last updated: 2026-06-28
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -552,6 +552,59 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   but the two Mermaid graphs and the from-scratch wave/dependency tables describe the original plan node and
   were left unchanged (they are the plan, not a live tracker). Fold `gate list` in if those diagrams are ever
   regenerated. *(nit · docs/roadmap/phases/phase-2-cli.md)*
+
+## Phase 2.5.A (tool-environment factory) follow-ups
+
+> **2026-06-28 2.5.A ([ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)).**
+> The shared CLI **tool-environment factory** landed the `fs` + `process` `ToolHost` arms behind one
+> `assembleToolEnv({ profile, fsScopeTier, workspaceDir })` seam (read-only chat / read-write run), the
+> advertise-filter, the `tool_unavailable` (EA1) fail-closed backstop, and real failed-turn usage (EA2). This
+> directly advances the 2.D *"CLI `ToolHost` is fail-closed"* item above — the **fs** and **process** halves are
+> now wired and security-reviewed; the **egress** and **os** halves remain deferred (below). The items here were
+> confirmed by the PR #60 review passes (a 10-lens excellence workflow + two verify-against-code rounds) and
+> deliberately **not** taken in-PR — none blocks the milestone.
+
+- [ ] **`egress` + `os` host arms are still unwired (fail-closed).** 2.5.A wired only `fs`/`process`; a built-in
+  needing `egress` (`http_request`/`web_search`) or `os` surfaces a clean `tool_unavailable` (EA1). `egress`
+  lands with [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)/2.5.E behind the per-tool
+  approval floor + the existing host-side SSRF primitive (DNS-resolve + connect-by-validated-IP + per-hop
+  redirect re-validation); `os` follows the same approval-gated path. *(medium · apps/cli/src/engine/tool-host/;
+  security-review.md; the 2.D ToolHost item above)*
+- [ ] **Project-tier path-allowlist (`extraRoots`) not yet passed by the factory.** The `project` tier therefore
+  behaves as **workspace-only** (it can only narrow the jail, never open a hole — `project` ==
+  `sandboxed`-minus-tmp). The real path-allowlist + the native first-run approval arrive with the approval-gated
+  surface in 2.5.E. *(medium · apps/cli/src/engine/tool-host/assemble.ts; ADR-0057; built-in-tools.md fs-tier note)*
+- [ ] **Write-capable chat is deferred to 2.5.E.** The `relavium chat` default profile is **read-only**, so
+  `write_file` is `tool_unavailable` and a declared `full` tier is **clamped to `project`** (an unjailed read
+  could exfiltrate `~/.ssh` / `~/.aws`). Per-tool approval ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
+  is the gate that unlocks a write-capable / `full` chat. *(medium · apps/cli/src/chat/session-host.ts; ADR-0057)*
+- [ ] **Profile-unaware advertise-filter.** `wiredToolIds` narrows the grant by which `ToolHost` **arm** is wired,
+  not by the profile's *read-only* posture — `write_file` is still advertised on a read-only chat host and only
+  fail-closes at dispatch (`tool_unavailable`). Correct and safe (the dispatch backstop is authoritative), but a
+  profile-aware advertise-filter would stop offering an always-denied tool. *(low · apps/cli/src/engine/tool-host/assemble.ts)*
+- [ ] **Residual fs TOCTOU on the PARENT directory (no `openat` in Node).** The read path (`readJailedFile`)
+  and the write paths (append + temp/rename) all open the FINAL component with `O_NOFOLLOW`, so a final-component
+  symlink swapped in after the jail's `realpath` fails closed. The unclosable residual is a swap of a PARENT
+  directory component to an out-of-jail symlink between the `realpath` and the open — Node exposes no
+  `openat`/`openat2` (nor Linux `RESOLVE_BENEATH`) to pin the parent by fd, so a pure-path open re-walks the
+  (possibly swapped) parents. The window is narrowed to the gap between `jailExisting`/`jailWriteTarget`'s
+  `realpath` and the immediately-following open. Additionally, `O_NOFOLLOW` is `0` on **Windows**, so even the
+  final-component guard there rests on the pre-op `lstat` alone (the non-race case). Reads are bounded and the
+  write arm is the author-trusted workflow-run path (chat is read-only), so both residuals are accepted for
+  2.5.A; close the parent-swap gap with a native `openat`-based helper (or a Rust-side resolver) if a
+  write-capable / untrusted-read surface raises the bar. *(low · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **Deliberate non-fixes from the PR #60 excellence review (recorded, not bugs).** Each was weighed and
+  skipped with a reason: (a) **no host-arm memoization** (fs scope-checker, process base-env, exec cache) —
+  each would cache a security-relevant `realpath` on an I/O-dominated cold path, defeating the per-call
+  re-resolution that catches a mid-session symlink swap; (b) **no tool-name prefix on the shared fs helper
+  errors** (`jailExisting`/`assertInScope`/`lexicalTarget`) — they back read/write/list, so a single prefix
+  would need `toolName` threading for marginal gain (write-only messages *are* prefixed); (c) the generic
+  `guarded()` catch-all stays **reason-only** (the I3 boundary). Re-open only if a concrete need appears.
+  *(nit · apps/cli/src/engine/tool-host/)*
+- [ ] **Two transitively-covered test gaps.** A chat-session-dispatches-`git_status` e2e (the process arm + the
+  session→host dispatch are each tested; the union covers it) and a persister fold of a failed-turn's **real**
+  tokens (the fold is error-agnostic and tested; the failed-turn flush fires `turn_completed`). Add explicit
+  pins opportunistically. *(low · apps/cli/src/**/*.test.ts; testing.md)*
 
 ## Schema / validation hardening
 

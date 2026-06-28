@@ -13,6 +13,7 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { ToolExecutionError } from '../tools/errors.js';
 import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
@@ -320,6 +321,30 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     );
     // No egress happened (the pause was pre-egress).
     expect(typesOf(events)).not.toContain('agent:token');
+    // EA2: a pre-egress pause engaged NO provider — truthful zero usage (the budget-pause branch hardcodes
+    // `{0,0}` by design; pin it so a regression can't start reporting fabricated tokens here).
+    expect(completed?.type === 'session:turn_completed' ? completed.tokensUsed : undefined).toEqual(
+      { input: 0, output: 0 },
+    );
+  });
+
+  it('reports the turn’s REAL accumulated usage on a failed turn (EA2) — not a hardcoded zero', async () => {
+    // A tool_use turn settles usage 4/2 (the STOP), THEN the tool throws → AgentTurnError(tool_failed)
+    // carrying that usage (EA2). The session reports it on the failed turn_completed, not `{0,0}`.
+    const failingRegistry: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: () => Promise.reject(new ToolExecutionError('echo', 'disk full')),
+    };
+    const { deps, events } = harness([toolUseTurn('c1')], {}, failingRegistry);
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    await s.sendMessage('go');
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    if (completed?.type !== 'session:turn_completed') throw new Error('expected a turn_completed');
+    expect(completed.error?.code).toBe('tool_failed');
+    expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
   });
 
   it('emits session:turn_completed{turn_limit} — loudly, no egress — when driven past the hard cap', async () => {
@@ -339,10 +364,52 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(completed?.type === 'session:turn_completed' ? completed.stopReason : undefined).toBe(
       'error',
     );
+    // EA2 regression: a NO-egress hard-cap block reports a TRUTHFUL zero — it must never start fabricating
+    // usage (the hard-cap branch hardcodes `{0,0}` by design, distinct from the within-turn turn_limit above).
+    expect(completed?.type === 'session:turn_completed' ? completed.tokensUsed : undefined).toEqual(
+      { input: 0, output: 0 },
+    );
     // The blocked turn still brackets turn_started → turn_completed, and emits NOTHING else (no egress —
     // no streamed token / tool / cost). Pinning the EXACT sequence stops a refactor from moving the
     // turn_started emission after the cap check, which would silently break the observable contract.
     expect(typesOf(events)).toEqual(['session:turn_started', 'session:turn_completed']);
+  });
+
+  it('does NOT count a pre-egress failure against max_turns — only an engaged turn burns the cap (F7)', async () => {
+    // F7 (ADR-0055): the hard cap counts ONLY turns where a provider actually engaged. A turn that fails BEFORE
+    // any egress — here a fixed host-wiring gap (`resolveProvider → undefined`, which the session memoizes) —
+    // must never consume one of `max_turns`. With maxTurns 1 we drive THREE such turns: under the engaged-gate
+    // every one fails identically with `internal` and NONE is ever blocked by `turn_limit`. The pre-gate
+    // UNCONDITIONAL increment would have counted turn 1 and blocked turn 2 with `turn_limit` — so this also pins
+    // the regression: a pre-flight failure can no longer silently exhaust the cap without a single provider call.
+    const events: SessionStreamEvent[] = [];
+    const deps: SessionDeps = {
+      resolveProvider: () => undefined, // a fixed wiring gap — every turn fails pre-egress, none engages
+      registry: noToolRegistry,
+      tools: [],
+      keyFor: () => 'key',
+      sleep: () => Promise.resolve(),
+      newAbortController: createAbortController,
+      maxTurns: 1,
+      emit: (e) => {
+        events.push(e);
+      },
+    };
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('one');
+    await s.sendMessage('two');
+    await s.sendMessage('three');
+
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(3);
+    const codes = completes.map((e) =>
+      e.type === 'session:turn_completed' ? e.error?.code : undefined,
+    );
+    // Every turn fails with the SAME pre-egress internal error — and the cap is NEVER tripped, because no turn
+    // engaged a provider to count.
+    expect(codes).toEqual(['internal', 'internal', 'internal']);
+    expect(codes).not.toContain('turn_limit');
   });
 
   it('maps a within-turn turn_limit (maxToolTurns exceeded) to session:turn_completed{turn_limit}', async () => {
@@ -357,9 +424,12 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     await s.sendMessage('loop please');
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'turn_limit',
-    );
+    if (completed?.type !== 'session:turn_completed') throw new Error('expected a turn_completed');
+    expect(completed.error?.code).toBe('turn_limit');
+    // EA2: the WITHIN-turn turn_limit is thrown from runAgentTurn AFTER the first tool turn streamed (usage
+    // 4/2 accumulated), so — unlike the session HARD cap below (no egress) — it reports the REAL spent tokens,
+    // not a zero. Pins the within-turn-vs-hard-cap usage distinction so it cannot silently drift.
+    expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
   });
 
   it('completes a turn with an error (stopReason error) when the provider chain is exhausted', async () => {

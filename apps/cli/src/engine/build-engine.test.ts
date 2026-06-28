@@ -78,4 +78,24 @@ describe('buildEngine MCP wiring (2.R)', () => {
       buildEngine({ mcp: { toolDefs: [...defs, ...defs], capability } }),
     ).rejects.toThrow(/duplicate tool id/);
   });
+
+  it('keeps the mcp toolDefs in the registry when toolEnv is ALSO set (the mcp option is not dropped, ADR-0055)', async () => {
+    // The prior bug REPLACED the host with `{ mcp }`, dropping a sibling fs/process arm. The duplicate-id
+    // rejection firing here proves the mcp toolDefs reach the SAME registry when `toolEnv` is also present (the
+    // mcp option is not silently dropped). It does NOT prove the fs/process ARMS survive at dispatch time —
+    // WorkflowEngine is opaque to its host. That end-to-end host-merge proof lives in session-host.test.ts
+    // ("MERGE-not-replace: a session with MCP keeps the fs arm too"), which dispatches read_file via host.fs AND
+    // an MCP tool via host.mcp in one session and asserts both succeed.
+    const { defs } = buildServerToolDefs('fs', [{ name: 'read', inputSchema: { type: 'object' } }]);
+    const capability: McpCapability = {
+      call: () => Promise.resolve({ content: [], isError: false }),
+    };
+    const toolEnv = { workspaceDir: tmpdir(), fsScopeTier: 'sandboxed' as const };
+    await expect(
+      buildEngine({ toolEnv, mcp: { toolDefs: defs, capability } }),
+    ).resolves.toBeDefined();
+    await expect(
+      buildEngine({ toolEnv, mcp: { toolDefs: [...defs, ...defs], capability } }),
+    ).rejects.toThrow(/duplicate tool id/);
+  });
 });

@@ -100,7 +100,9 @@ export class ToolArgsInvalidError extends ToolDispatchError {
 /** The required `ToolHost` capability was not injected — a host/config gap, not the model's fault. */
 export class ToolUnavailableError extends ToolDispatchError {
   readonly code = 'capability_unavailable';
-  readonly runErrorCode: ErrorCode = 'internal';
+  // EA1 (ADR-0055): a missing capability surfaces as its own `tool_unavailable` run code — naming the tool +
+  // the unwired arm actionably — never a bare `internal` (an unexpected engine fault). FATAL, like `internal`.
+  readonly runErrorCode: ErrorCode = 'tool_unavailable';
   readonly retryable = false;
   /** The missing capability (a name, e.g. `egress`). */
   readonly capability: string;

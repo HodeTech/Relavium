@@ -165,12 +165,34 @@ export interface AgentTurnResult {
  */
 export class AgentTurnError extends Error {
   override readonly name = 'AgentTurnError';
+  /**
+   * The accumulated token usage of the turn at the moment it failed (EA2, ADR-0055). Populated by
+   * {@link runAgentTurn} when a provider had already engaged before the failure (the turn-core attempt
+   * tracker is the source); `undefined` when none did (a no-plan-entries / pre-egress failure) so the
+   * caller reports a truthful zero rather than a fabricated count. `AgentSession` emits it on the failed
+   * `session:turn_completed` so a failed turn reports real, not zeroed, usage.
+   */
+  // NOT `readonly`: {@link runAgentTurn} attaches the accumulated usage IN PLACE on the original instance (so
+  // the real throw-site stack is preserved) when a provider had engaged. The nested counts stay immutable.
+  usage?: { readonly input: number; readonly output: number };
+  /**
+   * Whether a provider actually **engaged** this turn — i.e. at least one non-skipped fallback attempt ran
+   * (set the instant {@link runAgentTurn}'s attempt tracker fires, even for an attempt that then errored at
+   * zero usage, which the `usage > 0` proxy would miss). `AgentSession` counts ONLY engaged turns against
+   * `max_turns`, so a failure BEFORE any egress (no plan entries, a pre-egress budget refusal, a pre-flight
+   * cancel) does not burn a turn the model never got to take. Set IN PLACE by {@link runAgentTurn}; left
+   * `undefined` only for an error that never passed through that wrapper.
+   */
+  engaged?: boolean;
   constructor(
     readonly code: ErrorCode,
     message: string,
     readonly retryable: boolean,
+    usage?: { readonly input: number; readonly output: number },
   ) {
     super(message);
+    // exactOptionalPropertyTypes: assign the optional field only when supplied — never `= undefined`.
+    if (usage !== undefined) this.usage = usage;
   }
 }
 
@@ -211,7 +233,10 @@ function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable:
     case 'tool_denied':
       return { code: 'tool_denied', retryable: false };
     case 'capability_unavailable':
-      return { code: 'internal', retryable: false };
+      // EA1 (ADR-0055): a missing host capability is its own actionable, FATAL `tool_unavailable` (naming the
+      // tool + the unwired arm via the error message), never a bare `internal`. The advertise-filter (2.5.A)
+      // makes this a backstop — an unwired tool is not offered — but a slipped-through call still classifies clean.
+      return { code: 'tool_unavailable', retryable: false };
     case 'execution_failed':
       return { code: 'tool_failed', retryable: true };
     default:
@@ -598,8 +623,54 @@ async function dispatchToolUseTurn(
  * Drive one agent turn end to end. Resolves with the settled {@link AgentTurnResult}, or throws an
  * {@link AgentTurnError} classified to the closed `ErrorCode` taxonomy (the caller maps it to a node
  * failure). Never throws a raw error for a classified condition.
+ *
+ * EA2 (ADR-0055): this thin wrapper attaches the turn's accumulated token usage to a thrown
+ * {@link AgentTurnError} when a provider had already engaged, so a failed turn reports real — not zeroed —
+ * usage. The inner {@link driveAgentTurn} mutates the shared `usage` accumulator as attempts settle (the
+ * turn-core tracker); this wrapper reads it on the failure path.
  */
 export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+  const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
+  try {
+    return await driveAgentTurn(params, acc);
+  } catch (err) {
+    if (err instanceof AgentTurnError) {
+      // Record whether a provider engaged this turn (a non-skipped attempt ran) so the session's turn-cap can
+      // count ONLY engaged turns — set IN PLACE to keep the real throw-site stack. This is an explicit signal,
+      // not the `usage > 0` proxy: an attempt that connected and then errored at zero usage still "engaged".
+      err.engaged = acc.engaged;
+      // Attach the real accumulated usage too, but ONLY when the driver did not already set it AND a provider
+      // actually ran. `acc` still `{0,0}` ⇒ no egress (a no-plan-entries / pre-egress failure), so leave
+      // `AgentTurnError.usage` undefined and let the caller report a truthful zero rather than a fabricated count.
+      if (err.usage === undefined && (acc.input > 0 || acc.output > 0)) {
+        err.usage = { input: acc.input, output: acc.output };
+      }
+      throw err;
+    }
+    // A non-AgentTurnError escaping here is either a `BudgetPauseError` (a pre-egress `pause_for_approval` —
+    // the session/runner handles it in its own catch branch; it engaged no provider) or an unexpected engine
+    // bug (the driver classifies every other reachable failure into an AgentTurnError). Both re-throw bare and
+    // report a truthful `{0,0}` — the pause did no egress, and an unclassified bug has no usage to attach.
+    throw err;
+  }
+}
+
+/** The per-turn accumulator shared with {@link driveAgentTurn}: summed usage plus whether a provider engaged. */
+interface TurnUsageAccumulator {
+  input: number;
+  output: number;
+  engaged: boolean;
+}
+
+/**
+ * The provider-engaging turn driver (extracted from {@link runAgentTurn} for EA2). Accumulates token usage
+ * into the shared `usage` ref as non-skipped attempts settle, so the wrapper can report real usage on a
+ * failure; returns the settled {@link AgentTurnResult} on success.
+ */
+async function driveAgentTurn(
+  params: AgentTurnParams,
+  usage: TurnUsageAccumulator,
+): Promise<AgentTurnResult> {
   const primaryModel = params.planEntries[0]?.model;
   if (primaryModel === undefined) {
     throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
@@ -610,8 +681,6 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
   const costTracker = new CostTracker();
   let activeModel = primaryModel;
   let nonSkippedAttempts = 0;
-  let totalInput = 0;
-  let totalOutput = 0;
 
   const onAttempt = (record: AttemptRecord): void => {
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
@@ -619,9 +688,10 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     if (record.outcome === 'skipped') return;
     activeModel = record.model;
     nonSkippedAttempts += 1;
+    usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
     if (record.usage === undefined) return;
-    totalInput += record.usage.inputTokens;
-    totalOutput += record.usage.outputTokens;
+    usage.input += record.usage.inputTokens;
+    usage.output += record.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
     // figure on `record.cost`; read it rather than re-recording (which would double the total).
     params.emit({
@@ -690,7 +760,7 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     return {
       content: turn.content,
       text: textOf(turn.content),
-      usage: { input: totalInput, output: totalOutput },
+      usage: { input: usage.input, output: usage.output },
       model: activeModel,
       stopReason: turn.stopReason,
     };
@@ -730,7 +800,7 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
       return {
         content: turn.content,
         text: textOf(turn.content),
-        usage: { input: totalInput, output: totalOutput },
+        usage: { input: usage.input, output: usage.output },
         model: activeModel,
         stopReason: turn.stopReason,
       };

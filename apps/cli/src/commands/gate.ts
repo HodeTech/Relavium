@@ -216,6 +216,12 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
+      // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
+      // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists
+      // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a
+      // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
+      // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
+      toolEnv: { workspaceDir: saveToRoot, fsScopeTier: config.fsScope ?? 'sandboxed' },
       host: createCliHost(store, { checkpointer, media: wiring.media }),
       resolveMediaSurface: wiring.resolveMediaSurface,
       ...(wiring.mediaCostEstimate === undefined

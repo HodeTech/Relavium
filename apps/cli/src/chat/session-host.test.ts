@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +15,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
+import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
+
+import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
+import type { ProviderResolver } from '../engine/providers.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession,
@@ -25,10 +29,50 @@ import {
 import {
   drainHandle,
   scriptedResolver,
+  stop,
   textTurn,
   toolUseTurn,
   unresolvedResolver,
 } from './test-support.js';
+
+/** A tool-call turn that carries JSON args (the `toolUseTurn` helper sends none) — for read_file/write_file. */
+const callWithArgs = (id: string, name: string, args: unknown): StreamChunk[] => [
+  { type: 'tool_call_start', id, name },
+  { type: 'tool_call_delta', id, argsJsonDelta: JSON.stringify(args) },
+  { type: 'tool_call_end', id },
+  stop('tool_use'),
+];
+
+/** A resolver whose provider records each request's advertised `tools` — for the advertise-filter assertion. */
+function capturingResolver(scripts: StreamChunk[][]): {
+  providers: ProviderResolver;
+  requests: LlmRequest[];
+} {
+  const requests: LlmRequest[] = [];
+  let call = 0;
+  const provider: LlmProvider = {
+    id: 'anthropic',
+    supports: CHAT_TEXT_CAPABILITY_FLAGS,
+    generate: () => {
+      throw new Error('capturingResolver.generate is not used');
+    },
+    stream: (req) => {
+      requests.push(req);
+      const chunks = scripts[call++] ?? [];
+      return (async function* () {
+        await Promise.resolve();
+        for (const c of chunks) yield c;
+      })();
+    },
+  };
+  return {
+    providers: {
+      resolveProvider: (id) => (id === 'anthropic' ? provider : undefined),
+      keyFor: () => 'test-key',
+    },
+    requests,
+  };
+}
 
 const EMPTY_CHAT: ResolvedChatConfig = {
   defaultModel: undefined,
@@ -111,8 +155,9 @@ describe('buildChatSession', () => {
   });
 
   it('streams a tool-calling turn: the model calls a granted tool, the loop completes, the answer streams', async () => {
-    // Turn 1 calls read_file (a default-agent grant) → dispatched through the fail-closed {} host (a
-    // tool_result, unavailable) → turn 2 streams the final answer. The agent:tool_call annotation fires.
+    // Turn 1 calls read_file with NO `path` arg → it fails the tool's arg validation (correctable) BEFORE the
+    // host, so the model self-corrects and turn 2 streams the final answer. The agent:tool_call annotation fires.
+    // (A wired read_file working end-to-end against a real workspace is covered in the assemble integration tests.)
     const built = await build({
       providers: scriptedResolver([toolUseTurn('c1', 'read_file'), textTurn('the answer')]),
     });
@@ -130,8 +175,31 @@ describe('buildChatSession', () => {
   });
 
   it('enforces [chat].max_turns: an over-cap sendMessage settles loudly as turn_limit with no provider call', async () => {
-    // unresolvedResolver ⇒ every turn fails fast as `internal` (a host-wiring gap) but still COUNTS toward
-    // the cap, so the 3rd message past a cap of 2 is blocked as turn_limit without engaging a provider.
+    // Two ENGAGED (successful) turns reach the cap of 2; the 3rd is blocked as turn_limit WITHOUT a provider
+    // call. Only an engaged turn counts toward the cap (F7, ADR-0055) — so the cap is reached by real turns,
+    // not by pre-egress failures (that gate is pinned in packages/core agent-session.test.ts and below).
+    const built = await build({
+      chat: { ...EMPTY_CHAT, maxTurns: 2 },
+      providers: scriptedResolver([textTurn('first'), textTurn('second')]),
+    });
+    built.session.start();
+    await built.session.sendMessage('one');
+    await built.session.sendMessage('two');
+    await built.session.sendMessage('three — over the cap');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const errorCodes = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errorCodes).toEqual(['turn_limit']); // turns 1+2 succeeded; only the over-cap 3rd errors
+  });
+
+  it('a pre-egress failure does NOT count against [chat].max_turns — only an engaged turn burns the cap (F7)', async () => {
+    // The corrected behavior (ADR-0055): with `unresolvedResolver` every turn fails fast as `internal` BEFORE
+    // engaging a provider, so NONE counts toward the cap. Three messages past a cap of 2 therefore all settle as
+    // `internal` and `turn_limit` is NEVER reached — the old code counted the pre-egress failures and wrongly
+    // blocked the 3rd. This is the surface-level regression guard for the engine gate.
     const built = await build({
       chat: { ...EMPTY_CHAT, maxTurns: 2 },
       providers: unresolvedResolver(),
@@ -146,7 +214,8 @@ describe('buildChatSession', () => {
     const errorCodes = events.flatMap((e) =>
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
     );
-    expect(errorCodes).toEqual(['internal', 'internal', 'turn_limit']);
+    expect(errorCodes).toEqual(['internal', 'internal', 'internal']);
+    expect(errorCodes).not.toContain('turn_limit');
   });
 });
 
@@ -214,6 +283,41 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
 
     await built.closeMcp?.();
     expect(closed).toBe(1);
+  });
+
+  it('MERGE-not-replace: a session with MCP keeps the fs arm too — read_file AND an MCP tool both dispatch', async () => {
+    // The keystone 2.5.A fix (ADR-0055): the inbound-MCP arm is MERGED onto the factory fs+process host, never
+    // REPLACING it. Proven end-to-end: in ONE session, read_file routes via host.fs (real file) AND mcp_fs_read
+    // routes via host.mcp — both succeed, so neither arm displaced the other.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-merge-'));
+    writeFileSync(join(workspace, 'r.txt'), 'merged');
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () =>
+        Promise.resolve({ content: [{ type: 'text', text: 'mcp body' }], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeMcpAgent(), // grants read_file + declares the fs MCP server
+      providers: scriptedResolver([
+        callWithArgs('c1', 'read_file', { path: 'r.txt' }),
+        toolUseTurn('c2', 'mcp_fs_read'),
+        textTurn('done'),
+      ]),
+      startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+    });
+    built.session.start();
+    await built.session.sendMessage('read both ways');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const results = events.flatMap((e) =>
+      e.type === 'agent:tool_result' ? [{ id: e.toolId, ok: e.success }] : [],
+    );
+    expect(results).toContainEqual({ id: 'read_file', ok: true }); // host.fs survived the merge
+    expect(results).toContainEqual({ id: 'mcp_fs_read', ok: true }); // host.mcp survived the merge
+    await built.closeMcp?.();
   });
 
   it('leaves closeMcp undefined + mcpSkipped empty when the agent declares no mcp_servers', async () => {
@@ -359,6 +463,18 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
     // The persister continues PAST the persisted MAX(sequence_number) = 1.
     expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('CLAMPS a persisted full fs-scope tier down to project on resume (read-only chat ceiling, ADR-0055)', async () => {
+    // SECURITY regression: a session persisted (e.g. pre-2.5.A) with the broad `full` tier must resume at the
+    // read-only chat ceiling — `project`, never `full` — so a resumed chat can't read `~/.ssh` / `~/.aws` back
+    // to the model. The resumed `context.fsScopeTier` is what both the host jail and the dispatch context use,
+    // so clamping it here keeps all three channels consistent (the same clamp `buildChatSession` applies fresh).
+    const built = await resume(
+      [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      record({ context: { workingDir: '/workspace', fsScopeTier: 'full' } }),
+    );
+    expect(built.context.fsScopeTier).toBe('project');
   });
 
   it('continues a transcript whose last persisted seq is computed from the MAX (order-independent)', async () => {
@@ -600,5 +716,91 @@ describe('buildGovernorWiring', () => {
     wiring?.updateCost(999_999);
     // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed.
     await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
+  });
+});
+
+describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
+  /** Write a throwaway `.agent.yaml` granting `tools` (for the read-only + advertise-filter assertions). */
+  function writeAgent(tools: readonly string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-agent-'));
+    const path = join(dir, 'a.agent.yaml');
+    writeFileSync(
+      path,
+      [
+        'id: custom-agent',
+        'model: claude-sonnet-4-6',
+        'provider: anthropic',
+        'system_prompt: test agent',
+        'tools:',
+        ...tools.map((t) => `  - ${t}`),
+        '',
+      ].join('\n'),
+    );
+    return path;
+  }
+
+  it('read_file actually reads a real file through the wired fs host (end-to-end, not just the factory)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    writeFileSync(join(workspace, 'note.txt'), 'the file body');
+    const built = await build({
+      cwd: workspace,
+      providers: scriptedResolver([
+        callWithArgs('c1', 'read_file', { path: 'note.txt' }),
+        textTurn('done'),
+      ]),
+    });
+    built.session.start();
+    await built.session.sendMessage('read note.txt');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const result = events.find((e) => e.type === 'agent:tool_result');
+    expect(result?.type === 'agent:tool_result' && result.toolId).toBe('read_file');
+    expect(result?.type === 'agent:tool_result' && result.success).toBe(true); // the wired read SUCCEEDED
+    // No capability gap surfaced — the turn completed normally and the post-tool answer streamed.
+    const errors = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it('write_file in a chat session fail-closes as tool_unavailable (chat is read-only until 2.5.E)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+      ]),
+    });
+    built.session.start();
+    await built.session.sendMessage('write a file');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_unavailable', // the read-only fs writeFile fail-closed (EA1)
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // it fail-closed BEFORE any write — no file on disk
+  });
+
+  it('the advertise-filter drops an unwired tool from the EFFECTIVE grant; the original keeps it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const { providers, requests } = capturingResolver([textTurn('hi')]);
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['read_file', 'http_request']), // http_request needs egress — NOT wired in 2.5.A
+      providers,
+    });
+    built.session.start();
+    await built.session.sendMessage('go');
+    built.session.cancel();
+    await drainHandle(built.handle.events);
+
+    const advertised = (requests[0]?.tools ?? []).map((t) => t.name);
+    expect(advertised).toContain('read_file'); // fs wired ⇒ advertised
+    expect(advertised).not.toContain('http_request'); // egress unwired ⇒ NOT advertised
+    expect(built.agent.tools).toEqual(['read_file', 'http_request']); // the ORIGINAL keeps the author's grant
   });
 });
