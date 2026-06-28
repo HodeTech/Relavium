@@ -1,7 +1,7 @@
 {
   "name": "relavium",
-  "version": "0.1.0",
-  "description": "Relavium CLI (`relavium`) — run agent workflows from the terminal; the engine's first real consumer.",
+  "version": "0.1.1",
+  "description": "The local-first Relavium CLI — run multi-model AI agent sessions and git-committable workflows from your terminal.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "bin": {
@@ -9,15 +9,24 @@
   },
   "files": [
     "dist",
-    "drizzle"
+    "drizzle",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "relavium",
     "ai",
     "agent",
+    "ai-agent",
+    "multi-agent",
     "workflow",
     "cli",
-    "llm"
+    "llm",
+    "local-first",
+    "mcp",
+    "anthropic",
+    "openai",
+    "gemini",
+    "deepseek"
   ],
   "repository": {
     "type": "git",

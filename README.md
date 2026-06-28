@@ -43,6 +43,31 @@ machine unless you choose it.
 - **Per-node cost waterfall** — token and dollar attribution per node, per model.
 - **Local-first, zero-install posture** — BYOK, OS keychain, no sign-up in Phase 1.
 
+## Getting started
+
+The CLI is the first usable surface. It ships as a single npm binary — `npm install -g relavium`
+(the public npm publish is the final maintainer step of the **v0.1.1** release; until it lands, build from
+source per [local dev setup](docs/runbooks/local-dev-setup.md)). Then **start as an agent → ship the workflow
+→ own every run**:
+
+```bash
+# 1. Point Relavium at a provider — your key goes to the OS keychain, never a file
+relavium provider add anthropic
+echo "$ANTHROPIC_API_KEY" | relavium provider set-key anthropic   # the key is read from stdin, never argv
+
+# 2. Start as an agent — a multi-turn session in your terminal
+relavium chat
+#    …converse until a flow proves itself, then run /export inside the REPL
+#    to ship the session to a git-committable .relavium.yaml
+
+# 3. Own every run — execute the workflow and stream every event (CI-friendly with --json)
+relavium run ./my-workflow.relavium.yaml --json
+```
+
+Prefer to author directly? `relavium create` scaffolds an agent or a minimal single-agent workflow, and
+`relavium import` / `relavium export` move them between projects. The full surface is the
+[CLI command reference](docs/reference/cli/commands.md).
+
 ## Architecture
 
 ```mermaid
@@ -92,7 +117,7 @@ One engine, three modes behind the one `LLMProvider` seam:
 **Phase 1 — Engine and LLM is complete** (2026-06-21): the engine runs end-to-end on
 local-first BYOK — workflow parsing, DAG execution, live streaming, checkpoint/resume,
 multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (the CLI) is
-underway** — the CLI skeleton, config resolution, `relavium run` (wired to the engine), its
+feature-complete** — the CLI skeleton, config resolution, `relavium run` (wired to the engine), its
 `--json` CI machine-output contract, the engine regression harness, durable local run history, the
 provider/key commands (API keys in the OS keychain), the live `ink` streaming TUI, the human-gate
 prompt + out-of-band `relavium gate` resume, the read commands (`list` / `logs` / `status` / `gate list`)
@@ -104,7 +129,10 @@ go/no-go exit criteria now hold). The first additive lanes have since landed too
 one-shot `agent run` with deterministic offline `--fixture` replay (the first user-facing `AgentSession`
 surface); and the **inbound MCP client** — agents consume external MCP servers' tools over stdio + the
 `http`/`sse`/`websocket` network transports (behind an SSRF floor and isolated keychain-resolved secrets),
-proven by a real-spawn end-to-end test. For live status and the full roadmap, see
+proven by a real-spawn end-to-end test; and the **YAML-authoring lifecycle** — `relavium create` (a wizard
+scaffolding an agent or a minimal single-agent workflow), `import`, and a share-safe `export` (re-serialized
+from the validated AST, no provider key by construction). With every in-phase workstream merged, the CLI is
+cut as **v0.1.1** (the public npm publish is the pending final maintainer step). For live status and the full roadmap, see
 [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-26
+> Last updated: 2026-06-28
 
 - **Related**: [README.md](README.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -28,14 +28,16 @@ and the [reference specs](../reference/).
 
 > **Live maintainer obligations:** (1) mark the CI `ci` job a **required check** in GitHub branch
 > protection (carried from Phase 0; optionally add `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
-> cross-runner remote cache); (2) now that **2.L** has landed (PR #49), add the **`NPM_TOKEN`** repo secret + npm 2FA
-> so the tag-triggered `Release CLI` workflow can publish (the actual `npm publish` is maintainer-gated,
+> cross-runner remote cache); (2) now that **2.L** has landed (PR #49) and **v0.1.1** has been cut, add the
+> **`NPM_TOKEN`** repo secret + npm 2FA so the tag-triggered `Release CLI` workflow can publish — **still pending
+> for the v0.1.1 tag** (the actual `npm publish` is maintainer-gated,
 > [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
 > [release-a-surface.md](../runbooks/release-a-surface.md)).
 
 ## What is active now
 
-**Phase 2 — CLI (milestone M3) is in progress.** The CLI is the first real
+**Phase 2 — CLI (milestone M3) is feature-complete** (every in-phase workstream 2.A–2.S merged; published as
+**v0.1.1**). The CLI is the first real
 `@relavium/core` consumer and doubles as the engine's regression harness — validating the
 engine API ergonomics before the desktop and VS Code surfaces. **Landed:** the CLI skeleton +
 process contract (**2.A**) and the two-level config-resolution loader (**2.B**), both ✅ Done
@@ -109,10 +111,19 @@ e2e** are ✅ **Done (PR #57, 2026-06-27)** — behind [ADR-0034](../decisions/0
 Phase-3 go/no-go (capability without gating). Residual MCP hardening — the connect-by-validated-IP dialer,
 network header-auth, tool-list caching, mid-call abort propagation, and the stdio import-trust gate — is tracked
 in [deferred-tasks.md](deferred-tasks.md).
-**Next pickup:** **2.J** — the last in-phase additive lane; the full status-aware order is the
-[Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. See the
+**Also landed — 2.J (the YAML-authoring lifecycle), the last in-phase lane:** `relavium create` (a
+`@clack/prompts` wizard scaffolding an agent **or** a minimal single-agent workflow, validated against the
+kind-appropriate `@relavium/shared` schema before write, dual-TTY-gated), `relavium import <path>` (schema-
+validated copy-in with **project-global** id uniqueness), and `relavium export <id>` (a portable copy
+**re-serialized from the validated AST** — canonical, comment-free, no provider key by construction), sharing one
+`assertSlugAvailable` cross-catalog guard, ✅ **Done (PR #58, 2026-06-28)** — **no new ADR** (covered by
+[ADR-0026](../decisions/0026-session-export-to-workflow.md)/[ADR-0047](../decisions/0047-cli-framework-commander-ink-clack.md)).
+
+**Phase 2 — CLI is feature-complete.** Every in-phase workstream (2.A–2.S) is merged and the published CLI is cut
+as **v0.1.1**; M3 was reached at 2.K and the Phase-3 go/no-go held from 2.L. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
-[sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).
+[sequencing plan](phases/phase-2-cli.md#sequencing--parallelization). The full status-aware history is the
+[Remaining build order](phases/phase-2-cli.md#remaining-build-order) section (its queue is now empty).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half
