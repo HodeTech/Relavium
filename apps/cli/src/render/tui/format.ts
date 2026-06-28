@@ -67,6 +67,15 @@ export function formatCostUsd(microcents: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
+/**
+ * The Home-strip cost label (2.5.B): "free" at zero (the common zero-cost chat reads better than `$0.0000`),
+ * else {@link formatCostUsd}. Reuses the canonical µ¢→USD conversion so there is exactly one home for that math
+ * (CLAUDE.md rule 8) — never a second hand-rolled divisor that could drift by a factor of 100.
+ */
+export function formatCostShort(microcents: number): string {
+  return microcents <= 0 ? 'free' : formatCostUsd(microcents);
+}
+
 /** Format a millisecond duration compactly: `420ms`, `3.2s`, `1m04s`. Negatives (clock skew) clamp to 0. */
 export function formatDuration(ms: number): string {
   const safeMs = Math.max(0, ms);

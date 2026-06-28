@@ -14,18 +14,26 @@ export interface ChatKey {
   readonly delete?: boolean;
 }
 
-/** What a keystroke maps to; the caller applies it. `none` is a deliberately-ignored key (a chord, or mid-turn). */
+/**
+ * What a keystroke maps to. The buffer EDITS are operations (`append` / `backspace`), NOT a precomputed value,
+ * so the caller applies them through React's functional updater (`setInput((cur) => …)`) — this is load-bearing:
+ * ink dispatches every event parsed from one stdin chunk synchronously with no render flush between them (a
+ * coalesced burst, e.g. a printable interleaved with an escape sequence), so a precomputed `value` would read a
+ * STALE buffer and drop all but the last edit. `none` is a deliberately-ignored key (a chord, or mid-turn).
+ */
 export type ChatKeyAction =
   | { readonly kind: 'none' }
-  | { readonly kind: 'input'; readonly value: string }
+  | { readonly kind: 'append'; readonly char: string }
+  | { readonly kind: 'backspace' }
   | { readonly kind: 'submit'; readonly line: string }
   | { readonly kind: 'cancel' };
 
 /**
  * Reduce one keystroke of the chat prompt to an action. Ctrl-C maps to `cancel` even mid-turn (so a streaming
  * turn can always be interrupted); while a turn is `running` every OTHER key is ignored (one turn at a time);
- * Return submits the current buffer; backspace/delete trims one char; a printable char (not a ctrl/meta chord)
- * appends. Mirrors the original `ChatApp` `useInput` body exactly.
+ * Return submits the current buffer (`input`); backspace/delete is a `backspace` op; a printable char (not a
+ * ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller folds them functionally,
+ * preserving the original `ChatApp` accumulating semantics across a batched multi-event chunk.
  */
 export function reduceChatKey(
   char: string,
@@ -36,11 +44,19 @@ export function reduceChatKey(
   if (key.ctrl === true && char === 'c') return { kind: 'cancel' };
   if (running) return { kind: 'none' }; // one turn at a time — ignore typing while the assistant streams
   if (key.return === true) return { kind: 'submit', line: input };
-  if (key.backspace === true || key.delete === true) {
-    return { kind: 'input', value: input.slice(0, -1) };
-  }
-  if (char.length > 0 && key.ctrl !== true && key.meta !== true) {
-    return { kind: 'input', value: input + char };
-  }
+  if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
+  if (char.length > 0 && key.ctrl !== true && key.meta !== true) return { kind: 'append', char };
   return { kind: 'none' };
+}
+
+/** Apply a buffer-edit action to a buffer (the functional-updater body). `submit`/`cancel`/`none` don't edit. */
+export function applyChatEdit(buffer: string, action: ChatKeyAction): string {
+  switch (action.kind) {
+    case 'append':
+      return buffer + action.char;
+    case 'backspace':
+      return buffer.slice(0, -1);
+    default:
+      return buffer;
+  }
 }

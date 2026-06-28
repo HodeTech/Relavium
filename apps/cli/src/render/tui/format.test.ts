@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  formatCostShort,
   formatCostUsd,
   formatDuration,
   formatProducedMedia,
@@ -17,6 +18,16 @@ describe('formatCostUsd', () => {
     expect(formatCostUsd(5_000_000)).toBe('$0.0500'); // workflow-yaml-spec.md: 5_000_000 ≈ $0.05
     expect(formatCostUsd(100_000_000)).toBe('$1.0000'); // 1e8 micro-cents = $1
     expect(formatCostUsd(123_456_789)).toBe('$1.2346'); // rounds to 4 dp
+  });
+});
+
+describe('formatCostShort (2.5.B Home)', () => {
+  it('is "free" at zero/negative, else the canonical USD figure (shares the 1e8 conversion — no drift)', () => {
+    expect(formatCostShort(0)).toBe('free');
+    expect(formatCostShort(-5)).toBe('free');
+    expect(formatCostShort(100_000_000)).toBe('$1.0000'); // 1e8 micro-cents = $1 (NOT $100 — the 1e6 bug)
+    expect(formatCostShort(120_000_000)).toBe('$1.2000');
+    expect(formatCostShort(5_000_000)).toBe('$0.0500');
   });
 });
 

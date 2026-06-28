@@ -4,14 +4,17 @@ import type {
   HomeRunRow,
   HomeSessionRow,
 } from '../../home/home-store.js';
-import { stripTerminalControls } from './chat-projection.js';
+import { sanitizeInline } from './chat-projection.js';
+import { formatCostShort } from './format.js';
 
 /**
  * Pure projection helpers for the 2.5.B Home strip (ADR-0054) — the read-only display of recent sessions /
  * runs / agents + an "attention" section. Like the chat projection, all logic lives here (clock-injected, no
- * ink) so the `HomeView` is a thin render and every label is unit-tested. Every model/user-derived string (a
- * session title, a gate message) is sanitized at this display boundary so a control sequence cannot corrupt the
- * terminal; the kebab slugs (`workflowSlug` / `agentSlug`) and the closed enums (`status` / `gateType`) are safe.
+ * ink) so the `HomeView` is a thin render and every label is unit-tested. Every model/user-derived free-form
+ * string (a session title, a gate message) goes through `sanitizeInline` at this display boundary — which strips
+ * control sequences AND collapses any newline/tab to a space, so the value cannot spoof extra rows/columns in a
+ * one-line strip row; the kebab slugs (`workflowSlug` / `agentSlug`) and the closed enums (`status` / `gateType`)
+ * are safe by construction. Cost reuses the canonical {@link formatCostShort} (one home for the µ¢→USD math).
  */
 
 /** The minimum terminal the Home renders in; below it, degrade to a resize prompt (ADR-0054 / §2.5.B). */
@@ -49,14 +52,6 @@ export function relativeTime(iso: string, nowMs: number): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
-/** Format microcents as a short cost: "free" at 0, else "$0.0042" / "$1.20" (2 sig-ish decimals, min 2 places). */
-export function formatCost(microcents: number): string {
-  if (microcents <= 0) return 'free';
-  const dollars = microcents / 1_000_000;
-  // 4 decimals below a cent so a sub-cent run still shows a non-zero figure; 2 at/above a cent.
-  return `$${dollars.toFixed(dollars < 0.01 ? 4 : 2)}`;
-}
-
 /** A gate's deadline as urgency text: "expired" once past (the Phase-1 in-process-timer caveat), else "expires …". */
 export function expiryLabel(expiresAt: string | undefined, nowMs: number): string | undefined {
   if (expiresAt === undefined) return undefined;
@@ -81,12 +76,12 @@ const SEP = '  ·  ';
 
 /** A recent session row → its glanceable line: title (or agent) · agent · when · cost. */
 export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
-  const title = stripTerminalControls(row.title ?? row.agentSlug);
+  const title = sanitizeInline(row.title ?? row.agentSlug);
   return [
     title,
     row.agentSlug,
     relativeTime(row.updatedAt, nowMs),
-    formatCost(row.totalCostMicrocents),
+    formatCostShort(row.totalCostMicrocents),
   ]
     .filter((s) => s.length > 0)
     .join(SEP);
@@ -100,7 +95,7 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
     name,
     row.status,
     relativeTime(anchor ?? row.createdAt, nowMs),
-    formatCost(row.totalCostMicrocents),
+    formatCostShort(row.totalCostMicrocents),
   ]
     .filter((s) => s.length > 0)
     .join(SEP);
@@ -113,7 +108,7 @@ export function gateLabel(row: HomeGateRow, nowMs: number): string {
   return [
     name,
     row.gateType,
-    stripTerminalControls(row.message),
+    sanitizeInline(row.message),
     ...(expiry === undefined ? [] : [expiry]),
   ]
     .filter((s) => s.length > 0)

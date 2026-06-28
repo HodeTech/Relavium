@@ -8,13 +8,19 @@
  * the title when it renders), mirroring the chat transcript's "raw in storage, sanitized at the boundary" rule.
  */
 
-/** The max length of a derived session title — the readable width of the Home strip. */
+/** The max length of a derived session title, in Unicode code points — the readable width of the Home strip. */
 export const SESSION_TITLE_MAX = 40;
 
 /** The first user message → a one-line, trimmed, truncated title, or `undefined` for an empty/blank message. */
 export function deriveSessionTitle(firstMessage: string): string | undefined {
   const oneLine = firstMessage.replace(/\s+/g, ' ').trim();
   if (oneLine.length === 0) return undefined; // a blank first message keeps the session title unset (not "")
-  if (oneLine.length <= SESSION_TITLE_MAX) return oneLine;
-  return `${oneLine.slice(0, SESSION_TITLE_MAX - 1).trimEnd()}…`;
+  // Count + slice by CODE POINT (`[...oneLine]`), not UTF-16 code unit: a code-unit cut at index 39 could split
+  // an astral char (emoji) and leave a lone surrogate that renders as mojibake in the Home list.
+  const points = [...oneLine];
+  if (points.length <= SESSION_TITLE_MAX) return oneLine;
+  return `${points
+    .slice(0, SESSION_TITLE_MAX - 1)
+    .join('')
+    .trimEnd()}…`;
 }

@@ -9,7 +9,7 @@ import {
 } from '../../commands/chat.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps } from './projection.js';
-import { reduceChatKey } from './chat-input.js';
+import { applyChatEdit, reduceChatKey } from './chat-input.js';
 import { spinnerFrame } from './format.js';
 import {
   formatSessionFooter,
@@ -163,8 +163,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           submit('/cancel');
         }
         return;
-      case 'input':
-        setInput(action.value);
+      case 'append':
+      case 'backspace':
+        // Apply the EDIT through the functional updater so a coalesced multi-event stdin chunk composes onto the
+        // latest buffer (ink dispatches the chunk's events synchronously with no render flush between them).
+        setInput((current) => applyChatEdit(current, action));
         return;
       case 'submit':
         setInput('');

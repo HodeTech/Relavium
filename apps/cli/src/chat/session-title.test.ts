@@ -12,12 +12,18 @@ describe('deriveSessionTitle', () => {
     expect(deriveSessionTitle('line one\nline two\t  three')).toBe('line one line two three');
   });
 
-  it('truncates an over-long message with an ellipsis, staying within the max', () => {
-    const long = 'a'.repeat(100);
-    const title = deriveSessionTitle(long);
+  it('truncates an over-long message with an ellipsis, staying within the code-point max', () => {
+    const title = deriveSessionTitle('a'.repeat(100));
     expect(title).toBeDefined();
-    expect(title?.length).toBe(SESSION_TITLE_MAX); // 39 chars + the 1-char ellipsis
+    expect([...(title ?? '')].length).toBe(SESSION_TITLE_MAX); // 39 kept code points + the 1 ellipsis
     expect(title?.endsWith('…')).toBe(true);
+  });
+
+  it('truncates on a code-point boundary — never splits an emoji into a lone surrogate (no mojibake)', () => {
+    // An astral char straddling the cut index would, with a code-UNIT slice, leave a lone high surrogate.
+    const title = deriveSessionTitle(`${'a'.repeat(38)}\u{1F600}${'b'.repeat(10)}`);
+    expect(title).toBeDefined();
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(title ?? '')).toBe(false); // no lone high surrogate
   });
 
   it('returns undefined for an empty or whitespace-only message (no empty title persisted)', () => {
