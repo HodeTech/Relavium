@@ -93,32 +93,48 @@ export class ProcessDeniedError extends ToolDispatchError {
 }
 
 /**
- * Declared env vars the host **forbids** even from a trusted workflow author: code/library **injection**
- * vectors that would run attacker code in the child (or a grandchild) regardless of the allowlisted binary.
- * `PATH`/`Path` are rejected too — executable resolution deliberately ignores a declared `PATH`, so accepting
- * one would only mislead. A declared var is merged on top of the audited base env; this is the audit
- * (built-in-tools.md §Subprocess environment names `NODE_OPTIONS` as a hijack vector).
+ * Declared env vars the host **forbids** even from a workflow author: keys that would run attacker code in
+ * the child (or a grandchild), or steer a tool's config/identity, regardless of the allowlisted binary —
+ * the audit the spec mandates ([built-in-tools.md](../../../../../docs/reference/shared-core/built-in-tools.md)
+ * §Subprocess environment names `NODE_OPTIONS` as a hijack vector). Categories: interpreter/loader option
+ * injection (`NODE_OPTIONS`/`NODE_PATH`, `PYTHON*`, `PERL5*`, `RUBY*`, `JAVA_*`/`CLASSPATH`, the `LD_`/`DYLD_`
+ * dynamic loaders, `BASH_ENV`/`ENV`/`IFS`), the entire `GIT_` namespace (`GIT_DIR`, `GIT_CONFIG_*`,
+ * `GIT_SSH*`, `GIT_EXEC_PATH`, hooks via `core.hooksPath` → RCE), and **config-home redirection**
+ * (`HOME`/`XDG_CONFIG_HOME`/`USERPROFILE` repoint a tool's `~/.gitconfig`/rc to attacker-controlled files).
+ * `PATH` is rejected too — executable resolution deliberately ignores a declared `PATH`. Keys are matched
+ * case-insensitively (Windows env names are case-insensitive). A declared var is merged on top of the audited
+ * base env; a stricter author-**opt-in allowlist** of permitted keys is the Phase-2.6 refinement (this profile's
+ * `git_status` passes an empty `declaredEnv`, so the surface is only a power-user `run_command` `env` config).
  */
-const FORBIDDEN_DECLARED_ENV = new Set([
+const FORBIDDEN_DECLARED_ENV: ReadonlySet<string> = new Set([
+  // interpreter / loader option + module-path injection
   'NODE_OPTIONS',
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'LD_AUDIT',
+  'NODE_PATH',
+  'NODE_V8_COVERAGE',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+  'PERL5LIB',
+  'PERL5OPT',
+  'RUBYLIB',
+  'RUBYOPT',
+  'JAVA_TOOL_OPTIONS',
+  '_JAVA_OPTIONS',
+  'JDK_JAVA_OPTIONS',
+  'CLASSPATH',
   'BASH_ENV',
   'ENV',
   'IFS',
-  'PYTHONPATH',
-  'PERL5LIB',
-  'RUBYLIB',
-  'GIT_SSH_COMMAND',
-  'GIT_EXTERNAL_DIFF',
-  'GIT_PAGER',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  // config-home redirection (repoints ~/.gitconfig, rc files, …)
+  'HOME',
+  'XDG_CONFIG_HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  // executable resolution ignores a declared PATH — reject it rather than mislead
   'PATH',
-  'Path',
 ]);
-/** Dynamic-loader prefixes (`DYLD_INSERT_LIBRARIES`, `LD_*`) — any declared key starting with one is forbidden. */
-const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_'];
+/** Forbidden key prefixes: the dynamic loaders (`DYLD_*`, `LD_*`) and the ENTIRE git env namespace (`GIT_*`). */
+const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_', 'GIT_'];
 
 /**
  * Build a node-backed {@link ProcessCapability}. The returned object is the value a host wires onto
@@ -311,10 +327,11 @@ async function resolveExecutable(command: string): Promise<string> {
   throw new ProcessDeniedError('the command was not found on PATH'); // deterministic — fatal, never retried
 }
 
-/** Reject a declared env var the host forbids (injection vectors / `PATH`) — fail-closed and visible (the audit). */
+/** Reject a declared env var the host forbids (injection / config-steering) — case-insensitive, fail-closed. */
 function assertSafeDeclaredEnv(declaredEnv: Readonly<Record<string, string>>): void {
   for (const key of Object.keys(declaredEnv)) {
-    if (FORBIDDEN_DECLARED_ENV.has(key) || FORBIDDEN_DECLARED_ENV_PREFIX.some((p) => key.startsWith(p))) {
+    const k = key.toUpperCase(); // Windows env names are case-insensitive; normalize so `node_options` can't slip past
+    if (FORBIDDEN_DECLARED_ENV.has(k) || FORBIDDEN_DECLARED_ENV_PREFIX.some((p) => k.startsWith(p))) {
       throw new ProcessDeniedError('a declared environment variable is not permitted');
     }
   }

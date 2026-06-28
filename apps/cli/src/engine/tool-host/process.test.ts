@@ -115,17 +115,25 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
     expect(r.stdout).toBe('ran');
   });
 
-  it('REJECTS a forbidden declared env var (injection vectors + PATH) — fatal tool_denied', async () => {
-    const fs = proc();
+  it('REJECTS a forbidden declared env var (injection / config-steering) — fatal tool_denied', async () => {
+    const cap = proc();
     for (const env of [
       { NODE_OPTIONS: '--require /tmp/evil.js' },
+      { NODE_PATH: '/tmp/evil-modules' }, // module-resolution hijack
       { LD_PRELOAD: '/tmp/evil.so' }, // exact-set member
       { LD_CUSTOM_INJECTOR: '/evil' }, // only the `LD_` PREFIX arm blocks this — exercises it independently
       { DYLD_INSERT_LIBRARIES: '/tmp/x' }, // only the `DYLD_` prefix arm
+      { JAVA_TOOL_OPTIONS: '-javaagent:/tmp/x.jar' },
+      { PERL5OPT: '-Mevil' },
       { PATH: '/nonexistent' },
-      { GIT_SSH_COMMAND: 'evil' },
+      { GIT_SSH_COMMAND: 'evil' }, // GIT_ prefix
+      { GIT_DIR: '/tmp/attacker.git' }, // GIT_ prefix — redirect every git op
+      { GIT_CONFIG_COUNT: '1' }, // GIT_ prefix — inline config → core.hooksPath RCE
+      { git_dir: '/tmp/x' }, // case-insensitive: lowercase must NOT slip past
+      { HOME: '/tmp/fake-home' }, // config-home redirection (~/.gitconfig)
+      { XDG_CONFIG_HOME: '/tmp/x' },
     ]) {
-      await expect(fs.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(ProcessDeniedError);
+      await expect(cap.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(ProcessDeniedError);
     }
   });
 
@@ -247,6 +255,8 @@ describe('createNodeProcessCapability — cwd + streams + signal exit', () => {
       // The spawned parent forks a same-group grandchild that would write `marker` after 500ms; the parent
       // then stays alive. Killing only the parent PID would orphan (not kill) the grandchild — the
       // process-group SIGKILL must reap it, so the marker must NOT appear.
+      // Double-encoded on purpose: the OUTER JSON.stringify makes the JS string literal the parent script
+      // concatenates; the INNER one supplies the quoted path the grandchild's eval'd script hands writeFileSync.
       const parentScript = `const { spawn } = require('node:child_process');
         spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").writeFileSync(' + ${JSON.stringify(JSON.stringify(marker))} + ', "1"), 500)'], { stdio: 'ignore' });
         setTimeout(() => {}, 60000);`;
