@@ -12,6 +12,7 @@ import {
   type SessionEventSink,
   type SessionHandle,
   type SessionResumeState,
+  type ToolDef,
   type ToolHost,
 } from '@relavium/core';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
@@ -26,6 +27,7 @@ import type {
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { connectAgentMcp } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import { assembleToolEnv, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveChatAgent } from './agent-source.js';
@@ -158,13 +160,22 @@ function buildSessionRuntime(
   opts: SessionRuntimeOptions,
   sessionId: string,
   mcp: McpClient | undefined,
-): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink } {
+  context: SessionContext,
+): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink; host: ToolHost } {
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
-  // `?? {}` is the deliberate fail-closed default (no capabilities); hoisted so the merge below doesn't spread a
-  // freshly-allocated empty object literal.
-  const baseHost: ToolHost = opts.toolHost ?? {};
+  // 2.5.A (ADR-0055): the shared factory wires the READ-ONLY chat host (fs read+list, process for the
+  // pre-approved git_status) jailed to the session's fs-scope tier. A test may inject its own `toolHost`
+  // (e.g. a fail-closed `{}` for a capability-gap assertion); production uses the factory.
+  const baseHost: ToolHost =
+    opts.toolHost ??
+    assembleToolEnv({
+      profile: 'chat-read-only',
+      fsScopeTier: context.fsScopeTier,
+      workspaceDir: context.workingDir,
+    }).host;
+  // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const registry = createToolRegistry({ tools, host });
   const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
@@ -190,7 +201,7 @@ function buildSessionRuntime(
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
   };
-  return { bus, deps, emit };
+  return { bus, deps, emit, host };
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
@@ -220,13 +231,14 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       });
 
   try {
-    const { bus, deps, emit } = buildSessionRuntime(opts, sessionId, mcp);
-    // The session runs against the EFFECTIVE agent (its grant unioned with the discovered MCP tool ids); the
-    // ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
+    const { bus, deps, emit, host } = buildSessionRuntime(opts, sessionId, mcp, context);
+    // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
+    // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
+    // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
     const session = new AgentSession({
       sessionId,
       agentRef: agent.id,
-      agent: withMcpGrant(agent, mcp),
+      agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
       context,
       deps,
     });
@@ -263,6 +275,17 @@ function withMcpGrant(agent: AgentDefinition, mcp: McpClient | undefined): Agent
   if (mcp === undefined || mcp.toolDefs.length === 0) return agent;
   const tools = [...new Set([...(agent.tools ?? []), ...mcp.toolDefs.map((def) => def.id)])];
   return { ...agent, tools };
+}
+
+/**
+ * Narrow a runtime agent's `tools` grant to those whose required {@link ToolHost} arm is wired (the 2.5.A
+ * advertise-filter, ADR-0055): an unwired tool is never offered to the model, so the agent's "say so plainly"
+ * path applies and the model cannot call a capability that isn't there. Applied to the EFFECTIVE agent only —
+ * the original (persisted/exported) agent keeps the author's full grant. The dispatch `tool_unavailable`
+ * backstop (EA1) still fail-closes anything that slips through.
+ */
+function narrowToWired(agent: AgentDefinition, host: ToolHost, defs: readonly ToolDef[]): AgentDefinition {
+  return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
 }
 
 /** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */
@@ -337,12 +360,12 @@ export async function buildResumedChatSession(
   });
 
   try {
-    const { bus, deps, emit } = buildSessionRuntime(opts, record.id, mcp);
+    const { bus, deps, emit, host } = buildSessionRuntime(opts, record.id, mcp, context);
     const session = AgentSession.resume(
       {
         sessionId: record.id,
         agentRef: agent.id,
-        agent: withMcpGrant(agent, mcp),
+        agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
         context,
         deps,
       },

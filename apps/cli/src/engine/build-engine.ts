@@ -6,6 +6,7 @@ import {
   createToolRegistry,
   type AgentRunnerDeps,
   type ExecutionHost,
+  type FsScopeTier,
   type McpCapability,
   type ToolDef,
   type ToolHost,
@@ -14,6 +15,7 @@ import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
+import { assembleToolEnv } from './tool-host/assemble.js';
 
 export interface BuildEngineOptions {
   /** Override the execution host (tests use the in-memory reference). */
@@ -39,18 +41,27 @@ export interface BuildEngineOptions {
    * `ToolHost.mcp`. The host owns the connections' lifecycle (teardown at the run terminal) — see `run.ts`.
    */
   readonly mcp?: { readonly toolDefs: readonly ToolDef[]; readonly capability: McpCapability };
+  /**
+   * The workflow-run tool-environment inputs (2.5.A, ADR-0055) — when given, the shared factory wires the
+   * **read+write** `fs` + `process` host arms jailed to `workspaceDir` at `fsScopeTier` (the workflow-author
+   * trust model governs the run path). Absent (the in-memory unit/harness path) ⇒ a fail-closed `{}` host, so
+   * a tool needing a capability is cleanly `tool_unavailable`. `run.ts` passes the launch cwd + the resolved
+   * `fs_scope`. The MCP arm is merged on top below.
+   */
+  readonly toolEnv?: { readonly workspaceDir: string; readonly fsScopeTier: FsScopeTier };
 }
 
 /**
  * Assemble a {@link WorkflowEngine} for a CLI run: a node-backed host, the standard node executor
- * (the six non-agent handlers + the agent arm), the expression sandbox, and a **fail-closed**
- * `ToolHost`. `host`/`providers` are injectable so tests drive a stub provider + the in-memory host.
+ * (the six non-agent handlers + the agent arm), the expression sandbox, and the `ToolHost`.
+ * `host`/`providers` are injectable so tests drive a stub provider + the in-memory host.
  *
- * The `ToolHost` carries only what is explicitly wired: when `options.mcp` is present (2.R Step 3b) it
- * gets the `McpCapability` (so a granted MCP tool can `tools/call`); otherwise it is `{}` — every
- * capability (fs / process / egress / …) absent, so a built-in tool that needs one is cleanly
- * "unavailable" rather than an insecure stub. Wiring the remaining capabilities (with a dedicated
- * security review; egress SSRF is already deferred per deferred-tasks/§2.S) is a follow-up workstream.
+ * The `ToolHost` (2.5.A, ADR-0055): when `options.toolEnv` is given, the shared factory wires the
+ * **read+write** `fs` + `process` arms jailed to the workspace at the resolved `fs_scope` (the workflow-author
+ * trust model governs the run path); the inbound-MCP `McpCapability` (2.R) is then **merged** on top with a
+ * conditional spread — a true merge, never a replace. The `egress` / `os` arms stay unwired in 2.5.A (egress
+ * lands with ADR-0057/2.5.E behind the approval floor), so a tool needing one is cleanly `tool_unavailable`.
+ * Absent `toolEnv` (the in-memory unit/harness path) ⇒ a fail-closed `{}` base host.
  */
 export async function buildEngine(options: BuildEngineOptions = {}): Promise<WorkflowEngine> {
   const host = options.host ?? createCliHost();
@@ -60,10 +71,21 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
   // Compose the inbound MCP tools (2.R Step 3b): the discovered namespaced ToolDefs join the built-ins in the
   // registry AND `AgentRunnerDeps.tools` below (so a granted MCP tool is surfaced to the LLM), and the
   // McpCapability is wired onto the registry's `ToolHost.mcp` so a `tools/call` routes to the owning connection.
-  // Absent ⇒ built-ins only + a fail-closed `{}` host (the engine's pre-2.R posture, unchanged).
   const tools =
     options.mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...options.mcp.toolDefs];
-  const toolHost: ToolHost = options.mcp === undefined ? {} : { mcp: options.mcp.capability };
+  // 2.5.A (ADR-0055): the shared factory wires the read+write fs + process arms when `toolEnv` is given;
+  // absent ⇒ a fail-closed `{}` base host. The MCP arm is then MERGED with a conditional spread — a true
+  // merge, never a replace (the prior bug that dropped a sibling fs/process arm once one was added).
+  const baseToolHost: ToolHost =
+    options.toolEnv === undefined
+      ? {}
+      : assembleToolEnv({
+          profile: 'workflow-read-write',
+          fsScopeTier: options.toolEnv.fsScopeTier,
+          workspaceDir: options.toolEnv.workspaceDir,
+        }).host;
+  const toolHost: ToolHost =
+    options.mcp === undefined ? baseToolHost : { ...baseToolHost, mcp: options.mcp.capability };
   const registry = createToolRegistry({ tools, host: toolHost });
 
   // The single host CAS (`host.mediaStore`) also backs the D8 failover re-materialization: resolve a durable

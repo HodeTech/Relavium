@@ -111,8 +111,9 @@ describe('buildChatSession', () => {
   });
 
   it('streams a tool-calling turn: the model calls a granted tool, the loop completes, the answer streams', async () => {
-    // Turn 1 calls read_file (a default-agent grant) → dispatched through the fail-closed {} host (a
-    // tool_result, unavailable) → turn 2 streams the final answer. The agent:tool_call annotation fires.
+    // Turn 1 calls read_file with NO `path` arg → it fails the tool's arg validation (correctable) BEFORE the
+    // host, so the model self-corrects and turn 2 streams the final answer. The agent:tool_call annotation fires.
+    // (A wired read_file working end-to-end against a real workspace is covered in the assemble integration tests.)
     const built = await build({
       providers: scriptedResolver([toolUseTurn('c1', 'read_file'), textTurn('the answer')]),
     });

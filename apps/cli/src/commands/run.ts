@@ -185,7 +185,14 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // junction, and the host gets the global CAS root (`~/.relavium/media/`) + the project-relative `save_to`
     // root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
     // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
-    let engineOptions: BuildEngineOptions = { providers, ...mcpOption };
+    // 2.5.A (ADR-0055): wire the read+write fs + process ToolHost arms, jailed to the launch cwd at the
+    // resolved `[defaults].fs_scope` (default sandboxed). The factory feeds BOTH this run path and the chat
+    // path, so a workflow's read_file / write_file / run_command / git_status work (the MCP arm merges on top).
+    const toolEnv = {
+      workspaceDir: deps.global.cwd,
+      fsScopeTier: config.fsScope ?? ('sandboxed' as const),
+    };
+    let engineOptions: BuildEngineOptions = { providers, toolEnv, ...mcpOption };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
@@ -198,6 +205,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
       engineOptions = {
         providers,
+        toolEnv,
         host: createCliHost(opened.store, { media: wiring.media }),
         resolveMediaSurface: wiring.resolveMediaSurface,
         ...(wiring.mediaCostEstimate === undefined
