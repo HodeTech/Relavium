@@ -1,6 +1,6 @@
 {
   "name": "relavium",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Relavium CLI (`relavium`) — run agent workflows from the terminal; the engine's first real consumer.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
@@ -9,7 +9,8 @@
   },
   "files": [
     "dist",
-    "drizzle"
+    "drizzle",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "relavium",
