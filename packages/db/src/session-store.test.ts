@@ -142,6 +142,17 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(store.listSessions()).toEqual([]);
   });
 
+  it('listSessions({ limit }) bounds the read to the indexed top-N, newest-first (2.5.B Home)', () => {
+    for (let i = 0; i < 5; i += 1) {
+      store.createSession(
+        makeSession({ id: `sess-${i}`, updatedAt: `2026-06-17T08:0${i}:00.000Z` }),
+      );
+    }
+    // The top-2 by updated_at DESC are the two highest minute-stamps — the limit must not return all 5.
+    expect(store.listSessions({ limit: 2 }).map((s) => s.id)).toEqual(['sess-4', 'sess-3']);
+    expect(store.listSessions()).toHaveLength(5); // omitting the limit still returns the full list (chat-list)
+  });
+
   it('listSessions breaks an updated_at tie deterministically by id descending (not insert order)', () => {
     const tie = '2026-06-17T08:00:00.000Z';
     // Insert in an order (b, a, c) that neither id-asc nor id-desc matches, so passing proves the sort is by

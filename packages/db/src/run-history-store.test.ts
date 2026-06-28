@@ -646,4 +646,38 @@ describe('createRunHistoryReader', () => {
     expect(store.listRuns().map((r) => r.id)).toEqual(reader.listRuns().map((r) => r.id));
     expect(store.loadRunEvents('run-1')).toHaveLength(reader.loadRunEvents('run-1').length);
   });
+
+  it('listRuns({ limit }) bounds to the indexed top-N; { status } filters; both compose (2.5.B Home)', async () => {
+    await seedRun('alpha', 'run-a', { completed: true, atMs: TS_MS + 1000 });
+    await seedRun('alpha', 'run-b', { paused: true, atMs: TS_MS + 2000 });
+    await seedRun('beta', 'run-c', { completed: true, atMs: TS_MS + 3000 });
+
+    // limit → the two newest by created_at DESC (served off idx_runs_created, no filesort).
+    expect(reader.listRuns({ limit: 2 }).map((r) => r.id)).toEqual(['run-c', 'run-b']);
+    // status → only matching runs, newest-first (served off idx_runs_status).
+    expect(reader.listRuns({ status: 'completed' }).map((r) => r.id)).toEqual(['run-c', 'run-a']);
+    expect(reader.listRuns({ status: 'paused' }).map((r) => r.id)).toEqual(['run-b']);
+    // status + limit compose; omitting both returns the full list (the `relavium list` contract).
+    expect(reader.listRuns({ status: 'completed', limit: 1 }).map((r) => r.id)).toEqual(['run-c']);
+    expect(reader.listRuns().map((r) => r.id)).toEqual(['run-c', 'run-b', 'run-a']);
+  });
+
+  it('workflowSlugsByIds maps ids → slug (indexed PK lookup), excludes soft-deleted, empty input ⇒ no query', async () => {
+    const alphaId = await seedRun('alpha', 'run-a', { completed: true });
+    const betaId = await seedRun('beta', 'run-b', { completed: true });
+
+    const map = reader.workflowSlugsByIds([alphaId, betaId]);
+    expect(map.get(alphaId)).toBe('alpha');
+    expect(map.get(betaId)).toBe('beta');
+
+    // empty input returns an empty map without a query; an unknown id is simply absent.
+    expect(reader.workflowSlugsByIds([]).size).toBe(0);
+    expect(reader.workflowSlugsByIds([counterUuid(999)]).size).toBe(0);
+
+    // a soft-deleted workflow drops out (its runs read as unlabeled in the Home, matching loadLatestRunPerWorkflow).
+    client.db.update(workflows).set({ deletedAt: TS_MS }).where(eq(workflows.slug, 'beta')).run();
+    const after = reader.workflowSlugsByIds([alphaId, betaId]);
+    expect(after.get(alphaId)).toBe('alpha');
+    expect(after.has(betaId)).toBe(false);
+  });
 });

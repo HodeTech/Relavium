@@ -248,6 +248,13 @@ export const runs = sqliteTable(
     index('idx_runs_cost')
       .on(t.workflowId, t.createdAt, t.totalCostMicrocents)
       .where(sql`${t.deletedAt} is null`),
+    // Backs the workflow-agnostic recency lists (`listRuns`/`listActiveRuns` + the 2.5.B Home strip): the
+    // ORDER BY `(created_at DESC, id DESC)` over the non-deleted set is served straight off this partial index
+    // instead of a `USE TEMP B-TREE` filesort, so the Home cold-open stays fast at scale (discharges the §2.I
+    // perf follow-up). The `WHERE deleted_at IS NULL` partial matches every read's soft-delete predicate.
+    index('idx_runs_created')
+      .on(desc(t.createdAt), desc(t.id))
+      .where(sql`${t.deletedAt} is null`),
   ],
 );
 
@@ -419,6 +426,12 @@ export const agentSessions = sqliteTable(
     index('idx_agent_sessions_agent')
       .on(t.agentId, desc(t.createdAt))
       .where(sql`${t.agentId} is not null`),
+    // Backs `listSessions` + the 2.5.B Home "recent sessions" strip: the ORDER BY `(updated_at DESC, id DESC)`
+    // over the non-deleted set is served off this partial index rather than a filesort (the session counterpart
+    // of `idx_runs_created`; §2.I perf discharge). `WHERE deleted_at IS NULL` matches the read's soft-delete filter.
+    index('idx_agent_sessions_updated')
+      .on(desc(t.updatedAt), desc(t.id))
+      .where(sql`${t.deletedAt} is null`),
   ],
 );
 

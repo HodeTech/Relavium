@@ -1,0 +1,2 @@
+CREATE INDEX `idx_agent_sessions_updated` ON `agent_sessions` ("updated_at" desc,"id" desc) WHERE "agent_sessions"."deleted_at" is null;--> statement-breakpoint
+CREATE INDEX `idx_runs_created` ON `runs` ("created_at" desc,"id" desc) WHERE "runs"."deleted_at" is null;

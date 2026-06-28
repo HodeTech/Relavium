@@ -126,8 +126,14 @@ export interface RunHistoryStoreDeps {
  * {@link RunHistoryStore} re-exposes the first three (the writer also reads back its own event log).
  */
 export interface RunHistoryReader {
-  /** All runs (newest first), excluding soft-deleted. */
-  listRuns: () => RunRecord[];
+  /**
+   * Runs newest-first (`created_at DESC, id DESC`), excluding soft-deleted. Pass `{ limit }` for an indexed
+   * top-N (the 2.5.B Home "recent runs" strip) and/or `{ status }` to filter (e.g. the Home "attention"
+   * section's recent `failed` runs). Both predicates are served off a partial index — `idx_runs_created` for
+   * the recency order, `idx_runs_status` when a `status` is given — never a `USE TEMP B-TREE` filesort. Omit
+   * the opts for the full list (the `relavium list` contract).
+   */
+  listRuns: (opts?: { readonly limit?: number; readonly status?: RunStatus }) => RunRecord[];
   /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
   loadRun: (runId: string) => RunRecord | undefined;
   /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
@@ -140,6 +146,10 @@ export interface RunHistoryReader {
   /** A run's per-node step rows in execution order — `relavium status`'s per-node detail. Keyed by `runId`
    *  alone; the caller validates the run via {@link loadRun} first (the active-run list is already filtered). */
   loadStepExecutions: (runId: string) => StepRecord[];
+  /** Map each given workflow id → its slug, for labeling run rows in the 2.5.B Home (a `RunRecord` carries only
+   *  the workflow UUID). Soft-deleted workflows are excluded; bounded by the id set — an indexed primary-key
+   *  `id IN (...)` lookup, never a scan. An empty input returns an empty map without touching the db. */
+  workflowSlugsByIds: (ids: readonly string[]) => Map<string, string>;
 }
 
 /**
@@ -460,16 +470,22 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
  */
 export function createRunHistoryReader(db: Db): RunHistoryReader {
   return {
-    listRuns: () =>
-      db
+    listRuns: (opts) => {
+      // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs (same
+      // tiebreak as loadLatestRunPerWorkflow) — keeps `status`/`list` output deterministic. A `status` opt adds
+      // the equality predicate (served by `idx_runs_status`); `limit` bounds to an indexed top-N for the Home.
+      const where =
+        opts?.status === undefined
+          ? isNull(runs.deletedAt)
+          : and(eq(runs.status, opts.status), isNull(runs.deletedAt));
+      const query = db
         .select()
         .from(runs)
-        .where(isNull(runs.deletedAt))
-        // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs
-        // (same tiebreak as loadLatestRunPerWorkflow) — keeps `status`/`list` output deterministic.
-        .orderBy(desc(runs.createdAt), desc(runs.id))
-        .all()
-        .map(fromRunRow),
+        .where(where)
+        .orderBy(desc(runs.createdAt), desc(runs.id));
+      const rows = opts?.limit === undefined ? query.all() : query.limit(opts.limit).all();
+      return rows.map(fromRunRow);
+    },
 
     loadRun: (runId) => {
       // Excludes soft-deleted runs, matching listRuns/listActiveRuns — a run hidden from `relavium list`
@@ -557,6 +573,16 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
             costMicrocents: r.costMicrocents,
           }),
         ),
+
+    workflowSlugsByIds: (ids) => {
+      if (ids.length === 0) return new Map(); // no query for an empty set — the Home with no runs hits this
+      const rows = db
+        .select({ id: workflows.id, slug: workflows.slug })
+        .from(workflows)
+        .where(and(inArray(workflows.id, [...ids]), isNull(workflows.deletedAt)))
+        .all();
+      return new Map(rows.map((r) => [r.id, r.slug]));
+    },
   };
 }
 
