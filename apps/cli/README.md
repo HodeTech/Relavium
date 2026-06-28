@@ -55,11 +55,12 @@ an interactive wizard.
 - **Live _and_ scriptable.** A rich streaming TUI on a TTY; a stable NDJSON `RunEvent` stream with
   deterministic exit codes under `--json` for CI.
 - **Extensible and multimodal.** Agents consume external **MCP** tools (stdio + `http` / `sse` /
-  `websocket`, behind an SSRF floor); image / audio / video flow through as both input and output.
+  `websocket`, behind an SSRF floor), and workflows generate image / audio / video **output** through the
+  same engine (media input via `read_media` is a tracked follow-up).
 
 ## Commands
 
-#### Agent sessions
+### Agent sessions
 
 | Command                                       | Purpose                                                     |
 | --------------------------------------------- | ----------------------------------------------------------- |
@@ -67,9 +68,9 @@ an interactive wizard.
 | `relavium chat-resume <sessionId>`            | Reload and continue a persisted session.                    |
 | `relavium chat-list`                          | List past sessions (id, agent, last activity).              |
 | `relavium chat-export <sessionId>`            | Export a session to a `.relavium.yaml` workflow scaffold.   |
-| `relavium agent run <agent> [--fixture <p>]`  | Run a single agent one-shot, non-interactively (CI-ready).  |
+| `relavium agent run <agent> [--fixture <p>]`  | Run a single agent one-shot (prompt on **stdin**); `--fixture` replays a cassette (offline, CI-ready). |
 
-#### Workflows & authoring
+### Workflows & authoring
 
 | Command                              | Purpose                                                            |
 | ------------------------------------ | ----------------------------------------------------------------- |
@@ -78,7 +79,7 @@ an interactive wizard.
 | `relavium import <path>`             | Import an external `.relavium.yaml` / `.agent.yaml` into the project. |
 | `relavium export <id>`               | Write a portable, share-safe copy (no secret material).           |
 
-#### History & human gates
+### History & human gates
 
 | Command                                              | Purpose                                              |
 | ---------------------------------------------------- | ---------------------------------------------------- |
@@ -88,7 +89,7 @@ an interactive wizard.
 | `relavium gate <runId> --approve\|--reject\|--input …` | Resolve a pending human gate.                       |
 | `relavium gate list [<runId>]`                       | List pending human gates across runs.                |
 
-#### Providers & keys
+### Providers & keys
 
 | Command                          | Purpose                                                     |
 | -------------------------------- | ---------------------------------------------------------- |
@@ -98,8 +99,8 @@ an interactive wizard.
 | `relavium provider remove-key <id>` | Delete a key from the keychain.                          |
 | `relavium provider test <id>`    | Verify a key with a minimal live request.                  |
 
-The global flags `--json`, `--cwd`, `--config`, and `--no-color` apply throughout. Run `relavium --help`
-or `relavium <command> --help` for the full surface.
+The global flags `--json`, `--cwd`, `--config`, `--no-color`, `--verbose` (`-v`), and `--quiet` (`-q`)
+apply throughout. Run `relavium --help` or `relavium <command> --help` for the full surface.
 
 ## Exit codes
 
@@ -111,9 +112,10 @@ Deterministic, for CI:
 | `1`  | Workflow failed (a node errored and exhausted retries / fallbacks)     |
 | `2`  | Invalid invocation (bad arguments, not found, schema error)            |
 | `3`  | Run paused at a human gate (non-interactive) — resume with `relavium gate` |
-| `4`  | A `relavium chat` session ended (`/exit`, `/cancel`, or input EOF)     |
+| `4`  | A `relavium chat` / `chat-resume` session ended (`/exit`, `/cancel`, or input EOF) |
 
-Under `--json`, stdout stays a pure NDJSON `RunEvent` stream and all diagnostics go to stderr.
+Under `--json`, stdout stays a pure NDJSON stream — `RunEvent`s for `run` / `gate`, `SessionEvent`s for
+`chat` / `agent run` — and all diagnostics go to stderr.
 
 ## Keys & configuration
 

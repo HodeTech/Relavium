@@ -25,7 +25,8 @@
     "mcp",
     "anthropic",
     "openai",
-    "gemini"
+    "gemini",
+    "deepseek"
   ],
   "repository": {
     "type": "git",
