@@ -83,6 +83,12 @@ export const ERROR_CODES = [
   'provider_unavailable',
   'tool_denied',
   'tool_failed',
+  // A required `ToolHost` capability arm (`fs` / `process` / `egress` / …) was not wired — a host/config
+  // gap, not the model's fault (EA1, ADR-0055; the dispatch-layer `ToolUnavailableError`). FATAL and NOT in
+  // RETRYABLE_ERROR_CODES — re-issuing the same call against the same host just re-fails. Distinct from
+  // `internal` (an unexpected engine fault) so a surface names the missing capability + the tool actionably,
+  // and from `tool_denied` (a policy/grant denial of a *present* capability).
+  'tool_unavailable',
   'budget_exceeded',
   'run_timeout',
   'turn_limit',

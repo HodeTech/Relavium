@@ -420,7 +420,7 @@ describe('ToolRegistry — config-only params and I/O mapping', () => {
 /* --- capability availability + execution + cancellation --- */
 
 describe('ToolRegistry — host capability, execution, cancellation', () => {
-  it('surfaces a missing capability as a typed (internal) error, not execution_failed', async () => {
+  it('surfaces a missing capability as a typed (tool_unavailable) error, not execution_failed', async () => {
     const processOnly: ToolHost = {
       process: {
         spawn: () => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 0 }),
@@ -434,7 +434,7 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
     );
     expect(err).toBeInstanceOf(ToolUnavailableError);
     expect(err.capability).toBe('fs');
-    expect(err.runErrorCode).toBe('internal');
+    expect(err.runErrorCode).toBe('tool_unavailable'); // EA1 (ADR-0055) — actionable, never a bare `internal`
   });
 
   it('wraps a host throw as a retryable execution error', async () => {

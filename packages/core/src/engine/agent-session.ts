@@ -313,9 +313,12 @@ export class AgentSession {
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
       if (err instanceof AgentTurnError) {
         this.#turnCount += 1; // the turn engaged a provider — it counts toward the cap
+        // EA2 (ADR-0055): report the turn's REAL accumulated usage (the turn core attaches it to the error
+        // when a provider engaged), not a hardcoded zero — so a failed turn's tokens are accounted for.
+        // `?? {0,0}` covers a failure that never engaged a provider (the turn core leaves `usage` undefined).
         this.#emitTurnCompleted(
           'error',
-          { input: 0, output: 0 },
+          err.usage ?? { input: 0, output: 0 },
           { code: err.code, message: err.message, retryable: err.retryable },
         );
       } else if (err instanceof BudgetPauseError) {

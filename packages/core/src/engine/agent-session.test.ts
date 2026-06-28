@@ -13,6 +13,7 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { ToolExecutionError } from '../tools/errors.js';
 import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
@@ -320,6 +321,25 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     );
     // No egress happened (the pause was pre-egress).
     expect(typesOf(events)).not.toContain('agent:token');
+  });
+
+  it('reports the turn’s REAL accumulated usage on a failed turn (EA2) — not a hardcoded zero', async () => {
+    // A tool_use turn settles usage 4/2 (the STOP), THEN the tool throws → AgentTurnError(tool_failed)
+    // carrying that usage (EA2). The session reports it on the failed turn_completed, not `{0,0}`.
+    const failingRegistry: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: () => Promise.reject(new ToolExecutionError('echo', 'disk full')),
+    };
+    const { deps, events } = harness([toolUseTurn('c1')], {}, failingRegistry);
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    await s.sendMessage('go');
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    if (completed?.type !== 'session:turn_completed') throw new Error('expected a turn_completed');
+    expect(completed.error?.code).toBe('tool_failed');
+    expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
   });
 
   it('emits session:turn_completed{turn_limit} — loudly, no egress — when driven past the hard cap', async () => {

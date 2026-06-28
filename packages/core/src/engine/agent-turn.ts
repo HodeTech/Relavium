@@ -165,12 +165,23 @@ export interface AgentTurnResult {
  */
 export class AgentTurnError extends Error {
   override readonly name = 'AgentTurnError';
+  /**
+   * The accumulated token usage of the turn at the moment it failed (EA2, ADR-0055). Populated by
+   * {@link runAgentTurn} when a provider had already engaged before the failure (the turn-core attempt
+   * tracker is the source); `undefined` when none did (a no-plan-entries / pre-egress failure) so the
+   * caller reports a truthful zero rather than a fabricated count. `AgentSession` emits it on the failed
+   * `session:turn_completed` so a failed turn reports real, not zeroed, usage.
+   */
+  readonly usage?: { readonly input: number; readonly output: number };
   constructor(
     readonly code: ErrorCode,
     message: string,
     readonly retryable: boolean,
+    usage?: { readonly input: number; readonly output: number },
   ) {
     super(message);
+    // exactOptionalPropertyTypes: assign the optional field only when supplied — never `= undefined`.
+    if (usage !== undefined) this.usage = usage;
   }
 }
 
@@ -211,7 +222,10 @@ function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable:
     case 'tool_denied':
       return { code: 'tool_denied', retryable: false };
     case 'capability_unavailable':
-      return { code: 'internal', retryable: false };
+      // EA1 (ADR-0055): a missing host capability is its own actionable, FATAL `tool_unavailable` (naming the
+      // tool + the unwired arm via the error message), never a bare `internal`. The advertise-filter (2.5.A)
+      // makes this a backstop — an unwired tool is not offered — but a slipped-through call still classifies clean.
+      return { code: 'tool_unavailable', retryable: false };
     case 'execution_failed':
       return { code: 'tool_failed', retryable: true };
     default:
@@ -598,8 +612,41 @@ async function dispatchToolUseTurn(
  * Drive one agent turn end to end. Resolves with the settled {@link AgentTurnResult}, or throws an
  * {@link AgentTurnError} classified to the closed `ErrorCode` taxonomy (the caller maps it to a node
  * failure). Never throws a raw error for a classified condition.
+ *
+ * EA2 (ADR-0055): this thin wrapper attaches the turn's accumulated token usage to a thrown
+ * {@link AgentTurnError} when a provider had already engaged, so a failed turn reports real — not zeroed —
+ * usage. The inner {@link driveAgentTurn} mutates the shared `usage` accumulator as attempts settle (the
+ * turn-core tracker); this wrapper reads it on the failure path.
  */
 export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+  const usage = { input: 0, output: 0 };
+  try {
+    return await driveAgentTurn(params, usage);
+  } catch (err) {
+    // Attach the real accumulated usage to a classified failure that engaged a provider, but ONLY when the
+    // driver did not already set it AND a provider actually ran. `usage` still `{0,0}` ⇒ no egress (a
+    // no-plan-entries or pre-egress failure), so leave `AgentTurnError.usage` undefined and let the caller
+    // report a truthful zero rather than a fabricated count.
+    if (
+      err instanceof AgentTurnError &&
+      err.usage === undefined &&
+      (usage.input > 0 || usage.output > 0)
+    ) {
+      throw new AgentTurnError(err.code, err.message, err.retryable, { ...usage });
+    }
+    throw err;
+  }
+}
+
+/**
+ * The provider-engaging turn driver (extracted from {@link runAgentTurn} for EA2). Accumulates token usage
+ * into the shared `usage` ref as non-skipped attempts settle, so the wrapper can report real usage on a
+ * failure; returns the settled {@link AgentTurnResult} on success.
+ */
+async function driveAgentTurn(
+  params: AgentTurnParams,
+  usage: { input: number; output: number },
+): Promise<AgentTurnResult> {
   const primaryModel = params.planEntries[0]?.model;
   if (primaryModel === undefined) {
     throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
@@ -610,8 +657,6 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
   const costTracker = new CostTracker();
   let activeModel = primaryModel;
   let nonSkippedAttempts = 0;
-  let totalInput = 0;
-  let totalOutput = 0;
 
   const onAttempt = (record: AttemptRecord): void => {
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
@@ -620,8 +665,8 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     activeModel = record.model;
     nonSkippedAttempts += 1;
     if (record.usage === undefined) return;
-    totalInput += record.usage.inputTokens;
-    totalOutput += record.usage.outputTokens;
+    usage.input += record.usage.inputTokens;
+    usage.output += record.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
     // figure on `record.cost`; read it rather than re-recording (which would double the total).
     params.emit({
@@ -690,7 +735,7 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
     return {
       content: turn.content,
       text: textOf(turn.content),
-      usage: { input: totalInput, output: totalOutput },
+      usage: { input: usage.input, output: usage.output },
       model: activeModel,
       stopReason: turn.stopReason,
     };
@@ -730,7 +775,7 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
       return {
         content: turn.content,
         text: textOf(turn.content),
-        usage: { input: totalInput, output: totalOutput },
+        usage: { input: usage.input, output: usage.output },
         model: activeModel,
         stopReason: turn.stopReason,
       };

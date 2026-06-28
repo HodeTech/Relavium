@@ -99,8 +99,10 @@ We distinguish the two and never leak one as the other:
   [ADR-0029](../decisions/0029-tool-policy-hardening.md)) carries `tool_denied` and is **fatal** — a
   denied call is deterministic, never retried (re-issuing it just re-denies). A tool **execution
   failure** (the host capability threw a transient/runtime error) carries `tool_failed` and is
-  **retryable** within the node retry budget. An absent host capability is `internal` (a host/config
-  gap, not the model's fault). A tool aborted by the run's `AbortSignal` surfaces on the
+  **retryable** within the node retry budget. An absent host capability arm (`fs`/`process`/`egress`/…) is
+  `tool_unavailable` — **fatal**, naming the missing capability + the tool actionably (a host/config gap,
+  not the model's fault), never a bare `internal` (EA1, [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)).
+  A tool aborted by the run's `AbortSignal` surfaces on the
   **cancellation** path (`cancelled`), never `tool_failed`, so it composes with the
   [ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) cancel-precedence
   rule. Messages stay scrubbed to the code + a user-safe string (the tool id / field, never an

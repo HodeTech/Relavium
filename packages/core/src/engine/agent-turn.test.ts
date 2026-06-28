@@ -528,13 +528,14 @@ describe('runAgentTurn — tool loop', () => {
     });
   });
 
-  it('maps ToolUnavailableError (absent host capability) to internal', async () => {
+  it('maps ToolUnavailableError (absent host capability) to tool_unavailable (EA1, not internal)', async () => {
     const registry = stubRegistry(() => {
       throw new ToolUnavailableError('echo', 'egress');
     });
     const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
     await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
-      code: 'internal',
+      code: 'tool_unavailable',
+      retryable: false,
     });
   });
 
@@ -547,6 +548,31 @@ describe('runAgentTurn — tool loop', () => {
       code: 'tool_failed',
       retryable: true,
     });
+  });
+
+  it('attaches the turn’s REAL accumulated usage to a failed turn (EA2)', async () => {
+    // The tool-use turn settled an attempt (STOP carries usage 10/5) BEFORE the tool throws, so the
+    // accumulated usage is non-zero — the wrapper attaches it to the thrown AgentTurnError rather than
+    // dropping it, so AgentSession can report real, not zeroed, tokens on the failed turn.
+    const registry = stubRegistry(() => {
+      throw new ToolExecutionError('echo', 'disk full');
+    });
+    const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
+      code: 'tool_failed',
+      usage: { input: 10, output: 5 },
+    });
+  });
+
+  it('leaves usage undefined on a failure with NO provider engagement (no plan entries)', async () => {
+    // A pre-egress / wiring failure never ran a provider — `usage` stays {0,0}, so the wrapper leaves
+    // AgentTurnError.usage undefined and the caller reports a truthful zero (never a fabricated count).
+    const provider = scriptedProvider('anthropic', []);
+    const err: unknown = await runAgentTurn({ ...baseParams(provider), planEntries: [] }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AgentTurnError);
+    if (err instanceof AgentTurnError) expect(err.usage).toBeUndefined();
   });
 
   it('redacts the raw model args on the error-path agent:tool_call (toolInput {})', async () => {

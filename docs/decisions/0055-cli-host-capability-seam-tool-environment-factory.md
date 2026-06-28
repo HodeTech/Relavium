@@ -48,6 +48,15 @@ used in a given mode*. The tool dispatch boundary is unchanged
 ([ADR-0037](0037-engine-tool-execution-boundary.md)); the engine stays pure. Spec lives in
 [tool-registry.md](../reference/shared-core/tool-registry.md).
 
+**Phased wiring (2.5.A vs 2.5.E).** 2.5.A wires only the **read-only chat profile** (`fs` read + list,
+`process` serving the pre-approved `git_status`) plus the **run-path read + write** `fs` / `process` (the
+workflow-author trust model already governs that path: an explicit `tools:` grant, `allowedCommands`,
+`fs_scope`, and the `git_commit` human gate). The **read-write chat `fs`** and the **`egress`** arm are
+deferred to [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) / 2.5.E, where the fail-closed
+`confirmAction` approval floor that makes a write-capable chat host safe lands *with* them — so until then
+no chat path can write. The §Negative "write capability physically present even in `ask` mode" describes
+that **post-2.5.E** end state, not the 2.5.A wiring.
+
 This decision also covers the two pure engine amendments that complete the error surface (the phase doc's
 EA1/EA2): **EA1** maps the dispatch-layer `capability_unavailable` to a new portable `tool_unavailable`
 `ErrorCode` (`@relavium/shared` `ERROR_CODES`; `codeForToolError` in `agent-turn.ts` is the single change
