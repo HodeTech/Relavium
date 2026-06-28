@@ -154,7 +154,8 @@ already has per-node-boundary checkpoints to build on); advanced `@`-injection (
 ignore files); basic markdown + code-block rendering with a table layout (syntax highlighting is Phase 3;
 a markdown dependency, if chosen, needs an ADR); `/theme` with at least one **high-contrast** and one
 **colorblind-safe** theme (and semantic markers — `✓`/`✗`/`⏸` — that survive `--no-color`/`NO_COLOR`, so
-the experience is not colour-dependent). Note any screen-reader limitations of the raw-mode TUI as a
+the experience is not colour-dependent, degrading to ASCII equivalents — `[v]`/`[x]`/`[||]` — when the
+terminal lacks Unicode support so the glyphs never render as broken boxes). Note any screen-reader limitations of the raw-mode TUI as a
 documented constraint with a non-TTY fallback.
 
 **Acceptance:** `/rewind`/`/fork` work over the checkpoint substrate; `@`-injection handles globs/dirs;

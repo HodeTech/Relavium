@@ -32,8 +32,10 @@ the two divergent inline host expressions. The default chat profile wires **`fs`
 `requireProcess`, so an `fs`-only host would still fail it with `capability_unavailable` (the exact root
 cause). `run_command` is kept unadvertised (the mode advertise-filter,
 [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md)) and denied by an empty `ToolPolicy.allowedCommands`,
-so in the default profile the `process` arm only ever serves the pre-approved `git_status`; `fs`-read-write
-and `egress` are wired only for the higher tiers. The `egress` arm reuses the existing SSRF-validated
+so in the default profile the `process` arm only ever serves the pre-approved `git_status` — which is
+**not** subject to `allowedCommands` (it exposes no model-controlled `command` to `policyTarget`, so
+`enforcePolicy`'s command-allowlist arm never fires for it; an empty allowlist therefore blocks
+`run_command` only, never `git_status`); `fs`-read-write and `egress` are wired only for the higher tiers. The `egress` arm reuses the existing SSRF-validated
 `EgressCapability` mechanism ([ADR-0043](0043-media-egress-failover-rematerialization-ssrf.md)
 / [ADR-0053](0053-mcp-network-transport-egress-security.md)) — the one shared primitive, never
 re-implemented.

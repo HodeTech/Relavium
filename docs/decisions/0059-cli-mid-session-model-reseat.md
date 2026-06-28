@@ -32,7 +32,10 @@ provider has no default). The original agent's `fallback_chain` is **not** carri
 `AgentSession` instance still has exactly one model — so this **refines** (clarifies) ADR-0024's
 one-model-per-lifetime rule rather than reversing it. We persist a per-message `modelId` with the model
 that actually produced each message (failover-aware) — the `session_messages` schema already has the
-column; only the CLI persister wiring is missing — and show a per-model cost breakdown. The reseat carries
+(nullable) column; only the CLI persister wiring is missing — and show a per-model cost breakdown. Rows
+written before this wiring (and any failover edge that leaves it unset) carry a **null** `modelId`; the
+breakdown assigns those to an explicit `unknown` (pre-attribution) bucket rather than dropping them, so
+legacy history is never silently lost from the totals. The reseat carries
 the **text-only** transcript, so we surface an explicit notice — shared with the `chat-resume` family —
 that prior tool calls and file contents are **not** carried to the new model; full-fidelity tool-context
 (a persister + schema extension) is deferred to Phase 3.

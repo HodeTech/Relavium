@@ -36,7 +36,11 @@ are **untrusted by provenance** even though their source is not `read_file`. The
 that **only trusted-literal session variables interpolate into the `system` prompt**; `--input`-derived
 values are tagged untrusted and resolve **only in `user`-position** turns, never `system`. (`SessionContext`
 gains a per-variable provenance/taint marker — today it is a flat record with none — so the resolver can
-enforce this.) Secret-taint discipline also applies: `{{ctx.*}}` carries plaintext variables only, never
+enforce this.) The marker is **sticky/transitive**: any `ctx.*` value copied from, merged with, or derived
+from an untrusted value inherits the untrusted provenance (the most-untrusted source wins), so taint cannot
+be laundered by relabeling an `--input`-derived value into a "trusted-literal" key — only variables that
+originate as trusted literals (config / agent definition) are ever `system`-eligible. Secret-taint
+discipline also applies: `{{ctx.*}}` carries plaintext variables only, never
 secrets (those stay in the keychain and never enter a prompt). **A security review of the session-prompt
 taint path is mandatory before Accept.**
 

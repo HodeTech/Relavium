@@ -131,15 +131,17 @@ extension point — a read-only management strip (recent sessions / runs / agent
 - Add a `HomeStore` that reads the durable `history.db` (recent sessions/runs/agents) with an
   "Attention required" section (pending gates / failed runs first, most-recent within a group) above the
   neutral "Continue" list; below **80×24**, degrade by rendering a single "Terminal too small (WxH) —
-  resize to at least 80×24" message and suspending the Home render until a `SIGWINCH` arrives (never a
-  broken/garbled TUI). The `history.db` aggregation must stay fast at scale (see the 2.5.I performance
+  resize to at least 80×24" message and suspending the Home render until a terminal **resize** arrives —
+  listen on `process.stdout`'s cross-platform `'resize'` event (backed by `SIGWINCH` on POSIX) rather than a
+  bare `SIGWINCH` binding, which is unreliable on Windows — never a broken/garbled TUI. The `history.db` aggregation must stay fast at scale (see the 2.5.I performance
   budget) — index the read query, do not full-scan.
 - **Author `docs/reference/cli/home.md`** as the canonical contract for the Home surface — an exit-criterion
   deliverable, not a parenthetical: the TTY/CI gate, the command/slash taxonomy + manifest shape, `@`-mention
   semantics, the mode keymap, the footer hint-bar layout, and the min-terminal-size degrade.
 - Wire a single signal lifecycle (SIGINT/SIGTERM) covering Home, the in-Home chat, and MCP teardown
-  (`closeMcp`); the Home's own exit code is `0`, and a chat's exit-code-`4` is consumed by the Home
-  loop, never leaked.
+  (`closeMcp`): a **clean** Home exit (e.g. `/exit`) returns `0`, while a **signal-driven** termination runs
+  teardown then exits with the conventional `128+signo` (`130` SIGINT / `143` SIGTERM) so shell pipelines
+  can still detect the interruption; a chat's exit-code-`4` is consumed by the Home loop, never leaked.
 - Add **bracketed paste** (DECSET 2004) to the chat input so a pasted multi-line block is taken
   literally instead of submitting early.
 - Derive a session title from the first user message (first ~40 chars) so the Home list is readable
