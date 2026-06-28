@@ -25,6 +25,7 @@ import {
 } from '@relavium/shared';
 import { stringify as stringifyYaml } from 'yaml';
 
+import type { AgentDefinition } from '../agent-parser.js';
 import type { WorkflowDefinition } from '../parser.js';
 
 type WorkflowSpec = WorkflowDefinition['workflow'];
@@ -40,6 +41,19 @@ type AgentNode = Extract<WorkflowNode, { type: 'agent' }>;
  */
 export function serializeWorkflow(workflow: WorkflowDefinition): string {
   return stringifyYaml(workflow, { sortMapEntries: true });
+}
+
+/**
+ * Emit an {@link AgentDefinition} as deterministic YAML (map keys sorted alphabetically, array order preserved),
+ * so `parse(serialize(agent))` is byte-stable — the `.agent.yaml` counterpart of {@link serializeWorkflow}. An
+ * agent document is plain config (model / provider / system_prompt / tools / mcp_servers) that carries **no
+ * secret VALUES** by construction — provider keys live in the OS keychain and are never schema-representable, and
+ * an MCP server's `env` references a secret only by `{{secrets.*}}` placeholder ([ADR-0006](../../../../docs/decisions/0006-os-keychain-for-api-keys.md)/[ADR-0029](../../../../docs/decisions/0029-tool-policy-hardening.md))
+ * — so the emitted file is share-safe, and re-serializing from the *validated* AST additionally drops any
+ * authored comments. Used by `relavium create` / `import` / `export` (2.J authoring).
+ */
+export function serializeAgent(agent: AgentDefinition): string {
+  return stringifyYaml(agent, { sortMapEntries: true });
 }
 
 /** The concatenated `text` parts of a durable content array (non-text parts are dropped). */

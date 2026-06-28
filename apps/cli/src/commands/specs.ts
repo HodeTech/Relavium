@@ -20,8 +20,11 @@ import { agentRunCommand } from './agent-run.js';
 import { chatCommand, chatResumeCommand } from './chat.js';
 import { chatExportCommand } from './chat-export.js';
 import { chatListCommand } from './chat-list.js';
+import { createCommand } from './create.js';
+import { exportCommand } from './export.js';
 import { gateCommand } from './gate.js';
 import { gateListCommand } from './gate-list.js';
+import { importCommand } from './import.js';
 import { listCommand } from './list.js';
 import { logsCommand } from './logs.js';
 import {
@@ -38,10 +41,10 @@ import { statusCommand } from './status.js';
  * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
  * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams.
  * The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), `chat-export`
- * (2.P), and `agent run` (2.Q) — via their `register*` functions below. The remaining `STUB_COMMANDS` are the
- * authoring commands `create` / `import` / `export` (2.J), `init` (a later workstream), and `budget resume`
- * (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message (not commander's
- * "unknown command") until it lands.
+ * (2.P), and `agent run` (2.Q) — and the YAML-authoring commands `create` / `import` / `export` (2.J) are live,
+ * all via their `register*` functions below. The remaining `STUB_COMMANDS` are `init` (a later workstream) and
+ * `budget resume` (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message
+ * (not commander's "unknown command") until it lands.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -58,21 +61,6 @@ interface StubSpec {
 }
 
 const STUB_COMMANDS: readonly StubSpec[] = [
-  {
-    name: 'create',
-    summary: 'Scaffold a new workflow or agent via an interactive wizard.',
-    landsIn: 'workstream 2.J',
-  },
-  {
-    name: 'import <path>',
-    summary: 'Import an external workflow/agent YAML into the project.',
-    landsIn: 'workstream 2.J',
-  },
-  {
-    name: 'export <id>',
-    summary: 'Export a workflow/agent to a portable YAML (secrets stripped).',
-    landsIn: 'workstream 2.J',
-  },
   {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
@@ -91,6 +79,9 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerChatResume(program, ctx);
   registerChatList(program, ctx);
   registerChatExport(program, ctx);
+  registerCreate(program, ctx);
+  registerExport(program, ctx);
+  registerImport(program, ctx);
   registerAgent(program, ctx);
   registerGate(program, ctx);
   registerProvider(program, ctx);
@@ -262,6 +253,83 @@ function registerChatExport(program: Command, ctx?: CommandContext): void {
         force: opts.force ?? false,
       },
       { io: ctx.io, global: ctx.global, openSessionStore },
+    );
+  });
+}
+
+/**
+ * Register `relavium create` (2.J) — an interactive `@clack/prompts` wizard that scaffolds a new agent or a
+ * minimal single-agent workflow as schema-validated, git-ready YAML under `.relavium/`. Needs an interactive
+ * terminal (fails loud under `--json` / non-TTY); a name collision is exit 2 unless `--force`. No keychain/db.
+ */
+function registerCreate(program: Command, ctx?: CommandContext): void {
+  const create = program
+    .command('create')
+    .description('Scaffold a new agent or workflow via an interactive wizard.')
+    .option('--force', 'overwrite an existing project entry with the same id');
+  if (ctx === undefined) {
+    create.action(() => {
+      throw new CliError('not_implemented', '`relavium create` requires the CLI runtime context.');
+    });
+    return;
+  }
+  create.action(async (opts: { force?: boolean }) => {
+    ctx.result.exitCode = await createCommand(
+      { force: opts.force ?? false },
+      { io: ctx.io, global: ctx.global },
+    );
+  });
+}
+
+/**
+ * Register `relavium export <id>` (2.J) — write a portable, share-safe copy of a project workflow/agent
+ * (re-serialized from the validated AST; `{{secrets.*}}` placeholders preserved, no resolved secret). Default
+ * target is `<id>.<suffix>` in cwd; `--out` overrides, `--force` overwrites. Pure YAML I/O — no keychain/db.
+ */
+function registerExport(program: Command, ctx?: CommandContext): void {
+  const exportCmd = program
+    .command('export <id>')
+    .description(
+      'Export a workflow/agent to a portable YAML (secret references stay placeholdered).',
+    )
+    .option('--out <path>', 'write the copy here instead of <id>.<suffix> in cwd')
+    .option('--force', 'overwrite an existing file at the target path');
+  if (ctx === undefined) {
+    exportCmd.action(() => {
+      throw new CliError('not_implemented', '`relavium export` requires the CLI runtime context.');
+    });
+    return;
+  }
+  exportCmd.action((id: string, opts: { out?: string; force?: boolean }) => {
+    ctx.result.exitCode = exportCommand(
+      { id, ...(opts.out === undefined ? {} : { out: opts.out }), force: opts.force ?? false },
+      { io: ctx.io, global: ctx.global },
+    );
+  });
+}
+
+/**
+ * Register `relavium import <path>` (2.J) — copy an external workflow/agent YAML into the project `.relavium/`,
+ * validating schema + slug uniqueness, writing the re-serialized doc to `.relavium/<kind>/<id>.<suffix>`. A
+ * collision is exit 2 unless `--force`. Pure YAML I/O — no keychain/db.
+ */
+function registerImport(program: Command, ctx?: CommandContext): void {
+  const importCmd = program
+    .command('import <path>')
+    .description(
+      'Import an external workflow/agent YAML into the project (validated, deduplicated).',
+    )
+    .option('--force', 'overwrite an existing project entry with the same id');
+  if (ctx === undefined) {
+    importCmd.action(() => {
+      throw new CliError('not_implemented', '`relavium import` requires the CLI runtime context.');
+    });
+    return;
+  }
+  importCmd.action((path: string, opts: { force?: boolean }) => {
+    ctx.result.exitCode = importCommand(
+      { path, force: opts.force ?? false },
+      { io: ctx.io, global: ctx.global },
     );
   });
 }

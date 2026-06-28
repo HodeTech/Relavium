@@ -62,9 +62,15 @@ no new ADR), **the first additive lane done**; and the agent-first `relavium cha
 dedicated, security-reviewed follow-up, so 2.M's REPL shipped without it); and the rest of the agent-first chat
 family landed — `relavium chat-resume` (2.N), `chat-list` (2.O), `chat-export` + the in-REPL `/export` (2.P),
 and `chat --json` + one-shot `agent run` (with `--fixture` cassette replay) (2.Q) — **PR #55, no new ADR**,
-completing the agent-first CLI lane. The next pickup is 2.R
-(the inbound MCP client, ADR-0034 — off the M3 critical path and the Phase-3 go/no-go). For live status, per-PR history,
-milestone dates, and open obligations, see the canonical home
+completing the agent-first CLI lane; and **2.R (the inbound MCP client) is ✅ Done** — the `@relavium/mcp`
+foundation (the SDK-fenced package, the dependency-free JSON-Schema→Zod compiler, the fail-loud connect-all
+manager) landed **PR #56**, and the host wiring (chat + run + one-shot `agent run`), the network transports
+(`http`/`sse`/`websocket`) behind the SSRF floor, named secrets via the isolated `mcp-secret:*` keychain
+namespace, the by-name `ref` form, and the real-spawn e2e landed **PR #57 (2026-06-27)** — behind
+[ADR-0034](docs/decisions/0034-mcp-client-sdk-dependency.md) + [ADR-0052](docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md)
++ [ADR-0053](docs/decisions/0053-mcp-network-transport-egress-security.md). 2.R was off the M3 critical path and
+the Phase-3 go/no-go, so it adds capability without gating. The next pickup is **2.J** (the last in-phase additive
+lane). For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
 public overview.
 

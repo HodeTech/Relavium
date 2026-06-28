@@ -97,9 +97,20 @@ and **2.Q** (`chat --json` — a headless `SessionEvent` NDJSON driver — + the
 minimal in-house `--fixture` cassette for deterministic offline replay), all ✅ **Done (PR #55, 2026-06-26)** —
 **no new ADR** — completing the agent-first CLI lane. (`agent run --input` is reserved/rejected until session
 `{{ctx.*}}` prompt interpolation lands — a tracked engine follow-up in [deferred-tasks.md](deferred-tasks.md).)
-**Next pickup:** **2.R** (the inbound MCP client, [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) — off
-the M3 critical path and the Phase-3 go/no-go, so it completes in-phase without blocking Phase 3); the full
-status-aware order is the [Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. See the
+**Also landed — 2.R (the inbound MCP client):** agents now consume external MCP servers' tools across `chat`,
+`run`, and one-shot `agent run`. The **`@relavium/mcp`** foundation (the SDK-fenced package, the dependency-free
+JSON-Schema→Zod compiler, the fail-loud connect-all manager, the `mcp_{server}_{tool}` namespacing) is ✅ **Done
+(PR #56, 2026-06-26)**, and the **host wiring** (chat/run/agent-run), the **network transports** (`http`/`sse`/
+`websocket`) behind the SSRF pre-connect floor + the per-server `allow_local_endpoint` opt-in, **named secrets**
+via the isolated `mcp-secret:*` keychain namespace, the by-name `ref` registration form, and the **real-spawn
+e2e** are ✅ **Done (PR #57, 2026-06-27)** — behind [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md),
+[ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md), and
+[ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md). It was off the M3 critical path and the
+Phase-3 go/no-go (capability without gating). Residual MCP hardening — the connect-by-validated-IP dialer,
+network header-auth, tool-list caching, mid-call abort propagation, and the stdio import-trust gate — is tracked
+in [deferred-tasks.md](deferred-tasks.md).
+**Next pickup:** **2.J** — the last in-phase additive lane; the full status-aware order is the
+[Remaining build order](phases/phase-2-cli.md#remaining-build-order) queue. See the
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
 [sequencing plan](phases/phase-2-cli.md#sequencing--parallelization).
 

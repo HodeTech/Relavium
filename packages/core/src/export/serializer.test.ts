@@ -6,8 +6,9 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { parseAgent } from '../agent-parser.js';
 import { parseWorkflow } from '../parser.js';
-import { serializeWorkflow, sessionToWorkflow } from './serializer.js';
+import { serializeAgent, serializeWorkflow, sessionToWorkflow } from './serializer.js';
 
 const TS = '2026-06-17T08:00:00.000Z';
 const CTX = SessionContextSchema.parse({ workingDir: '/workspace/s', fsScopeTier: 'sandboxed' });
@@ -222,5 +223,41 @@ describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitte
     expect(serializeWorkflow(parseWorkflow(yaml1))).toBe(yaml1); // still byte-stable
     // the FULL verbatim text is preserved untouched in the metadata transcript (not interpolation-scanned)
     expect(JSON.stringify(def.workflow.metadata)).toContain('{{ secrets.OPENAI_KEY }}');
+  });
+});
+
+describe('serializeAgent (2.J authoring) — deterministic, round-trippable .agent.yaml emitter', () => {
+  const AGENT = `# my agent (this comment is dropped on re-serialize)
+id: code-reviewer
+provider: anthropic
+model: claude-sonnet-4-6
+system_prompt: You are a precise reviewer.
+tools: [read_file]
+`;
+
+  it('round-trips: parse → serialize → parse is byte-stable, and the output re-parses', () => {
+    const agent = parseAgent(AGENT);
+    const yaml1 = serializeAgent(agent);
+    const reparsed = parseAgent(yaml1); // must not throw — the emitted agent is valid
+    expect(serializeAgent(reparsed)).toBe(yaml1); // byte-stable round-trip
+    expect(reparsed.id).toBe('code-reviewer');
+  });
+
+  it('is deterministic (sorted keys) and drops authored comments (re-serializing from the validated AST)', () => {
+    const yaml = serializeAgent(parseAgent(AGENT));
+    expect(serializeAgent(parseAgent(AGENT))).toBe(yaml); // stable across repeated emits
+    expect(yaml).not.toContain('this comment is dropped'); // comments are gone (share-safety)
+    // sorted map keys: `id` precedes `model` precedes `provider` precedes `system_prompt`
+    expect(yaml.indexOf('id:')).toBeLessThan(yaml.indexOf('model:'));
+    expect(yaml.indexOf('model:')).toBeLessThan(yaml.indexOf('provider:'));
+  });
+
+  it('preserves a {{secrets.*}} placeholder in an MCP server env (never a resolved value)', () => {
+    const yaml = serializeAgent(
+      parseAgent(
+        `id: gh\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: go\nmcp_servers:\n  - id: github\n    transport: stdio\n    command: gh-mcp\n    env: { TOKEN: '{{secrets.gh}}' }\n`,
+      ),
+    );
+    expect(yaml).toContain('{{secrets.gh}}'); // the placeholder survives — it is share-safe by design
   });
 });
