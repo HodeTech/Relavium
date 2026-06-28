@@ -7,6 +7,8 @@ import type {
   SessionStatus,
 } from '@relavium/shared';
 
+import { deriveSessionTitle } from './session-title.js';
+
 /**
  * Write-side session persistence for `relavium chat` (2.M) — the CLI counterpart of the run-history writer.
  * `AgentSession` (the engine class, 1.V) keeps its transcript **in memory** and persists nothing; this
@@ -69,6 +71,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   let assistantText = '';
   let unsubscribe: (() => void) | undefined;
   let started = false;
+  // Derived from the FIRST user message so the Home list shows a readable label (2.5.B). Set once; a resumed
+  // session hydrates the existing title in start() so a later message never overwrites it.
+  let title: string | undefined;
 
   const record = (status: SessionStatus): AgentSessionRecord => ({
     id: deps.sessionId,
@@ -81,6 +86,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     totalCostMicrocents,
     createdAt,
     updatedAt: iso(),
+    ...(title === undefined ? {} : { title }),
   });
 
   const appendText = (role: 'user' | 'assistant', text: string): void => {
@@ -159,10 +165,14 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         totalInputTokens = existing.totalInputTokens;
         totalOutputTokens = existing.totalOutputTokens;
         totalCostMicrocents = existing.totalCostMicrocents;
+        title = existing.title; // a resumed session keeps its original title — never re-derived from a new message
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
     beginUserTurn(text: string): void {
+      // Derive the title from the FIRST user message of a titleless session (a fresh chat, or a resumed one that
+      // never got one). A blank message yields undefined, so the next non-blank message becomes the title.
+      title ??= deriveSessionTitle(text);
       pendingUserText = text;
       assistantText = '';
     },
