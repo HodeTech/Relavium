@@ -211,7 +211,10 @@ export function createSessionStore(db: Db): SessionStore {
       .from(agentSessions)
       .where(isNull(agentSessions.deletedAt))
       .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id));
-    const rows = opts?.limit === undefined ? query.all() : query.limit(opts.limit).all();
+    // `≤0 ⇒ unbounded` (the codebase convention): a `limit: 0` must not map to `LIMIT 0` (empty), nor a negative
+    // to "all rows" — both would silently break the indexed top-N this opt exists to provide.
+    const limit = opts?.limit;
+    const rows = limit === undefined || limit <= 0 ? query.all() : query.limit(limit).all();
     return rows.map(fromAgentSessionRow);
   };
 

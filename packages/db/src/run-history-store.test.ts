@@ -654,7 +654,8 @@ describe('createRunHistoryReader', () => {
 
     // limit → the two newest by created_at DESC (served off idx_runs_created, no filesort).
     expect(reader.listRuns({ limit: 2 }).map((r) => r.id)).toEqual(['run-c', 'run-b']);
-    // status → only matching runs, newest-first (served off idx_runs_status).
+    // status → only matching runs, newest-first (filtered via idx_runs_status: status equality + created_at
+    // order; the id tiebreak is the index's missing last term — a small bounded sort, see the listRuns JSDoc).
     expect(reader.listRuns({ status: 'completed' }).map((r) => r.id)).toEqual(['run-c', 'run-a']);
     expect(reader.listRuns({ status: 'paused' }).map((r) => r.id)).toEqual(['run-b']);
     // status + limit compose; omitting both returns the full list (the `relavium list` contract).
@@ -662,21 +663,24 @@ describe('createRunHistoryReader', () => {
     expect(reader.listRuns().map((r) => r.id)).toEqual(['run-c', 'run-b', 'run-a']);
   });
 
-  it('workflowSlugsByIds maps ids → slug (indexed PK lookup), excludes soft-deleted, empty input ⇒ no query', async () => {
+  it('loadWorkflowSlugs maps ids → slug (indexed PK lookup), excludes soft-deleted, empty input ⇒ no query', async () => {
     const alphaId = await seedRun('alpha', 'run-a', { completed: true });
     const betaId = await seedRun('beta', 'run-b', { completed: true });
 
-    const map = reader.workflowSlugsByIds([alphaId, betaId]);
+    const map = reader.loadWorkflowSlugs([alphaId, betaId]);
     expect(map.get(alphaId)).toBe('alpha');
     expect(map.get(betaId)).toBe('beta');
 
-    // empty input returns an empty map without a query; an unknown id is simply absent.
-    expect(reader.workflowSlugsByIds([]).size).toBe(0);
-    expect(reader.workflowSlugsByIds([counterUuid(999)]).size).toBe(0);
+    // empty input returns an empty map without a query; a mixed batch resolves the known id and omits the unknown.
+    expect(reader.loadWorkflowSlugs([]).size).toBe(0);
+    const mixed = reader.loadWorkflowSlugs([alphaId, counterUuid(999)]);
+    expect(mixed.get(alphaId)).toBe('alpha');
+    expect(mixed.has(counterUuid(999))).toBe(false);
+    expect(mixed.size).toBe(1);
 
     // a soft-deleted workflow drops out (its runs read as unlabeled in the Home, matching loadLatestRunPerWorkflow).
     client.db.update(workflows).set({ deletedAt: TS_MS }).where(eq(workflows.slug, 'beta')).run();
-    const after = reader.workflowSlugsByIds([alphaId, betaId]);
+    const after = reader.loadWorkflowSlugs([alphaId, betaId]);
     expect(after.get(alphaId)).toBe('alpha');
     expect(after.has(betaId)).toBe(false);
   });

@@ -12,7 +12,7 @@ import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
  *
  * **Bounded + indexed (the §2.I perf discharge).** Every list is an indexed top-N (`listSessions`/`listRuns`
  * `{ limit }`, served off the `idx_agent_sessions_updated` / `idx_runs_created` partial indexes), never a full
- * materialization; run rows are labeled by workflow slug through ONE batched, primary-key `workflowSlugsByIds`
+ * materialization; run rows are labeled by workflow slug through ONE batched, primary-key `loadWorkflowSlugs`
  * lookup; and "recent agents" is derived from the already-read sessions (the maintainer-chosen source — there is
  * no DB agent read seam), so the whole snapshot is a handful of bounded queries.
  */
@@ -28,6 +28,8 @@ export interface HomeSessionRow {
   readonly modelId: string | undefined;
   readonly status: AgentSessionRecord['status'];
   readonly updatedAt: string;
+  /** Cumulative session cost — the agent-first primary row glances with cost too (parity with `HomeRunRow`). */
+  readonly totalCostMicrocents: number;
 }
 
 /** A run row (recent or failed), labeled by its workflow slug. */
@@ -37,6 +39,11 @@ export interface HomeRunRow {
   readonly workflowSlug: string | undefined;
   readonly status: RunRecord['status'];
   readonly createdAt: string;
+  /** When the run actually began (`undefined` until `run:started`) — the renderer's anchor for a running row. */
+  readonly startedAt: string | undefined;
+  /** When the run reached a terminal (`undefined` while non-terminal) — the anchor + duration source for a
+   *  completed/failed/cancelled row, which `createdAt` alone cannot give. */
+  readonly completedAt: string | undefined;
   readonly totalCostMicrocents: number;
 }
 
@@ -48,6 +55,11 @@ export interface HomeGateRow {
   readonly gateType: PendingGate['gateType'];
   readonly nodeId: string;
   readonly message: string;
+  /**
+   * The gate's deadline, or `undefined` if it never expires. **May be in the PAST in Phase 1:** the
+   * gate-timeout timer is in-process, and a gate whose deadline elapsed while no engine was running stays
+   * `pending` (the crash-reconciliation re-arm is deferred), so the renderer owns the overdue styling.
+   */
   readonly expiresAt: string | undefined;
 }
 
@@ -59,7 +71,11 @@ export interface HomeAgentRow {
 }
 
 export interface HomeSnapshot {
-  /** "Attention required" — pending human gates FIRST, then failed runs; most-recent within each group. */
+  /**
+   * "Attention required" — pending human gates FIRST (ordered by their run's recency), then failed runs
+   * (most-recent first). Gate order tracks the paused RUN's start time, not the gate's own raise time (a fine
+   * proxy for a small, glanceable list; true gate-recency would need `pendingHumanGates` to carry the raise time).
+   */
   readonly attention: {
     readonly gates: readonly HomeGateRow[];
     readonly failedRuns: readonly HomeRunRow[];
@@ -77,7 +93,7 @@ export interface HomeStoreDeps {
   readonly sessions: Pick<SessionStore, 'listSessions'>;
   readonly runs: Pick<
     RunHistoryReader,
-    'listRuns' | 'listActiveRuns' | 'loadRunEvents' | 'workflowSlugsByIds'
+    'listRuns' | 'listActiveRuns' | 'loadRunEvents' | 'loadWorkflowSlugs'
   >;
   /** Top-N per list (default {@link DEFAULT_HOME_LIMIT}). */
   readonly limit?: number;
@@ -101,20 +117,37 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const limit = deps.limit ?? DEFAULT_HOME_LIMIT;
 
   const recentSessionRecords = deps.sessions.listSessions({ limit });
-  const recentRunRecords = deps.runs.listRuns({ limit });
   const failedRunRecords = deps.runs.listRuns({ status: 'failed', limit });
   // The active-run set is already small (non-terminal only); a HUMAN-gated paused run is the gate source. A
   // budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
+  // Derive each paused run's gates ONCE (one loadRunEvents per run) — reused for both the rows and the lift set.
   const pausedRuns = deps.runs.listActiveRuns().filter((run) => run.status === 'paused');
+  const gatesByRun = pausedRuns.map((run) => ({
+    run,
+    pending: pendingHumanGates(deps.runs.loadRunEvents(run.id)),
+  }));
+
+  // "Attention" = a FAILED run (any of them — by status, NOT just the displayed top-N, so a failure beyond the
+  // cap can never leak into "Continue") or a paused run carrying ≥1 human gate. The human-gated ids are an
+  // explicit set; failed is tested by status below. Built BEFORE the recent window so it can be widened to compensate.
+  const humanGatedRunIds = new Set(
+    gatesByRun.filter((g) => g.pending.length > 0).map((g) => g.run.id),
+  );
+  // Over-fetch the recent window by the count of rows we KNOW we will strip (the displayed failed + the gated),
+  // so after the attention rows are removed "Continue" still fills to `limit` whenever that many neutral runs
+  // exist below the cutoff — a burst of failures must not starve Continue. (A run-burst deeper than this margin
+  // can still under-fill; that is the accepted edge for a glanceable strip — it never leaks an attention run.)
+  const overFetch = failedRunRecords.length + humanGatedRunIds.size;
+  const recentRunRecords = deps.runs.listRuns({ limit: limit + overFetch });
 
   // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ paused), ids deduped.
-  const slugById = deps.runs.workflowSlugsByIds([
+  const slugById = deps.runs.loadWorkflowSlugs([
     ...new Set([...recentRunRecords, ...failedRunRecords, ...pausedRuns].map((r) => r.workflowId)),
   ]);
   const slugOf = (run: RunRecord): string | undefined => slugById.get(run.workflowId);
 
-  const gates: HomeGateRow[] = pausedRuns.flatMap((run) =>
-    pendingHumanGates(deps.runs.loadRunEvents(run.id)).map((gate) => ({
+  const gates: HomeGateRow[] = gatesByRun.flatMap(({ run, pending }) =>
+    pending.map((gate) => ({
       runId: run.id,
       workflowSlug: slugOf(run),
       gateId: gate.gateId,
@@ -126,14 +159,9 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   );
 
   const failedRuns = failedRunRecords.map((run) => toRunRow(run, slugOf(run)));
-
-  // "Continue" runs exclude anything already lifted into "attention" (failed + human-gated), so no run repeats.
-  const attentionRunIds = new Set<string>([
-    ...failedRunRecords.map((r) => r.id),
-    ...gates.map((g) => g.runId),
-  ]);
   const recentRuns = recentRunRecords
-    .filter((run) => !attentionRunIds.has(run.id))
+    .filter((run) => run.status !== 'failed' && !humanGatedRunIds.has(run.id)) // never repeat an attention run
+    .slice(0, limit) // trim the over-fetch back to the top-N survivors
     .map((run) => toRunRow(run, slugOf(run)));
 
   const recentSessions = recentSessionRecords.map(toSessionRow);
@@ -154,6 +182,8 @@ function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow 
     workflowSlug,
     status: run.status,
     createdAt: run.createdAt,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
     totalCostMicrocents: run.totalCostMicrocents,
   };
 }
@@ -166,6 +196,7 @@ function toSessionRow(session: AgentSessionRecord): HomeSessionRow {
     modelId: session.modelId,
     status: session.status,
     updatedAt: session.updatedAt,
+    totalCostMicrocents: session.totalCostMicrocents,
   };
 }
 

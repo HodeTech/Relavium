@@ -3,9 +3,11 @@ import {
   createRunHistoryReader,
   createSessionStore,
   runMigrations,
+  workflows,
   type DbClient,
 } from '@relavium/db';
 import { SessionContextSchema, type AgentSessionRecord } from '@relavium/shared';
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { seedRun } from '../test-support.js';
@@ -90,12 +92,30 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
         expiresAt: undefined,
       },
     ]);
+    // Exact row (not objectContaining) so a dropped/mis-mapped createdAt or cost projection is caught.
     expect(snap.attention.failedRuns).toEqual([
-      expect.objectContaining({ runId: 'run-failed', workflowSlug: 'nightly', status: 'failed' }),
+      {
+        runId: 'run-failed',
+        workflowSlug: 'nightly',
+        status: 'failed',
+        createdAt: ISO(T0 + 2_000),
+        startedAt: ISO(T0 + 2_000),
+        completedAt: ISO(T0 + 2_000),
+        totalCostMicrocents: 100,
+      },
     ]);
     // The completed run is the only neutral "Continue" run — the failed + paused runs are in Attention, not here.
-    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-ok']);
-    expect(snap.recentRuns[0]?.workflowSlug).toBe('backup');
+    expect(snap.recentRuns).toEqual([
+      {
+        runId: 'run-ok',
+        workflowSlug: 'backup',
+        status: 'completed',
+        createdAt: ISO(T0 + 1_000),
+        startedAt: ISO(T0 + 1_000),
+        completedAt: ISO(T0 + 1_000),
+        totalCostMicrocents: 100,
+      },
+    ]);
     expect(snap.isEmpty).toBe(false);
   });
 
@@ -125,6 +145,96 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     const snap = buildHomeSnapshot(deps);
     expect(snap.attention.gates).toEqual([]); // a budget gate is the `relavium budget resume` surface, not here
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-budget']);
+  });
+
+  it('surfaces every human gate on a run (multi-gate fan-out) and lifts the run out of Continue', async () => {
+    await seedRun(client.db, {
+      slug: 'deploy',
+      runId: 'run-multi',
+      state: 'paused',
+      atMs: T0 + 1_000,
+      gates: [
+        { gateId: 'g1', gateType: 'approval', message: 'approve A?' },
+        { gateId: 'g2', gateType: 'review', message: 'review B?' },
+      ],
+    });
+
+    const snap = buildHomeSnapshot(deps);
+    // Both gates surface, each labeled with the run's slug; the flatMap fans one paused run out to two rows.
+    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g1', 'g2']);
+    expect(
+      snap.attention.gates.every((g) => g.runId === 'run-multi' && g.workflowSlug === 'deploy'),
+    ).toBe(true);
+    expect(snap.recentRuns).toEqual([]); // the gated run is not repeated in Continue
+  });
+
+  it('on a run with BOTH a budget and a human gate: surfaces only the human gate, excludes the run from Continue', async () => {
+    await seedRun(client.db, {
+      slug: 'a',
+      runId: 'run-both',
+      state: 'paused',
+      atMs: T0 + 1_000,
+      budgetGateId: 'budget-1',
+      gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
+    });
+
+    const snap = buildHomeSnapshot(deps);
+    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g1']); // budget gate excluded, human surfaced
+    expect(snap.recentRuns).toEqual([]); // the human gate still lifts the run out of Continue
+  });
+
+  it('renders a run whose workflow is soft-deleted with workflowSlug undefined (still surfaced)', async () => {
+    await seedRun(client.db, {
+      slug: 'gone',
+      runId: 'run-orphan',
+      state: 'completed',
+      atMs: T0 + 1_000,
+    });
+    // Soft-delete the workflow row — its run stays (listRuns filters runs.deletedAt, not the workflow's), but
+    // the slug lookup drops it, so the row renders unlabeled rather than vanishing.
+    client.db.update(workflows).set({ deletedAt: T0 }).where(eq(workflows.slug, 'gone')).run();
+
+    const [row] = buildHomeSnapshot(deps).recentRuns;
+    expect(row?.runId).toBe('run-orphan');
+    expect(row?.workflowSlug).toBeUndefined();
+    expect(row?.status).toBe('completed');
+  });
+
+  it('Continue backfills past newer attention runs (the over-fetch compensates) in newest-first order', async () => {
+    // limit 2; the 2 NEWEST runs are failed (attention) ahead of 2 older completed runs. The over-fetch
+    // (limit + #attention) widens the window so Continue still fills to 2 with the older completed runs.
+    await seedRun(client.db, { slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 4_000 });
+    await seedRun(client.db, { slug: 'b', runId: 'fail-1', state: 'failed', atMs: T0 + 3_000 });
+    await seedRun(client.db, { slug: 'b', runId: 'ok-new', state: 'completed', atMs: T0 + 2_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
+
+    const snap = buildHomeSnapshot({ ...deps, limit: 2 });
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']); // backfilled + newest-first
+    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']); // bounded to limit 2
+  });
+
+  it('a failed run beyond the attention display cap still never leaks into Continue (status-based exclusion)', async () => {
+    // 3 failed runs but limit 2: attention shows only the 2 newest failed, yet NO failed run may appear in
+    // Continue — `recentRuns` excludes by STATUS, not by the (capped) displayed-failed id set. (It may under-fill
+    // in this deep-burst edge; that is accepted — what must never happen is a failed run shown as "continuable".)
+    await seedRun(client.db, { slug: 'a', runId: 'fail-3', state: 'failed', atMs: T0 + 3_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 2_500 });
+    await seedRun(client.db, { slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 2_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 1_000 });
+
+    const snap = buildHomeSnapshot({ ...deps, limit: 2 });
+    expect(snap.recentRuns.every((r) => r.status !== 'failed')).toBe(true);
+    expect(snap.recentRuns.map((r) => r.runId)).not.toContain('fail-1');
+  });
+
+  it('a running (non-terminal, non-gated) run stays neutral in Continue, never in Attention', async () => {
+    await seedRun(client.db, { slug: 'a', runId: 'run-live', state: 'running', atMs: T0 + 2_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'run-bad', state: 'failed', atMs: T0 + 1_000 });
+
+    const snap = buildHomeSnapshot(deps);
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-live']);
+    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
+    expect(snap.attention.gates).toEqual([]);
   });
 
   it('derives recent agents from the recent sessions — most-recent-first and deduped', () => {
@@ -167,7 +277,13 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
       modelId: undefined,
       status: 'active',
       updatedAt: ISO(T0),
+      totalCostMicrocents: 0,
     });
+  });
+
+  it('carries the session cost on the row (parity with run rows — the agent-first primary glances with cost)', () => {
+    createSessionStore(client.db).createSession(session({ id: 's1', totalCostMicrocents: 4_200 }));
+    expect(buildHomeSnapshot(deps).recentSessions[0]?.totalCostMicrocents).toBe(4_200);
   });
 
   it('createHomeStore.read() re-aggregates fresh (a new session appears on the next read)', () => {

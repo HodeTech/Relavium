@@ -129,9 +129,11 @@ export interface RunHistoryReader {
   /**
    * Runs newest-first (`created_at DESC, id DESC`), excluding soft-deleted. Pass `{ limit }` for an indexed
    * top-N (the 2.5.B Home "recent runs" strip) and/or `{ status }` to filter (e.g. the Home "attention"
-   * section's recent `failed` runs). Both predicates are served off a partial index — `idx_runs_created` for
-   * the recency order, `idx_runs_status` when a `status` is given — never a `USE TEMP B-TREE` filesort. Omit
-   * the opts for the full list (the `relavium list` contract).
+   * section's recent `failed` runs). The recency order is served straight off `idx_runs_created` (no filesort).
+   * A `{ status }` filter is served off `idx_runs_status` for the equality + the `created_at DESC` order; the
+   * `id DESC` tiebreak is that index's missing last term, so it incurs a small partial `TEMP B-TREE` — acceptable
+   * because the only `status` caller is the bounded Home failed strip (`LIMIT 8`). A `limit <= 0` reads as
+   * unbounded (the codebase's `≤0 ⇒ no cap` convention). Omit the opts for the full list (`relavium list`).
    */
   listRuns: (opts?: { readonly limit?: number; readonly status?: RunStatus }) => RunRecord[];
   /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
@@ -149,7 +151,7 @@ export interface RunHistoryReader {
   /** Map each given workflow id → its slug, for labeling run rows in the 2.5.B Home (a `RunRecord` carries only
    *  the workflow UUID). Soft-deleted workflows are excluded; bounded by the id set — an indexed primary-key
    *  `id IN (...)` lookup, never a scan. An empty input returns an empty map without touching the db. */
-  workflowSlugsByIds: (ids: readonly string[]) => Map<string, string>;
+  loadWorkflowSlugs: (ids: readonly string[]) => Map<string, string>;
 }
 
 /**
@@ -483,7 +485,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .from(runs)
         .where(where)
         .orderBy(desc(runs.createdAt), desc(runs.id));
-      const rows = opts?.limit === undefined ? query.all() : query.limit(opts.limit).all();
+      // `≤0 ⇒ unbounded` (the codebase convention, config-enforced for chat caps): a `limit: 0` must NOT map to
+      // SQLite `LIMIT 0` (an empty result reads as data loss), and a negative must not silently mean "all rows".
+      const limit = opts?.limit;
+      const rows = limit === undefined || limit <= 0 ? query.all() : query.limit(limit).all();
       return rows.map(fromRunRow);
     },
 
@@ -574,7 +579,7 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
           }),
         ),
 
-    workflowSlugsByIds: (ids) => {
+    loadWorkflowSlugs: (ids) => {
       if (ids.length === 0) return new Map(); // no query for an empty set — the Home with no runs hits this
       const rows = db
         .select({ id: workflows.id, slug: workflows.slug })

@@ -100,18 +100,23 @@ type EventBody<T extends RunEvent['type']> = Omit<
   'type' | 'runId' | 'timestamp' | 'sequenceNumber'
 >;
 
+/** One pending human gate to seed on a `paused` run (each gets a `human_gate:paused` event at node `g`). */
+export interface SeedGate {
+  readonly gateId: string;
+  readonly gateType: 'approval' | 'input' | 'review';
+  readonly message?: string;
+}
+
 export interface SeedRunOptions {
   readonly slug: string;
   readonly runId: string;
   readonly state: 'running' | 'paused' | 'completed' | 'failed';
   /** Drives `createdAt`/`updatedAt` (and the event timestamps) so a test can order runs deterministically. */
   readonly atMs?: number;
-  /** For a `paused` run: leave a human gate pending so reconstruct / `status` / `gate list` surface it. */
-  readonly gate?: {
-    readonly gateId: string;
-    readonly gateType: 'approval' | 'input' | 'review';
-    readonly message?: string;
-  };
+  /** For a `paused` run: leave ONE human gate pending so reconstruct / `status` / `gate list` / the Home surface it. */
+  readonly gate?: SeedGate;
+  /** For a `paused` run: leave SEVERAL human gates (distinct `gateId`s) pending — the multi-gate fan-out case. */
+  readonly gates?: readonly SeedGate[];
   /** For a `paused` run: also leave a BUDGET gate pending (excluded from the human-gate listings). */
   readonly budgetGateId?: string;
 }
@@ -167,7 +172,8 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     cumulativeCostMicrocents: 100,
   });
   if (opts.state === 'paused') {
-    if (opts.budgetGateId !== undefined || opts.gate !== undefined) {
+    const gates: readonly SeedGate[] = opts.gates ?? (opts.gate === undefined ? [] : [opts.gate]);
+    if (opts.budgetGateId !== undefined || gates.length > 0) {
       // A real gate parks AT node `g`, so emit its start (the step row a `status` listing shows).
       await emit('node:started', { nodeId: 'g', nodeType: 'human_in_the_loop' });
       if (opts.budgetGateId !== undefined) {
@@ -178,12 +184,13 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
           limitMicrocents: 50,
         });
       }
-      if (opts.gate !== undefined) {
+      // Each human gate (distinct gateId) folds into a separate pending entry — exercises the multi-gate fan-out.
+      for (const gate of gates) {
         await emit('human_gate:paused', {
           nodeId: 'g',
-          gateId: opts.gate.gateId,
-          gateType: opts.gate.gateType,
-          message: opts.gate.message ?? 'ok?',
+          gateId: gate.gateId,
+          gateType: gate.gateType,
+          message: gate.message ?? 'ok?',
         });
       }
     } else {
