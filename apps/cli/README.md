@@ -114,8 +114,9 @@ Deterministic, for CI:
 | `3`  | Run paused at a human gate (non-interactive) — resume with `relavium gate` |
 | `4`  | A `relavium chat` / `chat-resume` session ended (`/exit`, `/cancel`, or input EOF) |
 
-Under `--json`, stdout stays a pure NDJSON stream — `RunEvent`s for `run` / `gate`, `SessionEvent`s for
-`chat` / `agent run` — and all diagnostics go to stderr.
+For a workflow run or agent session, `--json` makes stdout a pure NDJSON stream — `RunEvent`s for `run` /
+`gate`, `SessionEvent`s for `chat` / `agent run` — with all diagnostics on stderr. (`--help`, `--version`,
+and a bare invocation stay human-readable on stdout.)
 
 ## Keys & configuration
 
