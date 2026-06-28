@@ -223,8 +223,59 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     await seedRun(client.db, { slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.recentRuns.every((r) => r.status !== 'failed')).toBe(true);
-    expect(snap.recentRuns.map((r) => r.runId)).not.toContain('fail-1');
+    // Exact (not a vacuous negative): ok-1 IS within the over-fetched window (limit 2 + 2 failed = 4), so it
+    // must appear; an empty result would be over-filtering, not the accepted deep-burst under-fill. And no
+    // failed run (incl. the beyond-cap fail-1) may leak in.
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-1']);
+  });
+
+  it('Continue backfills when BOTH a failed and a human-gated run consume attention slots (combined overFetch)', async () => {
+    // The over-fetch is failedRunRecords.length + humanGatedRunIds.size — this fixture makes BOTH terms non-zero
+    // (1 failed + 1 gated), so a regression dropping either term would leave Continue empty instead of filled.
+    await seedRun(client.db, {
+      slug: 'deploy',
+      runId: 'gated',
+      state: 'paused',
+      atMs: T0 + 4_000,
+      gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
+    });
+    await seedRun(client.db, {
+      slug: 'nightly',
+      runId: 'fail-1',
+      state: 'failed',
+      atMs: T0 + 3_000,
+    });
+    await seedRun(client.db, { slug: 'a', runId: 'ok-new', state: 'completed', atMs: T0 + 2_000 });
+    await seedRun(client.db, { slug: 'b', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
+
+    const snap = buildHomeSnapshot({ ...deps, limit: 2 });
+    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g1']);
+    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-1']);
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']); // both overFetch terms applied
+  });
+
+  it('trims recentRuns to the limit when OLDER failed runs widen the window past `limit` neutral survivors', async () => {
+    // 2 OLD failed runs widen overFetch to 2 (window = limit 2 + 2 = 4), but the 4 NEWEST rows are all neutral —
+    // so the status filter removes nothing from the window and `.slice(0, limit)` is the SOLE active trimmer.
+    await seedRun(client.db, { slug: 'a', runId: 'ok-3', state: 'completed', atMs: T0 + 5_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'ok-2', state: 'completed', atMs: T0 + 4_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 3_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 2_000 });
+    await seedRun(client.db, { slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 1_000 });
+
+    const snap = buildHomeSnapshot({ ...deps, limit: 2 });
+    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-3', 'ok-2']); // sliced from 3 survivors to 2
+  });
+
+  it('clamps a non-positive limit to 1 (the DB ≤0⇒unbounded convention must not leak to the Home)', () => {
+    const store = createSessionStore(client.db);
+    store.createSession(session({ id: 's1', updatedAt: ISO(T0 + 2_000) }));
+    store.createSession(session({ id: 's2', updatedAt: ISO(T0 + 1_000) }));
+    // limit 0 would otherwise read every session unbounded; the clamp makes it a coherent single-row strip.
+    expect(buildHomeSnapshot({ ...deps, limit: 0 }).recentSessions.map((s) => s.sessionId)).toEqual(
+      ['s1'],
+    );
   });
 
   it('a running (non-terminal, non-gated) run stays neutral in Continue, never in Attention', async () => {
@@ -291,6 +342,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     expect(store.read().isEmpty).toBe(true);
     createSessionStore(client.db).createSession(session({ id: 's1' }));
     expect(store.read().recentSessions.map((s) => s.sessionId)).toEqual(['s1']);
+    expect(store.read().isEmpty).toBe(false); // a session-only db must flip the recentSessions arm of isEmpty
   });
 
   it('defaults to DEFAULT_HOME_LIMIT when no limit is given', () => {

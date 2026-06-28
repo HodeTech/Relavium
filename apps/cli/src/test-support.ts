@@ -107,19 +107,23 @@ export interface SeedGate {
   readonly message?: string;
 }
 
-export interface SeedRunOptions {
+/**
+ * For a `paused` run, the human gate(s) to leave pending — `gate` (one) XOR `gates` (several distinct
+ * `gateId`s, the fan-out case). The `never` arms make supplying both a COMPILE error rather than a silent drop.
+ */
+type SeedGateFields =
+  | { readonly gate?: SeedGate; readonly gates?: never }
+  | { readonly gate?: never; readonly gates?: readonly SeedGate[] };
+
+export type SeedRunOptions = {
   readonly slug: string;
   readonly runId: string;
   readonly state: 'running' | 'paused' | 'completed' | 'failed';
   /** Drives `createdAt`/`updatedAt` (and the event timestamps) so a test can order runs deterministically. */
   readonly atMs?: number;
-  /** For a `paused` run: leave ONE human gate pending so reconstruct / `status` / `gate list` / the Home surface it. */
-  readonly gate?: SeedGate;
-  /** For a `paused` run: leave SEVERAL human gates (distinct `gateId`s) pending — the multi-gate fan-out case. */
-  readonly gates?: readonly SeedGate[];
   /** For a `paused` run: also leave a BUDGET gate pending (excluded from the human-gate listings). */
   readonly budgetGateId?: string;
-}
+} & SeedGateFields;
 
 const DEFAULT_TS_MS = 1_750_000_000_000;
 

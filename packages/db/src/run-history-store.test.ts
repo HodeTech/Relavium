@@ -678,6 +678,12 @@ describe('createRunHistoryReader', () => {
     expect(mixed.has(counterUuid(999))).toBe(false);
     expect(mixed.size).toBe(1);
 
+    // duplicate ids are idempotent — the map keys on UNIQUE ids (a PK lookup), not the input length.
+    const dup = reader.loadWorkflowSlugs([alphaId, alphaId, betaId]);
+    expect(dup.size).toBe(2);
+    expect(dup.get(alphaId)).toBe('alpha');
+    expect(dup.get(betaId)).toBe('beta');
+
     // a soft-deleted workflow drops out (its runs read as unlabeled in the Home, matching loadLatestRunPerWorkflow).
     client.db.update(workflows).set({ deletedAt: TS_MS }).where(eq(workflows.slug, 'beta')).run();
     const after = reader.loadWorkflowSlugs([alphaId, betaId]);

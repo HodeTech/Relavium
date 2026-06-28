@@ -73,7 +73,8 @@ export interface HomeAgentRow {
 export interface HomeSnapshot {
   /**
    * "Attention required" — pending human gates FIRST (ordered by their run's recency), then failed runs
-   * (most-recent first). Gate order tracks the paused RUN's start time, not the gate's own raise time (a fine
+   * (most-recent first). Gate order tracks the paused RUN's creation time (`created_at DESC`) — a reliable
+   * proxy for start time on a local run (both are set in one transaction), not the gate's own raise time (a fine
    * proxy for a small, glanceable list; true gate-recency would need `pendingHumanGates` to carry the raise time).
    */
   readonly attention: {
@@ -95,7 +96,10 @@ export interface HomeStoreDeps {
     RunHistoryReader,
     'listRuns' | 'listActiveRuns' | 'loadRunEvents' | 'loadWorkflowSlugs'
   >;
-  /** Top-N per list (default {@link DEFAULT_HOME_LIMIT}). */
+  /**
+   * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to
+   * `1` (unlike the DB-layer `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request).
+   */
   readonly limit?: number;
 }
 
@@ -114,14 +118,22 @@ export function createHomeStore(deps: HomeStoreDeps): HomeStore {
  * "attention" section and EXCLUDED from the neutral "Continue" runs, so it is never shown twice.
  */
 export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
-  const limit = deps.limit ?? DEFAULT_HOME_LIMIT;
+  // Clamp to ≥1: the DB layer's `≤0 ⇒ unbounded` convention must NOT leak to a Home caller — a `limit: 0` would
+  // otherwise read every session/run unbounded yet slice `recentRuns` to empty (incoherent). `0` is not a
+  // meaningful Home request, so treat any non-positive value as the smallest glanceable strip.
+  const limit = Math.max(deps.limit ?? DEFAULT_HOME_LIMIT, 1);
 
   const recentSessionRecords = deps.sessions.listSessions({ limit });
   const failedRunRecords = deps.runs.listRuns({ status: 'failed', limit });
-  // The active-run set is already small (non-terminal only); a HUMAN-gated paused run is the gate source. A
-  // budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
-  // Derive each paused run's gates ONCE (one loadRunEvents per run) — reused for both the rows and the lift set.
-  const pausedRuns = deps.runs.listActiveRuns().filter((run) => run.status === 'paused');
+  // A budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
+  // CAP the paused fan-out to `limit`: a paused run accumulates indefinitely (a gate never resolved, a crash
+  // before the terminal), and each costs a `loadRunEvents` + reconstruct — so without a bound every Home open is
+  // O(N_paused × events). Only the most-recent `limit` paused runs are shown (the glanceable-strip contract).
+  // Derive each one's gates ONCE (one loadRunEvents per run) — reused for both the rows and the lift set.
+  const pausedRuns = deps.runs
+    .listActiveRuns()
+    .filter((run) => run.status === 'paused')
+    .slice(0, limit);
   const gatesByRun = pausedRuns.map((run) => ({
     run,
     pending: pendingHumanGates(deps.runs.loadRunEvents(run.id)),
@@ -167,6 +179,9 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const recentSessions = recentSessionRecords.map(toSessionRow);
   const recentAgents = deriveRecentAgents(recentSessionRecords);
 
+  // `recentAgents` is intentionally omitted: it derives from `recentSessionRecords`, so a non-empty agent list
+  // implies non-empty `recentSessions`, which already makes `isEmpty` false. (If agents ever get a separate DB
+  // read seam, add the check here.)
   const isEmpty =
     recentSessions.length === 0 &&
     recentRuns.length === 0 &&

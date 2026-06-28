@@ -131,8 +131,9 @@ export interface RunHistoryReader {
    * top-N (the 2.5.B Home "recent runs" strip) and/or `{ status }` to filter (e.g. the Home "attention"
    * section's recent `failed` runs). The recency order is served straight off `idx_runs_created` (no filesort).
    * A `{ status }` filter is served off `idx_runs_status` for the equality + the `created_at DESC` order; the
-   * `id DESC` tiebreak is that index's missing last term, so it incurs a small partial `TEMP B-TREE` — acceptable
-   * because the only `status` caller is the bounded Home failed strip (`LIMIT 8`). A `limit <= 0` reads as
+   * `id DESC` tiebreak is that index's missing last term, so it *may* incur a small bounded `TEMP B-TREE` — but
+   * only when rows tie on `created_at` at the `LIMIT` boundary (rare for epoch-ms timestamps), and acceptable
+   * regardless because the only `status` caller is the bounded Home failed strip (`LIMIT 8`). A `limit <= 0` reads as
    * unbounded (the codebase's `≤0 ⇒ no cap` convention). Omit the opts for the full list (`relavium list`).
    */
   listRuns: (opts?: { readonly limit?: number; readonly status?: RunStatus }) => RunRecord[];
