@@ -128,6 +128,21 @@ host-capability seam.**
 
 ### 2.5.B — Bare-invocation Home (single ink tree, HomeStore, bracketed paste)
 
+> **Status:** 🚧 **Implemented — in review (PR #61)**, behind
+> [ADR-0054](../../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted). Shipped: the bare-invocation
+> TTY gate in `run.ts` (`shouldOpenHome` = `stdoutIsTty && stdinIsTty && !json && !isCiEnv`, the help + exit-`0`
+> meta-op preserved byte-for-byte on every non-interactive path); the bounded, **indexed** `history.db` read seam +
+> the `HomeStore` aggregator (the "Attention required" gates/failed section above the "Continue" recency lists,
+> status-based exclusion, the §2.I partial-index performance debt discharged here); the **single ink tree**
+> (`RootApp` over a `home|loading|chat` mode machine, the session lifecycle extracted to a unit-tested
+> `HomeController`, the deferred `buildChatSession` with a loading state + build-failure recovery); **one
+> SIGINT/SIGTERM lifecycle** (clean Home exit `0`; an external signal → `128+signo` 130/143 with bounded MCP
+> teardown; the in-Home chat's exit-`4` consumed by the loop); **bracketed paste** (DECSET 2004, the marker
+> handling + the Ctrl-C escape + the editable-buffer gate); the first-user-message session title; and the
+> `docs/reference/cli/home.md` canonical contract. Each step landed through an opus + sonnet review loop. Not
+> yet ✅ Done — pending PR #61 merge. The richer slash palette / `@`-mention / mode keymap remain forthcoming
+> (2.5.C / 2.5.E).
+
 Today the bare invocation prints help and exits `0` (`apps/cli/src/run.ts`); `commander` deliberately
 has no default action (`apps/cli/src/program.ts`). This workstream adds a branded Home at that one
 extension point — a read-only management strip (recent sessions / runs / agents over the durable

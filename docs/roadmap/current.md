@@ -133,8 +133,16 @@ real failed-turn usage) is ✅ **Done (PR #60, 2026-06-28)**, behind
 [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) — **reaching milestone
 M2.5-1 (secure base)**. The `egress`/`os` arms, the `project`-tier `extraRoots` allowlist, and a write-capable
 chat are deferred to **2.5.E**/[ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (tracked in
-[deferred-tasks.md](deferred-tasks.md)). **Next pickup: 2.5.B** (the bare-invocation Home). See the
-[Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
+[deferred-tasks.md](deferred-tasks.md)). **2.5.B** (the bare-invocation Home) is **implemented and in review
+(PR #61)**, behind [ADR-0054](../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted): the
+TTY-gated bare `relavium` opens a read-only management strip (recent sessions/runs/agents + an "Attention
+required" section of pending human gates / failed runs) over a bounded, indexed `history.db` read seam, sitting
+above a live prompt that graduates into an in-process chat; rendered as a single ink tree (one `useInput` owner)
+with one SIGINT/SIGTERM lifecycle (clean Home exit `0`; an external signal → the conventional `128+signo`, 130/143;
+the in-Home chat's exit-`4` consumed, never leaked) and bracketed paste (DECSET 2004), all while every
+non-interactive path keeps the byte-for-byte help + exit-`0` meta-op ([ADR-0049](../decisions/0049-cli-machine-output-contract.md)).
+Canonically homed in [home.md](../reference/cli/home.md). **Next pickup: 2.5.C** (the in-app slash registry /
+command palette). See the [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half
