@@ -1,7 +1,9 @@
 # Phase 2.5 — CLI Consolidation and Conversational Home
 
-> Status: Planned. Spine: 2.5.A (tool-env + root-cause) → 2.5.B (Home) → 2.5.C (slash) → 2.5.E
-> (modes + per-tool approval). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
+> Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
+> ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
+> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home, next) → 2.5.C (slash) →
+> 2.5.E (modes + per-tool approval). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
 > lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
@@ -63,7 +65,22 @@ Along the way, close the bounded engine amendments and docs-debt that Phase 2 de
 
 ## Work breakdown
 
-### 2.5.A — Shared tool-environment factory and capability-gap root-cause fix
+### 2.5.A — Shared tool-environment factory and capability-gap root-cause fix — ✅ **Done (PR #60, 2026-06-28)**
+
+> **Status:** ✅ **Done (PR #60, 2026-06-28)** — behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
+> (Accepted after the security-review gate). Shipped: one shared `assembleToolEnv({ profile, fsScopeTier,
+> workspaceDir })` factory wired into **both** `chat/session-host.ts` (read-only chat) and `engine/build-engine.ts`
+> (read-write run), deleting the two inline host expressions and keeping the MCP arm a true **merge**, not a
+> replace; the host-side **`fs`** (`realpath` + `commonpath` jail, symlink-safe, read-only fail-close, single-fd
+> `O_NOFOLLOW`/`O_NONBLOCK` reads that reject directories/FIFOs/devices and close the read TOCTOU) and **`process`**
+> arms (shell-`false`, ambient-PATH resolution, declared-env denylist, process-group SIGKILL) so the built-in
+> agent's three tools work; the **advertise-filter** (an unwired tool is never offered); **EA1** (`tool_unavailable`
+> `ErrorCode`, replacing the bare `internal` for a missing capability); and **EA2** (real accumulated usage on a
+> failed turn via `AgentTurnError.usage`, with the turn-cap gated on a provider-engaged signal). **Deferred to
+> 2.5.E/[ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)** (recorded in
+> [../deferred-tasks.md](../deferred-tasks.md)): the `egress`/`os` arms, the `project`-tier `extraRoots` allowlist
+> (so `project` is workspace-only for now), and a write-capable / `full`-tier chat behind the per-tool approval
+> floor. The parent-directory TOCTOU residual is a Node `openat` limitation (also recorded).
 
 The spine. The built-in chat agent advertises `read_file` / `list_directory` / `git_status`
 (`apps/cli/src/chat/default-agent.ts`) and its system prompt already tells the model to *"say so
@@ -329,7 +346,7 @@ state; `NO_COLOR` is honoured.
 
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
-| M2.5-1 Secure base | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
+| M2.5-1 Secure base ✅ **(PR #60, 2026-06-28)** | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
 | M2.5-2 Home + entry + onboarding | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
 | M2.5-3 Modes + observability | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning |
 | M2.5-4 Consolidation | 2.5.I + 2.5.J | Harness + concurrency + docs-debt |

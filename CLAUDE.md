@@ -69,10 +69,16 @@ manager) landed **PR #56**, and the host wiring (chat + run + one-shot `agent ru
 namespace, the by-name `ref` form, and the real-spawn e2e landed **PR #57 (2026-06-27)** — behind
 [ADR-0034](docs/decisions/0034-mcp-client-sdk-dependency.md) + [ADR-0052](docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md)
 + [ADR-0053](docs/decisions/0053-mcp-network-transport-egress-security.md). 2.R was off the M3 critical path and
-the Phase-3 go/no-go, so it adds capability without gating. The next pickup is **2.J** (the last in-phase additive
-lane). For live status, per-PR history, milestone dates, and open obligations, see the canonical home
-[docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the
-public overview.
+the Phase-3 go/no-go, so it adds capability without gating; and **2.J** (the `create`/`import`/`export` YAML
+lifecycle) landed **PR #58 (2026-06-28)** — **with it every Phase-2 workstream is complete and the CLI is
+feature-complete (published v0.1.1)**. **Phase 2.5 (CLI Consolidation) is now underway:** its spine's secure
+base **2.5.A** — the shared `assembleToolEnv` tool-environment factory (host `fs`+`process` arms, the
+advertise-filter, **EA1** `tool_unavailable`, **EA2** real failed-turn usage) wired into both the chat and
+run paths — landed **PR #60 (2026-06-28)**, behind [ADR-0055](docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md),
+**reaching milestone M2.5-1**; the `egress`/`os` arms + write-capable chat are deferred to 2.5.E/ADR-0057. The
+next pickup is **2.5.B** (the bare-invocation Home). For live status, per-PR history, milestone dates, and open
+obligations, see the canonical home [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md)
+is the public overview.
 
 ## Non-negotiable rules for AI agents
 
