@@ -16,13 +16,20 @@ export function deriveSessionTitle(firstMessage: string): string | undefined {
   const oneLine = firstMessage.replace(/\s+/g, ' ').trim();
   if (oneLine.length === 0) return undefined; // a blank first message keeps the session title unset (not "")
   // Fast path: a UTF-16 length ≤ MAX implies ≤ MAX code points, so the title never truncates — and a huge pasted
-  // first message (a log dump) never spreads the whole string into a code-point array.
+  // first message (a log dump) never walks the whole string.
   if (oneLine.length <= SESSION_TITLE_MAX) return oneLine;
-  // Otherwise count + slice by CODE POINT (`[...]`), not UTF-16 code unit (a code-unit cut could split an astral
-  // char and leave a lone surrogate / mojibake). Bound the spread to the first `(MAX+1)*2` units — guaranteed to
-  // hold ≥ MAX+1 code points if the string is that long, so the ≤ MAX decision and the slice are exact.
-  const head = [...oneLine.slice(0, (SESSION_TITLE_MAX + 1) * 2)];
-  if (head.length <= SESSION_TITLE_MAX) return oneLine;
-  head.length = SESSION_TITLE_MAX - 1; // truncate IN PLACE (no second array clone) — keep MAX-1 code points + the ellipsis
-  return `${head.join('').trimEnd()}…`;
+  // Otherwise walk by CODE POINT (not UTF-16 unit — a code-unit cut could split an astral char and leave a lone
+  // surrogate / mojibake), bounded to MAX+1 points: track the UTF-16 index AFTER the (MAX-1)th point as the cut.
+  let cutUnits = oneLine.length; // default: the string has ≤ MAX points (no truncation) — set below if longer
+  let units = 0;
+  let points = 0;
+  for (const codePoint of oneLine) {
+    if (points === SESSION_TITLE_MAX - 1) cutUnits = units; // remember where MAX-1 code points end
+    points += 1;
+    units += codePoint.length;
+    if (points > SESSION_TITLE_MAX) {
+      return `${oneLine.slice(0, cutUnits).trimEnd()}…`; // more than MAX points ⇒ truncate at the MAX-1 boundary
+    }
+  }
+  return oneLine; // exactly MAX code points (or fewer after the astral-aware count) ⇒ no truncation
 }

@@ -142,14 +142,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     props.store.subscribe,
     props.store.getSnapshot,
   );
-  const [input, setInputState] = useState('');
+  const [input, setInput] = useState('');
   // A ref SHADOW of the buffer: in a coalesced stdin chunk ink dispatches every event synchronously with no
   // render flush, so the `input` closure stays stale across the burst. Reading `inputRef.current` gives the
   // latest COMMITTED value, so even a Return that arrives in the same chunk as a preceding char submits the full
-  // buffer (not the stale render capture). The `setInput` wrapper keeps the ref in lockstep with the state.
+  // buffer (not the stale render capture). `applyInput` wraps `setInput` to keep the ref in lockstep with state.
   const inputRef = useRef('');
-  const setInput = (next: (current: string) => string): void => {
-    setInputState((prev) => {
+  const applyInput = (next: (current: string) => string): void => {
+    setInput((prev) => {
       const value = next(prev);
       inputRef.current = value;
       return value;
@@ -186,10 +186,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'append':
       case 'backspace':
-        setInput((current) => applyChatEdit(current, action));
+        applyInput((current) => applyChatEdit(current, action));
         return;
       case 'submit':
-        setInput(() => '');
+        applyInput(() => '');
         submit(action.line);
         return;
       case 'none':
