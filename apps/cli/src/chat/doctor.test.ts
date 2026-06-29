@@ -1,6 +1,7 @@
 import type { ToolHost } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import {
   checkConfig,
   checkKeychain,
@@ -11,8 +12,12 @@ import {
   type DoctorProbes,
 } from './doctor.js';
 
-const FS_ARM = { id: 'fs' } as unknown as NonNullable<ToolHost['fs']>;
-const PROCESS_ARM = { id: 'process' } as unknown as NonNullable<ToolHost['process']>;
+// A REAL host with the `fs` + `process` arms wired (NO cast) — assembleToolEnv is pure construction (no I/O).
+const REAL_HOST: ToolHost = assembleToolEnv({
+  profile: 'chat-read-only',
+  fsScopeTier: 'sandboxed',
+  workspaceDir: '/tmp/doctor-test',
+}).host;
 
 const okProbe = (): void => {};
 const throwing = (message: string): (() => void) => () => {
@@ -22,7 +27,7 @@ const throwing = (message: string): (() => void) => () => {
 const baseProbes = (overrides: Partial<DoctorProbes> = {}): DoctorProbes => ({
   keychain: okProbe,
   config: okProbe,
-  toolHost: { fs: FS_ARM, process: PROCESS_ARM },
+  toolHost: REAL_HOST,
   ...overrides,
 });
 
@@ -62,7 +67,7 @@ describe('checkConfig', () => {
 
 describe('checkTools', () => {
   it('lists only the wired arms', () => {
-    expect(checkTools({ fs: FS_ARM, process: PROCESS_ARM }).detail).toBe('fs, process');
+    expect(checkTools(REAL_HOST).detail).toBe('fs, process');
   });
 
   it('reports "none" when no arm is wired', () => {
@@ -70,8 +75,10 @@ describe('checkTools', () => {
   });
 
   it('includes the mcp arm when present', () => {
-    const host: ToolHost = { fs: FS_ARM, mcp: { id: 'mcp' } as unknown as NonNullable<ToolHost['mcp']> };
-    expect(checkTools(host).detail).toBe('fs, mcp');
+    // Presence-only: checkTools reads `arm !== undefined`, never a method — so a documented stub stands in for the
+    // McpCapability (the one arm without a pure factory like assembleToolEnv; a real McpClient is heavy to build).
+    const mcpArm = { id: 'mcp' } as unknown as NonNullable<ToolHost['mcp']>;
+    expect(checkTools({ ...REAL_HOST, mcp: mcpArm }).detail).toBe('fs, process, mcp');
   });
 });
 

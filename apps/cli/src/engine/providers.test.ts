@@ -2,12 +2,20 @@ import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import type { LlmProvider } from '@relavium/llm';
 import { describe, expect, it, vi } from 'vitest';
 
+import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { neededProviderIds, providerKeyEnvVar, validateProviderKey } from './providers.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
 const TEST_KEY = ['sk', 'prov', '90ABCDEF'].join('-');
-const fakeProvider = (generate: LlmProvider['generate']): LlmProvider =>
-  ({ generate }) as unknown as LlmProvider;
+// A REAL LlmProvider fixture (no double cast) — only `generate` is exercised; `stream` is a fail-loud stub.
+const fakeProvider = (generate: LlmProvider['generate']): LlmProvider => ({
+  id: 'anthropic',
+  generate,
+  stream: () => {
+    throw new Error('stream is not exercised by validateProviderKey');
+  },
+  supports: CHAT_TEXT_CAPABILITY_FLAGS,
+});
 
 /** Assemble a parsed workflow from an `agents:` block and the `nodes:` that reference them. */
 function parse(agentsYaml: string, nodesYaml: string, edgesYaml: string): WorkflowDefinition {
@@ -158,10 +166,18 @@ describe('validateProviderKey', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it('threads the abort signal into the request', async () => {
+  it('passes an abort signal to the request (the internal bound)', async () => {
     const generate = vi.fn().mockResolvedValue({});
-    const controller = new AbortController();
-    await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test', controller.signal);
-    expect(generate.mock.calls[0]?.[0]).toMatchObject({ signal: controller.signal });
+    await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    // The request carries the internal AbortController's signal (validateProviderKey always sets it).
+    expect(generate.mock.calls[0]?.[0]).toHaveProperty('signal');
+  });
+
+  it('bounds a hanging request at the timeout (a stalled provider cannot hang the CLI)', async () => {
+    const generate: LlmProvider['generate'] = () => new Promise(() => {}); // never resolves, ignores the signal
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test', 5);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('timeout');
+    expect(result.detail).not.toContain(TEST_KEY);
   });
 });

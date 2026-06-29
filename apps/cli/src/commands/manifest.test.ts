@@ -67,10 +67,16 @@ describe('command manifest (ADR-0056)', () => {
       (node) => !NON_COMMAND_PATHS.has(node.id),
     );
 
-    // No real command is missing from the manifest.
+    // FORWARD: no real command is missing from the manifest.
     const manifestIds = new Set(COMMAND_MANIFEST.map((entry) => entry.id));
     const missing = commandNodes.filter((node) => !manifestIds.has(node.id)).map((node) => node.id);
     expect(missing).toEqual([]);
+
+    // REVERSE: no manifest entry is an orphan — a manifest id with no real `commander` command (a typo, or a
+    // command removed from the parser but left in the manifest). With FORWARD above, this pins the two id sets equal.
+    const commandIds = new Set(commandNodes.map((node) => node.id));
+    const orphans = COMMAND_MANIFEST.filter((entry) => !commandIds.has(entry.id)).map((entry) => entry.id);
+    expect(orphans, 'manifest entries with no commander command').toEqual([]);
 
     for (const node of commandNodes) {
       const entry = MANIFEST_BY_ID.get(node.id);
@@ -85,6 +91,14 @@ describe('command manifest (ADR-0056)', () => {
         const arg = entry?.args?.find((candidate) => candidate.name === key);
         expect(arg, `manifest ${node.id} is missing option arg '${key}'`).toBeDefined();
         expect(arg?.description).toBe(option.description);
+      }
+      // Every commander POSITIONAL is in the manifest's args too — `COMMAND_MANIFEST.args` advertises positionals
+      // AND options, so a `run <workflow>` positional is pinned the same way an option is (name; description when
+      // commander declares one).
+      for (const argument of node.command.registeredArguments) {
+        const arg = entry?.args?.find((candidate) => candidate.name === argument.name());
+        expect(arg, `manifest ${node.id} is missing positional arg '${argument.name()}'`).toBeDefined();
+        if (argument.description) expect(arg?.description).toBe(argument.description);
       }
     }
   });

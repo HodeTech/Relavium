@@ -148,6 +148,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       for (const tool of built.mcpSkipped) {
         store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
       }
+      // The chat's `/doctor` probes reflect THIS session's MCP status (the bound agent's declared servers + the
+      // tools the manager dropped) — derived from `built`, not the Home defaults — so `/doctor --deep` in a
+      // Home-started chat is correct by construction (the default agent has no `mcp_servers` today, but this keeps
+      // it right if that ever changes). A test override (`deps.doctorProbes`) still wins.
+      const chatDoctorProbes =
+        deps.doctorProbes ??
+        assembleDoctorProbes({
+          cwd: deps.global.cwd,
+          ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+          resolver: providers,
+          agentMcpServers: built.agent.mcp_servers ?? [],
+          mcpSkipped: built.mcpSkipped,
+        });
       // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring
       // (persister.start()'s insert, session.start()) must reclaim them — and any spawned MCP child — rather than
       // leak the timer/subscription, mirroring chatCommand's post-build guard.
@@ -165,7 +178,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           uuid,
         });
         const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
-          { built, opened, store, persister, doctorProbes },
+          { built, opened, store, persister, doctorProbes: chatDoctorProbes },
           deps,
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.

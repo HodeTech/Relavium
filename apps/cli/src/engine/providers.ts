@@ -1,10 +1,5 @@
 import type { WorkflowDefinition } from '@relavium/core';
-import {
-  defaultProviders,
-  type AbortSignalLike,
-  type LlmProvider,
-  type ProviderId,
-} from '@relavium/llm';
+import { defaultProviders, type LlmProvider, type ProviderId } from '@relavium/llm';
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
@@ -75,6 +70,16 @@ export const KNOWN_PROVIDERS: Record<ProviderId, ProviderMeta> = {
   },
 };
 
+/** The provider ids the CLI knows how to validate (those with a test model) — the typed key set of
+ *  {@link KNOWN_PROVIDERS}. `Object.keys` widens to `string[]`, so the single narrowing cast lives HERE,
+ *  documented; the keys ARE `ProviderId`s because the record is typed `Record<ProviderId, …>`. The `/doctor`
+ *  provider probe iterates this instead of casting `Object.keys` at the use site. */
+export const KNOWN_PROVIDER_IDS: readonly ProviderId[] = Object.keys(KNOWN_PROVIDERS) as ProviderId[];
+
+/** The default per-request bound for a live key validation — long enough for a cold provider handshake, short
+ *  enough that a stalled provider can never hang `provider test` or `/doctor --deep`. */
+export const VALIDATE_KEY_TIMEOUT_MS = 10_000;
+
 /** The outcome of a {@link validateProviderKey} probe — `ok` plus a secret-free `detail` line. */
 export interface ProviderKeyValidation {
   readonly ok: boolean;
@@ -89,14 +94,17 @@ export interface ProviderKeyValidation {
  *
  * SECURITY — the key is in scope here: `@relavium/llm` already scrubs secrets from its error messages, but we
  * defensively redact any occurrence (`raw.split(key).join(keyHint(key))`) before surfacing AND never attach
- * `err` as a cause (it could carry the key in a nested field a `--verbose` render might expose). An optional
- * `signal` bounds the in-flight request (the doctor probe's per-provider timeout).
+ * `err` as a cause (it could carry the key in a nested field a `--verbose` render might expose).
+ *
+ * The request is BOUNDED here — by an `AbortController` (cancels the in-flight request) AND a hard `Promise.race`
+ * timeout (settles the call even if an adapter ignores the signal) — so BOTH callers (`provider test` and the
+ * `/doctor --deep` probe) are bounded by construction; a stalled provider can never hang the CLI.
  */
 export async function validateProviderKey(
   provider: LlmProvider,
   key: string,
   model: string,
-  signal?: AbortSignalLike,
+  timeoutMs: number = VALIDATE_KEY_TIMEOUT_MS,
 ): Promise<ProviderKeyValidation> {
   // Defensive: an empty key would make the redaction `raw.split('').join(keyHint(''))` split on every character
   // and garble the message (no secret leaks — the key is empty — but the detail becomes nonsense). All current
@@ -104,20 +112,35 @@ export async function validateProviderKey(
   if (key.length === 0) {
     return { ok: false, detail: 'key test failed — (no key)' };
   }
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<ProviderKeyValidation>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ ok: false, detail: `key test failed — timeout (${timeoutMs}ms)` });
+    }, timeoutMs);
+  });
+  const probe = (async (): Promise<ProviderKeyValidation> => {
+    try {
+      await provider.generate(
+        {
+          model,
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          maxTokens: 1,
+          signal: controller.signal,
+        },
+        key,
+      );
+      return { ok: true, detail: `key works (${model})` };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      return { ok: false, detail: `key test failed — ${raw.split(key).join(keyHint(key))}` };
+    }
+  })();
   try {
-    await provider.generate(
-      {
-        model,
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-        maxTokens: 1,
-        ...(signal === undefined ? {} : { signal }),
-      },
-      key,
-    );
-    return { ok: true, detail: `key works (${model})` };
-  } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err);
-    return { ok: false, detail: `key test failed — ${raw.split(key).join(keyHint(key))}` };
+    return await Promise.race([probe, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

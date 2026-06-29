@@ -479,7 +479,8 @@ export function createChatLineHandler(
           configPath: deps.global.configPath,
         });
         if (projectConfigDir === undefined) {
-          emitOutput(`No .relavium/ project found from ${deps.global.cwd}.`);
+          // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
+          emitOutput('No .relavium/ project found from the current directory.');
           return;
         }
         const scan = (kind: CatalogKind): CatalogEntry[] =>
@@ -519,20 +520,21 @@ export function createChatLineHandler(
       const [name, ...tokens] = line.slice(1).split(/\s+/);
       const command = name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
       if (command !== undefined) {
-        // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED.
+        // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED
+        // through the notice channel — interactive errors belong in-view (ink), not on stderr behind the live view.
         const allowed = new Set((command.args ?? []).map((arg) => arg.flag));
         const bad = tokens.find((token) => !allowed.has(token));
         if (bad !== undefined) {
-          deps.io.writeErr(`/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.\n`);
+          emitOutput(`/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.`);
           return;
         }
         await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
         return;
       }
-      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
-      // terminal control sequence (or a flood) into stderr. The available list derives from REPL_COMMANDS.
+      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a terminal
+      // control sequence (or a flood). Routed through the notice channel (in-view on a TTY, stderr otherwise).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      deps.io.writeErr(`unknown command '${safe}'. Available: ${replCommandList()}.\n`);
+      emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
       return;
     }
     store.appendUser(line);

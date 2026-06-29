@@ -112,6 +112,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let pasting = false; // inside a bracketed paste (DECSET 2004) — content is buffered literally, never submitted
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
+  // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
+  // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
+  let doctorRunId = 0;
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
   // graceful close never settles; the teardown still runs to completion in the background.
@@ -209,6 +212,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
+    doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
     set({
       input: '',
       errorText: undefined,
@@ -262,6 +266,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     showCost: () => undefined,
     runDoctor: async (deep) => {
       if (exiting) return;
+      const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
       set({ notice: 'doctor: checking…' });
       let text: string;
       try {
@@ -269,9 +274,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       } catch {
         text = 'doctor: check failed';
       }
-      // A chat may have started, the Home exited, or the palette opened during the await — only land the report
-      // on a bare, idle Home (an open palette already cleared the notice + means the user moved to another command).
-      if (!exiting && state.session === undefined && state.palette === undefined) set({ notice: text });
+      // Land ONLY if nothing moved on during the await: still THIS run (the prompt wasn't edited/submitted), still
+      // a bare idle Home (no chat started, mode still 'home'), and the palette isn't open (it cleared the notice).
+      if (
+        runId === doctorRunId &&
+        !exiting &&
+        state.mode === 'home' &&
+        state.session === undefined &&
+        state.palette === undefined
+      ) {
+        set({ notice: text });
+      }
     },
   };
 
@@ -281,7 +294,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // The palette runs in BOTH surfaces: a live chat (a session ⇒ submit the slash through the S3a dispatch) and
     // the bare Home (no session ⇒ run the command over the Home's own context). The command set is the surface's.
     const active = state.session;
-    const commands = active !== undefined ? CHAT_PALETTE_COMMANDS : HOME_PALETTE_COMMANDS;
+    const commands = active === undefined ? HOME_PALETTE_COMMANDS : CHAT_PALETTE_COMMANDS;
     const step = foldPaletteKey(input, key, palette, commands);
     if (step.kind === 'close') {
       set({ palette: undefined });
@@ -290,12 +303,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (step.kind === 'run') {
       set({ palette: undefined });
       if (step.command !== undefined) {
-        if (active !== undefined) {
-          sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
-        } else {
+        if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
           void Promise.resolve(step.command.run(homeReplCtx, [])).catch(() => undefined);
+        } else {
+          sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
         }
       }
       return;
@@ -355,10 +368,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         submit();
         return;
       case 'append':
-        // The first keystroke after reading a `/doctor` report clears it (moving on) — no lingering block.
+        // The first keystroke after reading a `/doctor` report clears it (moving on) — no lingering block; the
+        // bump also invalidates an in-flight run so a slow `--deep` report can't reappear over what's now typed.
+        doctorRunId += 1;
         set({ input: state.input + action.char, notice: undefined });
         return;
       case 'backspace':
+        doctorRunId += 1;
         set({ input: dropLastCodePoint(state.input), notice: undefined });
         return;
       case 'none':
@@ -395,7 +411,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // as the keystroke gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B).
           const editable =
             state.mode !== 'loading' && !chatRunning() && state.palette === undefined;
-          if (input.length > 0 && editable) set({ input: state.input + input });
+          if (input.length > 0 && editable) {
+            // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
+            doctorRunId += 1;
+            set({ input: state.input + input, notice: undefined });
+          }
           return;
         }
         pasting = false;

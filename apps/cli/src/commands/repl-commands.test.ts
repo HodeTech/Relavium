@@ -54,7 +54,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(names).toEqual(['help', 'exit', 'cancel', 'export', 'workflows', 'cost', 'doctor']);
   });
 
-  it('each command run() invokes EXACTLY its one capability', () => {
+  it('each command run() invokes EXACTLY its one capability', async () => {
     const cases: Array<[string, keyof ReturnType<ReturnType<typeof spyContext>['calls']>]> = [
       ['help', 'help'],
       ['exit', 'exit'],
@@ -66,7 +66,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
-      void REPL_COMMANDS_BY_NAME.get(name)?.run(ctx, []); // run may be async (widened); the spies record synchronously
+      await REPL_COMMANDS_BY_NAME.get(name)?.run(ctx, []); // run may be async — await so the spy is recorded (+ no unhandled rejection)
       const counts = calls();
       expect(counts[capability], `${name} → ${capability}`).toBe(1);
       const total =
@@ -81,11 +81,11 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
   });
 
-  it('/doctor passes --deep through to runDoctor', () => {
+  it('/doctor passes --deep through to runDoctor', async () => {
     const { ctx } = spyContext();
     const doctor = REPL_COMMANDS_BY_NAME.get('doctor');
-    void doctor?.run(ctx, []);
-    void doctor?.run(ctx, ['--deep']);
+    await doctor?.run(ctx, []);
+    await doctor?.run(ctx, ['--deep']);
     expect(ctx.runDoctor).toHaveBeenNthCalledWith(1, false);
     expect(ctx.runDoctor).toHaveBeenNthCalledWith(2, true);
   });

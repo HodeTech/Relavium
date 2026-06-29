@@ -210,17 +210,20 @@ ADR: bare-invocation interactive-entry contract.**
 >   dropped** — its discoverability intent is folded into the footer + the palette's own nav hints (the palette
 >   IS the interactive command reference), avoiding a redundant static-reference command.
 
-A single shared dispatch table behind `commander`, the palette, and the in-REPL slash commands — a
-small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of other agent CLIs).
+**Two** purpose-built, canonical, **alias-free** registries (the [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
+amendment — avoiding the 40–100-command sprawl of other agent CLIs; no command appears in both): a **shell**
+`COMMAND_MANIFEST` behind `commander` + the `executeCommand` dispatch table + `relavium --help --json`, and a
+**curated in-REPL** `REPL_COMMANDS` behind the `/` palette + the slash commands.
 
 **Tasks:**
 
 - Extract the per-command wiring currently inside the `register*` bodies (`apps/cli/src/commands/specs.ts`)
-  into a shared dispatch module a `commander` action, the palette, and a slash command all call.
-- Implement a filterable `/` palette and the Home/chat slash taxonomy (canonically homed in
-  `docs/reference/cli/commands.md`, authored in 2.5.C); a command manifest
+  into a shared `executeCommand` dispatch table that a `commander` action and a `--help --json` consumer call.
+- Implement a filterable `/` palette + the curated in-REPL slash registry (`REPL_COMMANDS`) for Home/chat
+  (canonically homed in `docs/reference/cli/commands.md`). The **shell** command manifest
   (`{ id, label, description, args?, effect, modeScope? }`, [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md))
-  is the single source for the palette, slash help, and `relavium --help --json`.
+  is the single source for `commander`, the `executeCommand` dispatch, and `relavium --help --json`; the palette,
+  `/help`, and the unknown-slash hint derive from `REPL_COMMANDS` — NOT the manifest (no cross-surface divergence).
 - `/doctor` — a staged health check (fast: keychain / config / wired tool capabilities; `--deep`:
   provider-key validation + the live session's MCP status). **Security note:** the `--deep` MCP tier is
   **read-only** — it reports the bound agent's already-connected servers, it does NOT connect/spawn (a

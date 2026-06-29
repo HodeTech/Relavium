@@ -4,13 +4,21 @@ import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderResolver } from '../engine/providers.js';
+import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
 const TEST_KEY = ['sk', 'doctor', '90ABCDEF'].join('-');
 
-const fakeProvider = (generate: LlmProvider['generate']): LlmProvider =>
-  ({ generate }) as unknown as LlmProvider;
+// A REAL LlmProvider fixture (no double cast) — only `generate` is exercised; `stream` is a fail-loud stub.
+const fakeProvider = (generate: LlmProvider['generate']): LlmProvider => ({
+  id: 'anthropic',
+  generate,
+  stream: () => {
+    throw new Error('stream is not exercised by the doctor probe');
+  },
+  supports: CHAT_TEXT_CAPABILITY_FLAGS,
+});
 
 const resolverWith = (
   providers: Partial<Record<ProviderId, LlmProvider | undefined>>,

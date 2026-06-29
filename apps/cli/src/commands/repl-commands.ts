@@ -143,12 +143,25 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
   },
 ];
 
-/** The frozen curated command set (each entry + the array immutable at runtime, parity with `COMMAND_MANIFEST`). */
+/** DEEP-freeze a curated command — the entry, its `args` array + each flag, and its `availableIn` array — so no
+ *  downstream code can mutate the registry (or its nested `args`/`availableIn`) at runtime. Parity with
+ *  `COMMAND_MANIFEST`'s `freezeEntry`. */
+function freezeReplCommand(command: ReplCommand): ReplCommand {
+  if (command.args !== undefined) {
+    command.args.forEach((arg) => Object.freeze(arg));
+    Object.freeze(command.args);
+  }
+  Object.freeze(command.availableIn);
+  return Object.freeze(command);
+}
+
+/** The deep-frozen curated command set (each entry + its nested arrays immutable at runtime). */
 export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  RAW_REPL_COMMANDS.map((command) => Object.freeze(command)),
+  RAW_REPL_COMMANDS.map(freezeReplCommand),
 );
 
-/** O(1) lookup of a REPL command by its slash name (no leading `/`). */
+/** O(1) lookup of a REPL command by its slash name (no leading `/`). The `ReadonlyMap` type is the mutation guard
+ *  (a `Map`'s internal data can't be `Object.freeze`d); every command it holds is deep-frozen above. */
 export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(
   REPL_COMMANDS.map((command) => [command.name, command]),
 );
@@ -158,19 +171,19 @@ export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(
  * interactive help, so listing `/help` would be circular (and selecting it would print the text list to stderr
  * behind the live ink view). `/help` stays a typed / non-TTY text-list affordance (the unknown-slash fallback).
  */
-export const PALETTE_COMMANDS: readonly ReplCommand[] = REPL_COMMANDS.filter(
-  (command) => command.name !== 'help',
+export const PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
+  REPL_COMMANDS.filter((command) => command.name !== 'help'),
 );
 
 /** The palette commands available in a live chat (S3b) — every palette command whose `availableIn` includes `chat`. */
-export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = PALETTE_COMMANDS.filter((command) =>
-  command.availableIn.includes('chat'),
+export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
+  PALETTE_COMMANDS.filter((command) => command.availableIn.includes('chat')),
 );
 
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
  *  (S5, pre-chat diagnostics). The chat-only info commands (`/workflows` / `/cost`) stay out of the Home set. */
-export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = PALETTE_COMMANDS.filter((command) =>
-  command.availableIn.includes('home'),
+export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
+  PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
 );
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

@@ -204,14 +204,11 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       )}
 
       {notice !== undefined && (
-        // The `/doctor` report — one dim Text per line. NO `wrap="truncate-end"`: cli-truncate would drop whole
-        // lines from a multi-line block (the chat notice channel learned the same lesson). Already sanitized.
-        <Box marginTop={1} flexDirection="column">
-          {notice.split('\n').map((row, i) => (
-            <Text key={i} {...dimProps(color)}>
-              {row}
-            </Text>
-          ))}
+        // The `/doctor` report — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
+        // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
+        // multi-line string. Already sanitized at the source (formatDoctorReport).
+        <Box marginTop={1}>
+          <Text {...dimProps(color)}>{notice}</Text>
         </Box>
       )}
 

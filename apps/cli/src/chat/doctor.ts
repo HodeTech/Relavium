@@ -128,6 +128,14 @@ export async function runDoctorChecks(
 
 const GLYPH: Record<DoctorStatus, string> = { ok: '✓', warn: '⚠', fail: '✗' };
 
+/** The one-line heading. `warn` is visible at the heading level so a glanceable read can't mistake "no keys
+ *  configured" for healthy; a failure outranks a warning. */
+function doctorHeading(failures: number, warnings: number): string {
+  if (failures > 0) return `doctor: ${failures} check(s) failed`;
+  if (warnings > 0) return `doctor: ${warnings} warning(s)`;
+  return 'doctor: all checks passed';
+}
+
 /** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <label>: <detail>` row per check.
  *  Both the label AND the detail are sanitized — the Home renders these rows verbatim (no outer scrub like the
  *  chat notice channel), so a label carrying a control char (e.g. a crafted MCP server id) is neutralized here. */
@@ -137,12 +145,5 @@ export function formatDoctorReport(report: DoctorReport): string {
   );
   const failures = report.checks.filter((check) => check.status === 'fail').length;
   const warnings = report.checks.filter((check) => check.status === 'warn').length;
-  // `warn` is visible at the heading level so a glanceable read can't mistake "no keys configured" for healthy.
-  const heading =
-    failures > 0
-      ? `doctor: ${failures} check(s) failed`
-      : warnings > 0
-        ? `doctor: ${warnings} warning(s)`
-        : 'doctor: all checks passed';
-  return [heading, ...rows].join('\n');
+  return [doctorHeading(failures, warnings), ...rows].join('\n');
 }

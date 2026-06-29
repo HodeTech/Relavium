@@ -678,5 +678,42 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(notice).toContain('doctor: 1 check(s) failed');
       expect(notice).toContain('✗ OS keychain: keychain locked');
     });
+
+    it('a report does NOT land if the prompt is edited during the run (the stale-run token guard)', async () => {
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'doc');
+      c.handleKey('', ENTER); // run /doctor: sets 'checking…' synchronously, then awaits
+      type(c, 'x'); // edit the prompt BEFORE the run settles — bumps the run token + clears the notice
+      await flush(); // the run resolves; its report is dropped (token mismatch), not re-shown over what's typed
+      expect(c.getSnapshot().notice).toBeUndefined();
+      expect(c.getSnapshot().input).toBe('x');
+    });
+
+    it('a paste clears a stale /doctor notice (parity with typing)', async () => {
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'doc');
+      c.handleKey('', ENTER);
+      await flush();
+      expect(c.getSnapshot().notice).toBeDefined();
+      c.handleKey(PASTE_START, {});
+      c.handleKey('pasted', {});
+      c.handleKey(PASTE_END, {});
+      expect(c.getSnapshot().notice).toBeUndefined();
+      expect(c.getSnapshot().input).toBe('pasted');
+    });
   });
 });

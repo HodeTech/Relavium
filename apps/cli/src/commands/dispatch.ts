@@ -317,7 +317,12 @@ async function withProviderDeps(
 
 /** Build a provider executor for one `ProviderCommandArgs` shape (the subcommand id → its action). */
 function providerExecutor(build: (input: CommandInput) => ProviderCommandArgs): CommandExecutor {
-  return (input, ctx) => withProviderDeps(ctx, (deps) => runProviderCommand(build(input), deps));
+  // Extract/validate the args BEFORE opening any db/keychain deps — malformed input fails cleanly without
+  // initializing (and then tearing down) dependencies it never reached.
+  return (input, ctx) => {
+    const args = build(input);
+    return withProviderDeps(ctx, (deps) => runProviderCommand(args, deps));
+  };
 }
 
 // ── the dispatch table ───────────────────────────────────────────────────────
