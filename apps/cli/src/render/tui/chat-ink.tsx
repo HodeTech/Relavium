@@ -7,10 +7,18 @@ import {
   type ChatDriveContext,
   type ChatDriver,
 } from '../../commands/chat.js';
+import { REPL_COMMANDS } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import { applyChatEdit, reduceChatKey } from './chat-input.js';
+import { PaletteView } from './palette-view.js';
+import {
+  INITIAL_PALETTE_STATE,
+  reducePaletteKey,
+  stepPalette,
+  type PaletteState,
+} from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
   formatSessionFooter,
@@ -157,6 +165,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   };
   const cancelFired = useRef(false);
   const running = state.status === 'running';
+  // The interactive `/` palette (2.5.C S3b) — `undefined` ⇒ closed. React-local here (the external-store Home
+  // keeps it in HomeControllerState); both surfaces drive the SAME reducer + render the SAME PaletteView.
+  const [palette, setPalette] = useState<PaletteState | undefined>(undefined);
 
   const submit = (line: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
@@ -176,6 +187,36 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
+    // The open `/` palette owns every key — Ctrl-C closes it gently (a non-trapping escape back to the prompt).
+    if (palette !== undefined) {
+      if (key.ctrl === true && char === 'c') {
+        setPalette(undefined);
+        return;
+      }
+      const step = stepPalette(palette, reducePaletteKey(char, key), REPL_COMMANDS);
+      if (step.kind === 'close') {
+        setPalette(undefined);
+        return;
+      }
+      if (step.kind === 'run') {
+        setPalette(undefined);
+        if (step.command !== undefined) submit(`/${step.command.name}`); // reuse the S3a slash dispatch
+        return;
+      }
+      setPalette(step.state);
+      return;
+    }
+    // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point.
+    if (
+      !running &&
+      inputRef.current.length === 0 &&
+      char === '/' &&
+      key.ctrl !== true &&
+      key.meta !== true
+    ) {
+      setPalette(INITIAL_PALETTE_STATE);
+      return;
+    }
     const action = reduceChatKey(char, key, inputRef.current, running);
     switch (action.kind) {
       case 'cancel':
@@ -197,7 +238,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
-  return <ChatView state={state} tick={tick} color={color} input={input} running={running} />;
+  return (
+    <Box flexDirection="column">
+      <ChatView state={state} tick={tick} color={color} input={input} running={running} />
+      {palette !== undefined && (
+        <PaletteView commands={REPL_COMMANDS} state={palette} color={color} />
+      )}
+    </Box>
+  );
 }
 
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. */

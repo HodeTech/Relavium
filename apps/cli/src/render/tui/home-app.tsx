@@ -1,11 +1,14 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 
+import { REPL_COMMANDS } from '../../commands/repl-commands.js';
 import { ChatView } from './chat-ink.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
+import { PaletteView } from './palette-view.js';
+import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 
 /**
@@ -27,21 +30,29 @@ export interface RootAppProps {
   readonly subscribeResize: (onResize: () => void) => () => void;
 }
 
-/** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView}.
- *  It owns NO `useInput` — {@link RootApp} is the single raw-mode owner and forwards keys to the controller. */
-function ChatRegion(props: Readonly<{ store: ChatStoreController; input: string }>): ReactElement {
+/** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
+ *  plus the `/` palette overlay (2.5.C S3b) when open. It owns NO `useInput` — {@link RootApp} is the single
+ *  raw-mode owner and forwards keys to the controller. */
+function ChatRegion(
+  props: Readonly<{ store: ChatStoreController; input: string; palette: PaletteState | undefined }>,
+): ReactElement {
   const { state, tick, color } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
   );
   return (
-    <ChatView
-      state={state}
-      tick={tick}
-      color={color}
-      input={props.input}
-      running={state.status === 'running'}
-    />
+    <Box flexDirection="column">
+      <ChatView
+        state={state}
+        tick={tick}
+        color={color}
+        input={props.input}
+        running={state.status === 'running'}
+      />
+      {props.palette !== undefined && (
+        <PaletteView commands={REPL_COMMANDS} state={props.palette} color={color} />
+      )}
+    </Box>
   );
 }
 
@@ -56,7 +67,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useInput((input, key) => controller.handleKey(input, key));
 
   if (state.mode === 'chat' && state.session !== undefined) {
-    return <ChatRegion store={state.session.store} input={state.input} />;
+    return <ChatRegion store={state.session.store} input={state.input} palette={state.palette} />;
   }
   if (state.mode === 'loading') {
     return (

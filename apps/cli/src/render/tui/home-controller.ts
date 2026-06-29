@@ -1,7 +1,15 @@
+import { REPL_COMMANDS } from '../../commands/repl-commands.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
+import {
+  INITIAL_PALETTE_STATE,
+  reducePaletteKey,
+  stepPalette,
+  type PaletteKey,
+  type PaletteState,
+} from './palette-reducer.js';
 import { FORCE_TEARDOWN_MS } from './tui-constants.js';
 
 /**
@@ -39,6 +47,8 @@ export interface HomeControllerState {
   readonly pendingMessage: string;
   readonly input: string;
   readonly session: HomeChatSession | undefined;
+  /** The interactive `/` command palette (2.5.C S3b) — `undefined` ⇒ closed. Open only in `chat` mode today. */
+  readonly palette: PaletteState | undefined;
 }
 
 export interface HomeControllerDeps {
@@ -64,7 +74,7 @@ export interface HomeController {
   readonly subscribe: (listener: () => void) => () => void;
   readonly getSnapshot: () => HomeControllerState;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
-  readonly handleKey: (input: string, key: HomeKey & ChatKey) => void;
+  readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
@@ -78,6 +88,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     pendingMessage: '',
     input: '',
     session: undefined,
+    palette: undefined,
   };
   let cancelFired = false;
   let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
@@ -145,6 +156,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           mode: 'home',
+          palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
         });
       })
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
@@ -206,9 +218,46 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
+  // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
+  // (a gentle escape back to the prompt — never trapping the user).
+  const handlePaletteKey = (input: string, key: PaletteKey): void => {
+    const palette = state.palette;
+    if (palette === undefined) return;
+    if (key.ctrl === true && input === 'c') {
+      set({ palette: undefined });
+      return;
+    }
+    const step = stepPalette(palette, reducePaletteKey(input, key), REPL_COMMANDS);
+    if (step.kind === 'close') {
+      set({ palette: undefined });
+      return;
+    }
+    if (step.kind === 'run') {
+      set({ palette: undefined });
+      const active = state.session;
+      if (step.command !== undefined && active !== undefined) {
+        sendChatLine(active, `/${step.command.name}`); // reuse the S3a slash dispatch (createChatLineHandler)
+      }
+      return;
+    }
+    set({ palette: step.state });
+  };
+
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
+    // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
+    if (
+      !running &&
+      state.input.length === 0 &&
+      input === '/' &&
+      key.ctrl !== true &&
+      key.meta !== true
+    ) {
+      set({ palette: INITIAL_PALETTE_STATE });
+      return;
+    }
     const action = reduceChatKey(input, key, state.input, running);
     switch (action.kind) {
       case 'cancel':
@@ -282,13 +331,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // to exit/submit) — clear the latch and fall through to the normal dispatch (Home → exit, chat → /cancel).
         if (!(key.ctrl === true && input === 'c')) {
           // Literal content. Append verbatim (newlines kept) ONLY when the buffer is editable — drop it while a
-          // session builds (`loading`) or a chat turn streams (`chatRunning`), exactly as the keystroke gate does,
-          // so paste never diverges from typing (type-ahead is deferred, 2.5.B).
-          const editable = state.mode !== 'loading' && !chatRunning();
+          // session builds (`loading`), a chat turn streams (`chatRunning`), or the `/` palette is open, exactly
+          // as the keystroke gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B).
+          const editable =
+            state.mode !== 'loading' && !chatRunning() && state.palette === undefined;
           if (input.length > 0 && editable) set({ input: state.input + input });
           return;
         }
         pasting = false;
+      }
+      // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
+      if (state.palette !== undefined) {
+        handlePaletteKey(input, key);
+        return;
       }
       if (state.mode === 'chat' && state.session !== undefined) {
         handleChatKey(state.session, input, key);

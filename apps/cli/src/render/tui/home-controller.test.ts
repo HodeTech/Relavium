@@ -469,4 +469,70 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().input).toBe(''); // all chunks dropped, not just the first
     });
   });
+
+  describe('the / command palette (2.5.C S3b)', () => {
+    const DOWN = { downArrow: true } as const;
+    const ESC = { escape: true } as const;
+
+    /** Build a controller, submit a first message so it is in `chat` mode at an empty prompt, ready for the palette. */
+    const intoChat = async (
+      made: ReturnType<typeof makeSession>,
+    ): Promise<ReturnType<typeof createHomeController>> => {
+      const c = createHomeController({
+        startChat: () => Promise.resolve(made.session),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      return c;
+    };
+
+    it('opens on a literal "/" at an empty chat prompt', async () => {
+      const c = await intoChat(makeSession());
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 });
+    });
+
+    it('filters as you type and Enter submits the highlighted command as a slash line', async () => {
+      const made = makeSession();
+      const c = await intoChat(made);
+      c.handleKey('/', {});
+      type(c, 'ex'); // filter → [exit, export]
+      c.handleKey('', DOWN); // highlight export
+      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 1 });
+      c.handleKey('', ENTER); // select → submit /export through the chat dispatch
+      await flush();
+      expect(made.lines).toEqual(['hi', '/export']);
+      expect(c.getSnapshot().palette).toBeUndefined(); // closed after running
+    });
+
+    it('Esc closes the palette without submitting anything', async () => {
+      const made = makeSession();
+      const c = await intoChat(made);
+      c.handleKey('/', {});
+      c.handleKey('', ESC);
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(made.lines).toEqual(['hi']); // nothing else submitted
+    });
+
+    it('Ctrl-C closes the palette (a gentle escape — it does not /cancel the chat)', async () => {
+      const made = makeSession();
+      const c = await intoChat(made);
+      c.handleKey('/', {});
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(made.lines).toEqual(['hi']); // no /cancel leaked
+    });
+
+    it('a "/" mid-message is a normal character — the palette only triggers at an empty prompt', async () => {
+      const c = await intoChat(makeSession());
+      type(c, 'ab');
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(c.getSnapshot().input).toBe('ab/');
+    });
+  });
 });
