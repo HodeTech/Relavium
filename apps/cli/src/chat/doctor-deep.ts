@@ -70,7 +70,12 @@ async function probeProvider(
     return failCheck(`provider:${id}`, id, 'no adapter');
   }
   // `validateProviderKey` is bounded internally (AbortController + hard race), so no outer race is needed here.
-  const result = await validateProviderKey(provider, key, KNOWN_PROVIDERS[id].testModel, deps.timeoutMs);
+  const result = await validateProviderKey(
+    provider,
+    key,
+    KNOWN_PROVIDERS[id].testModel,
+    deps.timeoutMs,
+  );
   return result.ok
     ? okCheck(`provider:${id}`, id, result.detail)
     : failCheck(`provider:${id}`, id, sanitizeInline(result.detail));

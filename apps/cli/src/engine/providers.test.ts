@@ -145,7 +145,9 @@ describe('validateProviderKey', () => {
   });
 
   it('REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)', async () => {
-    const generate = vi.fn().mockRejectedValue(new Error(`401 invalid_api_key: ${TEST_KEY} rejected`));
+    const generate = vi
+      .fn()
+      .mockRejectedValue(new Error(`401 invalid_api_key: ${TEST_KEY} rejected`));
     const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
     expect(result.ok).toBe(false);
     expect(result.detail).not.toContain(TEST_KEY);

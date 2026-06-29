@@ -75,7 +75,9 @@ describe('command manifest (ADR-0056)', () => {
     // REVERSE: no manifest entry is an orphan — a manifest id with no real `commander` command (a typo, or a
     // command removed from the parser but left in the manifest). With FORWARD above, this pins the two id sets equal.
     const commandIds = new Set(commandNodes.map((node) => node.id));
-    const orphans = COMMAND_MANIFEST.filter((entry) => !commandIds.has(entry.id)).map((entry) => entry.id);
+    const orphans = COMMAND_MANIFEST.filter((entry) => !commandIds.has(entry.id)).map(
+      (entry) => entry.id,
+    );
     expect(orphans, 'manifest entries with no commander command').toEqual([]);
 
     for (const node of commandNodes) {
@@ -97,7 +99,10 @@ describe('command manifest (ADR-0056)', () => {
       // commander declares one).
       for (const argument of node.command.registeredArguments) {
         const arg = entry?.args?.find((candidate) => candidate.name === argument.name());
-        expect(arg, `manifest ${node.id} is missing positional arg '${argument.name()}'`).toBeDefined();
+        expect(
+          arg,
+          `manifest ${node.id} is missing positional arg '${argument.name()}'`,
+        ).toBeDefined();
         if (argument.description) expect(arg?.description).toBe(argument.description);
       }
     }

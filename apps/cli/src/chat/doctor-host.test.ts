@@ -15,8 +15,17 @@ const ref = (id: string): McpServerRef => ({ id });
 
 describe('assembleDoctorProbes', () => {
   it('builds every probe as a CLOSURE — no keychain read / config load / connect at construction', () => {
-    const keychain: KeychainStore = { get: vi.fn(() => null), set: vi.fn(), delete: vi.fn(() => false) };
-    const probes = assembleDoctorProbes({ cwd: '/tmp/x', resolver, keychain, agentMcpServers: [ref('fs')] });
+    const keychain: KeychainStore = {
+      get: vi.fn(() => null),
+      set: vi.fn(),
+      delete: vi.fn(() => false),
+    };
+    const probes = assembleDoctorProbes({
+      cwd: '/tmp/x',
+      resolver,
+      keychain,
+      agentMcpServers: [ref('fs')],
+    });
     // Assembling touched nothing — a regression here would read the keychain on every chat/Home start.
     expect(keychain.get).not.toHaveBeenCalled();
     // The read happens only when the probe RUNS.

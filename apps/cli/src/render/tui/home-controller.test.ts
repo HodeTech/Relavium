@@ -91,7 +91,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   });
 
   it('types into the buffer and reflects it in the snapshot', () => {
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(),
       homeStore,
       onExit: vi.fn(),
@@ -106,7 +107,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
 
     type(c, 'hello');
     c.handleKey('', ENTER);
@@ -122,7 +129,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   it('an empty / whitespace submit stays on the Home and never builds a chat', () => {
     const startChat = vi.fn();
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
     type(c, '   ');
     c.handleKey('', ENTER);
     expect(startChat).not.toHaveBeenCalled();
@@ -132,7 +145,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   it('a build failure routes back to Home with the banner (no session)', async () => {
     const startChat = vi.fn(() => Promise.reject(new Error('no API key for provider')));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
     type(c, 'hi');
     c.handleKey('', ENTER);
     await flush();
@@ -145,7 +164,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const made = makeSession({ onProcess: () => Promise.reject(new Error('turn-core bug')) });
     const onError = vi.fn();
     const startChat = vi.fn(() => Promise.resolve(made.session));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError,
+    });
 
     type(c, 'go');
     c.handleKey('', ENTER);
@@ -159,7 +184,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('a turn that ends the session (/exit·/cancel) returns to a freshly-read Home', async () => {
     const made = makeSession({ stop: () => true }); // shouldStop ⇒ the turn ended the session
     const startChat = vi.fn(() => Promise.resolve(made.session));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
 
     type(c, 'bye');
     c.handleKey('', ENTER);
@@ -173,7 +204,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   it('Ctrl-C on the Home exits cleanly (idempotent — never settles driveHome twice)', () => {
     const onExit = vi.fn();
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit,
+      onError: vi.fn(),
+    });
     c.handleKey('c', CTRL_C);
     c.handleKey('c', CTRL_C); // a second Ctrl-C / a race must not re-fire
     expect(onExit).toHaveBeenCalledTimes(1);
@@ -182,7 +219,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('Ctrl-C inside a chat sends /cancel once (cancelFired guards a double)', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
     type(c, 'hi');
     c.handleKey('', ENTER);
     await flush();
@@ -197,7 +240,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     let resolveBuild: (s: HomeChatSession) => void = () => undefined;
     const made = makeSession();
     const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
 
     type(c, 'hi');
     c.handleKey('', ENTER); // → loading, build pending
@@ -213,7 +262,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('teardownActive tears a live chat down (for the signal handler) and is idempotent vs endChat', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
     type(c, 'hi');
     c.handleKey('', ENTER);
     await flush();
@@ -226,7 +281,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('BOUNDS the endChat teardown — a never-resolving (hung MCP) close still returns to Home', async () => {
     const made = makeSession({ stop: () => true }); // the first turn ends the session ⇒ endChat fires
     made.teardown.mockImplementation(() => new Promise<void>(() => undefined)); // a graceful close that never settles
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(() => Promise.resolve(made.session)),
       homeStore,
       onExit: vi.fn(),
@@ -246,7 +302,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     let resolveBuild: (s: HomeChatSession) => void = () => undefined;
     const made = makeSession();
     const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
 
     type(c, 'hi');
     c.handleKey('', ENTER); // → loading, build pending, NO session yet
@@ -272,7 +334,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       teardown,
     };
     const startChat = vi.fn(() => Promise.resolve(session));
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
 
     type(c, 'hi');
     c.handleKey('', ENTER);
@@ -299,7 +367,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       shouldStop: () => true,
       teardown: vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))),
     };
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(() => Promise.resolve(session)),
       homeStore,
       onExit: vi.fn(),
@@ -322,7 +391,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const made = makeSession({ onProcess: () => Promise.reject(new Error('boom')) });
     const onExit = vi.fn();
     const onError = vi.fn();
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(() => Promise.resolve(made.session)),
       homeStore,
       onExit,
@@ -340,7 +410,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   it('Ctrl-D (EOF) on an empty Home prompt exits; with text in the buffer it does not (no data loss)', () => {
     const onExit = vi.fn();
-    const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit,
+      onError: vi.fn(),
+    });
     type(c, 'draft');
     c.handleKey('d', { ctrl: true }); // Ctrl-D with a non-empty buffer → ignored
     expect(onExit).not.toHaveBeenCalled();
@@ -360,7 +436,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   describe('bracketed paste (DECSET 2004)', () => {
     it('appends a multi-line paste literally (newlines kept) and does NOT submit early', () => {
       const startChat = vi.fn();
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       c.handleKey(PASTE_START, {});
       c.handleKey('line1\nline2\r\nline3', {}); // ink delivers the bracketed content as one event
       c.handleKey(PASTE_END, {});
@@ -370,7 +452,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     });
 
     it('the markers themselves never reach the buffer', () => {
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -384,7 +467,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('a literal Enter still submits once the paste has ended', async () => {
       const made = makeSession();
       const startChat = vi.fn(() => Promise.resolve(made.session));
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       c.handleKey(PASTE_START, {});
       c.handleKey('deploy.yaml contents', {});
       c.handleKey(PASTE_END, {});
@@ -396,7 +485,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('reassembles a paste delivered across MULTIPLE chunks (none submits, order + newlines preserved)', () => {
       const startChat = vi.fn();
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       c.handleKey(PASTE_START, {});
       c.handleKey('first\n', {}); // ink can split a large paste across stdin reads
       c.handleKey('\r', { return: true }); // even a lone CR chunk INSIDE the paste is literal, not a submit
@@ -408,7 +503,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('Ctrl-C ALWAYS escapes a stuck paste (a lost end-marker must never trap the user) — Home exits', () => {
       const onExit = vi.fn();
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+      });
       c.handleKey(PASTE_START, {});
       c.handleKey('half a paste', {}); // the [201~ end marker never arrives
       c.handleKey('c', CTRL_C); // the user bails out
@@ -418,7 +519,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('Ctrl-C escapes a stuck paste inside a chat as a /cancel (not swallowed)', async () => {
       const made = makeSession();
       const startChat = vi.fn(() => Promise.resolve(made.session));
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       type(c, 'hi');
       c.handleKey('', ENTER);
       await flush();
@@ -433,7 +540,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('drops paste content while a chat turn is running (matches the mid-turn keystroke gate)', async () => {
       const made = makeSession({ running: true });
       const startChat = vi.fn(() => Promise.resolve(made.session));
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       type(c, 'go');
       c.handleKey('', ENTER);
       await flush(); // mode 'chat', the (stubbed) store reports running
@@ -448,7 +561,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       const made = makeSession();
       let resolveBuild: (s: HomeChatSession) => void = () => undefined;
       const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       type(c, 'hi');
       c.handleKey('', ENTER); // → loading, build pending
       expect(c.getSnapshot().mode).toBe('loading');
@@ -466,7 +585,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('drops EVERY chunk of a multi-chunk paste while a turn runs', async () => {
       const made = makeSession({ running: true });
       const startChat = vi.fn(() => Promise.resolve(made.session));
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       type(c, 'go');
       c.handleKey('', ENTER);
       await flush(); // chat, running (stub)
@@ -487,7 +612,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const intoChat = async (
       made: ReturnType<typeof makeSession>,
     ): Promise<ReturnType<typeof createHomeController>> => {
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -556,7 +682,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('opens on "/" at the Home prompt, and selecting /exit ends the Home', () => {
       const onExit = vi.fn();
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+      });
       c.handleKey('/', {});
       expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 }); // HOME_PALETTE_COMMANDS = [exit, doctor]; index 0 = /exit
       c.handleKey('', ENTER); // select the highlighted /exit → run over the Home context → exitHome
@@ -566,7 +698,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('Esc closes the Home palette without exiting', () => {
       const onExit = vi.fn();
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+      });
       c.handleKey('/', {});
       c.handleKey('', ESC);
       expect(c.getSnapshot().palette).toBeUndefined();
@@ -575,7 +713,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('Ctrl-C closes the Home palette (the always-escapes hatch — does not exit the Home)', () => {
       const onExit = vi.fn();
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+      });
       c.handleKey('/', {});
       c.handleKey('c', CTRL_C);
       expect(c.getSnapshot().palette).toBeUndefined();
@@ -583,7 +727,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     });
 
     it('a "/" mid-message in the Home is a normal character (the palette only triggers at an empty prompt)', () => {
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -597,7 +742,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('does not open while a build is loading (the loading guard fires before the trigger)', () => {
       const startChat = vi.fn(() => new Promise<HomeChatSession>(() => undefined)); // never resolves
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES, startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
       type(c, 'hello');
       c.handleKey('', ENTER); // → loading (the build is in flight)
       expect(c.getSnapshot().mode).toBe('loading');
@@ -606,7 +757,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     });
 
     it('typing in the Home palette updates the query (the filter state path runs in the Home too)', () => {
-      const c = createHomeController({ doctorProbes: STUB_DOCTOR_PROBES,
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),

@@ -153,6 +153,9 @@ describe('mcpSessionChecks (read-only session status — never connects)', () =>
 
   it('uses the by-name ref when an entry has no inline id', () => {
     const byName: McpServerRef = { ref: 'shared-fs' };
-    expect(mcpSessionChecks([byName], [])[0]).toMatchObject({ id: 'mcp:shared-fs', label: 'shared-fs' });
+    expect(mcpSessionChecks([byName], [])[0]).toMatchObject({
+      id: 'mcp:shared-fs',
+      label: 'shared-fs',
+    });
   });
 });

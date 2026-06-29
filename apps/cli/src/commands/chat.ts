@@ -521,14 +521,17 @@ export function createChatLineHandler(
       // --deep` dispatches `doctor` with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is
       // rejected below), preserving the prior exact-match strictness while admitting declared flags.
       const [name, ...tokens] = line.slice(1).split(/\s+/);
-      const command = name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
+      const command =
+        name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
       if (command !== undefined) {
         // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED
         // through the notice channel — interactive errors belong in-view (ink), not on stderr behind the live view.
         const allowed = new Set((command.args ?? []).map((arg) => arg.flag));
         const bad = tokens.find((token) => !allowed.has(token));
         if (bad !== undefined) {
-          emitOutput(`/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.`);
+          emitOutput(
+            `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.`,
+          );
           return;
         }
         await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget

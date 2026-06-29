@@ -39,14 +39,19 @@ const code = readFileSync(BUNDLE, 'utf8');
 // Every external-import form esbuild can emit — minified (no spaces) or not: `from "x"`, side-effect
 // `import "x"`, dynamic `import("x")`, and CJS-interop `require("x")`. `import\s*\(` precedes the bare
 // `import\s*` branch so a dynamic import is matched by the former, not mis-split by the latter.
-// The leading `(?<!["'\w])` makes the keyword a real token, NOT string content: a STRING LITERAL whose value
-// is a keyword — e.g. the command-id `"import"` in `executeCommand("import", …)` — has its `import` preceded by
-// the opening quote, so it is correctly skipped instead of mis-read as a side-effect `import "<the next code>"`.
-const SPEC_RE = /(?<!["'\w])(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s*)["']([^"']+)["']/g;
+const SPEC_RE = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s*)["']([^"']+)["']/g;
+// A real bare specifier is a MODULE PATH (`scope/name`, a `node:` builtin, `~`/`.` segments) — never arbitrary
+// code. The regex alone can mis-read import-like text INSIDE a string literal as a specifier (the minified
+// bundle carries no comments) — e.g. the dispatch command-id `"import"` in `executeCommand("import", …)`, whose
+// closing quote the bare `import\s*["']` branch swallows, capturing the following minified code. Requiring the
+// capture to look like a module path drops those false matches (they carry `{ ( , ;` …), so help text, a notice,
+// or a string-valued command id can never invent an external dependency. (A simpler regex, no lookbehind.)
+const MODULE_SPEC = /^[\w@][\w@./:~-]*$/;
 const imported = new Set();
 for (const match of code.matchAll(SPEC_RE)) {
   const spec = match[1];
-  if (spec.startsWith('.') || spec.startsWith('/') || BUILTINS.has(spec)) continue;
+  // MODULE_SPEC also excludes relative (`./…`) + absolute (`/…`) specifiers (they fail the `^[\w@]` anchor).
+  if (!MODULE_SPEC.test(spec) || BUILTINS.has(spec)) continue;
   imported.add(toPackageName(spec));
 }
 

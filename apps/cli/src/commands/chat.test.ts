@@ -228,7 +228,9 @@ describe('chatCommand', () => {
         { id: 'provider:anthropic', label: 'anthropic', status: 'ok', detail: 'key works' },
       ]),
     deepMcp: () =>
-      Promise.resolve([{ id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' }]),
+      Promise.resolve([
+        { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      ]),
   };
 
   it('/doctor runs the fast tier into the notice channel (stderr, non-TTY), without ending the session', async () => {

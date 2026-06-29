@@ -134,7 +134,10 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Check your setup; --deep also validates keys + MCP.',
     effect: 'read',
     args: [
-      { flag: '--deep', description: 'Also validate provider keys and MCP connectivity (network).' },
+      {
+        flag: '--deep',
+        description: 'Also validate provider keys and MCP connectivity (network).',
+      },
     ],
     // The palette runs the fast tier (`deep: false`); `--deep` is opt-in by typing it. `/doctor` is a REAL Home
     // capability (pre-chat diagnostics), so it is `availableIn` both surfaces (homeReplCtx wires a live impl).

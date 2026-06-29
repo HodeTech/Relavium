@@ -57,7 +57,11 @@ export function checkKeychain(probe: () => void): DoctorCheck {
     probe();
     return okCheck('keychain', 'OS keychain', 'reachable');
   } catch (err) {
-    return failCheck('keychain', 'OS keychain', err instanceof Error ? sanitizeInline(err.message) : 'unavailable');
+    return failCheck(
+      'keychain',
+      'OS keychain',
+      err instanceof Error ? sanitizeInline(err.message) : 'unavailable',
+    );
   }
 }
 
@@ -68,7 +72,11 @@ export function checkConfig(probe: () => void): DoctorCheck {
     probe();
     return okCheck('config', 'config', 'valid');
   } catch (err) {
-    return failCheck('config', 'config', err instanceof Error ? sanitizeInline(err.message) : 'invalid');
+    return failCheck(
+      'config',
+      'config',
+      err instanceof Error ? sanitizeInline(err.message) : 'invalid',
+    );
   }
 }
 
@@ -103,10 +111,7 @@ export interface DoctorProbes {
 }
 
 /** Run the staged checks: the fast tier always, the `--deep` tier when requested AND its probes are wired. */
-export async function runDoctorChecks(
-  deep: boolean,
-  probes: DoctorProbes,
-): Promise<DoctorReport> {
+export async function runDoctorChecks(deep: boolean, probes: DoctorProbes): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [
     checkKeychain(probes.keychain),
     checkConfig(probes.config),
@@ -142,7 +147,8 @@ function doctorHeading(failures: number, warnings: number): string {
  *  chat notice channel), so a label carrying a control char (e.g. a crafted MCP server id) is neutralized here. */
 export function formatDoctorReport(report: DoctorReport): string {
   const rows = report.checks.map(
-    (check) => `  ${GLYPH[check.status]} ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`,
+    (check) =>
+      `  ${GLYPH[check.status]} ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`,
   );
   const failures = report.checks.filter((check) => check.status === 'fail').length;
   const warnings = report.checks.filter((check) => check.status === 'warn').length;

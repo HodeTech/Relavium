@@ -20,9 +20,11 @@ const REAL_HOST: ToolHost = assembleToolEnv({
 }).host;
 
 const okProbe = (): void => {};
-const throwing = (message: string): (() => void) => () => {
-  throw new Error(message);
-};
+const throwing =
+  (message: string): (() => void) =>
+  () => {
+    throw new Error(message);
+  };
 
 const baseProbes = (overrides: Partial<DoctorProbes> = {}): DoctorProbes => ({
   keychain: okProbe,
