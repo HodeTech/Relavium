@@ -1,9 +1,10 @@
 import type { LlmProvider, ProviderId } from '@relavium/llm';
-import type { McpClient, McpServerConfig } from '@relavium/mcp';
+import type { ManagerSkippedTool } from '@relavium/mcp';
+import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderResolver } from '../engine/providers.js';
-import { buildMcpProbe, buildProviderProbe } from './doctor-deep.js';
+import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
 const TEST_KEY = ['sk', 'doctor', '90ABCDEF'].join('-');
@@ -23,19 +24,12 @@ const resolverWith = (
   },
 });
 
-const fakeClient = (toolCount: number, onClose: () => void = () => {}): McpClient =>
-  ({
-    capability: {},
-    toolDefs: Array.from({ length: toolCount }, (_, i) => ({ name: `t${i}` })),
-    toolIdsByServer: new Map(),
-    skipped: [],
-    close: () => {
-      onClose();
-      return Promise.resolve();
-    },
-  }) as unknown as McpClient;
-
-const server = (id: string): McpServerConfig => ({ id }) as unknown as McpServerConfig;
+const ref = (id: string): McpServerRef => ({ id });
+const skip = (server: string, name: string, reason: string): ManagerSkippedTool => ({
+  server,
+  name,
+  reason,
+});
 
 describe('buildProviderProbe', () => {
   it('warns when no candidate has a resolvable key', async () => {
@@ -124,74 +118,33 @@ describe('buildProviderProbe', () => {
   });
 });
 
-describe('buildMcpProbe', () => {
-  it('warns when no MCP server is configured', async () => {
-    const probe = buildMcpProbe({ servers: [] });
-    expect(await probe()).toEqual([
+describe('mcpSessionChecks (read-only session status — never connects)', () => {
+  it('warns when the agent declares no MCP servers', () => {
+    expect(mcpSessionChecks([], [])).toEqual([
       { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
     ]);
   });
 
-  it('reports ok with the tool count and closes the client', async () => {
-    const close = vi.fn();
-    const probe = buildMcpProbe({
-      servers: [server('fs')],
-      startMcpClient: () => Promise.resolve(fakeClient(3, close)),
-    });
-    const [check] = await probe();
-    expect(check).toMatchObject({ id: 'mcp:fs', status: 'ok', detail: '3 tool(s)' });
-    expect(close).toHaveBeenCalledOnce();
+  it('reports each declared server as connected (a live session means the fail-loud connect succeeded)', () => {
+    const checks = mcpSessionChecks([ref('fs'), ref('github')], []);
+    expect(checks).toEqual([
+      { id: 'mcp:fs', label: 'fs', status: 'ok', detail: 'connected' },
+      { id: 'mcp:github', label: 'github', status: 'ok', detail: 'connected' },
+    ]);
   });
 
-  it('reports a (sanitized, single-line) failure on a connect error', async () => {
-    const probe = buildMcpProbe({
-      servers: [server('flaky')],
-      startMcpClient: () => Promise.reject(new Error('connect failed:\nECONNREFUSED')),
+  it('surfaces a manager-skipped tool as a warning explaining the missing capability', () => {
+    const checks = mcpSessionChecks([ref('fs')], [skip('fs', 'danger', 'not in allowlist')]);
+    expect(checks).toContainEqual({
+      id: 'mcp:skip:fs:danger',
+      label: 'fs/danger',
+      status: 'warn',
+      detail: 'tool skipped — not in allowlist',
     });
-    const [check] = await probe();
-    expect(check?.status).toBe('fail');
-    expect(check?.detail).not.toContain('\n');
-    expect(check?.detail).toContain('ECONNREFUSED');
   });
 
-  it('times out a hung connect without leaking', async () => {
-    const probe = buildMcpProbe({
-      servers: [server('hung')],
-      startMcpClient: () => new Promise<McpClient>(() => {}), // never resolves
-      timeoutMs: 5,
-    });
-    const [check] = await probe();
-    expect(check).toMatchObject({ id: 'mcp:hung', status: 'fail' });
-    expect(check?.detail).toContain('timeout');
-  });
-
-  it('closes a late-resolving client after a timeout (no process leak)', async () => {
-    const close = vi.fn();
-    let resolveLate: (client: McpClient) => void = () => {};
-    const probe = buildMcpProbe({
-      servers: [server('slow')],
-      startMcpClient: () =>
-        new Promise<McpClient>((resolve) => {
-          resolveLate = resolve;
-        }),
-      timeoutMs: 5,
-    });
-    const [check] = await probe();
-    expect(check?.status).toBe('fail');
-    resolveLate(fakeClient(1, close)); // the connect finally resolves, after the probe gave up
-    await new Promise((resolve) => setTimeout(resolve, 0)); // drain the late .then().catch() teardown chain
-    expect(close).toHaveBeenCalledOnce();
-  });
-
-  it('gives a per-server verdict (one dead server never masks another)', async () => {
-    const probe = buildMcpProbe({
-      servers: [server('ok'), server('bad')],
-      startMcpClient: (servers) =>
-        servers[0]?.id === 'ok'
-          ? Promise.resolve(fakeClient(2))
-          : Promise.reject(new Error('boom')),
-    });
-    const checks = await probe();
-    expect(checks.map((c) => `${c.id}:${c.status}`)).toEqual(['mcp:ok:ok', 'mcp:bad:fail']);
+  it('uses the by-name ref when an entry has no inline id', () => {
+    const byName: McpServerRef = { ref: 'shared-fs' };
+    expect(mcpSessionChecks([byName], [])[0]).toMatchObject({ id: 'mcp:shared-fs', label: 'shared-fs' });
   });
 });

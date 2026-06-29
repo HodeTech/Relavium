@@ -1,22 +1,22 @@
-import type { McpServerConfig } from '@relavium/mcp';
-import type { McpServerRegistration } from '@relavium/shared';
+import type { ManagerSkippedTool } from '@relavium/mcp';
+import type { McpServerRef } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { resolveMcpServerRef, resolveServerConfigs } from '../engine/mcp-servers.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
-import type { McpSecretResolver } from '../secrets/mcp-secret.js';
-import { buildMcpProbe, buildProviderProbe } from './doctor-deep.js';
-import { failCheck, type DoctorCheck, type DoctorProbes } from './doctor.js';
+import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
+import type { DoctorProbes } from './doctor.js';
 
 /**
  * Assemble the production {@link DoctorProbes} from the host's real ports (2.5.C S5). Pure CONSTRUCTION — every
  * probe is a closure, so building the set touches no keychain / network / config (a read happens only when
  * `/doctor` actually runs). Surfaces inject this once and hand it to the chat replCtx + the Home; a test injects
- * a fake `DoctorProbes` instead, so neither path needs a real keychain or a live provider/MCP server.
+ * a fake `DoctorProbes` instead, so neither path needs a real keychain or a live provider.
+ *
+ * The MCP tier is read-only — it reports the SESSION's already-connected status (the bound agent's `mcp_servers`
+ * + the manager's `mcpSkipped`), never a fresh connect/spawn (a security-review finding — see doctor-deep.ts).
  */
 
 /** A never-set keychain account — reading it tests REACHABILITY (returns `null` if reachable, throws if not). */
@@ -27,10 +27,11 @@ export interface DoctorHostInputs {
   readonly configPath?: string;
   /** The provider seam — the `--deep` probe validates each provider whose key resolves (keychain ∪ env). */
   readonly resolver: ProviderResolver;
-  /** The config `[[mcp_servers]]` registrations — the `--deep` MCP probe connects each (global, both surfaces). */
-  readonly mcpRegistrations: readonly McpServerRegistration[];
-  /** The MCP named-secret resolver (2.R) — threaded into the server-config build so `{{secrets.*}}` resolve. */
-  readonly mcpSecretResolver?: McpSecretResolver;
+  /** The bound agent's declared `mcp_servers` — the `--deep` MCP tier REPORTS these (all connected in a live
+   *  session), never connects them. Empty (default) ⇒ "none configured". */
+  readonly agentMcpServers?: readonly McpServerRef[];
+  /** The tools the MCP manager dropped at discovery (`built.mcpSkipped`) — surfaced as warnings. */
+  readonly mcpSkipped?: readonly ManagerSkippedTool[];
   /** The keychain to probe — defaults to the real OS keychain; a test injects an in-memory / faulting store. */
   readonly keychain?: KeychainStore;
 }
@@ -56,22 +57,7 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
       workspaceDir: inputs.cwd,
     }).host,
     deepProviders: buildProviderProbe({ resolver: inputs.resolver }),
-    deepMcp: () => runMcpProbe(inputs),
+    deepMcp: () =>
+      Promise.resolve(mcpSessionChecks(inputs.agentMcpServers ?? [], inputs.mcpSkipped ?? [])),
   };
-}
-
-/** Resolve the config registrations to connect-specs LAZILY (only when `--deep` runs) and guard the build: a
- *  malformed registration becomes a single failed check, never a thrown crash through the REPL/Home. */
-function runMcpProbe(inputs: DoctorHostInputs): Promise<readonly DoctorCheck[]> {
-  let servers: readonly McpServerConfig[];
-  try {
-    const refs = inputs.mcpRegistrations.map((reg) =>
-      resolveMcpServerRef({ ref: reg.name }, inputs.mcpRegistrations),
-    );
-    servers = resolveServerConfigs(refs, inputs.cwd, inputs.mcpSecretResolver);
-  } catch (err) {
-    const detail = err instanceof Error ? sanitizeInline(err.message) : 'config error';
-    return Promise.resolve([failCheck('mcp', 'MCP servers', detail)]);
-  }
-  return buildMcpProbe({ servers })();
 }

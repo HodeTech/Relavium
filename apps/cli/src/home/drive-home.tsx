@@ -95,8 +95,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       cwd: deps.global.cwd,
       ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
       resolver: providers,
-      mcpRegistrations: config.mcpServers,
-      mcpSecretResolver,
+      // The Home binds the zero-config default agent (no `mcp_servers`), so the `--deep` MCP tier reports "none
+      // configured" — no session-specific status to thread (and the Home palette runs only the fast tier anyway).
     });
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
 

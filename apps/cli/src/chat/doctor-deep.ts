@@ -1,30 +1,29 @@
 import type { ProviderId } from '@relavium/llm';
-import {
-  startMcpClient as defaultStartMcpClient,
-  type McpClient,
-  type McpServerConfig,
-} from '@relavium/mcp';
+import type { ManagerSkippedTool } from '@relavium/mcp';
+import type { McpServerRef } from '@relavium/shared';
 
 import { KNOWN_PROVIDERS, validateProviderKey, type ProviderResolver } from '../engine/providers.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
-import { failCheck, okCheck, warnCheck, type DoctorCheck } from './doctor.js';
+import { okCheck, warnCheck, failCheck, type DoctorCheck } from './doctor.js';
 
 /**
- * The `/doctor --deep` probes (2.5.C S5) — the network/process-touching tier, kept OUT of the pure doctor.ts.
- * Each probe is a closure built over injected ports, so the orchestrator stays test-driven without a live
- * provider or MCP server.
+ * The `/doctor --deep` probes (2.5.C S5).
  *
  * SECURITY:
  *  - Provider validation delegates the live request + the key-redaction to {@link validateProviderKey} (the
- *    seam) — the secret never reaches a `detail` string. Each request is bounded by an `AbortController`.
- *  - MCP probing connects each server ALONE (`startMcpClient` is fail-loud across servers — isolation yields a
- *    per-server verdict), under a bounded race-timeout; a late-resolving (hung) connect is still torn down so a
- *    probe never leaks a child process / socket. Connect failures are typed + secret-free (`McpConnectError`),
- *    re-sanitized to a single line defensively. The endpoints were already vetted by the SSRF floor +
- *    secret-resolution when the caller built the {@link McpServerConfig}s (engine/mcp-servers.ts).
+ *    seam) — the secret never reaches a `detail` string. Each request is bounded by a hard `Promise.race` (so a
+ *    misbehaving adapter cannot hang `/doctor`) plus an `AbortController` that cancels the in-flight request.
+ *  - MCP reporting is **read-only**: it reports the live session's ALREADY-connected status (the agent's declared
+ *    `mcp_servers` — all connected, because the session is live and the connect is fail-loud — plus the tools the
+ *    manager dropped at discovery). It does NOT connect/spawn anything. This is deliberate (a security-review
+ *    finding): re-connecting from `/doctor` would (a) connect/spawn the authorized set REDUNDANTLY and risk an
+ *    orphaned child on a timeout+exit window, and (b) — if it connected the config `[[mcp_servers]]` registrations
+ *    — spawn servers NO agent referenced, an arbitrary-spawn primitive from an imported project config. The
+ *    session already proves connectivity within the documented on-demand model; the probe only reports it.
  */
 
-/** The default per-target bound — long enough for a cold provider/MCP handshake, short enough to stay snappy. */
+/** The default per-provider request bound — long enough for a cold provider handshake, short enough to stay
+ *  snappy. (The MCP tier is read-only and never connects, so it has no timeout.) */
 export const DEEP_PROBE_TIMEOUT_MS = 10_000;
 
 // ── provider-key validation ──────────────────────────────────────────────────
@@ -96,60 +95,38 @@ async function probeProvider(
   }
 }
 
-// ── MCP connectivity ───────────────────────────────────────────────────────────
+// ── MCP status (read-only — reports the live session, never connects) ────────────
 
-export interface McpProbeDeps {
-  /** The resolved per-server configs — the caller builds them via `resolveServerConfigs` (SSRF + secrets done). */
-  readonly servers: readonly McpServerConfig[];
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
-  readonly timeoutMs?: number;
+/** The display id of an `mcp_servers` entry — the inline `id` or the by-name `ref` (sanitized at render). */
+function refId(entry: McpServerRef): string {
+  return entry.id ?? entry.ref ?? '?';
 }
 
-/** Build the `--deep` MCP probe: connect each declared server (isolated, bounded), report tool count or failure. */
-export function buildMcpProbe(deps: McpProbeDeps): () => Promise<readonly DoctorCheck[]> {
-  return async () => {
-    if (deps.servers.length === 0) {
-      return [warnCheck('mcp', 'MCP servers', 'none configured')];
-    }
-    return Promise.all(deps.servers.map((server) => probeOneServer(server, deps)));
-  };
-}
-
-type ConnectOutcome =
-  | { readonly kind: 'client'; readonly client: McpClient }
-  | { readonly kind: 'error'; readonly err: unknown };
-
-async function probeOneServer(server: McpServerConfig, deps: McpProbeDeps): Promise<DoctorCheck> {
-  const start = deps.startMcpClient ?? defaultStartMcpClient;
-  const timeoutMs = deps.timeoutMs ?? DEEP_PROBE_TIMEOUT_MS;
-  // Connect this server ALONE — `startMcpClient` is fail-loud across servers, so isolating yields a per-server
-  // verdict (one dead server never masks the others). The promise NEVER rejects (folded into an outcome).
-  const connect: Promise<ConnectOutcome> = start([server]).then(
-    (client) => ({ kind: 'client', client }),
-    (err: unknown) => ({ kind: 'error', err }),
-  );
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+/**
+ * Report the session's MCP status from what the build ALREADY resolved — the agent's declared `mcp_servers` (every
+ * one is connected: a live session means the fail-loud connect-all succeeded) and the tools the manager dropped at
+ * discovery (`mcpSkipped`). PURE — no connect, no spawn, no socket, no timeout. A skipped tool is a `warn` (it
+ * explains a missing capability); no declared server is a `warn` ("none configured").
+ */
+export function mcpSessionChecks(
+  agentMcpServers: readonly McpServerRef[],
+  skipped: readonly ManagerSkippedTool[],
+): readonly DoctorCheck[] {
+  if (agentMcpServers.length === 0) {
+    return [warnCheck('mcp', 'MCP servers', 'none configured')];
+  }
+  const checks: DoctorCheck[] = agentMcpServers.map((entry) => {
+    const id = refId(entry);
+    return okCheck(`mcp:${id}`, id, 'connected');
   });
-  const outcome = await Promise.race([connect, timeout]);
-  if (timer !== undefined) clearTimeout(timer);
-
-  if (outcome === 'timeout') {
-    // The connect may still resolve later (a hung spawn / handshake) — tear down a late client so the probe
-    // never leaks a child process / socket. Best-effort: a teardown failure is swallowed.
-    void connect
-      .then((late) => (late.kind === 'client' ? late.client.close() : undefined))
-      .catch(() => undefined);
-    return failCheck(`mcp:${server.id}`, server.id, `timeout (${timeoutMs}ms)`);
+  for (const skip of skipped) {
+    checks.push(
+      warnCheck(
+        `mcp:skip:${skip.server}:${skip.name}`,
+        `${skip.server}/${skip.name}`,
+        `tool skipped — ${skip.reason}`,
+      ),
+    );
   }
-  if (outcome.kind === 'error') {
-    const detail = outcome.err instanceof Error ? sanitizeInline(outcome.err.message) : 'connect failed';
-    return failCheck(`mcp:${server.id}`, server.id, detail);
-  }
-  const toolCount = outcome.client.toolDefs.length;
-  // The server connected + listed tools — that IS the health signal. Teardown is best-effort: a `close()` fault
-  // is teardown noise, not a probe failure (and must not reject the whole `/doctor` run via the Promise.all).
-  await outcome.client.close().catch(() => undefined);
-  return okCheck(`mcp:${server.id}`, server.id, `${toolCount} tool(s)`);
+  return checks;
 }

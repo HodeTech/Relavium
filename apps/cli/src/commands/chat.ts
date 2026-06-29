@@ -230,8 +230,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       cwd: deps.global.cwd,
       ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
       resolver: providers,
-      mcpRegistrations: config.mcpServers,
-      mcpSecretResolver,
+      // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+      // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+      agentMcpServers: built.agent.mcp_servers ?? [],
+      mcpSkipped: built.mcpSkipped,
     });
 
   return runReplLoop(
@@ -345,8 +347,10 @@ export async function chatResumeCommand(
       cwd: deps.global.cwd,
       ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
       resolver: providers,
-      mcpRegistrations: config.mcpServers,
-      mcpSecretResolver,
+      // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+      // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+      agentMcpServers: built.agent.mcp_servers ?? [],
+      mcpSkipped: built.mcpSkipped,
     });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
