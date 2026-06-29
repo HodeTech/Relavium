@@ -53,19 +53,8 @@ export async function run(
   });
 
   // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`).
-  if (!rest.slice(2).some((token) => token !== '--')) {
-    // Open the interactive Home in a genuine TTY (2.5.B / ADR-0054); every non-interactive path keeps the
-    // byte-for-byte help + exit 0 meta-op (ADR-0049). A Home build/config fault renders like a command fault.
-    if (shouldOpenHome({ stdoutIsTty: io.stdoutIsTty, stdinIsTty: io.stdinIsTty, json: global.json, env: io.env })) {
-      try {
-        return await openHome({ io, global });
-      } catch (err) {
-        renderError(err, renderCtx, io);
-        return toUserFacing(err).exitCode;
-      }
-    }
-    io.writeOut(program.helpInformation());
-    return EXIT_CODES.success;
+  if (isBareInvocation(rest)) {
+    return await handleBareInvocation({ io, global, program, openHome, renderCtx });
   }
 
   try {
@@ -88,6 +77,42 @@ export async function run(
       return err.exitCode === 0 ? EXIT_CODES.success : EXIT_CODES.invalidInvocation;
     }
     // A CliError thrown by a command action, or an unexpected throw.
+    renderError(err, renderCtx, io);
+    return toUserFacing(err).exitCode;
+  }
+}
+
+/** A bare invocation: nothing after `[node, script]` survives extraction except an optional lone `--`. */
+function isBareInvocation(rest: readonly string[]): boolean {
+  return !rest.slice(2).some((token) => token !== '--');
+}
+
+/**
+ * The bare-invocation outcome: open the interactive Home in a genuine TTY (2.5.B / ADR-0054), else keep the
+ * byte-for-byte help + exit-0 meta-op (ADR-0049). A Home build/config fault renders like a command fault.
+ */
+async function handleBareInvocation(ctx: {
+  io: CliIo;
+  global: GlobalOptions;
+  program: ReturnType<typeof buildProgram>;
+  openHome: OpenHome;
+  renderCtx: { json: boolean; verbose: boolean };
+}): Promise<ExitCode> {
+  const { io, global, program, openHome, renderCtx } = ctx;
+  if (
+    !shouldOpenHome({
+      stdoutIsTty: io.stdoutIsTty,
+      stdinIsTty: io.stdinIsTty,
+      json: global.json,
+      env: io.env,
+    })
+  ) {
+    io.writeOut(program.helpInformation());
+    return EXIT_CODES.success;
+  }
+  try {
+    return await openHome({ io, global });
+  } catch (err) {
     renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;
   }

@@ -211,10 +211,14 @@ export function createSessionStore(db: Db): SessionStore {
       .from(agentSessions)
       .where(isNull(agentSessions.deletedAt))
       .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id));
-    // `≤0 ⇒ unbounded` (the codebase convention): a `limit: 0` must not map to `LIMIT 0` (empty), nor a negative
-    // to "all rows" — both would silently break the indexed top-N this opt exists to provide.
+    // Only a FINITE POSITIVE INTEGER bounds the read; anything else (undefined, `≤0`, a fraction, `NaN`,
+    // `Infinity`) falls back to the unbounded `all()` — the codebase `≤0 ⇒ unbounded` convention, hardened so a
+    // non-integer can never reach the SQL `LIMIT` (where it would error or silently truncate).
     const limit = opts?.limit;
-    const rows = limit === undefined || limit <= 0 ? query.all() : query.limit(limit).all();
+    const rows =
+      limit !== undefined && Number.isInteger(limit) && limit > 0
+        ? query.limit(limit).all()
+        : query.all();
     return rows.map(fromAgentSessionRow);
   };
 

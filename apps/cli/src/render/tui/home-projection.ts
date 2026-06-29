@@ -83,7 +83,8 @@ const SEP = '  ·  ';
  *  slug ONCE (the slug is its own label) rather than doubling it as a title fallback AND the trailing field. */
 export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
   // Titled: the user-derived label, then the agent it ran. Untitled: just the agent slug (shown once).
-  const head = row.title === undefined ? [row.agentSlug] : [sanitizeInline(row.title), row.agentSlug];
+  const head =
+    row.title === undefined ? [row.agentSlug] : [sanitizeInline(row.title), row.agentSlug];
   return [...head, relativeTime(row.updatedAt, nowMs), formatCostShort(row.totalCostMicrocents)]
     .filter((s) => s.trim().length > 0) // a sanitized-to-whitespace field must not leave a dangling separator
     .join(SEP);

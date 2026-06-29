@@ -43,12 +43,18 @@ interface HomeViewProps {
   readonly color: boolean;
 }
 
+/** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
+interface StripRow {
+  readonly key: string;
+  readonly line: string;
+}
+
 /** A labeled list section ("Sessions", "Runs", …) — renders nothing when empty so the strip stays compact. An
  *  empty `title` renders just the lines (the attention sub-lists sit under one "Attention required" heading). */
 function Section(
-  props: Readonly<{ title: string; lines: readonly string[]; color: boolean; tint?: StatusColor }>,
+  props: Readonly<{ title: string; rows: readonly StripRow[]; color: boolean; tint?: StatusColor }>,
 ): ReactElement | null {
-  if (props.lines.length === 0) return null;
+  if (props.rows.length === 0) return null;
   return (
     <Box flexDirection="column" marginLeft={2}>
       {props.title.length > 0 && (
@@ -56,14 +62,14 @@ function Section(
           {props.title}
         </Text>
       )}
-      {props.lines.map((line, i) => (
+      {props.rows.map((row) => (
         <Text
-          key={i}
+          key={row.key}
           {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
           wrap="truncate-end"
         >
           {'  '}
-          {line}
+          {row.line}
         </Text>
       ))}
     </Box>
@@ -102,14 +108,29 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     );
   }
 
+  // Keyed by each row's durable id (gate: run+gate; run: runId; session: sessionId; agent: slug) — never the
+  // array index, so React reconciliation is stable as the strip's contents change between reads.
   const gateRows = snapshot.attention.gates.map((g) => ({
+    key: `${g.runId}:${g.gateId}`,
     line: `⚠ ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
-  const failed = snapshot.attention.failedRuns.map((r) => `✗ ${runLabel(r, nowMs)}`);
-  const sessions = snapshot.recentSessions.map((s) => sessionLabel(s, nowMs));
-  const runs = snapshot.recentRuns.map((r) => runLabel(r, nowMs));
-  const agents = snapshot.recentAgents.map((a) => agentLabel(a, nowMs));
+  const failed: StripRow[] = snapshot.attention.failedRuns.map((r) => ({
+    key: r.runId,
+    line: `✗ ${runLabel(r, nowMs)}`,
+  }));
+  const sessions: StripRow[] = snapshot.recentSessions.map((s) => ({
+    key: s.sessionId,
+    line: sessionLabel(s, nowMs),
+  }));
+  const runs: StripRow[] = snapshot.recentRuns.map((r) => ({
+    key: r.runId,
+    line: runLabel(r, nowMs),
+  }));
+  const agents: StripRow[] = snapshot.recentAgents.map((a) => ({
+    key: a.agentSlug,
+    line: agentLabel(a, nowMs),
+  }));
 
   return (
     <Box flexDirection="column">
@@ -137,9 +158,9 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
                 Attention required
               </Text>
               <Box flexDirection="column" marginLeft={2}>
-                {gateRows.map((g, i) => (
+                {gateRows.map((g) => (
                   <Text
-                    key={`gate-${i}`}
+                    key={g.key}
                     {...colorProps(color, g.expired ? 'red' : 'yellow')}
                     wrap="truncate-end"
                   >
@@ -147,10 +168,10 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
                     {g.line}
                   </Text>
                 ))}
-                {failed.map((line, i) => (
-                  <Text key={`failed-${i}`} {...colorProps(color, 'red')} wrap="truncate-end">
+                {failed.map((f) => (
+                  <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
                     {'  '}
-                    {line}
+                    {f.line}
                   </Text>
                 ))}
               </Box>
@@ -159,16 +180,16 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
           <Text {...dimProps(color)} wrap="truncate-end">
             Continue
           </Text>
-          <Section title="Sessions" lines={sessions} color={color} />
-          <Section title="Runs" lines={runs} color={color} />
-          <Section title="Agents" lines={agents} color={color} />
+          <Section title="Sessions" rows={sessions} color={color} />
+          <Section title="Runs" rows={runs} color={color} />
+          <Section title="Agents" rows={agents} color={color} />
         </Box>
       )}
 
       {errorText !== undefined && (
         <Box marginTop={1}>
           <Text {...colorProps(color, 'red')} wrap="truncate-end">
-            couldn’t start the chat: {errorText}
+            couldn’t start the chat: {sanitizeInline(errorText)}
           </Text>
         </Box>
       )}

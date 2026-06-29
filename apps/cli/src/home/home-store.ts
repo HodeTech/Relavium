@@ -126,35 +126,45 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const recentSessionRecords = deps.sessions.listSessions({ limit });
   const failedRunRecords = deps.runs.listRuns({ status: 'failed', limit });
   // A budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
-  // CAP the paused fan-out to `limit`: a paused run accumulates indefinitely (a gate never resolved, a crash
-  // before the terminal), and each costs a `loadRunEvents` + reconstruct — so without a bound every Home open is
-  // O(N_paused × events). Only the most-recent `limit` paused runs are shown (the glanceable-strip contract).
-  // Derive each one's gates ONCE (one loadRunEvents per run) — reused for both the rows and the lift set.
-  const pausedRuns = deps.runs
-    .listActiveRuns()
-    .filter((run) => run.status === 'paused')
-    .slice(0, limit);
-  const gatesByRun = pausedRuns.map((run) => ({
+  // The DISPLAYED gates come from the most-recent `limit` paused runs: a paused run accumulates indefinitely (a
+  // gate never resolved, a crash before the terminal), and each costs a `loadRunEvents` + reconstruct, so the
+  // shown fan-out is capped (the glanceable-strip contract). Derive each displayed one's gates ONCE.
+  const allPausedRuns = deps.runs.listActiveRuns().filter((run) => run.status === 'paused');
+  const displayedPausedRuns = allPausedRuns.slice(0, limit);
+  const gatesByRun = displayedPausedRuns.map((run) => ({
     run,
     pending: pendingHumanGates(deps.runs.loadRunEvents(run.id)),
   }));
 
-  // "Attention" = a FAILED run (any of them — by status, NOT just the displayed top-N, so a failure beyond the
-  // cap can never leak into "Continue") or a paused run carrying ≥1 human gate. The human-gated ids are an
-  // explicit set; failed is tested by status below. Built BEFORE the recent window so it can be widened to compensate.
-  const humanGatedRunIds = new Set(
+  // "Attention" lifts a FAILED run (by STATUS — any of them, so a failure beyond the cap can never leak into
+  // "Continue") or a paused run carrying ≥1 human gate. The DISPLAYED gated ids drive the over-fetch math.
+  const displayedGatedRunIds = new Set(
     gatesByRun.filter((g) => g.pending.length > 0).map((g) => g.run.id),
   );
-  // Over-fetch the recent window by the count of rows we KNOW we will strip (the displayed failed + the gated),
+  // Over-fetch the recent window by the rows we KNOW we will strip (the displayed failed + the displayed gated),
   // so after the attention rows are removed "Continue" still fills to `limit` whenever that many neutral runs
-  // exist below the cutoff — a burst of failures must not starve Continue. (A run-burst deeper than this margin
-  // can still under-fill; that is the accepted edge for a glanceable strip — it never leaks an attention run.)
-  const overFetch = failedRunRecords.length + humanGatedRunIds.size;
+  // exist below the cutoff — a burst of failures must not starve Continue.
+  const overFetch = failedRunRecords.length + displayedGatedRunIds.size;
   const recentRunRecords = deps.runs.listRuns({ limit: limit + overFetch });
 
-  // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ paused), ids deduped.
+  // Close the gated-leak: a paused+human-gated run BEYOND the display cap could still fall inside the Continue
+  // window and leak in. So the EXCLUSION set is widened to every paused run that appears in `recentRunRecords` —
+  // checking the gates of the not-yet-checked ones (bounded by the window size, not all of N_paused). A
+  // budget-paused run carries no human gate, so it correctly STAYS in Continue. (A neutral run-burst deeper than
+  // the over-fetch margin can still under-fill Continue; that is the accepted glanceable edge — it never leaks.)
+  const recentRunIds = new Set(recentRunRecords.map((r) => r.id));
+  const checkedRunIds = new Set(displayedPausedRuns.map((r) => r.id));
+  const humanGatedRunIds = new Set(displayedGatedRunIds);
+  for (const run of allPausedRuns) {
+    if (checkedRunIds.has(run.id) || !recentRunIds.has(run.id)) continue; // already checked, or outside the window
+    if (pendingHumanGates(deps.runs.loadRunEvents(run.id)).length > 0) humanGatedRunIds.add(run.id);
+  }
+
+  // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ displayed paused), deduped.
   const slugById = deps.runs.loadWorkflowSlugs([
-    ...new Set([...recentRunRecords, ...failedRunRecords, ...pausedRuns].map((r) => r.workflowId)),
+    ...new Set(
+      [...recentRunRecords, ...failedRunRecords, ...displayedPausedRuns].map((r) => r.workflowId),
+    ),
   ]);
   const slugOf = (run: RunRecord): string | undefined => slugById.get(run.workflowId);
 

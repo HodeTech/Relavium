@@ -32,7 +32,10 @@ export interface RootAppProps {
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView}.
  *  It owns NO `useInput` — {@link RootApp} is the single raw-mode owner and forwards keys to the controller. */
 function ChatRegion(props: Readonly<{ store: ChatStoreController; input: string }>): ReactElement {
-  const { state, tick, color } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  const { state, tick, color } = useSyncExternalStore(
+    props.store.subscribe,
+    props.store.getSnapshot,
+  );
   return (
     <ChatView
       state={state}

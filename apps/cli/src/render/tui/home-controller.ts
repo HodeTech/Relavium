@@ -1,5 +1,5 @@
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
-import { applyChatEdit, reduceChatKey, type ChatKey } from './chat-input.js';
+import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 
@@ -83,9 +83,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
   /** Whether a chat turn is streaming — paste content (like every other key) is gated mid-turn. */
   const chatRunning = (): boolean =>
-    state.mode === 'chat' &&
-    state.session !== undefined &&
-    state.session.store.getSnapshot().state.status === 'running';
+    state.mode === 'chat' && state.session?.store.getSnapshot().state.status === 'running';
   const set = (patch: Partial<HomeControllerState>): void => {
     state = { ...state, ...patch };
     notify();
@@ -108,21 +106,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tearingDown = ended;
     const td = ended.teardown();
     activeTeardown = td; // a concurrent signal awaits THIS graceful close rather than hard-killing the MCP child
-    void td.finally(() => {
-      if (activeTeardown === td) activeTeardown = undefined;
-      tearingDown = undefined;
-      cancelFired = false;
-      pasting = false; // a lost paste-end marker must not leak the latch into the returned Home
-      if (exiting) return; // an error/exit closed the db while we awaited teardown — do not read it
-      set({
-        session: undefined,
-        input: '',
-        errorText: undefined, // a stale build-failure banner must not haunt a clean return from a good chat
-        pendingMessage: '',
-        snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
-        mode: 'home',
-      });
-    });
+    void td
+      .finally(() => {
+        if (activeTeardown === td) activeTeardown = undefined;
+        tearingDown = undefined;
+        cancelFired = false;
+        pasting = false; // a lost paste-end marker must not leak the latch into the returned Home
+        if (exiting) return; // an error/exit closed the db while we awaited teardown — do not read it
+        set({
+          session: undefined,
+          input: '',
+          errorText: undefined, // a stale build-failure banner must not haunt a clean return from a good chat
+          pendingMessage: '',
+          snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
+          mode: 'home',
+        });
+      })
+      .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
   };
 
   // Drive one chat turn; on success end the chat if `/exit`/`/cancel` ran, on an escaping error tear the session
@@ -136,11 +136,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         tearingDown = active; // align with endChat's single-shot guard (the session closure is idempotent)
         const td = active.teardown();
         activeTeardown = td; // a concurrent signal awaits this teardown too
-        void td.finally(() => {
-          if (activeTeardown === td) activeTeardown = undefined;
-          tearingDown = undefined; // clear for symmetry with endChat (failHome is terminal, but stay consistent)
-          failHome(err);
-        });
+        void td
+          .finally(() => {
+            if (activeTeardown === td) activeTeardown = undefined;
+            tearingDown = undefined; // clear for symmetry with endChat (failHome is terminal, but stay consistent)
+            failHome(err);
+          })
+          .catch(() => undefined); // a rejecting teardown must not surface as an unhandled rejection
       },
     );
   };
@@ -223,7 +225,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ input: state.input + action.char });
         return;
       case 'backspace':
-        set({ input: state.input.slice(0, -1) });
+        set({ input: dropLastCodePoint(state.input) });
         return;
       case 'none':
         return;
@@ -276,7 +278,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         if (tearingDown === active) {
           // A teardown is ALREADY in flight (an endChat / error-arm) — await THAT graceful close rather than
           // returning early, so the bounded signal race waits for the MCP handshake instead of hard-killing it.
-          await (activeTeardown ?? Promise.resolve());
+          // `.catch` so a rejecting teardown can't make this (signal-path) call reject.
+          await (activeTeardown ?? Promise.resolve()).catch(() => undefined);
         } else {
           tearingDown = active;
           const td = active.teardown();

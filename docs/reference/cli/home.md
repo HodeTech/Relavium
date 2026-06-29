@@ -13,7 +13,7 @@ A bare `relavium` (no subcommand) on an interactive terminal opens a **branded, 
 
 The Home opens **only** when the process is genuinely interactive. The gate, evaluated in the existing bare-invocation branch of `run.ts` (**not** a `commander` default action, which would swallow unknown-command errors), is:
 
-```
+```text
 stdoutIsTty && stdinIsTty && !json && !isCiEnv(env)
 ```
 
@@ -27,7 +27,7 @@ stdoutIsTty && stdinIsTty && !json && !isCiEnv(env)
 
 The strip is a **read-only display** (the no-IDE-shell principle of [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md) applied to the CLI by analogy: management + chat only — no file tree, editor, or embedded terminal). It is a bounded, indexed aggregation over the durable `history.db` ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), re-read on every return-to-Home — never a live subscription.
 
-```
+```text
 relavium                                          ← branded header (bold)
 
   Attention required

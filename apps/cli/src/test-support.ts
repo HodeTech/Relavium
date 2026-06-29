@@ -176,6 +176,20 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     cumulativeCostMicrocents: 100,
   });
   if (opts.state === 'paused') {
+    // Fail fast on a malformed gate spec so a test mistake can't silently seed the WRONG scenario: an explicit
+    // empty `gates: []` (use no gate for the media-job park) or a duplicate `gateId` (each gate must be distinct).
+    if (opts.gates !== undefined) {
+      if (opts.gates.length === 0) {
+        throw new Error(
+          'seedRun: `gates: []` is ambiguous — omit it for a zero-gate (media-job) pause, or pass ≥1',
+        );
+      }
+      if (new Set(opts.gates.map((g) => g.gateId)).size !== opts.gates.length) {
+        throw new Error(
+          'seedRun: duplicate gateId in `gates` — each human gate needs a distinct gateId',
+        );
+      }
+    }
     const gates: readonly SeedGate[] = opts.gates ?? (opts.gate === undefined ? [] : [opts.gate]);
     if (opts.budgetGateId !== undefined || gates.length > 0) {
       // A real gate parks AT node `g`, so emit its start (the step row a `status` listing shows).

@@ -12,12 +12,16 @@ import {
 const PASTE_START = '[200~';
 const PASTE_END = '[201~';
 
-/** A minimal chat store stub reporting `running` — the controller only reads `getSnapshot().state.status`. */
-const runningStore = (): ChatStoreController =>
-  ({
-    ...createChatStore(false),
-    getSnapshot: () => ({ state: { status: 'running' }, tick: 0, color: false }),
-  }) as unknown as ChatStoreController;
+/** A real chat store whose snapshot reports `running` — the controller reads `getSnapshot().state.status`. Built
+ *  by overriding the live snapshot's status, so it satisfies {@link ChatStoreController} with no unsafe cast. */
+const runningStore = (): ChatStoreController => {
+  const store = createChatStore(false);
+  const snapshot = store.getSnapshot();
+  return {
+    ...store,
+    getSnapshot: () => ({ ...snapshot, state: { ...snapshot.state, status: 'running' } }),
+  };
+};
 
 const EMPTY: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },

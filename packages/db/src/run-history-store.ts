@@ -486,10 +486,14 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .from(runs)
         .where(where)
         .orderBy(desc(runs.createdAt), desc(runs.id));
-      // `≤0 ⇒ unbounded` (the codebase convention, config-enforced for chat caps): a `limit: 0` must NOT map to
-      // SQLite `LIMIT 0` (an empty result reads as data loss), and a negative must not silently mean "all rows".
+      // Only a FINITE POSITIVE INTEGER bounds the read; undefined / `≤0` / a fraction / `NaN` / `Infinity` fall
+      // back to the unbounded `all()` (the `≤0 ⇒ unbounded` convention, hardened so a non-integer never reaches
+      // SQLite `LIMIT` — a `LIMIT 0` empty result would read as data loss, a negative as "all rows").
       const limit = opts?.limit;
-      const rows = limit === undefined || limit <= 0 ? query.all() : query.limit(limit).all();
+      const rows =
+        limit !== undefined && Number.isInteger(limit) && limit > 0
+          ? query.limit(limit).all()
+          : query.all();
       return rows.map(fromRunRow);
     },
 

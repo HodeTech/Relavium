@@ -20,10 +20,7 @@ import {
   type HomeChatSession,
   type HomeController,
 } from '../render/tui/home-controller.js';
-import {
-  DISABLE_BRACKETED_PASTE,
-  ENABLE_BRACKETED_PASTE,
-} from '../render/tui/home-input.js';
+import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, FRAME_MS, type RootAppProps } from '../render/tui/home-app.js';
 import { createHomeStore } from './home-store.js';
 
@@ -90,138 +87,145 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  const homeStore = createHomeStore({
-    sessions: opened.store,
-    runs: createRunHistoryReader(opened.db),
-  });
 
-  // Build + wire + START a fresh chat session (the controller sends the first message on transition).
-  const startChat = async (): Promise<HomeChatSession> => {
-    const store = createChatStore(deps.global.color);
-    const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-      chat: config.chat,
-      agentRef: undefined, // the built-in default agent (zero-config first run)
-      cwd: deps.global.cwd,
-      projectConfigDir,
-      now,
-      uuid,
-      providers,
-      mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-      mcpRegistrations: config.mcpServers,
-      onBudgetWarning: (warning) =>
-        deps.io.writeErr(
-          `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-        ),
-    });
-    // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring
-    // (persister.start()'s insert, session.start()) must reclaim them — and any spawned MCP child — rather than
-    // leak the timer/subscription, mirroring chatCommand's post-build guard.
-    let frame: ReturnType<typeof setInterval> | undefined;
-    let unsubscribe: (() => void) | undefined;
-    let persister: SessionPersister | undefined;
-    try {
-      persister = createSessionPersister({
-        store: opened.store,
-        handle: built.handle,
-        sessionId: built.sessionId,
-        agent: built.agent,
-        context: built.context,
-        now,
-        uuid,
-      });
-      const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
-        { built, opened, store, persister },
-        deps,
-      );
-      // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
-      unsubscribe = built.handle.subscribe((event) => store.apply(event));
-      frame = setInterval(() => store.tick(), FRAME_MS);
-      frame.unref();
-      persister.start();
-      built.session.start();
-      let torn = false;
-      const teardown = async (): Promise<void> => {
-        if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
-        torn = true;
-        cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
-        clearInterval(frame);
-        unsubscribe?.();
-        try {
-          persister?.close();
-        } finally {
-          await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
-        }
-      };
-      return { store, processLine, shouldStop, teardown };
-    } catch (err) {
-      clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
-      unsubscribe?.();
-      try {
-        persister?.close();
-      } finally {
-        await built.closeMcp?.().catch(() => undefined);
-      }
-      throw err;
-    }
-  };
-
-  const getSize =
-    deps.getSize ??
-    (() => ({ cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }));
-  const subscribeResize =
-    deps.subscribeResize ??
-    ((onResize: () => void) => {
-      process.stdout.on('resize', onResize);
-      return () => process.stdout.off('resize', onResize);
-    });
-  const writeControl =
-    deps.writeControl ??
-    ((sequence: string) => {
-      process.stdout.write(sequence);
-    });
-  const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
-
+  // The cleanup scope opens as soon as the db handle is held, so an init fault AFTER this point (a failed
+  // homeStore wire, a control write, a signal registration) still closes the shared db ONCE and restores the
+  // terminal state (DISABLE bracketed paste + unmount) rather than leaking the handle / leaving the mode on.
   let instance: { unmount: () => void } | undefined;
   let controller: HomeController | undefined;
+  let unsubscribeSignals: (() => void) | undefined;
   let dbClosed = false;
   const closeDb = (): void => {
     if (dbClosed) return;
     dbClosed = true;
     opened.close();
   };
-
-  writeControl(ENABLE_BRACKETED_PASTE); // ask the terminal to bracket pastes (DECSET 2004)
-
-  // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
-  let signaled = false;
-  const onSignal = (signo: number): void => {
-    if (signaled) {
-      exitProcess(128 + signo); // a second signal forces an immediate exit (a teardown ignoring the abort)
-      return;
-    }
-    signaled = true;
-    instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
-    writeControl(DISABLE_BRACKETED_PASTE);
-    // The bound is REFERENCED until the race settles so the exit is guaranteed even if teardown hangs; it is
-    // cleared the instant the race resolves so a fast teardown (the common case) neither waits nor dangles.
-    let bound: ReturnType<typeof setTimeout> | undefined;
-    const bounded = new Promise<void>((resolve) => {
-      bound = setTimeout(resolve, FORCE_TEARDOWN_MS);
+  const writeControl =
+    deps.writeControl ??
+    ((sequence: string) => {
+      process.stdout.write(sequence);
     });
-    void Promise.race([controller?.teardownActive() ?? Promise.resolve(), bounded]).finally(() => {
-      if (bound !== undefined) clearTimeout(bound);
-      // exitProcess MUST always run — guard the db close so a (effectively non-throwing) close fault can never
-      // strand the process without exiting.
-      try {
-        closeDb();
-      } finally {
-        exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
-      }
-    });
-  };
-  const unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
 
   try {
+    const homeStore = createHomeStore({
+      sessions: opened.store,
+      runs: createRunHistoryReader(opened.db),
+    });
+
+    // Build + wire + START a fresh chat session (the controller sends the first message on transition).
+    const startChat = async (): Promise<HomeChatSession> => {
+      const store = createChatStore(deps.global.color);
+      const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
+        chat: config.chat,
+        agentRef: undefined, // the built-in default agent (zero-config first run)
+        cwd: deps.global.cwd,
+        projectConfigDir,
+        now,
+        uuid,
+        providers,
+        mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+        mcpRegistrations: config.mcpServers,
+        onBudgetWarning: (warning) =>
+          deps.io.writeErr(
+            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
+          ),
+      });
+      // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring
+      // (persister.start()'s insert, session.start()) must reclaim them — and any spawned MCP child — rather than
+      // leak the timer/subscription, mirroring chatCommand's post-build guard.
+      let frame: ReturnType<typeof setInterval> | undefined;
+      let unsubscribe: (() => void) | undefined;
+      let persister: SessionPersister | undefined;
+      try {
+        persister = createSessionPersister({
+          store: opened.store,
+          handle: built.handle,
+          sessionId: built.sessionId,
+          agent: built.agent,
+          context: built.context,
+          now,
+          uuid,
+        });
+        const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
+          { built, opened, store, persister },
+          deps,
+        );
+        // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
+        unsubscribe = built.handle.subscribe((event) => store.apply(event));
+        frame = setInterval(() => store.tick(), FRAME_MS);
+        frame.unref();
+        persister.start();
+        built.session.start();
+        let torn = false;
+        const teardown = async (): Promise<void> => {
+          if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
+          torn = true;
+          cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
+          clearInterval(frame);
+          unsubscribe?.();
+          try {
+            persister?.close();
+          } finally {
+            await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
+          }
+        };
+        return { store, processLine, shouldStop, teardown };
+      } catch (err) {
+        clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
+        unsubscribe?.();
+        try {
+          persister?.close();
+        } finally {
+          await built.closeMcp?.().catch(() => undefined);
+        }
+        throw err;
+      }
+    };
+
+    const getSize =
+      deps.getSize ??
+      (() => ({ cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }));
+    const subscribeResize =
+      deps.subscribeResize ??
+      ((onResize: () => void) => {
+        process.stdout.on('resize', onResize);
+        return () => process.stdout.off('resize', onResize);
+      });
+    const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
+
+    writeControl(ENABLE_BRACKETED_PASTE); // ask the terminal to bracket pastes (DECSET 2004)
+
+    // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
+    let signaled = false;
+    const onSignal = (signo: number): void => {
+      if (signaled) {
+        exitProcess(128 + signo); // a second signal forces an immediate exit (a teardown ignoring the abort)
+        return;
+      }
+      signaled = true;
+      instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
+      writeControl(DISABLE_BRACKETED_PASTE);
+      // The bound is REFERENCED until the race settles so the exit is guaranteed even if teardown hangs; it is
+      // cleared the instant the race resolves so a fast teardown (the common case) neither waits nor dangles.
+      let bound: ReturnType<typeof setTimeout> | undefined;
+      const bounded = new Promise<void>((resolve) => {
+        bound = setTimeout(resolve, FORCE_TEARDOWN_MS);
+      });
+      void Promise.race([controller?.teardownActive() ?? Promise.resolve(), bounded]).finally(
+        () => {
+          if (bound !== undefined) clearTimeout(bound);
+          // exitProcess MUST always run — guard the db close so a (effectively non-throwing) close fault can never
+          // strand the process without exiting.
+          try {
+            closeDb();
+          } finally {
+            exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
+          }
+        },
+      );
+    };
+    unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
+
     return await new Promise<ExitCode>((resolve, reject) => {
       controller = createHomeController({
         startChat,
@@ -237,22 +241,26 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         subscribeResize,
       };
       instance =
-        deps.render !== undefined
-          ? deps.render(props)
-          : render(createElement(RootApp, props), {
+        deps.render === undefined
+          ? render(createElement(RootApp, props), {
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
-            });
+            })
+          : deps.render(props);
     });
   } finally {
-    // The clean-exit / error path (NOT the signal path, which exits the process directly): undo the terminal
-    // state, reclaim a live session, and close the shared db ONCE. Unmount BEFORE disabling paste — the same
-    // order as the signal path (restore ink's terminal first, then emit the DECSET toggle).
-    unsubscribeSignals();
-    instance?.unmount();
-    writeControl(DISABLE_BRACKETED_PASTE);
-    await controller?.teardownActive().catch(() => undefined);
-    closeDb();
+    // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
+    // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore is best-effort —
+    // the inner finally GUARANTEES the db close even if `unmount`/`writeControl` throws (so a faulty terminal can
+    // never leak the handle). Unmount BEFORE disabling paste, matching the signal path.
+    try {
+      unsubscribeSignals?.();
+      instance?.unmount();
+      writeControl(DISABLE_BRACKETED_PASTE);
+      await controller?.teardownActive().catch(() => undefined);
+    } finally {
+      closeDb();
+    }
   }
 }

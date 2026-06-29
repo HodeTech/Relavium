@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyChatEdit, reduceChatKey, type ChatKey, type ChatKeyAction } from './chat-input.js';
+import {
+  applyChatEdit,
+  dropLastCodePoint,
+  reduceChatKey,
+  type ChatKey,
+  type ChatKeyAction,
+} from './chat-input.js';
 
 /** A bare key (no modifiers/specials set) — overlay only what a case exercises. */
 const KEY: ChatKey = {};
@@ -89,5 +95,28 @@ describe('applyChatEdit (the functional-updater body)', () => {
       kind: 'submit',
       line: 'partial',
     });
+  });
+});
+
+describe('dropLastCodePoint (code-point-aware backspace)', () => {
+  it('drops one BMP char', () => {
+    expect(dropLastCodePoint('abc')).toBe('ab');
+    expect(dropLastCodePoint('a')).toBe('');
+    expect(dropLastCodePoint('')).toBe(''); // empty is a no-op
+  });
+
+  it('drops a whole astral char (emoji) — never a lone surrogate', () => {
+    expect(dropLastCodePoint('hi😀')).toBe('hi'); // 😀 is two UTF-16 units; drop both, not just the low surrogate
+    expect([...dropLastCodePoint('a😀b')]).toEqual(['a', '😀']); // mid-string astral chars survive intact
+    expect(dropLastCodePoint('😀')).toBe(''); // a lone emoji clears the buffer (no orphan high surrogate)
+  });
+
+  it('a plain slice(0,-1) would corrupt an emoji — this helper does not', () => {
+    expect('hi😀'.slice(0, -1)).not.toBe('hi'); // the naive cut leaves a lone surrogate
+    expect(dropLastCodePoint('hi😀')).toBe('hi');
+  });
+
+  it('applyChatEdit backspace uses code-point removal', () => {
+    expect(applyChatEdit('go👍', { kind: 'backspace' })).toBe('go');
   });
 });

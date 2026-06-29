@@ -192,6 +192,24 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     expect(snap.attention.gates.map((g) => g.runId)).toEqual(['run-new', 'run-old']);
   });
 
+  it('a human-gated paused run BEYOND the display cap is still excluded from Continue (no leak)', async () => {
+    // 3 paused+human-gated runs, limit 2: the top-2 are DISPLAYED as gates; the 3rd is beyond the display cap but
+    // still inside the Continue window — it must be LIFTED out of Continue, not leaked in.
+    for (const [i, id] of ['gated-0', 'gated-1', 'gated-2'].entries()) {
+      await seedRun(client.db, {
+        slug: `wf-${i}`,
+        runId: id,
+        state: 'paused',
+        atMs: T0 + (i + 1) * 1_000,
+        gate: { gateId: `g-${i}`, gateType: 'approval', message: 'ok?' },
+      });
+    }
+
+    const snap = buildHomeSnapshot({ ...deps, limit: 2 });
+    expect(snap.attention.gates.map((g) => g.runId)).toEqual(['gated-2', 'gated-1']); // top-2 displayed
+    expect(snap.recentRuns).toEqual([]); // the 3rd (beyond-cap) gated run did NOT leak into Continue
+  });
+
   it('on a run with BOTH a budget and a human gate: surfaces only the human gate, excludes the run from Continue', async () => {
     await seedRun(client.db, {
       slug: 'a',

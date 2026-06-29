@@ -153,6 +153,20 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(store.listSessions()).toHaveLength(5); // omitting the limit still returns the full list (chat-list)
   });
 
+  it('listSessions falls back to unbounded for a non-integer / non-finite / ≤0 limit (never a bad SQL LIMIT)', () => {
+    for (let i = 0; i < 3; i += 1) {
+      store.createSession(
+        makeSession({ id: `sess-${i}`, updatedAt: `2026-06-17T08:0${i}:00.000Z` }),
+      );
+    }
+    // Only a finite positive integer bounds the read; NaN / Infinity / a fraction / ≤0 must NOT reach `LIMIT`.
+    expect(store.listSessions({ limit: Number.NaN })).toHaveLength(3);
+    expect(store.listSessions({ limit: Number.POSITIVE_INFINITY })).toHaveLength(3);
+    expect(store.listSessions({ limit: 1.5 })).toHaveLength(3);
+    expect(store.listSessions({ limit: 0 })).toHaveLength(3);
+    expect(store.listSessions({ limit: -1 })).toHaveLength(3);
+  });
+
   it('listSessions breaks an updated_at tie deterministically by id descending (not insert order)', () => {
     const tie = '2026-06-17T08:00:00.000Z';
     // Insert in an order (b, a, c) that neither id-asc nor id-desc matches, so passing proves the sort is by

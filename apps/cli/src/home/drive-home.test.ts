@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,7 +40,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     env: {},
     stdoutIsTty: true,
     stdinIsTty: true,
-    stdin: { on: () => undefined } as unknown as NodeJS.ReadableStream,
+    stdin: Readable.from([]), // a real, already-ended stream (driveHome never reads it)
   };
 
   beforeEach(() => {
@@ -94,6 +95,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     };
     return { deps, unmount, writeControl };
   }
+
+  it('an init fault after the db is open (a throwing writeControl) still closes the db once', async () => {
+    // The cleanup scope opens right after `opened`, and the inner finally guarantees the close even though the
+    // terminal-restore writeControl also throws — so a faulty terminal can never leak the db handle.
+    const writeControl = vi.fn(() => {
+      throw new Error('stdout write failed');
+    });
+    const { deps } = makeDeps(() => undefined, { writeControl });
+    await expect(driveHome(deps)).rejects.toThrow('stdout write failed');
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
 
   it('a clean Home exit (Ctrl-C) resolves 0, closes the db once, and restores paste mode', async () => {
     let captured: RootAppProps | undefined;
