@@ -1,9 +1,10 @@
 /**
  * The **curated in-REPL command registry** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
  * 2.5.C — see the amendment). The `/` palette + slash commands inside the Home and chat surface only the commands
- * that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`) and info/discovery (`/help`, and —
- * landing in later 2.5.C steps — `/shortcuts`, `/cost`, `/workflows`, `/doctor`, `/clear`). The heavy,
- * session-starting **shell** commands (`run`, `chat`, `provider`, …) stay shell-only ([manifest.ts](manifest.ts) /
+ * that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`) and info/discovery (`/help`,
+ * `/workflows`, `/cost`, `/doctor`; `/clear` is a future addition). `/shortcuts` was dropped (S6) — the `/` palette
+ * (its own nav hints) + the footer hint-bar handle keymap discoverability in context. The heavy, session-starting
+ * **shell** commands (`run`, `chat`, `provider`, …) stay shell-only ([manifest.ts](manifest.ts) /
  * [dispatch.ts](dispatch.ts)) — never run from inside a chat.
  *
  * REPL commands have a different shape than shell commands: their handler runs over a {@link ReplCommandContext}
