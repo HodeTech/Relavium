@@ -52,6 +52,14 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
       </Text>
     );
   }
+  if (entry.role === 'notice') {
+    // Command output (`/workflows`, `/cost`): a dim block, distinct from the cyan user line + the assistant turn.
+    return (
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {stripTerminalControls(entry.text)}
+      </Text>
+    );
+  }
   return (
     <Box flexDirection="column">
       <Text>{stripTerminalControls(entry.text)}</Text>

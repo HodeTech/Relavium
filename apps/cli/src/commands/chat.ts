@@ -7,6 +7,8 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 import { exportSession } from '../chat/export.js';
+import { catalogNotice, costNotice } from '../chat/repl-info.js';
+import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import {
   formatReplHelp,
   replCommandList,
@@ -413,6 +415,25 @@ export function createChatLineHandler(
     // The interactive `/` palette lands in 2.5.C S3b; today `/help` prints the curated command list.
     help: () => {
       deps.io.writeErr(formatReplHelp());
+    },
+    // `/workflows` (2.5.C S4): the project's disk catalog, surfaced as a notice in the chat view. A project-less
+    // cwd is reported, not an error. Reuses the same loader + scanner as `relavium list`.
+    showWorkflows: () => {
+      const { projectConfigDir } = loadResolvedConfig({
+        cwd: deps.global.cwd,
+        configPath: deps.global.configPath,
+      });
+      if (projectConfigDir === undefined) {
+        store.notice(`No .relavium/ project found from ${deps.global.cwd}.`);
+        return;
+      }
+      const scan = (kind: CatalogKind): CatalogEntry[] =>
+        discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
+      store.notice(catalogNotice(scan('workflows'), scan('agents')));
+    },
+    // `/cost` (2.5.C S4): the session's cumulative spend, read from the live view state (the per-model breakdown is 2.6.C).
+    showCost: () => {
+      store.notice(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
     },
   };
 

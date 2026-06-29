@@ -29,6 +29,10 @@ export interface ReplCommandContext {
   readonly exportSession: () => void | Promise<void>;
   /** Surface the command list — a text list today; the interactive `/` palette once it lands (2.5.C S3b). */
   readonly help: () => void | Promise<void>;
+  /** List the project's discovered workflows + agents (the disk catalog) as a notice (2.5.C S4). */
+  readonly showWorkflows: () => void | Promise<void>;
+  /** Show the session's cumulative cost as a notice (2.5.C S4; the per-model breakdown is 2.6.C). */
+  readonly showCost: () => void | Promise<void>;
 }
 
 /** One curated in-REPL command. `run` wires the slash name to a {@link ReplCommandContext} capability. */
@@ -92,6 +96,22 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Scaffold the session so far to a .relavium.yaml.',
     effect: 'write',
     run: (ctx) => ctx.exportSession(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'workflows',
+    label: 'Workflows',
+    description: 'List the workflows and agents discovered in this project.',
+    effect: 'read',
+    run: (ctx) => ctx.showWorkflows(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'cost',
+    label: 'Cost',
+    description: "Show this session's cumulative cost.",
+    effect: 'read',
+    run: (ctx) => ctx.showCost(),
     availableIn: ['chat'],
   },
 ];

@@ -242,6 +242,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     cancel: () => undefined,
     exportSession: () => undefined,
     help: () => undefined,
+    showWorkflows: () => undefined, // chat-only (availableIn) — unreachable from HOME_PALETTE_COMMANDS
+    showCost: () => undefined, // chat-only — needs a live session's cost
   };
 
   const handlePaletteKey = (input: string, key: PaletteKey): void => {

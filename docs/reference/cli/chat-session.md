@@ -47,10 +47,12 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 
 | Command | Effect |
 | --- | --- |
-| `/help` | List the available slash commands (**2.5.C**; the interactive `/` palette lands in a later 2.5.C step). |
+| `/help` | List the available slash commands (**2.5.C**). Typing `/` at an idle prompt instead opens the interactive, filterable **`/` palette** over these commands (in both the chat and the bare Home). |
 | `/exit` | End the session cleanly and quit the REPL (**exit code 4**, below). |
 | `/cancel` | End the session (aborting any in-flight turn — relevant when entered as **Ctrl-C** mid-turn in TTY mode; a typed `/cancel` runs between turns). In Phase 1 the engine has no per-turn abort that keeps a session alive, so `/cancel` terminates it — but the session is **persisted and resumable** via `relavium chat-resume <sessionId>` (2.N). Exits with code 4. |
 | `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file (named `<sessionId>.relavium.yaml`) and reports the path; under `--json` it emits a `session:exported` event on the stream. It does **not** mark the session row `exported` (a later turn's persist would clobber that) — use `relavium chat-export` for the durable provenance mark. **Live (2.P / 2.Q).** |
+| `/workflows` | List the project's discovered workflows + agents (the disk catalog) as an in-view **notice** (**2.5.C S4**). A project-less cwd is reported, not an error. Chat-only today. |
+| `/cost` | Show the session's cumulative spend as an in-view **notice** (**2.5.C S4**); the per-model breakdown is Phase 2.6.C. Chat-only. |
 
 An unrecognized `/…` command prints a one-line, secret-free notice and the prompt returns. In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 

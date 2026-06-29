@@ -40,10 +40,11 @@ export interface TurnSummary {
   readonly errorMessage?: string;
 }
 
-/** One rendered transcript entry — a user line, or a completed assistant turn with its summary. */
+/** One rendered transcript entry — a user line, a completed assistant turn, or a command-output notice. */
 export type TranscriptEntry =
   | { readonly role: 'user'; readonly text: string }
-  | { readonly role: 'assistant'; readonly text: string; readonly summary: TurnSummary };
+  | { readonly role: 'assistant'; readonly text: string; readonly summary: TurnSummary }
+  | { readonly role: 'notice'; readonly text: string };
 
 export interface SessionViewState {
   readonly agentRef?: string;
@@ -149,6 +150,15 @@ export function appendUserMessage(state: SessionViewState, text: string): Sessio
 /** Append a UI note to the bounded warnings channel (e.g. an MCP-skipped notice). The caller sanitizes the text. */
 export function appendWarning(state: SessionViewState, message: string): SessionViewState {
   return { ...state, warnings: pushBounded(state.warnings, message, MAX_WARNINGS) };
+}
+
+/**
+ * Append a command-output NOTICE (e.g. `/workflows`, `/cost`) as a transcript entry — it scrolls into the
+ * conversation history via ink `<Static>` like a system line, rendered distinctly from a user/assistant turn.
+ * The caller sanitizes the text. (Unbounded + append-only, like every transcript entry — see {@link appendTranscript}.)
+ */
+export function appendNotice(state: SessionViewState, text: string): SessionViewState {
+  return { ...state, transcript: appendTranscript(state.transcript, { role: 'notice', text }) };
 }
 
 interface SeqDecision {
