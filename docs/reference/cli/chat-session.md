@@ -43,10 +43,11 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 
-A small set of slash commands drives the REPL itself (not the agent):
+A small, **alias-free**, curated set of slash commands drives the REPL itself (not the agent) — the in-REPL surface of the command system ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C; the curated REPL set is `apps/cli/src/commands/repl-commands.ts`, distinct from the shell command surface). The `/help` list, the unknown-slash hint, and the `/` palette all derive from that one registry, so they cannot disagree. Heavy shell commands (`run`, `chat`, `provider`, …) stay shell-only — they are not in-REPL slashes.
 
 | Command | Effect |
 | --- | --- |
+| `/help` | List the available slash commands (**2.5.C**; the interactive `/` palette lands in a later 2.5.C step). |
 | `/exit` | End the session cleanly and quit the REPL (**exit code 4**, below). |
 | `/cancel` | End the session (aborting any in-flight turn — relevant when entered as **Ctrl-C** mid-turn in TTY mode; a typed `/cancel` runs between turns). In Phase 1 the engine has no per-turn abort that keeps a session alive, so `/cancel` terminates it — but the session is **persisted and resumable** via `relavium chat-resume <sessionId>` (2.N). Exits with code 4. |
 | `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file (named `<sessionId>.relavium.yaml`) and reports the path; under `--json` it emits a `session:exported` event on the stream. It does **not** mark the session row `exported` (a later turn's persist would clobber that) — use `relavium chat-export` for the durable provenance mark. **Live (2.P / 2.Q).** |

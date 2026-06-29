@@ -7,6 +7,12 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 import { exportSession } from '../chat/export.js';
+import {
+  formatReplHelp,
+  replCommandList,
+  REPL_COMMANDS_BY_NAME,
+  type ReplCommandContext,
+} from './repl-commands.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
   buildChatSession,
@@ -365,21 +371,19 @@ export function createChatLineHandler(
     }
   };
 
-  const processLine = async (raw: string): Promise<void> => {
-    const line = raw.trim();
-    if (line.length === 0) return;
-    if (line === '/exit') {
+  // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
+  // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
+  const replCtx: ReplCommandContext = {
+    exit: () => {
       stop = true;
-      return;
-    }
-    if (line === '/cancel') {
+    },
+    cancel: () => {
       // 1.V has no per-turn abort that keeps the session alive, so /cancel ends the (persisted, resumable)
       // session — its in-flight turn is aborted and `chat-resume` (2.N) can reload it later.
       cancelOnce();
       stop = true;
-      return;
-    }
-    if (line === '/export') {
+    },
+    exportSession: () => {
       // Export the session-so-far to a `.relavium.yaml` scaffold (2.P, same ADR-0026 contract). It runs
       // BETWEEN turns (every completed turn is already persisted), reads the durable transcript, and writes
       // the file; it does NOT mark the row `exported` (a later turn's persist would clobber that — the
@@ -405,13 +409,27 @@ export function createChatLineHandler(
       } catch (err) {
         deps.io.writeErr(`export failed: ${err instanceof Error ? err.message : String(err)}\n`);
       }
-      return;
-    }
+    },
+    // The interactive `/` palette lands in 2.5.C S3b; today `/help` prints the curated command list.
+    help: () => {
+      deps.io.writeErr(formatReplHelp());
+    },
+  };
+
+  const processLine = async (raw: string): Promise<void> => {
+    const line = raw.trim();
+    if (line.length === 0) return;
     if (line.startsWith('/')) {
+      // Exact-match a curated REPL command (every command is zero-arg today); `/export foo` is NOT `/export`.
+      const command = REPL_COMMANDS_BY_NAME.get(line.slice(1));
+      if (command !== undefined) {
+        command.run(replCtx);
+        return;
+      }
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
-      // terminal control sequence (or a flood) into stderr.
+      // terminal control sequence (or a flood) into stderr. The available list derives from REPL_COMMANDS.
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      deps.io.writeErr(`unknown command '${safe}'. Available: /exit, /cancel, /export.\n`);
+      deps.io.writeErr(`unknown command '${safe}'. Available: ${replCommandList()}.\n`);
       return;
     }
     store.appendUser(line);

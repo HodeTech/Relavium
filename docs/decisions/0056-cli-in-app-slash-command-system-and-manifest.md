@@ -61,3 +61,27 @@ foundation it will build on, not a Phase 2.5 deliverable).
   `apps/cli`, with the existing command tests as the safety net.
 - The command manifest is a new contract to maintain; mitigated by making it the *only* source for the
   three surfaces (drift is structurally impossible).
+
+## Amendment — 2026-06-29 (curated in-REPL command set, workstream 2.5.C S3)
+
+When 2.5.C S3 began, the maintainer chose the **curated REPL command** model: the in-REPL `/` palette + slash
+commands surface only the commands that make sense in a live REPL — **lifecycle** (`/exit`, `/cancel`, `/export`)
+and **info/discovery** (`/help`, and — landing in later S-steps — `/shortcuts`, `/cost`, `/workflows`, `/doctor`,
+`/clear`). The heavy, session-starting **shell** commands (`run`, `chat`, `provider`, `create`, `import`,
+`export`) stay shell-only (`relavium <cmd> …`); they are never run from inside a chat, which would take over the
+terminal and is the wrong ergonomics (the model every terminal-native agent CLI converges on).
+
+This **refines** the original decision's "one manifest feeds the palette". A REPL command has a fundamentally
+different shape than a shell command — its handler runs over the live session's lifecycle capabilities (a
+`ReplCommandContext`: exit / cancel / export / open-the-palette), not a `CommandInput` + the durable stores — so
+the two are realized as **two purpose-built registries**, not one list with a discriminator:
+
+- `apps/cli/src/commands/manifest.ts` `COMMAND_MANIFEST` — the **shell** surface (commander + `--help --json` +
+  the `executeCommand` dispatch table). Unchanged from S1/S2.
+- `apps/cli/src/commands/repl-commands.ts` `REPL_COMMANDS` — the **curated in-REPL** surface (the `/` palette,
+  the slash commands, the `/help` list, and the unknown-slash hint all derive from it).
+
+The decision's actual goal — **no cross-surface divergence** — still holds: every command has exactly one
+definition, and no command appears in both registries (a shell command is never an in-REPL slash, and vice
+versa). The "single source per surface" guarantee is preserved; only the unrealistic "run any shell command from
+inside a chat" reading is dropped.
