@@ -47,7 +47,17 @@ export interface ProviderMeta {
  * `relavium provider` command (add / test) and the `/doctor --deep` key probe both read it, so a new provider's
  * test model is defined once.
  */
-export const KNOWN_PROVIDERS: Record<ProviderId, ProviderMeta> = {
+/** The provider ids the CLI knows how to validate (those with a test model). The const tuple is the SOURCE OF
+ *  TRUTH — `satisfies` validates each is a real `ProviderId` (no cast, no widening), and {@link KNOWN_PROVIDERS}
+ *  is keyed on it, so the two cannot drift; the `/doctor` provider probe iterates it directly. */
+export const KNOWN_PROVIDER_IDS = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'deepseek',
+] as const satisfies readonly ProviderId[];
+
+export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], ProviderMeta> = {
   anthropic: {
     displayName: 'Anthropic',
     baseUrl: 'https://api.anthropic.com',
@@ -69,12 +79,6 @@ export const KNOWN_PROVIDERS: Record<ProviderId, ProviderMeta> = {
     testModel: 'deepseek-chat',
   },
 };
-
-/** The provider ids the CLI knows how to validate (those with a test model) — the typed key set of
- *  {@link KNOWN_PROVIDERS}. `Object.keys` widens to `string[]`, so the single narrowing cast lives HERE,
- *  documented; the keys ARE `ProviderId`s because the record is typed `Record<ProviderId, …>`. The `/doctor`
- *  provider probe iterates this instead of casting `Object.keys` at the use site. */
-export const KNOWN_PROVIDER_IDS: readonly ProviderId[] = Object.keys(KNOWN_PROVIDERS) as ProviderId[];
 
 /** The default per-request bound for a live key validation — long enough for a cold provider handshake, short
  *  enough that a stalled provider can never hang `provider test` or `/doctor --deep`. */

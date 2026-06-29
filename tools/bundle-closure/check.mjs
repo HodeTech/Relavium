@@ -39,7 +39,10 @@ const code = readFileSync(BUNDLE, 'utf8');
 // Every external-import form esbuild can emit — minified (no spaces) or not: `from "x"`, side-effect
 // `import "x"`, dynamic `import("x")`, and CJS-interop `require("x")`. `import\s*\(` precedes the bare
 // `import\s*` branch so a dynamic import is matched by the former, not mis-split by the latter.
-const SPEC_RE = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s*)["']([^"']+)["']/g;
+// The leading `(?<!["'\w])` makes the keyword a real token, NOT string content: a STRING LITERAL whose value
+// is a keyword — e.g. the command-id `"import"` in `executeCommand("import", …)` — has its `import` preceded by
+// the opening quote, so it is correctly skipped instead of mis-read as a side-effect `import "<the next code>"`.
+const SPEC_RE = /(?<!["'\w])(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s*)["']([^"']+)["']/g;
 const imported = new Set();
 for (const match of code.matchAll(SPEC_RE)) {
   const spec = match[1];
