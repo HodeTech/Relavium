@@ -173,12 +173,15 @@ export interface SessionStore {
   /** Load a session record by id, or `undefined` if absent. */
   loadSession: (sessionId: string) => AgentSessionRecord | undefined;
   /**
-   * List the non-deleted sessions, most-recently-updated first (the `relavium chat-list` read seam, 2.O) —
-   * the session counterpart of the run-history `listRuns`. Soft-deleted rows (`deleted_at` set) are excluded,
-   * matching `loadSession`; `id` is the stable secondary sort key so the order is deterministic when two rows
-   * share an `updated_at`.
+   * List the non-deleted sessions, most-recently-updated first (the `relavium chat-list` read seam, 2.O; and
+   * the 2.5.B Home "recent sessions" strip) — the session counterpart of the run-history `listRuns`.
+   * Soft-deleted rows (`deleted_at` set) are excluded, matching `loadSession`; `id` is the stable secondary
+   * sort key so the order is deterministic when two rows share an `updated_at`. The order + soft-delete filter
+   * are served off the `idx_agent_sessions_updated` partial index (no filesort). Pass `{ limit }` to bound the
+   * read to the top-N (the Home reads only what it shows — an indexed top-N, never a full materialization);
+   * omit it for the full list (the `chat-list` contract).
    */
-  listSessions: () => AgentSessionRecord[];
+  listSessions: (opts?: { readonly limit?: number }) => AgentSessionRecord[];
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
@@ -202,14 +205,22 @@ export function createSessionStore(db: Db): SessionStore {
     return row === undefined ? undefined : fromAgentSessionRow(row);
   };
 
-  const listSessions = (): AgentSessionRecord[] =>
-    db
+  const listSessions = (opts?: { readonly limit?: number }): AgentSessionRecord[] => {
+    const query = db
       .select()
       .from(agentSessions)
       .where(isNull(agentSessions.deletedAt))
-      .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id))
-      .all()
-      .map(fromAgentSessionRow);
+      .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id));
+    // Only a FINITE POSITIVE INTEGER bounds the read; anything else (undefined, `≤0`, a fraction, `NaN`,
+    // `Infinity`) falls back to the unbounded `all()` — the codebase `≤0 ⇒ unbounded` convention, hardened so a
+    // non-integer can never reach the SQL `LIMIT` (where it would error or silently truncate).
+    const limit = opts?.limit;
+    const rows =
+      limit !== undefined && Number.isInteger(limit) && limit > 0
+        ? query.limit(limit).all()
+        : query.all();
+    return rows.map(fromAgentSessionRow);
+  };
 
   const loadMessages = (sessionId: string): SessionMessage[] =>
     db

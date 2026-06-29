@@ -146,6 +146,11 @@ export function appendUserMessage(state: SessionViewState, text: string): Sessio
   };
 }
 
+/** Append a UI note to the bounded warnings channel (e.g. an MCP-skipped notice). The caller sanitizes the text. */
+export function appendWarning(state: SessionViewState, message: string): SessionViewState {
+  return { ...state, warnings: pushBounded(state.warnings, message, MAX_WARNINGS) };
+}
+
 interface SeqDecision {
   readonly apply: boolean;
   readonly lastSequenceNumber: number;

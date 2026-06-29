@@ -1,10 +1,38 @@
 import { describe, expect, it } from 'vitest';
 
+import type { HomeDeps } from './home/drive-home.js';
+import { CliError } from './process/errors.js';
+import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
+import type { CliIo } from './process/io.js';
 import { CLI_VERSION } from './program.js';
-import { run } from './run.js';
+import { run, type OpenHome } from './run.js';
 import { captureIo } from './test-support.js';
 
 const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
+
+/** An interactive-TTY {@link CliIo}: the bare-invocation Home gate (`shouldOpenHome`) needs both TTYs. */
+function interactiveIo(env: Record<string, string | undefined> = {}): {
+  io: CliIo;
+  out: () => string;
+  err: () => string;
+} {
+  const base = captureIo();
+  return { ...base, io: { ...base.io, stdoutIsTty: true, stdinIsTty: true, env } };
+}
+
+/** A scripted {@link OpenHome} that records the deps it was handed and returns/throws a sentinel. */
+function fakeOpenHome(result: ExitCode | (() => Promise<never>)): {
+  openHome: OpenHome;
+  calls: () => HomeDeps[];
+} {
+  const seen: HomeDeps[] = [];
+  const openHome: OpenHome = async (deps) => {
+    seen.push(deps);
+    if (typeof result === 'function') return result();
+    return result;
+  };
+  return { openHome, calls: () => seen };
+}
 
 /** Runtime-validate the parsed `--json` error envelope rather than asserting its type. */
 function isErrorEnvelope(value: unknown): value is { type: string; code: string; message: string } {
@@ -151,5 +179,80 @@ describe('run', () => {
     const { io, out } = captureIo();
     expect(await run(argv('--'), io)).toBe(0);
     expect(out()).toContain('Usage: relavium');
+  });
+});
+
+// 2.5.B / ADR-0054 — a bare `relavium` opens the interactive Home in a genuine TTY, but EVERY non-interactive
+// path (piped, --json, CI) keeps the byte-for-byte help + exit-0 meta-op. The gate predicate `shouldOpenHome`
+// is unit-tested on its own; these assert run() ROUTES on it (Home vs help) and never opens the Home otherwise.
+describe('run — bare-invocation Home gate', () => {
+  it('opens the Home in a genuine TTY and returns its exit code (no help printed)', async () => {
+    const { io, out } = interactiveIo();
+    const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded); // a sentinel the help path could never return
+    expect(await run(argv(), io, openHome)).toBe(EXIT_CODES.chatEnded);
+    expect(calls()).toHaveLength(1);
+    expect(out()).toBe(''); // the Home renders via ink, not the help meta-op
+  });
+
+  it('hands the Home its io + resolved globals (a lone -- still counts as bare)', async () => {
+    const { io } = interactiveIo();
+    const { openHome, calls } = fakeOpenHome(EXIT_CODES.success);
+    await run(argv('--'), io, openHome);
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0]?.io).toBe(io);
+    expect(calls()[0]?.global.cwd).toBe(process.cwd());
+  });
+
+  it('keeps help + exit 0 (never opens the Home) when stdout is not a TTY', async () => {
+    const { io, out } = captureIo(); // captureIo is non-TTY (a pipe / redirect)
+    const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+    expect(await run(argv(), io, openHome)).toBe(0);
+    expect(calls()).toHaveLength(0);
+    expect(out()).toContain('Usage: relavium');
+  });
+
+  it('keeps help + exit 0 (never opens the Home) when stdin is not a TTY', async () => {
+    const { io, out } = interactiveIo();
+    const nonTtyStdin: CliIo = { ...io, stdinIsTty: false };
+    const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+    expect(await run(argv(), nonTtyStdin, openHome)).toBe(0);
+    expect(calls()).toHaveLength(0);
+    expect(out()).toContain('Usage: relavium');
+  });
+
+  it('keeps help + exit 0 (never opens the Home) under --json even in a TTY', async () => {
+    const { io, out, err } = interactiveIo();
+    const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+    expect(await run(argv('--json'), io, openHome)).toBe(0);
+    expect(calls()).toHaveLength(0);
+    expect(out()).toContain('Usage: relavium'); // the --json bare meta-op is human-on-stdout (ADR-0049)
+    expect(err()).toBe('');
+  });
+
+  it('keeps help + exit 0 (never opens the Home) under CI even in a TTY', async () => {
+    const { io, out } = interactiveIo({ CI: 'true' });
+    const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+    expect(await run(argv(), io, openHome)).toBe(0);
+    expect(calls()).toHaveLength(0);
+    expect(out()).toContain('Usage: relavium');
+  });
+
+  it('renders a Home build/config fault like a command fault (exit 2, stderr, stdout clean)', async () => {
+    const { io, out, err } = interactiveIo();
+    const { openHome } = fakeOpenHome(() =>
+      Promise.reject(new CliError('invalid_invocation', 'home config is broken')),
+    );
+    expect(await run(argv(), io, openHome)).toBe(2);
+    expect(out()).toBe('');
+    expect(err()).toContain('home config is broken');
+  });
+
+  it('reports an unexpected Home throw generically (exit 1, no raw message/stack leak)', async () => {
+    const { io, out, err } = interactiveIo();
+    const { openHome } = fakeOpenHome(() => Promise.reject(new Error('internal boom')));
+    expect(await run(argv(), io, openHome)).toBe(EXIT_CODES.workflowFailed); // unexpected → exit 1
+    expect(out()).toBe('');
+    expect(err()).not.toContain('internal boom'); // the raw message is never surfaced
+    expect(err()).toContain('unexpected');
   });
 });

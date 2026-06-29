@@ -94,6 +94,9 @@ describe('@relavium/db migrations + client', () => {
       'idx_session_messages_seq',
       'media_objects_handle_unique',
       'idx_media_references_unique',
+      // 2.5.B (migration 0005): the recency partial indexes that serve the Home top-N reads without a filesort.
+      'idx_runs_created',
+      'idx_agent_sessions_updated',
     ]) {
       expect(indexes).toContain(idx);
     }

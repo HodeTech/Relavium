@@ -173,6 +173,19 @@ describe('createSessionPersister', () => {
     expect(full?.session.totalOutputTokens).toBe(5);
   });
 
+  it('derives the session title from the FIRST user message, and a later message does not overwrite it', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('a'), textTurn('b')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('Plan the launch for next week');
+    await built.session.sendMessage('Plan the launch for next week');
+    persister.beginUserTurn('and a follow-up question');
+    await built.session.sendMessage('and a follow-up question');
+
+    // The title is the (trimmed, ~40-char) FIRST message — the second turn must not re-title the session.
+    expect(store.loadFull('sess-1')?.session.title).toBe('Plan the launch for next week');
+  });
+
   it('persists only the user row when a successful turn produces no assistant text', async () => {
     // A turn that emits only a stop chunk — zero text_delta, so result.text is empty; the assistantText.length
     // guard must skip the empty assistant row (mirroring the engine), leaving just the user row.

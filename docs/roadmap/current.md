@@ -4,12 +4,12 @@
 
 > Last updated: 2026-06-28
 
-- **Related**: [README.md](README.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
+- **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
 This page tracks what is active **right now** and the immediate next concrete actions.
 The full phase plan and the global milestone spine are in [README.md](README.md); the
-granular work breakdown for the active phase is in
-[phases/phase-2-cli.md](phases/phase-2-cli.md).
+granular work breakdown for the active phase (now **Phase 2.5**) is in
+[phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md).
 
 ## Where we are
 
@@ -124,6 +124,25 @@ as **v0.1.1**; M3 was reached at 2.K and the Phase-3 go/no-go held from 2.L. See
 [Phase 2 workstreams](phases/phase-2-cli.md) and the
 [sequencing plan](phases/phase-2-cli.md#sequencing--parallelization). The full status-aware history is the
 [Remaining build order](phases/phase-2-cli.md#remaining-build-order) section (its queue is now empty).
+
+**Phase 2.5 — CLI Consolidation & Conversational Home has started.** **2.5.A** (the spine's secure base — a
+shared `assembleToolEnv({ profile, fsScopeTier, workspaceDir })` factory wired into **both** the chat and
+workflow-run paths, the host-side `fs` (`realpath`+`commonpath` jail, read-only chat fail-close, single-fd
+`O_NOFOLLOW`/`O_NONBLOCK` reads) and `process` arms, the advertise-filter, **EA1** `tool_unavailable`, and **EA2**
+real failed-turn usage) is ✅ **Done (PR #60, 2026-06-28)**, behind
+[ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) — **reaching milestone
+M2.5-1 (secure base)**. The `egress`/`os` arms, the `project`-tier `extraRoots` allowlist, and a write-capable
+chat are deferred to **2.5.E**/[ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (tracked in
+[deferred-tasks.md](deferred-tasks.md)). **2.5.B** (the bare-invocation Home) is **implemented and in review
+(PR #61)**, behind [ADR-0054](../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted): the
+TTY-gated bare `relavium` opens a read-only management strip (recent sessions/runs/agents + an "Attention
+required" section of pending human gates / failed runs) over a bounded, indexed `history.db` read seam, sitting
+above a live prompt that graduates into an in-process chat; rendered as a single ink tree (one `useInput` owner)
+with one SIGINT/SIGTERM lifecycle (clean Home exit `0`; an external signal → the conventional `128+signo`, 130/143;
+the in-Home chat's exit-`4` consumed, never leaked) and bracketed paste (DECSET 2004), all while every
+non-interactive path keeps the byte-for-byte help + exit-`0` meta-op ([ADR-0049](../decisions/0049-cli-machine-output-contract.md)).
+Canonically homed in [home.md](../reference/cli/home.md). **Next pickup: 2.5.C** (the in-app slash registry /
+command palette). See the [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half

@@ -536,10 +536,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > catalog special-file guard + the doc/contract corrections) and the cheap test/code nits landed in the PR.
 > The items below were verified-real but graded **fix-followup** — none blocks merge.
 
-- [ ] **History-read query indexes + pagination.** `listRuns`/`listActiveRuns` sort with a `USE TEMP B-TREE`
-  filesort (no `(created_at DESC, id DESC) WHERE deleted_at IS NULL` index), and `listRuns`/
-  `loadLatestRunPerWorkflow` are unbounded (no `LIMIT`/pagination). Sub-millisecond at single-user CLI scale;
-  add a partial index + a paging API before the desktop/cloud surfaces drive these reads at volume.
+- [x] **History-read query indexes — DONE (2.5.B, migration 0005).** The `(created_at DESC, id DESC) WHERE
+  deleted_at IS NULL` partial index landed on **both** `runs` (`idx_runs_created`) and `agent_sessions`
+  (`idx_agent_sessions_updated`), so `listRuns`/`listActiveRuns`/`listSessions` order off the index instead of a
+  `USE TEMP B-TREE` filesort, and the 2.5.B Home reads bound to an indexed top-N (`{ limit }` on
+  `listRuns`/`listSessions`). **Still open (cloud-scale only):** offset/cursor **pagination** for the read
+  *commands* (`relavium list` / `loadLatestRunPerWorkflow` still return the full set) — genuinely unneeded at
+  single-user CLI scale; add a cursor API before the desktop/cloud surfaces drive these reads at volume.
   *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
 - [ ] **`AgentParseError` carries no line/column on a YAML syntax fault** — parity gap with `parseWorkflow`
   (which threads `LineCounter` positions into `WorkflowSyntaxError`). Add line/col before the 2.J authoring

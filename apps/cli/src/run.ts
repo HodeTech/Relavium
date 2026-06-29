@@ -1,5 +1,7 @@
 import { CommanderError } from 'commander';
 
+import { driveHome, type HomeDeps } from './home/drive-home.js';
+import { shouldOpenHome } from './home/should-open-home.js';
 import { CliError, toUserFacing } from './process/errors.js';
 import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
 import type { CliIo } from './process/io.js';
@@ -11,6 +13,9 @@ import {
 import { renderError } from './process/render-error.js';
 import { buildProgram } from './program.js';
 
+/** The bare-invocation Home opener — injectable so a test can assert the TTY gate routes here (default {@link driveHome}). */
+export type OpenHome = (deps: HomeDeps) => Promise<ExitCode>;
+
 /**
  * The CLI's top-level boundary: extract the position-independent global flags, resolve them, build the
  * program with the command runtime context, parse the remaining argv (node-style), and translate every
@@ -18,7 +23,11 @@ import { buildProgram } from './program.js';
  * A command's exit code is set on the shared `result` holder; pre-parse and parse faults are rendered
  * here. Designed to **never reject**.
  */
-export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode> {
+export async function run(
+  argv: readonly string[],
+  io: CliIo,
+  openHome: OpenHome = driveHome,
+): Promise<ExitCode> {
   const { raw, rest, error: extractError } = extractGlobalOptions(argv);
   // `raw` is fully populated by extraction (it never throws), so the render honors any
   // `--json`/`--verbose` even when a later global flag is the thing that failed.
@@ -43,11 +52,9 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode>
     context: { io, global, result },
   });
 
-  // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`):
-  // print help and exit 0 rather than letting commander error.
-  if (!rest.slice(2).some((token) => token !== '--')) {
-    io.writeOut(program.helpInformation());
-    return EXIT_CODES.success;
+  // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`).
+  if (isBareInvocation(rest)) {
+    return await handleBareInvocation({ io, global, program, openHome, renderCtx });
   }
 
   try {
@@ -70,6 +77,42 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCode>
       return err.exitCode === 0 ? EXIT_CODES.success : EXIT_CODES.invalidInvocation;
     }
     // A CliError thrown by a command action, or an unexpected throw.
+    renderError(err, renderCtx, io);
+    return toUserFacing(err).exitCode;
+  }
+}
+
+/** A bare invocation: nothing after `[node, script]` survives extraction except an optional lone `--`. */
+function isBareInvocation(rest: readonly string[]): boolean {
+  return !rest.slice(2).some((token) => token !== '--');
+}
+
+/**
+ * The bare-invocation outcome: open the interactive Home in a genuine TTY (2.5.B / ADR-0054), else keep the
+ * byte-for-byte help + exit-0 meta-op (ADR-0049). A Home build/config fault renders like a command fault.
+ */
+async function handleBareInvocation(ctx: {
+  io: CliIo;
+  global: GlobalOptions;
+  program: ReturnType<typeof buildProgram>;
+  openHome: OpenHome;
+  renderCtx: { json: boolean; verbose: boolean };
+}): Promise<ExitCode> {
+  const { io, global, program, openHome, renderCtx } = ctx;
+  if (
+    !shouldOpenHome({
+      stdoutIsTty: io.stdoutIsTty,
+      stdinIsTty: io.stdinIsTty,
+      json: global.json,
+      env: io.env,
+    })
+  ) {
+    io.writeOut(program.helpInformation());
+    return EXIT_CODES.success;
+  }
+  try {
+    return await openHome({ io, global });
+  } catch (err) {
     renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;
   }

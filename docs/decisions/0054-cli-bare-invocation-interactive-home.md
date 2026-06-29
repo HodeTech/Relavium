@@ -1,10 +1,10 @@
 # ADR-0054: Bare `relavium` invocation opens an interactive Home (TTY only), preserving the meta-op contract
 
-- **Status**: Proposed
-- **Date**: 2026-06-28
-- **Related**: [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0007](0007-desktop-is-not-an-ide.md), [ADR-0025](0025-agent-surface-refines-desktop-scope.md), [phase-2.5-cli-consolidation.md](../roadmap/phases/phase-2.5-cli-consolidation.md) (2.5.B), [product-constraints.md](../product-constraints.md), [architectural-principles.md](../standards/architectural-principles.md)
+- **Status**: Accepted
+- **Date**: 2026-06-29
+- **Related**: [home.md](../reference/cli/home.md), [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0007](0007-desktop-is-not-an-ide.md), [ADR-0025](0025-agent-surface-refines-desktop-scope.md), [phase-2.5-cli-consolidation.md](../roadmap/phases/phase-2.5-cli-consolidation.md) (2.5.B), [product-constraints.md](../product-constraints.md), [architectural-principles.md](../standards/architectural-principles.md)
 
-> **Draft.** Proposed alongside the Phase 2.5 plan; to be reviewed and finalized (→ Accepted) when workstream 2.5.B begins.
+> **Accepted and implemented in workstream 2.5.B** (the TTY gate, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste). The Home's contract is canonically homed in [home.md](../reference/cli/home.md).
 
 ## Context
 
@@ -25,7 +25,8 @@ Getting this wrong either leaves the CLI feeling second-class (today) or breaks 
 the process is genuinely interactive.** The gate is `stdoutIsTty && stdinIsTty && global.json !== true
 && !isCiEnv(io.env)`; otherwise the current `helpInformation()` + exit `0` meta-op is preserved.
 The primary control is `stdoutIsTty && stdinIsTty`; the CI guard reuses the **existing `isCiEnv` helper**
-(`apps/cli/src/process/output-mode.ts`) — which treats `CI=true`/`CI=1`/any truthy `CI` as CI — rather
+(`apps/cli/src/process/output-mode.ts`) — which treats any non-empty `CI` other than `false`/`0` as CI
+(`CI=true`/`CI=1` count; `CI=false`/`CI=0`/empty opt out) — rather
 than a bare `env.CI !== 'true'` test, so a CI runner that sets `CI=1` (some Drone/Woodpecker/custom setups)
 or allocates a pseudo-TTY cannot accidentally open an interactive Home and stall the pipeline. (Earlier
 text used `env.CI !== 'true'`, which would miss `CI=1`.) The remainder reads as preserved
@@ -34,8 +35,7 @@ default action, so the no-default-action decision and the unknown-command semant
 **reuses** the existing `stdinIsTty` field on the `io` seam (already wired for the `create` wizard) — no
 new IO surface, just a new TTY-gate condition. The Home is a long-lived process mode whose own exit code
 is `0`; a chat launched from within it ends with the chat exit code `4`, which the Home loop **consumes**
-(never leaks). The Home's contract is canonically homed in a new `docs/reference/cli/home.md` (authored in
-this phase, 2.5.B).
+(never leaks). The Home's contract is canonically homed in [home.md](../reference/cli/home.md).
 
 Considered a `commander` default action (rejected: it swallows unknown-command errors — the exact
 reason `program.ts` avoids one); a separate `relavium home` subcommand (rejected: it does not meet the

@@ -4,7 +4,7 @@ import {
   type RunEvent,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import {
@@ -126,13 +126,27 @@ export interface RunHistoryStoreDeps {
  * {@link RunHistoryStore} re-exposes the first three (the writer also reads back its own event log).
  */
 export interface RunHistoryReader {
-  /** All runs (newest first), excluding soft-deleted. */
-  listRuns: () => RunRecord[];
+  /**
+   * Runs newest-first (`created_at DESC, id DESC`), excluding soft-deleted. Pass `{ limit }` for an indexed
+   * top-N (the 2.5.B Home "recent runs" strip) and/or `{ status }` to filter (e.g. the Home "attention"
+   * section's recent `failed` runs). The recency order is served straight off `idx_runs_created` (no filesort).
+   * A `{ status }` filter is served off `idx_runs_status` for the equality + the `created_at DESC` order; the
+   * `id DESC` tiebreak is that index's missing last term, so it *may* incur a small bounded `TEMP B-TREE` — but
+   * only when rows tie on `created_at` at the `LIMIT` boundary (rare for epoch-ms timestamps), and acceptable
+   * regardless because the only `status` caller is the bounded Home failed strip (`LIMIT 8`). A `limit <= 0` reads as
+   * unbounded (the codebase's `≤0 ⇒ no cap` convention). Omit the opts for the full list (`relavium list`).
+   */
+  listRuns: (opts?: { readonly limit?: number; readonly status?: RunStatus }) => RunRecord[];
   /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
   loadRun: (runId: string) => RunRecord | undefined;
   /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
    *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first. */
   loadRunEvents: (runId: string) => RunEvent[];
+  /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
+   *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
+   *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
+   *  parse the whole firehose. NOT for `logs`/resume, which need every event. */
+  loadRunStateEvents: (runId: string) => RunEvent[];
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
   /** The latest run per workflow (joined by slug) — `relavium list`'s last-run-status overlay. */
@@ -140,6 +154,10 @@ export interface RunHistoryReader {
   /** A run's per-node step rows in execution order — `relavium status`'s per-node detail. Keyed by `runId`
    *  alone; the caller validates the run via {@link loadRun} first (the active-run list is already filtered). */
   loadStepExecutions: (runId: string) => StepRecord[];
+  /** Map each given workflow id → its slug, for labeling run rows in the 2.5.B Home (a `RunRecord` carries only
+   *  the workflow UUID). Soft-deleted workflows are excluded; bounded by the id set — an indexed primary-key
+   *  `id IN (...)` lookup, never a scan. An empty input returns an empty map without touching the db. */
+  loadWorkflowSlugs: (ids: readonly string[]) => Map<string, string>;
 }
 
 /**
@@ -157,6 +175,11 @@ export interface RunHistoryStore extends Pick<
 }
 
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
+
+/** The per-token/tool streaming firehose — the highest-volume events, which checkpoint reconstruction and gate
+ *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} excludes these so a bounded fold over a long run
+ *  does not pay to parse them. (Matches `runEvents.eventType`, which stores `event.type`.) */
+const STREAMING_EVENT_TYPES = ['agent:token', 'agent:tool_call', 'agent:tool_result'];
 
 function fromRunRow(row: RunRow): RunRecord {
   return {
@@ -460,16 +483,29 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
  */
 export function createRunHistoryReader(db: Db): RunHistoryReader {
   return {
-    listRuns: () =>
-      db
+    listRuns: (opts) => {
+      // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs (same
+      // tiebreak as loadLatestRunPerWorkflow) — keeps `status`/`list` output deterministic. A `status` opt adds
+      // the equality predicate (served by `idx_runs_status`); `limit` bounds to an indexed top-N for the Home.
+      const where =
+        opts?.status === undefined
+          ? isNull(runs.deletedAt)
+          : and(eq(runs.status, opts.status), isNull(runs.deletedAt));
+      const query = db
         .select()
         .from(runs)
-        .where(isNull(runs.deletedAt))
-        // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs
-        // (same tiebreak as loadLatestRunPerWorkflow) — keeps `status`/`list` output deterministic.
-        .orderBy(desc(runs.createdAt), desc(runs.id))
-        .all()
-        .map(fromRunRow),
+        .where(where)
+        .orderBy(desc(runs.createdAt), desc(runs.id));
+      // Only a FINITE POSITIVE INTEGER bounds the read; undefined / `≤0` / a fraction / `NaN` / `Infinity` fall
+      // back to the unbounded `all()` (the `≤0 ⇒ unbounded` convention, hardened so a non-integer never reaches
+      // SQLite `LIMIT` — a `LIMIT 0` empty result would read as data loss, a negative as "all rows").
+      const limit = opts?.limit;
+      const rows =
+        limit !== undefined && Number.isInteger(limit) && limit > 0
+          ? query.limit(limit).all()
+          : query.all();
+      return rows.map(fromRunRow);
+    },
 
     loadRun: (runId) => {
       // Excludes soft-deleted runs, matching listRuns/listActiveRuns — a run hidden from `relavium list`
@@ -487,6 +523,19 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .select({ payloadJson: runEvents.payloadJson })
         .from(runEvents)
         .where(eq(runEvents.runId, runId))
+        .orderBy(asc(runEvents.seq))
+        .all()
+        .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+
+    loadRunStateEvents: (runId) =>
+      db
+        .select({ payloadJson: runEvents.payloadJson })
+        .from(runEvents)
+        // Exclude the per-token/tool streaming firehose at the DB level so a gate/checkpoint fold over a long run
+        // doesn't pay to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
+        .where(
+          and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
+        )
         .orderBy(asc(runEvents.seq))
         .all()
         .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
@@ -557,6 +606,16 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
             costMicrocents: r.costMicrocents,
           }),
         ),
+
+    loadWorkflowSlugs: (ids) => {
+      if (ids.length === 0) return new Map(); // no query for an empty set — the Home with no runs hits this
+      const rows = db
+        .select({ id: workflows.id, slug: workflows.slug })
+        .from(workflows)
+        .where(and(inArray(workflows.id, [...ids]), isNull(workflows.deletedAt)))
+        .all();
+      return new Map(rows.map((r) => [r.id, r.slug]));
+    },
   };
 }
 

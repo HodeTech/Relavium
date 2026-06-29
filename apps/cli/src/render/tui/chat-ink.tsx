@@ -8,16 +8,19 @@ import {
   type ChatDriver,
 } from '../../commands/chat.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
-import { colorProps } from './projection.js';
+import { colorProps, dimProps } from './projection.js';
+import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
+import { applyChatEdit, reduceChatKey } from './chat-input.js';
 import { spinnerFrame } from './format.js';
 import {
   formatSessionFooter,
   formatToolCall,
   formatTurnSummary,
+  sanitizeInline,
   stripTerminalControls,
 } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
-import type { TranscriptEntry } from './session-view-model.js';
+import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
 /**
  * The `ink` TTY driver + `ChatApp` for `relavium chat` (2.M) — the session counterpart of the 2.E run TUI
@@ -30,10 +33,6 @@ import type { TranscriptEntry } from './session-view-model.js';
  * kernel no longer translates Ctrl-C → SIGINT. The command's SIGINT handler therefore can't see it — the
  * ChatApp handles Ctrl-C itself (→ `/cancel`). (Re-verify cancel on a real TTY when changing the input.)
  */
-
-const FRAME_MS = 80;
-/** The bound on the best-effort MCP teardown a forced (double-SIGINT) quit waits for before hard-exiting. */
-const FORCE_TEARDOWN_MS = 2000;
 
 function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean }>): ReactElement {
   const { entry, color } = props;
@@ -65,57 +64,24 @@ interface ChatAppProps {
   readonly onError: (err: unknown) => void;
 }
 
-export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
-  const { state, tick, color } = useSyncExternalStore(
-    props.store.subscribe,
-    props.store.getSnapshot,
-  );
-  const [input, setInput] = useState('');
-  const cancelFired = useRef(false);
-  const running = state.status === 'running';
+interface ChatViewProps {
+  readonly state: SessionViewState;
+  readonly tick: number;
+  readonly color: boolean;
+  /** The current prompt buffer (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
+  readonly input: string;
+  readonly running: boolean;
+}
 
-  const submit = (line: string): void => {
-    // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
-    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
-    // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
-    void props
-      .onSubmit(line)
-      .then(
-        () => {
-          if (props.shouldStop()) props.onExit();
-        },
-        (err: unknown) => props.onError(err),
-      )
-      .catch((err: unknown) => props.onError(err));
-  };
-
-  useInput((char, key) => {
-    // Ctrl-C reaches us (not the kernel) in raw mode — end the session via /cancel, even mid-turn. Dispatch it
-    // at most once: cancelOnce() is already idempotent, but a held Ctrl-C would otherwise fire redundant /cancel
-    // turns in quick succession.
-    if (key.ctrl && char === 'c') {
-      if (!cancelFired.current) {
-        cancelFired.current = true;
-        submit('/cancel');
-      }
-      return;
-    }
-    if (running) return; // one turn at a time — ignore typing while the assistant streams
-    if (key.return) {
-      const line = input;
-      setInput('');
-      submit(line);
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setInput((current) => current.slice(0, -1));
-      return;
-    }
-    if (char.length > 0 && !key.ctrl && !key.meta) {
-      setInput((current) => current + char);
-    }
-  });
-
+/**
+ * The PURE chat render — transcript / in-flight turn / prompt echo / warnings / footer — with no `useInput`,
+ * no state, and no store subscription. Extracted from `ChatApp` so the 2.5.B Home can render the chat region
+ * inside its OWN single-`useInput` tree (one raw-mode owner) without duplicating this JSX. The live input echo
+ * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
+ * sequence cannot corrupt the terminal or inject ANSI/OSC.
+ */
+export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
+  const { state, tick, color, input, running } = props;
   return (
     <Box flexDirection="column">
       {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
@@ -138,11 +104,22 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       )}
 
       {/* The input prompt (idle) and the persistent footer. The live input echo is sanitized so a paste
-          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. */}
+          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. A trailing
+          inverse-space block cursor marks the prompt as a live field (shared with the Home's prompt). */}
       {!running && (
-        <Text {...colorProps(color, 'cyan')}>
-          {'> '}
-          {stripTerminalControls(input)}
+        <Text>
+          <Text {...colorProps(color, 'cyan')}>
+            {'> '}
+            {sanitizeInline(input)}
+          </Text>
+          {color && <Text inverse> </Text>}
+        </Text>
+      )}
+      {/* A way back / out, always in view at the idle prompt: how to end the session (back to the Home, or quit a
+          standalone `relavium chat`) and how to keep it (the export-to-workflow promise). */}
+      {!running && (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          /exit or Ctrl-C to end · /export to save as a workflow
         </Text>
       )}
 
@@ -158,6 +135,69 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       <Text {...colorProps(color, 'gray')}>{formatSessionFooter(state)}</Text>
     </Box>
   );
+}
+
+export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const { state, tick, color } = useSyncExternalStore(
+    props.store.subscribe,
+    props.store.getSnapshot,
+  );
+  const [input, setInput] = useState('');
+  // A ref SHADOW of the buffer: in a coalesced stdin chunk ink dispatches every event synchronously with no
+  // render flush, so the `input` closure stays stale across the burst. Reading `inputRef.current` gives the
+  // latest COMMITTED value, so even a Return that arrives in the same chunk as a preceding char submits the full
+  // buffer (not the stale render capture). `applyInput` wraps `setInput` to keep the ref in lockstep with state.
+  const inputRef = useRef('');
+  const applyInput = (next: (current: string) => string): void => {
+    setInput((prev) => {
+      const value = next(prev);
+      inputRef.current = value;
+      return value;
+    });
+  };
+  const cancelFired = useRef(false);
+  const running = state.status === 'running';
+
+  const submit = (line: string): void => {
+    // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
+    // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
+    // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
+    void props
+      .onSubmit(line)
+      .then(
+        () => {
+          if (props.shouldStop()) props.onExit();
+        },
+        (err: unknown) => props.onError(err),
+      )
+      .catch((err: unknown) => props.onError(err));
+  };
+
+  // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
+  // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
+  useInput((char, key) => {
+    const action = reduceChatKey(char, key, inputRef.current, running);
+    switch (action.kind) {
+      case 'cancel':
+        if (!cancelFired.current) {
+          cancelFired.current = true;
+          submit('/cancel');
+        }
+        return;
+      case 'append':
+      case 'backspace':
+        applyInput((current) => applyChatEdit(current, action));
+        return;
+      case 'submit':
+        applyInput(() => '');
+        submit(action.line);
+        return;
+      case 'none':
+        return;
+    }
+  });
+
+  return <ChatView state={state} tick={tick} color={color} input={input} running={running} />;
 }
 
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. */

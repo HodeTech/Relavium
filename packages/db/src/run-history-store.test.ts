@@ -646,4 +646,103 @@ describe('createRunHistoryReader', () => {
     expect(store.listRuns().map((r) => r.id)).toEqual(reader.listRuns().map((r) => r.id));
     expect(store.loadRunEvents('run-1')).toHaveLength(reader.loadRunEvents('run-1').length);
   });
+
+  it('listRuns({ limit }) bounds to the indexed top-N; { status } filters; both compose (2.5.B Home)', async () => {
+    await seedRun('alpha', 'run-a', { completed: true, atMs: TS_MS + 1000 });
+    await seedRun('alpha', 'run-b', { paused: true, atMs: TS_MS + 2000 });
+    await seedRun('beta', 'run-c', { completed: true, atMs: TS_MS + 3000 });
+
+    // limit → the two newest by created_at DESC (served off idx_runs_created, no filesort).
+    expect(reader.listRuns({ limit: 2 }).map((r) => r.id)).toEqual(['run-c', 'run-b']);
+    // status → only matching runs, newest-first (filtered via idx_runs_status: status equality + created_at
+    // order; the id tiebreak is the index's missing last term — a small bounded sort, see the listRuns JSDoc).
+    expect(reader.listRuns({ status: 'completed' }).map((r) => r.id)).toEqual(['run-c', 'run-a']);
+    expect(reader.listRuns({ status: 'paused' }).map((r) => r.id)).toEqual(['run-b']);
+    // status + limit compose; omitting both returns the full list (the `relavium list` contract).
+    expect(reader.listRuns({ status: 'completed', limit: 1 }).map((r) => r.id)).toEqual(['run-c']);
+    expect(reader.listRuns().map((r) => r.id)).toEqual(['run-c', 'run-b', 'run-a']);
+  });
+
+  it('loadWorkflowSlugs maps ids → slug (indexed PK lookup), excludes soft-deleted, empty input ⇒ no query', async () => {
+    const alphaId = await seedRun('alpha', 'run-a', { completed: true });
+    const betaId = await seedRun('beta', 'run-b', { completed: true });
+
+    const map = reader.loadWorkflowSlugs([alphaId, betaId]);
+    expect(map.get(alphaId)).toBe('alpha');
+    expect(map.get(betaId)).toBe('beta');
+
+    // empty input returns an empty map without a query; a mixed batch resolves the known id and omits the unknown.
+    expect(reader.loadWorkflowSlugs([]).size).toBe(0);
+    const mixed = reader.loadWorkflowSlugs([alphaId, counterUuid(999)]);
+    expect(mixed.get(alphaId)).toBe('alpha');
+    expect(mixed.has(counterUuid(999))).toBe(false);
+    expect(mixed.size).toBe(1);
+
+    // duplicate ids are idempotent — the map keys on UNIQUE ids (a PK lookup), not the input length.
+    const dup = reader.loadWorkflowSlugs([alphaId, alphaId, betaId]);
+    expect(dup.size).toBe(2);
+    expect(dup.get(alphaId)).toBe('alpha');
+    expect(dup.get(betaId)).toBe('beta');
+
+    // a soft-deleted workflow drops out (its runs read as unlabeled in the Home, matching loadLatestRunPerWorkflow).
+    client.db.update(workflows).set({ deletedAt: TS_MS }).where(eq(workflows.slug, 'beta')).run();
+    const after = reader.loadWorkflowSlugs([alphaId, betaId]);
+    expect(after.get(alphaId)).toBe('alpha');
+    expect(after.has(betaId)).toBe(false);
+  });
+
+  it('loadRunStateEvents drops the per-token/tool streaming firehose; loadRunEvents keeps every event', async () => {
+    const store = storeFor('wf');
+    const workflowId = await store.resolveWorkflowId('wf');
+    const ts = new Date(TS_MS).toISOString();
+    await store.persistEvent(
+      evRun('run-x', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+    );
+    await store.persistEvent(
+      evRun('run-x', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
+    );
+    // ALL THREE excluded streaming types, so the test fails if any exclusion drifts or is misspelled.
+    await store.persistEvent(
+      evRun('run-x', 'agent:token', 2, { nodeId: 'g', token: 'a', model: 'claude-opus-4-8' }, ts),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-x',
+        'agent:tool_call',
+        3,
+        { nodeId: 'g', model: 'claude-opus-4-8', toolId: 'read_file', toolInput: { path: 'x' } },
+        ts,
+      ),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-x',
+        'agent:tool_result',
+        4,
+        { nodeId: 'g', toolId: 'read_file', success: true, outputSummary: 'ok' },
+        ts,
+      ),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-x',
+        'human_gate:paused',
+        5,
+        { nodeId: 'g', gateId: 'g1', gateType: 'approval', message: 'ok?' },
+        ts,
+      ),
+    );
+
+    // The full log keeps the firehose (logs/resume need every event); the bounded state read drops only the
+    // streaming events checkpoint reconstruction + gate detection ignore — keeping the gate-relevant events.
+    const full = reader.loadRunEvents('run-x').map((e) => e.type);
+    expect(full).toEqual(
+      expect.arrayContaining(['agent:token', 'agent:tool_call', 'agent:tool_result']),
+    );
+    expect(reader.loadRunStateEvents('run-x').map((e) => e.type)).toEqual([
+      'run:started',
+      'node:started',
+      'human_gate:paused',
+    ]);
+  });
 });

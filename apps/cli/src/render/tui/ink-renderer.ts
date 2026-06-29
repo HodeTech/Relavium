@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import type { RunRenderer } from '../renderer.js';
 import { RunApp } from './RunApp.js';
 import { createRunStore, type RunStore } from './run-store.js';
+import { FRAME_MS } from './tui-constants.js';
 
 /**
  * The `ink` streaming-TUI renderer (workstream **2.E**) — the third {@link RunRenderer} over the one event
@@ -17,8 +18,7 @@ import { createRunStore, type RunStore } from './run-store.js';
  * tests, which run without a TTY, never mount it via the production path.
  */
 
-/** The frame cadence — ~12.5 fps: smooth spinner + token flow without flooding React on a fast stream. */
-export const FRAME_MS = 80;
+export { FRAME_MS }; // re-exported for existing importers; the value lives in the pure tui-constants module
 
 /** The subset of `ink`'s render instance this renderer drives — also the shape a test's `mount` returns. */
 export interface InkMountInstance {

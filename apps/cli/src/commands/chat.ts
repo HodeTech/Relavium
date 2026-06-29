@@ -335,8 +335,27 @@ interface ReplWiring {
  * loop), and on teardown emit the session's sole terminal (`session:cancelled`, idempotent) + close the
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
-async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
-  const { built, opened, store, persister, startSession, intro } = wiring;
+/** The slash-aware line handler + the session's cancel/stop state. */
+export interface ChatLineHandler {
+  /** Handle one line (a slash command or a message); awaits the turn for a message. */
+  readonly processLine: (raw: string) => Promise<void>;
+  /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
+  readonly cancelOnce: () => void;
+  /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
+  readonly shouldStop: () => boolean;
+}
+
+/**
+ * Build the slash-aware line handler shared by the chat REPL loop (`runReplLoop`) and the 2.5.B Home's in-tree
+ * chat driver: `/exit` stops; `/cancel` ends the (resumable) session AND stops; `/export` scaffolds a workflow
+ * between turns; an unknown slash warns; anything else is appended + persisted + sent as a turn. The cancel/stop
+ * state is internal — the caller reads it via `shouldStop` and fires the terminal via `cancelOnce` on teardown.
+ */
+export function createChatLineHandler(
+  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister'>,
+  deps: ChatReplDeps,
+): ChatLineHandler {
+  const { built, opened, store, persister } = wiring;
   let stop = false;
   let cancelled = false;
   const cancelOnce = (): void => {
@@ -400,6 +419,13 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     await built.session.sendMessage(line);
   };
 
+  return { processLine, cancelOnce, shouldStop: () => stop };
+}
+
+async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
+  const { built, opened, store, persister, startSession, intro } = wiring;
+  const { processLine, cancelOnce, shouldStop } = createChatLineHandler(wiring, deps);
+
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
@@ -408,7 +434,7 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     await (deps.drive ?? drivePlain)({
       startSession,
       processLine,
-      shouldStop: () => stop,
+      shouldStop,
       handle: built.handle,
       store,
       io: deps.io,
