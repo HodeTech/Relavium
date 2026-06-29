@@ -23,8 +23,6 @@ export function deriveSessionTitle(firstMessage: string): string | undefined {
   // hold ≥ MAX+1 code points if the string is that long, so the ≤ MAX decision and the slice are exact.
   const head = [...oneLine.slice(0, (SESSION_TITLE_MAX + 1) * 2)];
   if (head.length <= SESSION_TITLE_MAX) return oneLine;
-  return `${head
-    .slice(0, SESSION_TITLE_MAX - 1)
-    .join('')
-    .trimEnd()}…`;
+  head.length = SESSION_TITLE_MAX - 1; // truncate IN PLACE (no second array clone) — keep MAX-1 code points + the ellipsis
+  return `${head.join('').trimEnd()}…`;
 }

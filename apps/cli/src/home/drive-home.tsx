@@ -203,16 +203,23 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         return;
       }
       signaled = true;
-      instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
-      writeControl(DISABLE_BRACKETED_PASTE);
+      // Best-effort terminal restore — a throw here must NOT skip scheduling the bounded teardown + exit below
+      // (else an external signal could neither close the db nor exit).
+      try {
+        instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
+        writeControl(DISABLE_BRACKETED_PASTE);
+      } catch {
+        // ignore — restoring the terminal is best-effort; the close + exit must still run
+      }
       // The bound is REFERENCED until the race settles so the exit is guaranteed even if teardown hangs; it is
       // cleared the instant the race resolves so a fast teardown (the common case) neither waits nor dangles.
       let bound: ReturnType<typeof setTimeout> | undefined;
       const bounded = new Promise<void>((resolve) => {
         bound = setTimeout(resolve, FORCE_TEARDOWN_MS);
       });
-      void Promise.race([controller?.teardownActive() ?? Promise.resolve(), bounded]).finally(
-        () => {
+      void Promise.race([controller?.teardownActive() ?? Promise.resolve(), bounded])
+        .catch(() => undefined) // a teardown rejection must never skip the close + exit (no unhandled rejection)
+        .finally(() => {
           if (bound !== undefined) clearTimeout(bound);
           // exitProcess MUST always run — guard the db close so a (effectively non-throwing) close fault can never
           // strand the process without exiting.
@@ -221,8 +228,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           } finally {
             exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
           }
-        },
-      );
+        });
     };
     unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
 
@@ -252,15 +258,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
     // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore is best-effort —
-    // the inner finally GUARANTEES the db close even if `unmount`/`writeControl` throws (so a faulty terminal can
-    // never leak the handle). Unmount BEFORE disabling paste, matching the signal path.
+    // a throw there is swallowed so it neither turns a clean exit into a failure nor skips the teardown + close
+    // below (a faulty terminal can never leak the session or the db handle). Unmount BEFORE disabling paste.
+    unsubscribeSignals?.();
     try {
-      unsubscribeSignals?.();
       instance?.unmount();
       writeControl(DISABLE_BRACKETED_PASTE);
-      await controller?.teardownActive().catch(() => undefined);
-    } finally {
-      closeDb();
+    } catch {
+      // ignore — restoring the terminal is best-effort; the session teardown + db close must still run
     }
+    await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
+    closeDb(); // always close the shared db
   }
 }

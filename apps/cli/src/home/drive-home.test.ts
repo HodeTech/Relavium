@@ -107,6 +107,27 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('a throwing unmount on a clean exit stays best-effort — still resolves 0 and closes the db once', async () => {
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps(() => undefined, {
+      render: (props) => {
+        captured = props;
+        return {
+          unmount: () => {
+            throw new Error('ink unmount failed');
+          },
+        };
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success); // the throwing unmount did not corrupt the clean exit
+    expect(closeSpy).toHaveBeenCalledTimes(1); // …and the db was still closed
+  });
+
   it('a clean Home exit (Ctrl-C) resolves 0, closes the db once, and restores paste mode', async () => {
     let captured: RootAppProps | undefined;
     const { deps, unmount, writeControl } = makeDeps((p) => (captured = p));

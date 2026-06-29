@@ -51,14 +51,17 @@ export function reduceChatKey(
 
 /**
  * Drop the last Unicode CODE POINT from a buffer (one backspace). A `slice(0, -1)` removes a single UTF-16 code
- * unit, which would split a trailing astral char (emoji) and leave a lone high surrogate / mojibake — so when the
- * last unit is a low surrogate of a pair, drop both units. O(1): no whole-buffer spread.
+ * unit, which would split a trailing astral char (emoji) and leave a lone surrogate / mojibake. `codePointAt` of
+ * the second-to-last unit yields a value > 0xFFFF ONLY when a high surrogate is actually followed by a low one —
+ * so drop both units for a real pair, else just one (a LONE surrogate must never over-delete the char before it).
+ * O(1): no whole-buffer spread.
  */
 export function dropLastCodePoint(buffer: string): string {
   if (buffer.length === 0) return buffer;
-  const last = buffer.charCodeAt(buffer.length - 1);
-  const isLowSurrogate = last >= 0xdc00 && last <= 0xdfff;
-  return buffer.slice(0, buffer.length - (isLowSurrogate && buffer.length >= 2 ? 2 : 1));
+  if (buffer.length >= 2 && (buffer.codePointAt(buffer.length - 2) ?? 0) > 0xffff) {
+    return buffer.slice(0, -2);
+  }
+  return buffer.slice(0, -1);
 }
 
 /** Apply a buffer-edit action to a buffer (the functional-updater body). `submit`/`cancel`/`none` don't edit. */

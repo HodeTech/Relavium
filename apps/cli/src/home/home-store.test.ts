@@ -320,6 +320,18 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     );
   });
 
+  it('falls back to the default for an invalid limit (NaN / Infinity / a fraction) — never a broken read', () => {
+    const store = createSessionStore(client.db);
+    store.createSession(session({ id: 's1', updatedAt: ISO(T0 + 2_000) }));
+    store.createSession(session({ id: 's2', updatedAt: ISO(T0 + 1_000) }));
+    // A non-integer can't reach the bounded read; it coerces to DEFAULT_HOME_LIMIT (≥2 here) ⇒ a coherent strip.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 2.5]) {
+      expect(
+        buildHomeSnapshot({ ...deps, limit: bad }).recentSessions.map((s) => s.sessionId),
+      ).toEqual(['s1', 's2']);
+    }
+  });
+
   it('a running (non-terminal, non-gated) run stays neutral in Continue, never in Attention', async () => {
     await seedRun(client.db, { slug: 'a', runId: 'run-live', state: 'running', atMs: T0 + 2_000 });
     await seedRun(client.db, { slug: 'a', runId: 'run-bad', state: 'failed', atMs: T0 + 1_000 });

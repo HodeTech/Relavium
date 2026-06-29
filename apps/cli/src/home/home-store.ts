@@ -92,10 +92,7 @@ export interface HomeSnapshot {
 /** The read seams the Home aggregates over — narrowed so a test can stub exactly these reads. */
 export interface HomeStoreDeps {
   readonly sessions: Pick<SessionStore, 'listSessions'>;
-  readonly runs: Pick<
-    RunHistoryReader,
-    'listRuns' | 'listActiveRuns' | 'loadRunEvents' | 'loadWorkflowSlugs'
-  >;
+  readonly runs: Pick<RunHistoryReader, 'listRuns' | 'loadRunEvents' | 'loadWorkflowSlugs'>;
   /**
    * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to
    * `1` (unlike the DB-layer `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request).
@@ -118,19 +115,19 @@ export function createHomeStore(deps: HomeStoreDeps): HomeStore {
  * "attention" section and EXCLUDED from the neutral "Continue" runs, so it is never shown twice.
  */
 export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
-  // Clamp to ≥1: the DB layer's `≤0 ⇒ unbounded` convention must NOT leak to a Home caller — a `limit: 0` would
-  // otherwise read every session/run unbounded yet slice `recentRuns` to empty (incoherent). `0` is not a
-  // meaningful Home request, so treat any non-positive value as the smallest glanceable strip.
-  const limit = Math.max(deps.limit ?? DEFAULT_HOME_LIMIT, 1);
+  // Coerce `deps.limit` to a safe positive integer for the bounded read: a non-integer (NaN, a fraction,
+  // Infinity) is invalid and falls back to the default; a `≤0` clamps to the smallest glanceable strip (1) — the
+  // DB `≤0 ⇒ unbounded` convention must not leak to a Home caller, and `0` is not a meaningful Home request.
+  const requested = deps.limit ?? DEFAULT_HOME_LIMIT;
+  const limit = Number.isInteger(requested) ? Math.max(requested, 1) : DEFAULT_HOME_LIMIT;
 
   const recentSessionRecords = deps.sessions.listSessions({ limit });
   const failedRunRecords = deps.runs.listRuns({ status: 'failed', limit });
   // A budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
-  // The DISPLAYED gates come from the most-recent `limit` paused runs: a paused run accumulates indefinitely (a
-  // gate never resolved, a crash before the terminal), and each costs a `loadRunEvents` + reconstruct, so the
-  // shown fan-out is capped (the glanceable-strip contract). Derive each displayed one's gates ONCE.
-  const allPausedRuns = deps.runs.listActiveRuns().filter((run) => run.status === 'paused');
-  const displayedPausedRuns = allPausedRuns.slice(0, limit);
+  // The DISPLAYED gates come from the most-recent `limit` paused runs via a BOUNDED db read (not an in-memory
+  // filter over all active history); a paused run accumulates indefinitely (a gate never resolved, a crash before
+  // the terminal) and each gate check costs a `loadRunEvents`, so the shown fan-out is capped. Derive each ONCE.
+  const displayedPausedRuns = deps.runs.listRuns({ status: 'paused', limit });
   const gatesByRun = displayedPausedRuns.map((run) => ({
     run,
     pending: pendingHumanGates(deps.runs.loadRunEvents(run.id)),
@@ -148,15 +145,14 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const recentRunRecords = deps.runs.listRuns({ limit: limit + overFetch });
 
   // Close the gated-leak: a paused+human-gated run BEYOND the display cap could still fall inside the Continue
-  // window and leak in. So the EXCLUSION set is widened to every paused run that appears in `recentRunRecords` —
-  // checking the gates of the not-yet-checked ones (bounded by the window size, not all of N_paused). A
-  // budget-paused run carries no human gate, so it correctly STAYS in Continue. (A neutral run-burst deeper than
-  // the over-fetch margin can still under-fill Continue; that is the accepted glanceable edge — it never leaks.)
-  const recentRunIds = new Set(recentRunRecords.map((r) => r.id));
+  // window and leak in. So the EXCLUSION set is widened to every paused run that appears in `recentRunRecords`
+  // (a BOUNDED window) — checking the gates of the not-yet-checked ones. A budget-paused run carries no human
+  // gate, so it correctly STAYS in Continue. (A neutral run-burst deeper than the over-fetch margin can still
+  // under-fill Continue; that is the accepted glanceable edge — it never leaks an attention run.)
   const checkedRunIds = new Set(displayedPausedRuns.map((r) => r.id));
   const humanGatedRunIds = new Set(displayedGatedRunIds);
-  for (const run of allPausedRuns) {
-    if (checkedRunIds.has(run.id) || !recentRunIds.has(run.id)) continue; // already checked, or outside the window
+  for (const run of recentRunRecords) {
+    if (run.status !== 'paused' || checkedRunIds.has(run.id)) continue; // not a paused candidate, or already checked
     if (pendingHumanGates(deps.runs.loadRunEvents(run.id)).length > 0) humanGatedRunIds.add(run.id);
   }
 

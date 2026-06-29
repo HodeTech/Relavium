@@ -100,6 +100,9 @@ type EventBody<T extends RunEvent['type']> = Omit<
   'type' | 'runId' | 'timestamp' | 'sequenceNumber'
 >;
 
+/** The schema-validated event emitter `seedRun` threads through its state helpers. */
+type EmitFn = <T extends RunEvent['type']>(type: T, rest: EventBody<T>) => Promise<void>;
+
 /** One pending human gate to seed on a `paused` run (each gets a `human_gate:paused` event at node `g`). */
 export interface SeedGate {
   readonly gateId: string;
@@ -176,58 +179,7 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     cumulativeCostMicrocents: 100,
   });
   if (opts.state === 'paused') {
-    // Fail fast on a malformed gate spec so a test mistake can't silently seed the WRONG scenario: an explicit
-    // empty `gates: []` (use no gate for the media-job park) or a duplicate `gateId` (each gate must be distinct).
-    if (opts.gates !== undefined) {
-      if (opts.gates.length === 0) {
-        throw new Error(
-          'seedRun: `gates: []` is ambiguous — omit it for a zero-gate (media-job) pause, or pass ≥1',
-        );
-      }
-      if (new Set(opts.gates.map((g) => g.gateId)).size !== opts.gates.length) {
-        throw new Error(
-          'seedRun: duplicate gateId in `gates` — each human gate needs a distinct gateId',
-        );
-      }
-    }
-    const gates: readonly SeedGate[] = opts.gates ?? (opts.gate === undefined ? [] : [opts.gate]);
-    if (opts.budgetGateId !== undefined || gates.length > 0) {
-      // A real gate parks AT node `g`, so emit its start (the step row a `status` listing shows).
-      await emit('node:started', { nodeId: 'g', nodeType: 'human_in_the_loop' });
-      if (opts.budgetGateId !== undefined) {
-        await emit('budget:paused', {
-          nodeId: 'g',
-          gateId: opts.budgetGateId,
-          spentMicrocents: 100,
-          limitMicrocents: 50,
-        });
-      }
-      // Each human gate (distinct gateId) folds into a separate pending entry — exercises the multi-gate fan-out.
-      for (const gate of gates) {
-        await emit('human_gate:paused', {
-          nodeId: 'g',
-          gateId: gate.gateId,
-          gateType: gate.gateType,
-          message: gate.message ?? 'ok?',
-        });
-      }
-    } else {
-      // No human/budget gate — model an async MEDIA-JOB park (1.AG Section D, ADR-0045 §2): a generative node
-      // parks awaiting its job, so `run:paused` carries `pendingMediaJobNodeIds` (NOT a gate). This is the only
-      // valid zero-gate pause — `RunEventSchema` rejects a `run:paused` that carries no suspension reason at all,
-      // so the park MUST seed the parked node + its `media_job:submitted` (an empty `run:paused` is malformed).
-      await emit('node:started', { nodeId: 'g', nodeType: 'agent' });
-      await emit('media_job:submitted', {
-        nodeId: 'g',
-        jobId: 'job-1',
-        provider: 'openai',
-        model: 'gpt-image-1',
-        modality: 'image',
-        startedAt: ts,
-        deadlineAt: new Date(tsMs + 60_000).toISOString(),
-      });
-      await emit('run:paused', { pendingGateCount: 0, gateIds: [], pendingMediaJobNodeIds: ['g'] });
-    }
+    await emitPausedState(emit, opts, ts, tsMs);
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
       outputs: {},
@@ -242,4 +194,67 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     });
   }
   return opts.runId;
+}
+
+/** Emit the `paused`-state events for {@link seedRun} — a human/budget gate park, or (no gate) a media-job park. */
+async function emitPausedState(
+  emit: EmitFn,
+  opts: SeedRunOptions,
+  ts: string,
+  tsMs: number,
+): Promise<void> {
+  // Fail fast on a malformed gate spec so a test mistake can't silently seed the WRONG scenario: an explicit
+  // empty `gates: []` (use no gate for the media-job park) or a duplicate `gateId` (each gate must be distinct).
+  if (opts.gates !== undefined) {
+    if (opts.gates.length === 0) {
+      throw new Error(
+        'seedRun: `gates: []` is ambiguous — omit it for a zero-gate (media-job) pause, or pass ≥1',
+      );
+    }
+    if (new Set(opts.gates.map((g) => g.gateId)).size !== opts.gates.length) {
+      throw new Error(
+        'seedRun: duplicate gateId in `gates` — each human gate needs a distinct gateId',
+      );
+    }
+  }
+  const gates: readonly SeedGate[] = opts.gates ?? (opts.gate === undefined ? [] : [opts.gate]);
+
+  if (opts.budgetGateId === undefined && gates.length === 0) {
+    // No human/budget gate — model an async MEDIA-JOB park (1.AG Section D, ADR-0045 §2): a generative node
+    // parks awaiting its job, so `run:paused` carries `pendingMediaJobNodeIds` (NOT a gate). This is the only
+    // valid zero-gate pause — `RunEventSchema` rejects a `run:paused` that carries no suspension reason at all,
+    // so the park MUST seed the parked node + its `media_job:submitted` (an empty `run:paused` is malformed).
+    await emit('node:started', { nodeId: 'g', nodeType: 'agent' });
+    await emit('media_job:submitted', {
+      nodeId: 'g',
+      jobId: 'job-1',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      modality: 'image',
+      startedAt: ts,
+      deadlineAt: new Date(tsMs + 60_000).toISOString(),
+    });
+    await emit('run:paused', { pendingGateCount: 0, gateIds: [], pendingMediaJobNodeIds: ['g'] });
+    return;
+  }
+
+  // A real gate parks AT node `g`, so emit its start (the step row a `status` listing shows).
+  await emit('node:started', { nodeId: 'g', nodeType: 'human_in_the_loop' });
+  if (opts.budgetGateId !== undefined) {
+    await emit('budget:paused', {
+      nodeId: 'g',
+      gateId: opts.budgetGateId,
+      spentMicrocents: 100,
+      limitMicrocents: 50,
+    });
+  }
+  // Each human gate (distinct gateId) folds into a separate pending entry — exercises the multi-gate fan-out.
+  for (const gate of gates) {
+    await emit('human_gate:paused', {
+      nodeId: 'g',
+      gateId: gate.gateId,
+      gateType: gate.gateType,
+      message: gate.message ?? 'ok?',
+    });
+  }
 }

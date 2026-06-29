@@ -111,6 +111,12 @@ describe('dropLastCodePoint (code-point-aware backspace)', () => {
     expect(dropLastCodePoint('😀')).toBe(''); // a lone emoji clears the buffer (no orphan high surrogate)
   });
 
+  it('drops ONLY one unit for a LONE surrogate (does not over-delete the char before it)', () => {
+    // A trailing lone LOW surrogate not preceded by a high surrogate must drop just itself, not also the 'a'.
+    expect(dropLastCodePoint('a\uDC00')).toBe('a');
+    expect(dropLastCodePoint('a\uD800')).toBe('a'); // a trailing lone HIGH surrogate likewise drops just itself
+  });
+
   it('a plain slice(0,-1) would corrupt an emoji — this helper does not', () => {
     expect('hi😀'.slice(0, -1)).not.toBe('hi'); // the naive cut leaves a lone surrogate
     expect(dropLastCodePoint('hi😀')).toBe('hi');
