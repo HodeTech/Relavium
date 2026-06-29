@@ -87,7 +87,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('effects are sound: export writes, the rest are read', () => {
     expect(REPL_COMMANDS_BY_NAME.get('export')?.effect).toBe('write');
-    for (const name of ['help', 'exit', 'cancel']) {
+    for (const name of ['help', 'exit', 'cancel', 'workflows', 'cost']) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }
   });

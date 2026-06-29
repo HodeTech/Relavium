@@ -204,6 +204,21 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
+  it('/cost reports the session spend (no cost ⇒ $0.0000) on the non-TTY path, without ending the session', async () => {
+    const { d, err, store, sessionId } = deps(['/cost', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('Session cost: $0.0000');
+    // /cost is read-only: the session continued — the 'hello' turn persisted (user + assistant = 2).
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  it('/workflows reports a project-less cwd without crashing the REPL', async () => {
+    const { d, err, store, sessionId } = deps(['/workflows', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d); // the test cwd is a fresh temp dir ⇒ no .relavium/ project
+    expect(err()).toContain('No .relavium/ project found');
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // the session survived the command
+  });
+
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
     const { d, err, store, sessionId } = deps(['/help', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);

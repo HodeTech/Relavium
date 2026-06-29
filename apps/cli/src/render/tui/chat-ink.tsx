@@ -54,11 +54,10 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
   }
   if (entry.role === 'notice') {
     // Command output (`/workflows`, `/cost`): a dim block, distinct from the cyan user line + the assistant turn.
-    return (
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {stripTerminalControls(entry.text)}
-      </Text>
-    );
+    // NO `wrap` (like the assistant turn): multi-line output renders each line on its own row, and a long line
+    // WRAPS. `wrap="truncate-end"` would make ink's cli-truncate measure the whole \n-joined string and DROP
+    // every line after an over-wide one — silent data loss for the catalog list.
+    return <Text {...dimProps(color)}>{stripTerminalControls(entry.text)}</Text>;
   }
   return (
     <Box flexDirection="column">

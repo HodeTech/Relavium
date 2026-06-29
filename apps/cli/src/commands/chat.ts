@@ -373,6 +373,19 @@ export function createChatLineHandler(
     }
   };
 
+  // Surface command output (the /help list, /workflows catalog, /cost line) the right way for the active surface:
+  // the live ink view (TTY, non-`--json`) renders a NOTICE cleanly in-conversation; on the plain (non-TTY) and
+  // `--json` paths ink is NOT mounted (those drivers render the event stream, not the chat store), so write to
+  // stderr — a diagnostic that keeps stdout the pure event stream. (ink is mounted iff stdoutIsTty && !json.)
+  const interactive = deps.io.stdoutIsTty && !deps.global.json;
+  const emitOutput = (text: string): void => {
+    if (interactive) {
+      store.notice(text);
+    } else {
+      deps.io.writeErr(`${text}\n`);
+    }
+  };
+
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
   const replCtx: ReplCommandContext = {
@@ -412,28 +425,34 @@ export function createChatLineHandler(
         deps.io.writeErr(`export failed: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     },
-    // The interactive `/` palette lands in 2.5.C S3b; today `/help` prints the curated command list.
+    // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
     help: () => {
-      deps.io.writeErr(formatReplHelp());
+      emitOutput(formatReplHelp().trimEnd());
     },
-    // `/workflows` (2.5.C S4): the project's disk catalog, surfaced as a notice in the chat view. A project-less
-    // cwd is reported, not an error. Reuses the same loader + scanner as `relavium list`.
+    // `/workflows` (2.5.C S4): the project's disk catalog. A project-less cwd is reported, not an error; the same
+    // loader + scanner as `relavium list`.
     showWorkflows: () => {
-      const { projectConfigDir } = loadResolvedConfig({
-        cwd: deps.global.cwd,
-        configPath: deps.global.configPath,
-      });
-      if (projectConfigDir === undefined) {
-        store.notice(`No .relavium/ project found from ${deps.global.cwd}.`);
-        return;
+      // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
+      // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
+      try {
+        const { projectConfigDir } = loadResolvedConfig({
+          cwd: deps.global.cwd,
+          configPath: deps.global.configPath,
+        });
+        if (projectConfigDir === undefined) {
+          emitOutput(`No .relavium/ project found from ${deps.global.cwd}.`);
+          return;
+        }
+        const scan = (kind: CatalogKind): CatalogEntry[] =>
+          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
+        emitOutput(catalogNotice(scan('workflows'), scan('agents')));
+      } catch (err) {
+        emitOutput(`could not list workflows: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const scan = (kind: CatalogKind): CatalogEntry[] =>
-        discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
-      store.notice(catalogNotice(scan('workflows'), scan('agents')));
     },
-    // `/cost` (2.5.C S4): the session's cumulative spend, read from the live view state (the per-model breakdown is 2.6.C).
+    // `/cost` (2.5.C S4): the session's cumulative spend (the per-model breakdown is 2.6.C).
     showCost: () => {
-      store.notice(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
+      emitOutput(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
     },
   };
 
