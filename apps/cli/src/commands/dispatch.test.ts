@@ -2,16 +2,22 @@ import { describe, expect, it } from 'vitest';
 
 import { captureIo } from '../test-support.js';
 import {
+  boolFlag,
   buildAgentRunArgs,
   buildChatArgs,
   buildChatExportArgs,
   buildExportArgs,
   buildGateArgs,
   buildImportArgs,
+  buildProviderAddArgs,
+  buildProviderTestArgs,
   buildRunArgs,
   DISPATCHABLE_COMMAND_IDS,
   executeCommand,
+  optPositional,
+  optString,
   reqPositional,
+  stringList,
   type CommandInput,
   type DispatchContext,
 } from './dispatch.js';
@@ -37,10 +43,35 @@ const ctx: DispatchContext = {
   global: { json: false, color: false, cwd: '/tmp', configPath: undefined, verbosity: 'normal' },
 };
 
-describe('input extractors', () => {
+describe('input extractors (shared by every command)', () => {
   it('reqPositional returns the value or throws a clean invocation fault', () => {
     expect(reqPositional(input(['wf']), 0, 'workflow')).toBe('wf');
     expect(() => reqPositional(input([]), 0, 'workflow')).toThrow(/missing argument <workflow>/);
+  });
+
+  it('optPositional is the value or undefined', () => {
+    expect(optPositional(input(['x']), 0)).toBe('x');
+    expect(optPositional(input([]), 0)).toBeUndefined();
+  });
+
+  it('optString returns a string value, undefined for a boolean/list/absent', () => {
+    expect(optString('v')).toBe('v');
+    expect(optString(true)).toBeUndefined();
+    expect(optString(['a'])).toBeUndefined();
+    expect(optString(undefined)).toBeUndefined();
+  });
+
+  it('boolFlag is true only for present-and-true (false ≡ unset)', () => {
+    expect(boolFlag(true)).toBe(true);
+    expect(boolFlag(undefined)).toBe(false);
+    expect(boolFlag('x')).toBe(false);
+  });
+
+  it('stringList returns the list, or [] for a string/boolean/absent', () => {
+    expect(stringList(['a', 'b'])).toEqual(['a', 'b']);
+    expect(stringList('a')).toEqual([]);
+    expect(stringList(true)).toEqual([]);
+    expect(stringList(undefined)).toEqual([]);
   });
 });
 
@@ -105,12 +136,41 @@ describe('build*Args (argv → typed core args)', () => {
   it('gate: a missing runId is the clean invocation fault (a bare `gate` without `list`)', () => {
     expect(() => buildGateArgs(input([]))).toThrow(/`relavium gate` requires a <runId>/);
   });
+
+  it('provider.add: name + optional baseUrl (omitted when absent)', () => {
+    expect(buildProviderAddArgs(input(['anthropic'], { baseUrl: 'https://x' }))).toEqual({
+      action: 'add',
+      name: 'anthropic',
+      baseUrl: 'https://x',
+    });
+    const noBase = buildProviderAddArgs(input(['anthropic']));
+    expect(noBase).toEqual({ action: 'add', name: 'anthropic' });
+    expect('baseUrl' in noBase).toBe(false);
+  });
+
+  it('provider.test: name + optional model (omitted when absent)', () => {
+    expect(buildProviderTestArgs(input(['anthropic'], { model: 'haiku' }))).toEqual({
+      action: 'test',
+      name: 'anthropic',
+      model: 'haiku',
+    });
+    const noModel = buildProviderTestArgs(input(['anthropic']));
+    expect(noModel).toEqual({ action: 'test', name: 'anthropic' });
+    expect('model' in noModel).toBe(false);
+  });
 });
 
 describe('executeCommand', () => {
   it('an unknown command id is a clean invocation fault (never echoed — secret-safe)', () => {
     expect(() => executeCommand('definitely-not-a-command', input([]), ctx)).toThrow(
       /unknown command/,
+    );
+  });
+
+  it('an arg-extraction fault propagates through executeCommand unchanged (gate without a runId)', () => {
+    // executeCommand routes to the executor, whose build*Args throws the invocation fault before any side effect.
+    expect(() => executeCommand('gate', input([]), ctx)).toThrow(
+      /`relavium gate` requires a <runId>/,
     );
   });
 

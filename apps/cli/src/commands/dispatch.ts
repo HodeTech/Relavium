@@ -49,7 +49,13 @@ import { statusCommand } from './status.js';
 /** A parsed option value as a surface hands it in — a string, a boolean flag, a repeatable list, or absent. */
 export type CommandOptionValue = string | boolean | readonly string[] | undefined;
 
-/** The uniform, surface-agnostic parsed input a command executor consumes (commander argv, or a slash line). */
+/**
+ * The uniform, surface-agnostic parsed input a command executor consumes (commander argv, or a slash line). It is
+ * deliberately LOW-LEVEL: an option value is just a string / boolean / repeatable list, with no per-command
+ * schema. Each command's pure `build*Args` extractor below owns the interpretation; a slash/palette surface
+ * (2.5.C) builds a `CommandInput` against the manifest's arg shapes, so option arity (a repeatable `--input` vs a
+ * single `--out`) is resolved from the manifest, never guessed from this shape.
+ */
 export interface CommandInput {
   readonly positionals: readonly string[];
   readonly options: Readonly<Record<string, CommandOptionValue>>;
@@ -159,6 +165,24 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
     ...(comment === undefined ? {} : { comment }),
     ...(inputValue === undefined ? {} : { input: inputValue }),
     ...(gate === undefined ? {} : { gate }),
+  };
+}
+
+export function buildProviderAddArgs(input: CommandInput): ProviderCommandArgs {
+  const baseUrl = optString(input.options['baseUrl']);
+  return {
+    action: 'add',
+    name: reqPositional(input, 0, 'name'),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+  };
+}
+
+export function buildProviderTestArgs(input: CommandInput): ProviderCommandArgs {
+  const model = optString(input.options['model']);
+  return {
+    action: 'test',
+    name: reqPositional(input, 0, 'name'),
+    ...(model === undefined ? {} : { model }),
   };
 }
 
@@ -309,17 +333,7 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['logs', executeLogs],
   ['status', executeStatus],
   ['provider.list', providerExecutor(() => ({ action: 'list' }))],
-  [
-    'provider.add',
-    providerExecutor((input) => {
-      const baseUrl = optString(input.options['baseUrl']);
-      return {
-        action: 'add',
-        name: reqPositional(input, 0, 'name'),
-        ...(baseUrl === undefined ? {} : { baseUrl }),
-      };
-    }),
-  ],
+  ['provider.add', providerExecutor(buildProviderAddArgs)],
   [
     'provider.set-key',
     providerExecutor((input) => ({ action: 'set-key', name: reqPositional(input, 0, 'name') })),
@@ -328,17 +342,7 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
     'provider.remove-key',
     providerExecutor((input) => ({ action: 'remove-key', name: reqPositional(input, 0, 'name') })),
   ],
-  [
-    'provider.test',
-    providerExecutor((input) => {
-      const model = optString(input.options['model']);
-      return {
-        action: 'test',
-        name: reqPositional(input, 0, 'name'),
-        ...(model === undefined ? {} : { model }),
-      };
-    }),
-  ],
+  ['provider.test', providerExecutor(buildProviderTestArgs)],
 ]);
 
 /** Every manifest-command id that {@link executeCommand} can dispatch (the drift guard ties this to the manifest). */
