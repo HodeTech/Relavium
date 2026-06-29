@@ -36,11 +36,16 @@ interface HomeViewProps {
   readonly input: string;
   /** A build-failure message to show above the prompt (cleared on the next submit / a clean return). */
   readonly errorText?: string | undefined;
+  /** Transient command output — the `/doctor` report (2.5.C S5), shown above the prompt, cleared on the next
+   *  edit/submit. Multi-line + already secret-free (the doctor formatter sanitizes). */
+  readonly notice?: string | undefined;
   /** Injected clock for the relative-time labels (the projection is clock-free). */
   readonly nowMs: number;
   readonly cols: number;
   readonly rows: number;
   readonly color: boolean;
+  /** When the `/` palette is open it owns the bottom of the view, so the prompt + footer hint are suppressed (2.5.C S3c). */
+  readonly paletteOpen?: boolean;
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -91,7 +96,7 @@ function Prompt(props: Readonly<{ input: string; color: boolean }>): ReactElemen
 }
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, input, errorText, nowMs, cols, rows, color } = props;
+  const { snapshot, input, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
 
   // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
   // until a resize arrives, so the user must still be able to leave without resizing.
@@ -198,12 +203,27 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       )}
 
-      <Box marginTop={1} flexDirection="column">
-        <Prompt input={input} color={color} />
-        <Text {...dimProps(color)} wrap="truncate-end">
-          type a message to start a new chat · Ctrl-C to exit
-        </Text>
-      </Box>
+      {notice !== undefined && (
+        // The `/doctor` report — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
+        // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
+        // multi-line string. Already sanitized at the source (formatDoctorReport).
+        <Box marginTop={1}>
+          <Text {...dimProps(color)}>{notice}</Text>
+        </Box>
+      )}
+
+      {paletteOpen !== true && (
+        <Box marginTop={1} flexDirection="column">
+          <Prompt input={input} color={color} />
+          {/* The context-aware Home hint bar (2.5.C S6): at an empty prompt, surface the `/` palette (it only opens
+              from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint. */}
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {input.length === 0
+              ? '/ for commands · type a message to start a chat · Ctrl-C to exit'
+              : 'Enter to start the chat · Ctrl-C to exit'}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

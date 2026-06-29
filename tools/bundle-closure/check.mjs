@@ -6,20 +6,23 @@
  * resolves them. The danger is drift: an engine package adds a runtime dep, the bundle imports it, but the CLI
  * manifest is not updated — and a user's `npm i -g relavium` fails with `Cannot find module …`.
  *
- * This guard reads the BUILT bundle, extracts every external (bare-specifier) import it still carries, and
- * asserts that set equals the declared runtime `dependencies` exactly:
+ * This guard reads esbuild's BUILD METAFILE (`dist/metafile-esm.json`, emitted by tsup with `metafile: true`) —
+ * the bundler's OWN authoritative record of every import the output carries — and asserts the external set equals
+ * the declared runtime `dependencies` exactly:
  *   - a bundle import NOT declared  → ERROR (a broken install — the dangerous direction);
  *   - a declared dep NOT imported   → ERROR (dead dependency / stale manifest).
- * `@relavium/*` must NOT appear (they are inlined); node builtins and relative imports are ignored.
+ * Reading the metafile (not regex-scanning the minified bundle) means import-like text inside a string literal /
+ * comment / regex can never be mistaken for a dependency, and a real (e.g. dynamic `import()`) import can never be
+ * missed. `@relavium/*` must NOT appear (they are inlined); node builtins and relative imports are ignored.
  *
- * Build the CLI first, then run from the repo root:
+ * Build the CLI first (the build writes the metafile), then run from the repo root:
  *   pnpm --filter relavium build && node tools/bundle-closure/check.mjs
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { join } from 'node:path';
 
-const BUNDLE = 'apps/cli/dist/index.js';
+const METAFILE = 'apps/cli/dist/metafile-esm.json';
 const MANIFEST = 'apps/cli/package.json';
 
 const BUILTINS = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
@@ -30,21 +33,29 @@ function toPackageName(spec) {
   return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
 
-if (!existsSync(BUNDLE)) {
-  console.error(`✗ ${BUNDLE} not found — build the CLI first (pnpm --filter relavium build).`);
+if (!existsSync(METAFILE)) {
+  console.error(`✗ ${METAFILE} not found — build the CLI first (pnpm --filter relavium build).`);
   process.exit(1);
 }
 
-const code = readFileSync(BUNDLE, 'utf8');
-// Every external-import form esbuild can emit — minified (no spaces) or not: `from "x"`, side-effect
-// `import "x"`, dynamic `import("x")`, and CJS-interop `require("x")`. `import\s*\(` precedes the bare
-// `import\s*` branch so a dynamic import is matched by the former, not mis-split by the latter.
-const SPEC_RE = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s*)["']([^"']+)["']/g;
+const meta = JSON.parse(readFileSync(METAFILE, 'utf8'));
+const outputKey = Object.keys(meta.outputs ?? {}).find((k) => k.endsWith('index.js'));
+if (outputKey === undefined) {
+  console.error(
+    `✗ ${METAFILE} has no index.js output — the build did not produce the expected bundle.`,
+  );
+  process.exit(1);
+}
+
 const imported = new Set();
-for (const match of code.matchAll(SPEC_RE)) {
-  const spec = match[1];
-  if (spec.startsWith('.') || spec.startsWith('/') || BUILTINS.has(spec)) continue;
-  imported.add(toPackageName(spec));
+for (const imp of meta.outputs[outputKey].imports ?? []) {
+  const spec = imp.path;
+  // Relative (`./…`) / absolute (`/…`) specifiers are internal (the bundler inlined them); node builtins (listed
+  // by esbuild with or without the `node:` prefix, incl. subpaths like `fs/promises`) resolve without a package.
+  if (spec.startsWith('.') || spec.startsWith('/')) continue;
+  const pkg = toPackageName(spec);
+  if (BUILTINS.has(spec) || BUILTINS.has(pkg)) continue;
+  imported.add(pkg);
 }
 
 const declared = new Set(

@@ -2,8 +2,9 @@
 
 > Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
-> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home, next) → 2.5.C (slash) →
-> 2.5.E (modes + per-tool approval). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
+> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
+> + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) **implemented + fully reviewed, PR pending**
+> → 2.5.E (modes + per-tool approval, next). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
 > lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
@@ -126,9 +127,9 @@ chat; an unwired tool is not advertised; a capability gap surfaces as a named, a
 both arms (merge, not replace). A security review of the host capability seam passes. **Required ADR:
 host-capability seam.**
 
-### 2.5.B — Bare-invocation Home (single ink tree, HomeStore, bracketed paste)
+### 2.5.B — Bare-invocation Home (single ink tree, HomeStore, bracketed paste) — ✅ **Done (PR #61, 2026-06-29)**
 
-> **Status:** 🚧 **Implemented — in review (PR #61)**, behind
+> **Status:** ✅ **Done (PR #61, 2026-06-29)**, behind
 > [ADR-0054](../../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted). Shipped: the bare-invocation
 > TTY gate in `run.ts` (`shouldOpenHome` = `stdoutIsTty && stdinIsTty && !json && !isCiEnv`, the help + exit-`0`
 > meta-op preserved byte-for-byte on every non-interactive path); the bounded, **indexed** `history.db` read seam +
@@ -139,8 +140,8 @@ host-capability seam.**
 > SIGINT/SIGTERM lifecycle** (clean Home exit `0`; an external signal → `128+signo` 130/143 with bounded MCP
 > teardown; the in-Home chat's exit-`4` consumed by the loop); **bracketed paste** (DECSET 2004, the marker
 > handling + the Ctrl-C escape + the editable-buffer gate); the first-user-message session title; and the
-> `docs/reference/cli/home.md` canonical contract. Each step landed through an opus + sonnet review loop. Not
-> yet ✅ Done — pending PR #61 merge. The richer slash palette / `@`-mention / mode keymap remain forthcoming
+> `docs/reference/cli/home.md` canonical contract. Each step landed through an opus + sonnet review loop, and
+> PR #61 merged 2026-06-29. The richer slash palette / `@`-mention / mode keymap remain forthcoming
 > (2.5.C / 2.5.E).
 
 Today the bare invocation prints help and exits `0` (`apps/cli/src/run.ts`); `commander` deliberately
@@ -187,31 +188,59 @@ ADR: bare-invocation interactive-entry contract.**
 
 ### 2.5.C — In-app slash registry, command palette, `/help`, `/doctor`, `/workflows`
 
-A single shared dispatch table behind `commander`, the palette, and the in-REPL slash commands — a
-small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of other agent CLIs).
+> **Status:** 🚧 **Implemented + fully reviewed; PR pending — not yet ✅ Done (awaits merge).**
+> [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) is **Accepted (2026-06-29)**;
+> the command-manifest + in-REPL-slash contracts are canonically homed in
+> [commands.md](../../reference/cli/commands.md) and [chat-session.md](../../reference/cli/chat-session.md).
+> Delivered across S1–S6, each behind the per-step **opus + sonnet** review loop, with a **dedicated adversarial
+> security pass** on the security-sensitive S5 (`/doctor --deep`). **Decided design:** the `/` palette is the
+> discovery entry point in **both Home and chat** — a curated **two-registry** model (the shell `COMMAND_MANIFEST`
+> vs the in-REPL `REPL_COMMANDS`; no command in both, so no cross-surface divergence).
+>
+> **Per-step ledger** (branch `development`):
+> - **S1** the command manifest (drift-guarded against the commander tree) · **S2** the shared `executeCommand`
+>   dispatch table · **S3** the curated `REPL_COMMANDS` registry + `/help` + the filterable `/` palette (chat **and**
+>   Home, one ink tree, a single `useInput` owner) · **S4** the `notice` output channel + `/workflows` + `/cost`.
+> - **S5** `/doctor` (fast + `--deep`, **both** surfaces) + the slash `name + args` dispatch upgrade + a new Home
+>   output surface. The dedicated security pass found a **HIGH, exploitable** issue — `/doctor --deep` connected
+>   *every* config `[[mcp_servers]]` registration (an arbitrary-spawn primitive from an imported `project.toml`),
+>   and could orphan a child on a timeout+exit window — and drove a root-cause redesign: the `--deep` MCP tier is
+>   now **read-only**, reporting the live session's already-connected status, never a fresh connect/spawn.
+> - **S6** the context-aware footer hint-bar surfacing `/ for commands` at an empty prompt. **`/shortcuts` was
+>   dropped** — its discoverability intent is folded into the footer + the palette's own nav hints (the palette
+>   IS the interactive command reference), avoiding a redundant static-reference command.
+
+**Two** purpose-built, canonical, **alias-free** registries (the [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
+amendment — avoiding the 40–100-command sprawl of other agent CLIs; no command appears in both): a **shell**
+`COMMAND_MANIFEST` behind `commander` + the `executeCommand` dispatch table + `relavium --help --json`, and a
+**curated in-REPL** `REPL_COMMANDS` behind the `/` palette + the slash commands.
 
 **Tasks:**
 
 - Extract the per-command wiring currently inside the `register*` bodies (`apps/cli/src/commands/specs.ts`)
-  into a shared dispatch module a `commander` action, the palette, and a slash command all call.
-- Implement a filterable `/` palette and the Home/chat slash taxonomy (canonically homed in
-  `docs/reference/cli/home.md`, authored in 2.5.B); a command manifest
-  (`{ id, label, canonical, effect, modeScope }`) is the single source for the palette, slash help,
-  and `relavium --help --json`.
+  into a shared `executeCommand` dispatch table that a `commander` action and a `--help --json` consumer call.
+- Implement a filterable `/` palette + the curated in-REPL slash registry (`REPL_COMMANDS`) for Home/chat
+  (canonically homed in `docs/reference/cli/commands.md`). The **shell** command manifest
+  (`{ id, label, description, args?, effect, modeScope? }`, [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md))
+  is the single source for `commander`, the `executeCommand` dispatch, and `relavium --help --json`; the palette,
+  `/help`, and the unknown-slash hint derive from `REPL_COMMANDS` — NOT the manifest (no cross-surface divergence).
 - `/doctor` — a staged health check (fast: keychain / config / wired tool capabilities; `--deep`:
-  provider-key validation + MCP connectivity), rendered incrementally as each check settles.
+  provider-key validation + the live session's MCP status). **Security note:** the `--deep` MCP tier is
+  **read-only** — it reports the bound agent's already-connected servers, it does NOT connect/spawn (a
+  security-review decision — re-connecting would spawn unreferenced registrations from an imported config).
 - `/workflows` — the disk-discovery catalog (`apps/cli/src/workflows/catalog.ts`); `/help` — the
-  palette; an unknown slash prints a sanitized, secret-free hint.
-- **Discoverability:** a `/shortcuts` command (derived from the manifest — zero extra source) and a
-  persistent footer hint-bar surfacing the 2–3 most relevant keys per context (so the mode/`@`/`!`/`Esc`
-  ergonomics of 2.5.D/E are findable, not hidden); `/cost` — the session-cumulative spend (an
-  `effect: read` manifest entry; the per-model breakdown is 2.6.C).
+  palette; an unknown slash (or an undeclared arg on a known command) prints a sanitized, secret-free hint.
+- **Discoverability:** a context-aware footer hint-bar surfacing `/ for commands` at an empty prompt (where
+  `/` opens the palette) and the palette's own nav hints (`↑/↓ · Enter · Esc`). **`/shortcuts` was dropped** —
+  the footer + palette cover keymap discoverability in context, so a separate static-reference command is
+  redundant. `/cost` — the session-cumulative spend (`effect: read`; the per-model breakdown is 2.6.C).
 
 **Acceptance:** every existing subcommand also reachable through the palette/slash with no behaviour
 change; `/doctor` reports the real health (and would have explained the original root-cause symptom);
-`/workflows` lists discovered workflows; `/shortcuts` and the footer hint-bar make the keymap discoverable;
-the palette filters; an unknown slash is safe. **Required ADR: in-app slash command system + command
-manifest.**
+`/workflows` lists discovered workflows; the footer hint-bar + the palette's nav hints make the keymap
+discoverable (no separate `/shortcuts`); the palette filters; an unknown slash / undeclared arg is safe;
+`/doctor --deep` never connects/spawns an unreferenced MCP server. **Required ADR: in-app slash command
+system + command manifest (ADR-0056).**
 
 ### 2.5.D — Chat input ergonomics
 

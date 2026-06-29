@@ -99,7 +99,7 @@ flowchart TD
 | 0053 | [MCP network-transport (`sse`/`websocket`) egress security — SSRF enforcement on the one shared primitive, and the explicit per-server local-endpoint opt-in](0053-mcp-network-transport-egress-security.md) | Accepted | 2026-06-26 |
 | 0054 | [Bare `relavium` invocation opens an interactive Home (TTY only), preserving the meta-op contract](0054-cli-bare-invocation-interactive-home.md) | Accepted | 2026-06-29 |
 | 0055 | [Shared CLI tool-environment factory — `ToolHost`, `ToolPolicy`, and dispatch context as separate channels](0055-cli-host-capability-seam-tool-environment-factory.md) | Accepted | 2026-06-28 |
-| 0056 | [In-app slash command system driven by a single command manifest](0056-cli-in-app-slash-command-system-and-manifest.md) | Proposed | 2026-06-28 |
+| 0056 | [In-app slash command system driven by a single command manifest](0056-cli-in-app-slash-command-system-and-manifest.md) | Accepted | 2026-06-29 |
 | 0057 | [Reseat-less chat modes and per-tool approval (with mid-turn abort)](0057-cli-chat-modes-and-per-tool-approval.md) | Proposed | 2026-06-28 |
 | 0058 | [`@relavium/authoring` package and the conversational-authoring pre-flight contract](0058-relavium-authoring-package-and-conversational-authoring.md) | Proposed | 2026-06-28 |
 | 0059 | [Mid-session model switching via host-side reseat (refines ADR-0024)](0059-cli-mid-session-model-reseat.md) | Proposed | 2026-06-28 |

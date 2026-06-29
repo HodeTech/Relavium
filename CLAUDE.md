@@ -75,8 +75,11 @@ feature-complete (published v0.1.1)**. **Phase 2.5 (CLI Consolidation) is now un
 base **2.5.A** — the shared `assembleToolEnv` tool-environment factory (host `fs`+`process` arms, the
 advertise-filter, **EA1** `tool_unavailable`, **EA2** real failed-turn usage) wired into both the chat and
 run paths — landed **PR #60 (2026-06-28)**, behind [ADR-0055](docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md),
-**reaching milestone M2.5-1**; the `egress`/`os` arms + write-capable chat are deferred to 2.5.E/ADR-0057. The
-next pickup is **2.5.B** (the bare-invocation Home). For live status, per-PR history, milestone dates, and open
+**reaching milestone M2.5-1**; the `egress`/`os` arms + write-capable chat are deferred to 2.5.E/ADR-0057; and
+**2.5.B** (the bare-invocation interactive Home — the TTY-gated bare `relavium` → a read-only management strip
+over `history.db` that graduates into in-process chat, one ink tree + one SIGINT/SIGTERM lifecycle + bracketed
+paste) landed **PR #61 (2026-06-29)**, behind [ADR-0054](docs/decisions/0054-cli-bare-invocation-interactive-home.md);
+**the next pickup is 2.5.C** (the in-app slash registry / command palette). For live status, per-PR history, milestone dates, and open
 obligations, see the canonical home [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md)
 is the public overview.
 

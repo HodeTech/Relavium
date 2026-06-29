@@ -1,7 +1,21 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
-import { describe, expect, it } from 'vitest';
+import type { LlmProvider } from '@relavium/llm';
+import { describe, expect, it, vi } from 'vitest';
 
-import { neededProviderIds, providerKeyEnvVar } from './providers.js';
+import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
+import { neededProviderIds, providerKeyEnvVar, validateProviderKey } from './providers.js';
+
+// A test key assembled at runtime (no contiguous secret literal — leakwatch).
+const TEST_KEY = ['sk', 'prov', '90ABCDEF'].join('-');
+// A REAL LlmProvider fixture (no double cast) — only `generate` is exercised; `stream` is a fail-loud stub.
+const fakeProvider = (generate: LlmProvider['generate']): LlmProvider => ({
+  id: 'anthropic',
+  generate,
+  stream: () => {
+    throw new Error('stream is not exercised by validateProviderKey');
+  },
+  supports: CHAT_TEXT_CAPABILITY_FLAGS,
+});
 
 /** Assemble a parsed workflow from an `agents:` block and the `nodes:` that reference them. */
 function parse(agentsYaml: string, nodesYaml: string, edgesYaml: string): WorkflowDefinition {
@@ -117,5 +131,55 @@ describe('providerKeyEnvVar', () => {
   it('maps a lowercase provider id to its uppercase env var', () => {
     expect(providerKeyEnvVar('anthropic')).toBe('RELAVIUM_ANTHROPIC_API_KEY');
     expect(providerKeyEnvVar('deepseek')).toBe('RELAVIUM_DEEPSEEK_API_KEY');
+  });
+});
+
+// The shared redaction seam (used by `provider test` AND the `/doctor --deep` probe) — its security contract is
+// tested DIRECTLY here, not only through its two callers.
+describe('validateProviderKey', () => {
+  it('reports ok with the test model on a successful ping', async () => {
+    const generate = vi.fn().mockResolvedValue({});
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    expect(result).toEqual({ ok: true, detail: 'key works (m-test)' });
+    expect(generate).toHaveBeenCalledWith(expect.anything(), TEST_KEY); // the key reached generate, not the detail
+  });
+
+  it('REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)', async () => {
+    const generate = vi
+      .fn()
+      .mockRejectedValue(new Error(`401 invalid_api_key: ${TEST_KEY} rejected`));
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    expect(result.ok).toBe(false);
+    expect(result.detail).not.toContain(TEST_KEY);
+    expect(result.detail).toContain('90ABCDEF'.slice(-4)); // the keyHint last-4 survives
+  });
+
+  it('does not attach the error as a cause (no nested field a --verbose render could leak)', async () => {
+    const generate = vi.fn().mockRejectedValue(new Error(`boom ${TEST_KEY}`));
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    // The result is a plain value — there is no `cause`/`error` field carrying the raw key anywhere on it.
+    expect(JSON.stringify(result)).not.toContain(TEST_KEY);
+  });
+
+  it('guards an empty key (the split("") footgun) without calling generate', async () => {
+    const generate = vi.fn();
+    const result = await validateProviderKey(fakeProvider(generate), '', 'm-test');
+    expect(result).toEqual({ ok: false, detail: 'key test failed — (no key)' });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('passes an abort signal to the request (the internal bound)', async () => {
+    const generate = vi.fn().mockResolvedValue({});
+    await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    // The request carries the internal AbortController's signal (validateProviderKey always sets it).
+    expect(generate.mock.calls[0]?.[0]).toHaveProperty('signal');
+  });
+
+  it('bounds a hanging request at the timeout (a stalled provider cannot hang the CLI)', async () => {
+    const generate: LlmProvider['generate'] = () => new Promise(() => {}); // never resolves, ignores the signal
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test', 5);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('timeout');
+    expect(result.detail).not.toContain(TEST_KEY);
   });
 });

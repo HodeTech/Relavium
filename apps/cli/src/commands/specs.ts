@@ -1,50 +1,19 @@
-import { randomUUID } from 'node:crypto';
-
-import { createProviderStore } from '@relavium/db';
 import type { Command } from 'commander';
 
-import { loadResolvedConfig } from '../config/load.js';
-import { openLocalDb } from '../db/open.js';
-import { createProviderResolver } from '../engine/providers.js';
-import { openHistoryStore } from '../history/open.js';
-import { openSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { selectChatDriver } from '../render/tui/chat-ink.js';
-import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
-import { createOsKeychainStore } from '../secrets/os-keychain.js';
-import { readSecretFromStdin } from '../secrets/read-secret.js';
-import { agentRunCommand } from './agent-run.js';
-import { chatCommand, chatResumeCommand } from './chat.js';
-import { chatExportCommand } from './chat-export.js';
-import { chatListCommand } from './chat-list.js';
-import { createCommand } from './create.js';
-import { exportCommand } from './export.js';
-import { gateCommand } from './gate.js';
-import { gateListCommand } from './gate-list.js';
-import { importCommand } from './import.js';
-import { listCommand } from './list.js';
-import { logsCommand } from './logs.js';
-import {
-  runProviderCommand,
-  type ProviderCommandArgs,
-  type ProviderCommandDeps,
-} from './provider.js';
-import { runCommand } from './run.js';
-import { statusCommand } from './status.js';
+import { executeCommand } from './dispatch.js';
 
 /**
  * The documented command surface (canonical home:
- * [commands.md](../../../../docs/reference/cli/commands.md)). `run` (2.D), `gate` + `gate list` (2.G/2.I),
- * `provider` (2.C), and the read commands `list` / `logs` / `status` (2.I) are real commands; the remaining
- * confirmed pre-chat commands are registered as clean "not-yet-available" stubs until their own workstreams.
- * The whole chat family is now live — `chat` (2.M), `chat-resume` (2.N), `chat-list` (2.O), `chat-export`
- * (2.P), and `agent run` (2.Q) — and the YAML-authoring commands `create` / `import` / `export` (2.J) are live,
- * all via their `register*` functions below. The remaining `STUB_COMMANDS` are `init` (a later workstream) and
- * `budget resume` (a tracked follow-up) — each shows the documented "not available yet (lands in …)" message
- * (not commander's "unknown command") until it lands.
+ * [commands.md](../../../../docs/reference/cli/commands.md)). Every real command's registration here is a thin
+ * `commander` adapter: it parses argv into a uniform {@link import('./dispatch.js').CommandInput} and calls the
+ * shared {@link executeCommand} table ([dispatch.ts](dispatch.ts), [ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md)),
+ * so the per-command dependency wiring lives once and the `commander` / palette / slash surfaces can never
+ * diverge. The remaining `STUB_COMMANDS` are `init` (a later workstream) and `budget` (a tracked follow-up) —
+ * each shows the documented "not available yet (lands in …)" message until it lands.
  */
 
 /** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
@@ -60,7 +29,7 @@ interface StubSpec {
   readonly landsIn: string;
 }
 
-const STUB_COMMANDS: readonly StubSpec[] = [
+export const STUB_COMMANDS: readonly StubSpec[] = [
   {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
@@ -116,28 +85,18 @@ function registerRun(program: Command, ctx?: CommandContext): void {
   }
 
   run.action(async (workflow: string, opts: { input?: readonly string[] }) => {
-    // One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6).
-    const keychain = createOsKeychainStore();
-    ctx.result.exitCode = await runCommand(
-      { workflow, input: opts.input ?? [] },
-      {
-        io: ctx.io,
-        global: ctx.global,
-        // Production wires durable run history (2.H) + the keychain-backed key resolver (2.C): the real CLI
-        // persists to ~/.relavium/history.db and resolves keys via the OS keychain → env var.
-        openRunStore: openHistoryStore,
-        providers: createProviderResolver(ctx.io.env, keychain),
-        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
-      },
+    ctx.result.exitCode = await executeCommand(
+      'run',
+      { positionals: [workflow], options: { input: opts.input } },
+      ctx,
     );
   });
 }
 
 /**
- * Register `relavium chat [--agent <ref>]` (2.M — the agent-first interactive REPL over `AgentSession`).
- * Production wires the keychain-backed key resolver (2.C), durable session persistence (over the shared
- * `history.db`, 2.H/ADR-0050), and the TTY-aware driver (ink for a real terminal, the plain line loop
- * otherwise). `/exit` ends the session with exit code 4.
+ * Register `relavium chat [--agent <ref>]` (2.M — the agent-first interactive REPL over `AgentSession`). The
+ * dispatch wires the keychain-backed key resolver (2.C), durable session persistence (2.H/ADR-0050), and the
+ * TTY-aware driver. `/exit` ends the session with exit code 4.
  */
 function registerChat(program: Command, ctx?: CommandContext): void {
   const chat = program
@@ -153,25 +112,17 @@ function registerChat(program: Command, ctx?: CommandContext): void {
   }
 
   chat.action(async (opts: { agent?: string }) => {
-    const keychain = createOsKeychainStore();
-    ctx.result.exitCode = await chatCommand(
-      { agent: opts.agent },
-      {
-        io: ctx.io,
-        global: ctx.global,
-        providers: createProviderResolver(ctx.io.env, keychain),
-        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
-        openSessionStore,
-        drive: selectChatDriver,
-      },
+    ctx.result.exitCode = await executeCommand(
+      'chat',
+      { positionals: [], options: { agent: opts.agent } },
+      ctx,
     );
   });
 }
 
 /**
  * Register `relavium chat-resume <sessionId>` (2.N) — reload a persisted session from `history.db` and continue
- * it in the same REPL. Production wires the keychain-backed key resolver (2.C) + the TTY-aware driver, like
- * `chat`. An unknown session id is a clean exit-2 invocation fault; `/exit` ends with exit code 4.
+ * it in the same REPL. An unknown session id is a clean exit-2 invocation fault; `/exit` ends with exit code 4.
  */
 function registerChatResume(program: Command, ctx?: CommandContext): void {
   const chatResume = program
@@ -189,17 +140,10 @@ function registerChatResume(program: Command, ctx?: CommandContext): void {
   }
 
   chatResume.action(async (sessionId: string) => {
-    const keychain = createOsKeychainStore();
-    ctx.result.exitCode = await chatResumeCommand(
-      { sessionId },
-      {
-        io: ctx.io,
-        global: ctx.global,
-        providers: createProviderResolver(ctx.io.env, keychain),
-        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
-        openSessionStore,
-        drive: selectChatDriver,
-      },
+    ctx.result.exitCode = await executeCommand(
+      'chat-resume',
+      { positionals: [sessionId], options: {} },
+      ctx,
     );
   });
 }
@@ -218,10 +162,8 @@ function registerChatList(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  chatList.action(() => {
-    // Pass the real opener explicitly (consistent with registerChat) so the production wiring is visible at
-    // the registration site and a future specs-level integration test can inject an in-memory store.
-    ctx.result.exitCode = chatListCommand({ io: ctx.io, global: ctx.global, openSessionStore });
+  chatList.action(async () => {
+    ctx.result.exitCode = await executeCommand('chat-list', { positionals: [], options: {} }, ctx);
   });
 }
 
@@ -245,14 +187,11 @@ function registerChatExport(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  chatExport.action((sessionId: string, opts: { out?: string; force?: boolean }) => {
-    ctx.result.exitCode = chatExportCommand(
-      {
-        sessionId,
-        ...(opts.out === undefined ? {} : { out: opts.out }),
-        force: opts.force ?? false,
-      },
-      { io: ctx.io, global: ctx.global, openSessionStore },
+  chatExport.action(async (sessionId: string, opts: { out?: string; force?: boolean }) => {
+    ctx.result.exitCode = await executeCommand(
+      'chat-export',
+      { positionals: [sessionId], options: { out: opts.out, force: opts.force } },
+      ctx,
     );
   });
 }
@@ -274,9 +213,10 @@ function registerCreate(program: Command, ctx?: CommandContext): void {
     return;
   }
   create.action(async (opts: { force?: boolean }) => {
-    ctx.result.exitCode = await createCommand(
-      { force: opts.force ?? false },
-      { io: ctx.io, global: ctx.global },
+    ctx.result.exitCode = await executeCommand(
+      'create',
+      { positionals: [], options: { force: opts.force } },
+      ctx,
     );
   });
 }
@@ -300,10 +240,11 @@ function registerExport(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  exportCmd.action((id: string, opts: { out?: string; force?: boolean }) => {
-    ctx.result.exitCode = exportCommand(
-      { id, ...(opts.out === undefined ? {} : { out: opts.out }), force: opts.force ?? false },
-      { io: ctx.io, global: ctx.global },
+  exportCmd.action(async (id: string, opts: { out?: string; force?: boolean }) => {
+    ctx.result.exitCode = await executeCommand(
+      'export',
+      { positionals: [id], options: { out: opts.out, force: opts.force } },
+      ctx,
     );
   });
 }
@@ -326,10 +267,11 @@ function registerImport(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  importCmd.action((path: string, opts: { force?: boolean }) => {
-    ctx.result.exitCode = importCommand(
-      { path, force: opts.force ?? false },
-      { io: ctx.io, global: ctx.global },
+  importCmd.action(async (path: string, opts: { force?: boolean }) => {
+    ctx.result.exitCode = await executeCommand(
+      'import',
+      { positionals: [path], options: { force: opts.force } },
+      ctx,
     );
   });
 }
@@ -337,8 +279,7 @@ function registerImport(program: Command, ctx?: CommandContext): void {
 /**
  * Register `relavium agent run <agent>` (2.Q) — a one-shot, non-interactive agent invocation over the same
  * `AgentSession` infra. The prompt is piped on stdin; `--input k=v` adds `{{ctx.*}}` variables; `--fixture`
- * replays a recorded cassette (offline). Production resolves keys via the OS keychain (skipped under
- * `--fixture`). A bare `relavium agent` (no subcommand) is a clean exit-2 invocation fault.
+ * replays a recorded cassette (offline). A bare `relavium agent` (no subcommand) is a clean exit-2 fault.
  */
 function registerAgent(program: Command, ctx?: CommandContext): void {
   const agent = program.command('agent').description('Manage and run agents.');
@@ -364,20 +305,10 @@ function registerAgent(program: Command, ctx?: CommandContext): void {
   }
 
   run.action(async (agentRef: string, opts: { input?: readonly string[]; fixture?: string }) => {
-    const keychain = createOsKeychainStore();
-    ctx.result.exitCode = await agentRunCommand(
-      {
-        agent: agentRef,
-        input: opts.input ?? [],
-        ...(opts.fixture === undefined ? {} : { fixture: opts.fixture }),
-      },
-      {
-        io: ctx.io,
-        global: ctx.global,
-        // A non-fixture run resolves keys via the OS keychain → env var (2.C), like `run`/`chat`.
-        providers: createProviderResolver(ctx.io.env, keychain),
-        mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
-      },
+    ctx.result.exitCode = await executeCommand(
+      'agent.run',
+      { positionals: [agentRef], options: { input: opts.input, fixture: opts.fixture } },
+      ctx,
     );
   });
   // A bare `relavium agent` (no `run`) is a clean invocation fault, not a thrown stack.
@@ -432,30 +363,29 @@ function registerGate(program: Command, ctx?: CommandContext): void {
         gate?: string;
       },
     ) => {
-      if (runId === undefined) {
-        // No runId and no `list` subcommand matched — a clean invocation fault, not a thrown stack.
-        throw new CliError(
-          'invalid_invocation',
-          '`relavium gate` requires a <runId> (or use `relavium gate list`).',
-        );
-      }
-      ctx.result.exitCode = await gateCommand(
-        { runId, ...opts },
+      ctx.result.exitCode = await executeCommand(
+        'gate',
         {
-          io: ctx.io,
-          global: ctx.global,
-          // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
-          providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+          positionals: runId === undefined ? [] : [runId],
+          options: {
+            approve: opts.approve,
+            reject: opts.reject,
+            comment: opts.comment,
+            input: opts.input,
+            gate: opts.gate,
+          },
         },
+        ctx,
       );
     },
   );
 
-  gateList.action((runId: string | undefined) => {
-    ctx.result.exitCode = gateListCommand(runId === undefined ? {} : { runId }, {
-      io: ctx.io,
-      global: ctx.global,
-    });
+  gateList.action(async (runId: string | undefined) => {
+    ctx.result.exitCode = await executeCommand(
+      'gate.list',
+      { positionals: runId === undefined ? [] : [runId], options: {} },
+      ctx,
+    );
   });
 }
 
@@ -471,10 +401,11 @@ function registerList(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  list.action((opts: { agents?: boolean }) => {
-    ctx.result.exitCode = listCommand(
-      { agents: opts.agents ?? false },
-      { io: ctx.io, global: ctx.global },
+  list.action(async (opts: { agents?: boolean }) => {
+    ctx.result.exitCode = await executeCommand(
+      'list',
+      { positionals: [], options: { agents: opts.agents } },
+      ctx,
     );
   });
 }
@@ -490,8 +421,8 @@ function registerLogs(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  logs.action((runId: string) => {
-    ctx.result.exitCode = logsCommand({ runId }, { io: ctx.io, global: ctx.global });
+  logs.action(async (runId: string) => {
+    ctx.result.exitCode = await executeCommand('logs', { positionals: [runId], options: {} }, ctx);
   });
 }
 
@@ -506,12 +437,12 @@ function registerStatus(program: Command, ctx?: CommandContext): void {
     });
     return;
   }
-  status.action(() => {
-    ctx.result.exitCode = statusCommand({ io: ctx.io, global: ctx.global });
+  status.action(async () => {
+    ctx.result.exitCode = await executeCommand('status', { positionals: [], options: {} }, ctx);
   });
 }
 
-/** Register `relavium provider` and its subcommands (2.C). Each opens the local db + keychain per invocation. */
+/** Register `relavium provider` and its subcommands (2.C). Each dispatch opens the local db + keychain per invocation. */
 function registerProvider(program: Command, ctx?: CommandContext): void {
   const provider = program
     .command('provider')
@@ -547,57 +478,41 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
     return;
   }
 
-  const dispatch = async (args: ProviderCommandArgs): Promise<void> => {
-    ctx.result.exitCode = await withProviderDeps(ctx, (deps) => runProviderCommand(args, deps));
-  };
   list.action(async () => {
-    await dispatch({ action: 'list' });
+    ctx.result.exitCode = await executeCommand(
+      'provider.list',
+      { positionals: [], options: {} },
+      ctx,
+    );
   });
   add.action(async (name: string, opts: { baseUrl?: string }) => {
-    await dispatch({
-      action: 'add',
-      name,
-      ...(opts.baseUrl === undefined ? {} : { baseUrl: opts.baseUrl }),
-    });
+    ctx.result.exitCode = await executeCommand(
+      'provider.add',
+      { positionals: [name], options: { baseUrl: opts.baseUrl } },
+      ctx,
+    );
   });
   setKey.action(async (name: string) => {
-    await dispatch({ action: 'set-key', name });
+    ctx.result.exitCode = await executeCommand(
+      'provider.set-key',
+      { positionals: [name], options: {} },
+      ctx,
+    );
   });
   removeKey.action(async (name: string) => {
-    await dispatch({ action: 'remove-key', name });
+    ctx.result.exitCode = await executeCommand(
+      'provider.remove-key',
+      { positionals: [name], options: {} },
+      ctx,
+    );
   });
   test.action(async (name: string, opts: { model?: string }) => {
-    await dispatch({
-      action: 'test',
-      name,
-      ...(opts.model === undefined ? {} : { model: opts.model }),
-    });
+    ctx.result.exitCode = await executeCommand(
+      'provider.test',
+      { positionals: [name], options: { model: opts.model } },
+      ctx,
+    );
   });
-}
-
-/** Open the local db + OS keychain for one `provider` invocation, run the core, and always close the db. */
-async function withProviderDeps(
-  ctx: CommandContext,
-  fn: (deps: ProviderCommandDeps) => Promise<ExitCode>,
-): Promise<ExitCode> {
-  const { homeDir } = loadResolvedConfig({
-    cwd: ctx.global.cwd,
-    configPath: ctx.global.configPath,
-  });
-  const { db, close } = openLocalDb(homeDir);
-  try {
-    const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver
-    const deps: ProviderCommandDeps = {
-      io: ctx.io,
-      store: createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
-      keychain,
-      resolver: createProviderResolver(ctx.io.env, keychain),
-      readSecret: readSecretFromStdin,
-    };
-    return await fn(deps);
-  } finally {
-    close();
-  }
 }
 
 /** First whitespace-delimited token of a command name — `logs <runId>` → `logs`. */

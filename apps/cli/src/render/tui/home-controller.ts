@@ -1,7 +1,20 @@
+import {
+  CHAT_PALETTE_COMMANDS,
+  HOME_PALETTE_COMMANDS,
+  type ReplCommandContext,
+} from '../../commands/repl-commands.js';
+import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
+import {
+  foldPaletteKey,
+  INITIAL_PALETTE_STATE,
+  shouldOpenPalette,
+  type PaletteKey,
+  type PaletteState,
+} from './palette-reducer.js';
 import { FORCE_TEARDOWN_MS } from './tui-constants.js';
 
 /**
@@ -39,6 +52,12 @@ export interface HomeControllerState {
   readonly pendingMessage: string;
   readonly input: string;
   readonly session: HomeChatSession | undefined;
+  /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
+   *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
+  readonly palette: PaletteState | undefined;
+  /** Transient command output in the bare Home — the `/doctor` report (2.5.C S5), rendered below the strip and
+   *  cleared on the next edit/submit. Multi-line + secret-free (the doctor formatter sanitizes). `undefined` ⇒ none. */
+  readonly notice: string | undefined;
 }
 
 export interface HomeControllerDeps {
@@ -56,6 +75,8 @@ export interface HomeControllerDeps {
    * instant bound so it need not wait real time.
    */
   readonly boundTeardown?: (teardown: Promise<void>) => Promise<void>;
+  /** The `/doctor` probes (2.5.C S5) — the Home palette's `/doctor` runs the fast tier over these into `notice`. */
+  readonly doctorProbes: DoctorProbes;
 }
 
 export interface HomeController {
@@ -64,7 +85,7 @@ export interface HomeController {
   readonly subscribe: (listener: () => void) => () => void;
   readonly getSnapshot: () => HomeControllerState;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
-  readonly handleKey: (input: string, key: HomeKey & ChatKey) => void;
+  readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
@@ -78,6 +99,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     pendingMessage: '',
     input: '',
     session: undefined,
+    palette: undefined,
+    notice: undefined,
   };
   let cancelFired = false;
   let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
@@ -85,6 +108,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let pasting = false; // inside a bracketed paste (DECSET 2004) — content is buffered literally, never submitted
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
+  // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
+  // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
+  let doctorRunId = 0;
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
   // graceful close never settles; the teardown still runs to completion in the background.
@@ -142,9 +168,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           session: undefined,
           input: '',
           errorText: undefined, // a stale build-failure banner must not haunt a clean return from a good chat
+          notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           mode: 'home',
+          palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
         });
       })
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
@@ -178,7 +206,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ input: '' }); // an empty prompt stays on the Home (no chat)
       return;
     }
-    set({ input: '', errorText: undefined, pendingMessage: trimmed, mode: 'loading' });
+    // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
+    // rather than only implied by the key-routing order — mirroring the `endChat` reset.
+    doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
+    set({
+      input: '',
+      errorText: undefined,
+      notice: undefined,
+      pendingMessage: trimmed,
+      mode: 'loading',
+      palette: undefined,
+    });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
     // session — its MCP child / frame loop — rather than orphan it (see teardownActive).
     const build = deps.startChat();
@@ -206,9 +244,82 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
+  // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
+  // (a gentle escape back to the prompt — never trapping the user).
+  // The Home's own REPL context (no live session): only `/exit` applies in HOME_PALETTE_COMMANDS, and it ends the
+  // Home cleanly; the chat-lifecycle capabilities are unreachable from the Home palette (cancel/export are
+  // chat-only) but the context shape requires them, so they are inert here.
+  // The Home's REPL context. Capabilities for CHAT-ONLY commands (cancel/export/cost/workflows — `availableIn`
+  // excludes the Home) are inert noops, unreachable from HOME_PALETTE_COMMANDS. A genuinely home-applicable command
+  // wires a REAL impl: `/doctor` (availableIn ['home','chat']) runs the fast tier into the Home `notice` surface.
+  const homeReplCtx: ReplCommandContext = {
+    exit: () => exitHome(),
+    cancel: () => undefined,
+    exportSession: () => undefined,
+    help: () => undefined,
+    showWorkflows: () => undefined,
+    showCost: () => undefined,
+    runDoctor: async (deep) => {
+      if (exiting) return;
+      const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
+      set({ notice: 'doctor: checking…' });
+      let text: string;
+      try {
+        text = formatDoctorReport(await runDoctorChecks(deep, deps.doctorProbes));
+      } catch {
+        text = 'doctor: check failed';
+      }
+      // Land ONLY if nothing moved on during the await: still THIS run (the prompt wasn't edited/submitted), still
+      // a bare idle Home (no chat started, mode still 'home'), and the palette isn't open (it cleared the notice).
+      if (
+        runId === doctorRunId &&
+        !exiting &&
+        state.mode === 'home' &&
+        state.session === undefined &&
+        state.palette === undefined
+      ) {
+        set({ notice: text });
+      }
+    },
+  };
+
+  const handlePaletteKey = (input: string, key: PaletteKey): void => {
+    const palette = state.palette;
+    if (palette === undefined) return;
+    // The palette runs in BOTH surfaces: a live chat (a session ⇒ submit the slash through the S3a dispatch) and
+    // the bare Home (no session ⇒ run the command over the Home's own context). The command set is the surface's.
+    const active = state.session;
+    const commands = active === undefined ? HOME_PALETTE_COMMANDS : CHAT_PALETTE_COMMANDS;
+    const step = foldPaletteKey(input, key, palette, commands);
+    if (step.kind === 'close') {
+      set({ palette: undefined });
+      return;
+    }
+    if (step.kind === 'run') {
+      set({ palette: undefined });
+      if (step.command !== undefined) {
+        if (active === undefined) {
+          // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
+          // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
+          void Promise.resolve(step.command.run(homeReplCtx, [])).catch(() => undefined);
+        } else {
+          sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
+        }
+      }
+      return;
+    }
+    set({ palette: step.state });
+  };
+
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
+    // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
+    if (shouldOpenPalette(input, key, running, state.input.length)) {
+      set({ palette: INITIAL_PALETTE_STATE });
+      return;
+    }
     const action = reduceChatKey(input, key, state.input, running);
     switch (action.kind) {
       case 'cancel':
@@ -242,15 +353,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl-C above still bails)
+    // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
+    // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
+    if (shouldOpenPalette(input, key, false, state.input.length)) {
+      set({ palette: INITIAL_PALETTE_STATE, notice: undefined }); // running another command clears a stale report
+      return;
+    }
     switch (action.kind) {
       case 'submit':
         submit();
         return;
       case 'append':
-        set({ input: state.input + action.char });
+        // The first keystroke after reading a `/doctor` report clears it (moving on) — no lingering block; the
+        // bump also invalidates an in-flight run so a slow `--deep` report can't reappear over what's now typed.
+        doctorRunId += 1;
+        set({ input: state.input + action.char, notice: undefined });
         return;
       case 'backspace':
-        set({ input: dropLastCodePoint(state.input) });
+        doctorRunId += 1;
+        set({ input: dropLastCodePoint(state.input), notice: undefined });
         return;
       case 'none':
         return;
@@ -282,13 +403,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // to exit/submit) — clear the latch and fall through to the normal dispatch (Home → exit, chat → /cancel).
         if (!(key.ctrl === true && input === 'c')) {
           // Literal content. Append verbatim (newlines kept) ONLY when the buffer is editable — drop it while a
-          // session builds (`loading`) or a chat turn streams (`chatRunning`), exactly as the keystroke gate does,
-          // so paste never diverges from typing (type-ahead is deferred, 2.5.B).
-          const editable = state.mode !== 'loading' && !chatRunning();
-          if (input.length > 0 && editable) set({ input: state.input + input });
+          // session builds (`loading`), a chat turn streams (`chatRunning`), or the `/` palette is open, exactly
+          // as the keystroke gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B).
+          const editable =
+            state.mode !== 'loading' && !chatRunning() && state.palette === undefined;
+          if (input.length > 0 && editable) {
+            // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
+            doctorRunId += 1;
+            set({ input: state.input + input, notice: undefined });
+          }
           return;
         }
         pasting = false;
+      }
+      // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
+      if (state.palette !== undefined) {
+        handlePaletteKey(input, key);
+        return;
       }
       if (state.mode === 'chat' && state.session !== undefined) {
         handleChatKey(state.session, input, key);

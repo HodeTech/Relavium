@@ -9,6 +9,7 @@
   },
   "files": [
     "dist",
+    "!dist/metafile-esm.json",
     "drizzle",
     "CHANGELOG.md"
   ],

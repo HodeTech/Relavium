@@ -7,6 +7,16 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 import { exportSession } from '../chat/export.js';
+import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
+import { assembleDoctorProbes } from '../chat/doctor-host.js';
+import { catalogNotice, costNotice } from '../chat/repl-info.js';
+import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
+import {
+  formatReplHelp,
+  replCommandList,
+  REPL_COMMANDS_BY_NAME,
+  type ReplCommandContext,
+} from './repl-commands.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
   buildChatSession,
@@ -111,6 +121,9 @@ export interface ChatCommandDeps {
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  /** The `/doctor` probes (2.5.C S5) — production assembles the real keychain/config/tool/provider/MCP probes;
+   *  a test injects a fake so it exercises `/doctor` without a real keychain or a live provider/MCP server. */
+  readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -133,6 +146,8 @@ export interface ChatResumeCommandDeps {
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
+  readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -158,6 +173,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     configPath: deps.global.configPath,
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
+  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   const store = createChatStore(deps.global.color);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
@@ -171,7 +187,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     now,
     uuid,
     providers,
-    mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+    mcpSecretResolver,
     mcpRegistrations: config.mcpServers,
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
@@ -208,8 +224,20 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     throw err;
   }
 
+  const doctorProbes =
+    deps.doctorProbes ??
+    assembleDoctorProbes({
+      cwd: deps.global.cwd,
+      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+      resolver: providers,
+      // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+      // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+      agentMcpServers: built.agent.mcp_servers ?? [],
+      mcpSkipped: built.mcpSkipped,
+    });
+
   return runReplLoop(
-    { built, opened, store, persister, startSession: () => built.session.start() },
+    { built, opened, store, persister, doctorProbes, startSession: () => built.session.start() },
     deps,
   );
 }
@@ -234,6 +262,7 @@ export async function chatResumeCommand(
     configPath: deps.global.configPath,
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
+  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
 
   let built: BuiltChatSession;
@@ -257,7 +286,7 @@ export async function chatResumeCommand(
       messages: loaded.messages,
       now,
       providers,
-      mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
@@ -312,9 +341,24 @@ export async function chatResumeCommand(
     throw err;
   }
 
+  const doctorProbes =
+    deps.doctorProbes ??
+    assembleDoctorProbes({
+      cwd: deps.global.cwd,
+      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+      resolver: providers,
+      // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+      // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+      agentMcpServers: built.agent.mcp_servers ?? [],
+      mcpSkipped: built.mcpSkipped,
+    });
+
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
-  return runReplLoop({ built, opened, store, persister, startSession: () => {}, intro }, deps);
+  return runReplLoop(
+    { built, opened, store, persister, doctorProbes, startSession: () => {}, intro },
+    deps,
+  );
 }
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
@@ -323,6 +367,8 @@ interface ReplWiring {
   readonly opened: OpenedSessionStore;
   readonly store: ChatStoreController;
   readonly persister: SessionPersister;
+  /** The assembled `/doctor` probes (2.5.C S5) — the replCtx's `runDoctor` runs them over the notice channel. */
+  readonly doctorProbes: DoctorProbes;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
@@ -352,10 +398,10 @@ export interface ChatLineHandler {
  * state is internal — the caller reads it via `shouldStop` and fires the terminal via `cancelOnce` on teardown.
  */
 export function createChatLineHandler(
-  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister'>,
+  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister' | 'doctorProbes'>,
   deps: ChatReplDeps,
 ): ChatLineHandler {
-  const { built, opened, store, persister } = wiring;
+  const { built, opened, store, persister, doctorProbes } = wiring;
   let stop = false;
   let cancelled = false;
   const cancelOnce = (): void => {
@@ -365,21 +411,33 @@ export function createChatLineHandler(
     }
   };
 
-  const processLine = async (raw: string): Promise<void> => {
-    const line = raw.trim();
-    if (line.length === 0) return;
-    if (line === '/exit') {
-      stop = true;
-      return;
+  // Surface command output (the /help list, /workflows catalog, /cost line) the right way for the active surface:
+  // the live ink view (TTY, non-`--json`) renders a NOTICE cleanly in-conversation; on the plain (non-TTY) and
+  // `--json` paths ink is NOT mounted (those drivers render the event stream, not the chat store), so write to
+  // stderr — a diagnostic that keeps stdout the pure event stream. (ink is mounted iff stdoutIsTty && !json — keep
+  // this condition in sync with `selectChatDriver` in render/tui/chat-ink.tsx, which picks driveInk on the same test.)
+  const interactive = deps.io.stdoutIsTty && !deps.global.json;
+  const emitOutput = (text: string): void => {
+    if (interactive) {
+      store.notice(text);
+    } else {
+      deps.io.writeErr(`${text}\n`);
     }
-    if (line === '/cancel') {
+  };
+
+  // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
+  // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
+  const replCtx: ReplCommandContext = {
+    exit: () => {
+      stop = true;
+    },
+    cancel: () => {
       // 1.V has no per-turn abort that keeps the session alive, so /cancel ends the (persisted, resumable)
       // session — its in-flight turn is aborted and `chat-resume` (2.N) can reload it later.
       cancelOnce();
       stop = true;
-      return;
-    }
-    if (line === '/export') {
+    },
+    exportSession: () => {
       // Export the session-so-far to a `.relavium.yaml` scaffold (2.P, same ADR-0026 contract). It runs
       // BETWEEN turns (every completed turn is already persisted), reads the durable transcript, and writes
       // the file; it does NOT mark the row `exported` (a later turn's persist would clobber that — the
@@ -405,13 +463,84 @@ export function createChatLineHandler(
       } catch (err) {
         deps.io.writeErr(`export failed: ${err instanceof Error ? err.message : String(err)}\n`);
       }
-      return;
-    }
+    },
+    // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
+    help: () => {
+      emitOutput(formatReplHelp().trimEnd());
+    },
+    // `/workflows` (2.5.C S4): the project's disk catalog. A project-less cwd is reported, not an error; the same
+    // loader + scanner as `relavium list`.
+    showWorkflows: () => {
+      // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
+      // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
+      try {
+        const { projectConfigDir } = loadResolvedConfig({
+          cwd: deps.global.cwd,
+          configPath: deps.global.configPath,
+        });
+        if (projectConfigDir === undefined) {
+          // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
+          emitOutput('No .relavium/ project found from the current directory.');
+          return;
+        }
+        const scan = (kind: CatalogKind): CatalogEntry[] =>
+          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
+        emitOutput(catalogNotice(scan('workflows'), scan('agents')));
+      } catch (err) {
+        // Surface the failure by its CODE — a raw catalog CliError message embeds the absolute `.relavium/` path,
+        // which the REPL transcript / a screenshare need not carry.
+        const reason = err instanceof CliError ? err.code : 'unexpected error';
+        emitOutput(`could not list workflows: ${reason}`);
+      }
+    },
+    // `/cost` (2.5.C S4): the session's cumulative spend (the per-model breakdown is 2.6.C).
+    showCost: () => {
+      emitOutput(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
+    },
+    // `/doctor` (2.5.C S5): a staged setup health check; `--deep` adds the network/process tier (key + MCP
+    // validation). Each probe is secret-free + bounded; a thrown probe never crashes the REPL (reported as output).
+    runDoctor: async (deep) => {
+      // Synchronous acknowledgment that a SLOW probe started — only `--deep` validates providers + MCP (seconds);
+      // the fast tier is instant, so it needs no progress line. Parity with the Home's transient 'checking…'.
+      if (deep) emitOutput('doctor: validating providers + MCP…');
+      try {
+        emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
+      } catch {
+        // runDoctorChecks should not throw (every probe catches its own faults), so this is a defensive net.
+        // Keep it generic + consistent with the Home (home-controller.ts) — never surface an internal code.
+        emitOutput('doctor: check failed');
+      }
+    },
+  };
+
+  const processLine = async (raw: string): Promise<void> => {
+    const line = raw.trim();
+    if (line.length === 0) return;
     if (line.startsWith('/')) {
-      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
-      // terminal control sequence (or a flood) into stderr.
+      // Parse `/name [args]` (S5): split the post-slash string into a command name + arg tokens, so `/doctor
+      // --deep` dispatches `doctor` with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is
+      // rejected below), preserving the prior exact-match strictness while admitting declared flags.
+      const [name, ...tokens] = line.slice(1).split(/\s+/);
+      const command =
+        name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
+      if (command !== undefined) {
+        // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED
+        // through the notice channel — interactive errors belong in-view (ink), not on stderr behind the live view.
+        const allowed = new Set((command.args ?? []).map((arg) => arg.flag));
+        const bad = tokens.find((token) => !allowed.has(token));
+        if (bad !== undefined) {
+          emitOutput(
+            `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.`,
+          );
+          return;
+        }
+        await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
+        return;
+      }
+      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a terminal
+      // control sequence (or a flood). Routed through the notice channel (in-view on a TTY, stderr otherwise).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      deps.io.writeErr(`unknown command '${safe}'. Available: /exit, /cancel, /export.\n`);
+      emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
       return;
     }
     store.appendUser(line);

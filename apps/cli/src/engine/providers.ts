@@ -35,6 +35,119 @@ export function keyHint(key: string): string {
   return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
 }
 
+/** A known provider's metadata — display name, base URL, and a cheap model for the live key test. */
+export interface ProviderMeta {
+  readonly displayName: string;
+  readonly baseUrl: string;
+  readonly testModel: string;
+}
+
+/**
+ * The known providers (each has an `@relavium/llm` adapter). The single home for provider metadata — the
+ * `relavium provider` command (add / test) and the `/doctor --deep` key probe both read it, so a new provider's
+ * test model is defined once.
+ */
+/** The provider ids the CLI knows how to validate (those with a test model). The const tuple is the SOURCE OF
+ *  TRUTH — `satisfies` validates each is a real `ProviderId` (no cast, no widening), and {@link KNOWN_PROVIDERS}
+ *  is keyed on it, so the two cannot drift; the `/doctor` provider probe iterates it directly. */
+export const KNOWN_PROVIDER_IDS = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'deepseek',
+] as const satisfies readonly ProviderId[];
+
+export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], ProviderMeta> = {
+  anthropic: {
+    displayName: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    testModel: 'claude-haiku-4-5',
+  },
+  openai: {
+    displayName: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    testModel: 'gpt-5.4-mini',
+  },
+  gemini: {
+    displayName: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    testModel: 'gemini-2.5-flash',
+  },
+  deepseek: {
+    displayName: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    testModel: 'deepseek-chat',
+  },
+};
+
+/** The default per-request bound for a live key validation — long enough for a cold provider handshake, short
+ *  enough that a stalled provider can never hang `provider test` or `/doctor --deep`. */
+export const VALIDATE_KEY_TIMEOUT_MS = 10_000;
+
+/** The outcome of a {@link validateProviderKey} probe — `ok` plus a secret-free `detail` line. */
+export interface ProviderKeyValidation {
+  readonly ok: boolean;
+  /** Secret-free: `key works (<model>)` on success, or `key test failed — <redacted>` on failure. */
+  readonly detail: string;
+}
+
+/**
+ * Validate a provider key with a minimal live request (`maxTokens: 1` 'ping'). Returns a RESULT so the caller
+ * decides whether to throw (`provider test`) or collect it (the `/doctor --deep` probe) — the redaction lives
+ * here, in one tested place.
+ *
+ * SECURITY — the key is in scope here: `@relavium/llm` already scrubs secrets from its error messages, but we
+ * defensively redact any occurrence (`raw.split(key).join(keyHint(key))`) before surfacing AND never attach
+ * `err` as a cause (it could carry the key in a nested field a `--verbose` render might expose).
+ *
+ * The request is BOUNDED here — by an `AbortController` (cancels the in-flight request) AND a hard `Promise.race`
+ * timeout (settles the call even if an adapter ignores the signal) — so BOTH callers (`provider test` and the
+ * `/doctor --deep` probe) are bounded by construction; a stalled provider can never hang the CLI.
+ */
+export async function validateProviderKey(
+  provider: LlmProvider,
+  key: string,
+  model: string,
+  timeoutMs: number = VALIDATE_KEY_TIMEOUT_MS,
+): Promise<ProviderKeyValidation> {
+  // Defensive: an empty key would make the redaction `raw.split('').join(keyHint(''))` split on every character
+  // and garble the message (no secret leaks — the key is empty — but the detail becomes nonsense). All current
+  // callers resolve a non-empty key (createProviderResolver rejects `''`); this closes the footgun at the seam.
+  if (key.length === 0) {
+    return { ok: false, detail: 'key test failed — (no key)' };
+  }
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<ProviderKeyValidation>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ ok: false, detail: `key test failed — timeout (${timeoutMs}ms)` });
+    }, timeoutMs);
+  });
+  const probe = (async (): Promise<ProviderKeyValidation> => {
+    try {
+      await provider.generate(
+        {
+          model,
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          maxTokens: 1,
+          signal: controller.signal,
+        },
+        key,
+      );
+      return { ok: true, detail: `key works (${model})` };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      return { ok: false, detail: `key test failed — ${raw.split(key).join(keyHint(key))}` };
+    }
+  })();
+  try {
+    return await Promise.race([probe, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /**
  * The provider ids whose key is **guaranteed** needed by a parsed workflow — the **primary**
  * `provider` (the authored `agent.provider`, never derived from the model) of every inline agent

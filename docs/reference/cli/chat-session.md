@@ -43,15 +43,19 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 
-A small set of slash commands drives the REPL itself (not the agent):
+A small, **alias-free**, curated set of slash commands drives the REPL itself (not the agent) — the in-REPL surface of the command system ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C; the curated REPL set is `apps/cli/src/commands/repl-commands.ts`, distinct from the shell command surface). The `/help` list, the unknown-slash hint, and the `/` palette all derive from that one registry, so they cannot disagree. Heavy shell commands (`run`, `chat`, `provider`, …) stay shell-only — they are not in-REPL slashes.
 
 | Command | Effect |
 | --- | --- |
+| `/help` | List the available slash commands (**2.5.C**). Typing `/` at an idle prompt instead opens the interactive, filterable **`/` palette** over these commands (in both the chat and the bare Home). |
 | `/exit` | End the session cleanly and quit the REPL (**exit code 4**, below). |
 | `/cancel` | End the session (aborting any in-flight turn — relevant when entered as **Ctrl-C** mid-turn in TTY mode; a typed `/cancel` runs between turns). In Phase 1 the engine has no per-turn abort that keeps a session alive, so `/cancel` terminates it — but the session is **persisted and resumable** via `relavium chat-resume <sessionId>` (2.N). Exits with code 4. |
 | `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file (named `<sessionId>.relavium.yaml`) and reports the path; under `--json` it emits a `session:exported` event on the stream. It does **not** mark the session row `exported` (a later turn's persist would clobber that) — use `relavium chat-export` for the durable provenance mark. **Live (2.P / 2.Q).** |
+| `/workflows` | List the project's discovered workflows + agents (the disk catalog) as an in-view **notice** (**2.5.C S4**). A project-less cwd is reported, not an error. Chat-only today. |
+| `/cost` | Show the session's cumulative spend as an in-view **notice** (**2.5.C S4**); the per-model breakdown is Phase 2.6.C. Chat-only. |
+| `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
 
-An unrecognized `/…` command prints a one-line, secret-free notice and the prompt returns. In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
+An unrecognized `/…` command — or an **undeclared argument** on a known one (`/exit now`) — prints a one-line, secret-free notice and the prompt returns. A command may accept flags (`/doctor --deep`); the `/` palette runs the bare form, so a flag is opt-in by typing it. The idle footer surfaces `/ for commands` at an empty prompt (2.5.C S6). In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 
 ## Streaming
 

@@ -244,4 +244,15 @@ describe('createChatStore', () => {
     expect(repaints).toBe(1); // a note repaints immediately
     expect(store.getSnapshot().state.warnings).toEqual(["MCP tool 'x' skipped FAKE"]); // newline collapsed, ESC stripped
   });
+
+  it('notice() appends a command-output transcript entry (control seqs stripped, newlines KEPT for multi-line)', () => {
+    const store = createChatStore(false);
+    let repaints = 0;
+    store.subscribe(() => (repaints += 1));
+    store.notice('Workflows (1):\n  deploy' + String.fromCharCode(27) + '[31m'); // the ESC[31m must be stripped, the \n kept
+    expect(repaints).toBe(1); // a notice repaints immediately
+    expect(store.getSnapshot().state.transcript).toEqual([
+      { role: 'notice', text: 'Workflows (1):\n  deploy' }, // multi-line preserved, ANSI stripped
+    ]);
+  });
 });
