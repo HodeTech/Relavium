@@ -701,17 +701,33 @@ describe('createRunHistoryReader', () => {
     await store.persistEvent(
       evRun('run-x', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
     );
+    // ALL THREE excluded streaming types, so the test fails if any exclusion drifts or is misspelled.
     await store.persistEvent(
       evRun('run-x', 'agent:token', 2, { nodeId: 'g', token: 'a', model: 'claude-opus-4-8' }, ts),
     );
     await store.persistEvent(
-      evRun('run-x', 'agent:token', 3, { nodeId: 'g', token: 'b', model: 'claude-opus-4-8' }, ts),
+      evRun(
+        'run-x',
+        'agent:tool_call',
+        3,
+        { nodeId: 'g', model: 'claude-opus-4-8', toolId: 'read_file', toolInput: { path: 'x' } },
+        ts,
+      ),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-x',
+        'agent:tool_result',
+        4,
+        { nodeId: 'g', toolId: 'read_file', success: true, outputSummary: 'ok' },
+        ts,
+      ),
     );
     await store.persistEvent(
       evRun(
         'run-x',
         'human_gate:paused',
-        4,
+        5,
         { nodeId: 'g', gateId: 'g1', gateType: 'approval', message: 'ok?' },
         ts,
       ),
@@ -719,7 +735,10 @@ describe('createRunHistoryReader', () => {
 
     // The full log keeps the firehose (logs/resume need every event); the bounded state read drops only the
     // streaming events checkpoint reconstruction + gate detection ignore — keeping the gate-relevant events.
-    expect(reader.loadRunEvents('run-x').map((e) => e.type)).toContain('agent:token');
+    const full = reader.loadRunEvents('run-x').map((e) => e.type);
+    expect(full).toEqual(
+      expect.arrayContaining(['agent:token', 'agent:tool_call', 'agent:tool_result']),
+    );
     expect(reader.loadRunStateEvents('run-x').map((e) => e.type)).toEqual([
       'run:started',
       'node:started',
