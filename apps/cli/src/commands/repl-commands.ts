@@ -166,8 +166,8 @@ export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = PALETTE_COMMANDS.fi
   command.availableIn.includes('chat'),
 );
 
-/** The palette commands available in the bare Home (S3c) — `availableIn` includes `home` (today just `/exit`;
- *  the richer `/workflows` / `/doctor` info commands populate it in later 2.5.C steps). */
+/** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
+ *  (S5, pre-chat diagnostics). The chat-only info commands (`/workflows` / `/cost`) stay out of the Home set. */
 export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = PALETTE_COMMANDS.filter((command) =>
   command.availableIn.includes('home'),
 );

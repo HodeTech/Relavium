@@ -98,6 +98,12 @@ export async function validateProviderKey(
   model: string,
   signal?: AbortSignalLike,
 ): Promise<ProviderKeyValidation> {
+  // Defensive: an empty key would make the redaction `raw.split('').join(keyHint(''))` split on every character
+  // and garble the message (no secret leaks — the key is empty — but the detail becomes nonsense). All current
+  // callers resolve a non-empty key (createProviderResolver rejects `''`); this closes the footgun at the seam.
+  if (key.length === 0) {
+    return { ok: false, detail: 'key test failed — (no key)' };
+  }
   try {
     await provider.generate(
       {

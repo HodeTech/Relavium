@@ -113,8 +113,13 @@ export async function runDoctorChecks(
     checkTools(probes.toolHost),
   ];
   if (deep) {
-    if (probes.deepProviders !== undefined) checks.push(...(await probes.deepProviders()));
-    if (probes.deepMcp !== undefined) checks.push(...(await probes.deepMcp()));
+    // Run the two deep tiers CONCURRENTLY (each is itself a `Promise.all` over its targets), so the worst case is
+    // the slower tier, not their sum. The output order (providers, then MCP) is preserved.
+    const [providerChecks, mcpChecks] = await Promise.all([
+      probes.deepProviders?.() ?? Promise.resolve<readonly DoctorCheck[]>([]),
+      probes.deepMcp?.() ?? Promise.resolve<readonly DoctorCheck[]>([]),
+    ]);
+    checks.push(...providerChecks, ...mcpChecks);
   }
   return { checks };
 }
@@ -123,12 +128,21 @@ export async function runDoctorChecks(
 
 const GLYPH: Record<DoctorStatus, string> = { ok: '✓', warn: '⚠', fail: '✗' };
 
-/** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <label>: <detail>` row per check. */
+/** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <label>: <detail>` row per check.
+ *  Both the label AND the detail are sanitized — the Home renders these rows verbatim (no outer scrub like the
+ *  chat notice channel), so a label carrying a control char (e.g. a crafted MCP server id) is neutralized here. */
 export function formatDoctorReport(report: DoctorReport): string {
   const rows = report.checks.map(
-    (check) => `  ${GLYPH[check.status]} ${check.label}: ${sanitizeInline(check.detail)}`,
+    (check) => `  ${GLYPH[check.status]} ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`,
   );
   const failures = report.checks.filter((check) => check.status === 'fail').length;
-  const heading = failures === 0 ? 'doctor: all checks passed' : `doctor: ${failures} check(s) failed`;
+  const warnings = report.checks.filter((check) => check.status === 'warn').length;
+  // `warn` is visible at the heading level so a glanceable read can't mistake "no keys configured" for healthy.
+  const heading =
+    failures > 0
+      ? `doctor: ${failures} check(s) failed`
+      : warnings > 0
+        ? `doctor: ${warnings} warning(s)`
+        : 'doctor: all checks passed';
   return [heading, ...rows].join('\n');
 }

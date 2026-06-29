@@ -68,20 +68,31 @@ async function probeProvider(
   if (provider === undefined) {
     return failCheck(`provider:${id}`, id, 'no adapter');
   }
+  const timeoutMs = deps.timeoutMs ?? DEEP_PROBE_TIMEOUT_MS;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? DEEP_PROBE_TIMEOUT_MS);
-  try {
-    const result = await validateProviderKey(
-      provider,
-      key,
-      KNOWN_PROVIDERS[id].testModel,
-      controller.signal,
-    );
-    return result.ok
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // HARD outer bound (parity with the MCP probe): the AbortController cancels the in-flight request AND the race
+  // guarantees the probe settles even if an adapter ignores the signal — `/doctor` can never hang on a provider.
+  const timeout = new Promise<DoctorCheck>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(failCheck(`provider:${id}`, id, `timeout (${timeoutMs}ms)`));
+    }, timeoutMs);
+  });
+  const probe = validateProviderKey(
+    provider,
+    key,
+    KNOWN_PROVIDERS[id].testModel,
+    controller.signal,
+  ).then((result) =>
+    result.ok
       ? okCheck(`provider:${id}`, id, result.detail)
-      : failCheck(`provider:${id}`, id, sanitizeInline(result.detail));
+      : failCheck(`provider:${id}`, id, sanitizeInline(result.detail)),
+  );
+  try {
+    return await Promise.race([probe, timeout]);
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -137,6 +148,8 @@ async function probeOneServer(server: McpServerConfig, deps: McpProbeDeps): Prom
     return failCheck(`mcp:${server.id}`, server.id, detail);
   }
   const toolCount = outcome.client.toolDefs.length;
-  await outcome.client.close();
+  // The server connected + listed tools — that IS the health signal. Teardown is best-effort: a `close()` fault
+  // is teardown noise, not a probe failure (and must not reject the whole `/doctor` run via the Promise.all).
+  await outcome.client.close().catch(() => undefined);
   return okCheck(`mcp:${server.id}`, server.id, `${toolCount} tool(s)`);
 }

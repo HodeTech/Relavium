@@ -128,10 +128,26 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('✗ config: bad');
   });
 
-  it('uses the warn glyph for warn checks', () => {
+  it('uses the warn glyph and reports warnings in the heading when there are no failures', () => {
     const out = formatDoctorReport({
-      checks: [{ id: 'mcp:x', label: 'x', status: 'warn', detail: 'no servers' }],
+      checks: [
+        { id: 'provider', label: 'providers', status: 'warn', detail: 'no keys configured' },
+        { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      ],
     });
-    expect(out).toContain('⚠ x: no servers');
+    // A warn-only report must NOT read "all checks passed" — the heading surfaces the warning count.
+    expect(out).toContain('doctor: 2 warning(s)');
+    expect(out).not.toContain('all checks passed');
+    expect(out).toContain('⚠ providers: no keys configured');
+  });
+
+  it('a failure outranks warnings in the heading', () => {
+    const out = formatDoctorReport({
+      checks: [
+        { id: 'a', label: 'a', status: 'warn', detail: 'w' },
+        { id: 'b', label: 'b', status: 'fail', detail: 'f' },
+      ],
+    });
+    expect(out).toContain('doctor: 1 check(s) failed');
   });
 });

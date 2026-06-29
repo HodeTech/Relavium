@@ -1,7 +1,13 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
-import { describe, expect, it } from 'vitest';
+import type { LlmProvider } from '@relavium/llm';
+import { describe, expect, it, vi } from 'vitest';
 
-import { neededProviderIds, providerKeyEnvVar } from './providers.js';
+import { neededProviderIds, providerKeyEnvVar, validateProviderKey } from './providers.js';
+
+// A test key assembled at runtime (no contiguous secret literal — leakwatch).
+const TEST_KEY = ['sk', 'prov', '90ABCDEF'].join('-');
+const fakeProvider = (generate: LlmProvider['generate']): LlmProvider =>
+  ({ generate }) as unknown as LlmProvider;
 
 /** Assemble a parsed workflow from an `agents:` block and the `nodes:` that reference them. */
 function parse(agentsYaml: string, nodesYaml: string, edgesYaml: string): WorkflowDefinition {
@@ -117,5 +123,45 @@ describe('providerKeyEnvVar', () => {
   it('maps a lowercase provider id to its uppercase env var', () => {
     expect(providerKeyEnvVar('anthropic')).toBe('RELAVIUM_ANTHROPIC_API_KEY');
     expect(providerKeyEnvVar('deepseek')).toBe('RELAVIUM_DEEPSEEK_API_KEY');
+  });
+});
+
+// The shared redaction seam (used by `provider test` AND the `/doctor --deep` probe) — its security contract is
+// tested DIRECTLY here, not only through its two callers.
+describe('validateProviderKey', () => {
+  it('reports ok with the test model on a successful ping', async () => {
+    const generate = vi.fn().mockResolvedValue({});
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    expect(result).toEqual({ ok: true, detail: 'key works (m-test)' });
+    expect(generate).toHaveBeenCalledWith(expect.anything(), TEST_KEY); // the key reached generate, not the detail
+  });
+
+  it('REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)', async () => {
+    const generate = vi.fn().mockRejectedValue(new Error(`401 invalid_api_key: ${TEST_KEY} rejected`));
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    expect(result.ok).toBe(false);
+    expect(result.detail).not.toContain(TEST_KEY);
+    expect(result.detail).toContain('90ABCDEF'.slice(-4)); // the keyHint last-4 survives
+  });
+
+  it('does not attach the error as a cause (no nested field a --verbose render could leak)', async () => {
+    const generate = vi.fn().mockRejectedValue(new Error(`boom ${TEST_KEY}`));
+    const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
+    // The result is a plain value — there is no `cause`/`error` field carrying the raw key anywhere on it.
+    expect(JSON.stringify(result)).not.toContain(TEST_KEY);
+  });
+
+  it('guards an empty key (the split("") footgun) without calling generate', async () => {
+    const generate = vi.fn();
+    const result = await validateProviderKey(fakeProvider(generate), '', 'm-test');
+    expect(result).toEqual({ ok: false, detail: 'key test failed — (no key)' });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('threads the abort signal into the request', async () => {
+    const generate = vi.fn().mockResolvedValue({});
+    const controller = new AbortController();
+    await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test', controller.signal);
+    expect(generate.mock.calls[0]?.[0]).toMatchObject({ signal: controller.signal });
   });
 });

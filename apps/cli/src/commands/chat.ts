@@ -497,9 +497,10 @@ export function createChatLineHandler(
     runDoctor: async (deep) => {
       try {
         emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
-      } catch (err) {
-        const reason = err instanceof CliError ? err.code : 'unexpected error';
-        emitOutput(`doctor failed: ${reason}`);
+      } catch {
+        // runDoctorChecks should not throw (every probe catches its own faults), so this is a defensive net.
+        // Keep it generic + consistent with the Home (home-controller.ts) — never surface an internal code.
+        emitOutput('doctor: check failed');
       }
     },
   };

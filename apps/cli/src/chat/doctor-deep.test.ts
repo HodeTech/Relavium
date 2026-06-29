@@ -91,10 +91,13 @@ describe('buildProviderProbe', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it('aborts a hanging ping at the timeout and reports a (redacted) failure', async () => {
+  it('hard-bounds a hanging ping at the timeout (secret-free even if the abort error carries the key)', async () => {
+    // The fake honors abort by rejecting with the KEY embedded — so if the hard race were broken and the abort
+    // detail surfaced, the `not.toContain(TEST_KEY)` assertion would catch a leak. The hard outer race bounds the
+    // probe regardless of whether the adapter honors the signal, so the detail is the timeout message.
     const generate: LlmProvider['generate'] = (req) =>
       new Promise((_resolve, reject) => {
-        req.signal?.addEventListener('abort', () => reject(new Error('request aborted')));
+        req.signal?.addEventListener('abort', () => reject(new Error(`aborted: ${TEST_KEY}`)));
       });
     const probe = buildProviderProbe({
       resolver: resolverWith({ anthropic: fakeProvider(generate) }, { anthropic: TEST_KEY }),
@@ -103,7 +106,21 @@ describe('buildProviderProbe', () => {
     });
     const [check] = await probe();
     expect(check?.status).toBe('fail');
+    expect(check?.detail).toContain('timeout');
     expect(check?.detail).not.toContain(TEST_KEY);
+  });
+
+  it('hard-bounds a provider whose adapter IGNORES the abort signal (never hangs)', async () => {
+    // A misbehaving adapter that never resolves and ignores the signal — the hard race still settles the probe.
+    const generate: LlmProvider['generate'] = () => new Promise(() => {});
+    const probe = buildProviderProbe({
+      resolver: resolverWith({ anthropic: fakeProvider(generate) }, { anthropic: TEST_KEY }),
+      candidateIds: ['anthropic'],
+      timeoutMs: 5,
+    });
+    const [check] = await probe();
+    expect(check).toMatchObject({ status: 'fail' });
+    expect(check?.detail).toContain('timeout');
   });
 });
 
@@ -162,8 +179,7 @@ describe('buildMcpProbe', () => {
     const [check] = await probe();
     expect(check?.status).toBe('fail');
     resolveLate(fakeClient(1, close)); // the connect finally resolves, after the probe gave up
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // drain the late .then().catch() teardown chain
     expect(close).toHaveBeenCalledOnce();
   });
 

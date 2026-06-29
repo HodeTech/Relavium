@@ -169,6 +169,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           session: undefined,
           input: '',
           errorText: undefined, // a stale build-failure banner must not haunt a clean return from a good chat
+          notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           mode: 'home',
@@ -268,8 +269,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       } catch {
         text = 'doctor: check failed';
       }
-      // A chat may have started (or the Home exited) during the await — only land the report on the bare Home.
-      if (!exiting && state.session === undefined) set({ notice: text });
+      // A chat may have started, the Home exited, or the palette opened during the await — only land the report
+      // on a bare, idle Home (an open palette already cleared the notice + means the user moved to another command).
+      if (!exiting && state.session === undefined && state.palette === undefined) set({ notice: text });
     },
   };
 

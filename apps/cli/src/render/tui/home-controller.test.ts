@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import {
@@ -14,7 +15,7 @@ const PASTE_END = '[201~';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
  *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
-const STUB_DOCTOR_PROBES = {
+const STUB_DOCTOR_PROBES: DoctorProbes = {
   keychain: () => {},
   config: () => {},
   toolHost: {},
