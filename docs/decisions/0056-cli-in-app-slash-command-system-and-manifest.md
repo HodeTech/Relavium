@@ -1,10 +1,14 @@
 # ADR-0056: In-app slash command system driven by a single command manifest
 
-- **Status**: Proposed
-- **Date**: 2026-06-28
+- **Status**: Accepted
+- **Date**: 2026-06-29
 - **Related**: [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0054](0054-cli-bare-invocation-interactive-home.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [phase-2.5-cli-consolidation.md](../roadmap/phases/phase-2.5-cli-consolidation.md) (2.5.C), [architectural-principles.md](../standards/architectural-principles.md)
 
-> **Draft.** Proposed alongside the Phase 2.5 plan; to be reviewed and finalized (→ Accepted) when workstream 2.5.C begins.
+> **Accepted (2026-06-29) at the start of workstream 2.5.C**, after a pre-implementation review tightened the
+> manifest shape (dropped the redundant `canonical` flag and the speculative `requiresProvider`; gave `args` a
+> concrete shape), re-anchored the manifest's canonical home from `home.md` to `commands.md` (Principle 8 — the
+> manifest is a command-surface artifact, not a Home-surface one), and deferred `effect` **enforcement** + the
+> `modeScope` mode values to [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E).
 
 ## Context
 
@@ -21,16 +25,22 @@ discoverability — an anti-pattern to avoid.
 
 **We will drive `commander`, the in-app palette, and the in-REPL slash commands from one shared dispatch
 table generated from a single command manifest**, defined as a Zod schema (canonically homed in
-`docs/reference/cli/home.md`): per-entry `{ id, label, description, canonical, args?, effect, modeScope?,
-requiresProvider? }` — where `effect` is `read | write | destructive` (destructive entries are marked and
-approval-gated), `description` feeds the `--help --json` text, `args` describes subcommand arguments, and
-`modeScope?` is an optional list of chat modes a command is available in (omit = all modes; used to filter
-the palette in, e.g., `ask` mode). The set is deliberately **small, canonical, and alias-free**. The same
-manifest also feeds `relavium --help --json`, realizing the long-noted "agent-readable command surface". The per-command
-dependency wiring is extracted from the `register*` bodies into a shared dispatch module that a
-`commander` action, the palette, and a slash command all call, so the three surfaces can never diverge.
-The taxonomy (which slash maps to which subcommand, and how the non-interactive equivalent is preserved
-for CI/scripting) is canonically homed in `docs/reference/cli/home.md` (authored in 2.5.B).
+`docs/reference/cli/commands.md`; the runtime form is a **CLI-only contract in `apps/cli`**, not
+`@relavium/shared` — no other surface consumes a CLI command list, and `@relavium/shared` carries the engine /
+cross-surface contracts): per-entry `{ id, label, description, args?, effect, modeScope? }` — where
+`description` feeds the `--help --json` text and **must match** the `commander` `.description()`; `args?`
+describes the command's arguments as `{ name, type: 'string' | 'number' | 'boolean', required?, description? }[]`;
+`effect` is `read | write | destructive` — a `destructive` entry is **marked** for agent discoverability, but
+approval **enforcement** is defined in [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (workstream
+2.5.E), not here; and `modeScope?` is an optional list of chat modes a command is available in (omit = all
+modes), whose values (`ask` / `plan` / `accept-edits` / `auto`) are likewise defined in
+[ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md). The set is deliberately **small and alias-free** —
+every entry is canonical by construction, so there is no per-entry `canonical` flag. The same manifest also
+feeds `relavium --help --json`, realizing the long-noted "agent-readable command surface". The per-command
+dependency wiring is extracted from the `register*` bodies into a shared **dispatch module** (in `apps/cli`)
+that a `commander` action, the palette, and a slash command all call, so the three surfaces can never diverge.
+The taxonomy (which slash maps to which subcommand, and how the non-interactive equivalent is preserved for
+CI/scripting) is canonically homed in `docs/reference/cli/commands.md` (authored in 2.5.C).
 
 Considered keeping slash separate from `commander` (rejected: the two surfaces drift); allowing aliases
 for ergonomics (rejected: the competitor anti-pattern — cognitive load and inconsistent muscle memory);

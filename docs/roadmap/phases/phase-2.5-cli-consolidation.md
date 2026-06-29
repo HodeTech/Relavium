@@ -187,6 +187,11 @@ ADR: bare-invocation interactive-entry contract.**
 
 ### 2.5.C — In-app slash registry, command palette, `/help`, `/doctor`, `/workflows`
 
+> **Status:** 🚧 **In progress.** [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
+> is **Accepted (2026-06-29)**; the command-manifest contract is canonically homed in
+> [commands.md](../../reference/cli/commands.md). Delivered per the per-step opus + sonnet review loop; not yet
+> ✅ Done (PR pending). Slash commands work in **both Home and chat** (the palette is the discovery entry point).
+
 A single shared dispatch table behind `commander`, the palette, and the in-REPL slash commands — a
 small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of other agent CLIs).
 
@@ -195,9 +200,9 @@ small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of ot
 - Extract the per-command wiring currently inside the `register*` bodies (`apps/cli/src/commands/specs.ts`)
   into a shared dispatch module a `commander` action, the palette, and a slash command all call.
 - Implement a filterable `/` palette and the Home/chat slash taxonomy (canonically homed in
-  `docs/reference/cli/home.md`, authored in 2.5.B); a command manifest
-  (`{ id, label, canonical, effect, modeScope }`) is the single source for the palette, slash help,
-  and `relavium --help --json`.
+  `docs/reference/cli/commands.md`, authored in 2.5.C); a command manifest
+  (`{ id, label, description, args?, effect, modeScope? }`, [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md))
+  is the single source for the palette, slash help, and `relavium --help --json`.
 - `/doctor` — a staged health check (fast: keychain / config / wired tool capabilities; `--deep`:
   provider-key validation + MCP connectivity), rendered incrementally as each check settles.
 - `/workflows` — the disk-discovery catalog (`apps/cli/src/workflows/catalog.ts`); `/help` — the

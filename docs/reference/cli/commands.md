@@ -119,6 +119,38 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
 | `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
 
+## Command manifest
+
+> **Canonical home** for the command manifest ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C). The runtime form lives in `apps/cli/src/commands/manifest.ts` (a **CLI-only** contract — no other surface consumes a CLI command list).
+
+A single **command manifest** is the one source the three command surfaces derive from — the `commander` parser, the in-app `/` palette + slash commands, and `relavium --help --json` — so they can **never diverge**. The set is deliberately **small and alias-free**; every entry is canonical by construction (there is no per-entry alias flag). Each entry is:
+
+```text
+{
+  id          // stable id; a subcommand is dotted — `provider.set-key`, `agent.run`, `gate.list`
+  label       // a short human label for the palette — "Run workflow", "Set provider key"
+  description // the one-line help; MUST match commander's .description() (the --help --json text)
+  args?       // [{ name, type: 'string'|'number'|'boolean', required?, description? }]
+  effect      // 'read' | 'write' | 'destructive'  (see below)
+  modeScope?  // chat modes the command is available in; omit ⇒ all modes
+}
+```
+
+- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (today only `provider.remove-key`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
+- **`modeScope`** lists the chat modes a command appears in (omit ⇒ all). The mode values (`ask` / `plan` / `accept-edits` / `auto`) are defined in [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E); 2.5.C ships the field with `omit = all`.
+- A `manifest ↔ commander` drift guard (a unit test) asserts every real `commander` command has an entry with the **same description**, so the palette, slash help, and `--help --json` stay byte-consistent.
+
+The manifest also carries **slash-only** entries that have no `commander` command — `/help`, `/doctor`, `/workflows`, `/shortcuts`, `/cost`, and the migrated `/exit` / `/cancel` / `/export` — each added alongside its handler in a later 2.5.C step. A bare `/` in the **Home or chat** prompt opens the filterable palette (the discovery entry point); an unknown slash prints a sanitized, secret-free hint.
+
+| Example entry | `effect` | Surfaces |
+|---------------|----------|----------|
+| `run` | write | commander · palette · slash |
+| `list` | read | commander · palette · slash |
+| `provider.set-key` | write | commander · palette · slash |
+| `provider.remove-key` | destructive | commander · palette · slash |
+| `/doctor` | read | palette · slash |
+| `/workflows` | read | palette · slash |
+
 ### `relavium run`
 
 Runs a workflow end-to-end. The argument is a path to a `.relavium.yaml` file (or a workflow id/slug resolvable inside `.relavium/`).
