@@ -79,7 +79,13 @@ run paths — landed **PR #60 (2026-06-28)**, behind [ADR-0055](docs/decisions/0
 **2.5.B** (the bare-invocation interactive Home — the TTY-gated bare `relavium` → a read-only management strip
 over `history.db` that graduates into in-process chat, one ink tree + one SIGINT/SIGTERM lifecycle + bracketed
 paste) landed **PR #61 (2026-06-29)**, behind [ADR-0054](docs/decisions/0054-cli-bare-invocation-interactive-home.md);
-**the next pickup is 2.5.C** (the in-app slash registry / command palette). For live status, per-PR history, milestone dates, and open
+and **2.5.C** (the in-app command system — a curated **two-registry** model: the shell `COMMAND_MANIFEST`
+(`commander` + `--help --json` + the `executeCommand` dispatch) vs the in-REPL `REPL_COMMANDS` (a filterable `/`
+palette + slash commands in **both** chat and the bare Home, no command in both); `/help`, the `notice` channel,
+`/workflows`, `/cost`, and `/doctor` — fast tier plus a `--deep` tier with a **redacted** provider-key probe + a
+**read-only** MCP-status report that never connects/spawns (a security-review decision); the `name + args` slash
+dispatch + a context-aware footer hint-bar) landed **PR #62 (2026-06-30)**, behind [ADR-0056](docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md);
+**the next pickup is 2.5.E** (chat modes + per-tool approval, ADR-0057). For live status, per-PR history, milestone dates, and open
 obligations, see the canonical home [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md)
 is the public overview.
 

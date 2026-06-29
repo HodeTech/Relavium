@@ -3,8 +3,8 @@
 > Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
-> + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) **implemented + fully reviewed, PR pending**
-> → 2.5.E (modes + per-tool approval, next). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
+> + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
+> → 2.5.E (modes + per-tool approval, **next**). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
 > lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
@@ -188,14 +188,15 @@ ADR: bare-invocation interactive-entry contract.**
 
 ### 2.5.C — In-app slash registry, command palette, `/help`, `/doctor`, `/workflows`
 
-> **Status:** 🚧 **Implemented + fully reviewed; PR pending — not yet ✅ Done (awaits merge).**
+> **Status:** ✅ **Done (PR #62, 2026-06-30).**
 > [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) is **Accepted (2026-06-29)**;
 > the command-manifest + in-REPL-slash contracts are canonically homed in
 > [commands.md](../../reference/cli/commands.md) and [chat-session.md](../../reference/cli/chat-session.md).
 > Delivered across S1–S6, each behind the per-step **opus + sonnet** review loop, with a **dedicated adversarial
-> security pass** on the security-sensitive S5 (`/doctor --deep`). **Decided design:** the `/` palette is the
-> discovery entry point in **both Home and chat** — a curated **two-registry** model (the shell `COMMAND_MANIFEST`
-> vs the in-REPL `REPL_COMMANDS`; no command in both, so no cross-surface divergence).
+> security pass** on the security-sensitive S5 (`/doctor --deep`), then a comprehensive multi-dimensional
+> first-class review of the whole PR. **Decided design:** the `/` palette is the discovery entry point in **both
+> Home and chat** — a curated **two-registry** model (the shell `COMMAND_MANIFEST` vs the in-REPL `REPL_COMMANDS`;
+> no command in both, so no cross-surface divergence).
 >
 > **Per-step ledger** (branch `development`):
 > - **S1** the command manifest (drift-guarded against the commander tree) · **S2** the shared `executeCommand`

@@ -141,8 +141,18 @@ above a live prompt that graduates into an in-process chat; rendered as a single
 with one SIGINT/SIGTERM lifecycle (clean Home exit `0`; an external signal → the conventional `128+signo`, 130/143;
 the in-Home chat's exit-`4` consumed, never leaked) and bracketed paste (DECSET 2004), all while every
 non-interactive path keeps the byte-for-byte help + exit-`0` meta-op ([ADR-0049](../decisions/0049-cli-machine-output-contract.md)).
-Canonically homed in [home.md](../reference/cli/home.md). **Next pickup: 2.5.C** (the in-app slash registry /
-command palette). See the [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
+Canonically homed in [home.md](../reference/cli/home.md). **2.5.C** (the in-app command system) is ✅ **Done
+(PR #62, 2026-06-30)**, behind [ADR-0056](../decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
+(Accepted): a curated **two-registry** model (the shell `COMMAND_MANIFEST` driving `commander` + `--help --json`
++ the `executeCommand` dispatch, vs the in-REPL `REPL_COMMANDS` driving a filterable `/` palette + slash commands
+in **both** the chat and the bare Home — no command in both); `/help`, the `notice` output channel, `/workflows`,
+`/cost`, and `/doctor` (fast tier: keychain/config/wired-tools; `--deep`: a **redacted** provider-key probe + a
+**read-only** MCP-status report — a security-review decision: it reports the live session's already-connected
+servers, never a fresh connect/spawn); plus the `name + args` slash dispatch and a context-aware footer hint-bar
+surfacing `/ for commands`. Canonically homed in [commands.md](../reference/cli/commands.md) +
+[chat-session.md](../reference/cli/chat-session.md). **Next pickup: 2.5.E** (chat modes + per-tool approval,
+[ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)). See the
+[Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half
