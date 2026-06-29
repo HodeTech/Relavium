@@ -135,11 +135,15 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           {color && <Text inverse> </Text>}
         </Text>
       )}
-      {/* A way back / out, always in view at the idle prompt: how to end the session (back to the Home, or quit a
-          standalone `relavium chat`) and how to keep it (the export-to-workflow promise). */}
+      {/* The context-aware idle hint bar (2.5.C S6). At an EMPTY prompt, surface the `/` palette as the command-
+          discovery entry point (it lists /export, /doctor, /workflows, …) — `/` only opens it from an empty
+          buffer, so the hint appears exactly when it works. Once the user is composing, swap to the submit hint.
+          The palette renders its own nav hints when open, so keys stay discoverable without a separate command. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          /exit or Ctrl-C to end · /export to save as a workflow
+          {input.length === 0
+            ? '/ for commands · /exit or Ctrl-C to end'
+            : 'Enter to send · Ctrl-C to end'}
         </Text>
       )}
 

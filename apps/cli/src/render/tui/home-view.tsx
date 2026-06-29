@@ -218,8 +218,12 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       {paletteOpen !== true && (
         <Box marginTop={1} flexDirection="column">
           <Prompt input={input} color={color} />
+          {/* The context-aware Home hint bar (2.5.C S6): at an empty prompt, surface the `/` palette (it only opens
+              from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint. */}
           <Text {...dimProps(color)} wrap="truncate-end">
-            type a message to start a new chat · Ctrl-C to exit
+            {input.length === 0
+              ? '/ for commands · type a message to start a chat · Ctrl-C to exit'
+              : 'Enter to start the chat · Ctrl-C to exit'}
           </Text>
         </Box>
       )}
