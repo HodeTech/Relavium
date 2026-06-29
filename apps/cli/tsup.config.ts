@@ -52,6 +52,11 @@ export default defineConfig({
   clean: true,
   sourcemap: false,
   minify: true,
+  // Emit esbuild's metafile (`dist/metafile-esm.json`) — the authoritative record of every externalized import,
+  // read by `tools/bundle-closure/check.mjs` to guard that the `external` list ≡ the declared `dependencies`. It
+  // is EXCLUDED from the published tarball (the `files` negation in package.json): its `inputs` would reveal the
+  // inlined engine's source-file layout, which ADR-0051 keeps unpublished.
+  metafile: true,
   dts: false,
   noExternal: [/^@relavium\//],
   external: THIRD_PARTY_EXTERNAL,
