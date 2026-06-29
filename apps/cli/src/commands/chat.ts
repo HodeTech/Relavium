@@ -500,6 +500,9 @@ export function createChatLineHandler(
     // `/doctor` (2.5.C S5): a staged setup health check; `--deep` adds the network/process tier (key + MCP
     // validation). Each probe is secret-free + bounded; a thrown probe never crashes the REPL (reported as output).
     runDoctor: async (deep) => {
+      // Synchronous acknowledgment that a SLOW probe started — only `--deep` validates providers + MCP (seconds);
+      // the fast tier is instant, so it needs no progress line. Parity with the Home's transient 'checking…'.
+      if (deep) emitOutput('doctor: validating providers + MCP…');
       try {
         emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
       } catch {

@@ -696,6 +696,23 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().input).toBe('x');
     });
 
+    it('a report does NOT land if the palette is re-opened during the run (the palette branch of the guard)', async () => {
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'doc');
+      c.handleKey('', ENTER); // run /doctor (closes the palette, sets 'checking…'), then awaits
+      c.handleKey('/', {}); // re-open the palette BEFORE the run settles (clears the notice; token is unchanged)
+      await flush(); // the run resolves; the palette is open, so the report must NOT land over it
+      expect(c.getSnapshot().palette).toBeDefined();
+      expect(c.getSnapshot().notice).toBeUndefined();
+    });
+
     it('a paste clears a stale /doctor notice (parity with typing)', async () => {
       const c = createHomeController({
         doctorProbes: STUB_DOCTOR_PROBES,

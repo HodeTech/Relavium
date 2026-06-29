@@ -14,11 +14,16 @@ export function costNotice(cumulativeCostMicrocents: number): string {
   return `Session cost: ${formatCostUsd(cumulativeCostMicrocents)}`;
 }
 
-/** The `/workflows` notice — the discovered workflow + agent catalogs (each slug sanitized), grouped by kind. */
+/** The `/workflows` notice — the discovered workflow + agent catalogs (each slug sanitized), grouped by kind. A
+ *  project that EXISTS but is empty gets one clear line — distinct from the caller's "No .relavium/ project found"
+ *  message, so a user can tell an empty project apart from no project at all (path-free, like that message). */
 export function catalogNotice(
   workflows: readonly CatalogEntry[],
   agents: readonly CatalogEntry[],
 ): string {
+  if (workflows.length === 0 && agents.length === 0) {
+    return 'No workflows or agents found in this project.';
+  }
   return [catalogSection('Workflows', workflows), catalogSection('Agents', agents)].join('\n');
 }
 

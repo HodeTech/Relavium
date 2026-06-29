@@ -128,12 +128,13 @@ export async function runDoctorChecks(
 
 const GLYPH: Record<DoctorStatus, string> = { ok: '✓', warn: '⚠', fail: '✗' };
 
-/** The one-line heading. `warn` is visible at the heading level so a glanceable read can't mistake "no keys
- *  configured" for healthy; a failure outranks a warning. */
+/** The one-line heading, prefixed with the dominant-severity glyph so the outcome is scannable WITHOUT reading
+ *  the words (parity with the Home strip's at-a-glance status). `warn` is visible here so a glanceable read can't
+ *  mistake "no keys configured" for healthy; a failure outranks a warning. */
 function doctorHeading(failures: number, warnings: number): string {
-  if (failures > 0) return `doctor: ${failures} check(s) failed`;
-  if (warnings > 0) return `doctor: ${warnings} warning(s)`;
-  return 'doctor: all checks passed';
+  if (failures > 0) return `${GLYPH.fail} doctor: ${failures} check(s) failed`;
+  if (warnings > 0) return `${GLYPH.warn} doctor: ${warnings} warning(s)`;
+  return `${GLYPH.ok} doctor: all checks passed`;
 }
 
 /** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <label>: <detail>` row per check.

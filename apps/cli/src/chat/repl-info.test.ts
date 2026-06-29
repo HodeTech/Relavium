@@ -28,8 +28,12 @@ describe('catalogNotice', () => {
     expect(notice).toContain('  coder');
   });
 
-  it('an empty kind reads "none"', () => {
-    expect(catalogNotice([], [])).toBe('Workflows: none\nAgents: none');
+  it('a single empty kind reads "none" (the other kind still lists)', () => {
+    expect(catalogNotice([entry('deploy')], [])).toBe('Workflows (1):\n  deploy\nAgents: none');
+  });
+
+  it('an EMPTY project (both kinds empty) reads one clear, path-free line — distinct from "no project"', () => {
+    expect(catalogNotice([], [])).toBe('No workflows or agents found in this project.');
   });
 
   it('sanitizes a slug so a crafted entry cannot inject control sequences into the notice', () => {
