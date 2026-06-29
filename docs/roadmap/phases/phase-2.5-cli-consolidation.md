@@ -2,8 +2,9 @@
 
 > Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
-> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → 2.5.C (slash, next) →
-> 2.5.E (modes + per-tool approval). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
+> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
+> + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) **implemented + fully reviewed, PR pending**
+> → 2.5.E (modes + per-tool approval, next). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
 > lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
@@ -187,11 +188,27 @@ ADR: bare-invocation interactive-entry contract.**
 
 ### 2.5.C — In-app slash registry, command palette, `/help`, `/doctor`, `/workflows`
 
-> **Status:** 🚧 **In progress.** [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
-> is **Accepted (2026-06-29)**; the command-manifest contract is canonically homed in
-> [commands.md](../../reference/cli/commands.md). Delivered per the per-step opus + sonnet review loop; not yet
-> ✅ Done (PR pending). **Decided design:** the `/` palette is the discovery entry point in **both Home and chat**
-> — the dispatch, the palette UI, and the slash-only handlers land across this workstream's steps.
+> **Status:** 🚧 **Implemented + fully reviewed; PR pending — not yet ✅ Done (awaits merge).**
+> [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) is **Accepted (2026-06-29)**;
+> the command-manifest + in-REPL-slash contracts are canonically homed in
+> [commands.md](../../reference/cli/commands.md) and [chat-session.md](../../reference/cli/chat-session.md).
+> Delivered across S1–S6, each behind the per-step **opus + sonnet** review loop, with a **dedicated adversarial
+> security pass** on the security-sensitive S5 (`/doctor --deep`). **Decided design:** the `/` palette is the
+> discovery entry point in **both Home and chat** — a curated **two-registry** model (the shell `COMMAND_MANIFEST`
+> vs the in-REPL `REPL_COMMANDS`; no command in both, so no cross-surface divergence).
+>
+> **Per-step ledger** (branch `development`):
+> - **S1** the command manifest (drift-guarded against the commander tree) · **S2** the shared `executeCommand`
+>   dispatch table · **S3** the curated `REPL_COMMANDS` registry + `/help` + the filterable `/` palette (chat **and**
+>   Home, one ink tree, a single `useInput` owner) · **S4** the `notice` output channel + `/workflows` + `/cost`.
+> - **S5** `/doctor` (fast + `--deep`, **both** surfaces) + the slash `name + args` dispatch upgrade + a new Home
+>   output surface. The dedicated security pass found a **HIGH, exploitable** issue — `/doctor --deep` connected
+>   *every* config `[[mcp_servers]]` registration (an arbitrary-spawn primitive from an imported `project.toml`),
+>   and could orphan a child on a timeout+exit window — and drove a root-cause redesign: the `--deep` MCP tier is
+>   now **read-only**, reporting the live session's already-connected status, never a fresh connect/spawn.
+> - **S6** the context-aware footer hint-bar surfacing `/ for commands` at an empty prompt. **`/shortcuts` was
+>   dropped** — its discoverability intent is folded into the footer + the palette's own nav hints (the palette
+>   IS the interactive command reference), avoiding a redundant static-reference command.
 
 A single shared dispatch table behind `commander`, the palette, and the in-REPL slash commands — a
 small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of other agent CLIs).
@@ -205,19 +222,22 @@ small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of ot
   (`{ id, label, description, args?, effect, modeScope? }`, [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md))
   is the single source for the palette, slash help, and `relavium --help --json`.
 - `/doctor` — a staged health check (fast: keychain / config / wired tool capabilities; `--deep`:
-  provider-key validation + MCP connectivity), rendered incrementally as each check settles.
+  provider-key validation + the live session's MCP status). **Security note:** the `--deep` MCP tier is
+  **read-only** — it reports the bound agent's already-connected servers, it does NOT connect/spawn (a
+  security-review decision — re-connecting would spawn unreferenced registrations from an imported config).
 - `/workflows` — the disk-discovery catalog (`apps/cli/src/workflows/catalog.ts`); `/help` — the
-  palette; an unknown slash prints a sanitized, secret-free hint.
-- **Discoverability:** a `/shortcuts` command (derived from the manifest — zero extra source) and a
-  persistent footer hint-bar surfacing the 2–3 most relevant keys per context (so the mode/`@`/`!`/`Esc`
-  ergonomics of 2.5.D/E are findable, not hidden); `/cost` — the session-cumulative spend (an
-  `effect: read` manifest entry; the per-model breakdown is 2.6.C).
+  palette; an unknown slash (or an undeclared arg on a known command) prints a sanitized, secret-free hint.
+- **Discoverability:** a context-aware footer hint-bar surfacing `/ for commands` at an empty prompt (where
+  `/` opens the palette) and the palette's own nav hints (`↑/↓ · Enter · Esc`). **`/shortcuts` was dropped** —
+  the footer + palette cover keymap discoverability in context, so a separate static-reference command is
+  redundant. `/cost` — the session-cumulative spend (`effect: read`; the per-model breakdown is 2.6.C).
 
 **Acceptance:** every existing subcommand also reachable through the palette/slash with no behaviour
 change; `/doctor` reports the real health (and would have explained the original root-cause symptom);
-`/workflows` lists discovered workflows; `/shortcuts` and the footer hint-bar make the keymap discoverable;
-the palette filters; an unknown slash is safe. **Required ADR: in-app slash command system + command
-manifest.**
+`/workflows` lists discovered workflows; the footer hint-bar + the palette's nav hints make the keymap
+discoverable (no separate `/shortcuts`); the palette filters; an unknown slash / undeclared arg is safe;
+`/doctor --deep` never connects/spawns an unreferenced MCP server. **Required ADR: in-app slash command
+system + command manifest (ADR-0056).**
 
 ### 2.5.D — Chat input ergonomics
 

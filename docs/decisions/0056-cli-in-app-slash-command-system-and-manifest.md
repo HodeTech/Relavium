@@ -91,3 +91,22 @@ The decision's actual goal — **no cross-surface divergence** — still holds: 
 definition, and no command appears in both registries (a shell command is never an in-REPL slash, and vice
 versa). The "single source per surface" guarantee is preserved; only the unrealistic "run any shell command from
 inside a chat" reading is dropped.
+
+## Implementation note — 2026-06-29 (S5–S6 refinements during the per-step review loop)
+
+Two refinements emerged during implementation; each is recorded in the canonical reference homes
+([commands.md](../reference/cli/commands.md), [chat-session.md](../reference/cli/chat-session.md)). The ADR's
+core decision — the slash registry, the palette, the manifest, and the `--help --json` contract — is unchanged.
+
+- **`/doctor --deep`'s MCP tier is read-only (S5 — a dedicated security-review decision).** The plan above
+  (`--deep`: "MCP connectivity") implied a fresh connect. The adversarial security pass found that exploitable:
+  the probe connected **every** config `[[mcp_servers]]` registration — including ones no agent references —
+  turning `/doctor --deep` into an arbitrary-local-process-spawn primitive from an imported `project.toml`, and
+  could orphan a spawned child on a timeout+exit window. The `--deep` MCP tier is therefore **read-only**: it
+  REPORTS the live session's already-connected status (the bound agent's authorized servers + the tools the
+  manager dropped), never a fresh connect/spawn. The session already proves connectivity within the documented
+  on-demand model; the probe only reports it.
+- **`/shortcuts` was dropped (S6).** The "info/discovery" list named a `/shortcuts` command; it was not built.
+  The context-aware footer hint-bar (surfacing `/ for commands` at an empty prompt) plus the palette's own nav
+  hints (`↑/↓ · Enter · Esc`) make the keymap discoverable in context, so a separate static-reference command is
+  redundant.
