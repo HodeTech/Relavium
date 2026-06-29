@@ -629,7 +629,12 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('', ENTER); // select /doctor → runDoctor(false) over the Home context
       expect(c.getSnapshot().palette).toBeUndefined();
       await flush(); // the async runDoctor settles
-      expect(c.getSnapshot().notice).toContain('doctor: all checks passed');
+      // Assert the rendered ROWS, not just the heading — so a malformed/missing check row would fail the test.
+      const notice = c.getSnapshot().notice;
+      expect(notice).toContain('doctor: all checks passed');
+      expect(notice).toContain('✓ OS keychain: reachable');
+      expect(notice).toContain('✓ config: valid');
+      expect(notice).toContain('✓ wired tools: none'); // the STUB toolHost wires no arms
     });
 
     it('the Home /doctor notice clears on the next keystroke', async () => {
