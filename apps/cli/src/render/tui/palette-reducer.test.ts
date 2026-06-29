@@ -1,14 +1,29 @@
 import { describe, expect, it } from 'vitest';
 
-import { REPL_COMMANDS } from '../../commands/repl-commands.js';
+import { REPL_COMMANDS, type ReplCommand } from '../../commands/repl-commands.js';
 import {
   clampIndex,
   filterPaletteCommands,
   foldPaletteKey,
   INITIAL_PALETTE_STATE,
   reducePaletteKey,
+  shouldOpenPalette,
   stepPalette,
 } from './palette-reducer.js';
+
+/** A small fixture so the filter tests are independent of the live command set (robust to S4 additions). */
+const noop = (): void => undefined;
+const FIXTURE: readonly ReplCommand[] = [
+  { name: 'alpha', label: 'Alpha', description: 'the first command', effect: 'read', run: noop },
+  {
+    name: 'beta',
+    label: 'Beta',
+    description: 'mentions alpha in its text',
+    effect: 'read',
+    run: noop,
+  },
+  { name: 'gamma', label: 'Gamma', description: 'unrelated', effect: 'read', run: noop },
+];
 
 /** Tests for the pure `/` command-palette reducer (2.5.C S3b) — filter / navigate / select, no ink. */
 describe('reducePaletteKey', () => {
@@ -24,18 +39,27 @@ describe('reducePaletteKey', () => {
 });
 
 describe('filterPaletteCommands', () => {
-  it('returns everything for an empty query', () => {
-    expect(filterPaletteCommands(REPL_COMMANDS, '')).toEqual(REPL_COMMANDS);
-    expect(filterPaletteCommands(REPL_COMMANDS, '   ')).toEqual(REPL_COMMANDS);
+  it('returns everything for an empty / whitespace query', () => {
+    expect(filterPaletteCommands(FIXTURE, '')).toEqual(FIXTURE);
+    expect(filterPaletteCommands(FIXTURE, '   ')).toEqual(FIXTURE);
   });
 
-  it('substring-matches name or label, case-insensitively', () => {
-    expect(filterPaletteCommands(REPL_COMMANDS, 'ex').map((c) => c.name)).toEqual([
-      'exit',
-      'export',
-    ]);
-    expect(filterPaletteCommands(REPL_COMMANDS, 'CANCEL').map((c) => c.name)).toEqual(['cancel']);
-    expect(filterPaletteCommands(REPL_COMMANDS, 'zzz')).toEqual([]);
+  it('substring-matches the NAME or the DESCRIPTION (the shown fields), case-insensitively', () => {
+    // `alpha` is the name of one command AND appears in another's description → both match (matches what's shown).
+    expect(filterPaletteCommands(FIXTURE, 'ALPHA').map((c) => c.name)).toEqual(['alpha', 'beta']);
+    expect(filterPaletteCommands(FIXTURE, 'gam').map((c) => c.name)).toEqual(['gamma']);
+    expect(filterPaletteCommands(FIXTURE, 'unrelated').map((c) => c.name)).toEqual(['gamma']);
+    expect(filterPaletteCommands(FIXTURE, 'zzz')).toEqual([]);
+  });
+});
+
+describe('shouldOpenPalette', () => {
+  it('opens on a literal "/" at an idle empty prompt only', () => {
+    expect(shouldOpenPalette('/', {}, false, 0)).toBe(true);
+    expect(shouldOpenPalette('/', {}, true, 0)).toBe(false); // mid-turn
+    expect(shouldOpenPalette('/', {}, false, 3)).toBe(false); // buffer not empty (a mid-message slash)
+    expect(shouldOpenPalette('/', { ctrl: true }, false, 0)).toBe(false); // a chord
+    expect(shouldOpenPalette('a', {}, false, 0)).toBe(false); // not a slash
   });
 });
 

@@ -10,8 +10,9 @@ import { colorProps, dimProps } from './projection.js';
  * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the filtered curated commands
  * ({@link filterPaletteCommands}). It owns NO `useInput`: the single raw-mode owner (the standalone `ChatApp` or
  * the Home's `RootApp`) routes keys to {@link reducePaletteKey}/{@link stepPalette} and re-renders this from the
- * resulting {@link PaletteState}. Every free-form field (the query echo, a command description) is sanitized at
- * the display boundary, so a crafted command label or a pasted control sequence can never forge a row.
+ * resulting {@link PaletteState}. Every rendered free-form field — the query echo, the command name, and its
+ * description — is sanitized at the display boundary, so a crafted command name/description or a pasted control
+ * sequence can never forge a row or inject an escape.
  */
 export interface PaletteViewProps {
   readonly commands: readonly ReplCommand[];
@@ -40,7 +41,7 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
               {...(selected ? colorProps(color, 'cyan') : {})}
               wrap="truncate-end"
             >
-              {`${selected ? '›' : ' '} /${command.name}  `}
+              {`${selected ? '›' : ' '} /${sanitizeInline(command.name)}  `}
               <Text {...dimProps(color)}>{sanitizeInline(command.description)}</Text>
             </Text>
           );

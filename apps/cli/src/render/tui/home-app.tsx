@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 
-import { REPL_COMMANDS } from '../../commands/repl-commands.js';
+import { PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { ChatView } from './chat-ink.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -48,9 +48,10 @@ function ChatRegion(
         color={color}
         input={props.input}
         running={state.status === 'running'}
+        paletteOpen={props.palette !== undefined}
       />
       {props.palette !== undefined && (
-        <PaletteView commands={REPL_COMMANDS} state={props.palette} color={color} />
+        <PaletteView commands={PALETTE_COMMANDS} state={props.palette} color={color} />
       )}
     </Box>
   );

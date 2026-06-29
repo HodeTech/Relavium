@@ -1,4 +1,4 @@
-import { REPL_COMMANDS } from '../../commands/repl-commands.js';
+import { PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -6,6 +6,7 @@ import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-in
 import {
   foldPaletteKey,
   INITIAL_PALETTE_STATE,
+  shouldOpenPalette,
   type PaletteKey,
   type PaletteState,
 } from './palette-reducer.js';
@@ -223,13 +224,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const handlePaletteKey = (input: string, key: PaletteKey): void => {
     const palette = state.palette;
     if (palette === undefined) return;
-    const step = foldPaletteKey(input, key, palette, REPL_COMMANDS);
+    const step = foldPaletteKey(input, key, palette, PALETTE_COMMANDS);
     if (step.kind === 'close') {
       set({ palette: undefined });
       return;
     }
     if (step.kind === 'run') {
       set({ palette: undefined });
+      // Invariant: the palette opens only from `handleChatKey`, reached only when mode==='chat' && session!==undefined,
+      // and `endChat` clears `palette` with the session — so `active` is defined here. The guard is a type-safety belt.
       const active = state.session;
       if (step.command !== undefined && active !== undefined) {
         sendChatLine(active, `/${step.command.name}`); // reuse the S3a slash dispatch (createChatLineHandler)
@@ -243,13 +246,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
     // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
-    if (
-      !running &&
-      state.input.length === 0 &&
-      input === '/' &&
-      key.ctrl !== true &&
-      key.meta !== true
-    ) {
+    if (shouldOpenPalette(input, key, running, state.input.length)) {
       set({ palette: INITIAL_PALETTE_STATE });
       return;
     }

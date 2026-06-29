@@ -57,7 +57,8 @@ export function reducePaletteKey(char: string, key: PaletteKey): PaletteKeyActio
   return { kind: 'none' };
 }
 
-/** Case-insensitive substring filter on a command's name OR label (the user's query, sans the leading `/`). */
+/** Case-insensitive substring filter on a command's name OR description — the two fields the row renders — so
+ *  what the user types matches what they see (the `label` is not shown, so it is not searched). */
 export function filterPaletteCommands(
   commands: readonly ReplCommand[],
   query: string,
@@ -65,8 +66,20 @@ export function filterPaletteCommands(
   const q = query.trim().toLowerCase();
   if (q.length === 0) return commands;
   return commands.filter(
-    (command) => command.name.toLowerCase().includes(q) || command.label.toLowerCase().includes(q),
+    (command) =>
+      command.name.toLowerCase().includes(q) || command.description.toLowerCase().includes(q),
   );
+}
+
+/** Whether a keystroke should OPEN the palette: a literal `/` at an idle, EMPTY prompt (not a chord). Shared by
+ *  both surfaces so the open trigger is identical and tested once. */
+export function shouldOpenPalette(
+  char: string,
+  key: PaletteKey,
+  running: boolean,
+  bufferLength: number,
+): boolean {
+  return !running && bufferLength === 0 && char === '/' && key.ctrl !== true && key.meta !== true;
 }
 
 /** Clamp an index into `[0, count - 1]` (or `0` when the filtered list is empty). */
@@ -77,15 +90,12 @@ export function clampIndex(index: number, count: number): number {
 
 /** The result of folding one keystroke: keep the palette open with new state, run the highlighted command, or close. */
 export type PaletteStep =
+  // `run` carries only the command — the palette submits its bare `/<name>` line today (every curated command is
+  // zero-arg). S4 (arg-taking commands like `/doctor --deep`) must extend this + the dispatch — see ReplCommand.
   | { readonly kind: 'state'; readonly state: PaletteState }
   | { readonly kind: 'run'; readonly command: ReplCommand | undefined }
   | { readonly kind: 'close' };
 
-/**
- * Fold one {@link PaletteKeyAction} against the current state + the (surface-provided) command list. An edit
- * re-filters and resets the highlight to the top; a move re-clamps against the new filtered count; `select` reads
- * the highlighted command (or `undefined` when the filter is empty — the caller treats that as a no-op close).
- */
 /**
  * The complete fold both palette surfaces share: map a keystroke to a step against the open palette. Ctrl-C is the
  * always-escapes hatch (it `close`s the palette so the user is never trapped); everything else delegates to
@@ -102,6 +112,11 @@ export function foldPaletteKey(
   return stepPalette(state, reducePaletteKey(char, key), commands);
 }
 
+/**
+ * Fold one {@link PaletteKeyAction} against the current state + the (surface-provided) command list. An edit
+ * re-filters and resets the highlight to the top; a move re-clamps against the new filtered count; `select` reads
+ * the highlighted command (or `undefined` when the filter is empty — the caller treats that as a no-op close).
+ */
 export function stepPalette(
   state: PaletteState,
   action: PaletteKeyAction,

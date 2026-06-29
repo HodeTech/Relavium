@@ -534,5 +534,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().palette).toBeUndefined();
       expect(c.getSnapshot().input).toBe('ab/');
     });
+
+    it('does not open mid-turn — "/" while a turn streams is ignored, not a palette trigger', async () => {
+      const c = await intoChat(makeSession({ running: true })); // the session store reports `running`
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toBeUndefined();
+    });
   });
 });

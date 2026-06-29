@@ -7,13 +7,18 @@ import {
   type ChatDriveContext,
   type ChatDriver,
 } from '../../commands/chat.js';
-import { REPL_COMMANDS } from '../../commands/repl-commands.js';
+import { PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import { applyChatEdit, reduceChatKey } from './chat-input.js';
 import { PaletteView } from './palette-view.js';
-import { foldPaletteKey, INITIAL_PALETTE_STATE, type PaletteState } from './palette-reducer.js';
+import {
+  foldPaletteKey,
+  INITIAL_PALETTE_STATE,
+  shouldOpenPalette,
+  type PaletteState,
+} from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
   formatSessionFooter,
@@ -74,6 +79,8 @@ interface ChatViewProps {
   /** The current prompt buffer (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
   readonly input: string;
   readonly running: boolean;
+  /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
+  readonly paletteOpen?: boolean;
 }
 
 /**
@@ -84,7 +91,10 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, input, running } = props;
+  const { state, tick, color, input, running, paletteOpen } = props;
+  // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
+  // avoid two competing prompts (the palette owns the input focus until it closes).
+  const showIdlePrompt = !running && paletteOpen !== true;
   return (
     <Box flexDirection="column">
       {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
@@ -109,7 +119,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       {/* The input prompt (idle) and the persistent footer. The live input echo is sanitized so a paste
           containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. A trailing
           inverse-space block cursor marks the prompt as a live field (shared with the Home's prompt). */}
-      {!running && (
+      {showIdlePrompt && (
         <Text>
           <Text {...colorProps(color, 'cyan')}>
             {'> '}
@@ -120,7 +130,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       )}
       {/* A way back / out, always in view at the idle prompt: how to end the session (back to the Home, or quit a
           standalone `relavium chat`) and how to keep it (the export-to-workflow promise). */}
-      {!running && (
+      {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
           /exit or Ctrl-C to end · /export to save as a workflow
         </Text>
@@ -191,11 +201,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
+    // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
+    // settles sees the current status — matching the ref-shadow `inputRef`/`paletteRef` reads below.
+    const isRunning = props.store.getSnapshot().state.status === 'running';
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
     const openPalette = paletteRef.current;
     if (openPalette !== undefined) {
-      const step = foldPaletteKey(char, key, openPalette, REPL_COMMANDS);
+      const step = foldPaletteKey(char, key, openPalette, PALETTE_COMMANDS);
       if (step.kind === 'close') {
         applyPalette(undefined);
         return;
@@ -209,17 +222,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       return;
     }
     // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point.
-    if (
-      !running &&
-      inputRef.current.length === 0 &&
-      char === '/' &&
-      key.ctrl !== true &&
-      key.meta !== true
-    ) {
+    if (shouldOpenPalette(char, key, isRunning, inputRef.current.length)) {
       applyPalette(INITIAL_PALETTE_STATE);
       return;
     }
-    const action = reduceChatKey(char, key, inputRef.current, running);
+    const action = reduceChatKey(char, key, inputRef.current, isRunning);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired.current) {
@@ -242,9 +249,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 
   return (
     <Box flexDirection="column">
-      <ChatView state={state} tick={tick} color={color} input={input} running={running} />
+      <ChatView
+        state={state}
+        tick={tick}
+        color={color}
+        input={input}
+        running={running}
+        paletteOpen={palette !== undefined}
+      />
       {palette !== undefined && (
-        <PaletteView commands={REPL_COMMANDS} state={palette} color={color} />
+        <PaletteView commands={PALETTE_COMMANDS} state={palette} color={color} />
       )}
     </Box>
   );

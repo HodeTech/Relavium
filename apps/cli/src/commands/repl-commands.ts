@@ -95,6 +95,15 @@ export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(
   REPL_COMMANDS.map((command) => [command.name, command]),
 );
 
+/**
+ * The commands the interactive `/` palette offers — every curated command EXCEPT `/help`: the palette IS the
+ * interactive help, so listing `/help` would be circular (and selecting it would print the text list to stderr
+ * behind the live ink view). `/help` stays a typed / non-TTY text-list affordance (the unknown-slash fallback).
+ */
+export const PALETTE_COMMANDS: readonly ReplCommand[] = REPL_COMMANDS.filter(
+  (command) => command.name !== 'help',
+);
+
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */
 export function replCommandList(): string {
   return REPL_COMMANDS.map((command) => `/${command.name}`).join(', ');
