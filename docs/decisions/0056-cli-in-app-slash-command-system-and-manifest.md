@@ -47,6 +47,11 @@ for ergonomics (rejected: the competitor anti-pattern — cognitive load and inc
 and shipping a user-defined plugin/TOML command system now (rejected: Phase 3 — the manifest is the
 foundation it will build on, not a Phase 2.5 deliverable).
 
+> **Refined by the Amendment below (2.5.C S3):** "one manifest feeds the palette" was narrowed — the heavy
+> shell commands here drive `commander` + `--help --json` + the `executeCommand` dispatch table, while the
+> **in-REPL** `/` palette + slash commands are a separate, curated `REPL_COMMANDS` registry. Each surface still
+> has exactly one source; only the "run any shell command from inside a chat" reading was dropped.
+
 ## Consequences
 
 ### Positive

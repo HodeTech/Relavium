@@ -204,6 +204,16 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
+  it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
+    const { d, err, store, sessionId } = deps(['/help', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/help');
+    expect(err()).toContain('/export'); // the list derives from REPL_COMMANDS — every curated command appears
+    // /help is read-only: the session continued and only the 'hello' turn persisted (user + assistant = 2).
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+    expect(store.loadFull(sessionId)?.session.status).toBe('ended');
+  });
+
   it('ends the session and exits 4 when the input stream reaches EOF without /exit', async () => {
     const { d, store, sessionId } = deps(['hello'], [textTurn('hi')]); // no /exit — the loop just ends
     const code = await chatCommand({ agent: undefined }, d);
@@ -325,6 +335,25 @@ describe('chatCommand', () => {
     expect(types.at(-1)).toBe('session:cancelled'); // the terminal flushed via runReplLoop's finalize wiring
     expect(out()).not.toContain('unknown command'); // the diagnostic did NOT leak to stdout
     expect(err()).toContain("unknown command '/bogus'"); // it went to stderr
+  });
+
+  it('chat --json /help writes the command list to stderr, never the stdout NDJSON stream', async () => {
+    const { io, out, err } = captureIo();
+    const store = createSessionStore(client.db);
+    let id = 0;
+    const d: ChatCommandDeps = {
+      io: { ...io, stdin: Readable.from(['/help\n']) },
+      global: { ...globalOptions(cwd), json: true },
+      providers: scriptedResolver([textTurn('unused')]),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: driveJson,
+      now: () => 0,
+      uuid: () => `id-${id++}`,
+    };
+    expect(await chatCommand({ agent: undefined }, d)).toBe(EXIT_CODES.chatEnded);
+    parseNdjson(out()); // throws if a human /help line leaked onto stdout
+    expect(out()).not.toContain('/help'); // the list did NOT pollute the event stream
+    expect(err()).toContain('/export'); // it went to stderr
   });
 
   it('chat --json /export emits a session:exported event on stdout (the machine path)', async () => {

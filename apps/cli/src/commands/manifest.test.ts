@@ -8,11 +8,11 @@ import { STUB_COMMANDS } from './specs.js';
 
 /**
  * The command-manifest drift guard ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
- * 2.5.C). The manifest is the single source the `commander` parser, the `/` palette, and `--help --json` all
- * derive from; this test pins them together so they can never diverge: every real `commander` command must have
- * a matching manifest entry with the SAME command description AND the SAME description for each of its options
- * (the `--help --json` text). The manifest may carry extra slash-only entries (`/help`, `/doctor`, …) with no
- * `commander` command — those are added by later 2.5.C steps, so this is a `commander ⊆ manifest` invariant.
+ * 2.5.C). The manifest is the single source the `commander` parser, the `executeCommand` table, and
+ * `--help --json` all derive from; this test pins them together so they can never diverge: every real `commander`
+ * command must have a matching manifest entry with the SAME command description AND the SAME description for each
+ * of its options (the `--help --json` text). The in-REPL `/` palette + slash commands are a SEPARATE
+ * `REPL_COMMANDS` registry (repl-commands.ts — ADR-0056 amendment), never the manifest, so `commander == manifest`.
  */
 
 /** Permanent parent-only containers — a parent whose only real form is a subcommand; never a manifest entry. */

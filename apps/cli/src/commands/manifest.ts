@@ -1,17 +1,17 @@
 import { z } from 'zod';
 
 /**
- * The single **command manifest** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
- * 2.5.C) — one canonical, **alias-free** description of every command, the single source the three surfaces
- * derive from: the `commander` parser, the in-app `/` palette + slash commands, and `relavium --help --json`.
- * Because all three read this one list, they can never disagree (the [ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
- * decision). Canonically homed in [commands.md](../../../../docs/reference/cli/commands.md); this module is its
- * runtime form (a CLI-only contract — apps/cli, not `@relavium/shared`).
+ * The **command manifest** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
+ * 2.5.C) — one canonical, **alias-free** description of every **shell** command, the single source the shell
+ * surfaces derive from: the `commander` parser, `relavium --help --json`, and the `executeCommand` dispatch
+ * table ([dispatch.ts](dispatch.ts)). Because they read this one list, they can never disagree. Canonically
+ * homed in [commands.md](../../../../docs/reference/cli/commands.md); this module is its runtime form (a CLI-only
+ * contract — apps/cli, not `@relavium/shared`).
  *
- * **S1 scope:** the manifest covers the existing `commander` command surface; the slash-only entries (`/help`,
- * `/doctor`, `/workflows`, `/shortcuts`, `/cost`, and the migrated `/exit` / `/cancel` / `/export`) are added by
- * their own 2.5.C steps, each alongside a working handler — never a dangling entry. The {@link manifest.test.ts}
- * drift guard asserts every real `commander` command has a matching entry (so the surfaces cannot diverge).
+ * The **in-REPL** `/` palette + slash commands are a SEPARATE, curated registry ([repl-commands.ts](repl-commands.ts),
+ * `REPL_COMMANDS` — see the ADR-0056 amendment): a REPL command runs over the live session's lifecycle, not a
+ * `CommandInput`, and the heavy shell commands here are never run from inside a chat. The {@link manifest.test.ts}
+ * drift guard asserts every real `commander` command has a matching manifest entry (so the shell surfaces cannot diverge).
  */
 
 /** A single command argument the manifest advertises — a positional or a (possibly repeatable) option value. */
@@ -362,7 +362,7 @@ function freezeEntry(entry: CommandManifestEntry): CommandManifestEntry {
   return Object.freeze(entry);
 }
 
-/** The validated, deep-frozen command manifest — the single source for the palette, slash help, and `--help --json`. */
+/** The validated, deep-frozen command manifest — the single source for `commander` + the `executeCommand` table + `--help --json`. */
 export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = Object.freeze(
   CommandManifestSchema.parse(ENTRIES).map(freezeEntry),
 );

@@ -214,8 +214,9 @@ describe('executeCommand', () => {
 
   it('dispatch table ↔ manifest: every manifest command is dispatchable, and no executor is orphaned', () => {
     // The durable chain: commander ⊆ manifest (manifest.test.ts drift guard) AND manifest == dispatch (here) ⟹
-    // every commander command is dispatchable. (When 2.5.C adds slash-only entries with their own executors,
-    // both sets grow together; this stays an exact-cover invariant.)
+    // every commander command is dispatchable. The in-REPL `/` palette + slash commands are a SEPARATE
+    // REPL_COMMANDS registry (repl-commands.ts — ADR-0056 amendment), not executeCommand entries, so the manifest
+    // stays exactly the shell command set and this remains an exact-cover invariant.
     expect(new Set(DISPATCHABLE_COMMAND_IDS)).toEqual(
       new Set(COMMAND_MANIFEST.map((entry) => entry.id)),
     );

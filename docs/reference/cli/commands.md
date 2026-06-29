@@ -123,33 +123,33 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 
 > **Canonical home** for the command manifest ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C). The runtime form lives in `apps/cli/src/commands/manifest.ts` (a **CLI-only** contract — no other surface consumes a CLI command list).
 
-A single **command manifest** is the one source the three command surfaces derive from — the `commander` parser, the in-app `/` palette + slash commands, and `relavium --help --json` — so they can **never diverge**. The set is deliberately **small and alias-free**; every entry is canonical by construction (there is no per-entry alias flag). Each entry is:
+The **command manifest** is the one source the **shell** command surfaces derive from — the `commander` parser, the `executeCommand` dispatch table (`apps/cli/src/commands/dispatch.ts`), and `relavium --help --json` — so they can **never diverge**. (The in-REPL `/` palette + slash commands are a separate, curated registry — see [In-REPL slash commands](#in-repl-slash-commands) below.) The set is deliberately **small and alias-free**; every entry is canonical by construction (there is no per-entry alias flag). Each entry is:
 
 ```text
 {
   id          // stable id; a subcommand is dotted — `provider.set-key`, `agent.run`, `gate.list`
-  label       // a short human label for the palette — "Run workflow", "Set provider key"
+  label       // a short human label — "Run workflow", "Set provider key"
   description // the one-line help; MUST match commander's .description() (the --help --json text)
-  args?       // [{ name, type: 'string'|'number'|'boolean', required?, description? }]
+  args?       // [{ name, type: 'string'|'number'|'boolean', required?, description? }]; name is the camelCase CommandInput key
   effect      // 'read' | 'write' | 'destructive'  (see below)
-  modeScope?  // chat modes the command is available in; omit ⇒ all modes
+  modeScope?  // chat modes a command is available in; omit ⇒ all modes
 }
 ```
 
 - **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (today only `provider.remove-key`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
 - **`modeScope`** lists the chat modes a command appears in (omit ⇒ all). The mode values (`ask` / `plan` / `accept-edits` / `auto`) are defined in [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E); 2.5.C ships the field with `omit = all`.
-- A `manifest ↔ commander` drift guard (a unit test) asserts every real `commander` command has an entry with the **same description**, so the palette, slash help, and `--help --json` stay byte-consistent.
+- A `manifest ↔ commander` drift guard (a unit test) asserts every real `commander` command has an entry with the **same description** (command + each option), so `commander`, the `executeCommand` table, and `--help --json` stay byte-consistent.
 
-The manifest also carries **slash-only** entries that have no `commander` command — `/help`, `/doctor`, `/workflows`, `/shortcuts`, `/cost`, and the migrated `/exit` / `/cancel` / `/export` — each added alongside its handler in a later 2.5.C step. A bare `/` in the **Home or chat** prompt opens the filterable palette (the discovery entry point); an unknown slash prints a sanitized, secret-free hint.
+| Example entry | `effect` |
+|---------------|----------|
+| `run` | write |
+| `list` | read |
+| `provider.set-key` | write |
+| `provider.remove-key` | destructive |
 
-| Example entry | `effect` | Surfaces |
-|---------------|----------|----------|
-| `run` | write | commander · palette · slash |
-| `list` | read | commander · palette · slash |
-| `provider.set-key` | write | commander · palette · slash |
-| `provider.remove-key` | destructive | commander · palette · slash |
-| `/doctor` | read | palette · slash |
-| `/workflows` | read | palette · slash |
+### In-REPL slash commands
+
+The interactive `/` palette + slash commands inside the **Home and chat** are a SEPARATE, **curated** surface ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) amendment, 2.5.C) — the runtime registry is `apps/cli/src/commands/repl-commands.ts` (`REPL_COMMANDS`), the single source for the palette, the `/help` list, and the unknown-slash hint. It surfaces only the commands that make sense in a live REPL — lifecycle (`/exit`, `/cancel`, `/export`) and info/discovery (`/help`, and — landing in later 2.5.C steps — `/shortcuts`, `/cost`, `/workflows`, `/doctor`, `/clear`). The heavy, session-starting shell commands above (`run`, `chat`, `provider`, …) are **never** in-REPL slashes — they stay shell-only (`relavium <cmd> …`). A bare `/` at the prompt opens the filterable palette; an unknown slash prints a sanitized, secret-free hint.
 
 ### `relavium run`
 
