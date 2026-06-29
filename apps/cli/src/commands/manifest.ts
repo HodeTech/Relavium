@@ -90,7 +90,7 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     description: 'Execute a workflow (path or id), streaming progress.',
     args: [
       { name: 'workflow', type: 'string', required: true, description: 'workflow path or id' },
-      { name: 'input', type: 'string', description: 'a workflow input key=value (repeatable)' },
+      { name: 'input', type: 'string', description: 'a workflow input (repeatable)' },
     ],
     effect: 'write',
   },
@@ -127,7 +127,7 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     label: 'Export session',
     description: 'Export a session to a .relavium.yaml scaffold for review (ADR-0026).',
     args: [
-      { name: 'sessionId', type: 'string', required: true },
+      { name: 'sessionId', type: 'string', required: true, description: 'the session to export' },
       {
         name: 'out',
         type: 'string',
@@ -160,7 +160,7 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     description:
       'Export a workflow/agent to a portable YAML (secret references stay placeholdered).',
     args: [
-      { name: 'id', type: 'string', required: true },
+      { name: 'id', type: 'string', required: true, description: 'workflow or agent id to export' },
       {
         name: 'out',
         type: 'string',
@@ -180,7 +180,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     description:
       'Import an external workflow/agent YAML into the project (validated, deduplicated).',
     args: [
-      { name: 'path', type: 'string', required: true },
+      {
+        name: 'path',
+        type: 'string',
+        required: true,
+        description: 'path to the .relavium.yaml / .agent.yaml file',
+      },
       {
         name: 'force',
         type: 'boolean',
@@ -195,7 +200,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     description:
       'Run a single agent one-shot (prompt on stdin); --fixture replays a recorded cassette.',
     args: [
-      { name: 'agent', type: 'string', required: true },
+      {
+        name: 'agent',
+        type: 'string',
+        required: true,
+        description: 'agent .agent.yaml path or .relavium/ id',
+      },
       { name: 'input', type: 'string', description: 'a session {{ctx.*}} variable (repeatable)' },
       {
         name: 'fixture',
@@ -222,8 +232,16 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         type: 'string',
         description: 'a decision comment (with --approve / --reject)',
       },
-      { name: 'input', type: 'string', description: 'provide input for a gate_type=input gate' },
-      { name: 'gate', type: 'string', description: 'which pending gate to resolve' },
+      {
+        name: 'input',
+        type: 'string',
+        description: 'provide input for a gate_type=input gate (JSON, else a raw string)',
+      },
+      {
+        name: 'gate',
+        type: 'string',
+        description: 'which pending gate to resolve (required when more than one is pending)',
+      },
     ],
     effect: 'write',
   },
@@ -231,7 +249,13 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     id: 'gate.list',
     label: 'List gates',
     description: 'List pending human gates (all paused runs, or one run).',
-    args: [{ name: 'runId', type: 'string' }],
+    args: [
+      {
+        name: 'runId',
+        type: 'string',
+        description: 'a single run to inspect (omit ⇒ all paused runs)',
+      },
+    ],
     effect: 'read',
   },
   {
@@ -245,7 +269,7 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     id: 'logs',
     label: 'Show run logs',
     description: 'Print the persisted event stream for a past run.',
-    args: [{ name: 'runId', type: 'string', required: true }],
+    args: [{ name: 'runId', type: 'string', required: true, description: 'the run to print' }],
     effect: 'read',
   },
   {
@@ -265,7 +289,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     label: 'Add provider',
     description: 'Register a provider.',
     args: [
-      { name: 'name', type: 'string', required: true },
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'provider name (e.g. anthropic)',
+      },
       { name: 'base-url', type: 'string', description: 'override the provider base URL' },
     ],
     effect: 'write',
@@ -274,14 +303,28 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     id: 'provider.set-key',
     label: 'Set provider key',
     description: 'Store a provider API key in the OS keychain (the key is read from stdin).',
-    args: [{ name: 'name', type: 'string', required: true }],
+    args: [
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'provider name (e.g. anthropic)',
+      },
+    ],
     effect: 'write',
   },
   {
     id: 'provider.remove-key',
     label: 'Remove provider key',
     description: 'Remove a provider API key from the OS keychain.',
-    args: [{ name: 'name', type: 'string', required: true }],
+    args: [
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'provider name (e.g. anthropic)',
+      },
+    ],
     // destructive: irreversibly removes a stored credential (approval enforcement is 2.5.E/ADR-0057).
     effect: 'destructive',
   },
@@ -290,7 +333,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     label: 'Test provider key',
     description: 'Verify a provider key with a minimal live request.',
     args: [
-      { name: 'name', type: 'string', required: true },
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'provider name (e.g. anthropic)',
+      },
       {
         name: 'model',
         type: 'string',
@@ -301,9 +349,18 @@ const ENTRIES: readonly CommandManifestEntry[] = [
   },
 ];
 
-/** The validated, frozen command manifest — the single source for the palette, slash help, and `--help --json`. */
+/** Freeze an entry and its nested `args` (items + array) so the manifest is immutable at runtime, not just in the type system. */
+function freezeEntry(entry: CommandManifestEntry): CommandManifestEntry {
+  if (entry.args !== undefined) {
+    for (const arg of entry.args) Object.freeze(arg);
+    Object.freeze(entry.args);
+  }
+  return Object.freeze(entry);
+}
+
+/** The validated, deep-frozen command manifest — the single source for the palette, slash help, and `--help --json`. */
 export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = Object.freeze(
-  CommandManifestSchema.parse(ENTRIES),
+  CommandManifestSchema.parse(ENTRIES).map(freezeEntry),
 );
 
 /** O(1) lookup of a manifest entry by id. */

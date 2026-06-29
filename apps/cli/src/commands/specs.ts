@@ -60,7 +60,7 @@ interface StubSpec {
   readonly landsIn: string;
 }
 
-const STUB_COMMANDS: readonly StubSpec[] = [
+export const STUB_COMMANDS: readonly StubSpec[] = [
   {
     name: 'budget',
     summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',

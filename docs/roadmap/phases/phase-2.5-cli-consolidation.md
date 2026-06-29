@@ -190,7 +190,8 @@ ADR: bare-invocation interactive-entry contract.**
 > **Status:** 🚧 **In progress.** [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md)
 > is **Accepted (2026-06-29)**; the command-manifest contract is canonically homed in
 > [commands.md](../../reference/cli/commands.md). Delivered per the per-step opus + sonnet review loop; not yet
-> ✅ Done (PR pending). Slash commands work in **both Home and chat** (the palette is the discovery entry point).
+> ✅ Done (PR pending). **Decided design:** the `/` palette is the discovery entry point in **both Home and chat**
+> — the dispatch, the palette UI, and the slash-only handlers land across this workstream's steps.
 
 A single shared dispatch table behind `commander`, the palette, and the in-REPL slash commands — a
 small, canonical, **alias-free** set (avoiding the 40–100-command sprawl of other agent CLIs).
