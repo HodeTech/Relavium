@@ -6,6 +6,8 @@ import { createElement } from 'react';
 
 import { createChatLineHandler } from '../commands/chat.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
+import { assembleDoctorProbes } from '../chat/doctor-host.js';
+import type { DoctorProbes } from '../chat/doctor.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
@@ -49,6 +51,8 @@ export interface HomeDeps {
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   readonly mcpSecretResolver?: McpSecretResolver;
+  /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
+  readonly doctorProbes?: DoctorProbes;
   readonly now?: () => number;
   readonly uuid?: () => string;
   /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). */
@@ -84,6 +88,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     configPath: deps.global.configPath,
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
+  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+  const doctorProbes =
+    deps.doctorProbes ??
+    assembleDoctorProbes({
+      cwd: deps.global.cwd,
+      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+      resolver: providers,
+      mcpRegistrations: config.mcpServers,
+      mcpSecretResolver,
+    });
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
 
   // The cleanup scope opens as soon as the db handle is held, so an init fault AFTER this point (a failed
@@ -121,7 +135,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         now,
         uuid,
         providers,
-        mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+        mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
         onBudgetWarning: (warning) =>
           deps.io.writeErr(
@@ -151,7 +165,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           uuid,
         });
         const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
-          { built, opened, store, persister },
+          { built, opened, store, persister, doctorProbes },
           deps,
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
@@ -240,6 +254,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       controller = createHomeController({
         startChat,
         homeStore,
+        doctorProbes,
         onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
         onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       });

@@ -89,6 +89,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         snapshot={state.snapshot}
         input={state.input}
         errorText={state.errorText}
+        notice={state.notice}
         nowMs={props.nowMs()}
         cols={size.cols}
         rows={size.rows}

@@ -3,6 +3,11 @@ import {
   HOME_PALETTE_COMMANDS,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
+import {
+  formatDoctorReport,
+  runDoctorChecks,
+  type DoctorProbes,
+} from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -54,6 +59,9 @@ export interface HomeControllerState {
   /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
    *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
   readonly palette: PaletteState | undefined;
+  /** Transient command output in the bare Home — the `/doctor` report (2.5.C S5), rendered below the strip and
+   *  cleared on the next edit/submit. Multi-line + secret-free (the doctor formatter sanitizes). `undefined` ⇒ none. */
+  readonly notice: string | undefined;
 }
 
 export interface HomeControllerDeps {
@@ -71,6 +79,8 @@ export interface HomeControllerDeps {
    * instant bound so it need not wait real time.
    */
   readonly boundTeardown?: (teardown: Promise<void>) => Promise<void>;
+  /** The `/doctor` probes (2.5.C S5) — the Home palette's `/doctor` runs the fast tier over these into `notice`. */
+  readonly doctorProbes: DoctorProbes;
 }
 
 export interface HomeController {
@@ -94,6 +104,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     input: '',
     session: undefined,
     palette: undefined,
+    notice: undefined,
   };
   let cancelFired = false;
   let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
@@ -200,6 +211,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     set({
       input: '',
       errorText: undefined,
+      notice: undefined,
       pendingMessage: trimmed,
       mode: 'loading',
       palette: undefined,
@@ -239,8 +251,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // chat-only) but the context shape requires them, so they are inert here.
   // The Home's REPL context. Capabilities for CHAT-ONLY commands (cancel/export/cost/workflows — `availableIn`
   // excludes the Home) are inert noops, unreachable from HOME_PALETTE_COMMANDS. A genuinely home-applicable command
-  // (e.g. the upcoming `/doctor`, availableIn ['home','chat']) wires a REAL impl here, not a noop — so the context
-  // stays honest rather than accumulating dead capabilities.
+  // wires a REAL impl: `/doctor` (availableIn ['home','chat']) runs the fast tier into the Home `notice` surface.
   const homeReplCtx: ReplCommandContext = {
     exit: () => exitHome(),
     cancel: () => undefined,
@@ -248,6 +259,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     help: () => undefined,
     showWorkflows: () => undefined,
     showCost: () => undefined,
+    runDoctor: async (deep) => {
+      if (exiting) return;
+      set({ notice: 'doctor: checking…' });
+      let text: string;
+      try {
+        text = formatDoctorReport(await runDoctorChecks(deep, deps.doctorProbes));
+      } catch {
+        text = 'doctor: check failed';
+      }
+      // A chat may have started (or the Home exited) during the await — only land the report on the bare Home.
+      if (!exiting && state.session === undefined) set({ notice: text });
+    },
   };
 
   const handlePaletteKey = (input: string, key: PaletteKey): void => {
@@ -268,7 +291,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         if (active !== undefined) {
           sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
         } else {
-          void Promise.resolve(step.command.run(homeReplCtx)).catch(() => undefined); // home: run over the Home context
+          // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
+          // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
+          void Promise.resolve(step.command.run(homeReplCtx, [])).catch(() => undefined);
         }
       }
       return;
@@ -320,7 +345,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.length)) {
-      set({ palette: INITIAL_PALETTE_STATE });
+      set({ palette: INITIAL_PALETTE_STATE, notice: undefined }); // running another command clears a stale report
       return;
     }
     switch (action.kind) {
@@ -328,10 +353,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         submit();
         return;
       case 'append':
-        set({ input: state.input + action.char });
+        // The first keystroke after reading a `/doctor` report clears it (moving on) — no lingering block.
+        set({ input: state.input + action.char, notice: undefined });
         return;
       case 'backspace':
-        set({ input: dropLastCodePoint(state.input) });
+        set({ input: dropLastCodePoint(state.input), notice: undefined });
         return;
       case 'none':
         return;

@@ -36,6 +36,9 @@ interface HomeViewProps {
   readonly input: string;
   /** A build-failure message to show above the prompt (cleared on the next submit / a clean return). */
   readonly errorText?: string | undefined;
+  /** Transient command output — the `/doctor` report (2.5.C S5), shown above the prompt, cleared on the next
+   *  edit/submit. Multi-line + already secret-free (the doctor formatter sanitizes). */
+  readonly notice?: string | undefined;
   /** Injected clock for the relative-time labels (the projection is clock-free). */
   readonly nowMs: number;
   readonly cols: number;
@@ -93,7 +96,7 @@ function Prompt(props: Readonly<{ input: string; color: boolean }>): ReactElemen
 }
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, input, errorText, nowMs, cols, rows, color, paletteOpen } = props;
+  const { snapshot, input, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
 
   // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
   // until a resize arrives, so the user must still be able to leave without resizing.
@@ -197,6 +200,18 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
           <Text {...colorProps(color, 'red')} wrap="truncate-end">
             couldn’t start the chat: {sanitizeInline(errorText)}
           </Text>
+        </Box>
+      )}
+
+      {notice !== undefined && (
+        // The `/doctor` report — one dim Text per line. NO `wrap="truncate-end"`: cli-truncate would drop whole
+        // lines from a multi-line block (the chat notice channel learned the same lesson). Already sanitized.
+        <Box marginTop={1} flexDirection="column">
+          {notice.split('\n').map((row, i) => (
+            <Text key={i} {...dimProps(color)}>
+              {row}
+            </Text>
+          ))}
         </Box>
       )}
 

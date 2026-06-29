@@ -31,32 +31,42 @@ export const DEEP_PROBE_TIMEOUT_MS = 10_000;
 
 export interface ProviderProbeDeps {
   readonly resolver: ProviderResolver;
-  /** The provider ids with a key configured — the caller derives them (store `key set` ∪ env var). */
-  readonly configuredIds: readonly ProviderId[];
+  /** The candidate provider ids to consider (default: all known providers). Each is validated ONLY if its key
+   *  actually resolves (keychain ∪ env) — the filter runs lazily INSIDE the probe so assembling the probe does
+   *  no I/O (never reads a key until `/doctor --deep` runs). */
+  readonly candidateIds?: readonly ProviderId[];
   readonly timeoutMs?: number;
 }
 
-/** Build the `--deep` provider probe: validate each configured key with a bounded live ping. */
+/** Build the `--deep` provider probe: validate each CONFIGURED key with a bounded live ping. */
 export function buildProviderProbe(deps: ProviderProbeDeps): () => Promise<readonly DoctorCheck[]> {
   return async () => {
-    if (deps.configuredIds.length === 0) {
+    const candidates = deps.candidateIds ?? (Object.keys(KNOWN_PROVIDERS) as ProviderId[]);
+    // Resolve each candidate's key ONCE (keychain → env → skip). All reads happen here, lazily, when the probe
+    // runs — never at assembly. A provider with no key is simply not configured, so it is skipped (not failed).
+    const configured: { readonly id: ProviderId; readonly key: string }[] = [];
+    for (const id of candidates) {
+      try {
+        configured.push({ id, key: deps.resolver.keyFor(id) });
+      } catch {
+        // No key for this provider — skip it (an unconfigured provider is not a failure).
+      }
+    }
+    if (configured.length === 0) {
       return [warnCheck('provider', 'providers', 'no keys configured')];
     }
-    return Promise.all(deps.configuredIds.map((id) => probeProvider(id, deps)));
+    return Promise.all(configured.map(({ id, key }) => probeProvider(id, key, deps)));
   };
 }
 
-async function probeProvider(id: ProviderId, deps: ProviderProbeDeps): Promise<DoctorCheck> {
+async function probeProvider(
+  id: ProviderId,
+  key: string,
+  deps: ProviderProbeDeps,
+): Promise<DoctorCheck> {
   const provider = deps.resolver.resolveProvider(id);
   if (provider === undefined) {
     return failCheck(`provider:${id}`, id, 'no adapter');
-  }
-  let key: string;
-  try {
-    key = deps.resolver.keyFor(id);
-  } catch {
-    // A configured id should always resolve; never surface the resolver message (defensive — it is secret-free).
-    return failCheck(`provider:${id}`, id, 'no key resolved');
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? DEEP_PROBE_TIMEOUT_MS);

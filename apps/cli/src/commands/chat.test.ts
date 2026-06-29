@@ -9,6 +9,7 @@ import { createClient, createSessionStore, runMigrations, type DbClient } from '
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { DoctorProbes } from '../chat/doctor.js';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import {
   scriptedResolver,
@@ -118,7 +119,11 @@ describe('chatCommand', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  function deps(lines: readonly string[], scripts: StreamChunk[][]) {
+  function deps(
+    lines: readonly string[],
+    scripts: StreamChunk[][],
+    extra: Partial<ChatCommandDeps> = {},
+  ) {
     const { io, out, err } = captureIo();
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     let id = 0;
@@ -131,6 +136,7 @@ describe('chatCommand', () => {
       drive: linesDriver(lines),
       now: () => tick++,
       uuid: () => `id-${id++}`,
+      ...extra,
     };
     // The first uuid() mints the sessionId; ids advance from there for the persisted messages.
     return { d, out, err, store, sessionId: 'id-0' };
@@ -210,6 +216,57 @@ describe('chatCommand', () => {
     expect(err()).toContain('Session cost: $0.0000');
     // /cost is read-only: the session continued — the 'hello' turn persisted (user + assistant = 2).
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  // A fake fast-tier-passing probe set; `--deep` adds one ok provider + one warn MCP check (deterministic, no I/O).
+  const fakeDoctorProbes: DoctorProbes = {
+    keychain: () => {},
+    config: () => {},
+    toolHost: {},
+    deepProviders: () =>
+      Promise.resolve([
+        { id: 'provider:anthropic', label: 'anthropic', status: 'ok', detail: 'key works' },
+      ]),
+    deepMcp: () =>
+      Promise.resolve([{ id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' }]),
+  };
+
+  it('/doctor runs the fast tier into the notice channel (stderr, non-TTY), without ending the session', async () => {
+    const { d, err, store, sessionId } = deps(['/doctor', 'hello', '/exit'], [textTurn('hi')], {
+      doctorProbes: fakeDoctorProbes,
+    });
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('doctor: all checks passed');
+    expect(out).toContain('✓ OS keychain: reachable');
+    expect(out).not.toContain('anthropic'); // the fast tier never ran the deep provider probe
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: the session continued
+  });
+
+  it('/doctor --deep dispatches the deep tier (provider + MCP probes)', async () => {
+    const { d, err } = deps(['/doctor --deep', '/exit'], [textTurn('hi')], {
+      doctorProbes: fakeDoctorProbes,
+    });
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('✓ anthropic: key works'); // the deep provider probe ran
+    expect(out).toContain('⚠ MCP servers: none configured'); // the deep MCP probe ran
+  });
+
+  it('rejects an undeclared slash argument (a zero-arg command takes no tokens)', async () => {
+    const { d, err, store, sessionId } = deps(['/exit now', 'hi', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain("/exit: unknown argument 'now'");
+    // '/exit now' was rejected (not run as exit), so the session continued and the 'hi' turn persisted.
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  it('rejects an unknown flag on an arg-taking command (/doctor --bogus)', async () => {
+    const { d, err } = deps(['/doctor --bogus', '/exit'], [textTurn('hi')], {
+      doctorProbes: fakeDoctorProbes,
+    });
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain("/doctor: unknown argument '--bogus'");
   });
 
   it('/workflows reports a project-less cwd without crashing the REPL', async () => {

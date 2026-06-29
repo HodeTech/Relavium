@@ -7,6 +7,8 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 import { exportSession } from '../chat/export.js';
+import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
+import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { catalogNotice, costNotice } from '../chat/repl-info.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import {
@@ -119,6 +121,9 @@ export interface ChatCommandDeps {
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  /** The `/doctor` probes (2.5.C S5) — production assembles the real keychain/config/tool/provider/MCP probes;
+   *  a test injects a fake so it exercises `/doctor` without a real keychain or a live provider/MCP server. */
+  readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -141,6 +146,8 @@ export interface ChatResumeCommandDeps {
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
+  readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
   /** Wall-clock (ms) + id sources (injectable for tests). */
@@ -166,6 +173,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     configPath: deps.global.configPath,
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
+  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   const store = createChatStore(deps.global.color);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
@@ -179,7 +187,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     now,
     uuid,
     providers,
-    mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+    mcpSecretResolver,
     mcpRegistrations: config.mcpServers,
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
@@ -216,8 +224,18 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     throw err;
   }
 
+  const doctorProbes =
+    deps.doctorProbes ??
+    assembleDoctorProbes({
+      cwd: deps.global.cwd,
+      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+      resolver: providers,
+      mcpRegistrations: config.mcpServers,
+      mcpSecretResolver,
+    });
+
   return runReplLoop(
-    { built, opened, store, persister, startSession: () => built.session.start() },
+    { built, opened, store, persister, doctorProbes, startSession: () => built.session.start() },
     deps,
   );
 }
@@ -242,6 +260,7 @@ export async function chatResumeCommand(
     configPath: deps.global.configPath,
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
+  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
 
   let built: BuiltChatSession;
@@ -265,7 +284,7 @@ export async function chatResumeCommand(
       messages: loaded.messages,
       now,
       providers,
-      mcpSecretResolver: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
@@ -320,9 +339,22 @@ export async function chatResumeCommand(
     throw err;
   }
 
+  const doctorProbes =
+    deps.doctorProbes ??
+    assembleDoctorProbes({
+      cwd: deps.global.cwd,
+      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+      resolver: providers,
+      mcpRegistrations: config.mcpServers,
+      mcpSecretResolver,
+    });
+
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
-  return runReplLoop({ built, opened, store, persister, startSession: () => {}, intro }, deps);
+  return runReplLoop(
+    { built, opened, store, persister, doctorProbes, startSession: () => {}, intro },
+    deps,
+  );
 }
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
@@ -331,6 +363,8 @@ interface ReplWiring {
   readonly opened: OpenedSessionStore;
   readonly store: ChatStoreController;
   readonly persister: SessionPersister;
+  /** The assembled `/doctor` probes (2.5.C S5) — the replCtx's `runDoctor` runs them over the notice channel. */
+  readonly doctorProbes: DoctorProbes;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
@@ -360,10 +394,10 @@ export interface ChatLineHandler {
  * state is internal — the caller reads it via `shouldStop` and fires the terminal via `cancelOnce` on teardown.
  */
 export function createChatLineHandler(
-  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister'>,
+  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister' | 'doctorProbes'>,
   deps: ChatReplDeps,
 ): ChatLineHandler {
-  const { built, opened, store, persister } = wiring;
+  const { built, opened, store, persister, doctorProbes } = wiring;
   let stop = false;
   let cancelled = false;
   const cancelOnce = (): void => {
@@ -458,16 +492,36 @@ export function createChatLineHandler(
     showCost: () => {
       emitOutput(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
     },
+    // `/doctor` (2.5.C S5): a staged setup health check; `--deep` adds the network/process tier (key + MCP
+    // validation). Each probe is secret-free + bounded; a thrown probe never crashes the REPL (reported as output).
+    runDoctor: async (deep) => {
+      try {
+        emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
+      } catch (err) {
+        const reason = err instanceof CliError ? err.code : 'unexpected error';
+        emitOutput(`doctor failed: ${reason}`);
+      }
+    },
   };
 
   const processLine = async (raw: string): Promise<void> => {
     const line = raw.trim();
     if (line.length === 0) return;
     if (line.startsWith('/')) {
-      // Exact-match a curated REPL command (every command is zero-arg today); `/export foo` is NOT `/export`.
-      const command = REPL_COMMANDS_BY_NAME.get(line.slice(1));
+      // Parse `/name [args]` (S5): split the post-slash string into a command name + arg tokens, so `/doctor
+      // --deep` dispatches `doctor` with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is
+      // rejected below), preserving the prior exact-match strictness while admitting declared flags.
+      const [name, ...tokens] = line.slice(1).split(/\s+/);
+      const command = name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
       if (command !== undefined) {
-        await command.run(replCtx); // may be async (a future /cost / /doctor); never fire-and-forget
+        // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED.
+        const allowed = new Set((command.args ?? []).map((arg) => arg.flag));
+        const bad = tokens.find((token) => !allowed.has(token));
+        if (bad !== undefined) {
+          deps.io.writeErr(`/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.\n`);
+          return;
+        }
+        await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
         return;
       }
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a

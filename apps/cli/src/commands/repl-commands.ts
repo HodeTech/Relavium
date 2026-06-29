@@ -33,6 +33,15 @@ export interface ReplCommandContext {
   readonly showWorkflows: () => void | Promise<void>;
   /** Show the session's cumulative cost as a notice (2.5.C S4; the per-model breakdown is 2.6.C). */
   readonly showCost: () => void | Promise<void>;
+  /** Run the `/doctor` health check (2.5.C S5); `deep` adds the network/process tier (key + MCP validation). */
+  readonly runDoctor: (deep: boolean) => void | Promise<void>;
+}
+
+/** A flag a {@link ReplCommand} accepts after its name (e.g. `/doctor --deep`). Flags only — the curated set has
+ *  no positionals; a future positional command would extend this, not work around it. */
+export interface ReplArg {
+  readonly flag: string;
+  readonly description: string;
 }
 
 /** One curated in-REPL command. `run` wires the slash name to a {@link ReplCommandContext} capability. */
@@ -44,8 +53,12 @@ export interface ReplCommand {
   /** A forward annotation, shared with the shell manifest ({@link CommandEffect}): `read` (no data change) /
    *  `write` (creates a file) / `destructive` (irreversibly removes — e.g. a future `/clear`). */
   readonly effect: CommandEffect;
-  /** Run the command; may be async (an awaited `Promise<void>`), so a future `/cost` / `/doctor` is safe. */
-  readonly run: (ctx: ReplCommandContext) => void | Promise<void>;
+  /** The flags this command accepts after its name (omitted ⇒ zero-arg). The dispatch rejects any token not
+   *  listed here, so a zero-arg command still rejects `/exit now`. */
+  readonly args?: readonly ReplArg[];
+  /** Run the command; receives the validated post-name arg tokens (empty for a zero-arg command). May be async
+   *  (an awaited `Promise<void>`), so `/cost` / `/doctor` are safe. */
+  readonly run: (ctx: ReplCommandContext, args: readonly string[]) => void | Promise<void>;
   /** The surfaces the command applies to — `chat` (a live session) and/or `home` (the bare management strip).
    *  A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. The
    *  palette of each surface shows only its applicable commands (2.5.C S3c). */
@@ -53,12 +66,12 @@ export interface ReplCommand {
 }
 
 /**
- * **Args are NOT modelled here yet (an S4 obligation).** A 2.5.C palette selection submits the bare `/<name>`
- * line, and the in-REPL dispatch (createChatLineHandler) **exact-matches** the whole post-slash string — so every
- * curated command must be runnable with no args (today's set is). When an arg-taking command lands (e.g.
- * `/doctor --deep`, `/trim <n>`), S4 must BOTH (a) add an `args` shape here + an arg-entry/parse path so a typed
- * `/<name> <args>` dispatches (the exact-match must become a name+args parse), and (b) decide how the palette
- * captures args on select (prompt after, or insert `/<name> ` into the buffer). Do not discover this mid-S4.
+ * **Args (the prior S4 obligation, discharged in S5).** A command MAY declare {@link ReplCommand.args} — the
+ * flags it accepts after its name (`/doctor --deep`). The in-REPL dispatch (createChatLineHandler) splits the
+ * slash line into `name + tokens`, REJECTS a token not in the command's declared flags (so a zero-arg command
+ * still rejects `/exit now`), and passes the validated tokens to `run(ctx, args)`. The `/` palette captures NO
+ * args: selecting a command submits the BARE `/<name>` (its default / fast behavior) — a flag like `--deep` is
+ * opt-in by TYPING it. The set stays flags-only (no positionals).
  */
 
 /** The curated REPL command set — the single source for the palette, `/help`, and the unknown-slash hint. */
@@ -113,6 +126,19 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     effect: 'read',
     run: (ctx) => ctx.showCost(),
     availableIn: ['chat'],
+  },
+  {
+    name: 'doctor',
+    label: 'Doctor',
+    description: 'Check your setup; --deep also validates keys + MCP.',
+    effect: 'read',
+    args: [
+      { flag: '--deep', description: 'Also validate provider keys and MCP connectivity (network).' },
+    ],
+    // The palette runs the fast tier (`deep: false`); `--deep` is opt-in by typing it. `/doctor` is a REAL Home
+    // capability (pre-chat diagnostics), so it is `availableIn` both surfaces (homeReplCtx wires a live impl).
+    run: (ctx, args) => ctx.runDoctor(args.includes('--deep')),
+    availableIn: ['home', 'chat'],
   },
 ];
 

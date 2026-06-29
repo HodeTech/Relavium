@@ -38,8 +38,8 @@ const fakeClient = (toolCount: number, onClose: () => void = () => {}): McpClien
 const server = (id: string): McpServerConfig => ({ id }) as unknown as McpServerConfig;
 
 describe('buildProviderProbe', () => {
-  it('warns when no provider key is configured', async () => {
-    const probe = buildProviderProbe({ resolver: resolverWith({}), configuredIds: [] });
+  it('warns when no candidate has a resolvable key', async () => {
+    const probe = buildProviderProbe({ resolver: resolverWith({}), candidateIds: [] });
     const checks = await probe();
     expect(checks).toEqual([
       { id: 'provider', label: 'providers', status: 'warn', detail: 'no keys configured' },
@@ -50,7 +50,7 @@ describe('buildProviderProbe', () => {
     const generate = vi.fn().mockResolvedValue({});
     const probe = buildProviderProbe({
       resolver: resolverWith({ anthropic: fakeProvider(generate) }, { anthropic: TEST_KEY }),
-      configuredIds: ['anthropic'],
+      candidateIds: ['anthropic'],
     });
     const [check] = await probe();
     expect(check).toMatchObject({ id: 'provider:anthropic', status: 'ok' });
@@ -63,7 +63,7 @@ describe('buildProviderProbe', () => {
     const generate = vi.fn().mockRejectedValue(new Error(`401 unauthorized for ${TEST_KEY}`));
     const probe = buildProviderProbe({
       resolver: resolverWith({ anthropic: fakeProvider(generate) }, { anthropic: TEST_KEY }),
-      configuredIds: ['anthropic'],
+      candidateIds: ['anthropic'],
     });
     const [check] = await probe();
     expect(check?.status).toBe('fail');
@@ -74,19 +74,21 @@ describe('buildProviderProbe', () => {
   it('reports "no adapter" when the provider does not resolve', async () => {
     const probe = buildProviderProbe({
       resolver: resolverWith({ anthropic: undefined }, { anthropic: TEST_KEY }),
-      configuredIds: ['anthropic'],
+      candidateIds: ['anthropic'],
     });
     const [check] = await probe();
     expect(check).toMatchObject({ id: 'provider:anthropic', status: 'fail', detail: 'no adapter' });
   });
 
-  it('reports "no key resolved" when keyFor throws', async () => {
+  it('skips a candidate whose key does not resolve (never pings it)', async () => {
+    const generate = vi.fn();
     const probe = buildProviderProbe({
-      resolver: resolverWith({ anthropic: fakeProvider(vi.fn()) }, {}),
-      configuredIds: ['anthropic'],
+      resolver: resolverWith({ anthropic: fakeProvider(generate) }, {}), // no key configured
+      candidateIds: ['anthropic'],
     });
     const [check] = await probe();
-    expect(check).toMatchObject({ status: 'fail', detail: 'no key resolved' });
+    expect(check).toMatchObject({ id: 'provider', status: 'warn', detail: 'no keys configured' });
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it('aborts a hanging ping at the timeout and reports a (redacted) failure', async () => {
@@ -96,7 +98,7 @@ describe('buildProviderProbe', () => {
       });
     const probe = buildProviderProbe({
       resolver: resolverWith({ anthropic: fakeProvider(generate) }, { anthropic: TEST_KEY }),
-      configuredIds: ['anthropic'],
+      candidateIds: ['anthropic'],
       timeoutMs: 5,
     });
     const [check] = await probe();
