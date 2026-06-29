@@ -92,7 +92,7 @@ export interface HomeSnapshot {
 /** The read seams the Home aggregates over — narrowed so a test can stub exactly these reads. */
 export interface HomeStoreDeps {
   readonly sessions: Pick<SessionStore, 'listSessions'>;
-  readonly runs: Pick<RunHistoryReader, 'listRuns' | 'loadRunEvents' | 'loadWorkflowSlugs'>;
+  readonly runs: Pick<RunHistoryReader, 'listRuns' | 'loadRunStateEvents' | 'loadWorkflowSlugs'>;
   /**
    * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to
    * `1` (unlike the DB-layer `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request).
@@ -126,11 +126,11 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   // A budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
   // The DISPLAYED gates come from the most-recent `limit` paused runs via a BOUNDED db read (not an in-memory
   // filter over all active history); a paused run accumulates indefinitely (a gate never resolved, a crash before
-  // the terminal) and each gate check costs a `loadRunEvents`, so the shown fan-out is capped. Derive each ONCE.
+  // the terminal) and each gate check costs a `loadRunStateEvents`, so the shown fan-out is capped. Derive each ONCE.
   const displayedPausedRuns = deps.runs.listRuns({ status: 'paused', limit });
   const gatesByRun = displayedPausedRuns.map((run) => ({
     run,
-    pending: pendingHumanGates(deps.runs.loadRunEvents(run.id)),
+    pending: pendingHumanGates(deps.runs.loadRunStateEvents(run.id)),
   }));
 
   // "Attention" lifts a FAILED run (by STATUS — any of them, so a failure beyond the cap can never leak into
@@ -153,7 +153,8 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const humanGatedRunIds = new Set(displayedGatedRunIds);
   for (const run of recentRunRecords) {
     if (run.status !== 'paused' || checkedRunIds.has(run.id)) continue; // not a paused candidate, or already checked
-    if (pendingHumanGates(deps.runs.loadRunEvents(run.id)).length > 0) humanGatedRunIds.add(run.id);
+    if (pendingHumanGates(deps.runs.loadRunStateEvents(run.id)).length > 0)
+      humanGatedRunIds.add(run.id);
   }
 
   // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ displayed paused), deduped.

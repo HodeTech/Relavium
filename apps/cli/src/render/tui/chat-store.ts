@@ -1,8 +1,9 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
-import { formatSessionFooter } from './chat-projection.js';
+import { formatSessionFooter, sanitizeInline } from './chat-projection.js';
 import {
   appendUserMessage,
+  appendWarning,
   initialSessionViewState,
   reduceSessionEvent,
   type SessionViewSeed,
@@ -41,6 +42,8 @@ export interface ChatStoreController extends ChatStore {
   apply: (event: SessionStreamHandleEvent) => void;
   /** Add the user's typed text as a transcript entry (REPL submit) — flushes immediately. */
   appendUser: (text: string) => void;
+  /** Surface a one-line note in the ⚠ warnings channel (e.g. an MCP-skipped notice) — sanitized, flushes. */
+  note: (message: string) => void;
   /** Advance the spinner tick; repaint if there is pending (dirty) state or a turn is in flight. */
   tick: () => void;
   /** Force a repaint (used on finalize to paint the last frame). */
@@ -94,6 +97,10 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
     },
     appendUser: (text) => {
       state = appendUserMessage(state, text);
+      flush();
+    },
+    note: (message) => {
+      state = appendWarning(state, sanitizeInline(message)); // sanitized — a config-derived note can't inject ANSI
       flush();
     },
     tick: () => {

@@ -21,11 +21,9 @@ import {
   type HomeController,
 } from '../render/tui/home-controller.js';
 import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
-import { RootApp, FRAME_MS, type RootAppProps } from '../render/tui/home-app.js';
+import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
+import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
-
-/** The bound on the best-effort MCP teardown a signal-driven quit waits for before hard-exiting (mirrors the chat driver). */
-const FORCE_TEARDOWN_MS = 2000;
 
 /**
  * `driveHome` — the imperative entry behind a bare `relavium` in a TTY (2.5.B / [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -130,6 +128,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
           ),
       });
+      // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
+      // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped so a Home-started chat
+      // tells the user why a configured tool is unavailable.
+      for (const tool of built.mcpSkipped) {
+        store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
+      }
       // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring
       // (persister.start()'s insert, session.start()) must reclaim them — and any spawned MCP child — rather than
       // leak the timer/subscription, mirroring chatCommand's post-build guard.

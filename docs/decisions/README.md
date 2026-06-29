@@ -97,8 +97,8 @@ flowchart TD
 | 0051 | [CLI distribution — an engine-inlined ESM bundle that externalizes every third-party dependency (finalizes 0047's bundle boundary)](0051-cli-distribution-thin-bundle-private-engine.md) | Accepted | 2026-06-24 |
 | 0052 | [Inbound MCP client — the `@relavium/mcp` package boundary, host-injected connection lifecycle, host-side tool registration, a dependency-free schema→validator compiler, and the agent↔config reference linkage (implements 0034)](0052-inbound-mcp-client-package-lifecycle-registration.md) | Accepted | 2026-06-26 |
 | 0053 | [MCP network-transport (`sse`/`websocket`) egress security — SSRF enforcement on the one shared primitive, and the explicit per-server local-endpoint opt-in](0053-mcp-network-transport-egress-security.md) | Accepted | 2026-06-26 |
-| 0054 | [Bare `relavium` invocation opens an interactive Home (TTY only), preserving the meta-op contract](0054-cli-bare-invocation-interactive-home.md) | Proposed | 2026-06-28 |
-| 0055 | [Shared CLI tool-environment factory — `ToolHost`, `ToolPolicy`, and dispatch context as separate channels](0055-cli-host-capability-seam-tool-environment-factory.md) | Proposed | 2026-06-28 |
+| 0054 | [Bare `relavium` invocation opens an interactive Home (TTY only), preserving the meta-op contract](0054-cli-bare-invocation-interactive-home.md) | Accepted | 2026-06-29 |
+| 0055 | [Shared CLI tool-environment factory — `ToolHost`, `ToolPolicy`, and dispatch context as separate channels](0055-cli-host-capability-seam-tool-environment-factory.md) | Accepted | 2026-06-28 |
 | 0056 | [In-app slash command system driven by a single command manifest](0056-cli-in-app-slash-command-system-and-manifest.md) | Proposed | 2026-06-28 |
 | 0057 | [Reseat-less chat modes and per-tool approval (with mid-turn abort)](0057-cli-chat-modes-and-per-tool-approval.md) | Proposed | 2026-06-28 |
 | 0058 | [`@relavium/authoring` package and the conversational-authoring pre-flight contract](0058-relavium-authoring-package-and-conversational-authoring.md) | Proposed | 2026-06-28 |

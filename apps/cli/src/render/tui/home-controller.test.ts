@@ -214,6 +214,25 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(made.teardown).toHaveBeenCalledTimes(1);
   });
 
+  it('BOUNDS the endChat teardown — a never-resolving (hung MCP) close still returns to Home', async () => {
+    const made = makeSession({ stop: () => true }); // the first turn ends the session ⇒ endChat fires
+    made.teardown.mockImplementation(() => new Promise<void>(() => undefined)); // a graceful close that never settles
+    const c = createHomeController({
+      startChat: vi.fn(() => Promise.resolve(made.session)),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      boundTeardown: () => Promise.resolve(), // an instant bound (no real timer) — the deadline "wins" the race
+    });
+
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+
+    expect(c.getSnapshot().mode).toBe('home'); // returned to Home despite the hung teardown — no freeze
+    expect(c.getSnapshot().session).toBeUndefined();
+  });
+
   it('teardownActive during a build-in-flight (a signal while loading) reaps the just-built session — no orphan', async () => {
     let resolveBuild: (s: HomeChatSession) => void = () => undefined;
     const made = makeSession();

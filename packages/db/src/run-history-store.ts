@@ -4,7 +4,7 @@ import {
   type RunEvent,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import {
@@ -142,6 +142,11 @@ export interface RunHistoryReader {
   /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
    *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first. */
   loadRunEvents: (runId: string) => RunEvent[];
+  /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
+   *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
+   *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
+   *  parse the whole firehose. NOT for `logs`/resume, which need every event. */
+  loadRunStateEvents: (runId: string) => RunEvent[];
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
   /** The latest run per workflow (joined by slug) — `relavium list`'s last-run-status overlay. */
@@ -170,6 +175,11 @@ export interface RunHistoryStore extends Pick<
 }
 
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
+
+/** The per-token/tool streaming firehose — the highest-volume events, which checkpoint reconstruction and gate
+ *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} excludes these so a bounded fold over a long run
+ *  does not pay to parse them. (Matches `runEvents.eventType`, which stores `event.type`.) */
+const STREAMING_EVENT_TYPES = ['agent:token', 'agent:tool_call', 'agent:tool_result'];
 
 function fromRunRow(row: RunRow): RunRecord {
   return {
@@ -513,6 +523,19 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .select({ payloadJson: runEvents.payloadJson })
         .from(runEvents)
         .where(eq(runEvents.runId, runId))
+        .orderBy(asc(runEvents.seq))
+        .all()
+        .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+
+    loadRunStateEvents: (runId) =>
+      db
+        .select({ payloadJson: runEvents.payloadJson })
+        .from(runEvents)
+        // Exclude the per-token/tool streaming firehose at the DB level so a gate/checkpoint fold over a long run
+        // doesn't pay to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
+        .where(
+          and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
+        )
         .orderBy(asc(runEvents.seq))
         .all()
         .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),

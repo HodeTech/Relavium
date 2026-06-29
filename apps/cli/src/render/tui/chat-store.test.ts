@@ -235,4 +235,13 @@ describe('createChatStore', () => {
     expect(store.summaryText()).toContain('claude-sonnet-4-6');
     expect(store.summaryText()).toContain('0 turns');
   });
+
+  it('note() surfaces a SANITIZED one-line warning (the MCP-skipped channel) and flushes immediately', () => {
+    const store = createChatStore(false);
+    let repaints = 0;
+    store.subscribe(() => (repaints += 1));
+    store.note("MCP tool 'x' skipped\nFAKE" + String.fromCharCode(27) + '[31m'); // a newline + a control seq must not forge a row / inject ANSI
+    expect(repaints).toBe(1); // a note repaints immediately
+    expect(store.getSnapshot().state.warnings).toEqual(["MCP tool 'x' skipped FAKE"]); // newline collapsed, ESC stripped
+  });
 });

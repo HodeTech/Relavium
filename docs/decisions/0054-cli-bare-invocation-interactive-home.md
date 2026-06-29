@@ -25,7 +25,8 @@ Getting this wrong either leaves the CLI feeling second-class (today) or breaks 
 the process is genuinely interactive.** The gate is `stdoutIsTty && stdinIsTty && global.json !== true
 && !isCiEnv(io.env)`; otherwise the current `helpInformation()` + exit `0` meta-op is preserved.
 The primary control is `stdoutIsTty && stdinIsTty`; the CI guard reuses the **existing `isCiEnv` helper**
-(`apps/cli/src/process/output-mode.ts`) — which treats `CI=true`/`CI=1`/any truthy `CI` as CI — rather
+(`apps/cli/src/process/output-mode.ts`) — which treats any non-empty `CI` other than `false`/`0` as CI
+(`CI=true`/`CI=1` count; `CI=false`/`CI=0`/empty opt out) — rather
 than a bare `env.CI !== 'true'` test, so a CI runner that sets `CI=1` (some Drone/Woodpecker/custom setups)
 or allocates a pseudo-TTY cannot accidentally open an interactive Home and stall the pipeline. (Earlier
 text used `env.CI !== 'true'`, which would miss `CI=1`.) The remainder reads as preserved

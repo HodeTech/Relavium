@@ -16,8 +16,6 @@ import { colorProps, dimProps } from './projection.js';
  * state. The clock + terminal size are injected so the strip degrade (<80×24) and the relative times are testable.
  */
 
-const FRAME_MS = 80;
-
 export type { HomeChatSession } from './home-controller.js';
 
 export interface RootAppProps {
@@ -68,7 +66,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {sanitizeInline(state.pendingMessage)}
         </Text>
         <Text {...dimProps(color)} wrap="truncate-end">
-          Starting chat…
+          Starting chat… · Ctrl-C to cancel
         </Text>
       </Box>
     );
@@ -85,5 +83,3 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     />
   );
 }
-
-export { FRAME_MS };

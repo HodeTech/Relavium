@@ -177,12 +177,16 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               </Box>
             </Box>
           )}
-          <Text {...dimProps(color)} wrap="truncate-end">
-            Continue
-          </Text>
-          <Section title="Sessions" rows={sessions} color={color} />
-          <Section title="Runs" rows={runs} color={color} />
-          <Section title="Agents" rows={agents} color={color} />
+          {(sessions.length > 0 || runs.length > 0 || agents.length > 0) && (
+            <>
+              <Text {...dimProps(color)} wrap="truncate-end">
+                Continue
+              </Text>
+              <Section title="Sessions" rows={sessions} color={color} />
+              <Section title="Runs" rows={runs} color={color} />
+              <Section title="Agents" rows={agents} color={color} />
+            </>
+          )}
         </Box>
       )}
 

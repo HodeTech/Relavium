@@ -19,7 +19,7 @@ stdoutIsTty && stdinIsTty && !json && !isCiEnv(env)
 
 - Both `stdout` **and** `stdin` must be TTYs (the `stdinIsTty` seam is the one the `create` wizard already uses). A pipe or redirect on either end keeps the meta-op.
 - `--json` never opens the Home (the machine contract wins).
-- The CI guard reuses the existing `isCiEnv` helper ([output-mode.ts](../../../apps/cli/src/process/output-mode.ts)), which treats `CI=true`, `CI=1`, or any truthy `CI` as CI — so a runner that sets `CI=1` or allocates a pseudo-TTY cannot accidentally open an interactive Home and stall the pipeline.
+- The CI guard reuses the existing `isCiEnv` helper ([output-mode.ts](../../../apps/cli/src/process/output-mode.ts)), which treats any **non-empty** `CI` other than `false`/`0` as CI (`CI=true`/`CI=1` count; `CI=false`/`CI=0`/empty opt out) — so a runner that sets `CI=1` or allocates a pseudo-TTY cannot accidentally open an interactive Home and stall the pipeline.
 
 **Every non-interactive path is byte-for-byte unchanged**: a piped, `--json`, or CI bare invocation prints `program.helpInformation()` and exits `0`, exactly as before ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md) — `--help` / `--version` / a bare no-command invocation are exit-`0` meta-operations). The Home adds a TTY-gated branch and **no** new IO surface. A Home build/config fault renders like any command fault (a config/invocation `CliError` → exit `2`; any unexpected throw, or an `internal` fault, → exit `1` with a generic message, no raw leak).
 
@@ -52,7 +52,7 @@ type a message to start a new chat · Ctrl-C to exit                 ← footer 
 - **Continue** — the neutral recency lists: recent **sessions** (title or agent slug · agent · when · cost), **runs** (workflow or short id · status · when · cost), and **agents** (slug · last used), each bounded to a small limit.
 - **First run** — when there is nothing to show, a welcome (value framing + an example prompt) replaces the empty strips.
 - Every free-form label (a session title, a gate message) is sanitized at the display boundary (control sequences stripped, newlines/tabs collapsed) so it cannot forge a row or inject an escape; kebab slugs and closed enums are safe by construction. Cost reuses the canonical micro-cents → USD conversion (`free` for zero-cost).
-- The aggregation is **indexed, not full-scan** (partial indexes on `updated_at`/`created_at` with the soft-delete predicate) and over-fetches just enough to backfill *Continue* past the entries lifted into *Attention* — see the 2.5.I performance budget.
+- The aggregation is **indexed, not full-scan** (partial indexes on `updated_at`/`created_at` with the soft-delete predicate), and the pending-gate check reads only the gate-relevant events (the per-token streaming firehose is excluded), so the whole snapshot is a handful of bounded top-N reads — it over-fetches just enough to backfill *Continue* past the entries lifted into *Attention*.
 
 A **session title** is derived from the first user message (~40 chars, truncated by code point so an emoji never splits) so the *Sessions* list is readable; an LLM-summarised title is a later phase.
 

@@ -8,7 +8,8 @@ import {
   type ChatDriver,
 } from '../../commands/chat.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
-import { colorProps } from './projection.js';
+import { colorProps, dimProps } from './projection.js';
+import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import { applyChatEdit, reduceChatKey } from './chat-input.js';
 import { spinnerFrame } from './format.js';
 import {
@@ -32,10 +33,6 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
  * kernel no longer translates Ctrl-C → SIGINT. The command's SIGINT handler therefore can't see it — the
  * ChatApp handles Ctrl-C itself (→ `/cancel`). (Re-verify cancel on a real TTY when changing the input.)
  */
-
-const FRAME_MS = 80;
-/** The bound on the best-effort MCP teardown a forced (double-SIGINT) quit waits for before hard-exiting. */
-const FORCE_TEARDOWN_MS = 2000;
 
 function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean }>): ReactElement {
   const { entry, color } = props;
@@ -116,6 +113,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             {sanitizeInline(input)}
           </Text>
           {color && <Text inverse> </Text>}
+        </Text>
+      )}
+      {/* A way back / out, always in view at the idle prompt: how to end the session (back to the Home, or quit a
+          standalone `relavium chat`) and how to keep it (the export-to-workflow promise). */}
+      {!running && (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          /exit or Ctrl-C to end · /export to save as a workflow
         </Text>
       )}
 

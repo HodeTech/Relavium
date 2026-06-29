@@ -2,6 +2,7 @@ import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
+import { FORCE_TEARDOWN_MS } from './tui-constants.js';
 
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
@@ -48,6 +49,13 @@ export interface HomeControllerDeps {
   readonly onExit: () => void;
   /** An unexpected error escaping a chat turn (a re-thrown turn-core bug) — `driveHome` tears down + propagates. */
   readonly onError: (err: unknown) => void;
+  /**
+   * Bound a chat teardown for the UI: returns a promise that settles when the teardown finishes OR the
+   * force-teardown deadline elapses, whichever first — so a hung MCP graceful close can never freeze the
+   * return-to-Home. Default races the teardown against a {@link FORCE_TEARDOWN_MS} timer; a test injects an
+   * instant bound so it need not wait real time.
+   */
+  readonly boundTeardown?: (teardown: Promise<void>) => Promise<void>;
 }
 
 export interface HomeController {
@@ -78,6 +86,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let pasting = false; // inside a bracketed paste (DECSET 2004) — content is buffered literally, never submitted
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
 
+  // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
+  // graceful close never settles; the teardown still runs to completion in the background.
+  const boundTeardown =
+    deps.boundTeardown ??
+    ((teardown: Promise<void>): Promise<void> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, FORCE_TEARDOWN_MS);
+        timer.unref?.();
+      });
+      return Promise.race([teardown.catch(() => undefined), deadline]).finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
+    });
+
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
@@ -106,7 +129,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tearingDown = ended;
     const td = ended.teardown();
     activeTeardown = td; // a concurrent signal awaits THIS graceful close rather than hard-killing the MCP child
-    void td
+    // BOUND the return-to-Home: a hung MCP graceful close must not freeze the Home (mirrors the signal path). The
+    // teardown still completes in the background; only the UI return is bounded by the force-teardown deadline.
+    void boundTeardown(td)
       .finally(() => {
         if (activeTeardown === td) activeTeardown = undefined;
         tearingDown = undefined;

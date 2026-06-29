@@ -152,8 +152,8 @@ extension point — a read-only management strip (recent sessions / runs / agent
 
 - Gate the bare-invocation branch in `run.ts`: open the Home only when `stdoutIsTty && stdinIsTty &&
   global.json !== true && !isCiEnv(io.env)`; otherwise keep `helpInformation()` + exit `0`. Use the
-  **existing** `isCiEnv` helper (`apps/cli/src/process/output-mode.ts`, which already treats `CI=1`/any
-  truthy `CI` as CI — not a bare `env.CI !== 'true'` that would miss `CI=1`) and the **existing**
+  **existing** `isCiEnv` helper (`apps/cli/src/process/output-mode.ts`, which treats any non-empty `CI`
+  other than `false`/`0` as CI — not a bare `env.CI !== 'true'` that would miss `CI=1`) and the **existing**
   `stdinIsTty` field on the `io` seam (`apps/cli/src/process/io.ts` — already wired for the `create`
   wizard), so this adds only a TTY-gate branch, no new IO surface. Do **not** add a `commander` default
   action.

@@ -690,4 +690,40 @@ describe('createRunHistoryReader', () => {
     expect(after.get(alphaId)).toBe('alpha');
     expect(after.has(betaId)).toBe(false);
   });
+
+  it('loadRunStateEvents drops the per-token/tool streaming firehose; loadRunEvents keeps every event', async () => {
+    const store = storeFor('wf');
+    const workflowId = await store.resolveWorkflowId('wf');
+    const ts = new Date(TS_MS).toISOString();
+    await store.persistEvent(
+      evRun('run-x', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+    );
+    await store.persistEvent(
+      evRun('run-x', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
+    );
+    await store.persistEvent(
+      evRun('run-x', 'agent:token', 2, { nodeId: 'g', token: 'a', model: 'claude-opus-4-8' }, ts),
+    );
+    await store.persistEvent(
+      evRun('run-x', 'agent:token', 3, { nodeId: 'g', token: 'b', model: 'claude-opus-4-8' }, ts),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-x',
+        'human_gate:paused',
+        4,
+        { nodeId: 'g', gateId: 'g1', gateType: 'approval', message: 'ok?' },
+        ts,
+      ),
+    );
+
+    // The full log keeps the firehose (logs/resume need every event); the bounded state read drops only the
+    // streaming events checkpoint reconstruction + gate detection ignore — keeping the gate-relevant events.
+    expect(reader.loadRunEvents('run-x').map((e) => e.type)).toContain('agent:token');
+    expect(reader.loadRunStateEvents('run-x').map((e) => e.type)).toEqual([
+      'run:started',
+      'node:started',
+      'human_gate:paused',
+    ]);
+  });
 });
