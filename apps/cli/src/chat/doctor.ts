@@ -25,19 +25,20 @@ export interface DoctorReport {
   readonly checks: readonly DoctorCheck[];
 }
 
-const ok = (id: string, label: string, detail: string): DoctorCheck => ({
+/** Construct an `ok` / `fail` / `warn` check — shared with the `--deep` probes (doctor-deep.ts). */
+export const okCheck = (id: string, label: string, detail: string): DoctorCheck => ({
   id,
   label,
   status: 'ok',
   detail,
 });
-const fail = (id: string, label: string, detail: string): DoctorCheck => ({
+export const failCheck = (id: string, label: string, detail: string): DoctorCheck => ({
   id,
   label,
   status: 'fail',
   detail,
 });
-const warn = (id: string, label: string, detail: string): DoctorCheck => ({
+export const warnCheck = (id: string, label: string, detail: string): DoctorCheck => ({
   id,
   label,
   status: 'warn',
@@ -54,9 +55,9 @@ const warn = (id: string, label: string, detail: string): DoctorCheck => ({
 export function checkKeychain(probe: () => void): DoctorCheck {
   try {
     probe();
-    return ok('keychain', 'OS keychain', 'reachable');
+    return okCheck('keychain', 'OS keychain', 'reachable');
   } catch (err) {
-    return fail('keychain', 'OS keychain', err instanceof Error ? sanitizeInline(err.message) : 'unavailable');
+    return failCheck('keychain', 'OS keychain', err instanceof Error ? sanitizeInline(err.message) : 'unavailable');
   }
 }
 
@@ -65,9 +66,9 @@ export function checkKeychain(probe: () => void): DoctorCheck {
 export function checkConfig(probe: () => void): DoctorCheck {
   try {
     probe();
-    return ok('config', 'config', 'valid');
+    return okCheck('config', 'config', 'valid');
   } catch (err) {
-    return fail('config', 'config', err instanceof Error ? sanitizeInline(err.message) : 'invalid');
+    return failCheck('config', 'config', err instanceof Error ? sanitizeInline(err.message) : 'invalid');
   }
 }
 
@@ -85,7 +86,7 @@ export function checkTools(host: ToolHost): DoctorCheck {
   )
     .filter(([, arm]) => arm !== undefined)
     .map(([name]) => name);
-  return ok('tools', 'wired tools', wired.length > 0 ? wired.join(', ') : 'none');
+  return okCheck('tools', 'wired tools', wired.length > 0 ? wired.join(', ') : 'none');
 }
 
 // ── the orchestrator ─────────────────────────────────────────────────────────
@@ -131,5 +132,3 @@ export function formatDoctorReport(report: DoctorReport): string {
   const heading = failures === 0 ? 'doctor: all checks passed' : `doctor: ${failures} check(s) failed`;
   return [heading, ...rows].join('\n');
 }
-
-export { warn };

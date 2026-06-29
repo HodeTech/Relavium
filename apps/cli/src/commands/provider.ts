@@ -1,7 +1,12 @@
 import { ProviderIdSchema, type ProviderId } from '@relavium/llm';
 import type { ProviderStore } from '@relavium/db';
 
-import { keyHint, type ProviderResolver } from '../engine/providers.js';
+import {
+  KNOWN_PROVIDERS,
+  keyHint,
+  validateProviderKey,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -21,33 +26,6 @@ import {
  * The headless fallback for resolution is the env var (`RELAVIUM_<PROVIDER>_API_KEY`); the `secrets.enc`
  * encrypted-file fallback is deferred past v1.0 (keychain-and-secrets.md).
  */
-
-/** The known providers (each has an `@relavium/llm` adapter) — display name, base URL, and a cheap test model. */
-const KNOWN_PROVIDERS: Record<
-  ProviderId,
-  { displayName: string; baseUrl: string; testModel: string }
-> = {
-  anthropic: {
-    displayName: 'Anthropic',
-    baseUrl: 'https://api.anthropic.com',
-    testModel: 'claude-haiku-4-5',
-  },
-  openai: {
-    displayName: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    testModel: 'gpt-5.4-mini',
-  },
-  gemini: {
-    displayName: 'Google Gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com',
-    testModel: 'gemini-2.5-flash',
-  },
-  deepseek: {
-    displayName: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com',
-    testModel: 'deepseek-chat',
-  },
-};
 
 export type ProviderAction = 'list' | 'add' | 'set-key' | 'remove-key' | 'test';
 
@@ -147,24 +125,13 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
   }
   const key = deps.resolver.keyFor(id); // keychain → env var → error; never logged
   const model = args.model ?? KNOWN_PROVIDERS[id].testModel;
-  try {
-    await provider.generate(
-      {
-        model,
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-        maxTokens: 1,
-      },
-      key,
-    );
-  } catch (err) {
-    // A clean failure. @relavium/llm already scrubs secrets from its error messages, but the key is in
-    // scope HERE, so defensively redact any occurrence before surfacing — and do NOT attach `err` as the
-    // cause (it could carry the key in a nested field that `--verbose` might render).
-    const raw = err instanceof Error ? err.message : String(err);
-    const scrubbed = raw.split(key).join(keyHint(key));
-    throw new CliError('invalid_invocation', `${id}: key test failed — ${scrubbed}`);
+  // The live ping + the defensive key-redaction live in `validateProviderKey` (the seam), shared with the
+  // `/doctor --deep` probe so the secret-scrubbing has one tested home.
+  const result = await validateProviderKey(provider, key, model);
+  if (!result.ok) {
+    throw new CliError('invalid_invocation', `${id}: ${result.detail}`);
   }
-  deps.io.writeOut(`${id}: key works (${model}).\n`);
+  deps.io.writeOut(`${id}: ${result.detail}.\n`);
 }
 
 /**

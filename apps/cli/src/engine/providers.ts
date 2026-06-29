@@ -1,5 +1,10 @@
 import type { WorkflowDefinition } from '@relavium/core';
-import { defaultProviders, type LlmProvider, type ProviderId } from '@relavium/llm';
+import {
+  defaultProviders,
+  type AbortSignalLike,
+  type LlmProvider,
+  type ProviderId,
+} from '@relavium/llm';
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
@@ -33,6 +38,81 @@ export function providerKeyEnvVar(id: ProviderId): string {
 /** A non-secret display hint for a key — masked, with the last 4 chars (or fully masked when too short). NEVER the full key. */
 export function keyHint(key: string): string {
   return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
+}
+
+/** A known provider's metadata — display name, base URL, and a cheap model for the live key test. */
+export interface ProviderMeta {
+  readonly displayName: string;
+  readonly baseUrl: string;
+  readonly testModel: string;
+}
+
+/**
+ * The known providers (each has an `@relavium/llm` adapter). The single home for provider metadata — the
+ * `relavium provider` command (add / test) and the `/doctor --deep` key probe both read it, so a new provider's
+ * test model is defined once.
+ */
+export const KNOWN_PROVIDERS: Record<ProviderId, ProviderMeta> = {
+  anthropic: {
+    displayName: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    testModel: 'claude-haiku-4-5',
+  },
+  openai: {
+    displayName: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    testModel: 'gpt-5.4-mini',
+  },
+  gemini: {
+    displayName: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    testModel: 'gemini-2.5-flash',
+  },
+  deepseek: {
+    displayName: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    testModel: 'deepseek-chat',
+  },
+};
+
+/** The outcome of a {@link validateProviderKey} probe — `ok` plus a secret-free `detail` line. */
+export interface ProviderKeyValidation {
+  readonly ok: boolean;
+  /** Secret-free: `key works (<model>)` on success, or `key test failed — <redacted>` on failure. */
+  readonly detail: string;
+}
+
+/**
+ * Validate a provider key with a minimal live request (`maxTokens: 1` 'ping'). Returns a RESULT so the caller
+ * decides whether to throw (`provider test`) or collect it (the `/doctor --deep` probe) — the redaction lives
+ * here, in one tested place.
+ *
+ * SECURITY — the key is in scope here: `@relavium/llm` already scrubs secrets from its error messages, but we
+ * defensively redact any occurrence (`raw.split(key).join(keyHint(key))`) before surfacing AND never attach
+ * `err` as a cause (it could carry the key in a nested field a `--verbose` render might expose). An optional
+ * `signal` bounds the in-flight request (the doctor probe's per-provider timeout).
+ */
+export async function validateProviderKey(
+  provider: LlmProvider,
+  key: string,
+  model: string,
+  signal?: AbortSignalLike,
+): Promise<ProviderKeyValidation> {
+  try {
+    await provider.generate(
+      {
+        model,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        maxTokens: 1,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      key,
+    );
+    return { ok: true, detail: `key works (${model})` };
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: `key test failed — ${raw.split(key).join(keyHint(key))}` };
+  }
 }
 
 /**
