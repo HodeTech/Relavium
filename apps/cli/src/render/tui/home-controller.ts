@@ -1,4 +1,8 @@
-import { PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import {
+  CHAT_PALETTE_COMMANDS,
+  HOME_PALETTE_COMMANDS,
+  type ReplCommandContext,
+} from '../../commands/repl-commands.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -47,7 +51,8 @@ export interface HomeControllerState {
   readonly pendingMessage: string;
   readonly input: string;
   readonly session: HomeChatSession | undefined;
-  /** The interactive `/` command palette (2.5.C S3b) — `undefined` ⇒ closed. Open only in `chat` mode today. */
+  /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
+   *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
   readonly palette: PaletteState | undefined;
 }
 
@@ -221,21 +226,36 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
   // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
   // (a gentle escape back to the prompt — never trapping the user).
+  // The Home's own REPL context (no live session): only `/exit` applies in HOME_PALETTE_COMMANDS, and it ends the
+  // Home cleanly; the chat-lifecycle capabilities are unreachable from the Home palette (cancel/export are
+  // chat-only) but the context shape requires them, so they are inert here.
+  const homeReplCtx: ReplCommandContext = {
+    exit: () => exitHome(),
+    cancel: () => undefined,
+    exportSession: () => undefined,
+    help: () => undefined,
+  };
+
   const handlePaletteKey = (input: string, key: PaletteKey): void => {
     const palette = state.palette;
     if (palette === undefined) return;
-    const step = foldPaletteKey(input, key, palette, PALETTE_COMMANDS);
+    // The palette runs in BOTH surfaces: a live chat (a session ⇒ submit the slash through the S3a dispatch) and
+    // the bare Home (no session ⇒ run the command over the Home's own context). The command set is the surface's.
+    const active = state.session;
+    const commands = active !== undefined ? CHAT_PALETTE_COMMANDS : HOME_PALETTE_COMMANDS;
+    const step = foldPaletteKey(input, key, palette, commands);
     if (step.kind === 'close') {
       set({ palette: undefined });
       return;
     }
     if (step.kind === 'run') {
       set({ palette: undefined });
-      // Invariant: the palette opens only from `handleChatKey`, reached only when mode==='chat' && session!==undefined,
-      // and `endChat` clears `palette` with the session — so `active` is defined here. The guard is a type-safety belt.
-      const active = state.session;
-      if (step.command !== undefined && active !== undefined) {
-        sendChatLine(active, `/${step.command.name}`); // reuse the S3a slash dispatch (createChatLineHandler)
+      if (step.command !== undefined) {
+        if (active !== undefined) {
+          sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
+        } else {
+          void Promise.resolve(step.command.run(homeReplCtx)).catch(() => undefined); // home: run over the Home context
+        }
       }
       return;
     }
@@ -283,6 +303,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl-C above still bails)
+    // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
+    // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
+    if (shouldOpenPalette(input, key, false, state.input.length)) {
+      set({ palette: INITIAL_PALETTE_STATE });
+      return;
+    }
     switch (action.kind) {
       case 'submit':
         submit();

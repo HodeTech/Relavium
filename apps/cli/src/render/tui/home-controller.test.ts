@@ -541,4 +541,40 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().palette).toBeUndefined();
     });
   });
+
+  describe('the / command palette in the bare Home (2.5.C S3c)', () => {
+    const ESC = { escape: true } as const;
+
+    it('opens on "/" at the Home prompt, and selecting /exit ends the Home', () => {
+      const onExit = vi.fn();
+      const c = createHomeController({ startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 }); // HOME_PALETTE_COMMANDS = [exit]
+      c.handleKey('', ENTER); // select the highlighted /exit → run over the Home context → exitHome
+      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(c.getSnapshot().palette).toBeUndefined();
+    });
+
+    it('Esc closes the Home palette without exiting', () => {
+      const onExit = vi.fn();
+      const c = createHomeController({ startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      c.handleKey('/', {});
+      c.handleKey('', ESC);
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('a "/" mid-message in the Home is a normal character (the palette only triggers at an empty prompt)', () => {
+      const c = createHomeController({
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'ab');
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(c.getSnapshot().input).toBe('ab/');
+    });
+  });
 });

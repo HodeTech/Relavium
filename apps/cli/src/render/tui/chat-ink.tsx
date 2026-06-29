@@ -7,7 +7,7 @@ import {
   type ChatDriveContext,
   type ChatDriver,
 } from '../../commands/chat.js';
-import { PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
@@ -208,7 +208,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // sees a just-applied close/select, not the stale render-closure value.
     const openPalette = paletteRef.current;
     if (openPalette !== undefined) {
-      const step = foldPaletteKey(char, key, openPalette, PALETTE_COMMANDS);
+      const step = foldPaletteKey(char, key, openPalette, CHAT_PALETTE_COMMANDS);
       if (step.kind === 'close') {
         applyPalette(undefined);
         return;
@@ -258,7 +258,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         paletteOpen={palette !== undefined}
       />
       {palette !== undefined && (
-        <PaletteView commands={PALETTE_COMMANDS} state={palette} color={color} />
+        <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
       )}
     </Box>
   );

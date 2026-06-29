@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CHAT_PALETTE_COMMANDS,
   formatReplHelp,
+  HOME_PALETTE_COMMANDS,
+  PALETTE_COMMANDS,
   replCommandList,
   REPL_COMMANDS,
   REPL_COMMANDS_BY_NAME,
@@ -73,5 +76,15 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     for (const name of ['help', 'exit', 'cancel']) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }
+  });
+
+  it('every command declares a non-empty availableIn; the palette sets derive from it (no /help)', () => {
+    for (const command of REPL_COMMANDS) {
+      expect(command.availableIn.length, `${command.name} availableIn`).toBeGreaterThan(0);
+    }
+    // The base palette set excludes /help; the surface sets split it by availableIn.
+    expect(PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'cancel', 'export']);
+    expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'cancel', 'export']);
+    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit']); // only /exit applies in the bare Home today
   });
 });

@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 
-import { PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { ChatView } from './chat-ink.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -51,7 +51,7 @@ function ChatRegion(
         paletteOpen={props.palette !== undefined}
       />
       {props.palette !== undefined && (
-        <PaletteView commands={PALETTE_COMMANDS} state={props.palette} color={color} />
+        <PaletteView commands={CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
       )}
     </Box>
   );
@@ -84,14 +84,20 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     );
   }
   return (
-    <HomeView
-      snapshot={state.snapshot}
-      input={state.input}
-      errorText={state.errorText}
-      nowMs={props.nowMs()}
-      cols={size.cols}
-      rows={size.rows}
-      color={color}
-    />
+    <Box flexDirection="column">
+      <HomeView
+        snapshot={state.snapshot}
+        input={state.input}
+        errorText={state.errorText}
+        nowMs={props.nowMs()}
+        cols={size.cols}
+        rows={size.rows}
+        color={color}
+        paletteOpen={state.palette !== undefined}
+      />
+      {state.palette !== undefined && (
+        <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
+      )}
+    </Box>
   );
 }

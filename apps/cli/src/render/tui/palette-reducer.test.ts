@@ -13,16 +13,18 @@ import {
 
 /** A small fixture so the filter tests are independent of the live command set (robust to S4 additions). */
 const noop = (): void => undefined;
+const cmd = (name: string, description: string): ReplCommand => ({
+  name,
+  label: name,
+  description,
+  effect: 'read',
+  run: noop,
+  availableIn: ['home', 'chat'],
+});
 const FIXTURE: readonly ReplCommand[] = [
-  { name: 'alpha', label: 'Alpha', description: 'the first command', effect: 'read', run: noop },
-  {
-    name: 'beta',
-    label: 'Beta',
-    description: 'mentions alpha in its text',
-    effect: 'read',
-    run: noop,
-  },
-  { name: 'gamma', label: 'Gamma', description: 'unrelated', effect: 'read', run: noop },
+  cmd('alpha', 'the first command'),
+  cmd('beta', 'mentions alpha in its text'),
+  cmd('gamma', 'unrelated'),
 ];
 
 /** Tests for the pure `/` command-palette reducer (2.5.C S3b) — filter / navigate / select, no ink. */

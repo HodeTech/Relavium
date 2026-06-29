@@ -41,6 +41,8 @@ interface HomeViewProps {
   readonly cols: number;
   readonly rows: number;
   readonly color: boolean;
+  /** When the `/` palette is open it owns the bottom of the view, so the prompt + footer hint are suppressed (2.5.C S3c). */
+  readonly paletteOpen?: boolean;
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -91,7 +93,7 @@ function Prompt(props: Readonly<{ input: string; color: boolean }>): ReactElemen
 }
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, input, errorText, nowMs, cols, rows, color } = props;
+  const { snapshot, input, errorText, nowMs, cols, rows, color, paletteOpen } = props;
 
   // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
   // until a resize arrives, so the user must still be able to leave without resizing.
@@ -198,12 +200,14 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       )}
 
-      <Box marginTop={1} flexDirection="column">
-        <Prompt input={input} color={color} />
-        <Text {...dimProps(color)} wrap="truncate-end">
-          type a message to start a new chat · Ctrl-C to exit
-        </Text>
-      </Box>
+      {paletteOpen !== true && (
+        <Box marginTop={1} flexDirection="column">
+          <Prompt input={input} color={color} />
+          <Text {...dimProps(color)} wrap="truncate-end">
+            type a message to start a new chat · Ctrl-C to exit
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

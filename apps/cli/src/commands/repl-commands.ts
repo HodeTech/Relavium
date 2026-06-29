@@ -42,6 +42,10 @@ export interface ReplCommand {
   readonly effect: CommandEffect;
   /** Run the command; may be async (an awaited `Promise<void>`), so a future `/cost` / `/doctor` is safe. */
   readonly run: (ctx: ReplCommandContext) => void | Promise<void>;
+  /** The surfaces the command applies to — `chat` (a live session) and/or `home` (the bare management strip).
+   *  A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. The
+   *  palette of each surface shows only its applicable commands (2.5.C S3c). */
+  readonly availableIn: readonly ('home' | 'chat')[];
 }
 
 /**
@@ -61,6 +65,7 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'List the available slash commands.',
     effect: 'read',
     run: (ctx) => ctx.help(),
+    availableIn: ['home', 'chat'],
   },
   {
     name: 'exit',
@@ -68,6 +73,7 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'End the chat session.',
     effect: 'read',
     run: (ctx) => ctx.exit(),
+    availableIn: ['home', 'chat'],
   },
   {
     name: 'cancel',
@@ -75,6 +81,7 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Cancel the current turn and end the (resumable) session.',
     effect: 'read',
     run: (ctx) => ctx.cancel(),
+    availableIn: ['chat'],
   },
   {
     name: 'export',
@@ -82,6 +89,7 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Scaffold the session so far to a .relavium.yaml.',
     effect: 'write',
     run: (ctx) => ctx.exportSession(),
+    availableIn: ['chat'],
   },
 ];
 
@@ -102,6 +110,17 @@ export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(
  */
 export const PALETTE_COMMANDS: readonly ReplCommand[] = REPL_COMMANDS.filter(
   (command) => command.name !== 'help',
+);
+
+/** The palette commands available in a live chat (S3b) — every palette command whose `availableIn` includes `chat`. */
+export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = PALETTE_COMMANDS.filter((command) =>
+  command.availableIn.includes('chat'),
+);
+
+/** The palette commands available in the bare Home (S3c) — `availableIn` includes `home` (today just `/exit`;
+ *  the richer `/workflows` / `/doctor` info commands populate it in later 2.5.C steps). */
+export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = PALETTE_COMMANDS.filter((command) =>
+  command.availableIn.includes('home'),
 );
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */
