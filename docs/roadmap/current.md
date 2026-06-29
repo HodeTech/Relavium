@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-28
+> Last updated: 2026-06-29
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -133,8 +133,8 @@ real failed-turn usage) is ✅ **Done (PR #60, 2026-06-28)**, behind
 [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) — **reaching milestone
 M2.5-1 (secure base)**. The `egress`/`os` arms, the `project`-tier `extraRoots` allowlist, and a write-capable
 chat are deferred to **2.5.E**/[ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (tracked in
-[deferred-tasks.md](deferred-tasks.md)). **2.5.B** (the bare-invocation Home) is **implemented and in review
-(PR #61)**, behind [ADR-0054](../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted): the
+[deferred-tasks.md](deferred-tasks.md)). **2.5.B** (the bare-invocation Home) is ✅ **Done
+(PR #61, 2026-06-29)**, behind [ADR-0054](../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted): the
 TTY-gated bare `relavium` opens a read-only management strip (recent sessions/runs/agents + an "Attention
 required" section of pending human gates / failed runs) over a bounded, indexed `history.db` read seam, sitting
 above a live prompt that graduates into an in-process chat; rendered as a single ink tree (one `useInput` owner)

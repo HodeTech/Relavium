@@ -2,7 +2,7 @@
 
 > Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
-> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home, next) → 2.5.C (slash) →
+> — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → 2.5.C (slash, next) →
 > 2.5.E (modes + per-tool approval). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
 > lanes (no dependency chain): 2.5.H / I / J.
 
@@ -126,9 +126,9 @@ chat; an unwired tool is not advertised; a capability gap surfaces as a named, a
 both arms (merge, not replace). A security review of the host capability seam passes. **Required ADR:
 host-capability seam.**
 
-### 2.5.B — Bare-invocation Home (single ink tree, HomeStore, bracketed paste)
+### 2.5.B — Bare-invocation Home (single ink tree, HomeStore, bracketed paste) — ✅ **Done (PR #61, 2026-06-29)**
 
-> **Status:** 🚧 **Implemented — in review (PR #61)**, behind
+> **Status:** ✅ **Done (PR #61, 2026-06-29)**, behind
 > [ADR-0054](../../decisions/0054-cli-bare-invocation-interactive-home.md) (Accepted). Shipped: the bare-invocation
 > TTY gate in `run.ts` (`shouldOpenHome` = `stdoutIsTty && stdinIsTty && !json && !isCiEnv`, the help + exit-`0`
 > meta-op preserved byte-for-byte on every non-interactive path); the bounded, **indexed** `history.db` read seam +
@@ -139,8 +139,8 @@ host-capability seam.**
 > SIGINT/SIGTERM lifecycle** (clean Home exit `0`; an external signal → `128+signo` 130/143 with bounded MCP
 > teardown; the in-Home chat's exit-`4` consumed by the loop); **bracketed paste** (DECSET 2004, the marker
 > handling + the Ctrl-C escape + the editable-buffer gate); the first-user-message session title; and the
-> `docs/reference/cli/home.md` canonical contract. Each step landed through an opus + sonnet review loop. Not
-> yet ✅ Done — pending PR #61 merge. The richer slash palette / `@`-mention / mode keymap remain forthcoming
+> `docs/reference/cli/home.md` canonical contract. Each step landed through an opus + sonnet review loop, and
+> PR #61 merged 2026-06-29. The richer slash palette / `@`-mention / mode keymap remain forthcoming
 > (2.5.C / 2.5.E).
 
 Today the bare invocation prints help and exits `0` (`apps/cli/src/run.ts`); `commander` deliberately
