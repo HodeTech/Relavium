@@ -63,9 +63,12 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     name: 'help',
     label: 'Help',
     description: 'List the available slash commands.',
+    // `/help` (the text list) is reachable only by being TYPED in a chat REPL — it is excluded from the `/`
+    // palette (the palette IS the interactive help) and the Home has no typed-slash dispatch, so it never runs
+    // as a command in the Home. Hence `chat` only; the palette-key discovery still opens in both surfaces.
     effect: 'read',
     run: (ctx) => ctx.help(),
-    availableIn: ['home', 'chat'],
+    availableIn: ['chat'],
   },
   {
     name: 'exit',

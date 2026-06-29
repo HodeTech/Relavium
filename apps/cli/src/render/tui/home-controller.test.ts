@@ -564,6 +564,15 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(onExit).not.toHaveBeenCalled();
     });
 
+    it('Ctrl-C closes the Home palette (the always-escapes hatch — does not exit the Home)', () => {
+      const onExit = vi.fn();
+      const c = createHomeController({ startChat: vi.fn(), homeStore, onExit, onError: vi.fn() });
+      c.handleKey('/', {});
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
     it('a "/" mid-message in the Home is a normal character (the palette only triggers at an empty prompt)', () => {
       const c = createHomeController({
         startChat: vi.fn(),
