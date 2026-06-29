@@ -585,5 +585,27 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().palette).toBeUndefined();
       expect(c.getSnapshot().input).toBe('ab/');
     });
+
+    it('does not open while a build is loading (the loading guard fires before the trigger)', () => {
+      const startChat = vi.fn(() => new Promise<HomeChatSession>(() => undefined)); // never resolves
+      const c = createHomeController({ startChat, homeStore, onExit: vi.fn(), onError: vi.fn() });
+      type(c, 'hello');
+      c.handleKey('', ENTER); // → loading (the build is in flight)
+      expect(c.getSnapshot().mode).toBe('loading');
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toBeUndefined();
+    });
+
+    it('typing in the Home palette updates the query (the filter state path runs in the Home too)', () => {
+      const c = createHomeController({
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'ex'); // HOME_PALETTE_COMMANDS = [exit] — 'ex' keeps it; the query updates
+      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 });
+    });
   });
 });

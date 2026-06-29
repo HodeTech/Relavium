@@ -195,7 +195,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ input: '' }); // an empty prompt stays on the Home (no chat)
       return;
     }
-    set({ input: '', errorText: undefined, pendingMessage: trimmed, mode: 'loading' });
+    // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
+    // rather than only implied by the key-routing order — mirroring the `endChat` reset.
+    set({
+      input: '',
+      errorText: undefined,
+      pendingMessage: trimmed,
+      mode: 'loading',
+      palette: undefined,
+    });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
     // session — its MCP child / frame loop — rather than orphan it (see teardownActive).
     const build = deps.startChat();
