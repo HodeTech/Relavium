@@ -77,10 +77,13 @@ describe('command manifest (ADR-0056)', () => {
       // The command description matches commander's `--help` text.
       expect(entry?.description).toBe(node.description);
       // Every commander OPTION is in the manifest's args with the SAME description (the --help --json text), so
-      // an option-description edit in specs.ts that is not mirrored in the manifest fails CI.
+      // an option-description edit in specs.ts that is not mirrored in the manifest fails CI. The manifest arg
+      // name is the camelCase `CommandInput.options` key — commander's `attributeName()` (`--base-url` → `baseUrl`),
+      // so the manifest, the dispatch extractor, and a slash surface all agree on the key.
       for (const option of node.command.options) {
-        const arg = entry?.args?.find((candidate) => candidate.name === option.name());
-        expect(arg, `manifest ${node.id} is missing option arg '${option.name()}'`).toBeDefined();
+        const key = option.attributeName();
+        const arg = entry?.args?.find((candidate) => candidate.name === key);
+        expect(arg, `manifest ${node.id} is missing option arg '${key}'`).toBeDefined();
         expect(arg?.description).toBe(option.description);
       }
     }

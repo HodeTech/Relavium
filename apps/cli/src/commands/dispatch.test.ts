@@ -86,6 +86,8 @@ describe('build*Args (argv → typed core args)', () => {
 
   it('chat: agent is undefined when absent (the built-in default)', () => {
     expect(buildChatArgs(input([], { agent: 'coder' }))).toEqual({ agent: 'coder' });
+    // agent:undefined is kept (not omitted) to match the old register body — chatCommand reads `undefined` as
+    // "no agent bound", so the field is present-but-undefined, unlike the exactOptional omit cases below.
     expect(buildChatArgs(input([]))).toEqual({ agent: undefined });
   });
 
@@ -97,16 +99,18 @@ describe('build*Args (argv → typed core args)', () => {
     expect('out' in without).toBe(false); // omitted, not set to undefined
   });
 
-  it('export: id + optional out + force', () => {
+  it('export: id + optional out + force (defaults false, out omitted when absent)', () => {
     expect(buildExportArgs(input(['wf-1'], { force: true }))).toEqual({ id: 'wf-1', force: true });
+    expect(buildExportArgs(input(['wf-1']))).toEqual({ id: 'wf-1', force: false });
     expect('out' in buildExportArgs(input(['wf-1']))).toBe(false);
   });
 
-  it('import: path + force', () => {
+  it('import: path + force (defaults false)', () => {
     expect(buildImportArgs(input(['./x.yaml'], { force: true }))).toEqual({
       path: './x.yaml',
       force: true,
     });
+    expect(buildImportArgs(input(['./x.yaml']))).toEqual({ path: './x.yaml', force: false });
   });
 
   it('agent.run: agent + repeatable input + optional fixture (omitted when absent)', () => {
@@ -131,6 +135,22 @@ describe('build*Args (argv → typed core args)', () => {
     expect(bare).toEqual({ runId: 'run-1', approve: false, reject: false });
     expect('comment' in bare).toBe(false);
     expect('gate' in bare).toBe(false);
+  });
+
+  it('gate: reject + input + gate options pass through (input/gate omitted when absent)', () => {
+    expect(buildGateArgs(input(['run-1'], { reject: true }))).toEqual({
+      runId: 'run-1',
+      approve: false,
+      reject: true,
+    });
+    expect(buildGateArgs(input(['run-1'], { input: '{"ok":true}', gate: 'g-1' }))).toEqual({
+      runId: 'run-1',
+      approve: false,
+      reject: false,
+      input: '{"ok":true}',
+      gate: 'g-1',
+    });
+    expect('input' in buildGateArgs(input(['run-1']))).toBe(false);
   });
 
   it('gate: a missing runId is the clean invocation fault (a bare `gate` without `list`)', () => {
@@ -161,22 +181,41 @@ describe('build*Args (argv → typed core args)', () => {
 });
 
 describe('executeCommand', () => {
-  it('an unknown command id is a clean invocation fault (never echoed — secret-safe)', () => {
-    expect(() => executeCommand('definitely-not-a-command', input([]), ctx)).toThrow(
+  it('an unknown command id is a clean invocation fault, surfaced as a rejection (never echoed — secret-safe)', async () => {
+    await expect(executeCommand('definitely-not-a-command', input([]), ctx)).rejects.toThrow(
       /unknown command/,
     );
   });
 
-  it('an arg-extraction fault propagates through executeCommand unchanged (gate without a runId)', () => {
-    // executeCommand routes to the executor, whose build*Args throws the invocation fault before any side effect.
-    expect(() => executeCommand('gate', input([]), ctx)).toThrow(
+  it('an arg-extraction fault surfaces as a rejection, unchanged (gate without a runId)', async () => {
+    // `async` executeCommand turns the executor's synchronous build*Args throw into a clean rejection.
+    await expect(executeCommand('gate', input([]), ctx)).rejects.toThrow(
       /`relavium gate` requires a <runId>/,
     );
   });
 
+  it('routes a known id to its executor — a missing required positional faults from inside, not "unknown command"', async () => {
+    // These executors call reqPositional in build*Args BEFORE any dep wiring, so an empty input faults with the
+    // arg message (proving the id routed to the right executor). Provider commands are excluded — they open the
+    // local db before validating, so testing them here would touch real I/O.
+    const requirePositional = [
+      'run',
+      'chat-resume',
+      'chat-export',
+      'export',
+      'import',
+      'agent.run',
+      'logs',
+    ];
+    for (const id of requirePositional) {
+      await expect(executeCommand(id, input([]), ctx)).rejects.toThrow(/missing argument/);
+    }
+  });
+
   it('dispatch table ↔ manifest: every manifest command is dispatchable, and no executor is orphaned', () => {
-    // In S2 the manifest covers exactly the commander commands, and each is dispatchable. (When 2.5.C adds
-    // slash-only entries with their own executors, both sets grow together; this stays an exact-cover invariant.)
+    // The durable chain: commander ⊆ manifest (manifest.test.ts drift guard) AND manifest == dispatch (here) ⟹
+    // every commander command is dispatchable. (When 2.5.C adds slash-only entries with their own executors,
+    // both sets grow together; this stays an exact-cover invariant.)
     expect(new Set(DISPATCHABLE_COMMAND_IDS)).toEqual(
       new Set(COMMAND_MANIFEST.map((entry) => entry.id)),
     );

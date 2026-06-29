@@ -200,6 +200,11 @@ function keyResolvers(io: CliIo): {
   };
 }
 
+/** The env-backed provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
+function providerResolver(io: CliIo): ReturnType<typeof createProviderResolver> {
+  return createProviderResolver(io.env, createOsKeychainStore());
+}
+
 const executeRun: CommandExecutor = (input, ctx) =>
   runCommand(buildRunArgs(input), {
     io: ctx.io,
@@ -262,7 +267,7 @@ const executeGate: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
-    providers: createProviderResolver(ctx.io.env, createOsKeychainStore()),
+    providers: providerResolver(ctx.io),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {
@@ -348,12 +353,18 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
 /** Every manifest-command id that {@link executeCommand} can dispatch (the drift guard ties this to the manifest). */
 export const DISPATCHABLE_COMMAND_IDS: readonly string[] = [...COMMAND_EXECUTORS.keys()];
 
+/** Whether `id` maps to a real executor — a surface checks this BEFORE dispatch to print a safe hint on a miss. */
+export function isDispatchableId(id: string): boolean {
+  return COMMAND_EXECUTORS.has(id);
+}
+
 /**
  * Dispatch a command by its manifest id over the uniform {@link CommandInput}. An unknown id is a clean
- * invocation fault (never echoed back — the safe, secret-free path; a surface that wants a hint checks the
- * manifest first).
+ * invocation fault (never echoed back — the safe, secret-free path; a surface that wants to print a hint calls
+ * {@link isDispatchableId} first). `async`, so every fault (an unknown id, or an arg-extraction `CliError` like a
+ * `gate` without a runId) surfaces as a **rejection**, never a synchronous throw — callers only need `await` / `.catch`.
  */
-export function executeCommand(
+export async function executeCommand(
   id: string,
   input: CommandInput,
   ctx: DispatchContext,

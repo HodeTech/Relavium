@@ -17,7 +17,11 @@ import { z } from 'zod';
 /** A single command argument the manifest advertises — a positional or a (possibly repeatable) option value. */
 export const CommandArgSchema = z
   .object({
-    /** The argument/option name (`workflow`, `agent`, `force`) — no leading dashes. */
+    /**
+     * The argument / option **key as it appears in `CommandInput.options`** — the camelCase form commander
+     * derives via `option.attributeName()` (`workflow`, `agent`, `baseUrl`), never the kebab CLI flag
+     * (`--base-url`) and never with leading dashes. A slash/palette surface builds `CommandInput` against this key.
+     */
     name: z.string().min(1),
     type: z.enum(['string', 'number', 'boolean']),
     /** A required positional; omit ⇒ optional (an option or an optional positional). */
@@ -295,7 +299,7 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         required: true,
         description: 'provider name (e.g. anthropic)',
       },
-      { name: 'base-url', type: 'string', description: 'override the provider base URL' },
+      { name: 'baseUrl', type: 'string', description: 'override the provider base URL' },
     ],
     effect: 'write',
   },
