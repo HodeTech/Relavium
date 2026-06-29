@@ -4,6 +4,7 @@ import { REPL_COMMANDS } from '../../commands/repl-commands.js';
 import {
   clampIndex,
   filterPaletteCommands,
+  foldPaletteKey,
   INITIAL_PALETTE_STATE,
   reducePaletteKey,
   stepPalette,
@@ -85,5 +86,25 @@ describe('stepPalette', () => {
       kind: 'close',
     });
     expect(INITIAL_PALETTE_STATE).toEqual({ query: '', index: 0 });
+  });
+});
+
+describe('foldPaletteKey (the shared both-surface fold)', () => {
+  it('Ctrl-C closes the palette (the always-escapes hatch — never trapping)', () => {
+    expect(foldPaletteKey('c', { ctrl: true }, INITIAL_PALETTE_STATE, REPL_COMMANDS)).toEqual({
+      kind: 'close',
+    });
+  });
+
+  it('otherwise delegates to reducePaletteKey + stepPalette (a printable extends the query, Enter runs)', () => {
+    expect(foldPaletteKey('e', {}, INITIAL_PALETTE_STATE, REPL_COMMANDS)).toEqual({
+      kind: 'state',
+      state: { query: 'e', index: 0 },
+    });
+    const run = foldPaletteKey('', { return: true }, { query: 'exit', index: 0 }, REPL_COMMANDS);
+    expect(run.kind === 'run' && run.command?.name).toBe('exit');
+    expect(foldPaletteKey('', { escape: true }, INITIAL_PALETTE_STATE, REPL_COMMANDS)).toEqual({
+      kind: 'close',
+    });
   });
 });

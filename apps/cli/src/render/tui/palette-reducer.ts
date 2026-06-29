@@ -86,6 +86,22 @@ export type PaletteStep =
  * re-filters and resets the highlight to the top; a move re-clamps against the new filtered count; `select` reads
  * the highlighted command (or `undefined` when the filter is empty — the caller treats that as a no-op close).
  */
+/**
+ * The complete fold both palette surfaces share: map a keystroke to a step against the open palette. Ctrl-C is the
+ * always-escapes hatch (it `close`s the palette so the user is never trapped); everything else delegates to
+ * {@link reducePaletteKey} + {@link stepPalette}. Both the single-tree `HomeController` and the standalone
+ * `ChatApp` call THIS, so the open-palette key contract is tested once and can never diverge.
+ */
+export function foldPaletteKey(
+  char: string,
+  key: PaletteKey,
+  state: PaletteState,
+  commands: readonly ReplCommand[],
+): PaletteStep {
+  if (key.ctrl === true && char === 'c') return { kind: 'close' };
+  return stepPalette(state, reducePaletteKey(char, key), commands);
+}
+
 export function stepPalette(
   state: PaletteState,
   action: PaletteKeyAction,

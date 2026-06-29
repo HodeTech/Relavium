@@ -44,6 +44,15 @@ export interface ReplCommand {
   readonly run: (ctx: ReplCommandContext) => void | Promise<void>;
 }
 
+/**
+ * **Args are NOT modelled here yet (an S4 obligation).** A 2.5.C palette selection submits the bare `/<name>`
+ * line, and the in-REPL dispatch (createChatLineHandler) **exact-matches** the whole post-slash string — so every
+ * curated command must be runnable with no args (today's set is). When an arg-taking command lands (e.g.
+ * `/doctor --deep`, `/trim <n>`), S4 must BOTH (a) add an `args` shape here + an arg-entry/parse path so a typed
+ * `/<name> <args>` dispatches (the exact-match must become a name+args parse), and (b) decide how the palette
+ * captures args on select (prompt after, or insert `/<name> ` into the buffer). Do not discover this mid-S4.
+ */
+
 /** The curated REPL command set — the single source for the palette, `/help`, and the unknown-slash hint. */
 const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
   {

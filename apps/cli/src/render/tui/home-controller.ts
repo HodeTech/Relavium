@@ -4,9 +4,8 @@ import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from '.
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 import {
+  foldPaletteKey,
   INITIAL_PALETTE_STATE,
-  reducePaletteKey,
-  stepPalette,
   type PaletteKey,
   type PaletteState,
 } from './palette-reducer.js';
@@ -224,11 +223,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const handlePaletteKey = (input: string, key: PaletteKey): void => {
     const palette = state.palette;
     if (palette === undefined) return;
-    if (key.ctrl === true && input === 'c') {
-      set({ palette: undefined });
-      return;
-    }
-    const step = stepPalette(palette, reducePaletteKey(input, key), REPL_COMMANDS);
+    const step = foldPaletteKey(input, key, palette, REPL_COMMANDS);
     if (step.kind === 'close') {
       set({ palette: undefined });
       return;

@@ -13,12 +13,7 @@ import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import { applyChatEdit, reduceChatKey } from './chat-input.js';
 import { PaletteView } from './palette-view.js';
-import {
-  INITIAL_PALETTE_STATE,
-  reducePaletteKey,
-  stepPalette,
-  type PaletteState,
-} from './palette-reducer.js';
+import { foldPaletteKey, INITIAL_PALETTE_STATE, type PaletteState } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
   formatSessionFooter,
@@ -166,8 +161,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const cancelFired = useRef(false);
   const running = state.status === 'running';
   // The interactive `/` palette (2.5.C S3b) — `undefined` ⇒ closed. React-local here (the external-store Home
-  // keeps it in HomeControllerState); both surfaces drive the SAME reducer + render the SAME PaletteView.
+  // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
+  // A ref SHADOW (like `inputRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
+  // in one chunk synchronously with no render flush, so reading the render-closure `palette` would be stale (a
+  // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette`
+  // keeps the ref in lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`.
   const [palette, setPalette] = useState<PaletteState | undefined>(undefined);
+  const paletteRef = useRef<PaletteState | undefined>(undefined);
+  const applyPalette = (next: PaletteState | undefined): void => {
+    paletteRef.current = next;
+    setPalette(next);
+  };
 
   const submit = (line: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
@@ -187,23 +191,21 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
-    // The open `/` palette owns every key — Ctrl-C closes it gently (a non-trapping escape back to the prompt).
-    if (palette !== undefined) {
-      if (key.ctrl === true && char === 'c') {
-        setPalette(undefined);
-        return;
-      }
-      const step = stepPalette(palette, reducePaletteKey(char, key), REPL_COMMANDS);
+    // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
+    // sees a just-applied close/select, not the stale render-closure value.
+    const openPalette = paletteRef.current;
+    if (openPalette !== undefined) {
+      const step = foldPaletteKey(char, key, openPalette, REPL_COMMANDS);
       if (step.kind === 'close') {
-        setPalette(undefined);
+        applyPalette(undefined);
         return;
       }
       if (step.kind === 'run') {
-        setPalette(undefined);
+        applyPalette(undefined);
         if (step.command !== undefined) submit(`/${step.command.name}`); // reuse the S3a slash dispatch
         return;
       }
-      setPalette(step.state);
+      applyPalette(step.state);
       return;
     }
     // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point.
@@ -214,7 +216,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       key.ctrl !== true &&
       key.meta !== true
     ) {
-      setPalette(INITIAL_PALETTE_STATE);
+      applyPalette(INITIAL_PALETTE_STATE);
       return;
     }
     const action = reduceChatKey(char, key, inputRef.current, running);
