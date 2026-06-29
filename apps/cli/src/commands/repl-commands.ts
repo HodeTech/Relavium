@@ -12,16 +12,23 @@
  * those three can never disagree. The set is deliberately small and **alias-free**.
  */
 
-/** The lifecycle capabilities a {@link ReplCommand} can invoke — supplied by the surface (the chat REPL / the Home). */
+import type { CommandEffect } from './manifest.js';
+
+/**
+ * The lifecycle capabilities a {@link ReplCommand} can invoke — supplied by the surface (the chat REPL / the
+ * Home). Each may be sync or async (`void | Promise<void>`): `help` opens the interactive `/` palette in 2.5.C
+ * S3b, and later info commands (`/cost`, `/doctor`) read/probe asynchronously — so a capability's promise is
+ * always awaited (see {@link ReplCommand.run}), never silently fire-and-forget.
+ */
 export interface ReplCommandContext {
   /** End the chat session cleanly (the REPL stops; exit code 4 in a standalone chat). */
-  readonly exit: () => void;
+  readonly exit: () => void | Promise<void>;
   /** Cancel the in-flight turn and end the (persisted, resumable) session. */
-  readonly cancel: () => void;
+  readonly cancel: () => void | Promise<void>;
   /** Scaffold the session so far to a `.relavium.yaml` (ADR-0026), between turns. */
-  readonly exportSession: () => void;
+  readonly exportSession: () => void | Promise<void>;
   /** Surface the command list — a text list today; the interactive `/` palette once it lands (2.5.C S3b). */
-  readonly help: () => void;
+  readonly help: () => void | Promise<void>;
 }
 
 /** One curated in-REPL command. `run` wires the slash name to a {@link ReplCommandContext} capability. */
@@ -30,13 +37,15 @@ export interface ReplCommand {
   readonly name: string;
   readonly label: string;
   readonly description: string;
-  /** `read` = no data change (lifecycle/info); `write` = creates a file. (Forward annotation, like the manifest.) */
-  readonly effect: 'read' | 'write';
-  readonly run: (ctx: ReplCommandContext) => void;
+  /** A forward annotation, shared with the shell manifest ({@link CommandEffect}): `read` (no data change) /
+   *  `write` (creates a file) / `destructive` (irreversibly removes — e.g. a future `/clear`). */
+  readonly effect: CommandEffect;
+  /** Run the command; may be async (an awaited `Promise<void>`), so a future `/cost` / `/doctor` is safe. */
+  readonly run: (ctx: ReplCommandContext) => void | Promise<void>;
 }
 
 /** The curated REPL command set — the single source for the palette, `/help`, and the unknown-slash hint. */
-export const REPL_COMMANDS: readonly ReplCommand[] = [
+const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
   {
     name: 'help',
     label: 'Help',
@@ -66,6 +75,11 @@ export const REPL_COMMANDS: readonly ReplCommand[] = [
     run: (ctx) => ctx.exportSession(),
   },
 ];
+
+/** The frozen curated command set (each entry + the array immutable at runtime, parity with `COMMAND_MANIFEST`). */
+export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(
+  RAW_REPL_COMMANDS.map((command) => Object.freeze(command)),
+);
 
 /** O(1) lookup of a REPL command by its slash name (no leading `/`). */
 export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(

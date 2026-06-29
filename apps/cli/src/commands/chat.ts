@@ -423,7 +423,7 @@ export function createChatLineHandler(
       // Exact-match a curated REPL command (every command is zero-arg today); `/export foo` is NOT `/export`.
       const command = REPL_COMMANDS_BY_NAME.get(line.slice(1));
       if (command !== undefined) {
-        command.run(replCtx);
+        await command.run(replCtx); // may be async (a future /cost / /doctor); never fire-and-forget
         return;
       }
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a

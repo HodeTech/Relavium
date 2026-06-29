@@ -207,8 +207,9 @@ describe('chatCommand', () => {
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
     const { d, err, store, sessionId } = deps(['/help', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain('/help');
-    expect(err()).toContain('/export'); // the list derives from REPL_COMMANDS — every curated command appears
+    for (const slash of ['/help', '/exit', '/cancel', '/export']) {
+      expect(err(), `/help lists ${slash}`).toContain(slash); // the list derives from REPL_COMMANDS — all appear
+    }
     // /help is read-only: the session continued and only the 'hello' turn persisted (user + assistant = 2).
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
     expect(store.loadFull(sessionId)?.session.status).toBe('ended');

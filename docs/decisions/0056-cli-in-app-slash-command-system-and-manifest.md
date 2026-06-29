@@ -56,16 +56,17 @@ foundation it will build on, not a Phase 2.5 deliverable).
 
 ### Positive
 
-- One discoverable, consistent, machine-readable command surface; the palette, slash help, and
-  `--help --json` all derive from one source, so they cannot disagree.
+- Each surface has exactly one source — `COMMAND_MANIFEST` for `commander` + `--help --json` + the
+  `executeCommand` dispatch table, and (per the amendment) `REPL_COMMANDS` for the in-REPL palette / slash —
+  so a command can never disagree across the surfaces that show it.
 - DRY wiring: a command's dependencies are assembled once and shared by every surface.
 
 ### Negative
 
 - A one-time refactor of the `specs.ts` action wiring into the shared dispatch module — contained to
   `apps/cli`, with the existing command tests as the safety net.
-- The command manifest is a new contract to maintain; mitigated by making it the *only* source for the
-  three surfaces (drift is structurally impossible).
+- Two small registries to maintain (the shell `COMMAND_MANIFEST` + the curated `REPL_COMMANDS`); mitigated by
+  each being the *only* source for its surfaces (drift is structurally impossible) and no command living in both.
 
 ## Amendment — 2026-06-29 (curated in-REPL command set, workstream 2.5.C S3)
 

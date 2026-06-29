@@ -8,8 +8,15 @@ import {
   type ReplCommandContext,
 } from './repl-commands.js';
 
+interface CapabilityCalls {
+  readonly exit: number;
+  readonly cancel: number;
+  readonly exportSession: number;
+  readonly help: number;
+}
+
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
-function spyContext(): { ctx: ReplCommandContext; calls: () => Record<string, number> } {
+function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls } {
   const spies = {
     exit: vi.fn(),
     cancel: vi.fn(),
@@ -44,10 +51,10 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
-      REPL_COMMANDS_BY_NAME.get(name)?.run(ctx);
+      void REPL_COMMANDS_BY_NAME.get(name)?.run(ctx); // run may be async (widened); the spies record synchronously
       const counts = calls();
       expect(counts[capability], `${name} → ${capability}`).toBe(1);
-      const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+      const total = counts.exit + counts.cancel + counts.exportSession + counts.help;
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });
