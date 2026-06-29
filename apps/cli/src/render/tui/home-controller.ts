@@ -237,13 +237,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // The Home's own REPL context (no live session): only `/exit` applies in HOME_PALETTE_COMMANDS, and it ends the
   // Home cleanly; the chat-lifecycle capabilities are unreachable from the Home palette (cancel/export are
   // chat-only) but the context shape requires them, so they are inert here.
+  // The Home's REPL context. Capabilities for CHAT-ONLY commands (cancel/export/cost/workflows — `availableIn`
+  // excludes the Home) are inert noops, unreachable from HOME_PALETTE_COMMANDS. A genuinely home-applicable command
+  // (e.g. the upcoming `/doctor`, availableIn ['home','chat']) wires a REAL impl here, not a noop — so the context
+  // stays honest rather than accumulating dead capabilities.
   const homeReplCtx: ReplCommandContext = {
     exit: () => exitHome(),
     cancel: () => undefined,
     exportSession: () => undefined,
     help: () => undefined,
-    showWorkflows: () => undefined, // chat-only (availableIn) — unreachable from HOME_PALETTE_COMMANDS
-    showCost: () => undefined, // chat-only — needs a live session's cost
+    showWorkflows: () => undefined,
+    showCost: () => undefined,
   };
 
   const handlePaletteKey = (input: string, key: PaletteKey): void => {

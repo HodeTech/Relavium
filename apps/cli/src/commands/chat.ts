@@ -376,7 +376,8 @@ export function createChatLineHandler(
   // Surface command output (the /help list, /workflows catalog, /cost line) the right way for the active surface:
   // the live ink view (TTY, non-`--json`) renders a NOTICE cleanly in-conversation; on the plain (non-TTY) and
   // `--json` paths ink is NOT mounted (those drivers render the event stream, not the chat store), so write to
-  // stderr — a diagnostic that keeps stdout the pure event stream. (ink is mounted iff stdoutIsTty && !json.)
+  // stderr — a diagnostic that keeps stdout the pure event stream. (ink is mounted iff stdoutIsTty && !json — keep
+  // this condition in sync with `selectChatDriver` in render/tui/chat-ink.tsx, which picks driveInk on the same test.)
   const interactive = deps.io.stdoutIsTty && !deps.global.json;
   const emitOutput = (text: string): void => {
     if (interactive) {
@@ -447,7 +448,10 @@ export function createChatLineHandler(
           discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
         emitOutput(catalogNotice(scan('workflows'), scan('agents')));
       } catch (err) {
-        emitOutput(`could not list workflows: ${err instanceof Error ? err.message : String(err)}`);
+        // Surface the failure by its CODE — a raw catalog CliError message embeds the absolute `.relavium/` path,
+        // which the REPL transcript / a screenshare need not carry.
+        const reason = err instanceof CliError ? err.code : 'unexpected error';
+        emitOutput(`could not list workflows: ${reason}`);
       }
     },
     // `/cost` (2.5.C S4): the session's cumulative spend (the per-model breakdown is 2.6.C).

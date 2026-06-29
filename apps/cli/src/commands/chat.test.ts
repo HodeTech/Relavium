@@ -219,6 +219,19 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // the session survived the command
   });
 
+  it('/workflows lists a discovered workflow when a project exists (the catalog → notice path)', async () => {
+    mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'workflows', 'deploy.relavium.yaml'),
+      'schema_version: 1\nid: deploy\nname: Deploy\nnodes: []\n',
+    );
+    const { d, err, store, sessionId } = deps(['/workflows', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('Workflows (1):');
+    expect(err()).toContain('deploy'); // the catalog entry's slug, whether the file is valid or flagged invalid
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
     const { d, err, store, sessionId } = deps(['/help', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
