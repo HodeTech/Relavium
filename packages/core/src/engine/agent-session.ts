@@ -26,6 +26,7 @@
 import type {
   Agent,
   AbortSignalLike,
+  AgentApprovalRequestedEvent,
   ErrorCode,
   SessionContext,
   SessionEvent,
@@ -73,11 +74,25 @@ export type SessionLifecycleEvent = DistributiveOmit<
 >;
 
 /**
- * Everything a session emits, envelope-less: the five `session:*` lifecycle bodies plus the four
- * dual-envelope in-turn bodies the turn core produces (`agent:token` / `agent:tool_call` /
- * `agent:tool_result` / `cost:updated`). The injected sink receives these; 1.W routes them onto the bus.
+ * The host-emitted per-tool approval body (ADR-0057 EA5), envelope-less — a **session-carried** event the
+ * chat approval regime emits through the sink. It is NOT a turn-core in-node event (so not in
+ * `NodeStreamEvent` / the run path); the host's `ConfirmActionHook` emits it via this same sink.
  */
-export type SessionStreamEvent = SessionLifecycleEvent | NodeStreamEvent;
+export type SessionApprovalStreamEvent = DistributiveOmit<
+  AgentApprovalRequestedEvent,
+  'runId' | 'sessionId' | 'timestamp' | 'sequenceNumber'
+>;
+
+/**
+ * Everything a session emits, envelope-less: the five `session:*` lifecycle bodies, the four dual-envelope
+ * in-turn bodies the turn core produces (`agent:token` / `agent:tool_call` / `agent:tool_result` /
+ * `cost:updated`), and the host-emitted `agent:approval_requested` body (ADR-0057). The injected sink
+ * receives these; 1.W routes them onto the bus.
+ */
+export type SessionStreamEvent =
+  | SessionLifecycleEvent
+  | NodeStreamEvent
+  | SessionApprovalStreamEvent;
 
 /** The injected emission port. 1.V emits through it; 1.W implements it over the shared `RunEventBus`. */
 export type SessionEventSink = (event: SessionStreamEvent) => void;

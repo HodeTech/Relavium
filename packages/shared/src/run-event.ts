@@ -37,12 +37,14 @@ const runBase = { runId: nonEmptyString, ...timestampSeq };
 const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
 
 /**
- * The dual envelope for the four events reused across both streams (`agent:token` /
- * `agent:tool_call` / `agent:tool_result` / `cost:updated`): they carry `runId` on a run and
- * `sessionId` on a session. A `discriminatedUnion` *member* can't carry a cross-field
- * refinement, so the "exactly one of runId / sessionId" invariant is enforced at the **union**
- * level (see `RunEventSchema`). Run-only / session-only events satisfy it by construction (the
- * other key isn't declared, so it is stripped on parse), so the check only constrains these four.
+ * The dual envelope for the events that may carry EITHER correlation key: the four reused across both
+ * streams (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus
+ * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
+ * approval regime). They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
+ * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
+ * enforced at the **union** level (see `RunEventSchema`). Run-only / session-only events satisfy it by
+ * construction (the other key isn't declared, so it is stripped on parse), so the check only constrains
+ * these `dualBase` events.
  */
 const dualBase = {
   runId: nonEmptyString.optional(),
@@ -196,11 +198,15 @@ export const AgentApprovalRequestedEventSchema = z.object({
   nodeId: nonEmptyString,
   toolId: nonEmptyString,
   action: ToolActionClassSchema,
-  preview: z.object({
-    path: nonEmptyString.optional(), // fs_write — the resolved target path
-    command: z.string().optional(), // process — the resolved command string the user approves
-    host: nonEmptyString.optional(), // egress — the target host only (never the full URL / query string)
-  }),
+  // `.strict()` (the MaskedSecretSchema precedent) makes this secret-hygiene boundary REJECT an unexpected
+  // field (a stray `url` / `query` a host wiring bug might add) LOUDLY rather than silently stripping it.
+  preview: z
+    .object({
+      path: nonEmptyString.optional(), // fs_write — the resolved target path
+      command: nonEmptyString.optional(), // process — the resolved command (always non-empty: `min(1)` + join)
+      host: nonEmptyString.optional(), // egress — the target host only (never the full URL / query string)
+    })
+    .strict(),
   attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated/agent:tool_call
 });
 export type AgentApprovalRequestedEvent = z.infer<typeof AgentApprovalRequestedEventSchema>;
@@ -467,8 +473,9 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
  * **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md
  * §"Correlation key"). Run-only / session-only events satisfy it by construction — a stray
  * opposite key is stripped by their `z.object` before this refine runs, so the parsed output
- * stays compliant (the deliberate non-strict, forward-compatible posture). The four
- * dual-envelope events declare both keys as optional, so this is where neither/both is rejected.
+ * stays compliant (the deliberate non-strict, forward-compatible posture). The `dualBase` events (the
+ * four reused agent/cost events plus `agent:approval_requested`) declare both keys as optional, so this
+ * is where neither/both is rejected.
  */
 export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   const hasRunId = 'runId' in event && event.runId !== undefined;
@@ -589,7 +596,8 @@ export type SessionEvent = z.infer<typeof SessionEventSchema>;
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the
  * `session:*` family on **one** bus (ADR-0036 "one bus, two namespaces"). A `z.union` (not a flat
  * discriminated union) so each family keeps its own refinements — notably `RunEventSchema`'s correlation-key
- * cross-check and its dual-envelope members (the four `agent:*`/`cost:updated` events already validate here
+ * cross-check and its dual-envelope members (the four `agent:*`/`cost:updated` events, plus the session-only
+ * `agent:approval_requested`, already validate here
  * carrying `sessionId`); a `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the
  * single validation gate the bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
  */

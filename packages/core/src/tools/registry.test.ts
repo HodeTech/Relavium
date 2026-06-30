@@ -345,9 +345,13 @@ describe('ToolRegistry — git_commit human-gate', () => {
 /* --- per-tool approval (ADR-0057 EA3) --- */
 
 describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
-  // The `vi.fn<Fn>` function-type generic types `.mock.calls[0][0]` as ToolApprovalRequest (no unused impl
-  // param) and contextually types the decision literals (`'approve'`/`'reject'`).
-  type ConfirmFn = (req: ToolApprovalRequest) => Promise<ToolApprovalDecision>;
+  // The `vi.fn<Fn>` function-type generic types `.mock.calls[0]` as [ToolApprovalRequest, signal?] (no
+  // unused impl param) and contextually types the decision literals (`'approve'`/`'reject'`). The 2nd
+  // (signal) param lets a test assert ctx.signal is forwarded to the hook.
+  type ConfirmFn = (
+    req: ToolApprovalRequest,
+    signal?: AbortSignalLike,
+  ) => Promise<ToolApprovalDecision>;
   const approving = () => vi.fn<ConfirmFn>(() => Promise.resolve({ outcome: 'approve' }));
   const rejecting = (reason?: string) =>
     vi.fn<ConfirmFn>(() =>
@@ -539,6 +543,89 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
+  });
+
+  it('cancels (never executes) when the signal aborts WHILE prompting and the hook still resolves approve', async () => {
+    // The fail-closed cancellation contract: a hook that ignores the AbortSignal and approves anyway must
+    // NOT reach the side effect — the trailing throwIfAborted in confirmDispatch catches it.
+    const signal = { aborted: false };
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn<ConfirmFn>(() => {
+      signal.aborted = true; // the run is cancelled while the prompt is pending…
+      return Promise.resolve({ outcome: 'approve' }); // …but the hook approves anyway
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm }, signal: signal as never }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('is FAIL-CLOSED on a hook that THROWS a non-abort error — denies (approval_error), never retryable', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn<ConfirmFn>(() => Promise.reject(new Error('hook bug')));
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolDeniedByUserError);
+    expect(err.reason).toBe('approval_error');
+    expect(err.runErrorCode).toBe('tool_denied'); // fatal, NOT the retryable tool_failed a host throw gets
+    expect(err.retryable).toBe(false);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('gates mcp_call (egress) — confirm prompts with an empty preview; approve runs it, reject denies it', async () => {
+    const call_ = vi.fn(() => Promise.resolve({ ok: true }));
+    const host = stubHost({ mcp: { call: call_ } });
+    const reg = () => createToolRegistry({ tools: BUILTIN_TOOLS, host });
+    // approve
+    const confirm = approving();
+    const out = await reg().dispatch(
+      call('mcp_call', { server: 's', tool: 't' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(call_).toHaveBeenCalledOnce();
+    expect(confirm.mock.calls[0]?.[0]).toMatchObject({
+      toolId: 'mcp_call',
+      action: 'egress',
+      preview: {},
+    });
+    // reject — the side effect must not run
+    call_.mockClear();
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      reg().dispatch(
+        call('mcp_call', { server: 's', tool: 't' }),
+        ctx({ approval: { confirm: rejecting() } }),
+      ),
+    );
+    expect(err.reason).toBe('user_rejected');
+    expect(call_).not.toHaveBeenCalled();
+  });
+
+  it('previews a no-args run_command as the bare command (join yields { command:"ls" }, not "ls ")', async () => {
+    const confirm = approving();
+    await registry().dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommands: ['ls'] } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ command: 'ls' });
+  });
+
+  it('forwards ctx.signal to the confirm hook as its second argument', async () => {
+    const signal = { aborted: false };
+    const confirm = approving();
+    await registry().dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({ approval: { confirm }, signal: signal as never }),
+    );
+    expect(confirm.mock.calls[0]?.[1]).toBe(signal);
   });
 });
 

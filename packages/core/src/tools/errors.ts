@@ -105,7 +105,8 @@ export class ToolDeniedByUserError extends ToolDispatchError {
 }
 export type ToolApprovalDenyReason =
   | 'user_rejected' // the user (or the host's mode policy) rejected the interactive approval prompt
-  | 'no_approval_hook'; // fail-closed: the approval regime was active for a governed tool but no confirm hook was wired
+  | 'no_approval_hook' // fail-closed: the approval regime was active for a governed tool but no confirm hook was wired
+  | 'approval_error'; // fail-closed: the confirm hook itself threw (a non-abort fault), so consent could not be obtained
 
 /** The effective argument set failed the tool's validator or the secret-taint check. Field names only. */
 export class ToolArgsInvalidError extends ToolDispatchError {

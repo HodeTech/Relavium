@@ -25,6 +25,7 @@ import {
   type CreateToolRegistryOptions,
   type PolicyTarget,
   type ToolActionPreview,
+  type ToolApprovalDecision,
   type ToolCallPart,
   type ToolDef,
   type ToolDispatchContext,
@@ -347,10 +348,27 @@ async function confirmDispatch(
     );
   }
   throwIfAborted(ctx, def.id); // do not prompt for a turn that is already aborting
-  const decision = await approval.confirm(
-    { toolId: def.id, action, preview: previewFor(action, target) },
-    ctx.signal,
-  );
+
+  let decision: ToolApprovalDecision;
+  try {
+    decision = await approval.confirm(
+      { toolId: def.id, action, preview: previewFor(action, target) },
+      ctx.signal,
+    );
+  } catch (cause) {
+    // An abort raised WHILE prompting is a cancellation (cancel precedence) — rethrow so the dispatch
+    // ladder classifies it as `cancelled`, never a denial. Any OTHER throw is a fault in the consent layer
+    // itself; the approval can't be obtained, so fail-closed: DENY (the side effect must not run on a broken
+    // gate — never the retryable `tool_failed` a host-capability throw gets).
+    if (isAbort(cause, ctx)) {
+      throw cause;
+    }
+    throw new ToolDeniedByUserError(
+      def.id,
+      'approval_error',
+      `tool \`${def.id}\` denied: the approval could not be obtained`,
+    );
+  }
   if (decision.outcome !== 'approve') {
     // `decision.reason` is a host-supplied, secret-free label (e.g. "writes are not allowed in ask mode").
     const why =
@@ -359,6 +377,10 @@ async function confirmDispatch(
         : ' by the user';
     throw new ToolDeniedByUserError(def.id, 'user_rejected', `tool \`${def.id}\` denied${why}`);
   }
+  // An abort that landed WHILE the prompt was pending — the hook approved anyway / ignored the signal —
+  // must still cancel: the governed side effect must not run. Mirrors the post-dispatch guard in dispatch()
+  // (cancel precedence). Without this, an `approve` that resolves after the signal aborted would proceed.
+  throwIfAborted(ctx, def.id);
 }
 
 /**
@@ -395,6 +417,12 @@ function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPr
       }
       const parsed = extractHttpsHost(target.url);
       return parsed === null ? {} : { host: parsed.host };
+    }
+    default: {
+      // Exhaustiveness guard — a future ToolActionClass member (e.g. an `os` action) fails loud HERE at
+      // compile time (the `never` assignment) with a precise error, not a generic "not all paths return".
+      const exhaustive: never = action;
+      return exhaustive;
     }
   }
 }

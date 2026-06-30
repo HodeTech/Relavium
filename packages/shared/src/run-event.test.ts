@@ -242,6 +242,24 @@ const reject: Record<string, Record<string, unknown>> = {
     action: 'fs_write',
     preview: { path: './out.txt' },
   },
+  'agent:approval_requested (empty preview path)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: '' }, // path/host are nonEmptyString — an empty display value is rejected
+  },
+  'agent:approval_requested (stray secret-bearing preview field — .strict)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'http_request',
+    action: 'egress',
+    // .strict() on `preview` rejects an unexpected field LOUDLY — a host wiring bug that put a full
+    // URL/query (a secret-bearing field) into the preview is a parse failure, not a silent strip.
+    preview: { host: 'api.example.com', url: 'https://api.example.com/x?token=abc' },
+  },
   'cost:updated (float costMicrocents)': { ...valid['cost:updated'], costMicrocents: 12.5 },
   'node:completed (bad tokensUsed)': {
     type: 'node:completed',
@@ -605,7 +623,7 @@ describe('SessionEvent union — the agent-first namespace', () => {
 });
 
 describe('event envelope + ErrorCode + attemptNumber invariants', () => {
-  it('enforces exactly one of runId / sessionId on the four dual-envelope events', () => {
+  it('enforces exactly one of runId / sessionId on the dual-envelope events', () => {
     // A reused event carries runId on a run and sessionId on a session — never neither, never both.
     const dual = {
       type: 'agent:token',

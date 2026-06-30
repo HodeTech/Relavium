@@ -203,6 +203,54 @@ config-only VALUES and the `input_mapping` / `output_mapping` come from. `invoke
 **engine-provided delegate**, not a `ToolHost` capability — `invoke_agent` is pure orchestration
 (dispatch another node by id), no platform I/O, no full router selection this phase.
 
+### The per-tool approval seam (`ConfirmActionHook`, ADR-0057 EA3)
+
+`ctx.approval.confirm` is the host-injected interactive-consent hook the dispatch lifecycle's step 4b
+consults — the same dependency-inversion pattern as the `ToolHost` (the engine defines the interface +
+the invocation point; the host supplies the implementation, so [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md)'s
+tool-execution boundary holds). The host implementation owns the mode policy (ask / plan / accept-edits /
+auto), the once/always cache, the protected-paths rule, and emitting `agent:approval_requested` — the
+engine stays mode-agnostic and only asks "may this governed action proceed?" then honors the verdict. The
+preview is **secret-free, display-only**.
+
+```ts
+/** Present on `ctx.approval` ⇒ the interactive-approval regime is active (the chat path). Absent ⇒ the
+ *  workflow author-trust path (governed tools proceed under the step-4 floor, unchanged). */
+interface ToolApprovalContext {
+  readonly confirm?: ConfirmActionHook; // ABSENT under an active regime ⇒ fail-closed deny (no_approval_hook)
+}
+
+type ConfirmActionHook = (
+  request: ToolApprovalRequest,
+  signal?: AbortSignalLike, // SHOULD be honored — an abort while prompting routes to the engine's cancel path
+) => Promise<ToolApprovalDecision>;
+
+interface ToolApprovalRequest {
+  readonly toolId: ToolId;
+  readonly action: ToolActionClass; // 'fs_write' | 'process' | 'egress' (@relavium/shared TOOL_ACTION_CLASSES)
+  readonly preview: ToolActionPreview;
+}
+
+/** Secret-free, display-only — never a full URL/query, never a secret. */
+interface ToolActionPreview {
+  readonly path?: string;    // fs_write — the resolved target path
+  readonly command?: string; // process — the resolved command string
+  readonly host?: string;    // egress — the target host ONLY
+}
+
+type ToolApprovalDecision =
+  | { readonly outcome: 'approve' }
+  | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
+```
+
+A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
+fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the
+retryable `tool_failed` a *host-capability* throw gets); an absent hook under an active regime ⇒
+`tool_denied` (reason `no_approval_hook`). All three carry the existing non-retryable `tool_denied`
+`ErrorCode`. The action class is derived from `ToolPolicyClass` (§The `ToolDef`): `fsWrite` ⇒ `fs_write`,
+any `egress` ⇒ `egress`, and a `spawnsProcess` **with a model-controlled `command` target** ⇒ `process`
+(so the pre-approved `git_status`, which exposes no command, is **not** gated).
+
 ## Guardrail enforcement (policy = engine-pure; mechanism = host)
 
 The canonical guardrail home is [security-review.md §Sandbox-and-tool-policy](../../standards/security-review.md#sandbox-and-tool-policy-run_command-node-tools-secret-inputs) and [ADR-0029](../../decisions/0029-tool-policy-hardening.md); this table shows **where each half runs** — every engine-pure check is on the **effective** args (step 4).
