@@ -191,6 +191,9 @@ export type {
   SessionEventSink,
   SessionStreamEvent,
   SessionLifecycleEvent,
+  // The envelope-less `agent:approval_requested` body the host's ConfirmActionHook emits through the
+  // SessionEventSink (ADR-0057 EA5; the Step-4 chat-approval wiring needs to reference it by name).
+  SessionApprovalStreamEvent,
 } from './engine/agent-session.js';
 // Session checkpoint/resume (1.Y) — reconstruct the in-flight state from a persisted transcript (1.X) so a
 // session continues after a restart; the host loads via the @relavium/db SessionStore and hands the result

@@ -248,7 +248,23 @@ const reject: Record<string, Record<string, unknown>> = {
     nodeId: 'n',
     toolId: 'write_file',
     action: 'fs_write',
-    preview: { path: '' }, // path/host are nonEmptyString — an empty display value is rejected
+    preview: { path: '' }, // path/command/host are all nonEmptyString — an empty display value is rejected
+  },
+  'agent:approval_requested (empty preview command)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'run_command',
+    action: 'process',
+    preview: { command: '' }, // command was tightened to nonEmptyString (symmetry with path/host)
+  },
+  'agent:approval_requested (empty preview host)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'http_request',
+    action: 'egress',
+    preview: { host: '' },
   },
   'agent:approval_requested (stray secret-bearing preview field — .strict)': {
     type: 'agent:approval_requested',

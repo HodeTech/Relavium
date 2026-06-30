@@ -33,7 +33,7 @@ interface BaseEvent {
 }
 ```
 
-> **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` events carry `runId` on a run and `sessionId` on a session; consumers route on whichever is present.
+> **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` events carry `runId` on a run and `sessionId` on a session; `agent:approval_requested` (ADR-0057) is also dual-envelope but **session-only-emitted** in Phase 2.5. Consumers route on whichever is present.
 
 `sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless. The **envelope** fields (`sessionId` / `runId`, `sequenceNumber`, `timestamp`) are stamped by the bus, not the producer: `WorkflowEngine` emits through the `RunEventBus`, and `AgentSession` (1.V) emits *envelope-free payload drafts* through an injected `SessionEventSink` — wiring that sink onto the bus, where the per-session `sequenceNumber` (and its same gap/resync rule) is assigned, is **1.W**. So a session's monotonic numbering is the bus's responsibility, not the session core's.
 
@@ -46,6 +46,7 @@ export type RunEvent =
   | AgentTokenEvent
   | AgentToolCallEvent
   | AgentToolResultEvent
+  | AgentApprovalRequestedEvent // dual-envelope; session-only-emitted in Phase 2.5 (ADR-0057)
   | AgentFilePatchProposedEvent
   | CostUpdatedEvent
   | NodeCompletedEvent

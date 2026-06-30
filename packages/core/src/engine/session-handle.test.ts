@@ -192,4 +192,30 @@ describe('createSessionEventSink (1.W) — AgentSession envelope-free drafts →
     // The dropped event consumed no sequence number — cancelled is seq 1, not 2.
     expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1]);
   });
+
+  it('CARRIES the host-emitted agent:approval_requested onto the session stream (ADR-0057, not dropped)', async () => {
+    // The inverse of the file_patch_proposed drop: approval_requested IS a session-carried event, so the
+    // sink attaches the sessionId, the bus stamps a sequence, and a consumer sees it. A future refactor that
+    // accidentally added it to the drop guard would fail here.
+    const b = bus();
+    const handle = createSessionHandle(b, 'sess-1', () => undefined);
+    const sink = createSessionEventSink(b, 'sess-1');
+    sink({ type: 'session:started', agentRef: 'chatter', model: 'claude-opus-4-8', context: CTX });
+    sink({
+      type: 'agent:approval_requested',
+      nodeId: 'n',
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: './out.txt' },
+    });
+    sink({ type: 'session:cancelled' });
+    const events = await drain(handle.events);
+    expect(events.map((e) => e.type)).toEqual([
+      'session:started',
+      'agent:approval_requested',
+      'session:cancelled',
+    ]);
+    expect(events.every((e) => e.sessionId === 'sess-1')).toBe(true);
+    expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2]); // it consumed a sequence (was carried)
+  });
 });

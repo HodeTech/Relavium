@@ -108,7 +108,9 @@ async function dispatch(
   // 4b-7. The per-tool approval gate + the single side effect + output_mapping (FULL result) + model-facing
   // bounding — all under one classification ladder so a spill-time (or prompt-time) abort surfaces as
   // `cancelled` (ADR-0036 precedence) and any other tail failure is a classified tool error, never a raw
-  // escape. A `ToolDeniedByUserError` from 4b is a `ToolDispatchError` and passes through the ladder verbatim.
+  // escape. A `ToolDeniedByUserError` from 4b is a `ToolDispatchError` and passes through the ladder verbatim
+  // — UNLESS the signal is concurrently aborted, in which case the `isAbort` check below takes precedence
+  // (cancel-wins-all, ADR-0036) and the denial becomes `ToolCancelledError`.
   let outputMapped: unknown;
   let bounded: Awaited<ReturnType<typeof boundForModel>>;
   try {

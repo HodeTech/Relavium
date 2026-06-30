@@ -578,10 +578,10 @@ export const SessionExportedEventSchema = z.object({
 });
 
 /**
- * The five `session:*` lifecycle events. Within a turn a session also reuses the four
- * dual-envelope events above (`agent:token` / `agent:tool_call` / `agent:tool_result` /
- * `cost:updated`), carried with `sessionId` — so the complete session stream is this union
- * plus those four.
+ * The five `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
+ * above (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus, on the chat
+ * approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the complete
+ * session stream is this union plus those five (four when the approval regime is inactive).
  */
 export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionStartedEventSchema,
@@ -596,10 +596,10 @@ export type SessionEvent = z.infer<typeof SessionEventSchema>;
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the
  * `session:*` family on **one** bus (ADR-0036 "one bus, two namespaces"). A `z.union` (not a flat
  * discriminated union) so each family keeps its own refinements — notably `RunEventSchema`'s correlation-key
- * cross-check and its dual-envelope members (the four `agent:*`/`cost:updated` events, plus the session-only
- * `agent:approval_requested`, already validate here
- * carrying `sessionId`); a `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the
- * single validation gate the bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
+ * cross-check and its five `dualBase` members (the four `agent:*`/`cost:updated` events plus
+ * `agent:approval_requested`, which carry `sessionId` when session-emitted and `runId` on a run); a
+ * `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the single validation gate the
+ * bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
  */
 export const RunOrSessionEventSchema = z.union([RunEventSchema, SessionEventSchema]);
 export type RunOrSessionEvent = RunEvent | SessionEvent;

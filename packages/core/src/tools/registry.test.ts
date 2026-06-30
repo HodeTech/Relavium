@@ -532,17 +532,40 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  it('classifies an abort raised while prompting as cancelled (cancel precedence), not a denial', async () => {
+  it('classifies an abort raised while prompting (hook throws AbortError) as cancelled, not a denial', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
     const confirm = vi.fn(() =>
       Promise.reject(Object.assign(new Error('prompt aborted'), { name: 'AbortError' })),
     );
     const err = await rejectsWith<ToolCancelledError>(
-      registry().dispatch(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('write_file', { path: './out.txt', content: 'hi' }),
         ctx({ approval: { confirm } }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('cancel-wins-all: a signal that aborts mid-prompt + a hook that throws a PLAIN error classifies as cancelled, not approval_error', async () => {
+    // Exercises the `ctx.signal?.aborted` branch of isAbort in the confirm catch (the AbortError test
+    // above exercises only the cause.name branch), and proves cancel precedence over the fail-closed deny.
+    // The signal must flip DURING the prompt (not before): an already-aborted signal short-circuits at the
+    // dispatch entry guard before the hook ever runs.
+    const signal = { aborted: false };
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn<ConfirmFn>(() => {
+      signal.aborted = true; // cancelled while the prompt is pending…
+      return Promise.reject(new Error('hook bug while cancelling')); // …and the hook then throws a plain error
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm }, signal: signal as never }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
   });
 
   it('cancels (never executes) when the signal aborts WHILE prompting and the hook still resolves approve', async () => {
@@ -626,6 +649,50 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
       ctx({ approval: { confirm }, signal: signal as never }),
     );
     expect(confirm.mock.calls[0]?.[1]).toBe(signal);
+  });
+
+  it('denies a rejected http_request (egress) — the host fetch is never reached', async () => {
+    const fetch = vi.fn(() => Promise.resolve({ status: 200, headers: {}, body: '{}' }));
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ egress: { fetch } }) }).dispatch(
+        call('http_request', { url: 'https://api.example.com/x' }),
+        ctx({
+          approval: { confirm: rejecting() },
+          toolPolicy: { allowedDomains: ['api.example.com'] },
+        }),
+      ),
+    );
+    expect(err.reason).toBe('user_rejected');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('denies a rejected run_command (process) — the host spawn is never reached', async () => {
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+        call('run_command', { command: 'ls' }),
+        ctx({ approval: { confirm: rejecting() }, toolPolicy: { allowedCommands: ['ls'] } }),
+      ),
+    );
+    expect(err.reason).toBe('user_rejected');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('cancel-wins-all: an already-aborted signal yields cancelled (never a fail-closed deny) for a governed write', async () => {
+    // An already-aborted signal short-circuits at the dispatch entry guard (cancel precedence, ADR-0036)
+    // BEFORE the approval gate runs — so a would-be fail-closed `no_approval_hook` deny on an aborted turn
+    // correctly surfaces as cancelled, not denied, and the side effect never runs.
+    const { host, writeFile } = hostWithWriteSpy();
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: {}, signal: { aborted: true } as never }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
   });
 });
 
