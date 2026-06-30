@@ -40,6 +40,7 @@ stateDiagram-v2
     Streaming --> Idle: assistant turn complete
     Streaming --> Idle: abort (Esc) — turn ends, session lives (ADR-0057)
     Idle --> Idle: setTurnPolicy (reseat-less mode change, ADR-0057)
+    Streaming --> Streaming: setTurnPolicy (mode change applies next turn, ADR-0057)
     Idle --> Idle: resume (reload from history.db)
     Idle --> [*]: cancel / end
     Idle --> Exported: export → .relavium.yaml

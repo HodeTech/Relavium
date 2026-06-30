@@ -6,6 +6,7 @@ import {
   MaskedSecretSchema,
   RunEventSchema,
   SessionEventSchema,
+  StopReasonSchema,
 } from './run-event.js';
 import type { RunEvent, RunEventType } from './index.js';
 
@@ -613,9 +614,12 @@ describe('SessionEvent union — the agent-first namespace', () => {
     const ok = validSession['session:turn_completed'];
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'tool_use' }).success).toBe(true);
     // EA7 (ADR-0057): the session superset adds `aborted` (the mid-turn abort) — accepted here, but NOT in
-    // the LLM StopReason vocabulary (the @relavium/llm seam stays the clean five values).
+    // the LLM StopReason vocabulary (the @relavium/llm seam stays the clean five values). Pin BOTH halves
+    // co-located: the LLM StopReason has exactly five members and REJECTS 'aborted'.
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'aborted' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'banana' }).success).toBe(false);
+    expect(StopReasonSchema.options).toHaveLength(5);
+    expect(StopReasonSchema.safeParse('aborted').success).toBe(false);
   });
 
   it('rejects session variants missing/emptying a required field', () => {

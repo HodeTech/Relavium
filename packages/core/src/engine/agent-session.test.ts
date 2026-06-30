@@ -639,11 +639,14 @@ describe('AgentSession → createSessionEventSink → RunEventBus → SessionHan
 
 describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)', () => {
   it('abort() ends the in-flight turn as turn_completed{aborted} (no error) and keeps the session alive', async () => {
-    const { deps, events } = harness([textTurn('partial'), textTurn('second')]);
+    // This abort lands PRE-EGRESS (synchronous abort() → the turn core throws at its pre-egress
+    // throwIfAborted before the provider stream), so the turn engaged no provider. The mid-stream
+    // (engaged) abort is exercised by the barrier test below.
+    const { deps, events } = harness([textTurn('hi')]);
     const s = session(deps);
     s.start();
     const p = s.sendMessage('hi');
-    s.abort(); // mid-turn: the turn core is suspended at the provider stream await
+    s.abort();
     await p;
 
     const completes = events.filter((e) => e.type === 'session:turn_completed');
@@ -782,5 +785,125 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     s.start();
     await s.sendMessage('use echo'); // no setTurnPolicy
     expect(captured?.approval).toBeUndefined();
+  });
+
+  it('a policy WITHOUT a confirm hook threads approval:{} — the fail-closed regime (no_approval_hook floor)', async () => {
+    // The security-critical middle state: a set policy with no confirm activates the regime as approval:{}
+    // (present-but-empty), which the Step-1 registry floor turns into a fail-closed `no_approval_hook` deny.
+    // A regression collapsing this to `undefined` would silently re-grant the author-trust floor to a moded
+    // session (letting `ask` mode write), so pin the threading here.
+    let captured: ToolDispatchContext | undefined;
+    const capturing: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: (toolCall, ctx) => {
+        captured = ctx;
+        return echoRegistry.dispatch(toolCall, ctx);
+      },
+    };
+    const { deps } = harness([toolUseTurn('c1'), textTurn('done')], {}, capturing);
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    s.setTurnPolicy({ advertise: () => true }); // a policy, but NO confirm
+    await s.sendMessage('use echo');
+    expect(captured?.approval).toStrictEqual({}); // present (regime active) but confirm-less (fail-closed)
+  });
+
+  it('setTurnPolicy(undefined) CLEARS the regime — re-advertises every granted tool', async () => {
+    // The clear path (e.g. Shift+Tab back to a no-filter mode) must re-advertise all granted tools. The
+    // approval-key half of the clear is the same observable as the no-policy test above (approval undefined).
+    const readFileDef = BUILTIN_TOOLS.find((t) => t.id === 'read_file');
+    if (readFileDef === undefined) throw new Error('read_file builtin missing');
+    const scripts = [textTurn('a'), textTurn('b')];
+    let advertised: string[] = [];
+    let n = 0;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        advertised = (req.tools ?? []).map((t) => t.name);
+        return streamOf(scripts[n++] ?? []);
+      },
+    };
+    const reader = AgentSchema.parse({
+      id: 'reader',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'x',
+      tools: ['read_file'],
+    });
+    const { deps } = harness(scripts, { resolveProvider: () => provider, tools: [readFileDef] });
+    const s = session(deps, reader);
+    s.start();
+    s.setTurnPolicy({ advertise: () => false }); // filter read_file OUT
+    await s.sendMessage('filtered');
+    expect(advertised).not.toContain('read_file');
+    s.setTurnPolicy(undefined); // CLEAR
+    await s.sendMessage('cleared');
+    expect(advertised).toContain('read_file'); // re-advertised
+  });
+
+  it('aborts an ENGAGED mid-stream turn — real partial usage, counted, session alive (barrier-controlled)', async () => {
+    let release: () => void = () => {};
+    const barrier = new Promise<void>((r) => {
+      release = r;
+    });
+    async function* blockingStream(): AsyncGenerator<StreamChunk> {
+      yield { type: 'text_delta', text: 'partial' }; // a provider engaged + a token streamed
+      await barrier; // hold the turn open mid-stream until the test releases it
+      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 4 } };
+    }
+    let n = 0;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: () => (n++ === 0 ? blockingStream() : streamOf(textTurn('next'))),
+    };
+    const { deps, events } = harness([], { resolveProvider: () => provider });
+    const s = session(deps, AGENT);
+    s.start();
+    const p = s.sendMessage('hi');
+    await new Promise((r) => setTimeout(r, 0)); // let the turn engage + stream 'partial', then block on the barrier
+    s.abort(); // mid-stream abort — a provider HAS engaged
+    release();
+    await p;
+
+    const tokens = events.filter((e) => e.type === 'agent:token');
+    expect(tokens.map((e) => (e.type === 'agent:token' ? e.token : ''))).toContain('partial'); // engaged
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(1);
+    const aborted = completes[0];
+    expect(aborted?.type === 'session:turn_completed' && aborted.stopReason).toBe('aborted');
+    // EA2: the aborted turn reports REAL accumulated usage (a provider engaged), not a hardcoded zero.
+    expect(aborted?.type === 'session:turn_completed' && aborted.tokensUsed.input).toBeGreaterThan(
+      0,
+    );
+    // The session is alive — a second turn still runs.
+    await s.sendMessage('again');
+    expect(events.filter((e) => e.type === 'session:turn_completed')).toHaveLength(2);
+  });
+
+  it('a pre-egress (un-engaged) abort does NOT burn a max_turns slot — the cap is engaged-gated', async () => {
+    // maxTurns=1: an aborted, un-engaged turn must not consume the only slot, so the next turn still runs.
+    const { deps, events } = harness([textTurn('ok')], { maxTurns: 1 });
+    const s = session(deps, AGENT);
+    s.start();
+    const p = s.sendMessage('abort me');
+    s.abort(); // pre-egress (un-engaged)
+    await p;
+    await s.sendMessage('real turn'); // must NOT hit the cap
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(2);
+    expect(completes[0]?.type === 'session:turn_completed' && completes[0].stopReason).toBe(
+      'aborted',
+    );
+    // The second turn ran (not blocked by turn_limit) — the aborted un-engaged turn did not count.
+    expect(completes[1]?.type === 'session:turn_completed' && completes[1].stopReason).toBe('stop');
   });
 });

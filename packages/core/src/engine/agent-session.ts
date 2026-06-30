@@ -301,7 +301,8 @@ export class AgentSession {
    * approval hook — on this SAME session instance. The host calls it when its mode changes (e.g. `Shift+Tab`);
    * the change is **lossless** (no reseat, no tool-context loss) and applies on the **next** turn (each
    * `sendMessage` snapshots the policy at turn start). Pass `undefined` to clear it (back to advertise-all /
-   * no-approval-regime). Allowed in any non-terminal state, including mid-turn (it takes effect next turn).
+   * no-approval-regime). Callable in **any** state, including mid-turn (it takes effect next turn); it is
+   * **inert once `cancelled`** (a cancelled session runs no further turn, so the policy is never read again).
    */
   setTurnPolicy(policy: SessionTurnPolicy | undefined): void {
     this.#turnPolicy = policy;
@@ -325,6 +326,10 @@ export class AgentSession {
       );
     }
 
+    // Clear any stale EA7 abort marker BEFORE arming the turn, so an `abort()` a prior turn's synchronous
+    // turn_started-emit sink set (which then took a pre-`try` early return, bypassing the `finally` reset)
+    // can never leak into this turn's catch path and misclassify a real failure as an abort.
+    this.#abortingTurn = false;
     this.#status = 'running';
     this.#deps.emit({ type: 'session:turn_started' });
     // A cancel can fire SYNCHRONOUSLY inside the turn_started emit (a host whose sink calls cancel()). If it
@@ -364,18 +369,10 @@ export class AgentSession {
         this.#messages.pop();
         return;
       }
-      // EA7: an abort that landed just as the turn RESOLVED (the narrow race past the turn core's last
-      // `throwIfAborted`) is still honored — discard the completed reply and settle `aborted`, so `Esc`
-      // always yields an aborted turn, never a surprise completed one. The session stays alive (→ idle).
-      if (this.#abortingTurn) {
-        this.#messages.pop();
-        this.#emitTurnCompleted('aborted', {
-          input: result.usage.input,
-          output: result.usage.output,
-          model: result.model,
-        });
-        return;
-      }
+      // EA7 note: an `abort()` that lands AFTER the turn fully resolved (a late `Esc`, past the turn core's
+      // last `throwIfAborted`) is a no-op — the turn already produced its reply, so it completes NORMALLY
+      // (the reply is kept, the turn is counted). `abort()` interrupts an IN-FLIGHT turn only; a turn the
+      // model already finished is not discarded. The `#abortingTurn` marker is cleared by the `finally`.
       this.#turnCount += 1;
       // Append the assistant reply to the cross-turn transcript as TEXT-ONLY. The turn core keeps the
       // within-turn tool_use/tool_result pairs internal (they never leave runAgentTurn — it returns only the
@@ -491,11 +488,13 @@ export class AgentSession {
 
   /**
    * **Mid-turn abort** (ADR-0057 EA7) — `Esc` ends the *in-flight turn* but **keeps the session alive**
-   * (unlike {@link cancel}, which is terminal). It aborts the turn's signal; the `sendMessage` catch then
-   * settles the turn as **one** `session:turn_completed{stopReason:'aborted'}` (no `error` — it is
-   * user-initiated, not a failure), rolls the pending user message back, and returns `#status` to `idle` so
-   * the next `sendMessage` continues the conversation. No-op unless a turn is in flight (`running`); a
-   * `cancel()` already in progress wins (terminal precedence). There is **no** new session status.
+   * (unlike {@link cancel}, which is terminal). It aborts the turn's signal; the turn core then throws on
+   * the abort and the `sendMessage` catch settles the turn as **one** `session:turn_completed{stopReason:
+   * 'aborted'}` (no `error` — it is user-initiated, not a failure), rolls the pending user message back, and
+   * returns `#status` to `idle` so the next `sendMessage` continues the conversation. A **late** abort that
+   * lands after the turn already RESOLVED is a no-op — that turn completes normally (its reply is kept), so
+   * a just-finished reply is never discarded. No-op unless a turn is in flight (`running`); a `cancel()`
+   * already in progress wins (terminal precedence). There is **no** new session status.
    */
   abort(): void {
     if (this.#status !== 'running') return; // nothing in flight (or already terminal) — nothing to abort
