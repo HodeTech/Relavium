@@ -8,6 +8,7 @@ import {
   FS_SCOPE_TIERS,
   LLM_PROVIDERS,
   MEDIA_BILLED_MODALITIES,
+  SESSION_STOP_REASONS,
   STOP_REASONS,
   TOOL_ACTION_CLASSES,
 } from './constants.js';
@@ -90,6 +91,9 @@ export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
 /** The five-value LLM stop reason. Canonical home — the `@relavium/llm` seam re-exports this. */
 export const StopReasonSchema = z.enum(STOP_REASONS);
+
+/** The session turn stop reason — the five LLM values plus `aborted` (the EA7 mid-turn abort, ADR-0057). */
+export const SessionStopReasonSchema = z.enum(SESSION_STOP_REASONS);
 
 /**
  * The shared failure shape: a closed `code`, a user-safe `message`, `retryable`, and an optional,
@@ -560,7 +564,10 @@ export const SessionTurnStartedEventSchema = z.object({
 export const SessionTurnCompletedEventSchema = z.object({
   type: z.literal('session:turn_completed'),
   ...sessionBase,
-  stopReason: StopReasonSchema,
+  // The session superset of `StopReason` — the five LLM values plus `aborted` (the EA7 mid-turn abort: the
+  // turn ends but the session stays alive, ADR-0057). `aborted` carries NO `error` (it is user-initiated,
+  // not a failure); a failed turn uses `stopReason: 'error'` + the `error` field.
+  stopReason: SessionStopReasonSchema,
   tokensUsed: TokensUsedSchema,
   // A failed turn (provider error, rate limit, cancellation) still completes — with an error.
   error: z.object(eventErrorFields).optional(),

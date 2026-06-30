@@ -1,5 +1,5 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import type { StopReason } from '@relavium/shared';
+import type { SessionStopReason } from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `relavium chat` ink REPL (workstream **2.M**) — the session
@@ -30,7 +30,9 @@ export interface ToolCallView {
 
 /** The per-turn summary shown after a completed assistant turn. */
 export interface TurnSummary {
-  readonly stopReason: StopReason;
+  // The SESSION stop-reason superset — the five LLM `StopReason`s plus `'aborted'` (the EA7 mid-turn abort,
+  // ADR-0057); a `session:turn_completed` can carry `'aborted'`, so this mirrors the event field exactly.
+  readonly stopReason: SessionStopReason;
   readonly tokensUsed: { readonly input: number; readonly output: number };
   readonly durationMs?: number;
   /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */

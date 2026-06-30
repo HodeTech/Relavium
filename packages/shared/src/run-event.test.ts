@@ -609,9 +609,12 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(withSelection({ file: 'a.ts', startLine: 5, endLine: 1 })).toBe(false);
   });
 
-  it('binds session:turn_completed.stopReason to the closed StopReason enum', () => {
+  it('binds session:turn_completed.stopReason to the SESSION stop-reason enum (the five LLM values + aborted)', () => {
     const ok = validSession['session:turn_completed'];
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'tool_use' }).success).toBe(true);
+    // EA7 (ADR-0057): the session superset adds `aborted` (the mid-turn abort) — accepted here, but NOT in
+    // the LLM StopReason vocabulary (the @relavium/llm seam stays the clean five values).
+    expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'aborted' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'banana' }).success).toBe(false);
   });
 

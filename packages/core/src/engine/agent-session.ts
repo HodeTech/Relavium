@@ -30,7 +30,7 @@ import type {
   ErrorCode,
   SessionContext,
   SessionEvent,
-  StopReason,
+  SessionStopReason,
   ToolPolicy,
 } from '@relavium/shared';
 import {
@@ -42,7 +42,13 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
+import type {
+  ConfirmActionHook,
+  ToolDef,
+  ToolDispatchContext,
+  ToolId,
+  ToolRegistry,
+} from '../tools/types.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
@@ -96,6 +102,34 @@ export type SessionStreamEvent =
 
 /** The injected emission port. 1.V emits through it; 1.W implements it over the shared `RunEventBus`. */
 export type SessionEventSink = (event: SessionStreamEvent) => void;
+
+/**
+ * The **reseat-less mode** projection (ADR-0057) — the engine-side, **mode-agnostic** per-turn policy a host
+ * sets on the SAME session instance (no reseat, no tool-context loss). The ask / plan / accept-edits / auto
+ * **enum lives in the host** (`apps/cli`, [ADR-0055](../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md)):
+ * the host maps its current mode to this policy and pushes it via {@link AgentSession.setTurnPolicy}; the
+ * session **snapshots it at each turn start**, so a mid-turn change applies on the next turn. Setting a policy
+ * **activates the interactive-approval regime** for governed tools (the dispatch context's `approval` is
+ * present), so a write/process/egress dispatch requires a `confirm` decision — fail-closed if `confirm` is
+ * absent (ADR-0057 EA3). Absent (the default) ⇒ today's behavior: all granted tools advertised, no approval
+ * regime (the workflow author-trust floor).
+ */
+export interface SessionTurnPolicy {
+  /**
+   * Which of the agent's granted tools to **advertise** to the model this turn (the mode advertise-filter):
+   * `true` keeps the tool in the model-visible set. A tool filtered OUT is never offered, but the `confirm`
+   * floor remains authoritative if the model names it anyway (best-effort filter + fail-closed gate). Absent
+   * ⇒ advertise every granted tool.
+   */
+  readonly advertise?: (toolId: ToolId) => boolean;
+  /**
+   * The host's interactive per-tool approval hook ([ConfirmActionHook]{@link ConfirmActionHook}) threaded into
+   * the dispatch context's approval regime. Absent **while a policy is set** ⇒ fail-closed (a governed
+   * dispatch is denied — a wiring bug can't let `ask` mode write). The host's hook owns the mode policy
+   * (ask denies writes, accept-edits prompts, auto auto-approves), the once/always cache, and protected paths.
+   */
+  readonly confirm?: ConfirmActionHook;
+}
 
 /**
  * The session's injected dependencies — **platform capabilities only**, mirroring `AgentRunnerDeps`
@@ -198,6 +232,18 @@ export class AgentSession {
   #status: SessionStatus = 'created';
   /** The in-flight turn's controller, so {@link cancel} can abort it; `undefined` between turns. */
   #abort: AbortControllerLike | undefined;
+  /**
+   * The reseat-less mode policy (ADR-0057), mutated by {@link setTurnPolicy} and **snapshotted per turn**.
+   * Present ⇒ the interactive-approval regime is active + the advertise-filter applies. `undefined` ⇒
+   * today's behavior (all granted tools advertised, no approval regime).
+   */
+  #turnPolicy: SessionTurnPolicy | undefined;
+  /**
+   * Set by {@link abort} to mark the in-flight turn as **user-aborted** (EA7) — distinct from `cancel()`'s
+   * terminal `'cancelled'` status. The `sendMessage` catch reads it to settle the turn as
+   * `session:turn_completed{stopReason:'aborted'}` and keep the session alive (→ `idle`). Cleared each turn.
+   */
+  #abortingTurn = false;
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
   #plan: PlanResult | undefined;
 
@@ -251,6 +297,17 @@ export class AgentSession {
   }
 
   /**
+   * Set (or clear) the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive
+   * approval hook — on this SAME session instance. The host calls it when its mode changes (e.g. `Shift+Tab`);
+   * the change is **lossless** (no reseat, no tool-context loss) and applies on the **next** turn (each
+   * `sendMessage` snapshots the policy at turn start). Pass `undefined` to clear it (back to advertise-all /
+   * no-approval-regime). Allowed in any non-terminal state, including mid-turn (it takes effect next turn).
+   */
+  setTurnPolicy(policy: SessionTurnPolicy | undefined): void {
+    this.#turnPolicy = policy;
+  }
+
+  /**
    * Run one user turn end to end: append the user message, drive the turn core (streaming + tool loop +
    * fallback), append the assistant reply, and emit `session:turn_started` → `session:turn_completed`.
    * A turn past the hard cap is blocked **loudly** with `turn_limit` and **no egress**. A classified
@@ -295,13 +352,28 @@ export class AgentSession {
     this.#messages.push({ role: 'user', content: [{ type: 'text', text }] });
     const abort = this.#deps.newAbortController();
     this.#abort = abort;
+    // Snapshot the reseat-less mode policy for the whole turn (ADR-0057): a mid-turn setTurnPolicy applies
+    // only on the NEXT turn, so the advertise-filter + approval regime stay consistent within this turn.
+    const turnPolicy = this.#turnPolicy;
     try {
-      const result = await this.#runTurn(abort.signal);
+      const result = await this.#runTurn(abort.signal, turnPolicy);
       // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet, but
       // roll the user message back so a cancelled turn leaves no dangling user turn in the transcript
       // (the "only completed exchanges" invariant — matters for 1.X persistence / 1.Z export).
       if (this.#statusIs('cancelled')) {
         this.#messages.pop();
+        return;
+      }
+      // EA7: an abort that landed just as the turn RESOLVED (the narrow race past the turn core's last
+      // `throwIfAborted`) is still honored — discard the completed reply and settle `aborted`, so `Esc`
+      // always yields an aborted turn, never a surprise completed one. The session stays alive (→ idle).
+      if (this.#abortingTurn) {
+        this.#messages.pop();
+        this.#emitTurnCompleted('aborted', {
+          input: result.usage.input,
+          output: result.usage.output,
+          model: result.model,
+        });
         return;
       }
       this.#turnCount += 1;
@@ -330,9 +402,21 @@ export class AgentSession {
       // orphaning it.
       this.#messages.pop();
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
+      if (this.#abortingTurn) {
+        // EA7 mid-turn abort: the turn core threw on the aborted signal (an AgentTurnError 'cancelled').
+        // Settle as ONE `session:turn_completed{stopReason:'aborted'}` — NO error (user-initiated, not a
+        // failure) — and keep the session alive; the `finally` returns #status to idle. Count the turn
+        // against the hard cap only when a provider engaged + report its real EA2 usage (consistent with
+        // #settleTurnError). It is NOT `cancel()`/`session:cancelled` (which is terminal).
+        const aborted = err instanceof AgentTurnError ? err : undefined;
+        if (aborted?.engaged === true) this.#turnCount += 1;
+        this.#emitTurnCompleted('aborted', aborted?.usage ?? { input: 0, output: 0 });
+        return;
+      }
       this.#settleTurnError(err); // emits the terminal by error class; RE-THROWS an unclassified error
     } finally {
       this.#abort = undefined;
+      this.#abortingTurn = false; // clear the per-turn EA7 marker (no stale abort leaks into the next turn)
       if (this.#statusIs('running')) this.#status = 'idle';
     }
   }
@@ -405,8 +489,25 @@ export class AgentSession {
     this.#deps.emit({ type: 'session:cancelled' });
   }
 
+  /**
+   * **Mid-turn abort** (ADR-0057 EA7) — `Esc` ends the *in-flight turn* but **keeps the session alive**
+   * (unlike {@link cancel}, which is terminal). It aborts the turn's signal; the `sendMessage` catch then
+   * settles the turn as **one** `session:turn_completed{stopReason:'aborted'}` (no `error` — it is
+   * user-initiated, not a failure), rolls the pending user message back, and returns `#status` to `idle` so
+   * the next `sendMessage` continues the conversation. No-op unless a turn is in flight (`running`); a
+   * `cancel()` already in progress wins (terminal precedence). There is **no** new session status.
+   */
+  abort(): void {
+    if (this.#status !== 'running') return; // nothing in flight (or already terminal) — nothing to abort
+    this.#abortingTurn = true;
+    this.#abort?.abort();
+  }
+
   /** Build (memoized) the fallback plan and drive one turn through the shared core. */
-  async #runTurn(signal: AbortSignalLike): Promise<AgentTurnResult> {
+  async #runTurn(
+    signal: AbortSignalLike,
+    turnPolicy: SessionTurnPolicy | undefined,
+  ): Promise<AgentTurnResult> {
     const plan = this.#resolvePlan();
     if (!plan.ok) {
       // A host-wiring gap (a provider was not resolved) — a classified, non-retryable internal failure.
@@ -420,8 +521,16 @@ export class AgentSession {
       toolPolicy: this.#deps.toolPolicy ?? {},
       fsScope: this.#context.fsScopeTier,
       gateApproved: false, // a chat loop provides no human gate — git_commit stays denied (parity with 1.O)
+      // ADR-0057: a set mode policy ACTIVATES the interactive-approval regime — a governed (write/process/
+      // egress) dispatch then requires the host's `confirm` decision, fail-closed when `confirm` is absent
+      // (`approval: {}`). No policy ⇒ no `approval` key ⇒ the workflow author-trust floor, unchanged.
+      ...(turnPolicy === undefined
+        ? {}
+        : { approval: turnPolicy.confirm === undefined ? {} : { confirm: turnPolicy.confirm } }),
     };
-    const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds);
+    // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
+    // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
+    const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
     return runAgentTurn({
       system: this.#agent.system_prompt,
       messages: this.#messages,
@@ -464,7 +573,7 @@ export class AgentSession {
   }
 
   #emitTurnCompleted(
-    stopReason: StopReason,
+    stopReason: SessionStopReason,
     tokensUsed: { input: number; output: number; model?: string },
     error?: { code: ErrorCode; message: string; retryable: boolean },
   ): void {
@@ -520,11 +629,21 @@ export class AgentSession {
   }
 }
 
-/** The agent's granted tools as LLM-visible defs, validated through the seam schema (no unsafe cast). */
-function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): LlmToolDef[] {
+/**
+ * The agent's granted tools as LLM-visible defs, validated through the seam schema (no unsafe cast).
+ * `advertise` is the optional mode advertise-filter (ADR-0057): a granted tool it rejects is **not** offered
+ * to the model this turn (the `confirm` floor stays authoritative if the model names it anyway). Absent ⇒
+ * every granted tool is advertised.
+ */
+function buildLlmTools(
+  defs: readonly ToolDef[],
+  granted: ReadonlySet<string>,
+  advertise?: (toolId: string) => boolean,
+): LlmToolDef[] {
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
+    if (advertise !== undefined && !advertise(def.id)) continue; // mode advertise-filter (ADR-0057)
     const parsed = ToolDefSchema.safeParse({
       name: def.id,
       ...(def.description.length > 0 ? { description: def.description } : {}),

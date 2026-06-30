@@ -38,6 +38,8 @@ stateDiagram-v2
     Idle --> Streaming: sendMessage(text)
     Streaming --> Streaming: tool-call round-trip
     Streaming --> Idle: assistant turn complete
+    Streaming --> Idle: abort (Esc) — turn ends, session lives (ADR-0057)
+    Idle --> Idle: setTurnPolicy (reseat-less mode change, ADR-0057)
     Idle --> Idle: resume (reload from history.db)
     Idle --> [*]: cancel / end
     Idle --> Exported: export → .relavium.yaml
@@ -47,7 +49,9 @@ stateDiagram-v2
 | --- | --- |
 | **start** | Open a session for an `agentRef` with an initial [`SessionContext`](#session-context). Allocates a `sessionId` and persists the session row. |
 | **sendMessage** | Append a user [`SessionMessage`](#session-messages), run one assistant turn through the `AgentRunner` (streaming + tool-call loop), and append the assistant + tool messages. |
-| **cancel** | Abort the in-flight turn via `AbortSignal`; the session stays resumable. |
+| **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. |
+| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), roll the pending user message back, and return to `idle`. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. |
+| **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
 | **export** | Serialize the session to a `.relavium.yaml` scaffold ([export](#export-to-workflow)). |
 

@@ -142,6 +142,16 @@ export const STOP_REASONS = ['stop', 'length', 'tool_use', 'content_filter', 'er
 export type StopReason = (typeof STOP_REASONS)[number];
 
 /**
+ * The **session** turn stop-reason vocabulary — the five LLM {@link STOP_REASONS} **plus** `aborted`, the
+ * user's **mid-turn abort** (ADR-0057 EA7: `Esc` ends the in-flight turn but keeps the session alive, so the
+ * turn settles with `session:turn_completed{stopReason:'aborted'}`, **not** `session:cancelled`). `aborted` is
+ * a session-lifecycle concept, **not** an LLM stop reason, so it lives here and the `@relavium/llm` seam's
+ * `StopReason` stays the clean five-value set. Only `session:turn_completed.stopReason` uses this superset.
+ */
+export const SESSION_STOP_REASONS = [...STOP_REASONS, 'aborted'] as const;
+export type SessionStopReason = (typeof SESSION_STOP_REASONS)[number];
+
+/**
  * The four **media input modalities** a `media` content part can carry (ADR-0031). The modality
  * of a part is derived from its MIME type (`image/*`, `audio/*`, `video/*`, `application/pdf`),
  * never stored as a second field; `document` (PDF) is deliberately distinct from `image` — a

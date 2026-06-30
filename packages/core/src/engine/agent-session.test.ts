@@ -13,8 +13,9 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { BUILTIN_TOOLS } from '../tools/builtins.js';
 import { ToolExecutionError } from '../tools/errors.js';
-import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
+import type { ToolDispatchContext, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
   AgentSession,
@@ -633,5 +634,153 @@ describe('AgentSession → createSessionEventSink → RunEventBus → SessionHan
     // Every event carries the sessionId, and the per-session sequence is monotonic + gap-free from 0.
     expect(events.every((e) => e.sessionId === 'sess-1')).toBe(true);
     expect(events.map((e) => e.sequenceNumber)).toEqual(events.map((_, i) => i));
+  });
+});
+
+describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)', () => {
+  it('abort() ends the in-flight turn as turn_completed{aborted} (no error) and keeps the session alive', async () => {
+    const { deps, events } = harness([textTurn('partial'), textTurn('second')]);
+    const s = session(deps);
+    s.start();
+    const p = s.sendMessage('hi');
+    s.abort(); // mid-turn: the turn core is suspended at the provider stream await
+    await p;
+
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(1);
+    const aborted = completes[0];
+    expect(aborted?.type === 'session:turn_completed' && aborted.stopReason).toBe('aborted');
+    // aborted carries NO error (user-initiated, not a failure) and is NOT the terminal session:cancelled.
+    expect(aborted?.type === 'session:turn_completed' ? aborted.error : 'x').toBeUndefined();
+    expect(typesOf(events)).not.toContain('session:cancelled');
+
+    // The session is alive — a second turn runs to normal completion.
+    await s.sendMessage('again');
+    const after = events.filter((e) => e.type === 'session:turn_completed');
+    expect(after).toHaveLength(2);
+    expect(after[1]?.type === 'session:turn_completed' && after[1].stopReason).toBe('stop');
+  });
+
+  it('abort() rolls the pending user message back — the aborted turn leaves no transcript trace', async () => {
+    const scripts = [textTurn('partial'), textTurn('answer')];
+    const seenUserTexts: string[][] = [];
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        seenUserTexts.push(
+          req.messages
+            .filter((m) => m.role === 'user')
+            .flatMap((m) => m.content.flatMap((c) => (c.type === 'text' ? [c.text] : []))),
+        );
+        return streamOf(scripts[seenUserTexts.length - 1] ?? []);
+      },
+    };
+    const { deps } = harness(scripts, { resolveProvider: () => provider });
+    const s = session(deps);
+    s.start();
+    const p = s.sendMessage('aborted-msg');
+    s.abort();
+    await p;
+    await s.sendMessage('kept-msg');
+    // The LAST outbound request (turn 2) carries ONLY 'kept-msg' — never ['aborted-msg', 'kept-msg'].
+    // The aborted turn's user message was rolled back, so it is not carried into the next turn's transcript.
+    // (Robust to whether turn 1 reached the provider before the abort landed.)
+    expect(seenUserTexts.at(-1)).toEqual(['kept-msg']);
+  });
+
+  it('abort() is a no-op when no turn is in flight (idle) — emits nothing, the session stays usable', async () => {
+    const { deps, events } = harness([textTurn('ok')]);
+    const s = session(deps);
+    s.start();
+    s.abort(); // idle — nothing to abort
+    expect(typesOf(events)).toEqual(['session:started']);
+    await s.sendMessage('hi');
+    expect(events.filter((e) => e.type === 'session:turn_completed')).toHaveLength(1);
+  });
+
+  it('cancel() wins over a concurrent abort() — session:cancelled is the terminal, no turn_completed{aborted}', async () => {
+    const { deps, events } = harness([textTurn('partial')]);
+    const s = session(deps);
+    s.start();
+    const p = s.sendMessage('hi');
+    s.abort();
+    s.cancel(); // terminal precedence over the abort
+    await p;
+    expect(typesOf(events)).toContain('session:cancelled');
+    expect(events.filter((e) => e.type === 'session:turn_completed')).toHaveLength(0);
+  });
+
+  it('setTurnPolicy advertise-filter narrows the model-visible tool set (lossless, next turn)', async () => {
+    const readFileDef = BUILTIN_TOOLS.find((t) => t.id === 'read_file');
+    if (readFileDef === undefined) throw new Error('read_file builtin missing');
+    const scripts = [textTurn('a'), textTurn('b')];
+    let advertised: string[] = [];
+    let n = 0;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        advertised = (req.tools ?? []).map((t) => t.name);
+        return streamOf(scripts[n++] ?? []);
+      },
+    };
+    const reader = AgentSchema.parse({
+      id: 'reader',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'x',
+      tools: ['read_file'],
+    });
+    const { deps } = harness(scripts, { resolveProvider: () => provider, tools: [readFileDef] });
+    const s = session(deps, reader);
+    s.start();
+    await s.sendMessage('no policy'); // advertise every granted tool
+    expect(advertised).toContain('read_file');
+    s.setTurnPolicy({ advertise: (id) => id !== 'read_file' }); // filter it out next turn
+    await s.sendMessage('filtered');
+    expect(advertised).not.toContain('read_file');
+  });
+
+  it('setTurnPolicy activates the approval regime — the dispatch context carries the confirm hook', async () => {
+    const confirm = (): Promise<{ outcome: 'approve' }> => Promise.resolve({ outcome: 'approve' });
+    let captured: ToolDispatchContext | undefined;
+    const capturing: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: (toolCall, ctx) => {
+        captured = ctx;
+        return echoRegistry.dispatch(toolCall, ctx);
+      },
+    };
+    const { deps } = harness([toolUseTurn('c1'), textTurn('done')], {}, capturing);
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    s.setTurnPolicy({ confirm });
+    await s.sendMessage('use echo');
+    expect(captured?.approval?.confirm).toBe(confirm);
+  });
+
+  it('no turn policy ⇒ no approval regime in the dispatch context (workflow author-trust parity)', async () => {
+    let captured: ToolDispatchContext | undefined;
+    const capturing: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: (toolCall, ctx) => {
+        captured = ctx;
+        return echoRegistry.dispatch(toolCall, ctx);
+      },
+    };
+    const { deps } = harness([toolUseTurn('c1'), textTurn('done')], {}, capturing);
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    await s.sendMessage('use echo'); // no setTurnPolicy
+    expect(captured?.approval).toBeUndefined();
   });
 });
