@@ -24,6 +24,10 @@ import { OsCapabilityError, throwIfAborted as throwIfAbortedShared } from './err
  * unavailable (no `DISPLAY`/DBUS yet), and a missing helper on one Linux box may have a sibling that works.
  */
 
+/** A clipboard/notify spawn that exceeded its timeout — a {@link OsCapabilityError} the read loop can single
+ * out from a missing-binary spawn error (a hung tool is a real failure worth surfacing; an absent one is not). */
+class OsTimeoutError extends OsCapabilityError {}
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 /** A 1 MiB clipboard-read cap (the model-facing result is further bounded by the registry). */
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
@@ -98,16 +102,20 @@ export function createNodeOsCapability(config: NodeOsCapabilityConfig = {}): OsC
     readClipboard: async (signal) => {
       throwIfAborted(signal);
       // Try each platform candidate in order (Linux: Wayland → X11); the first that runs and exits 0 wins. A
-      // missing binary or a non-zero exit falls through to the next; an abort propagates immediately. The
-      // default error stands when EVERY candidate fails to spawn (none installed); a candidate that *ran* but
-      // exited non-zero upgrades the message to the more specific read failure.
+      // missing binary, a non-zero exit, or a timeout falls through to the next; an abort propagates
+      // immediately. "no clipboard tool is available" stays the message when every candidate is simply absent
+      // (the most likely cause — none installed); a candidate that RAN but exited non-zero, or one that existed
+      // but HUNG (a timeout), upgrades the message so it is not misleading on a single-candidate platform.
       let lastError = new OsCapabilityError('no clipboard tool is available');
       for (const plan of clipboardReadPlans(platform)) {
         let result: CaptureResult;
         try {
           result = await spawnCapturing(spawnImpl, plan, { signal, timeoutMs, maxBufferBytes });
-        } catch {
-          throwIfAborted(signal); // an abort wins; a missing candidate falls through to the next
+        } catch (error) {
+          throwIfAborted(signal); // an abort wins; a missing/failed candidate falls through to the next
+          // A timeout (the tool exists but hung) is a real failure worth surfacing; a spawn-start error is
+          // most likely a missing binary, for which the default "no tool available" is the more helpful reason.
+          if (error instanceof OsTimeoutError) lastError = error;
           continue;
         }
         if (result.exitCode === 0) return result.stdout;
@@ -234,7 +242,7 @@ function spawnCapturing(
         if (aborted) {
           reject(new OsCapabilityError('the os command was aborted'));
         } else if (timedOut && code === null) {
-          reject(new OsCapabilityError('the os command timed out'));
+          reject(new OsTimeoutError('the os command timed out'));
         } else {
           resolvePromise({ exitCode: code ?? 1, stdout: stdout.text() });
         }

@@ -306,9 +306,17 @@ export async function readJailedFile(real: string, sizeLimit: number): Promise<J
  * Protected paths NO mode (auto included) may write — even where the fs jail would allow them
  * ([ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)). `.git/` and
  * `.relavium/` are matched by a path SEGMENT (so a `.gitignore` / `.relaviumrc` FILE is not protected — only
- * the directories); shell startup files are matched by BASENAME. Comparison is lowercased so a
- * case-insensitive FS (macOS/Windows) or a `.GIT` variant cannot slip a protected target through (an
- * over-deny on a genuinely-distinct `.GIT` dir on a case-sensitive FS is the safe direction).
+ * the directories); the auto-sourced startup / config files below — every one of which executes code on the
+ * next shell, X login, or `git` invocation (`.gitconfig`'s `core.hooksPath` / `[alias] x = !cmd` ⇒ RCE) — are
+ * matched by BASENAME. This is the secure FLOOR, not an exhaustive catalogue: it deliberately does NOT cover
+ * directory-pattern sources (fish `conf.d/*.fish`), OS launch agents (`~/Library/LaunchAgents/*.plist`), or
+ * editor auto-run config — those are out of the basename model's reach and rely on the fs jail + approval.
+ *
+ * {@link foldPathComponent} normalizes each compared name the way a real filesystem folds a component: it
+ * lowercases (a case-insensitive FS / a `.GIT` variant must not slip through) AND strips trailing dots/spaces
+ * — Win32 silently drops those at open time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on
+ * the REAL protected target while the unfolded name (`.bashrc.`) missed the set. Folding always (not only on
+ * win32) over-denies a genuinely-distinct `.git.` on a case-sensitive FS, which is the safe direction.
  */
 const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium']);
 const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
@@ -316,6 +324,7 @@ const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.bash_profile',
   '.bash_login',
   '.bash_logout',
+  '.bash_aliases', // sourced by the default Debian/Ubuntu .bashrc
   '.profile',
   '.zshrc',
   '.zprofile',
@@ -326,21 +335,31 @@ const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.tcshrc',
   '.kshrc',
   '.login',
+  '.xprofile', // X11 login scripts — executed at graphical login
+  '.xinitrc',
+  '.xsession',
+  '.gitconfig', // user-global git config — core.hooksPath / `[alias] x = !cmd` ⇒ RCE on the next git command
   'config.fish', // fish — ~/.config/fish/config.fish
   'profile.ps1',
   'microsoft.powershell_profile.ps1', // PowerShell profiles
 ]);
 
-/** Deny a write to a protected path (a `.git`/`.relavium` directory, or a shell startup file). FATAL. */
+/** Fold a path component the way a filesystem does for matching: lowercase + strip the trailing dots/spaces a
+ * case-insensitive/Win32 FS silently drops (so `.BASHRC` / `.bashrc.` / `.git ` all fold to the protected name). */
+function foldPathComponent(name: string): string {
+  return name.toLowerCase().replace(/[. ]+$/u, '');
+}
+
+/** Deny a write to a protected path (a `.git`/`.relavium` directory, or a startup/config file). FATAL. */
 function assertNotProtectedPath(absoluteTarget: string): void {
   for (const segment of absoluteTarget.split(sep)) {
-    if (segment.length > 0 && PROTECTED_DIR_SEGMENTS.has(segment.toLowerCase())) {
+    if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) {
       throw new FsScopeDeniedError(
         'write_file: refusing to write inside a protected directory (.git / .relavium)',
       );
     }
   }
-  if (PROTECTED_RC_BASENAMES.has(basename(absoluteTarget).toLowerCase())) {
+  if (PROTECTED_RC_BASENAMES.has(foldPathComponent(basename(absoluteTarget)))) {
     throw new FsScopeDeniedError('write_file: refusing to write a shell startup file');
   }
 }

@@ -111,8 +111,7 @@ export {
   type FetchMediaBytesOptions,
   type MediaEgressDeps,
   type MediaEgressErrorCode,
-  type HopRequest,
-  type HopResponse,
+  // `HopRequest`/`HopResponse` are exported directly from the shared safe-egress block below (their true home).
 } from './media-egress.js';
 
 // The shared SSRF egress mechanism (ADR-0029(d)/0043/0057) — `connectValidated` (one validated hop) +
@@ -128,6 +127,10 @@ export {
   type SafeEgressErrorCode,
   type EgressDeps,
   type EgressMethod,
+  // `HopRequest`/`HopResponse` are part of THIS mechanism's public surface (the CLI egress arm + its test
+  // consume them from `@relavium/db`); export them directly here rather than only via the media-egress alias.
+  type HopRequest,
+  type HopResponse,
 } from './safe-egress.js';
 
 // Media references (1.AF/D12c + D11, ADR-0042/0044) — the media_objects/media_references retention + authz

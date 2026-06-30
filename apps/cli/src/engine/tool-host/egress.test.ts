@@ -149,4 +149,49 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
       egress.fetch({ method: 'GET', url: 'https://api.example.com/x' }),
     ).rejects.toBeInstanceOf(EgressCapabilityError);
   });
+
+  it('DENIES a credentialed url (user:pass@host) as a fatal EgressDeniedError, before any connection', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({ deps });
+    await expect(
+      egress.fetch({ method: 'GET', url: 'https://user:pass@api.example.com/x' }),
+    ).rejects.toBeInstanceOf(EgressDeniedError);
+    expect(calls).toHaveLength(0); // rejected at the url policy gate, never opened a connection
+  });
+
+  it('threads the caller abort signal through to the connection (the cancel contract)', async () => {
+    let innerAborted: boolean | undefined;
+    const deps: EgressDeps = {
+      resolveHost: () => Promise.resolve(['203.0.113.10']),
+      openConnection: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          innerAborted = signal.aborted;
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+          if (signal.aborted) reject(new Error('aborted'));
+        }),
+    };
+    const egress = createNodeEgressCapability({ deps });
+    const ac = new AbortController();
+    ac.abort();
+    await egress
+      .fetch({ method: 'GET', url: 'https://api.example.com/x' }, ac.signal)
+      .catch(() => undefined);
+    expect(innerAborted).toBe(true); // the composed inner signal reached the connection already-aborted
+  });
+
+  it('times out a hung connection as a transient EgressCapabilityError (retryable)', async () => {
+    const deps: EgressDeps = {
+      resolveHost: () => Promise.resolve(['203.0.113.10']),
+      // Honors the abort signal (as the real node deps do) but never resolves on its own — the 5ms timeout
+      // composed by withEgressTimeout aborts it, surfacing a normalized transient failure to the model.
+      openConnection: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted by the timeout')));
+        }),
+    };
+    const egress = createNodeEgressCapability({ deps, timeoutMs: 5 });
+    await expect(
+      egress.fetch({ method: 'GET', url: 'https://api.example.com/x' }),
+    ).rejects.toBeInstanceOf(EgressCapabilityError);
+  });
 });

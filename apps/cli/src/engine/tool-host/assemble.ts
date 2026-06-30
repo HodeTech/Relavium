@@ -10,7 +10,13 @@ import { createNodeProcessCapability } from './process.js';
 // has ONE import site — the seam's public entry point — rather than reaching past it into each arm module. The
 // shared bases let a caller catch the whole class (`HostDeniedError` = every fatal `tool_denied`) or a specific
 // arm (`FsScopeDeniedError`). `export…from` keeps these pure pass-throughs (no local binding).
-export { HostCapabilityError, HostDeniedError } from './errors.js';
+export {
+  EgressCapabilityError,
+  EgressDeniedError,
+  HostCapabilityError,
+  HostDeniedError,
+  OsCapabilityError,
+} from './errors.js';
 export { FsCapabilityError, FsScopeDeniedError } from './fs.js';
 export { ProcessCapabilityError, ProcessDeniedError } from './process.js';
 

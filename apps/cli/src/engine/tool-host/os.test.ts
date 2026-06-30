@@ -57,6 +57,35 @@ function fakeSpawn(script: readonly ScriptedCall[]): {
   return { spawnImpl, calls };
 }
 
+/**
+ * A spawn whose children stay "running" — they never emit `close` on their own, so a timeout timer or an
+ * abort handler is what ends them. `kill('SIGKILL')` models the real OS: it bumps `killCount` and then emits
+ * `close` with a NULL code (a signal-killed process has no natural exit code), which is exactly what
+ * spawnCapturing's timeout/abort branches key on.
+ */
+function controllableSpawn(): {
+  spawnImpl: OsSpawnFn;
+  calls: RecordedCall[];
+  killCount: () => number;
+} {
+  const calls: RecordedCall[] = [];
+  let killCount = 0;
+  const spawnImpl: OsSpawnFn = (executable, args, options) => {
+    calls.push({ executable, args, env: options.env });
+    const child = new EventEmitter() as EventEmitter & OsSpawnLike;
+    const stdout = new EventEmitter();
+    Object.defineProperty(child, 'stdout', { value: stdout });
+    Object.defineProperty(child, 'kill', {
+      value: () => {
+        killCount += 1;
+        queueMicrotask(() => child.emit('close', null)); // SIGKILL ⇒ death ⇒ close with a null code
+      },
+    });
+    return child; // never emits close on its own — only a timeout/abort kill ends it
+  };
+  return { spawnImpl, calls, killCount: () => killCount };
+}
+
 describe('notifyPlan — the per-platform spawn plan (injection-free arg/env construction)', () => {
   const input = { title: 'Done', body: 'evil"; rm -rf / #$(whoami)' } as const;
 
@@ -173,6 +202,42 @@ describe('createNodeOsCapability — notify', () => {
     // The ambient PATH is still present alongside the injected notify vars.
     expect(calls[0]?.env['PATH']).toBe(process.env['PATH']);
     expect(calls[0]?.env['RELAVIUM_NOTIFY_TITLE']).toBe('t');
+  });
+});
+
+describe('createNodeOsCapability — timeout + mid-spawn abort + the bounded buffer (the SIGKILL paths)', () => {
+  it('SIGKILLs a hung clipboard candidate past timeoutMs and rejects with the timeout reason', async () => {
+    const { spawnImpl, killCount } = controllableSpawn();
+    const os = createNodeOsCapability({ platform: 'darwin', spawnImpl, timeoutMs: 10 });
+    const err = await os.readClipboard().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OsCapabilityError);
+    expect((err as OsCapabilityError).message).toBe('the os command timed out'); // not the misleading default
+    expect(killCount()).toBeGreaterThanOrEqual(1); // the timer SIGKILLed the hung child
+  });
+
+  it('SIGKILLs a hung notify spawn past timeoutMs and rejects', async () => {
+    const { spawnImpl, killCount } = controllableSpawn();
+    const os = createNodeOsCapability({ platform: 'linux', spawnImpl, timeoutMs: 10 });
+    await expect(os.notify({ title: 't', body: 'b' })).rejects.toBeInstanceOf(OsCapabilityError);
+    expect(killCount()).toBeGreaterThanOrEqual(1);
+  });
+
+  it('aborts an IN-FLIGHT clipboard spawn and does NOT probe the next candidate', async () => {
+    const { spawnImpl, calls, killCount } = controllableSpawn();
+    const os = createNodeOsCapability({ platform: 'linux', spawnImpl }); // 3 candidates (wl-paste, xclip, xsel)
+    const ac = new AbortController();
+    const pending = os.readClipboard(ac.signal);
+    await Promise.resolve(); // let the first candidate spawn + register its abort listener
+    ac.abort(); // onAbort ⇒ SIGKILL ⇒ close(null) with aborted=true ⇒ reject; the loop must NOT fall through
+    await expect(pending).rejects.toBeInstanceOf(Error);
+    expect(calls).toHaveLength(1); // ONLY wl-paste — the abort stopped the loop; xclip/xsel never spawned
+    expect(killCount()).toBeGreaterThanOrEqual(1);
+  });
+
+  it('caps clipboard output at maxBufferBytes (the memory guard)', async () => {
+    const { spawnImpl } = fakeSpawn([{ stdout: 'hello world', code: 0 }]); // 11 bytes
+    const os = createNodeOsCapability({ platform: 'darwin', spawnImpl, maxBufferBytes: 5 });
+    expect(await os.readClipboard()).toBe('hello'); // capped to the first 5 bytes
   });
 });
 

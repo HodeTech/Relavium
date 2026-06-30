@@ -99,15 +99,18 @@ export function createNodeEgressCapability(
  * Map the shared {@link SafeEgressError} to the host error taxonomy: an SSRF range-block or non-HTTPS/
  * credentialed-url denial is a **deterministic** {@link EgressDeniedError} (fatal `tool_denied` — re-issuing
  * re-denies, never burns the node-retry budget); a transient network/size failure is an
- * {@link EgressCapabilityError} (retryable `tool_failed`). Messages stay reason-only (no url/IP/bytes). An
- * abort is classified `cancelled` by the registry's cancel-precedence regardless of this class.
+ * {@link EgressCapabilityError} (retryable `tool_failed`). The shared message is already a tool-agnostic,
+ * reason-only `egress …` string (no url/IP/bytes), so it is passed through verbatim — the SAME arm backs
+ * `http_request`, `web_search`, and http-transport `mcp_call`, and the registry attaches the actual invoking
+ * tool id when it surfaces the error, so an arm-side `http_request:` prefix would MISATTRIBUTE a `web_search`
+ * failure. An abort is classified `cancelled` by the registry's cancel-precedence regardless of this class.
  */
 function classifyEgressError(error: unknown): Error {
   if (error instanceof SafeEgressError) {
     if (error.code === 'insecure_url' || error.code === 'blocked_host') {
-      return new EgressDeniedError(`http_request: ${error.message}`);
+      return new EgressDeniedError(error.message);
     }
-    return new EgressCapabilityError(`http_request: ${error.message}`);
+    return new EgressCapabilityError(error.message);
   }
-  return error instanceof Error ? error : new EgressCapabilityError('http_request: egress failed');
+  return error instanceof Error ? error : new EgressCapabilityError('egress request failed');
 }

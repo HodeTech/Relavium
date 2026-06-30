@@ -201,4 +201,14 @@ describe('wiredToolIds (advertise-filter)', () => {
   it('keeps an unknown granted id (a dynamically-registered tool resolved elsewhere)', () => {
     expect(wiredToolIds(['not_a_builtin'], fsHost, defs)).toEqual(['not_a_builtin']);
   });
+
+  it('keeps os tools (read_clipboard/notify) even when host.os is absent — the EA1 backstop is their gate', () => {
+    // OS_POLICY carries no arm class (no fsScoped/spawnsProcess/egress), so requiredArmPresent falls through to
+    // keep them: the advertise-filter is best-effort for os tools and the dispatch tool_unavailable backstop
+    // (EA1) is their authoritative gate. `fsHost` has no `os` arm, yet both are still advertised.
+    expect(wiredToolIds(['read_clipboard', 'notify'], fsHost, defs)).toEqual([
+      'read_clipboard',
+      'notify',
+    ]);
+  });
 });

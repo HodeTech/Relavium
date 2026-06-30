@@ -373,8 +373,18 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
     ).rejects.toBeInstanceOf(FsScopeDeniedError);
   });
 
-  it('refuses to write a shell startup file by basename (`.zshrc`, `.bashrc`, `.profile`)', async () => {
-    for (const rc of ['.zshrc', '.bashrc', '.profile', 'config.fish']) {
+  it('refuses startup/config files by basename (shell rc, X login, .gitconfig, .bash_aliases)', async () => {
+    for (const rc of [
+      '.zshrc',
+      '.bashrc',
+      '.profile',
+      'config.fish',
+      '.bash_aliases',
+      '.xprofile',
+      '.xinitrc',
+      '.xsession',
+      '.gitconfig', // user-global git config: core.hooksPath / `[alias] x = !cmd` ⇒ RCE
+    ]) {
       await expect(sandboxed().writeFile(rc, 'evil', {})).rejects.toBeInstanceOf(
         FsScopeDeniedError,
       );
@@ -385,6 +395,21 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
     await expect(
       sandboxed().writeFile('.GIT/config', 'x', { createDirs: true }),
     ).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses a Win32-folding trailing-dot/space variant (`.bashrc.`, `.bashrc `, `.git./x`)', async () => {
+    // Win32 silently strips trailing dots/spaces at open time, so these land on the REAL protected target;
+    // foldPathComponent denies them on every platform (an over-deny on a case-sensitive FS is the safe way).
+    for (const name of ['.bashrc.', '.bashrc ', '.gitconfig.', 'profile.ps1 ']) {
+      await expect(sandboxed().writeFile(name, 'evil', {})).rejects.toBeInstanceOf(
+        FsScopeDeniedError,
+      );
+    }
+    // The folded `.git.` directory segment is caught by the EARLY check, so no `.git.` dir is ever created.
+    await expect(
+      sandboxed().writeFile('.git./config', 'x', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    await expect(readdir(join(workspace, '.git.'))).rejects.toThrow();
   });
 
   it('refuses a symlink whose REALPATH resolves INTO `.git/` (the post-jail re-check)', async () => {
