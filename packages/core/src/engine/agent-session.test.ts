@@ -869,7 +869,10 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     const s = session(deps, AGENT);
     s.start();
     const p = s.sendMessage('hi');
-    await new Promise((r) => setTimeout(r, 0)); // let the turn engage + stream 'partial', then block on the barrier
+    // A setTimeout(0) macrotask fires only AFTER all pending microtasks drain (single-threaded JS), so the
+    // turn has deterministically engaged, streamed 'partial', and parked at `await barrier` by the time this
+    // resolves — making the mid-stream abort below non-flaky, not a timing guess.
+    await new Promise((r) => setTimeout(r, 0));
     s.abort(); // mid-stream abort — a provider HAS engaged
     release();
     await p;
@@ -905,5 +908,63 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     );
     // The second turn ran (not blocked by turn_limit) — the aborted un-engaged turn did not count.
     expect(completes[1]?.type === 'session:turn_completed' && completes[1].stopReason).toBe('stop');
+  });
+
+  it('abort() from the turn_started emit sink aborts THIS turn (the controller is armed BEFORE the emit)', async () => {
+    // Regression: if the controller were armed AFTER the turn_started emit, an abort() from the emit sink
+    // would set #abortingTurn but no-op the (undefined) signal, so a later real failure would misclassify as
+    // 'aborted'. With the controller armed first, the abort actually aborts the turn → it settles 'aborted'.
+    const sinkEvents: SessionStreamEvent[] = [];
+    const ref: { s?: AgentSession } = {}; // a const holder — the emit closure reads it before `s` exists
+    const { deps } = harness([textTurn('hi')], {
+      emit: (e) => {
+        sinkEvents.push(e);
+        if (e.type === 'session:turn_started') ref.s?.abort();
+      },
+    });
+    const s = session(deps);
+    ref.s = s;
+    s.start();
+    await s.sendMessage('hi');
+    const completes = sinkEvents.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(1);
+    expect(completes[0]?.type === 'session:turn_completed' && completes[0].stopReason).toBe(
+      'aborted',
+    );
+    expect(sinkEvents.map((e) => e.type)).not.toContain('session:cancelled');
+  });
+
+  // NOTE on the LATE-abort no-op (abort() landing in the microtask gap AFTER the turn core's final abort
+  // check but BEFORE the success path runs): it is **structurally** a no-op — the success path has NO
+  // `#abortingTurn` read, so it always completes the turn normally regardless of the flag (the `finally`
+  // clears it). There is no deterministic emit hook past the core's last `throwIfAborted` to drive that exact
+  // gap (a hook on the last in-turn event, cost:updated, lands BEFORE that check → a mid-stream abort, which
+  // the engaged-mid-stream test above already covers), so the guarantee is pinned by the code's structure,
+  // not a contrived race test.
+
+  it('setTurnPolicy(undefined) CLEARS the approval regime too — the dispatch context drops the approval key', async () => {
+    const confirm = (): Promise<{ outcome: 'approve' }> => Promise.resolve({ outcome: 'approve' });
+    let captured: ToolDispatchContext | undefined;
+    const capturing: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: (toolCall, ctx) => {
+        captured = ctx;
+        return echoRegistry.dispatch(toolCall, ctx);
+      },
+    };
+    const { deps } = harness(
+      [toolUseTurn('c1'), textTurn('a'), toolUseTurn('c2'), textTurn('b')],
+      {},
+      capturing,
+    );
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    s.setTurnPolicy({ confirm });
+    await s.sendMessage('with regime');
+    expect(captured?.approval?.confirm).toBe(confirm); // regime active
+    s.setTurnPolicy(undefined); // CLEAR
+    await s.sendMessage('cleared');
+    expect(captured?.approval).toBeUndefined(); // regime gone — back to author-trust parity
   });
 });

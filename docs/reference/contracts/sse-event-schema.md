@@ -264,7 +264,7 @@ export type SessionEvent =
   | SessionStartedEvent       // 'session:started'   — { agentRef, model, context }
   | SessionTurnStartedEvent   // 'session:turn_started'   — a user message began an assistant turn
   | SessionTurnCompletedEvent // 'session:turn_completed' — { stopReason, tokensUsed, error? }; stopReason is the SESSION superset (the 5 LLM StopReasons + 'aborted' — the EA7 mid-turn abort, ADR-0057)
-  | SessionCancelledEvent     // 'session:cancelled' — the in-flight turn was aborted
+  | SessionCancelledEvent     // 'session:cancelled' — cancel() was called; the session ends (terminal). NOT a mid-turn abort (EA7), which keeps the session alive — see session:turn_completed{stopReason:'aborted'}.
   | SessionExportedEvent;     // 'session:exported'  — { workflowPath } (chat-to-workflow export)
 ```
 

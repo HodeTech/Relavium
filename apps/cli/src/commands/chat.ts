@@ -432,8 +432,9 @@ export function createChatLineHandler(
       stop = true;
     },
     cancel: () => {
-      // 1.V has no per-turn abort that keeps the session alive, so /cancel ends the (persisted, resumable)
-      // session — its in-flight turn is aborted and `chat-resume` (2.N) can reload it later.
+      // `/cancel` ends the session TERMINALLY (session:cancelled) — its in-flight turn is aborted and
+      // `chat-resume` (2.N) can reload the persisted session later. For a mid-turn abort that KEEPS the
+      // session alive (Esc), use `session.abort()` (EA7, ADR-0057) — wired into the REPL in 2.5.E Step 4.
       cancelOnce();
       stop = true;
     },

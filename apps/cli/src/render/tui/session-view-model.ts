@@ -62,7 +62,11 @@ export interface SessionViewState {
   readonly liveToolCalls: readonly ToolCallView[];
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
   readonly cumulativeCostMicrocents: number;
-  /** Completed turns that engaged the provider (success or failure) — the chat-mode turn counter. */
+  /**
+   * The chat-mode turn counter — incremented on **every** `session:turn_completed` (success, failure, OR
+   * an EA7 `aborted` turn). This is a monotonic UI display count, distinct from the engine's hard-cap
+   * `#turnCount` (which counts only provider-engaged turns); a footer counter wants every attempted turn.
+   */
   readonly turnCount: number;
   /** The wall-clock (ms) of the in-flight turn's `session:turn_started`, for the completed-turn duration
    *  (required-nullable, not optional, so it can be reset to `undefined` between turns under

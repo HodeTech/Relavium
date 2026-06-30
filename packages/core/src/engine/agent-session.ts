@@ -331,17 +331,24 @@ export class AgentSession {
     // can never leak into this turn's catch path and misclassify a real failure as an abort.
     this.#abortingTurn = false;
     this.#status = 'running';
+    // Arm the abort controller BEFORE the turn_started emit. A host whose sink calls abort() synchronously
+    // inside that emit must abort THIS turn's real signal — if #abort were still undefined, abort()'s
+    // `#abort?.abort()` would be a no-op while still setting #abortingTurn, and a later GENUINE failure would
+    // then be misclassified as `aborted`. The cancel-bail + cap block release it on their early returns.
+    const abort = this.#deps.newAbortController();
+    this.#abort = abort;
     this.#deps.emit({ type: 'session:turn_started' });
     // A cancel can fire SYNCHRONOUSLY inside the turn_started emit (a host whose sink calls cancel()). If it
     // did, session:cancelled is the terminal — bail before the cap block and before any egress, else we would
     // overwrite the 'cancelled' status back to 'idle' and emit a second terminal, or silently egress an
-    // already-cancelled turn.
+    // already-cancelled turn. (cancel() already cleared #abort.)
     if (this.#statusIs('cancelled')) return;
 
     // Hard turn cap — checked AFTER turn_started (the turn was attempted) but BEFORE any egress: the
     // blocked turn completes loudly with turn_limit and never calls a provider.
     if (this.#turnCount >= this.#maxTurns) {
       this.#status = 'idle';
+      this.#abort = undefined; // no turn ran — release the armed controller (this early return skips finally)
       this.#emitTurnCompleted(
         'error',
         { input: 0, output: 0 },
@@ -355,8 +362,6 @@ export class AgentSession {
     }
 
     this.#messages.push({ role: 'user', content: [{ type: 'text', text }] });
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort;
     // Snapshot the reseat-less mode policy for the whole turn (ADR-0057): a mid-turn setTurnPolicy applies
     // only on the NEXT turn, so the advertise-filter + approval regime stay consistent within this turn.
     const turnPolicy = this.#turnPolicy;
@@ -372,7 +377,8 @@ export class AgentSession {
       // EA7 note: an `abort()` that lands AFTER the turn fully resolved (a late `Esc`, past the turn core's
       // last `throwIfAborted`) is a no-op — the turn already produced its reply, so it completes NORMALLY
       // (the reply is kept, the turn is counted). `abort()` interrupts an IN-FLIGHT turn only; a turn the
-      // model already finished is not discarded. The `#abortingTurn` marker is cleared by the `finally`.
+      // model already finished is not discarded. This success path **never reads `#abortingTurn`** — that is
+      // precisely what makes a late abort structurally invisible here; the `finally` still clears the marker.
       this.#turnCount += 1;
       // Append the assistant reply to the cross-turn transcript as TEXT-ONLY. The turn core keeps the
       // within-turn tool_use/tool_result pairs internal (they never leave runAgentTurn — it returns only the

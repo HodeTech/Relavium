@@ -33,6 +33,17 @@ describe('chat-projection', () => {
       expect(line).toContain('error: turn_limit');
     });
 
+    it('renders the EA7 "aborted" stop reason as a plain label (no error segment)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'aborted',
+        tokensUsed: { input: 7, output: 4 },
+      });
+      const parts = line.split(' · ');
+      expect(parts[0]).toBe('aborted'); // the aborted turn renders its stop reason, not an error
+      expect(line).not.toContain('error');
+      expect(line).toContain(formatTokens({ input: 7, output: 4 }));
+    });
+
     it('omits the duration segment when the duration is unknown (stop + tokens only)', () => {
       const line = formatTurnSummary({ stopReason: 'stop', tokensUsed: { input: 1, output: 1 } });
       const parts = line.split(' · ');

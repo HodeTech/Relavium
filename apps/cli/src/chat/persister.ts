@@ -20,9 +20,11 @@ import { deriveSessionTitle } from './session-title.js';
  * Persistence mirrors `AgentSession`'s own `#messages` exactly so a reconstructed transcript is faithful:
  * each **completed** turn persists the user message + the **text-only** assistant reply (the final
  * `result.text`, captured by accumulating `agent:token` and resetting on each `agent:tool_call` so a
- * pre-tool preamble is dropped, never the mid-turn `tool_use`/`tool_result` pairs); an **error** turn
- * persists nothing (the engine rolls its user message back, keeping the transcript to completed exchanges).
- * No secret value ever reaches a row (keys ride the keychain; `secret`-typed args are never interpolated).
+ * pre-tool preamble is dropped, never the mid-turn `tool_use`/`tool_result` pairs); an **error** turn AND a
+ * mid-turn **aborted** turn (EA7, `stopReason:'aborted'`, ADR-0057) persist **no messages** (the engine rolls
+ * the user message back, keeping the transcript to completed exchanges) — though the real session COST is
+ * still flushed for both. No secret value ever reaches a row (keys ride the keychain; `secret`-typed args
+ * are never interpolated).
  */
 
 export interface SessionPersisterDeps {
@@ -116,17 +118,24 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         totalCostMicrocents = event.cumulativeCostMicrocents;
         return;
       case 'session:turn_completed':
-        // Only a COMPLETED exchange (no error) writes MESSAGES — an error turn is rolled back by the engine,
-        // keeping the transcript to completed exchanges. But the session COST (the cumulative from
-        // cost:updated) is real even for a failed turn — the engine never decrements it — so flush the row
-        // UNCONDITIONALLY so a resumed budget governor seeds from the true spend (ADR-0028), not an
-        // understated one. The token COLUMNS, by contrast, are NOT accumulated on a failed turn — that is
-        // gated below on `event.error === undefined`. (EA2/ADR-0055 now delivers a real, non-zero `tokensUsed`
-        // on a failed turn, but those tokens belong to a rolled-back exchange and must not inflate the
-        // session-wide token totals; only the cost, from `cost:updated`, is kept.)
-        // A completed exchange always has a user message (the REPL calls beginUserTurn before sendMessage);
-        // gating the whole exchange on it prevents an orphaned assistant row with no preceding user row.
-        if (event.error === undefined && pendingUserText !== undefined) {
+        // Only a COMPLETED exchange writes MESSAGES — both an ERROR turn AND an ABORTED turn (EA7,
+        // `stopReason:'aborted'`, ADR-0057) are rolled back by the engine (`#messages.pop()`), so persisting
+        // their rows would orphan a user message with no in-memory counterpart on chat-resume. Gating on
+        // BOTH (`error === undefined && stopReason !== 'aborted'`) keeps the durable transcript to completed
+        // exchanges, matching the engine. But the session COST (the cumulative from cost:updated) is real
+        // even for a failed/aborted turn — the engine never decrements it — so flush the row UNCONDITIONALLY
+        // so a resumed budget governor seeds from the true spend (ADR-0028), not an understated one. The
+        // token COLUMNS, by contrast, are NOT accumulated on a non-persisted turn (gated with the messages).
+        // (EA2/ADR-0055 delivers a real, non-zero `tokensUsed` on a failed/aborted turn, but those tokens
+        // belong to a rolled-back exchange and must not inflate the session-wide token totals; only the cost,
+        // from `cost:updated`, is kept.) A completed exchange always has a user message (the REPL calls
+        // beginUserTurn before sendMessage); gating the whole exchange on it prevents an orphaned assistant
+        // row with no preceding user row.
+        if (
+          event.error === undefined &&
+          event.stopReason !== 'aborted' &&
+          pendingUserText !== undefined
+        ) {
           appendText('user', pendingUserText);
           if (assistantText.length > 0) appendText('assistant', assistantText);
           totalInputTokens += event.tokensUsed.input;
