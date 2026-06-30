@@ -351,6 +351,59 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
   });
 });
 
+describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto included) — ADR-0057', () => {
+  it('refuses to write inside `.git/` — FATAL tool_denied, and never creates the dir', async () => {
+    await expect(
+      sandboxed().writeFile('.git/config', '[evil]', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    // The early (pre-mkdir) check means even `createDirs` cannot bring `.git/` into being.
+    await expect(readdir(join(workspace, '.git'))).rejects.toThrow();
+  });
+
+  it('refuses to write a nested file under `.git/` (a hooks script)', async () => {
+    await mkdir(join(workspace, '.git'), { recursive: true });
+    await expect(
+      sandboxed().writeFile('.git/hooks/pre-commit', '#!/bin/sh\nrm -rf /', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses to write inside `.relavium/` — the local config/secrets dir', async () => {
+    await expect(
+      sandboxed().writeFile('.relavium/config.json', '{}', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses to write a shell startup file by basename (`.zshrc`, `.bashrc`, `.profile`)', async () => {
+    for (const rc of ['.zshrc', '.bashrc', '.profile', 'config.fish']) {
+      await expect(sandboxed().writeFile(rc, 'evil', {})).rejects.toBeInstanceOf(
+        FsScopeDeniedError,
+      );
+    }
+  });
+
+  it('matches `.git` case-insensitively (`.GIT/`) — the over-deny is the safe direction', async () => {
+    await expect(
+      sandboxed().writeFile('.GIT/config', 'x', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses a symlink whose REALPATH resolves INTO `.git/` (the post-jail re-check)', async () => {
+    await mkdir(join(workspace, '.git'), { recursive: true });
+    // `link` is a workspace-relative symlink pointing at the (in-workspace) `.git` dir; writing `link/config`
+    // passes the lexical pre-check (no `.git` segment) but the realpath'd finalTarget lands inside `.git/`.
+    await symlink(join(workspace, '.git'), join(workspace, 'link'));
+    await expect(sandboxed().writeFile('link/config', 'x', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+  });
+
+  it('ALLOWS a `.gitignore` FILE — only the `.git` DIRECTORY segment is protected', async () => {
+    const result = await sandboxed().writeFile('.gitignore', 'node_modules\n', {});
+    expect(result.bytesWritten).toBeGreaterThan(0);
+    expect((await sandboxed().readFile('.gitignore', {})).content).toBe('node_modules\n');
+  });
+});
+
 describe('createNodeFsCapability — read-only profile (2.5.A chat)', () => {
   it('fail-closes write_file as ToolUnavailableError (→ tool_unavailable), never touching disk', async () => {
     const fs = sandboxed({ readOnly: true });

@@ -35,6 +35,15 @@ export class HostDeniedError extends ToolDispatchError {
   }
 }
 
+/** The `egress` arm's transient failure — a network error or an over-size response (→ retryable `tool_failed`). */
+export class EgressCapabilityError extends HostCapabilityError {}
+
+/** The `egress` arm's deterministic denial — an SSRF range-block or a non-HTTPS / credentialed url (→ fatal `tool_denied`). */
+export class EgressDeniedError extends HostDeniedError {}
+
+/** The `os` arm's transient failure — the platform clipboard/notify command was unavailable or errored. */
+export class OsCapabilityError extends HostCapabilityError {}
+
 /**
  * Cooperative cancellation — throw a reason-only {@link HostCapabilityError} (carrying the arm's own message)
  * before a potentially slow host operation if the run already aborted. The registry's cancel-precedence then

@@ -302,6 +302,49 @@ export async function readJailedFile(real: string, sizeLimit: number): Promise<J
  * write_file
  * ------------------------------------------------------------------------------------------------ */
 
+/**
+ * Protected paths NO mode (auto included) may write — even where the fs jail would allow them
+ * ([ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)). `.git/` and
+ * `.relavium/` are matched by a path SEGMENT (so a `.gitignore` / `.relaviumrc` FILE is not protected — only
+ * the directories); shell startup files are matched by BASENAME. Comparison is lowercased so a
+ * case-insensitive FS (macOS/Windows) or a `.GIT` variant cannot slip a protected target through (an
+ * over-deny on a genuinely-distinct `.GIT` dir on a case-sensitive FS is the safe direction).
+ */
+const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium']);
+const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
+  '.bashrc',
+  '.bash_profile',
+  '.bash_login',
+  '.bash_logout',
+  '.profile',
+  '.zshrc',
+  '.zprofile',
+  '.zshenv',
+  '.zlogin',
+  '.zlogout',
+  '.cshrc',
+  '.tcshrc',
+  '.kshrc',
+  '.login',
+  'config.fish', // fish — ~/.config/fish/config.fish
+  'profile.ps1',
+  'microsoft.powershell_profile.ps1', // PowerShell profiles
+]);
+
+/** Deny a write to a protected path (a `.git`/`.relavium` directory, or a shell startup file). FATAL. */
+function assertNotProtectedPath(absoluteTarget: string): void {
+  for (const segment of absoluteTarget.split(sep)) {
+    if (segment.length > 0 && PROTECTED_DIR_SEGMENTS.has(segment.toLowerCase())) {
+      throw new FsScopeDeniedError(
+        'write_file: refusing to write inside a protected directory (.git / .relavium)',
+      );
+    }
+  }
+  if (PROTECTED_RC_BASENAMES.has(basename(absoluteTarget).toLowerCase())) {
+    throw new FsScopeDeniedError('write_file: refusing to write a shell startup file');
+  }
+}
+
 async function writeOne(
   config: NodeFsCapabilityConfig,
   path: string,
@@ -315,6 +358,10 @@ async function writeOne(
     throw new ToolUnavailableError('write_file', 'fs (read-only in this session)');
   }
   throwIfAborted(signal);
+  // Protected paths are denied in EVERY mode (auto included). Checked on the REQUESTED path before the jail
+  // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the realpath'd
+  // target below so a symlink cannot resolve INTO a protected directory.
+  assertNotProtectedPath(resolve(config.workspaceDir, path));
   const inScope = await buildScopeChecker(config);
   const { realDir, finalTarget } = await jailWriteTarget(
     config,
@@ -323,6 +370,7 @@ async function writeOne(
     opts.createDirs === true,
   );
   await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
+  assertNotProtectedPath(finalTarget); // re-check the REALPATH'd target — a symlink must not reach a protected path
   throwIfAborted(signal);
   const bytes = Buffer.from(data, 'utf8');
   if (opts.append === true) {

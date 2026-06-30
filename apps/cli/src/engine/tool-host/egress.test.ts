@@ -1,0 +1,152 @@
+import type { EgressDeps, HopRequest } from '@relavium/db';
+import { describe, expect, it } from 'vitest';
+
+import { createNodeEgressCapability } from './egress.js';
+import { EgressCapabilityError, EgressDeniedError } from './errors.js';
+
+async function* bodyOf(text: string): AsyncGenerator<Uint8Array> {
+  await Promise.resolve();
+  if (text.length > 0) yield new TextEncoder().encode(text);
+}
+
+interface FakeResponse {
+  readonly status: number;
+  readonly headers?: Record<string, string>;
+  readonly body?: string;
+}
+
+/** A deterministic egress-deps fake: a host→IPs resolver + a single scripted response. */
+function fakeDeps(config: {
+  readonly resolve?: Record<string, readonly string[]>;
+  readonly response: FakeResponse;
+}): { deps: EgressDeps; calls: HopRequest[] } {
+  const calls: HopRequest[] = [];
+  const deps: EgressDeps = {
+    resolveHost: (host) => Promise.resolve(config.resolve?.[host] ?? [host]),
+    openConnection: (request) => {
+      calls.push(request);
+      return Promise.resolve({
+        status: config.response.status,
+        headers: config.response.headers,
+        location: config.response.headers?.['location'],
+        body: bodyOf(config.response.body ?? ''),
+        dispose: () => {},
+      });
+    },
+  };
+  return { deps, calls };
+}
+
+const PUBLIC = { 'api.example.com': ['203.0.113.10'] } as const; // a public TEST-NET-3 IP
+
+describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the shared SSRF mechanism', () => {
+  it('performs a GET, pinned to the validated IP, returning status + headers + decoded text', async () => {
+    const { deps, calls } = fakeDeps({
+      resolve: PUBLIC,
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: '{"ok":true}',
+      },
+    });
+    const egress = createNodeEgressCapability({ deps });
+    const res = await egress.fetch({ method: 'GET', url: 'https://api.example.com/x' });
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('{"ok":true}');
+    expect(res.headers['content-type']).toBe('application/json');
+    expect(calls[0]?.pinnedIp).toBe('203.0.113.10'); // connect-by-validated-IP
+    expect(calls[0]?.method).toBe('GET');
+    expect(calls[0]?.hostname).toBe('api.example.com'); // SNI keeps the hostname
+  });
+
+  it('DENIES a private/loopback target (SSRF range-block) as a fatal EgressDeniedError', async () => {
+    const { deps } = fakeDeps({
+      resolve: { 'evil.example.com': ['127.0.0.1'] },
+      response: { status: 200 },
+    });
+    const egress = createNodeEgressCapability({ deps });
+    const err = await egress
+      .fetch({ method: 'GET', url: 'https://evil.example.com/x' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EgressDeniedError);
+    expect((err as EgressDeniedError).runErrorCode).toBe('tool_denied'); // fatal, never retried
+    expect((err as EgressDeniedError).retryable).toBe(false);
+  });
+
+  it('DENIES a non-HTTPS url as a fatal EgressDeniedError (before any DNS)', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({ deps });
+    await expect(
+      egress.fetch({ method: 'GET', url: 'http://api.example.com/x' }),
+    ).rejects.toBeInstanceOf(EgressDeniedError);
+    expect(calls).toHaveLength(0); // rejected at the url policy gate, never opened a connection
+  });
+
+  it('does NOT follow redirects — a 3xx is RETURNED with its Location (avoids the allowedDomains bypass)', async () => {
+    const { deps, calls } = fakeDeps({
+      resolve: PUBLIC,
+      response: { status: 302, headers: { location: 'https://other.example.com/y' } },
+    });
+    const egress = createNodeEgressCapability({ deps });
+    const res = await egress.fetch({ method: 'GET', url: 'https://api.example.com/x' });
+    expect(res.status).toBe(302);
+    expect(res.headers['location']).toBe('https://other.example.com/y'); // surfaced for the model to re-issue
+    expect(calls).toHaveLength(1); // exactly ONE hop — the redirect was never chased
+  });
+
+  it('returns a non-200, non-redirect status (e.g. 404) rather than throwing — the model surfaces it', async () => {
+    const { deps } = fakeDeps({ resolve: PUBLIC, response: { status: 404, body: 'not found' } });
+    const egress = createNodeEgressCapability({ deps });
+    const res = await egress.fetch({ method: 'GET', url: 'https://api.example.com/x' });
+    expect(res.status).toBe(404);
+    expect(res.body).toBe('not found');
+  });
+
+  it('resolves an opaque credentialRef host-side and attaches it as a bearer header (never the engine)', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({
+      deps,
+      resolveCredential: (ref) =>
+        Promise.resolve(ref === 'kc:search' ? ['SECRET', 'KEY'].join('-') : undefined),
+    });
+    await egress.fetch({
+      method: 'GET',
+      url: 'https://api.example.com/x',
+      credentialRef: 'kc:search',
+    });
+    expect(calls[0]?.headers?.['authorization']).toBe('Bearer SECRET-KEY');
+  });
+
+  it('proceeds WITHOUT a credential when the ref does not resolve (a provider 401 surfaces, never a crash)', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({
+      deps,
+      resolveCredential: () => Promise.resolve(undefined),
+    });
+    await egress.fetch({
+      method: 'GET',
+      url: 'https://api.example.com/x',
+      credentialRef: 'kc:missing',
+    });
+    expect(calls[0]?.headers?.['authorization']).toBeUndefined();
+  });
+
+  it('forwards a POST method + body to the hop', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200, body: 'ok' } });
+    const egress = createNodeEgressCapability({ deps });
+    await egress.fetch({ method: 'POST', url: 'https://api.example.com/x', body: '{"q":1}' });
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toBe('{"q":1}');
+  });
+
+  it('fails an over-size response as a transient EgressCapabilityError (retryable)', async () => {
+    const { deps } = fakeDeps({
+      resolve: PUBLIC,
+      response: { status: 200, body: 'x'.repeat(500) },
+    });
+    const egress = createNodeEgressCapability({ deps, maxResponseBytes: 100 });
+    await expect(
+      egress.fetch({ method: 'GET', url: 'https://api.example.com/x' }),
+    ).rejects.toBeInstanceOf(EgressCapabilityError);
+  });
+});
