@@ -270,9 +270,20 @@ approval policy** (authoritative — `enforcePolicy` is mode-agnostic and inert 
 
 - Add a mutable `#mode` to `AgentSession`, snapshotted per turn; the four modes
   (ask / plan / accept-edits / auto) map to an advertised-tool subset + an approval policy.
-  `Shift+Tab` cycles `ask → plan → accept-edits`; `auto` is explicit-only (`/mode auto`); **no
-  one-key bypass valve** ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
-- **Protected paths:** `.git/`, `.relavium/`, shell rc files are never auto-written in any mode.
+  `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** (auto-approve is a mainstream expectation, so
+  it is reachable in the cycle, not hidden behind a typed command); `/mode <name>` jumps directly. The
+  **default is read-only `ask`**, the active mode is **always shown in the footer**, and there is **no
+  hidden "bypass all permissions" valve**: no mode (auto included) writes a protected path or escapes the
+  fs jail ([ADR-0029](../../decisions/0029-tool-policy-hardening.md) secure-by-default).
+- **Protected paths:** `.git/`, `.relavium/`, shell rc files are never auto-written in any mode — in
+  `auto` a protected-path write falls back to an explicit prompt rather than auto-approving.
+- **Host arms (closes the 2.5.A deferral):** the write-capable `fs` tier, the SSRF-hardened `egress` arm,
+  and the `os` arm are wired in the CLI host this workstream — reusing the existing connect-by-validated-IP
+  media-egress mechanism ([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md))
+  over the one shared `isPrivateOrLocalHost` range-block (extracted so tool + media egress share one
+  implementation, never a second SSRF parser). `egress` is a governed class and always rides the
+  fail-closed `confirmAction` floor. A **dedicated adversarial security review** covers the fs-write jail +
+  protected paths, the egress mechanism, and the `os` arm.
 - **Per-tool approval (new vertical — not the workflow gate), fail-closed:** a registry pre-dispatch hook
   (**EA3** — `confirmAction?`, host-injected like `ToolHost` so the engine boundary (ADR-0037) holds; runs
   between the `enforcePolicy` check and the side-effect in `packages/core/src/tools/registry.ts`). **Note:**
