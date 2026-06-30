@@ -5,6 +5,7 @@ import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
+  ToolDeniedByUserError,
   ToolExecutionError,
   ToolPolicyError,
   ToolUnavailableError,
@@ -16,6 +17,8 @@ import type {
   EgressRequest,
   EgressResponse,
   FsCapability,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
   ToolCallPart,
   ToolDispatchContext,
   ToolHost,
@@ -336,6 +339,206 @@ describe('ToolRegistry — git_commit human-gate', () => {
       ctx({ gateApproved: true }),
     );
     expect(out.events.result.success).toBe(true);
+  });
+});
+
+/* --- per-tool approval (ADR-0057 EA3) --- */
+
+describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
+  // The `vi.fn<Fn>` function-type generic types `.mock.calls[0][0]` as ToolApprovalRequest (no unused impl
+  // param) and contextually types the decision literals (`'approve'`/`'reject'`).
+  type ConfirmFn = (req: ToolApprovalRequest) => Promise<ToolApprovalDecision>;
+  const approving = () => vi.fn<ConfirmFn>(() => Promise.resolve({ outcome: 'approve' }));
+  const rejecting = (reason?: string) =>
+    vi.fn<ConfirmFn>(() =>
+      Promise.resolve({ outcome: 'reject', ...(reason === undefined ? {} : { reason }) }),
+    );
+
+  /** A host whose `writeFile` is a spy, so a denied write can be proven to never reach the side effect. */
+  function hostWithWriteSpy(): { host: ToolHost; writeFile: ReturnType<typeof vi.fn> } {
+    const writeFile = vi.fn((path: string, data: string) =>
+      Promise.resolve({ path, bytesWritten: data.length }),
+    );
+    return {
+      writeFile,
+      host: stubHost({
+        fs: {
+          readFile: () =>
+            Promise.resolve({
+              content: 'x',
+              mimeType: 'text/plain',
+              sizeBytes: 1,
+              lastModified: 't',
+            }),
+          writeFile,
+          listDirectory: () => Promise.resolve({ entries: [] }),
+        },
+      }),
+    };
+  }
+
+  // --- the regime gate: present ⇒ chat (governed), absent ⇒ workflow author-trust (unchanged) ---
+
+  it('does NOT prompt on the workflow path (no ctx.approval) — a governed write dispatches under the floor', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx(), // no approval regime
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('prompts a governed write under the approval regime and dispatches on approve, with an fs_write preview', async () => {
+    const confirm = approving();
+    const { host, writeFile } = hostWithWriteSpy();
+    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(writeFile).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: './out.txt' },
+    });
+  });
+
+  it('denies a rejected write as a fatal tool_denied (user_rejected) and never reaches the side effect', async () => {
+    const confirm = rejecting();
+    const { host, writeFile } = hostWithWriteSpy();
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolDeniedByUserError);
+    expect(err.code).toBe('tool_denied');
+    expect(err.runErrorCode).toBe('tool_denied');
+    expect(err.retryable).toBe(false);
+    expect(err.reason).toBe('user_rejected');
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('echoes a host-supplied, secret-free reject reason in the (secret-free) message', async () => {
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      registry().dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm: rejecting('writes are not allowed in ask mode') } }),
+      ),
+    );
+    expect(err.message).toContain('writes are not allowed in ask mode');
+  });
+
+  it('is FAIL-CLOSED: an active regime with no confirm hook denies a governed write (no_approval_hook)', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: {} }), // regime active, but the hook was never wired (a bug)
+      ),
+    );
+    expect(err.reason).toBe('no_approval_hook');
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  // --- only governed classes are gated (read-only / pre-approved tools bypass the prompt) ---
+
+  it('does NOT prompt for a read-only fs tool (read_file) even under the regime', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('read_file', { path: 'a.txt' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('does NOT prompt for the pre-approved git_status (a process tool with no model command target)', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(call('git_status', {}), ctx({ approval: { confirm } }));
+    expect(out.events.result.success).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  // --- the governed process / egress classes, with their previews ---
+
+  it('prompts a model-controlled run_command (process) with the resolved command preview', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('run_command', { command: 'ls', args: ['-la'] }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommands: ['ls -la'] } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({
+      toolId: 'run_command',
+      action: 'process',
+      preview: { command: 'ls -la' },
+    });
+  });
+
+  it('prompts http_request (egress) with the host-only preview (never the full URL)', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('http_request', { url: 'https://api.example.com/secret?token=abc' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedDomains: ['api.example.com'] } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({
+      toolId: 'http_request',
+      action: 'egress',
+      preview: { host: 'api.example.com' },
+    });
+    // the query string (and its token) never enters the preview — assert over all recorded call args
+    expect(JSON.stringify(confirm.mock.calls)).not.toContain('token');
+  });
+
+  it('prompts web_search (egress) with an empty preview — it exposes no pre-dispatch URL target', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('web_search', { query: 'hi' }),
+      ctx({
+        approval: { confirm },
+        config: { parameters: { endpoint: 'https://search.example.com' } },
+      }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({ toolId: 'web_search', action: 'egress', preview: {} });
+  });
+
+  // --- ordering + cancellation ---
+
+  it('runs the enforcePolicy floor BEFORE approval — a denied run_command never reaches the prompt', async () => {
+    const confirm = approving();
+    const err = await rejectsWith<ToolPolicyError>(
+      registry().dispatch(
+        call('run_command', { command: 'rm', args: ['-rf', '/'] }),
+        ctx({ approval: { confirm }, toolPolicy: { allowedCommands: [] } }), // empty ⇒ deny-all
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolPolicyError);
+    expect(err.reason).toBe('command_not_allowed');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('classifies an abort raised while prompting as cancelled (cancel precedence), not a denial', async () => {
+    const confirm = vi.fn(() =>
+      Promise.reject(Object.assign(new Error('prompt aborted'), { name: 'AbortError' })),
+    );
+    const err = await rejectsWith<ToolCancelledError>(
+      registry().dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
   });
 });
 

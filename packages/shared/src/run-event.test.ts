@@ -44,6 +44,14 @@ const valid: Record<string, Record<string, unknown>> = {
     success: true,
     outputSummary: 'ok',
   },
+  'agent:approval_requested': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: './out.txt' },
+  },
   'agent:file_patch_proposed': {
     type: 'agent:file_patch_proposed',
     ...env,
@@ -211,6 +219,29 @@ const reject: Record<string, Record<string, unknown>> = {
     toolId: 't',
     outputSummary: 'ok',
   },
+  'agent:approval_requested (missing action)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    preview: { path: './out.txt' },
+  },
+  'agent:approval_requested (bad action)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_read', // not a governed action class (only fs_write | process | egress)
+    preview: { path: './out.txt' },
+  },
+  'agent:approval_requested (empty toolId)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: '',
+    action: 'fs_write',
+    preview: { path: './out.txt' },
+  },
   'cost:updated (float costMicrocents)': { ...valid['cost:updated'], costMicrocents: 12.5 },
   'node:completed (bad tokensUsed)': {
     type: 'node:completed',
@@ -345,7 +376,7 @@ describe('RunEvent union — every variant', () => {
     ).toBe(true);
   });
 
-  it('covers exactly the 21 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 22 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -354,6 +385,7 @@ describe('RunEvent union — every variant', () => {
       'agent:token',
       'agent:tool_call',
       'agent:tool_result',
+      'agent:approval_requested',
       'agent:file_patch_proposed',
       'cost:updated',
       'node:completed',
@@ -377,7 +409,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 21
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 22
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -624,6 +656,7 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     for (const name of [
       'agent:tool_call',
       'agent:tool_result',
+      'agent:approval_requested',
       'node:completed',
       'cost:updated',
       'agent:file_patch_proposed',
@@ -631,6 +664,33 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 2 }).success).toBe(true);
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 0 }).success).toBe(false);
     }
+  });
+
+  it('carries agent:approval_requested on either envelope (dual) with a secret-free preview (ADR-0057 EA5)', () => {
+    const base = {
+      type: 'agent:approval_requested',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 9,
+      nodeId: 'n',
+      toolId: 'run_command',
+      action: 'process',
+      preview: { command: 'npm test' },
+    };
+    // dual: accepted on a run (runId) AND on a session (sessionId), rejected with neither / both.
+    expect(RunEventSchema.safeParse({ ...base, runId: 'run-1' }).success).toBe(true);
+    expect(RunEventSchema.safeParse({ ...base, sessionId: 'sess-1' }).success).toBe(true);
+    expect(RunEventSchema.safeParse(base).success).toBe(false); // neither correlation key
+    expect(RunEventSchema.safeParse({ ...base, runId: 'r', sessionId: 's' }).success).toBe(false); // both
+    // egress preview carries the host only (a secret-free, query-free target)
+    expect(
+      RunEventSchema.safeParse({
+        ...base,
+        sessionId: 'sess-1',
+        toolId: 'http_request',
+        action: 'egress',
+        preview: { host: 'api.example.com' },
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects an agent:file_patch_proposed with an empty patches array', () => {

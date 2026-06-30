@@ -247,8 +247,13 @@ export {
   ToolUnavailableError,
   ToolExecutionError,
   ToolCancelledError,
+  ToolDeniedByUserError,
 } from './tools/errors.js';
-export type { ToolErrorCode, ToolPolicyDenyReason } from './tools/errors.js';
+export type {
+  ToolErrorCode,
+  ToolPolicyDenyReason,
+  ToolApprovalDenyReason,
+} from './tools/errors.js';
 export type { Untrusted } from './tools/untrusted.js';
 export type {
   ToolRegistry,
@@ -260,6 +265,11 @@ export type {
   EgressKind,
   ToolPolicyClass,
   PolicyTarget,
+  ConfirmActionHook,
+  ToolApprovalContext,
+  ToolApprovalRequest,
+  ToolApprovalDecision,
+  ToolActionPreview,
   ToolHost,
   FsCapability,
   ProcessCapability,

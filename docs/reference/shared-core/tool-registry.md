@@ -72,6 +72,14 @@ interface ToolDef<Args = unknown, Result = unknown> {
 interface ToolPolicyClass {
   /** Needs the FS scope tier — `read_file`, `write_file`, `list_directory`. */
   readonly fsScoped: boolean;
+  /**
+   * The fs operation is a WRITE (`write_file`), not a read. `fsScoped` alone is `true` for reads AND
+   * writes alike, so it cannot tell `write_file` from `read_file`; this additive discriminator is the one
+   * the per-tool approval needs to gate writes ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3)
+   * and the `fs-write` `ActionClass` [ADR-0041](../../decisions/0041-external-action-governance-seam.md) proposes —
+   * landed once, credited to both. Absent/false ⇒ a read-only fs tool (never governed by approval).
+   */
+  readonly fsWrite?: boolean;
   /** Spawns an OS process under the `allowedCommands` allowlist — `run_command`, `git_*`. */
   readonly spawnsProcess: boolean;
   /** Outbound egress — DISCRIMINATED by kind, because the three paths have different policies. */
@@ -158,6 +166,7 @@ host is touched once, in the middle.
 2. **Assemble the effective argument set.** Start from the model-supplied args (for an agent tool-call) and/or `ctx.config.input_mapping` (for a `tool` node, where there are no model args), apply `input_mapping`, then merge `configOnlyParams` **last (config wins)**.
 3. **Validate the COMPLETE effective set** via `tool.parseArgs` **and** the secret-taint check — `input_mapping`/config-derived values are validated identically to model args; a secret-tainted value reaching a non-credential arg is rejected (0029(c)). A miss → `ToolArgsInvalidError`.
 4. **Enforce the guardrail policy on the EFFECTIVE args** (the resolved command / URL is now the real value): exact `allowedCommands` (+ opt-in `allowedCommandGlobs`, deny-all-empty); per egress kind (table below); `git_commit` refused unless `ctx.gateApproved`. A denial → `ToolPolicyError` → **before any host call**.
+4b. **Per-tool approval — the interactive consent gate ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3).** Runs only when `ctx.approval` is present (the **interactive-approval regime** — the chat path; absent ⇒ the workflow author-trust path, unchanged) and the dispatch is a **governed class**: `fsWrite`, an `egress` of any kind, or a `spawnsProcess` with a model-controlled `command` target (so the pre-approved `git_status`, which exposes no command, is **not** gated — matching step 4). The engine consults the host-injected `ctx.approval.confirm` hook with a **secret-free preview** (resolved path / command / host — never a full URL/query, never a secret) and, before prompting, the host emits `agent:approval_requested`. **Fail-closed:** under an active regime a governed dispatch *requires* a decision — an **absent `confirm` hook ⇒ denied** (`ToolDeniedByUserError`, reason `no_approval_hook`), never silently allowed, so a wiring bug cannot let `ask` mode write. A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`) carrying the existing **`tool_denied`** code (fatal, never retried); an abort while prompting routes to the **cancellation** path (cancel precedence). The host's `confirm` owns the mode policy (ask / plan / accept-edits / auto), the once/always cache, and the protected-paths rule — the engine stays mode-agnostic. This composes *after* step 4 and, when an `ActionGuard` ([action-guard-seam.md](action-guard-seam.md)) is also injected, *alongside* it (the org governor's `decide`/`commit` and the user's `confirm` each only further restrict).
 5. **Call the host capability** (the single side effect), threading `ctx.signal`. Absent capability → `ToolUnavailableError`; an `AbortSignal`-origin failure → the **cancellation** path (`cancelled`, never `tool_failed` — preserves ADR-0036 cancel precedence); any other host throw → `ToolExecutionError`. A host capability MAY itself throw a typed `ToolDispatchError` subclass for a **deterministic host-side denial** (e.g. the CLI `fs` arm throwing a `tool_denied` when a path escapes the FS scope tier, or `ToolUnavailableError` for a read-only fail-close) — the registry passes any `ToolDispatchError` through **verbatim**, exactly as it does an engine-side `ToolPolicyError`, so such a denial is fatal (never burns the node-retry budget); only a *raw* host throw becomes the retryable `ToolExecutionError`.
 6. **Apply `output_mapping` to the FULL result** → workflow state gets the real value, never the bounded preview.
 7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
@@ -173,6 +182,11 @@ interface ToolDispatchContext {
   readonly toolPolicy: ToolPolicy;         // resolved allowedCommands/-Globs/-Domains (@relavium/shared)
   readonly fsScope: FsScopeTier;           // 'sandboxed' | 'project' | 'full' (the @relavium/shared source of truth)
   readonly gateApproved: boolean;          // a human-gate decision is present for this dispatch (1.Q)
+  // Per-tool approval regime (ADR-0057 EA3). PRESENT ⇒ the interactive-approval (chat) path: a governed-class
+  // dispatch requires `approval.confirm`'s decision, and an absent confirm is fail-closed → denied. ABSENT ⇒
+  // the workflow author-trust path (unchanged). `confirm` is the host-injected ConfirmActionHook (the engine
+  // defines the interface + the invocation point, the host supplies the implementation — ADR-0037-clean).
+  readonly approval?: { readonly confirm?: ConfirmActionHook };
   // The effective-arg keys whose resolved value is secret-tainted (ADR-0029(c)); the registry rejects
   // any present one from tool args (re-applying the parse-time taint gate on the effective set). 1.O/1.V
   // produces this; absent ⇒ no taint check (no producer yet).

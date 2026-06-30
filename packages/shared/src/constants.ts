@@ -16,9 +16,9 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * The canonical, **colon-namespaced** run-event type names (sse-event-schema.md).
  * Never the legacy dotted names (`node.started`), never `node:error`/`run:error`,
  * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
- * `RunEvent` union in the spec: `agent:file_patch_proposed` sits after `agent:tool_result`, and
- * the four governance events (`run:paused`, `run:timeout`, `budget:warning`, `budget:paused`;
- * ADR-0028) close the list.
+ * `RunEvent` union in the spec: `agent:approval_requested` + `agent:file_patch_proposed` sit after
+ * `agent:tool_result`, and the four governance events (`run:paused`, `run:timeout`, `budget:warning`,
+ * `budget:paused`; ADR-0028) close the list.
  */
 export const RUN_EVENT_TYPES = [
   'run:started',
@@ -26,6 +26,10 @@ export const RUN_EVENT_TYPES = [
   'agent:token',
   'agent:tool_call',
   'agent:tool_result',
+  // A side-effecting tool dispatch is awaiting an interactive per-tool approval decision (ADR-0057 EA3/EA5).
+  // A dual-envelope event (runId on a run, sessionId on a session); in Phase 2.5 it is session-only (the chat
+  // approval regime). The host's ConfirmActionHook emits it before prompting; never carries a secret.
+  'agent:approval_requested',
   'agent:file_patch_proposed',
   'cost:updated',
   'node:completed',
@@ -115,6 +119,18 @@ export const RETRYABLE_ERROR_CODES = [
   'sandbox_error',
 ] as const satisfies readonly ErrorCode[];
 export type RetryableErrorCode = (typeof RETRYABLE_ERROR_CODES)[number];
+
+/**
+ * The side-effecting **tool ACTION classes** a per-tool approval governs (ADR-0057 EA3). Derived from a
+ * tool's `ToolPolicyClass` (tool-registry.md): `fs_write` (a `write_file`), `process` (a model-controlled
+ * `run_command` — **not** the pre-approved `git_status`, which exposes no model command), and `egress`
+ * (`http_request` / `web_search` / `mcp_call`). Read-only fs reads, `git_status`, and clipboard are **not**
+ * governed (mirrors [ADR-0041](../decisions/0041-external-action-governance-seam.md) §ActionClass). Carried
+ * by `agent:approval_requested` and the engine's `ConfirmActionHook`; it lives here so `@relavium/shared`
+ * owns the vocabulary and the engine derives its `ToolActionClass` type from this one list (no second home).
+ */
+export const TOOL_ACTION_CLASSES = ['fs_write', 'process', 'egress'] as const;
+export type ToolActionClass = (typeof TOOL_ACTION_CLASSES)[number];
 
 /**
  * The five-value LLM **stop reason** vocabulary, used today by `session:turn_completed`.

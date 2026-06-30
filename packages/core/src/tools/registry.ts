@@ -7,12 +7,13 @@
  * [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md).
  */
 
-import { extractHttpsHost } from '@relavium/shared';
+import { extractHttpsHost, type ToolActionClass } from '@relavium/shared';
 
 import { boundForModel, redactInlineMedia } from './bounding.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
+  ToolDeniedByUserError,
   ToolDispatchError,
   ToolExecutionError,
   ToolPolicyError,
@@ -22,6 +23,8 @@ import { markUntrusted } from './untrusted.js';
 import {
   DEFAULT_TOOL_RESULT_LIMITS,
   type CreateToolRegistryOptions,
+  type PolicyTarget,
+  type ToolActionPreview,
   type ToolCallPart,
   type ToolDef,
   type ToolDispatchContext,
@@ -96,16 +99,23 @@ async function dispatch(
     throw toArgsInvalid(def.id, cause);
   }
 
-  // 4. Enforce the guardrail policy on the EFFECTIVE args (the resolved command/URL is now real).
-  enforcePolicy(def, args, ctx);
+  // 4. Enforce the guardrail policy on the EFFECTIVE args (the resolved command/URL is now real). The
+  //    policy target is resolved once here and reused by the per-tool approval step (4b) below.
+  const target = def.policyTarget?.(args) ?? {};
+  enforcePolicy(def, target, ctx);
 
-  // 5-7. The single side effect + output_mapping (FULL result) + model-facing bounding — all under one
-  // classification ladder so a spill-time abort surfaces as `cancelled` (ADR-0036 precedence) and any
-  // other tail failure is a classified tool error, never a raw escape.
+  // 4b-7. The per-tool approval gate + the single side effect + output_mapping (FULL result) + model-facing
+  // bounding — all under one classification ladder so a spill-time (or prompt-time) abort surfaces as
+  // `cancelled` (ADR-0036 precedence) and any other tail failure is a classified tool error, never a raw
+  // escape. A `ToolDeniedByUserError` from 4b is a `ToolDispatchError` and passes through the ladder verbatim.
   let outputMapped: unknown;
   let bounded: Awaited<ReturnType<typeof boundForModel>>;
   try {
     throwIfAborted(ctx, def.id);
+    // 4b. Per-tool approval (ADR-0057 EA3): under the interactive-approval regime (chat), a governed-class
+    //     dispatch REQUIRES a confirmAction decision before the side effect; the workflow author-trust path
+    //     (no `ctx.approval`) skips it. A denial is a fatal `tool_denied`; an abort while prompting is cancelled.
+    await confirmDispatch(def, target, ctx);
     const output = await def.dispatch(args, host, ctx);
     // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
     throwIfAborted(ctx, def.id);
@@ -269,7 +279,7 @@ function zodIssuePaths(cause: unknown): readonly string[] {
  * Step 4 — guardrail policy on the effective args.
  * ------------------------------------------------------------------------------------------------ */
 
-function enforcePolicy(def: ToolDef, args: unknown, ctx: ToolDispatchContext): void {
+function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchContext): void {
   if (def.policy.requiresGateApproval && !ctx.gateApproved) {
     throw new ToolPolicyError(
       def.id,
@@ -277,8 +287,6 @@ function enforcePolicy(def: ToolDef, args: unknown, ctx: ToolDispatchContext): v
       `tool \`${def.id}\` requires a human-gate approval in an automated workflow`,
     );
   }
-
-  const target = def.policyTarget?.(args) ?? {};
 
   if (def.policy.spawnsProcess && target.command !== undefined) {
     if (!commandAllowed(target.command, ctx.toolPolicy)) {
@@ -308,6 +316,87 @@ function commandAllowed(command: string, policy: import('@relavium/shared').Tool
     }
   }
   return false; // empty/absent ⇒ deny-all (symmetry with allowedDomains)
+}
+
+/* ------------------------------------------------------------------------------------------------ *
+ * Step 4b — per-tool approval (ADR-0057 EA3). Fail-closed under an active interactive-approval regime;
+ * a no-op on the workflow author-trust path (no `ctx.approval`) so the workflow path is unchanged.
+ * ------------------------------------------------------------------------------------------------ */
+
+async function confirmDispatch(
+  def: ToolDef,
+  target: PolicyTarget,
+  ctx: ToolDispatchContext,
+): Promise<void> {
+  const approval = ctx.approval;
+  if (approval === undefined) {
+    return; // the workflow author-trust path — governed tools proceed under the enforcePolicy floor above
+  }
+  const action = governedAction(def, target);
+  if (action === undefined) {
+    return; // a read-only / pre-approved tool (fs read, git_status, clipboard, invoke_agent) is never gated
+  }
+  // Fail-closed: an active approval regime with no confirm hook DENIES a governed dispatch — so a wiring bug
+  // (the chat host wired a write arm but not the hook) can never let `ask` mode write. The floor is the hook,
+  // not the advertise-filter.
+  if (approval.confirm === undefined) {
+    throw new ToolDeniedByUserError(
+      def.id,
+      'no_approval_hook',
+      `tool \`${def.id}\` requires interactive approval, but no approval hook is wired`,
+    );
+  }
+  throwIfAborted(ctx, def.id); // do not prompt for a turn that is already aborting
+  const decision = await approval.confirm(
+    { toolId: def.id, action, preview: previewFor(action, target) },
+    ctx.signal,
+  );
+  if (decision.outcome !== 'approve') {
+    // `decision.reason` is a host-supplied, secret-free label (e.g. "writes are not allowed in ask mode").
+    const why =
+      decision.reason !== undefined && decision.reason.length > 0
+        ? `: ${decision.reason}`
+        : ' by the user';
+    throw new ToolDeniedByUserError(def.id, 'user_rejected', `tool \`${def.id}\` denied${why}`);
+  }
+}
+
+/**
+ * The side-effecting action class a per-tool approval governs, or `undefined` for an un-gated tool. A
+ * model-controlled `run_command` (a resolved `command` target) is `process`; the pre-approved `git_status`
+ * (no command target) is NOT governed — matching `enforcePolicy`, which runs the command allowlist only when
+ * a command target is present. An fs READ, clipboard, and `invoke_agent` are not governed
+ * ([ADR-0041](../../../../docs/decisions/0041-external-action-governance-seam.md) §ActionClass); every egress
+ * IS, even a read-only `web_search` (an exfiltration sink).
+ */
+function governedAction(def: ToolDef, target: PolicyTarget): ToolActionClass | undefined {
+  if (def.policy.fsWrite === true) {
+    return 'fs_write';
+  }
+  if (def.policy.egress !== undefined) {
+    return 'egress';
+  }
+  if (def.policy.spawnsProcess && target.command !== undefined) {
+    return 'process';
+  }
+  return undefined;
+}
+
+/** A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL). */
+function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
+  switch (action) {
+    case 'fs_write':
+      return target.path === undefined ? {} : { path: target.path };
+    case 'process':
+      return target.command === undefined ? {} : { command: target.command };
+    case 'egress': {
+      if (target.url === undefined) {
+        return {}; // web_search / mcp_call expose no pre-dispatch URL target — the action class is enough
+      }
+      const parsed = extractHttpsHost(target.url);
+      return parsed === null ? {} : { host: parsed.host };
+    }
+  }
 }
 
 function enforceHttpEgress(toolId: ToolId, url: string, ctx: ToolDispatchContext): void {

@@ -9,6 +9,7 @@ import {
   LLM_PROVIDERS,
   MEDIA_BILLED_MODALITIES,
   STOP_REASONS,
+  TOOL_ACTION_CLASSES,
 } from './constants.js';
 import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 
@@ -175,6 +176,34 @@ export const AgentToolResultEventSchema = z.object({
   outputSummary: z.string(),
   attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated
 });
+
+/** The closed side-effecting action class a per-tool approval governs (ADR-0057 EA3). The `ToolActionClass`
+ *  TYPE is owned by constants.ts (the `TOOL_ACTION_CLASSES` tuple); this is its validating schema. */
+export const ToolActionClassSchema = z.enum(TOOL_ACTION_CLASSES);
+
+/**
+ * A side-effecting tool dispatch is awaiting an interactive per-tool approval decision (ADR-0057 EA3/EA5).
+ * The host's `ConfirmActionHook` emits it just before prompting the user; the registry then awaits the
+ * verdict (approve ⇒ dispatch, reject ⇒ a fatal `tool_denied`). A **dual-envelope** event (`runId` on a run,
+ * `sessionId` on a session) in the `agent:*` namespace, like `agent:tool_call` — in Phase 2.5 it is emitted
+ * only on the chat session path (the approval regime), and the session sink carries it (not run-only, so it
+ * is NOT dropped like `agent:file_patch_proposed`). The `preview` is **secret-free and display-only**: the
+ * resolved target path / command / host (never a full URL+query, never a secret).
+ */
+export const AgentApprovalRequestedEventSchema = z.object({
+  type: z.literal('agent:approval_requested'),
+  ...dualBase,
+  nodeId: nonEmptyString,
+  toolId: nonEmptyString,
+  action: ToolActionClassSchema,
+  preview: z.object({
+    path: nonEmptyString.optional(), // fs_write — the resolved target path
+    command: z.string().optional(), // process — the resolved command string the user approves
+    host: nonEmptyString.optional(), // egress — the target host only (never the full URL / query string)
+  }),
+  attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated/agent:tool_call
+});
+export type AgentApprovalRequestedEvent = z.infer<typeof AgentApprovalRequestedEventSchema>;
 
 export const AgentFilePatchProposedEventSchema = z.object({
   type: z.literal('agent:file_patch_proposed'),
@@ -414,6 +443,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   AgentTokenEventSchema,
   AgentToolCallEventSchema,
   AgentToolResultEventSchema,
+  AgentApprovalRequestedEventSchema,
   AgentFilePatchProposedEventSchema,
   CostUpdatedEventSchema,
   NodeCompletedEventSchema,

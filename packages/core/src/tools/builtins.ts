@@ -127,6 +127,16 @@ const FS_POLICY: ToolPolicyClass = {
   spawnsProcess: false,
   requiresGateApproval: false,
 };
+// `write_file` is a WRITE, so the per-tool approval gates it (ADR-0057 EA3, `fsWrite: true`). A SEPARATE
+// object from FS_POLICY: the read-only `read_file` / `list_directory` must keep `fsWrite` absent, or the
+// reads would be gated too. `enforcePolicy` is inert for it (no command/domain target, no gate) — the
+// `confirmAction` floor is the authoritative writer gate.
+const FS_WRITE_POLICY: ToolPolicyClass = {
+  fsScoped: true,
+  fsWrite: true,
+  spawnsProcess: false,
+  requiresGateApproval: false,
+};
 const OS_POLICY: ToolPolicyClass = {
   fsScoped: false,
   spawnsProcess: false,
@@ -182,7 +192,11 @@ const writeFileTool = defineBuiltin({
     required: ['path', 'content'],
     additionalProperties: false,
   },
-  policy: FS_POLICY,
+  policy: FS_WRITE_POLICY,
+  // The resolved target path the per-tool approval prompt + `agent:approval_requested` preview show
+  // (ADR-0057 EA3). NOT a guardrail target — `enforcePolicy` reads only `command`/`url`, so this changes no
+  // allowlist behavior; it is display-only.
+  policyTarget: (args) => ({ path: args.path }),
   dispatch: (args, host, ctx) =>
     requireFs(host, 'write_file').writeFile(
       args.path,

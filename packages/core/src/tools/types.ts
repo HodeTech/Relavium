@@ -15,6 +15,7 @@ import type {
   FsScopeTier,
   MediaSource,
   Scope,
+  ToolActionClass,
 } from '@relavium/shared';
 
 import type { Untrusted } from './untrusted.js';
@@ -47,6 +48,14 @@ export type EgressKind = 'http' | 'search' | 'mcp';
 export interface ToolPolicyClass {
   /** Needs the FS scope tier — `read_file`, `write_file`, `list_directory`. */
   readonly fsScoped: boolean;
+  /**
+   * The fs operation is a WRITE (`write_file`), not a read — `fsScoped` alone is `true` for reads AND
+   * writes alike, so it cannot tell `write_file` from `read_file`. The additive discriminator the
+   * per-tool approval needs to gate writes (ADR-0057 EA3) and the `fs-write` ActionClass
+   * [ADR-0041](../../../../docs/decisions/0041-external-action-governance-seam.md) already proposed —
+   * landed here, credited to both. Absent/false ⇒ a read-only fs tool (never governed by approval).
+   */
+  readonly fsWrite?: boolean;
   /** Spawns an OS process under the `allowedCommands` allowlist — `run_command`, `git_*`. */
   readonly spawnsProcess: boolean;
   /** Outbound egress, discriminated by kind — `http_request` / `web_search` / `mcp_call`. */
@@ -252,6 +261,59 @@ export interface MediaReadAccess {
   readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<MediaSource>;
 }
 
+/* ------------------------------------------------------------------------------------------------ *
+ * Per-tool approval (ADR-0057 EA3) — the interactive consent seam. A host-injected hook (the same
+ * dependency-inversion pattern as `ToolHost`, so ADR-0037's tool-execution boundary holds: the engine
+ * defines the interface + the invocation point, the host supplies the implementation). The registry
+ * consults it BETWEEN the `enforcePolicy` guardrail floor and the host side-effect, for a GOVERNED-class
+ * dispatch only (fs_write / a model-controlled process / egress — never a read-only fs / `git_status` /
+ * clipboard tool). The engine stays mode-agnostic: the host's hook owns the mode policy (ask / plan /
+ * accept-edits / auto), the once/always cache, the protected-paths rule, and emitting
+ * `agent:approval_requested`; the engine only asks "may this governed action proceed?" and honors it.
+ * ------------------------------------------------------------------------------------------------ */
+
+/** A secret-free, display-only preview of the side effect the user is approving (ADR-0057). */
+export interface ToolActionPreview {
+  /** fs_write — the resolved target path. */
+  readonly path?: string;
+  /** process — the resolved command string (what `allowedCommands` matched). */
+  readonly command?: string;
+  /** egress — the target host ONLY (never the full URL / query string, never a secret). */
+  readonly host?: string;
+}
+
+/** What the engine asks the host to confirm — the governed action class + a secret-free preview. */
+export interface ToolApprovalRequest {
+  readonly toolId: ToolId;
+  readonly action: ToolActionClass;
+  readonly preview: ToolActionPreview;
+}
+
+/** The host's verdict. `reject.reason` is an optional, secret-free, display-safe label echoed in the error. */
+export type ToolApprovalDecision =
+  | { readonly outcome: 'approve' }
+  | { readonly outcome: 'reject'; readonly reason?: string };
+
+/**
+ * The host-injected interactive consent hook. MUST be secret-free and SHOULD honor the `AbortSignal` (an
+ * abort while prompting routes to the engine's cancel path, not a denial). Returns the verdict the registry
+ * lowers into its existing control flow (approve ⇒ dispatch; reject ⇒ a fatal `tool_denied`).
+ */
+export type ConfirmActionHook = (
+  request: ToolApprovalRequest,
+  signal?: AbortSignalLike,
+) => Promise<ToolApprovalDecision>;
+
+/**
+ * The per-dispatch approval regime (ADR-0057 EA3). Its PRESENCE on {@link ToolDispatchContext} marks the
+ * interactive-approval (chat) path: a governed-class dispatch then REQUIRES a `confirm` decision, and an
+ * ABSENT `confirm` is **fail-closed → denied** (a wiring bug can never let a write through). ABSENT on the
+ * workflow author-trust path — governed tools proceed under the `enforcePolicy` floor, unchanged.
+ */
+export interface ToolApprovalContext {
+  readonly confirm?: ConfirmActionHook;
+}
+
 export interface ToolDispatchContext {
   readonly nodeId: string;
   /** The node's narrowed grant (ADR-0029(b)); a dispatch outside it is refused (registered ≠ authorized). */
@@ -264,6 +326,12 @@ export interface ToolDispatchContext {
   readonly fsScope: FsScopeTier;
   /** A human-gate decision is present for this dispatch (1.Q) — required by `git_commit`. */
   readonly gateApproved: boolean;
+  /**
+   * Per-tool approval regime (ADR-0057 EA3). PRESENT ⇒ the interactive-approval (chat) path: a
+   * governed-class dispatch (fs_write / a model-controlled process / egress) requires a `confirm` decision,
+   * and an absent `confirm` is fail-closed → denied. ABSENT ⇒ the workflow author-trust path, unchanged.
+   */
+  readonly approval?: ToolApprovalContext;
   /** Names of effective-arg keys that are secret-tainted (ADR-0029(c)) — rejected from non-credential args. */
   readonly secretArgKeys?: ReadonlySet<string>;
   /** Engine delegate for `invoke_agent` — pure orchestration, not a ToolHost I/O capability. */
@@ -315,6 +383,12 @@ export interface PolicyTarget {
   readonly command?: string;
   /** The outbound URL the `allowedDomains` exact-FQDN allowlist + SSRF policy applies to (ADR-0029(d)). */
   readonly url?: string;
+  /**
+   * The resolved fs target path of a WRITE — the per-tool approval preview shows it (ADR-0057 EA3). NOT a
+   * guardrail target (`enforcePolicy` reads only `command`/`url`), so supplying it changes no allowlist
+   * behavior; it is the display target for the approval prompt + the `agent:approval_requested` event.
+   */
+  readonly path?: string;
 }
 
 /** The engine-side registry + dispatcher. One instance, shared by both entry points (1.O / 1.V). */
