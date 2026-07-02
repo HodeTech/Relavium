@@ -79,6 +79,37 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     expect(captured?.body).toBe('{"a":1}');
   });
 
+  it('STRIPS a caller-supplied Host / :authority header (virtual-host-confusion SSRF defense)', async () => {
+    let captured: HopRequest | undefined;
+    const deps = fakeDeps({
+      resolve: { 'api.example.com': ['203.0.113.5'] },
+      onOpen: (request) => (captured = request),
+    });
+    await connectValidated(
+      'https://api.example.com/x',
+      {
+        allowPrivate: false,
+        method: 'GET',
+        // A model could set these to reroute an allowlisted, correctly-pinned request to a DIFFERENT vhost at
+        // the same shared IP — the mechanism must drop them so the wire Host derives from the validated host.
+        headers: {
+          Host: 'internal-admin.example',
+          host: 'evil.example',
+          ':authority': 'evil2.example',
+          'x-keep': 'ok',
+          authorization: 'Bearer X',
+        },
+      },
+      deps,
+      sig(),
+    );
+    expect(captured?.headers?.['Host']).toBeUndefined();
+    expect(captured?.headers?.['host']).toBeUndefined();
+    expect(captured?.headers?.[':authority']).toBeUndefined();
+    expect(captured?.headers?.['x-keep']).toBe('ok'); // unrelated headers pass through
+    expect(captured?.headers?.['authorization']).toBe('Bearer X'); // the legit credential is untouched
+  });
+
   it('rejects a non-HTTPS url and a credentialed url with insecure_url (before any DNS)', async () => {
     let resolved = false;
     const deps: EgressDeps = {
@@ -217,6 +248,12 @@ interface CapturedHttpsOptions {
   readonly hostname?: string;
   readonly method?: string;
   readonly headers?: Readonly<Record<string, string>>;
+  readonly servername?: string;
+  readonly lookup?: (
+    hostname: string,
+    options: unknown,
+    callback: (err: unknown, address: string, family: number) => void,
+  ) => void;
 }
 
 type FakeIncoming = AsyncIterable<Uint8Array> & {
@@ -279,6 +316,57 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
     expect(options.method).toBe('POST');
     expect(options.headers?.['authorization']).toBe('Bearer SECRET-VALUE'); // the host-resolved credential header
     expect(client.write).toHaveBeenCalledWith('{"q":1}'); // the body actually reaches the wire
+  });
+
+  it('pins the connection to the validated IP via the lookup callback and keeps the hostname as SNI', async () => {
+    const client = stubClientRequest();
+    vi.mocked(httpsRequest).mockReturnValue(client as unknown as ReturnType<typeof httpsRequest>);
+    const pending = nodeEgressDeps.openConnection(
+      {
+        url: 'https://api.example.com/x',
+        hostname: 'api.example.com',
+        pinnedIp: '203.0.113.5',
+        method: 'GET',
+      },
+      sig(),
+    );
+    const { options, onResponse } = lastHttpsCall();
+    // SNI + certificate host stay the validated hostname (TLS verification is against api.example.com), while
+    // the socket is pinned to the pre-validated IP — the lookup callback returns pinnedIp, never re-resolving.
+    expect(options.servername).toBe('api.example.com');
+    expect(options.hostname).toBe('api.example.com');
+    let pinnedTo: string | undefined;
+    let pinnedFamily: number | undefined;
+    options.lookup?.('api.example.com', {}, (_err: unknown, address: string, family: number) => {
+      pinnedTo = address;
+      pinnedFamily = family;
+    });
+    expect(pinnedTo).toBe('203.0.113.5');
+    expect(pinnedFamily).toBe(4); // an IPv4 pin resolves family 4
+    onResponse(fakeIncoming(200));
+    await pending;
+  });
+
+  it('pins an IPv6 target with family 6', async () => {
+    const client = stubClientRequest();
+    vi.mocked(httpsRequest).mockReturnValue(client as unknown as ReturnType<typeof httpsRequest>);
+    const pending = nodeEgressDeps.openConnection(
+      {
+        url: 'https://api.example.com/x',
+        hostname: 'api.example.com',
+        pinnedIp: '2606:2800:220:1:248:1893:25c8:1946',
+        method: 'GET',
+      },
+      sig(),
+    );
+    const { options, onResponse } = lastHttpsCall();
+    let pinnedFamily: number | undefined;
+    options.lookup?.('api.example.com', {}, (_e: unknown, _a: string, family: number) => {
+      pinnedFamily = family;
+    });
+    expect(pinnedFamily).toBe(6);
+    onResponse(fakeIncoming(200));
+    await pending;
   });
 
   it('does NOT write a body for a GET with no body', async () => {

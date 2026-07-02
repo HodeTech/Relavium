@@ -55,18 +55,20 @@ export function createNodeEgressCapability(
 
   return {
     fetch: async (request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse> => {
-      // Resolve the opaque credentialRef host-side and attach it as a bearer header INSIDE the trusted
-      // boundary — the raw secret never crosses back into the engine. No ref / no resolver ⇒ no header.
-      const credential =
-        request.credentialRef === undefined
-          ? undefined
-          : await config.resolveCredential?.(request.credentialRef);
-      const headers: Record<string, string> = { ...request.headers };
-      if (credential !== undefined && credential.length > 0) {
-        headers['authorization'] = `Bearer ${credential}`;
-      }
-
       try {
+        // Resolve the opaque credentialRef host-side and attach it as a bearer header INSIDE the trusted
+        // boundary — the raw secret never crosses back into the engine. No ref / no resolver / a resolver that
+        // THROWS (a native-keychain fault) all ⇒ no header: the request proceeds credential-less per the
+        // documented "never a crash" contract — a provider that needs the credential returns 401, surfaced to
+        // the model. `resolveCredentialSafely` degrades a rejecting resolver to `undefined` rather than failing.
+        const credential =
+          request.credentialRef === undefined
+            ? undefined
+            : await resolveCredentialSafely(config.resolveCredential, request.credentialRef);
+        const headers: Record<string, string> = { ...request.headers };
+        if (credential !== undefined && credential.length > 0) {
+          headers['authorization'] = `Bearer ${credential}`;
+        }
         return await withEgressTimeout(signal, timeoutMs, async (sig) => {
           const response = await connectValidated(
             request.url,
@@ -105,6 +107,24 @@ export function createNodeEgressCapability(
  * tool id when it surfaces the error, so an arm-side `http_request:` prefix would MISATTRIBUTE a `web_search`
  * failure. An abort is classified `cancelled` by the registry's cancel-precedence regardless of this class.
  */
+/**
+ * Resolve a `credentialRef` host-side, degrading an absent OR **rejecting** resolver to `undefined` so a
+ * native-keychain fault proceeds credential-less (the documented "never a crash" contract) instead of failing
+ * the whole request. A swallowed throw here is the intended fail-soft — NOT a silent secret error (the secret
+ * value itself is never touched on this path).
+ */
+async function resolveCredentialSafely(
+  resolveCredential: ((ref: string) => Promise<string | undefined>) | undefined,
+  ref: string,
+): Promise<string | undefined> {
+  if (resolveCredential === undefined) return undefined;
+  try {
+    return await resolveCredential(ref);
+  } catch {
+    return undefined;
+  }
+}
+
 function classifyEgressError(error: unknown): Error {
   if (error instanceof SafeEgressError) {
     if (error.code === 'insecure_url' || error.code === 'blocked_host') {

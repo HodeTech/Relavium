@@ -107,11 +107,17 @@ describe('notifyPlan — the per-platform spawn plan (injection-free arg/env con
     expect(plan.args.join('\n')).toContain('$env:RELAVIUM_NOTIFY_BODY');
   });
 
-  it('Linux: notify-send takes title + body as positional ARGS (shell:false data, no env overlay)', () => {
+  it('Linux: notify-send takes title + body as positional ARGS after `--` (flag-injection safe, no env overlay)', () => {
     const plan = notifyPlan('linux', input);
     expect(plan.executable).toBe('notify-send');
-    expect(plan.args).toEqual(['Done', input.body]);
+    // The `--` end-of-options marker means a title/body starting with `-` is DATA, never a parsed flag.
+    expect(plan.args).toEqual(['--', 'Done', input.body]);
     expect(plan.env).toBeUndefined();
+  });
+
+  it('Linux: a `-`-prefixed title is still positional (behind `--`), not parsed as a notify-send flag', () => {
+    const plan = notifyPlan('linux', { title: '--help', body: '-x' });
+    expect(plan.args).toEqual(['--', '--help', '-x']);
   });
 });
 
@@ -193,6 +199,15 @@ describe('createNodeOsCapability — notify', () => {
     const { spawnImpl } = fakeSpawn([{ emitError: true }]);
     const os = createNodeOsCapability({ platform: 'linux', spawnImpl });
     await expect(os.notify({ title: 't', body: 'b' })).rejects.toBeInstanceOf(OsCapabilityError);
+  });
+
+  it('rejects with OsCapabilityError when the notifier binary is not installed (synchronous spawn throw)', async () => {
+    // The single most likely real-world notify failure: `notify-send` simply absent (ENOENT at spawn).
+    const { spawnImpl } = fakeSpawn([{ throwOnSpawn: true }]);
+    const os = createNodeOsCapability({ platform: 'linux', spawnImpl });
+    const err = await os.notify({ title: 't', body: 'b' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OsCapabilityError);
+    expect((err as OsCapabilityError).message).toBe('the os command could not be started');
   });
 
   it('merges the notify env OVERLAY over the ambient env (so DISPLAY/DBUS survive)', async () => {

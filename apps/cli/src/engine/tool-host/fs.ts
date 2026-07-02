@@ -304,21 +304,26 @@ export async function readJailedFile(real: string, sizeLimit: number): Promise<J
 
 /**
  * Protected paths NO mode (auto included) may write — even where the fs jail would allow them
- * ([ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)). `.git/` and
- * `.relavium/` are matched by a path SEGMENT (so a `.gitignore` / `.relaviumrc` FILE is not protected — only
- * the directories); the auto-sourced startup / config files below — every one of which executes code on the
- * next shell, X login, or `git` invocation (`.gitconfig`'s `core.hooksPath` / `[alias] x = !cmd` ⇒ RCE) — are
+ * ([ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)). `.git/`,
+ * `.relavium/`, and `.ssh/` are matched by a path SEGMENT (so a `.gitignore` / `.relaviumrc` FILE is not
+ * protected — only the directories; a whole `.ssh/` is protected because *nothing* good comes of an agent
+ * writing into it — `authorized_keys`, `config`'s `ProxyCommand`, `id_*`, `rc` are all persistence/RCE
+ * vectors); the auto-sourced startup / config files below — every one of which executes code on the next
+ * shell, X login, or `git` invocation (`.gitconfig`'s `core.hooksPath` / `[alias] x = !cmd` ⇒ RCE) — are
  * matched by BASENAME. This is the secure FLOOR, not an exhaustive catalogue: it deliberately does NOT cover
  * directory-pattern sources (fish `conf.d/*.fish`), OS launch agents (`~/Library/LaunchAgents/*.plist`), or
  * editor auto-run config — those are out of the basename model's reach and rely on the fs jail + approval.
  *
  * {@link foldPathComponent} normalizes each compared name the way a real filesystem folds a component: it
- * lowercases (a case-insensitive FS / a `.GIT` variant must not slip through) AND strips trailing dots/spaces
- * — Win32 silently drops those at open time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on
- * the REAL protected target while the unfolded name (`.bashrc.`) missed the set. Folding always (not only on
- * win32) over-denies a genuinely-distinct `.git.` on a case-sensitive FS, which is the safe direction.
+ * takes the part before the first `:` (Win32 NTFS `name::$DATA` / `name:stream` addresses the SAME default
+ * stream as `name`, so `.gitconfig::$DATA` must fold to `.gitconfig`), lowercases (a case-insensitive FS / a
+ * `.GIT` variant must not slip through), AND strips trailing dots/spaces — Win32 silently drops those at open
+ * time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on the REAL protected target while the
+ * unfolded name missed the set. Folding always (not only on win32) over-denies a genuinely-distinct `.git.` or
+ * a POSIX `a:b` on a case-sensitive FS, which is the safe direction. The realpath re-check in {@link writeOne}
+ * additionally canonicalizes a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) of an EXISTING target.
  */
-const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium']);
+const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium', '.ssh']);
 const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.bashrc',
   '.bash_profile',
@@ -344,18 +349,20 @@ const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   'microsoft.powershell_profile.ps1', // PowerShell profiles
 ]);
 
-/** Fold a path component the way a filesystem does for matching: lowercase + strip the trailing dots/spaces a
- * case-insensitive/Win32 FS silently drops (so `.BASHRC` / `.bashrc.` / `.git ` all fold to the protected name). */
+/** Fold a path component the way a filesystem does for matching: take the pre-`:` part (NTFS `name::$DATA`
+ * addresses `name`), lowercase (case-insensitive FS), and strip trailing dots/spaces (Win32 drops those at open
+ * time) — so `.BASHRC` / `.bashrc.` / `.git ` / `.gitconfig::$DATA` all fold to the bare protected name. */
 function foldPathComponent(name: string): string {
-  return name.toLowerCase().replace(/[. ]+$/u, '');
+  const beforeStream = name.split(':', 1)[0] ?? name; // NTFS Alternate-Data-Stream / drive qualifier
+  return beforeStream.toLowerCase().replace(/[. ]+$/u, '');
 }
 
-/** Deny a write to a protected path (a `.git`/`.relavium` directory, or a startup/config file). FATAL. */
+/** Deny a write to a protected path (a `.git`/`.relavium`/`.ssh` directory, or a startup/config file). FATAL. */
 function assertNotProtectedPath(absoluteTarget: string): void {
   for (const segment of absoluteTarget.split(sep)) {
     if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) {
       throw new FsScopeDeniedError(
-        'write_file: refusing to write inside a protected directory (.git / .relavium)',
+        'write_file: refusing to write inside a protected directory (.git / .relavium / .ssh)',
       );
     }
   }
@@ -378,8 +385,8 @@ async function writeOne(
   }
   throwIfAborted(signal);
   // Protected paths are denied in EVERY mode (auto included). Checked on the REQUESTED path before the jail
-  // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the realpath'd
-  // target below so a symlink cannot resolve INTO a protected directory.
+  // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the (realDir-)jailed
+  // finalTarget so a parent symlink cannot resolve INTO a protected directory.
   assertNotProtectedPath(resolve(config.workspaceDir, path));
   const inScope = await buildScopeChecker(config);
   const { realDir, finalTarget } = await jailWriteTarget(
@@ -389,7 +396,13 @@ async function writeOne(
     opts.createDirs === true,
   );
   await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
-  assertNotProtectedPath(finalTarget); // re-check the REALPATH'd target — a symlink must not reach a protected path
+  assertNotProtectedPath(finalTarget); // re-check the jailed target (parent realpath'd) against the fold
+  // Belt-and-suspenders for Win32 final-component name-aliasing: `finalTarget` keeps the LEXICAL basename
+  // (jailWriteTarget only realpath's the parent). If the target already EXISTS, its realpath is the canonical
+  // long name, so a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) or an NTFS stream path that folds to
+  // a non-protected basename is caught HERE. A not-yet-existing target has no alias, so the checks above suffice.
+  const canonicalTarget = await realpath(finalTarget).catch(() => undefined);
+  if (canonicalTarget !== undefined) assertNotProtectedPath(canonicalTarget);
   throwIfAborted(signal);
   const bytes = Buffer.from(data, 'utf8');
   if (opts.append === true) {
@@ -398,8 +411,10 @@ async function writeOne(
     // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of
     // scope). A symlink there fails ELOOP/ENOTDIR, which we map to the FATAL `tool_denied` (not the retryable
     // `tool_failed` `guarded` would otherwise assign a raw fs error). NOTE: `O_NOFOLLOW` is `0` on Windows (no
-    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case, and append is the
-    // author-trusted workflow-run path (chat is read-only), so the residual Windows race is accepted for 2.5.A.
+    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case. The write arm now
+    // also serves the approval-gated `chat-read-write` profile (ADR-0057), not only the author-trusted
+    // workflow-run path; the residual Windows-only symlink-swap race is flagged for the mandatory ADR-0057
+    // security review (Step 5) to re-affirm as accepted — the protected-paths floor + fs jail still hold.
     const handle = await open(
       finalTarget,
       constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
@@ -425,8 +440,9 @@ async function writeOne(
     // O_CREAT|O_EXCL|O_WRONLY (the 'wx' flag) plus O_NOFOLLOW — no-follow PARITY with the append path: the open
     // refuses to follow a final-component symlink even though the random temp name already makes a pre-placed
     // symlink there implausible (defense in depth). The residual gap is a PARENT-dir swap between `jailWriteTarget`'s
-    // realpath and this write — not closable in Node (no `openat`); the write arm is the author-trusted
-    // workflow-run path (chat is read-only), so that residual is accepted for 2.5.A.
+    // realpath and this write — not closable in Node (no `openat`); the write arm now also serves the
+    // approval-gated `chat-read-write` profile (ADR-0057), so that Windows-only residual is flagged for the
+    // mandatory ADR-0057 security review (Step 5), with the protected-paths floor + fs jail still in force.
     await writeFile(tmp, bytes, {
       flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     });

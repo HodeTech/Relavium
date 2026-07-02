@@ -176,11 +176,32 @@ export async function connectValidated(
       hostname: host,
       pinnedIp,
       method: opts.method,
-      headers: opts.headers,
+      headers: sanitizeHopHeaders(opts.headers),
       body: opts.body,
     },
     signal,
   );
+}
+
+/**
+ * Drop a caller-supplied `Host` / `:authority` header so the wire `Host` is ALWAYS derived from the validated
+ * hostname. The IP-pin + SNI fix the TRANSPORT destination, but a shared/CDN/reverse-proxy IP routes at the
+ * APPLICATION layer by the `Host` header — so a model-set `Host` (the `http_request` `headers` arg is
+ * model-controlled) could otherwise send an `allowedDomains`-approved, correctly-pinned request to a DIFFERENT
+ * virtual host at the same IP (a virtual-host-confusion SSRF the pin/SNI alone don't stop). Matched
+ * case-insensitively; the legitimate `authorization` credential header is untouched.
+ */
+function sanitizeHopHeaders(
+  headers: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (headers === undefined) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const k = key.trim().toLowerCase();
+    if (k === 'host' || k === ':authority') continue; // never let the caller override the validated Host
+    out[key] = value;
+  }
+  return out;
 }
 
 /** Consume a body stream, aborting the moment it exceeds `maxBytes`; concat the bounded chunks. */

@@ -182,7 +182,9 @@ export function notifyPlan(platform: NodeJS.Platform, input: NotifyInput): Spawn
         env: { [NOTIFY_TITLE_ENV]: input.title, [NOTIFY_BODY_ENV]: input.body },
       };
     default:
-      return { executable: 'notify-send', args: [input.title, input.body] };
+      // `--` terminates notify-send's GOption parsing, so a title/body that begins with `-`/`--` is treated as
+      // positional DATA, never a flag (an argument-injection surface `shell:false` alone does not close).
+      return { executable: 'notify-send', args: ['--', input.title, input.body] };
   }
 }
 

@@ -131,6 +131,23 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
     expect(calls[0]?.headers?.['authorization']).toBeUndefined();
   });
 
+  it('degrades a REJECTING credential resolver (a keychain fault) to no credential — never a crash', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({
+      deps,
+      resolveCredential: () => Promise.reject(new Error('keychain locked')),
+    });
+    // The request still succeeds credential-less (the "never a crash" contract) — the raw keychain error does
+    // NOT escape fetch(), and no authorization header is attached.
+    const res = await egress.fetch({
+      method: 'GET',
+      url: 'https://api.example.com/x',
+      credentialRef: 'kc:x',
+    });
+    expect(res.status).toBe(200);
+    expect(calls[0]?.headers?.['authorization']).toBeUndefined();
+  });
+
   it('forwards a POST method + body to the hop', async () => {
     const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200, body: 'ok' } });
     const egress = createNodeEgressCapability({ deps });

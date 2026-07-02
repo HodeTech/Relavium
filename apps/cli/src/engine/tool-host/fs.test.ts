@@ -422,10 +422,49 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
     );
   });
 
+  it('refuses to write inside `.ssh/` — the whole directory is protected (keys, config ProxyCommand, rc)', async () => {
+    for (const target of ['.ssh/authorized_keys', '.ssh/config', '.ssh/id_ed25519', '.ssh/rc']) {
+      await expect(sandboxed().writeFile(target, 'x', { createDirs: true })).rejects.toBeInstanceOf(
+        FsScopeDeniedError,
+      );
+    }
+  });
+
+  it('refuses an NTFS Alternate-Data-Stream variant (`.gitconfig::$DATA` addresses the real `.gitconfig`)', async () => {
+    // `name::$DATA` / `name:stream` address the default stream of `name` on NTFS; foldPathComponent takes the
+    // pre-`:` part so the bare protected name is matched on every platform (an over-deny on POSIX is safe).
+    for (const name of ['.gitconfig::$DATA', '.bashrc:stream', '.git::$DATA/config']) {
+      await expect(
+        sandboxed().writeFile(name, 'evil', { createDirs: true }),
+      ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    }
+  });
+
+  // NOTE: the writeOne realpath re-check (canonicalTarget) also denies a Win32 8.3 short-name alias
+  // (`GITCON~1` → `.gitconfig`) of an EXISTING target — but 8.3 aliasing is an NTFS behavior with no POSIX
+  // equivalent (realpath resolves symlinks, not hardlinks/short-names), so it is not reproducible on the CI
+  // platform; its pass-path (an existing non-protected target realpaths cleanly) is exercised by the overwrite
+  // test above. A final-component SYMLINK — the POSIX aliasing vector — is caught earlier by assertNotSymlink.
+
   it('ALLOWS a `.gitignore` FILE — only the `.git` DIRECTORY segment is protected', async () => {
     const result = await sandboxed().writeFile('.gitignore', 'node_modules\n', {});
     expect(result.bytesWritten).toBeGreaterThan(0);
     expect((await sandboxed().readFile('.gitignore', {})).content).toBe('node_modules\n');
+  });
+
+  it('denies protected paths under the `full` (unjailed) tier too — a tier-independent floor', async () => {
+    // ADR-0057: protected paths hold "even where the fs jail would allow them" — `full` is the no-jail case.
+    const fullTier = createNodeFsCapability({
+      tier: 'full',
+      workspaceDir: workspace,
+      readOnly: false,
+    });
+    await expect(
+      fullTier.writeFile('.git/config', '[evil]', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    await expect(fullTier.writeFile('.bashrc', 'evil', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
   });
 });
 
