@@ -53,7 +53,12 @@ export function nextMode(mode: ChatMode): ChatMode {
   return CHAT_MODES[(index + 1) % CHAT_MODES.length] ?? DEFAULT_CHAT_MODE;
 }
 
-/** Parse a `/mode <name>` argument to a {@link ChatMode}, tolerating the spaced label (`accept edits`). */
+/**
+ * Parse a mode name to a {@link ChatMode}. Case-insensitive; it also normalizes internal whitespace to a
+ * hyphen (`accept edits` → `accept-edits`) as a DEFENSIVE convenience for any direct caller — note the `/mode`
+ * slash dispatch tokenizes on whitespace, so a spaced value never reaches here as one token (the labels are
+ * kebab, so a user types `accept-edits`); the normalization only matters to a programmatic caller.
+ */
 export function parseMode(input: string): ChatMode | undefined {
   const normalized = input.trim().toLowerCase().replace(/\s+/gu, '-');
   return (CHAT_MODES as readonly string[]).includes(normalized)

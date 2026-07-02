@@ -292,7 +292,8 @@ approval policy** (authoritative — `enforcePolicy` is mode-agnostic and inert 
   **fail-closed** — when a write/process/egress arm is wired, a write-/exec-/egress-class dispatch **requires**
   a decision; **absent hook ⇒ deny** (so an advertise-filter or wiring bug can never let `ask` mode write).
   Plus: an `agent:approval_requested` event (**EA5**), an `AgentSession` pause/resume state (**EA4**), a REPL
-  `[approve]/[reject]/[comment]` intercept that bypasses the in-flight key-swallow gate (no deadlock), a
+  `[y]`/`[a]`/`[n]`/`[esc]` intercept (approve-once / always / reject / abort; `[c]` reject-with-reason
+  deferred) that bypasses the in-flight key-swallow gate (no deadlock), a
   typed `ToolDeniedByUserError` (the existing `tool_denied` `ErrorCode`, already non-retryable), and a
   session-scoped, **in-memory** once/always cache (not persisted across resume; **once** = this invocation
   (tool+args), **always** = this tool id for this session instance). The existing `gateApproved` flag is a
@@ -304,7 +305,7 @@ approval policy** (authoritative — `enforcePolicy` is mode-agnostic and inert 
   machinery; the session-level budget pause/resume deferred from Phase 2 rides the same machine.
 
 **Acceptance:** `Shift+Tab` switches modes instantly with **no** tool-context loss; ask mode advertises
-read-only tools; accept-edits prompts before each write with `[a]/[r]/[c]` and an once/always memory;
+read-only tools; accept-edits prompts before each write with `[y]/[a]/[n]` and an once/always memory;
 a rejection is a clean `tool_denied`, not a retry; `Esc` aborts a turn and the session continues; auto
 is sandbox-bounded with protected paths honoured. A security review of the reseat-less mode model
 (defense-in-depth trade-off) passes. **Required ADR: per-tool approval + reseat-less chat mode system

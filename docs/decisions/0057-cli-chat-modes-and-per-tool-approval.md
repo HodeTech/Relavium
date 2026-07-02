@@ -85,8 +85,9 @@ approval as a new, bounded engine vertical.**
   pause/resume state (which today does not exist) — and an `Esc` **mid-turn abort** that aborts the
   in-flight turn and keeps the session alive by emitting **one** `session:turn_completed` (with an abort
   stop-reason), rolling back the pending user message, and returning `#status` to `idle` (the engine has no
-  `aborted` status and this is **not** `cancel()`, which is terminal); a REPL `[approve]/[reject]/[comment]`
-  intercept that bypasses the in-flight key-swallow gate (so the prompt cannot deadlock); a typed
+  `aborted` status and this is **not** `cancel()`, which is terminal); a REPL approve/reject intercept
+  (shipped keys `[y]` yes-once / `[a]` always / `[n]` no / `[esc]` abort; the `[c]` reject-with-typed-reason
+  path is a deferred follow-up) that bypasses the in-flight key-swallow gate (so the prompt cannot deadlock); a typed
   `ToolDeniedByUserError` carrying the **existing** `tool_denied` `ErrorCode` (already non-retryable — it is
   absent from `RETRYABLE_ERROR_CODES` in `@relavium/shared/constants`, so a user deny is final, not a retried
   execution error); and a session-scoped, **in-memory** once/always cache (instance-scoped — **not**
@@ -115,7 +116,7 @@ alternatives.** `ActionGuard` ([ADR-0041](0041-external-action-governance-seam.m
 organizational* policy-decision point — an external governor that `decide`s allow / block / transform and
 `commit`s with idempotency + compensation + tamper-evident audit; optional, **off-by-default**, Phase-2
 enterprise. `confirmAction` is the *interactive, end-user* consent gate — the human at the terminal answers
-`[a]/[r]/[c]` — and is precisely the "out-of-band interactive approval the host surfaces before `commit`"
+`[y]`/`[a]`/`[n]` (`[esc]` aborts) — and is precisely the "out-of-band interactive approval the host surfaces before `commit`"
 that [ADR-0041](0041-external-action-governance-seam.md) §Entry-point scope names for the **session** entry
 point (where `ActionGuard`'s `require-approval` verdict is unavailable). When **both** are present they
 **compose** in the [tool-registry.md](../reference/shared-core/tool-registry.md) dispatch lifecycle: the
