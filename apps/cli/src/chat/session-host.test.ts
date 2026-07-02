@@ -946,9 +946,18 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     store.answerApproval({ outcome: 'approve', scope: 'once' });
     await turn;
     built.session.cancel();
-    await drainHandle(built.handle.events);
+    const events = await drainHandle(built.handle.events);
     expect(existsSync(join(workspace, 'ok.txt'))).toBe(true); // approved ⇒ the write landed
     expect(readFileSync(join(workspace, 'ok.txt'), 'utf8')).toBe('hi');
+    // EA5 end-to-end: a real AgentSession turn → real registry confirmDispatch → the emit lands on the handle
+    // stream (locks the full compose the unit tests only prove per-hop — nodeId stamped, action-bound preview).
+    const approvalEvent = events.find((e) => e.type === 'agent:approval_requested');
+    expect(approvalEvent?.type).toBe('agent:approval_requested');
+    if (approvalEvent?.type === 'agent:approval_requested') {
+      expect(approvalEvent.toolId).toBe('write_file');
+      expect(approvalEvent.action).toBe('fs_write');
+      expect(approvalEvent.preview.path).toContain('ok.txt'); // the resolved target, nodeId-stamped by the session
+    }
   });
 
   it('createChatModeControl auto: a PROTECTED-path write FALLS BACK to a prompt (not auto-approved)', async () => {

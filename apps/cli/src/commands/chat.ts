@@ -417,6 +417,19 @@ export interface ChatModeControl {
  * `requestApproval`) and **applies the initial mode immediately** — so the regime is active from the first turn
  * (default `ask` denies every governed action). The returned `onModeChange` re-applies on a Shift+Tab / `/mode`.
  */
+/**
+ * Whether the chat surface can answer an interactive approval prompt — the ink UI is mounted (stdout is a TTY
+ * AND not `--json`), the SAME condition `selectChatDriver` (render/tui/chat-ink.tsx) picks `driveInk` on. A
+ * non-interactive driver (plain non-TTY / `--json`) has nothing to answer `requestApproval`, so the mode control
+ * uses a reject-immediately prompt (no deadlock, High 9). Named + exported so the derivation is unit-locked.
+ */
+export function chatIsInteractive(
+  io: Pick<CliIo, 'stdoutIsTty'>,
+  global: Pick<GlobalOptions, 'json'>,
+): boolean {
+  return io.stdoutIsTty && !global.json;
+}
+
 export function createChatModeControl(
   built: Pick<BuiltChatSession, 'session' | 'tools' | 'context'>,
   store: ChatStoreController,
@@ -480,11 +493,11 @@ export function createChatLineHandler(
       built.session.cancel(); // the session's sole terminal (session:cancelled) — persister marks it 'ended'
     }
   };
-  // Whether an interactive prompt (the ink UI / Home controller) can answer an approval: the ink view is mounted
-  // iff stdout is a TTY and not `--json` (keep in sync with `selectChatDriver` in render/tui/chat-ink.tsx). On a
-  // non-interactive driver nothing answers `requestApproval`, so the mode control uses a reject-immediately
-  // prompt (no deadlock). Also drives `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
-  const interactive = deps.io.stdoutIsTty && !deps.global.json;
+  // Whether an interactive prompt (the ink UI / Home controller) can answer an approval — the ink view is
+  // mounted (the same condition `selectChatDriver` picks driveInk on). On a non-interactive driver nothing
+  // answers `requestApproval`, so the mode control uses a reject-immediately prompt (no deadlock). Also drives
+  // `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
+  const interactive = chatIsInteractive(deps.io, deps.global);
 
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the

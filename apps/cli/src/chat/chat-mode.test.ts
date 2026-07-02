@@ -182,6 +182,20 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
+  it('accept-edits: a CONCRETE process preview (command) STILL caches "always" — pins isBlankPreview`s command check', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const procReq = req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } });
+    expect(await policy.confirm!(procReq)).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenNthCalledWith(1, procReq, true, undefined); // cacheable=true (a concrete command)
+    expect(
+      await policy.confirm!(req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } })),
+    ).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenCalledTimes(1); // cached — a dropped `command` check would force a re-prompt here
+  });
+
   it('accept-edits: a BLANK-preview tool (mcp_call/web_search) NEVER caches "always" — no session-long blank check', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),

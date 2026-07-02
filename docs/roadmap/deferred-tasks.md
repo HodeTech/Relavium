@@ -518,6 +518,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   follow; the same actor already has local RCE, and the sensitive-read floor still refuses a NAMED secret store even
   there. A future opt-out (`allow_aliased_reads` config, or resolving the inode's other name against a tool-known
   pnpm store root) would let a stricter deployment disable even this. *(low · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **Target-scoped approval cache + a per-tool preview target (ADR-0057 review elevation).** The once/always
+  `ApprovalCache` is keyed by tool id only, so an `[a]lways` grant blankets every allowlisted target of that tool
+  for the session (a `write_file` always covers every non-protected path; an `http_request` always covers every
+  `allowedDomains` host). It is bounded (enforcePolicy's allowlists + the fs protected-paths floor still gate each
+  dispatch) and is the documented accept-edits semantics — but keying by `(toolId, target)` (a path prefix for
+  fs, a host for egress, a server for mcp) would make `always` track what the user actually reviewed. Pairs with:
+  surface the MCP server/tool in `ToolActionPreview` (today `mcp_call`/`web_search` return a BLANK preview, so
+  F3 correctly forbids caching their `always`) — a structured `{mcpServer,mcpTool}` preview would turn the
+  blank-check downgrade into a real, reviewable, cacheable per-server grant. *(medium · apps/cli/src/chat/chat-mode.ts + packages/core/src/tools/{types,registry,builtins}.ts + run-event.ts)*
 - [ ] **fs `.relavium` sensitive-read/write segment vs. the `~/.relavium/tmp` sandboxed root (latent).** Both the
   read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
   segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires

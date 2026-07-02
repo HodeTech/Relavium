@@ -80,9 +80,11 @@ export type SessionLifecycleEvent = DistributiveOmit<
 >;
 
 /**
- * The host-emitted per-tool approval body (ADR-0057 EA5), envelope-less — a **session-carried** event the
- * chat approval regime emits through the sink. It is NOT a turn-core in-node event (so not in
- * `NodeStreamEvent` / the run path); the host's `ConfirmActionHook` emits it via this same sink.
+ * The per-tool approval body (ADR-0057 EA5), envelope-less — a **session-carried** event the chat approval
+ * regime emits through the sink. It is NOT a turn-core in-node event (so not in `NodeStreamEvent` / the run
+ * path). The ENGINE emits it: the registry's `confirmDispatch` calls the dispatch context's
+ * `emitApprovalRequested` port (which {@link AgentSession} wires to this sink, stamping the turn's `nodeId`)
+ * for every governed dispatch, just before invoking the host's `ConfirmActionHook`.
  */
 export type SessionApprovalStreamEvent = DistributiveOmit<
   AgentApprovalRequestedEvent,

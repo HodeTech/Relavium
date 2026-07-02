@@ -191,7 +191,7 @@ export type {
   SessionEventSink,
   SessionStreamEvent,
   SessionLifecycleEvent,
-  // The envelope-less `agent:approval_requested` body the host's ConfirmActionHook emits through the
+  // The envelope-less `agent:approval_requested` body the engine's confirmDispatch emits through the
   // SessionEventSink (ADR-0057 EA5; the Step-4 chat-approval wiring needs to reference it by name).
   SessionApprovalStreamEvent,
   // The reseat-less mode policy (advertise-filter + confirm hook) a host pushes via setTurnPolicy (ADR-0057).

@@ -25,6 +25,7 @@ import { createChatStore } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import {
   chatCommand,
+  chatIsInteractive,
   chatResumeCommand,
   driveJson,
   drivePlain,
@@ -1035,6 +1036,15 @@ describe('makePlainPrinter', () => {
     });
     expect(out()).toContain('turn_limit');
     expect(out()).not.toContain('secret-ish detail'); // only the code, never the message
+  });
+});
+
+describe('chatIsInteractive (the High-9 deadlock derivation — mirrors selectChatDriver`s ink-mount)', () => {
+  it('is true ONLY for a TTY without --json; false when piped OR --json (a dropped `!` would break this)', () => {
+    expect(chatIsInteractive({ stdoutIsTty: true }, { json: false })).toBe(true); // ink mounts → can prompt
+    expect(chatIsInteractive({ stdoutIsTty: false }, { json: false })).toBe(false); // piped → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: true }, { json: true })).toBe(false); // --json → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: false }, { json: true })).toBe(false);
   });
 });
 
