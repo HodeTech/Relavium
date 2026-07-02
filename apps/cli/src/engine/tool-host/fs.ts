@@ -136,6 +136,48 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
  * read_file
  * ------------------------------------------------------------------------------------------------ */
 
+/**
+ * Whether `real` sits inside **pnpm's virtual store** — a `node_modules/.pnpm/…` adjacency. pnpm is the one
+ * package manager that hard-links package files from a content-addressable store, and those hard links live ONLY
+ * under `node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>/…` (a top-level `node_modules/<pkg>` is a symlink INTO
+ * `.pnpm`, which the jail's realpath resolves to this same store path before the check). npm/yarn-classic copy
+ * files (`nlink == 1`) and never need this; macOS/APFS pnpm clones (`nlink == 1`) so the guard is a no-op there.
+ *
+ * SECURITY (narrowed after the ADR-0057 review): the hard-link aliasing read guard is disabled ONLY for this
+ * specific store layout — NOT for any `node_modules` segment (an earlier, too-broad form let an attacker-named
+ * `node_modules/<anything>` hard link exfiltrate). The residual is deliberate and bounded: reaching under
+ * `node_modules/.pnpm/` to plant a cross-boundary hard link requires a COMPROMISED DEPENDENCY in the tree (a
+ * malicious postinstall, or a hard-link path-traversal in the extractor — the node-tar CVE class), at which point
+ * the same actor already has local RCE; a benign git clone / normal tarball cannot carry such a link. We accept
+ * this to keep dependency-source reads working (a core coding-agent flow) rather than blocking every pnpm read on
+ * Linux; the sensitive-read floor still refuses a NAMED secret store even under the store. Tracked for the
+ * ADR-0057 security-review record in docs/roadmap/deferred-tasks.md.
+ */
+function isPnpmStorePath(absolutePath: string): boolean {
+  const folded = absolutePath.split(sep).map(foldPathComponent);
+  // Match the REAL virtual-store layout ONLY: `…/node_modules/.pnpm/<name>@<version>/node_modules/<name>/…`.
+  // Requiring the `<name>@<version>` segment (it always contains `@`) followed by a nested `node_modules`
+  // rejects a hard link planted DIRECTLY under `.pnpm/` (e.g. `.pnpm/evil`, or `.pnpm/x/y`), which the looser
+  // two-segment adjacency check exempted — the store's package files never live outside that nested shape.
+  for (let i = 0; i + 3 < folded.length; i += 1) {
+    if (
+      folded[i] === 'node_modules' &&
+      folded[i + 1] === '.pnpm' &&
+      (folded[i + 2]?.includes('@') ?? false) &&
+      folded[i + 3] === 'node_modules'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether the hard-link aliasing read guard applies to `real`: ON for the jailed tiers, OFF for the unjailed
+ * `full` tier and for pnpm's virtual store ({@link isPnpmStorePath}). */
+function rejectAliasedRead(config: NodeFsCapabilityConfig, real: string): boolean {
+  return config.tier !== 'full' && !isPnpmStorePath(real);
+}
+
 async function readOne(
   config: NodeFsCapabilityConfig,
   maxReadBytes: number,
@@ -150,12 +192,22 @@ async function readOne(
   }
   const inScope = await buildScopeChecker(config);
   const real = await jailExisting(config, inScope, path);
-  const result = await readJailedFile(real, maxReadBytes);
+  // The confidentiality floor: refuse to read a secret/credential store (.ssh, .relavium, .git/config, the
+  // credential dotfiles) in EVERY mode and tier — checked on the realpath'd target so a symlink/alias into one
+  // is caught. Reads flow into the model's context (then to the provider), so this mirrors, on the read side,
+  // the protected-paths WRITE floor's mode/tier independence (ADR-0057).
+  assertNotSensitiveReadPath(real);
+  const result = await readJailedFile(real, maxReadBytes, rejectAliasedRead(config, real));
   if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
   }
   if (result.kind === 'special') {
     throw new FsCapabilityError('read_file: the path is not a regular file');
+  }
+  if (result.kind === 'aliased') {
+    throw new FsScopeDeniedError(
+      'read_file: refusing to read a hard-linked file — its content may be shared with a file outside the sandbox (only pnpm virtual-store links under node_modules/.pnpm are exempt)',
+    );
   }
   if (result.kind === 'binary') {
     // The durable-media-handle path (ADR-0031) needs a wired media store; the 2.5.A fs arm has none, so a
@@ -196,10 +248,21 @@ async function readGlob(
     // can neither redirect the read nor make the size charged diverge from the bytes read. The bounded prefix
     // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
     // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
-    const result = await readJailedFile(m.real, maxReadBytes - totalBytes);
-    // skip a non-text match (dir / special / binary); never charge the budget. (collectGlobFiles already filters
-    // to regular files, so `special` is belt-and-suspenders — a swap to a FIFO after the walk would land here.)
-    if (result.kind === 'directory' || result.kind === 'special' || result.kind === 'binary')
+    const result = await readJailedFile(
+      m.real,
+      maxReadBytes - totalBytes,
+      rejectAliasedRead(config, m.real),
+    );
+    // skip a non-text match (dir / special / aliased / binary); never charge the budget. collectGlobFiles
+    // already filters to regular, in-scope, non-sensitive files — but it does NOT check nlink, so the
+    // hard-link (`aliased`) skip is enforced HERE by readJailedFile's per-fd guard (the primary aliasing
+    // filter for a glob read); `directory`/`special` are the belt-and-suspenders for a post-walk swap.
+    if (
+      result.kind === 'directory' ||
+      result.kind === 'special' ||
+      result.kind === 'aliased' ||
+      result.kind === 'binary'
+    )
       continue;
     if (result.kind === 'oversize') {
       throw new FsCapabilityError(
@@ -224,10 +287,11 @@ async function readGlob(
 /** Prefix length for binary detection — a NUL byte in the first 8 KiB marks a non-text file (the git convention). */
 const BINARY_PROBE_BYTES = 8192;
 
-/** The outcome of a single jailed read: a directory, a non-regular/binary/oversize fail-class, or text + stat. */
+/** The outcome of a single jailed read: a directory, a non-regular/aliased/binary/oversize fail-class, or text + stat. */
 export type JailedRead =
   | { kind: 'directory' }
   | { kind: 'special' }
+  | { kind: 'aliased' }
   | { kind: 'binary' }
   | { kind: 'oversize'; size: number }
   | { kind: 'file'; bytes: Buffer; size: number; mtimeMs: number };
@@ -245,14 +309,29 @@ export type JailedRead =
  * cancelled) — and the fstat below then fails any non-regular file closed. `sizeLimit` bounds the read so an
  * over-budget file is never loaded just to be rejected.
  *
+ * HARD-LINK ALIASING (`rejectAliased`): `realpath()` resolves symlinks but NOT hard links, so a regular file
+ * INSIDE the jail can be a second name for an inode whose OTHER name is OUTSIDE the jail (an SSH key) — the
+ * "realpath ∈ scope ⇒ content ∈ scope" invariant the jail relies on does not hold for a hard link, and neither
+ * `O_NOFOLLOW` (guards only a symlinked final component) nor the scope check (sees only the in-scope name) catches
+ * it. `st.nlink > 1` on the OPENED fd is the race-free signal (same inode the bytes come from); a hard-linked
+ * regular file is refused (`kind: 'aliased'`) exactly like a symlink. Gated on `isFile()` (a directory
+ * legitimately has `nlink > 1`). `rejectAliased` is `false` only for the unjailed `full` tier — where a benign
+ * in-scope hard link (e.g. a pnpm content-store link under `node_modules`) is read normally; the jailed tiers
+ * refuse it, trading that read for the aliasing-exfiltration guarantee.
+ *
  * CAVEAT (binary heuristic): a NUL-free file in a legacy single-byte encoding (Latin-1 / CP1252 / MacRoman)
  * passes as "text" and is decoded as UTF-8, yielding U+FFFD replacements for its high bytes — an accepted v1
  * limitation (the durable-media-handle path that would carry such files faithfully is the deferred follow-up).
  *
- * Exported for direct security testing of the post-jail fd guard (the no-follow / single-fd properties), which a
- * black-box `readFile` test cannot reach because the jail already resolves any symlink to its canonical target.
+ * Exported for direct security testing of the post-jail fd guard (the no-follow / single-fd / no-hard-link
+ * properties), which a black-box `readFile` test cannot reach because the jail already resolves any symlink to
+ * its canonical target.
  */
-export async function readJailedFile(real: string, sizeLimit: number): Promise<JailedRead> {
+export async function readJailedFile(
+  real: string,
+  sizeLimit: number,
+  rejectAliased = true,
+): Promise<JailedRead> {
   const handle = await open(
     real,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -276,6 +355,10 @@ export async function readJailedFile(real: string, sizeLimit: number): Promise<J
     // authoritative on the OPENED inode, so this guard needs no pre-open path-stat (which would reintroduce the
     // read TOCTOU the single-fd design closes).
     if (!st.isFile()) return { kind: 'special' };
+    // Hard-link aliasing guard (see the doc block): a regular file with more than one link may share its inode
+    // with a name outside the jail, so a jailed tier refuses it here — race-free on the OPENED fd, before any
+    // byte is read. `full` (unjailed) passes `rejectAliased: false` so a benign in-scope hard link still reads.
+    if (rejectAliased && st.nlink > 1) return { kind: 'aliased' };
     const probeLen = Math.min(BINARY_PROBE_BYTES, st.size);
     if (probeLen > 0) {
       const probe = Buffer.allocUnsafe(probeLen);
@@ -302,6 +385,152 @@ export async function readJailedFile(real: string, sizeLimit: number): Promise<J
  * write_file
  * ------------------------------------------------------------------------------------------------ */
 
+/**
+ * Protected paths NO mode (auto included) may write — even where the fs jail would allow them
+ * ([ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)). `.git/`,
+ * `.relavium/`, and `.ssh/` are matched by a path SEGMENT (so a `.gitignore` / `.relaviumrc` FILE is not
+ * protected — only the directories; a whole `.ssh/` is protected because *nothing* good comes of an agent
+ * writing into it — `authorized_keys`, `config`'s `ProxyCommand`, `id_*`, `rc` are all persistence/RCE
+ * vectors); the auto-sourced startup / config files below — every one of which executes code on the next
+ * shell, X login, or `git` invocation (`.gitconfig`'s `core.hooksPath` / `[alias] x = !cmd` ⇒ RCE) — are
+ * matched by BASENAME. This is the secure FLOOR, not an exhaustive catalogue: it deliberately does NOT cover
+ * directory-pattern sources (fish `conf.d/*.fish`), OS launch agents (`~/Library/LaunchAgents/*.plist`), or
+ * editor auto-run config — those are out of the basename model's reach and rely on the fs jail + approval.
+ *
+ * {@link foldPathComponent} normalizes each compared name the way a real filesystem folds a component: it
+ * takes the part before the first `:` (Win32 NTFS `name::$DATA` / `name:stream` addresses the SAME default
+ * stream as `name`, so `.gitconfig::$DATA` must fold to `.gitconfig`), lowercases (a case-insensitive FS / a
+ * `.GIT` variant must not slip through), AND strips trailing dots/spaces — Win32 silently drops those at open
+ * time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on the REAL protected target while the
+ * unfolded name missed the set. Folding always (not only on win32) over-denies a genuinely-distinct `.git.` or
+ * a POSIX `a:b` on a case-sensitive FS, which is the safe direction. The realpath re-check in {@link writeOne}
+ * additionally canonicalizes a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) of an EXISTING target.
+ */
+const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium', '.ssh']);
+const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
+  '.bashrc',
+  '.bash_profile',
+  '.bash_login',
+  '.bash_logout',
+  '.bash_aliases', // sourced by the default Debian/Ubuntu .bashrc
+  '.profile',
+  '.zshrc',
+  '.zprofile',
+  '.zshenv',
+  '.zlogin',
+  '.zlogout',
+  '.cshrc',
+  '.tcshrc',
+  '.kshrc',
+  '.login',
+  '.xprofile', // X11 login scripts — executed at graphical login
+  '.xinitrc',
+  '.xsession',
+  '.gitconfig', // user-global git config — core.hooksPath / `[alias] x = !cmd` ⇒ RCE on the next git command
+  'config.fish', // fish — ~/.config/fish/config.fish
+  'profile.ps1',
+  'microsoft.powershell_profile.ps1', // PowerShell profiles
+]);
+
+/** Fold a path component the way a filesystem does for matching: take the pre-`:` part (NTFS `name::$DATA`
+ * addresses `name`), lowercase (case-insensitive FS), and strip trailing dots/spaces (Win32 drops those at open
+ * time) — so `.BASHRC` / `.bashrc.` / `.git ` / `.gitconfig::$DATA` all fold to the bare protected name. */
+function foldPathComponent(name: string): string {
+  const beforeStream = name.split(':', 1)[0] ?? name; // NTFS Alternate-Data-Stream / drive qualifier
+  const lowered = beforeStream.toLowerCase();
+  // Strip trailing dots/spaces (Win32 drops them at open time) via a linear scan — NOT a `/[. ]+$/` regex, whose
+  // `+$` backtracks (flagged by the static analyzer) and would break this file's no-backtracking-RegExp posture.
+  let end = lowered.length;
+  while (end > 0 && (lowered[end - 1] === '.' || lowered[end - 1] === ' ')) end -= 1;
+  return lowered.slice(0, end);
+}
+
+/**
+ * Whether an absolute path is protected — a `.git`/`.relavium`/`.ssh` directory segment, or a startup/config
+ * basename. The pure predicate behind {@link assertNotProtectedPath}; exported so a caller (the ADR-0057 chat
+ * `auto`-mode approval, which falls back to an explicit prompt on a protected target) can classify a target
+ * WITHOUT triggering the throw — the two share exactly one protected-paths definition.
+ */
+export function isProtectedPath(absoluteTarget: string): boolean {
+  for (const segment of absoluteTarget.split(sep)) {
+    if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) return true;
+  }
+  return PROTECTED_RC_BASENAMES.has(foldPathComponent(basename(absoluteTarget)));
+}
+
+/** Deny a write to a protected path (a `.git`/`.relavium`/`.ssh` directory, or a startup/config file). FATAL. */
+function assertNotProtectedPath(absoluteTarget: string): void {
+  if (!isProtectedPath(absoluteTarget)) return;
+  // Re-derive which class matched for a precise (still reason-only) message.
+  for (const segment of absoluteTarget.split(sep)) {
+    if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) {
+      throw new FsScopeDeniedError(
+        'write_file: refusing to write inside a protected directory (.git / .relavium / .ssh)',
+      );
+    }
+  }
+  throw new FsScopeDeniedError('write_file: refusing to write a shell startup file');
+}
+
+/**
+ * Directory segments whose contents are refused to READ in every mode/tier — a whole `.ssh/` (private keys,
+ * `authorized_keys`, `known_hosts`) and `.relavium/` (this CLI's local config/secrets dir). Narrower than the
+ * write floor's {@link PROTECTED_DIR_SEGMENTS} (which also blocks whole `.git/` for WRITE-side hook RCE, a
+ * concern that does not apply to a read) — reads leak CONFIDENTIALITY, so the read floor targets the
+ * secret/credential stores specifically.
+ *
+ * NOTE (latent): `.relavium` also names this CLI's sanctioned scratch root `~/.relavium/tmp/` (the `tmpDir`
+ * sandboxed root). Both this read floor AND the write {@link PROTECTED_DIR_SEGMENTS} would refuse that root — but
+ * no call site wires `tmpDir` today, so the collision is inert. Resolve it (home-anchored match, or exclude the
+ * wired tmp root) BEFORE any caller passes `tmpDir`. Tracked in docs/roadmap/deferred-tasks.md.
+ */
+const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.ssh', '.relavium']);
+/** Credential/secret dotfiles refused to READ by basename (git creds, npm/pypi/pg/netrc tokens). */
+const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
+  '.gitconfig', // user-global git config — `[credential]`, insteadOf URLs with embedded tokens
+  '.git-credentials', // git `store` helper — verbatim `https://user:TOKEN@host` lines (the plaintext token store)
+  '.netrc',
+  '.npmrc', // `_authToken`
+  '.pypirc',
+  '.pgpass',
+]);
+
+/**
+ * Whether an absolute path is a secret/credential store that must never be read into the model's context (and
+ * thence to the provider): under a `.ssh`/`.relavium` segment, a repo-local `.git/config` (embeds remote-URL
+ * credentials), or a credential dotfile. The read-side confidentiality analogue of {@link isProtectedPath};
+ * exported for direct testing. Folds each component like the write floor (NTFS ADS / case / trailing dot-space).
+ */
+export function isSensitiveReadPath(absoluteTarget: string): boolean {
+  const folded = absoluteTarget.split(sep).map(foldPathComponent);
+  for (const segment of folded) {
+    if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
+  }
+  // A git `config` embeds remote-URL credentials: catch it under a `.git` dir (repo / submodule `.git/modules/*`
+  // / worktree) AND under a bare-repo dir (`myrepo.git/config`) — any segment ENDING in `.git` with a `config`
+  // basename. Over-denying a stray `x.git/config` that isn't a repo is the safe direction for a read floor.
+  const base = foldPathComponent(basename(absoluteTarget));
+  if (
+    base === 'config' &&
+    folded.some((segment) => segment === '.git' || segment.endsWith('.git'))
+  ) {
+    return true;
+  }
+  // git's XDG credential store `$XDG_CONFIG_HOME/git/credentials` — same plaintext `user:TOKEN@host` lines as
+  // `.git-credentials`, but the basename is a bare `credentials` under a `git` dir (no leading dot).
+  if (base === 'credentials' && folded.includes('git')) return true;
+  return SENSITIVE_READ_BASENAMES.has(base);
+}
+
+/** Deny a read of a secret/credential store (`.ssh`/`.relavium`, a git `config`, a credential dotfile). FATAL. */
+function assertNotSensitiveReadPath(absoluteTarget: string): void {
+  if (isSensitiveReadPath(absoluteTarget)) {
+    throw new FsScopeDeniedError(
+      'refusing to read a credential/secret store (.ssh / .relavium / a git config / a credential dotfile) — ask the user to share any needed content instead',
+    );
+  }
+}
+
 async function writeOne(
   config: NodeFsCapabilityConfig,
   path: string,
@@ -315,6 +544,10 @@ async function writeOne(
     throw new ToolUnavailableError('write_file', 'fs (read-only in this session)');
   }
   throwIfAborted(signal);
+  // Protected paths are denied in EVERY mode (auto included). Checked on the REQUESTED path before the jail
+  // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the (realDir-)jailed
+  // finalTarget so a parent symlink cannot resolve INTO a protected directory.
+  assertNotProtectedPath(resolve(config.workspaceDir, path));
   const inScope = await buildScopeChecker(config);
   const { realDir, finalTarget } = await jailWriteTarget(
     config,
@@ -323,6 +556,13 @@ async function writeOne(
     opts.createDirs === true,
   );
   await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
+  assertNotProtectedPath(finalTarget); // re-check the jailed target (parent realpath'd) against the fold
+  // Belt-and-suspenders for Win32 final-component name-aliasing: `finalTarget` keeps the LEXICAL basename
+  // (jailWriteTarget only realpath's the parent). If the target already EXISTS, its realpath is the canonical
+  // long name, so a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) or an NTFS stream path that folds to
+  // a non-protected basename is caught HERE. A not-yet-existing target has no alias, so the checks above suffice.
+  const canonicalTarget = await realpath(finalTarget).catch(() => undefined);
+  if (canonicalTarget !== undefined) assertNotProtectedPath(canonicalTarget);
   throwIfAborted(signal);
   const bytes = Buffer.from(data, 'utf8');
   if (opts.append === true) {
@@ -331,19 +571,54 @@ async function writeOne(
     // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of
     // scope). A symlink there fails ELOOP/ENOTDIR, which we map to the FATAL `tool_denied` (not the retryable
     // `tool_failed` `guarded` would otherwise assign a raw fs error). NOTE: `O_NOFOLLOW` is `0` on Windows (no
-    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case, and append is the
-    // author-trusted workflow-run path (chat is read-only), so the residual Windows race is accepted for 2.5.A.
+    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case. `O_NONBLOCK` opens
+    // a FIFO/device WITHOUT blocking — a reader-less FIFO would otherwise hang the write FOREVER (fs.open takes
+    // no AbortSignal, so even the EA7 mid-turn abort could not cancel it), and the fstat below fails it closed.
+    // The write arm now also serves the approval-gated `chat-read-write` profile (ADR-0057), not only the
+    // author-trusted workflow-run path; the residual Windows-only symlink-swap race is flagged for the mandatory
+    // ADR-0057 security review (Step 5) to re-affirm as accepted — the protected-paths floor + fs jail still hold.
     const handle = await open(
       finalTarget,
-      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+      constants.O_WRONLY |
+        constants.O_APPEND |
+        constants.O_CREAT |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK,
     ).catch((error: unknown) => {
       const code = errnoCode(error);
       if (code === 'ELOOP' || code === 'ENOTDIR') {
         throw new FsScopeDeniedError('write_file: refusing to write through a symlink');
       }
+      if (code === 'ENXIO' || code === 'EOPNOTSUPP' || code === 'ENODEV') {
+        // A non-regular special file that fails the OPEN itself rather than reaching the fstat: O_WRONLY |
+        // O_NONBLOCK on a reader-less FIFO returns ENXIO immediately (instead of blocking forever); a socket
+        // special file returns ENXIO (Linux) or EOPNOTSUPP (macOS); a device with no driver returns ENODEV. All
+        // are targets we refuse anyway — surface the same fatal denial the post-open fstat gives, not a raw
+        // (retryable, path-leaking) fs error.
+        throw new FsScopeDeniedError(
+          'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
+        );
+      }
       throw error;
     });
     try {
+      // Race-free guards on the OPENED inode (same fd — no TOCTOU vs. a path re-stat): (1) refuse a NON-REGULAR
+      // target — a reader-less FIFO/device would hang the write forever (O_NONBLOCK above returned the fd so this
+      // fstat can run); (2) refuse a HARD-LINKED regular file (st.nlink > 1) — lstat, realpath, and the
+      // protected-path fold all see only this one in-scope, non-symlink name, but the shared inode may ALSO be a
+      // name outside the jail or a protected file (~/.ssh/authorized_keys), and O_APPEND would write straight
+      // through to it, defeating the protected-paths floor. Both mirror the read-side fd guards (readJailedFile).
+      const st = await handle.stat();
+      if (!st.isFile()) {
+        throw new FsScopeDeniedError(
+          'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
+        );
+      }
+      if (st.nlink > 1) {
+        throw new FsScopeDeniedError(
+          'write_file: refusing to append to a hard-linked file (its content may be shared with a file outside the sandbox)',
+        );
+      }
       await handle.write(bytes);
     } finally {
       await handle.close();
@@ -358,8 +633,9 @@ async function writeOne(
     // O_CREAT|O_EXCL|O_WRONLY (the 'wx' flag) plus O_NOFOLLOW — no-follow PARITY with the append path: the open
     // refuses to follow a final-component symlink even though the random temp name already makes a pre-placed
     // symlink there implausible (defense in depth). The residual gap is a PARENT-dir swap between `jailWriteTarget`'s
-    // realpath and this write — not closable in Node (no `openat`); the write arm is the author-trusted
-    // workflow-run path (chat is read-only), so that residual is accepted for 2.5.A.
+    // realpath and this write — not closable in Node (no `openat`); the write arm now also serves the
+    // approval-gated `chat-read-write` profile (ADR-0057), so that Windows-only residual is flagged for the
+    // mandatory ADR-0057 security review (Step 5), with the protected-paths floor + fs jail still in force.
     await writeFile(tmp, bytes, {
       flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     });
@@ -385,6 +661,9 @@ async function listOne(
   throwIfAborted(signal);
   const inScope = await buildScopeChecker(config);
   const realRoot = await jailExisting(config, inScope, path);
+  // Refuse to enumerate a credential/secret store (recon of key/secret filenames) — the read-side confidentiality
+  // floor, applied to the requested root and to each nested entry the recursive walk reaches below.
+  assertNotSensitiveReadPath(realRoot);
   const rootInfo = await stat(realRoot);
   if (!rootInfo.isDirectory()) {
     throw new FsCapabilityError('list_directory: the path is not a directory');
@@ -395,6 +674,12 @@ async function listOne(
   await walk(realRoot, opts.recursive === true, signal, inScope, async (real, rel, dirent) => {
     if (entries.length >= cap) return false; // stop the walk once the listing cap is hit
     if (matcher !== undefined && !matcher(rel)) return true;
+    // Sensitive-read floor on the RESOLVED target (mirrors collectGlobFiles): `walk` realpaths the parent DIR
+    // but not the entry, so a bare lexical check would let a symlink named innocuously slip a nested
+    // .ssh/.relavium/credential store into the listing. Fall back to the lexical path when realpath fails (a
+    // broken/vanished link) so a sensitively-NAMED entry is still filtered. The DISPLAYED name (`rel`) is unchanged.
+    const realResolved = await realpath(real).catch(() => undefined);
+    if (isSensitiveReadPath(realResolved ?? real)) return true;
     const info = await lstat(real).catch(() => undefined);
     if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
     entries.push({
@@ -461,9 +746,14 @@ async function jailWriteTarget(
 ): Promise<{ realDir: string; finalTarget: string }> {
   const lexical = lexicalTarget(config, path);
   const targetDir = dirname(lexical);
-  // Verify the deepest EXISTING ancestor is in-scope before creating anything, so a symlinked ancestor
-  // pointing outside the scope is caught before a single byte or stray dir is written there.
-  assertInScope(inScope, await deepestExistingReal(targetDir));
+  // Verify the deepest EXISTING ancestor is in-scope AND not protected before creating anything, so a
+  // symlinked/aliased ancestor pointing outside the scope — OR resolving INTO a protected dir (a Win32 8.3
+  // short name like `GIT~1` → `.git`, which the lexical pre-check misses) — is caught before `mkdir` creates
+  // even an empty subdir there. This closes the createDirs side-effect the realpath'd finalTarget check alone
+  // would only catch AFTER the mkdir.
+  const deepestReal = await deepestExistingReal(targetDir);
+  assertInScope(inScope, deepestReal);
+  assertNotProtectedPath(deepestReal);
   if (createDirs) await mkdir(targetDir, { recursive: true });
   // The parent must now exist (created above, or pre-existing) — re-resolve + re-check (tightens the window).
   const realDir = await realpath(targetDir).catch(() => {
@@ -589,6 +879,9 @@ async function collectGlobFiles(
     // Defense in depth: a matched FILE is realpath-jailed (a symlinked file could still point outside scope).
     const realResolved = await realpath(real).catch(() => undefined);
     if (realResolved === undefined || !inScope(realResolved)) return true; // skip, never read out of scope
+    // Never surface a credential/secret store through a glob (the sensitive-read floor); the per-fd hard-link
+    // guard in readJailedFile then still refuses an aliased match the readGlob loop reaches.
+    if (isSensitiveReadPath(realResolved)) return true;
     // stat the RESOLVED target (not the walk path) so an in-scope symlink TO a regular file still reads — a
     // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
     const info = await stat(realResolved).catch(() => undefined);

@@ -1,3 +1,6 @@
+import type { ToolApprovalRequest } from '@relavium/core';
+
+import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { formatCostUsd, formatDuration, formatTokens } from './format.js';
 import type { SessionViewState, ToolCallView, TurnSummary } from './session-view-model.js';
 
@@ -48,11 +51,52 @@ export function sanitizeInline(text: string): string {
 }
 
 /**
- * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code),
- * the turn's token usage, and its duration. Secret-free — it carries only counts/codes, never argument text.
+ * Error codes whose `errorMessage` is safe to render in-chat. This leans on a load-bearing project-wide
+ * contract, not a two-string allowlist: EVERY `tool_denied` / `tool_unavailable` message across the engine is,
+ * by the `ToolDispatchError` reason-only rule (packages/core/src/tools/errors.ts; tool-registry.md §errors), a
+ * static host/engine-authored LABEL that never interpolates an argument value, path, URL, or secret — the
+ * ADR-0057 approval-floor denials ("not allowed in ask mode (read-only)", "refusing to write inside a protected
+ * directory", "fs (read-only in this session)") plus every `ToolPolicyError` / `HostDeniedError` reason. Other
+ * codes (validation / execution_failed / …) MAY carry prompt/model context, so only the code is shown for them.
+ * A new denial subclass becomes chat-visible automatically once its code is one of these — which is safe
+ * precisely because the reason-only contract binds it too (the message is still terminal-sanitized regardless).
+ */
+const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set(['tool_denied', 'tool_unavailable']);
+
+/**
+ * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code +,
+ * for the vetted approval-floor codes, its secret-free reason), the turn's token usage, and its duration.
+ * Secret-free — it carries only counts/codes + a whitelisted reason label, never argument text.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
-  const head = summary.errorCode === undefined ? summary.stopReason : `error: ${summary.errorCode}`;
+  // Terminal-sanitize the whitelisted reason (like every other display string here) BEFORE the whitespace
+  // collapse — the whitelisted messages are host-authored ASCII today, but the render boundary must strip any
+  // ANSI/OSC/control byte regardless so the whitelist stays robust to a future producer.
+  const reason =
+    summary.errorMessage === undefined
+      ? ''
+      : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
+  let head: string;
+  if (summary.errorCode === undefined) {
+    head = summary.stopReason;
+  } else if (reason.length > 0 && SAFE_MESSAGE_CODES.has(summary.errorCode)) {
+    // Surface WHY a governed action was denied — the reason is the only place it reaches the user, and the turn
+    // died on it (e.g. `error: tool_denied — not allowed in ask mode (read-only)`). Unlike the run path's
+    // final-summary.ts (which renders errorMessage for every code), the chat path restricts it to the vetted
+    // approval-floor codes, since a chat turn is interactive/lower-trust.
+    head = `error: ${summary.errorCode} — ${reason}`;
+  } else if (summary.errorCode === 'tool_failed') {
+    // A tool call ended the turn (a repeated failure spent the correction budget, or a non-recoverable tool
+    // error). On the chat surface a file-not-found is usually fed back to the model (ADR-0057 recoverToolFailures)
+    // so it seldom reaches here — but when the turn DOES die on tool_failed we owe the user more than a bare code.
+    // We must NOT echo `errorMessage` (a tool_failed message MAY carry model/prompt/MCP-server context — the very
+    // reason it is outside SAFE_MESSAGE_CODES); instead a STATIC, host-authored hint at the most common real
+    // cause: a path outside the session workspace (the #1 launch-cwd gotcha) or an unavailable target.
+    head =
+      "error: tool_failed — a tool call failed (a path may be outside this session's workspace, or the target was unavailable)";
+  } else {
+    head = `error: ${summary.errorCode}`;
+  }
   const parts = [
     head,
     formatTokens(summary.tokensUsed),
@@ -81,4 +125,22 @@ export function formatSessionFooter(state: SessionViewState): string {
     `${state.turnCount} ${state.turnCount === 1 ? 'turn' : 'turns'}`,
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
+}
+
+/** The footer including the active chat mode (ADR-0057) — the mode is always shown so `auto` is never hidden. */
+export function formatSessionFooterWithMode(state: SessionViewState, mode: ChatMode): string {
+  const base = formatSessionFooter(state);
+  const modePart = `${MODE_LABEL[mode]} mode`;
+  return base.length > 0 ? `${base} · ${modePart}` : modePart;
+}
+
+/**
+ * The secret-free target line for an approval prompt — the resolved path / command / host from the preview
+ * (the registry already stripped any secret / query string). Sanitized for display; empty when the action
+ * class carries no pre-dispatch target (e.g. `web_search` / `mcp_call`, where the action class alone is shown).
+ */
+export function formatApprovalTarget(request: ToolApprovalRequest): string {
+  const { path, command, host } = request.preview;
+  const target = path ?? command ?? host ?? '';
+  return target.length > 0 ? sanitizeInline(target) : '';
 }

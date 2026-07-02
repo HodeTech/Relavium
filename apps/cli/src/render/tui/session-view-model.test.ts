@@ -1,5 +1,5 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import type { ErrorCode } from '@relavium/shared';
+import type { ErrorCode, SessionStopReason } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -66,7 +66,7 @@ function events() {
       cumulativeCostMicrocents: cumulative,
     }),
     turnCompleted: (
-      opts: { stopReason?: 'stop' | 'tool_use'; error?: { code: ErrorCode; message: string } } = {},
+      opts: { stopReason?: SessionStopReason; error?: { code: ErrorCode; message: string } } = {},
     ): SessionStreamHandleEvent => ({
       type: 'session:turn_completed',
       ...stamp(),
@@ -139,6 +139,38 @@ describe('session-view-model', () => {
       // The 1ms-per-event clock: turn_started @ +1ms, two tokens, turn_completed @ +4ms ⇒ 3ms.
       expect(entry.summary.durationMs).toBe(3);
     }
+  });
+
+  it('projects a mid-turn abort (ADR-0057 EA7) into a turn summary with stopReason "aborted" and no error', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('partial'),
+      e.turnCompleted({ stopReason: 'aborted' }), // EA7: aborted carries NO error
+    ]);
+    const entry = state.transcript[0];
+    expect(entry).toMatchObject({ role: 'assistant', text: 'partial' });
+    if (entry?.role === 'assistant') {
+      expect(entry.summary.stopReason).toBe('aborted');
+      expect(entry.summary.errorCode).toBeUndefined(); // user-initiated, not a failure
+    }
+    expect(state.status).toBe('idle'); // the session stays alive after an abort
+  });
+
+  it('an abort with NO streamed text still appends a trace entry (Esc at the approval prompt is confirmed)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      // No token — the common abort-during-approval case (Esc at the [y]/[a]/[n] prompt before any text streamed).
+      e.turnCompleted({ stopReason: 'aborted' }),
+    ]);
+    expect(state.transcript).toHaveLength(1); // NOT silently dropped
+    const entry = state.transcript[0];
+    expect(entry).toMatchObject({ role: 'assistant', text: '' });
+    if (entry?.role === 'assistant') expect(entry.summary.stopReason).toBe('aborted');
+    expect(state.status).toBe('idle');
   });
 
   it('drops a pre-tool preamble from the stored assistant text (mirrors result.text), annotates the call', () => {

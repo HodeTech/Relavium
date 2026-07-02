@@ -3,9 +3,10 @@
 > Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
-> + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) **implemented + fully reviewed, PR pending**
-> → 2.5.E (modes + per-tool approval, next). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
-> lanes (no dependency chain): 2.5.H / I / J.
+> + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
+> → 2.5.E (modes + per-tool approval + mid-turn abort) 🟡 **implemented + reviewed; PR pending merge** (ADR-0057
+> Accepted). **Next: the experience arm 2.5.D / F / G** (off the spine, depends on B/C). Additive lanes (no
+> dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -188,14 +189,15 @@ ADR: bare-invocation interactive-entry contract.**
 
 ### 2.5.C — In-app slash registry, command palette, `/help`, `/doctor`, `/workflows`
 
-> **Status:** 🚧 **Implemented + fully reviewed; PR pending — not yet ✅ Done (awaits merge).**
+> **Status:** ✅ **Done (PR #62, 2026-06-30).**
 > [ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) is **Accepted (2026-06-29)**;
 > the command-manifest + in-REPL-slash contracts are canonically homed in
 > [commands.md](../../reference/cli/commands.md) and [chat-session.md](../../reference/cli/chat-session.md).
 > Delivered across S1–S6, each behind the per-step **opus + sonnet** review loop, with a **dedicated adversarial
-> security pass** on the security-sensitive S5 (`/doctor --deep`). **Decided design:** the `/` palette is the
-> discovery entry point in **both Home and chat** — a curated **two-registry** model (the shell `COMMAND_MANIFEST`
-> vs the in-REPL `REPL_COMMANDS`; no command in both, so no cross-surface divergence).
+> security pass** on the security-sensitive S5 (`/doctor --deep`), then a comprehensive multi-dimensional
+> first-class review of the whole PR. **Decided design:** the `/` palette is the discovery entry point in **both
+> Home and chat** — a curated **two-registry** model (the shell `COMMAND_MANIFEST` vs the in-REPL `REPL_COMMANDS`;
+> no command in both, so no cross-surface divergence).
 >
 > **Per-step ledger** (branch `development`):
 > - **S1** the command manifest (drift-guarded against the commander tree) · **S2** the shared `executeCommand`
@@ -258,6 +260,23 @@ preserved; zero engine/seam change.
 
 ### 2.5.E — Chat modes (reseat-less) + per-tool approval + mid-turn abort
 
+> **Status:** 🟡 **Implemented + reviewed on `development`; PR pending merge** (behind
+> [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md), now **Accepted** after the
+> mandatory security review). Shipped: the full reseat-less mode system (ask / plan / accept-edits / auto on
+> the `Shift+Tab` cycle + `/mode`), per-tool approval (the fail-closed `confirmAction` floor — `[y]/[a]/[n]`
+> with a session once/always cache), mid-turn `Esc` abort (EA7), and the host capability arms that close the
+> 2.5.A deferral — a write-capable `fs` tier + **protected paths** (`.git/`/`.relavium/`/`.ssh/` + shell-rc,
+> refused in EVERY mode incl. `auto`, Win32-fold / NTFS-ADS / 8.3 / symlink hardened), the SSRF-hardened
+> `egress` arm (one shared connect-by-validated-IP mechanism with media; Host-header-strip), and the `os` arm
+> (`read_clipboard`/`notify`) — **now a governed action class** so the clipboard exfiltration sink rides the
+> approval floor. Wired LIVE into `relavium chat`, the one-shot `agent run`, and the 2.5.B Home (each activates
+> the regime before its first turn — no path runs a governed action ungated). Engine amendments EA3/EA4/EA5/EA7
+> landed. Each step went through the mandated loop (opus + Sonnet 5 adversarial review, ~50 findings fixed incl.
+> 4 HIGH security bugs) plus the dedicated holistic security review (the Accept gate). **Deferred follow-ups**
+> ([../deferred-tasks.md](../deferred-tasks.md)): the `[c]` reject-with-typed-reason prompt, a plain/non-TTY
+> non-interactive approval policy, a live `web_search`/http egress credential resolver, and the session-level
+> budget pause/resume (rides the EA4 machine).
+
 The capability workstream. Claude-Code-style modes — but a mode is a **policy layer on the same
 session instance**, not a reseat: the `ToolHost` is bound full-capability for the session lifetime,
 and the mode controls only (a) the model-advertised tool subset (a per-turn `buildLlmTools` filter)
@@ -269,9 +288,20 @@ approval policy** (authoritative — `enforcePolicy` is mode-agnostic and inert 
 
 - Add a mutable `#mode` to `AgentSession`, snapshotted per turn; the four modes
   (ask / plan / accept-edits / auto) map to an advertised-tool subset + an approval policy.
-  `Shift+Tab` cycles `ask → plan → accept-edits`; `auto` is explicit-only (`/mode auto`); **no
-  one-key bypass valve** ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
-- **Protected paths:** `.git/`, `.relavium/`, shell rc files are never auto-written in any mode.
+  `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** (auto-approve is a mainstream expectation, so
+  it is reachable in the cycle, not hidden behind a typed command); `/mode <name>` jumps directly. The
+  **default is read-only `ask`**, the active mode is **always shown in the footer**, and there is **no
+  hidden "bypass all permissions" valve**: no mode (auto included) writes a protected path or escapes the
+  fs jail ([ADR-0029](../../decisions/0029-tool-policy-hardening.md) secure-by-default).
+- **Protected paths:** `.git/`, `.relavium/`, shell rc files are never auto-written in any mode — in
+  `auto` a protected-path write falls back to an explicit prompt rather than auto-approving.
+- **Host arms (closes the 2.5.A deferral):** the write-capable `fs` tier, the SSRF-hardened `egress` arm,
+  and the `os` arm are wired in the CLI host this workstream — reusing the existing connect-by-validated-IP
+  media-egress mechanism ([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md))
+  over the one shared `isPrivateOrLocalHost` range-block (extracted so tool + media egress share one
+  implementation, never a second SSRF parser). `egress` is a governed class and always rides the
+  fail-closed `confirmAction` floor. A **dedicated adversarial security review** covers the fs-write jail +
+  protected paths, the egress mechanism, and the `os` arm.
 - **Per-tool approval (new vertical — not the workflow gate), fail-closed:** a registry pre-dispatch hook
   (**EA3** — `confirmAction?`, host-injected like `ToolHost` so the engine boundary (ADR-0037) holds; runs
   between the `enforcePolicy` check and the side-effect in `packages/core/src/tools/registry.ts`). **Note:**
@@ -280,7 +310,8 @@ approval policy** (authoritative — `enforcePolicy` is mode-agnostic and inert 
   **fail-closed** — when a write/process/egress arm is wired, a write-/exec-/egress-class dispatch **requires**
   a decision; **absent hook ⇒ deny** (so an advertise-filter or wiring bug can never let `ask` mode write).
   Plus: an `agent:approval_requested` event (**EA5**), an `AgentSession` pause/resume state (**EA4**), a REPL
-  `[approve]/[reject]/[comment]` intercept that bypasses the in-flight key-swallow gate (no deadlock), a
+  `[y]`/`[a]`/`[n]`/`[esc]` intercept (approve-once / always / reject / abort; `[c]` reject-with-reason
+  deferred) that bypasses the in-flight key-swallow gate (no deadlock), a
   typed `ToolDeniedByUserError` (the existing `tool_denied` `ErrorCode`, already non-retryable), and a
   session-scoped, **in-memory** once/always cache (not persisted across resume; **once** = this invocation
   (tool+args), **always** = this tool id for this session instance). The existing `gateApproved` flag is a
@@ -292,7 +323,7 @@ approval policy** (authoritative — `enforcePolicy` is mode-agnostic and inert 
   machinery; the session-level budget pause/resume deferred from Phase 2 rides the same machine.
 
 **Acceptance:** `Shift+Tab` switches modes instantly with **no** tool-context loss; ask mode advertises
-read-only tools; accept-edits prompts before each write with `[a]/[r]/[c]` and an once/always memory;
+read-only tools; accept-edits prompts before each write with `[y]/[a]/[n]` and an once/always memory;
 a rejection is a clean `tool_denied`, not a retry; `Esc` aborts a turn and the session continues; auto
 is sandbox-bounded with protected paths honoured. A security review of the reseat-less mode model
 (defense-in-depth trade-off) passes. **Required ADR: per-tool approval + reseat-less chat mode system

@@ -177,10 +177,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           now,
           uuid,
         });
-        const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
-          { built, opened, store, persister, doctorProbes: chatDoctorProbes },
-          deps,
-        );
+        // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
+        // fail-closed approval regime — BEFORE the session opens, so the full-capability chat host is never live
+        // without the per-tool approval floor (the SAME guarantee the `chat` command's runReplLoop provides).
+        const { processLine, cancelOnce, shouldStop, onAbort, onModeChange } =
+          createChatLineHandler(
+            { built, opened, store, persister, doctorProbes: chatDoctorProbes },
+            deps,
+          );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         unsubscribe = built.handle.subscribe((event) => store.apply(event));
         frame = setInterval(() => store.tick(), FRAME_MS);
@@ -200,7 +204,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
           }
         };
-        return { store, processLine, shouldStop, teardown };
+        return { store, processLine, shouldStop, teardown, onAbort, onModeChange };
       } catch (err) {
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();

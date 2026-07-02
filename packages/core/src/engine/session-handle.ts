@@ -16,6 +16,7 @@
  */
 
 import type {
+  AgentApprovalRequestedEvent,
   AgentToolCallEvent,
   AgentToolResultEvent,
   AgentTokenEvent,
@@ -29,15 +30,17 @@ import type { RunEventBus } from './event-bus.js';
 import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
 
 /**
- * The fully-stamped events a session stream carries: the five `session:*` lifecycle events plus the four
+ * The fully-stamped events a session stream carries: the five `session:*` lifecycle events, the four
  * dual-envelope in-turn events (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`),
- * here carrying `sessionId`. The complete session stream per sse-event-schema.md §"Session event namespace".
+ * and the host-emitted `agent:approval_requested` (ADR-0057) — all carrying `sessionId`. The complete
+ * session stream per sse-event-schema.md §"Session event namespace".
  */
 export type SessionStreamHandleEvent =
   | SessionEvent
   | AgentTokenEvent
   | AgentToolCallEvent
   | AgentToolResultEvent
+  | AgentApprovalRequestedEvent
   | CostUpdatedEvent;
 
 /** The session's sole stream terminal — `turn_completed` is per-turn; `exported` (1.Z) is a side event. */
@@ -80,13 +83,15 @@ export function createSessionEventSink(bus: RunEventBus, sessionId: string): Ses
     // (agent-turn.ts), so a session never actually emits it. It is the one `NodeStreamEvent` arm with no
     // session-carrying schema member, so it could not validate on the bus. Drop it at this single
     // translation point — the contract boundary 1.W owns — keeping the session stream to its
-    // sse-event-schema.md contract (the five `session:*` + the four dual `agent:*`/`cost:updated`).
+    // sse-event-schema.md contract (the five `session:*`, the four dual `agent:*`/`cost:updated`, and the
+    // host-emitted `agent:approval_requested` — ADR-0057).
     if (event.type === 'agent:file_patch_proposed') {
       return;
     }
     // Attach the correlation key; the bus then stamps the per-session sequenceNumber + timestamp and
     // validates against the combined RunOrSessionEventSchema. After the guard the body is a `session:*`
-    // lifecycle body or one of the four dual `agent:*`/`cost:updated` bodies, so `+ sessionId` is a
+    // lifecycle body, one of the four dual `agent:*`/`cost:updated` bodies, or the host-emitted
+    // `agent:approval_requested` body, so `+ sessionId` is a
     // BusEventDraft the session-side `emit` overload accepts (a session lifecycle → `SessionEventDraft`,
     // a dual body → the optional-`sessionId` `RunEventDraft` arm). The bus stamps and returns it.
     bus.emit({ ...event, sessionId });

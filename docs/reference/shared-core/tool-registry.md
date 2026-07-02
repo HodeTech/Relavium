@@ -58,7 +58,7 @@ interface ToolDef<Args = unknown, Result = unknown> {
    * SECURITY: a `spawnsProcess` / `egress:'http'` tool that omits this has its allowlist check silently
    * skipped (fail-open) — supply it, or pin the model-controlled args as config-only.
    */
-  readonly policyTarget?: (args: Args) => PolicyTarget; // { command?: string; url?: string }
+  readonly policyTarget?: (args: Args) => PolicyTarget; // { command?: string; url?: string; path?: string }
 
   /**
    * Pure dispatcher: validated+merged effective args in, the FULL result out. Performs side effects
@@ -72,10 +72,22 @@ interface ToolDef<Args = unknown, Result = unknown> {
 interface ToolPolicyClass {
   /** Needs the FS scope tier — `read_file`, `write_file`, `list_directory`. */
   readonly fsScoped: boolean;
+  /**
+   * The fs operation is a WRITE (`write_file`), not a read. `fsScoped` alone is `true` for reads AND
+   * writes alike, so it cannot tell `write_file` from `read_file`; this additive discriminator is the one
+   * the per-tool approval needs to gate writes ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3)
+   * and the `fs-write` `ActionClass` [ADR-0041](../../decisions/0041-external-action-governance-seam.md) proposes —
+   * landed once, credited to both. Absent/false ⇒ a read-only fs tool (never governed by approval).
+   */
+  readonly fsWrite?: boolean;
   /** Spawns an OS process under the `allowedCommands` allowlist — `run_command`, `git_*`. */
   readonly spawnsProcess: boolean;
   /** Outbound egress — DISCRIMINATED by kind, because the three paths have different policies. */
   readonly egress?: 'http' | 'search' | 'mcp';
+  /** An OS-integration action — `read_clipboard` (an un-jailed read of ambient, secret-bearing OS state) /
+   *  `notify`. A governed action class (ADR-0057 §security review): gated by the interactive approval floor,
+   *  never merely the advertise-filter. Absent/false ⇒ not an os action. */
+  readonly os?: boolean;
   /** Requires a human-gate approval in an automated workflow before it may execute — `git_commit`. */
   readonly requiresGateApproval: boolean;
 }
@@ -158,12 +170,13 @@ host is touched once, in the middle.
 2. **Assemble the effective argument set.** Start from the model-supplied args (for an agent tool-call) and/or `ctx.config.input_mapping` (for a `tool` node, where there are no model args), apply `input_mapping`, then merge `configOnlyParams` **last (config wins)**.
 3. **Validate the COMPLETE effective set** via `tool.parseArgs` **and** the secret-taint check — `input_mapping`/config-derived values are validated identically to model args; a secret-tainted value reaching a non-credential arg is rejected (0029(c)). A miss → `ToolArgsInvalidError`.
 4. **Enforce the guardrail policy on the EFFECTIVE args** (the resolved command / URL is now the real value): exact `allowedCommands` (+ opt-in `allowedCommandGlobs`, deny-all-empty); per egress kind (table below); `git_commit` refused unless `ctx.gateApproved`. A denial → `ToolPolicyError` → **before any host call**.
+4b. **Per-tool approval — the interactive consent gate ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3).** Runs only when `ctx.approval` is present (the **interactive-approval regime** — the chat path; absent ⇒ the workflow author-trust path, unchanged) and the dispatch is a **governed class**: `fsWrite`, an `egress` of any kind, an `os` action (`read_clipboard` / `notify` — the clipboard is an un-jailed exfiltration sink), or a `spawnsProcess` with a model-controlled `command` target (so the pre-approved `git_status`, which exposes no command, is **not** gated — matching step 4). The engine consults the host-injected `ctx.approval.confirm` hook with a **secret-free preview** (resolved path / command / host — never a full URL/query, never a secret); just before invoking that hook, the **engine's `confirmDispatch`** emits `agent:approval_requested` (via `ctx.approval.emitApprovalRequested`) for **every** governed dispatch reaching this gate — whether the host then prompts a human (accept-edits / auto's protected-path fallback) or auto-decides (ask/plan deny, auto approve). **Fail-closed:** under an active regime a governed dispatch *requires* a decision — an **absent `confirm` hook ⇒ denied** (`ToolDeniedByUserError`, reason `no_approval_hook`), never silently allowed, so a wiring bug cannot let `ask` mode write. A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`) carrying the existing **`tool_denied`** code (fatal, never retried); an abort while prompting routes to the **cancellation** path (cancel precedence). The host's `confirm` owns the mode policy (ask / plan / accept-edits / auto), the once/always cache, and the protected-paths rule — the engine stays mode-agnostic. This composes *after* step 4 and, when an `ActionGuard` ([action-guard-seam.md](action-guard-seam.md)) is also injected, *alongside* it (the org governor's `decide`/`commit` and the user's `confirm` each only further restrict).
 5. **Call the host capability** (the single side effect), threading `ctx.signal`. Absent capability → `ToolUnavailableError`; an `AbortSignal`-origin failure → the **cancellation** path (`cancelled`, never `tool_failed` — preserves ADR-0036 cancel precedence); any other host throw → `ToolExecutionError`. A host capability MAY itself throw a typed `ToolDispatchError` subclass for a **deterministic host-side denial** (e.g. the CLI `fs` arm throwing a `tool_denied` when a path escapes the FS scope tier, or `ToolUnavailableError` for a read-only fail-close) — the registry passes any `ToolDispatchError` through **verbatim**, exactly as it does an engine-side `ToolPolicyError`, so such a denial is fatal (never burns the node-retry budget); only a *raw* host throw becomes the retryable `ToolExecutionError`.
 6. **Apply `output_mapping` to the FULL result** → workflow state gets the real value, never the bounded preview.
 7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
-> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
+> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` — and, identically, a `ToolDeniedByUserError` (the per-tool approval denial, ADR-0057) — is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
 
 ```ts
 interface ToolDispatchContext {
@@ -173,6 +186,11 @@ interface ToolDispatchContext {
   readonly toolPolicy: ToolPolicy;         // resolved allowedCommands/-Globs/-Domains (@relavium/shared)
   readonly fsScope: FsScopeTier;           // 'sandboxed' | 'project' | 'full' (the @relavium/shared source of truth)
   readonly gateApproved: boolean;          // a human-gate decision is present for this dispatch (1.Q)
+  // Per-tool approval regime (ADR-0057 EA3). PRESENT ⇒ the interactive-approval (chat) path: a governed-class
+  // dispatch requires `approval.confirm`'s decision, and an absent confirm is fail-closed → denied. ABSENT ⇒
+  // the workflow author-trust path (unchanged). `confirm` is the host-injected ConfirmActionHook (the engine
+  // defines the interface + the invocation point, the host supplies the implementation — ADR-0037-clean).
+  readonly approval?: { readonly confirm?: ConfirmActionHook };
   // The effective-arg keys whose resolved value is secret-tainted (ADR-0029(c)); the registry rejects
   // any present one from tool args (re-applying the parse-time taint gate on the effective set). 1.O/1.V
   // produces this; absent ⇒ no taint check (no producer yet).
@@ -188,6 +206,55 @@ config block ([node-types.md](node-types.md) `tool_config` / `agent_config`) —
 config-only VALUES and the `input_mapping` / `output_mapping` come from. `invokeAgent` is an
 **engine-provided delegate**, not a `ToolHost` capability — `invoke_agent` is pure orchestration
 (dispatch another node by id), no platform I/O, no full router selection this phase.
+
+### The per-tool approval seam (`ConfirmActionHook`, ADR-0057 EA3)
+
+`ctx.approval.confirm` is the host-injected interactive-consent hook the dispatch lifecycle's step 4b
+consults — the same dependency-inversion pattern as the `ToolHost` (the engine defines the interface +
+the invocation point; the host supplies the implementation, so [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md)'s
+tool-execution boundary holds). The host implementation owns the mode policy (ask / plan / accept-edits /
+auto), the once/always cache, the protected-paths rule, and emitting `agent:approval_requested` — the
+engine stays mode-agnostic and only asks "may this governed action proceed?" then honors the verdict. The
+preview is **secret-free, display-only**.
+
+```ts
+/** Present on `ctx.approval` ⇒ the interactive-approval regime is active (the chat path). Absent ⇒ the
+ *  workflow author-trust path (governed tools proceed under the step-4 floor, unchanged). */
+interface ToolApprovalContext {
+  readonly confirm?: ConfirmActionHook; // ABSENT under an active regime ⇒ fail-closed deny (no_approval_hook)
+}
+
+type ConfirmActionHook = (
+  request: ToolApprovalRequest,
+  signal?: AbortSignalLike, // SHOULD be honored — an abort while prompting routes to the engine's cancel path
+) => Promise<ToolApprovalDecision>;
+
+interface ToolApprovalRequest {
+  readonly toolId: ToolId;
+  readonly action: ToolActionClass; // 'fs_write' | 'process' | 'egress' | 'os' (@relavium/shared TOOL_ACTION_CLASSES)
+  readonly preview: ToolActionPreview;
+}
+
+/** Secret-free, display-only — never a full URL/query, never a secret. */
+interface ToolActionPreview {
+  readonly path?: string;    // fs_write — the resolved target path
+  readonly command?: string; // process — the resolved command string
+  readonly host?: string;    // egress — the target host ONLY
+}
+
+type ToolApprovalDecision =
+  | { readonly outcome: 'approve' }
+  | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
+```
+
+A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
+fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the
+retryable `tool_failed` a *host-capability* throw gets); an absent hook under an active regime ⇒
+`tool_denied` (reason `no_approval_hook`). All three carry the existing non-retryable `tool_denied`
+`ErrorCode`. The action class is derived from `ToolPolicyClass` (§The `ToolDef`): `fsWrite` ⇒ `fs_write`,
+any `egress` ⇒ `egress`, a `spawnsProcess` **with a model-controlled `command` target** ⇒ `process`
+(so the pre-approved `git_status`, which exposes no command, is **not** gated), and `os` ⇒ `os`
+(`read_clipboard` — an un-jailed exfiltration sink — / `notify`).
 
 ## Guardrail enforcement (policy = engine-pure; mechanism = host)
 
@@ -258,6 +325,7 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 |-------|------|-----------------|-------|
 | `UnknownToolError` | id not an exact match | `tool_failed` | fatal (loop-correctable first) |
 | `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required`, `media_scope_denied` (the full `ToolPolicyDenyReason` union; `media_scope_denied` is `read_media`'s scope-set denial, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) | `tool_denied` | **fatal** (never retried) |
+| `ToolDeniedByUserError` | an interactive **per-tool approval** denial ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3) — `user_rejected` (rejected by the user / mode policy), `no_approval_hook` (fail-closed: a governed dispatch under an active regime with no confirm hook wired), `approval_error` (fail-closed: the hook threw a non-abort error, so consent could not be obtained) | `tool_denied` | **fatal** (never retried; not loop-correctable — re-asking re-prompts/re-denies, like `ToolPolicyError`) |
 | `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint | `validation` | fatal (loop-correctable first) |
 | `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `tool_unavailable` | **fatal** (names the tool + the unwired arm actionably — never a bare `internal`; EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |

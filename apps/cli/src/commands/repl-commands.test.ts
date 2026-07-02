@@ -19,6 +19,7 @@ interface CapabilityCalls {
   readonly showWorkflows: number;
   readonly showCost: number;
   readonly runDoctor: number;
+  readonly setMode: number;
 }
 
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
@@ -31,6 +32,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
     showWorkflows: vi.fn(),
     showCost: vi.fn(),
     runDoctor: vi.fn(),
+    setMode: vi.fn(),
   };
   return {
     ctx: spies,
@@ -41,6 +43,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
       help: spies.help.mock.calls.length,
       showWorkflows: spies.showWorkflows.mock.calls.length,
       showCost: spies.showCost.mock.calls.length,
+      setMode: spies.setMode.mock.calls.length,
       runDoctor: spies.runDoctor.mock.calls.length,
     }),
   };
@@ -51,7 +54,16 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     const names = REPL_COMMANDS.map((command) => command.name);
     expect(new Set(names).size).toBe(names.length);
     expect(REPL_COMMANDS_BY_NAME.size).toBe(names.length);
-    expect(names).toEqual(['help', 'exit', 'cancel', 'export', 'workflows', 'cost', 'doctor']);
+    expect(names).toEqual([
+      'help',
+      'exit',
+      'cancel',
+      'export',
+      'workflows',
+      'cost',
+      'doctor',
+      'mode',
+    ]);
   });
 
   it('each command run() invokes EXACTLY its one capability', async () => {
@@ -63,6 +75,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['workflows', 'showWorkflows'],
       ['cost', 'showCost'],
       ['doctor', 'runDoctor'],
+      ['mode', 'setMode'],
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
@@ -76,7 +89,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
         counts.help +
         counts.showWorkflows +
         counts.showCost +
-        counts.runDoctor;
+        counts.runDoctor +
+        counts.setMode;
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });
@@ -91,7 +105,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
   });
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
-    expect(replCommandList()).toBe('/help, /exit, /cancel, /export, /workflows, /cost, /doctor');
+    expect(replCommandList()).toBe(
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode',
+    );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
       expect(help).toContain(`/${command.name}`);
@@ -101,7 +117,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('effects are sound: export writes, the rest are read', () => {
     expect(REPL_COMMANDS_BY_NAME.get('export')?.effect).toBe('write');
-    for (const name of ['help', 'exit', 'cancel', 'workflows', 'cost', 'doctor']) {
+    for (const name of ['help', 'exit', 'cancel', 'workflows', 'cost', 'doctor', 'mode']) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }
   });
@@ -118,6 +134,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'workflows',
       'cost',
       'doctor',
+      'mode',
     ]);
     expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
       'exit',
@@ -126,6 +143,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'workflows',
       'cost',
       'doctor',
+      'mode',
     ]);
     // The bare Home now offers /exit + /doctor (pre-chat diagnostics — a real Home capability via homeReplCtx).
     expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'doctor']);

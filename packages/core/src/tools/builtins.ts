@@ -127,14 +127,28 @@ const FS_POLICY: ToolPolicyClass = {
   spawnsProcess: false,
   requiresGateApproval: false,
 };
-const OS_POLICY: ToolPolicyClass = {
-  fsScoped: false,
+// `write_file` is a WRITE, so the per-tool approval gates it (ADR-0057 EA3, `fsWrite: true`). A SEPARATE
+// object from FS_POLICY: the read-only `read_file` / `list_directory` must keep `fsWrite` absent, or the
+// reads would be gated too. `enforcePolicy` is inert for it (no command/domain target, no gate) — the
+// `confirmAction` floor is the authoritative writer gate.
+const FS_WRITE_POLICY: ToolPolicyClass = {
+  fsScoped: true,
+  fsWrite: true,
   spawnsProcess: false,
   requiresGateApproval: false,
 };
-// read_media reads from the host MediaStore via the engine `ctx.mediaRead` delegate (NOT the FS-scope tier,
-// NOT an egress) and is read-only, so it needs no guardrail target / gate (ADR-0044 §1; the path-jail +
-// scope-set authz + Range gate live inside the dispatch). It bypasses the Phase-2 ActionGuard.
+// read_clipboard / notify — a GOVERNED os action (ADR-0057 §security review): the clipboard is ambient,
+// un-jailed OS state that routinely holds a freshly-copied secret, so a read is an exfiltration sink, and
+// notify paints a native desktop notification; both ride the interactive approval floor.
+const OS_POLICY: ToolPolicyClass = {
+  fsScoped: false,
+  spawnsProcess: false,
+  os: true,
+  requiresGateApproval: false,
+};
+// read_media (via `ctx.mediaRead`) + invoke_agent (via `ctx.invokeAgent`) are delegate-backed, read-only /
+// orchestration tools with NO guardrail-class capability — they carry no path/command/host/os target, so they
+// are NOT governed (the path-jail / scope authz / sub-agent policy live inside their own dispatch). ADR-0044 §1.
 const MEDIA_POLICY: ToolPolicyClass = {
   fsScoped: false,
   spawnsProcess: false,
@@ -182,7 +196,11 @@ const writeFileTool = defineBuiltin({
     required: ['path', 'content'],
     additionalProperties: false,
   },
-  policy: FS_POLICY,
+  policy: FS_WRITE_POLICY,
+  // The resolved target path the per-tool approval prompt + `agent:approval_requested` preview show
+  // (ADR-0057 EA3). NOT a guardrail target — `enforcePolicy` reads only `command`/`url`, so this changes no
+  // allowlist behavior; it is display-only.
+  policyTarget: (args) => ({ path: args.path }),
   dispatch: (args, host, ctx) =>
     requireFs(host, 'write_file').writeFile(
       args.path,
@@ -538,7 +556,8 @@ const invokeAgentTool = defineBuiltin({
     required: ['nodeId'],
     additionalProperties: false,
   },
-  policy: OS_POLICY,
+  // A delegate-backed orchestration tool (NOT an os action) — the non-governed delegate policy, not OS_POLICY.
+  policy: MEDIA_POLICY,
   dispatch: (args, _host, ctx) => {
     if (ctx.invokeAgent === undefined) {
       // Not a ToolHost I/O capability — an engine delegate. Absent ⇒ the same typed unavailable error.

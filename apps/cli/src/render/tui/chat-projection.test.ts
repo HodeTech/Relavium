@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ToolApprovalRequest } from '@relavium/core';
+
 import {
+  formatApprovalTarget,
   formatSessionFooter,
+  formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
   stripTerminalControls,
@@ -31,6 +35,82 @@ describe('chat-projection', () => {
         errorCode: 'turn_limit',
       });
       expect(line).toContain('error: turn_limit');
+    });
+
+    it('surfaces the secret-free REASON for a tool_denied / tool_unavailable turn (the actionable ADR-0057 codes)', () => {
+      const denied = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_denied',
+        errorMessage: 'not allowed in ask mode (read-only)',
+      });
+      expect(denied).toContain('error: tool_denied — not allowed in ask mode (read-only)');
+      const unavailable = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_unavailable',
+        errorMessage: 'fs (read-only in this session)',
+      });
+      expect(unavailable).toContain('error: tool_unavailable — fs (read-only in this session)');
+    });
+
+    it('does NOT render the message for a non-whitelisted code (it may carry prompt context)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'execution_failed',
+        errorMessage: 'some model-derived context that must not be shown',
+      });
+      expect(line).toContain('error: execution_failed');
+      expect(line).not.toContain('model-derived context');
+    });
+
+    it('shows a STATIC actionable hint for a tool_failed turn, never echoing the (context-carrying) message', () => {
+      // ADR-0057 (A): a tool_failed message MAY carry model/MCP-server context (so it stays OUT of
+      // SAFE_MESSAGE_CODES), but a bare `error: tool_failed` is unhelpful — render a host-authored STATIC hint
+      // at the #1 real cause (a path outside the session workspace) WITHOUT echoing errorMessage.
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_failed',
+        errorMessage: 'some model/MCP-derived context that must not be shown',
+      });
+      expect(line).toContain('error: tool_failed —'); // an actionable hint, not the bare code
+      expect(line).toContain("outside this session's workspace");
+      expect(line).not.toContain('model/MCP-derived context'); // the raw message is NOT echoed (F4 constraint)
+    });
+
+    it('terminal-sanitizes the rendered reason (strips ANSI/OSC/control bytes) and omits an empty reason', () => {
+      const ESC = String.fromCharCode(0x1b);
+      const BEL = String.fromCharCode(0x07);
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_denied',
+        errorMessage: `${ESC}]0;pwn${BEL}denied\r\n here`, // an OSC title-set + BEL + CRLF
+      });
+      // eslint-disable-next-line no-control-regex -- asserting NO control byte survives the sanitizer
+      expect(/[\u0000-\u001f\u007f]/.test(line)).toBe(false); // no raw control byte reaches the terminal
+      expect(line).toContain('error: tool_denied');
+      // A whitespace-only reason renders the bare code (no dangling em-dash).
+      const empty = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_denied',
+        errorMessage: '   ',
+      });
+      expect(empty.split(' \u00b7 ')[0]).toBe('error: tool_denied');
+    });
+
+    it('renders the EA7 "aborted" stop reason as a plain label (no error segment)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'aborted',
+        tokensUsed: { input: 7, output: 4 },
+      });
+      const parts = line.split(' · ');
+      expect(parts[0]).toBe('aborted'); // the aborted turn renders its stop reason, not an error
+      expect(line).not.toContain('error');
+      expect(line).toContain(formatTokens({ input: 7, output: 4 }));
     });
 
     it('omits the duration segment when the duration is unknown (stop + tokens only)', () => {
@@ -96,6 +176,36 @@ describe('chat-projection', () => {
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(footer).not.toMatch(/[\x00-\x1f\x7f]/);
       expect(footer.startsWith('evil model · ')).toBe(true); // escapes stripped; newline collapsed
+    });
+  });
+
+  describe('formatSessionFooterWithMode', () => {
+    it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
+      const state = { ...initialSessionViewState(), turnCount: 2 };
+      expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
+      expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept-edits mode$/);
+      expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);
+    });
+  });
+
+  describe('formatApprovalTarget', () => {
+    const req = (preview: ToolApprovalRequest['preview']): ToolApprovalRequest => ({
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview,
+    });
+    it('surfaces the resolved path / command / host from the preview', () => {
+      expect(formatApprovalTarget(req({ path: 'notes.md' }))).toBe('notes.md');
+      expect(formatApprovalTarget(req({ command: 'git commit' }))).toBe('git commit');
+      expect(formatApprovalTarget(req({ host: 'example.com' }))).toBe('example.com');
+    });
+    it('is empty when the preview carries no target (web_search / mcp_call)', () => {
+      expect(formatApprovalTarget(req({}))).toBe('');
+    });
+    it('sanitizes the target so a preview value cannot inject control sequences', () => {
+      const target = formatApprovalTarget(req({ path: '\x1b[31mx\x07\nname' }));
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(target).not.toMatch(/[\x00-\x1f\x7f]/);
     });
   });
 

@@ -2,6 +2,7 @@ import {
   AgentSession,
   BUILTIN_TOOLS,
   BudgetGovernor,
+  DEFAULT_AGENT_TURN_LIMITS,
   RunEventBus,
   createSessionEventSink,
   createSessionHandle,
@@ -58,7 +59,7 @@ export interface BuildChatSessionOptions {
   readonly uuid: () => string;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver, like `relavium run`. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
+  /** The tool-execution host (injectable for tests); defaults to the full-capability chat host (chat-read-write); its writes/egress are gated by the ADR-0057 approval regime, not capability absence. */
   readonly toolHost?: ToolHost;
   /**
    * Injectable MCP connect-all (2.R) — tests pass a fake that never spawns a child; production uses the real
@@ -118,6 +119,12 @@ export interface BuiltChatSession {
   /** The frozen session context (working dir + fs-scope tier) the session ran against. */
   readonly context: SessionContext;
   /**
+   * The EFFECTIVE granted tool defs the session runs with (built-ins + discovered MCP) — the REPL derives the
+   * chat-mode governed hide-set from these ([chat-mode-host.ts](chat-mode-host.ts), ADR-0057). Exposed here so
+   * the fresh + resumed paths both build the mode environment from the SAME def set the registry dispatches.
+   */
+  readonly tools: readonly ToolDef[];
+  /**
    * Push a SURFACE-originated session event onto the same per-session bus (so it shares the monotonic
    * `sequenceNumber` of the live stream). Used by the in-REPL `/export` to emit `session:exported` under
    * `--json`; the bus stamps the `sessionId`/`sequenceNumber`/`timestamp`.
@@ -165,12 +172,13 @@ function buildSessionRuntime(
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
-  // 2.5.A (ADR-0055): the shared factory wires the READ-ONLY chat host (fs read+list, process for the
-  // pre-approved git_status) jailed to the session's fs-scope tier AND the chat-default `ToolPolicy`. Building
-  // it is pure construction (no I/O), so we always assemble it for the policy even when a test injects its own
-  // `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion); production also takes its host.
+  // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
+  // os) jailed to the session's fs-scope tier. Safety rests on the mode's per-tool APPROVAL floor, not on
+  // capability absence — the REPL activates the fail-closed `confirmAction` regime via `applyChatMode` (default
+  // `ask` denies every governed action). Building it is pure (no I/O), so we always assemble it for the policy
+  // even when a test injects its own `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion).
   const factoryEnv = assembleToolEnv({
-    profile: 'chat-read-only',
+    profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
   });
@@ -199,6 +207,11 @@ function buildSessionRuntime(
     // "empty/absent ⇒ run_command disabled"). Wiring it now means a 2.5.E/ADR-0057 per-mode allowlist flows
     // through automatically rather than being silently dropped by reading only the factory's `host`.
     toolPolicy: factoryEnv.policy,
+    // Interactive-surface turn bounds: recover from a host tool EXECUTION failure (a file-not-found read, a
+    // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
+    // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
+    // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
+    limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     ...(governor === undefined
       ? {}
@@ -216,7 +229,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   });
   const context: SessionContext = {
     workingDir: opts.cwd,
-    // The EFFECTIVE tier (full→project clamped for the read-only chat surface) — the SAME value the factory
+    // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory
     // jails the host to, so the dispatch-context `fsScope` and the host jail stay consistent (ADR-0055), and
     // the persisted `SessionContext.fsScope` records what the session actually ran at (a resume re-reads it).
     fsScopeTier: clampChatTier(opts.chat.fsScope ?? DEFAULT_FS_SCOPE),
@@ -255,6 +268,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
@@ -324,7 +338,7 @@ export interface BuildResumedChatSessionOptions {
   readonly now: () => number;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
+  /** The tool-execution host (injectable for tests); defaults to the full-capability chat host (chat-read-write); its writes/egress are gated by the ADR-0057 approval regime, not capability absence. */
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
@@ -355,7 +369,7 @@ export async function buildResumedChatSession(
       `session ${record.id} has no stored agent snapshot and cannot be resumed`,
     );
   }
-  // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the read-only chat surface),
+  // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the chat surface),
   // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
   // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
   const context: SessionContext = {
@@ -400,6 +414,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      tools: deps.tools,
       emitSessionEvent: emit,
       resumeState,
       nextSequenceNumber,

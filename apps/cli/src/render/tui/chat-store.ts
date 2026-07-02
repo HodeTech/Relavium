@@ -1,5 +1,11 @@
-import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 
+import {
+  DEFAULT_CHAT_MODE,
+  type ApprovalAnswer,
+  type ApprovalPrompt,
+  type ChatMode,
+} from '../../chat/chat-mode.js';
 import { formatSessionFooter, sanitizeInline, stripTerminalControls } from './chat-projection.js';
 import {
   appendNotice,
@@ -24,9 +30,21 @@ import {
  * rate is capped).
  */
 
+/** A pending per-tool approval the REPL renders as a `[y] yes / [a] always / [n] no / [esc] abort` prompt
+ *  (ADR-0057, EA3/EA5). A reject-with-typed-reason (`[c]` comment) is a deferred follow-up. */
+export interface PendingApproval {
+  readonly request: ToolApprovalRequest;
+  /** Whether an "always" answer will be remembered (accept-edits) — the prompt greys it out when false. */
+  readonly cacheable: boolean;
+}
+
 /** The immutable snapshot the ink component reads each frame (a stable reference between flushes). */
 export interface ChatStoreSnapshot {
   readonly state: SessionViewState;
+  /** The active chat mode (ADR-0057) — REPL-set (Shift+Tab / `/mode`), shown in the footer. */
+  readonly mode: ChatMode;
+  /** The in-flight approval prompt, if a governed tool dispatch is awaiting the user's decision. */
+  readonly approval: PendingApproval | undefined;
   readonly tick: number;
   readonly color: boolean;
 }
@@ -54,6 +72,18 @@ export interface ChatStoreController extends ChatStore {
   flush: () => void;
   /** The persistent one-line session summary (model · cost · turns) for after-unmount output (Step-5 teardown). */
   summaryText: () => string;
+  /** Set the active chat mode (Shift+Tab / `/mode`) — updates the footer; the caller also re-applies the turn
+   *  policy via `applyChatMode`. Flushes immediately (a mode switch feels instant). */
+  setMode: (mode: ChatMode) => void;
+  /**
+   * The {@link ApprovalPrompt} the mode controller injects: publish a pending approval (flush → the REPL
+   * renders the prompt) and RESOLVE when the input handler calls {@link answerApproval}. Honors the abort
+   * signal — an abort while pending REJECTS with the signal's reason so the dispatch routes to the engine's
+   * cancel path (not a denial). At most ONE approval is pending at a time (the turn blocks on it).
+   */
+  requestApproval: ApprovalPrompt;
+  /** Answer the in-flight approval (the input handler's `[y]/[a]/[n]` decision) — a no-op if none is pending. */
+  answerApproval: (answer: ApprovalAnswer) => void;
 }
 
 /**
@@ -71,12 +101,16 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new
 export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatStoreController {
   const listeners = new Set<() => void>();
   let state = initialSessionViewState(seed);
+  let mode: ChatMode = DEFAULT_CHAT_MODE;
+  let approval: PendingApproval | undefined;
+  // The resolver for the in-flight approval promise (set while `approval` is published; cleared on settle).
+  let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
   let tickCount = 0;
   let dirty = false;
-  let snapshot: ChatStoreSnapshot = { state, tick: tickCount, color };
+  let snapshot: ChatStoreSnapshot = { state, mode, approval, tick: tickCount, color };
 
   const flush = (): void => {
-    snapshot = { state, tick: tickCount, color };
+    snapshot = { state, mode, approval, tick: tickCount, color };
     for (const listener of listeners) {
       listener();
     }
@@ -121,5 +155,51 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
     },
     flush,
     summaryText: () => formatSessionFooter(state),
+    setMode: (next) => {
+      mode = next;
+      flush();
+    },
+    requestApproval: (request, cacheable, signal) =>
+      new Promise<ApprovalAnswer>((resolve, reject) => {
+        // Honor an already-aborted turn: reject with an AbortError so the dispatch routes to cancel, not deny.
+        if (signal?.aborted === true) {
+          reject(abortError());
+          return;
+        }
+        const clear = (): void => {
+          approval = undefined;
+          settleApproval = undefined;
+          signal?.removeEventListener('abort', onAbort);
+        };
+        const onAbort = (): void => {
+          // An abort while the prompt is pending is a CANCEL, not a denial — reject with an AbortError; the
+          // registry's confirmDispatch re-throws an abort (cancel precedence: ctx.signal.aborted OR an
+          // `AbortError`-named cause) rather than denying.
+          clear();
+          reject(abortError());
+          flush();
+        };
+        settleApproval = (answer) => {
+          clear();
+          resolve(answer);
+        };
+        approval = { request, cacheable };
+        signal?.addEventListener('abort', onAbort);
+        flush(); // render the [y]/[a]/[n] prompt
+      }),
+    answerApproval: (answer) => {
+      // A no-op if nothing is pending (a stray keypress); else settle the in-flight promise + repaint.
+      if (settleApproval === undefined) return;
+      settleApproval(answer);
+      flush();
+    },
   };
+}
+
+/** An `AbortError`-named error so a pending-approval rejection is classified as a CANCEL by the registry's
+ *  `isAbort` (which also accepts `cause.name === 'AbortError'`), never as a denial. */
+function abortError(): Error {
+  const err = new Error('the approval was aborted');
+  err.name = 'AbortError';
+  return err;
 }

@@ -288,11 +288,13 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     ).rejects.toMatchObject({ code: 'network' });
   });
 
-  it('exposes a typed MediaEgressError', () => {
+  it('exposes a typed MediaEgressError (the shared SafeEgressError, aliased) with a code discriminant', () => {
     const err = new MediaEgressError('blocked_host', 'x');
     expect(err).toBeInstanceOf(Error);
     expect(err.code).toBe('blocked_host');
-    expect(err.name).toBe('MediaEgressError');
+    // MediaEgressError is now an alias of the shared SafeEgressError (one egress error type) — the runtime
+    // class name reflects that; instanceof + the `code` discriminant are the load-bearing behaviors.
+    expect(err.name).toBe('SafeEgressError');
   });
 });
 
@@ -397,6 +399,7 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
       url: 'https://media.example.com:8443/a/b?c=d',
       hostname: 'media.example.com',
       pinnedIp: '203.0.113.10',
+      method: 'GET',
     };
     const pending = nodeMediaEgressDeps.openConnection(request, new AbortController().signal);
     const { options, onResponse } = lastHttpsCall();
@@ -418,7 +421,12 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
   it('openConnection derives family 6 for an IPv6 pin and defaults a port-less url to 443', async () => {
     vi.mocked(httpsRequest).mockReturnValue(stubClientRequest());
     const pending = nodeMediaEgressDeps.openConnection(
-      { url: 'https://v6.example.com/x', hostname: 'v6.example.com', pinnedIp: '2001:db8::1' },
+      {
+        url: 'https://v6.example.com/x',
+        hostname: 'v6.example.com',
+        pinnedIp: '2001:db8::1',
+        method: 'GET',
+      },
       new AbortController().signal,
     );
     const { options, onResponse } = lastHttpsCall();

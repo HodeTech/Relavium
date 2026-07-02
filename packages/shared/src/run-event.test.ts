@@ -6,6 +6,7 @@ import {
   MaskedSecretSchema,
   RunEventSchema,
   SessionEventSchema,
+  StopReasonSchema,
 } from './run-event.js';
 import type { RunEvent, RunEventType } from './index.js';
 
@@ -43,6 +44,14 @@ const valid: Record<string, Record<string, unknown>> = {
     toolId: 'read_file',
     success: true,
     outputSummary: 'ok',
+  },
+  'agent:approval_requested': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: './out.txt' },
   },
   'agent:file_patch_proposed': {
     type: 'agent:file_patch_proposed',
@@ -211,6 +220,95 @@ const reject: Record<string, Record<string, unknown>> = {
     toolId: 't',
     outputSummary: 'ok',
   },
+  'agent:approval_requested (missing action)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    preview: { path: './out.txt' },
+  },
+  'agent:approval_requested (bad action)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_read', // not a governed action class (only fs_write | process | egress | os)
+    preview: { path: './out.txt' },
+  },
+  'agent:approval_requested (empty toolId)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: '',
+    action: 'fs_write',
+    preview: { path: './out.txt' },
+  },
+  'agent:approval_requested (empty preview path)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: '' }, // path/command/host are all nonEmptyString — an empty display value is rejected
+  },
+  'agent:approval_requested (egress preview carrying a path — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'http_request',
+    action: 'egress',
+    preview: { path: './out.txt' }, // an egress approval must carry `host` ONLY — a path is action drift (superRefine)
+  },
+  'agent:approval_requested (fs_write preview carrying a host — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { host: 'evil.example' }, // fs_write carries `path` ONLY — a host is action drift
+  },
+  'agent:approval_requested (os preview carrying a path — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'read_clipboard',
+    action: 'os',
+    preview: { path: './leak.txt' }, // os carries NO field — any of path/command/host is drift
+  },
+  'agent:approval_requested (process preview carrying a host — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'run_command',
+    action: 'process',
+    preview: { host: 'evil.example' }, // process carries `command` ONLY — a host is action drift
+  },
+  'agent:approval_requested (empty preview command)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'run_command',
+    action: 'process',
+    preview: { command: '' }, // command was tightened to nonEmptyString (symmetry with path/host)
+  },
+  'agent:approval_requested (empty preview host)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'http_request',
+    action: 'egress',
+    preview: { host: '' },
+  },
+  'agent:approval_requested (stray secret-bearing preview field — .strict)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'http_request',
+    action: 'egress',
+    // .strict() on `preview` rejects an unexpected field LOUDLY — a host wiring bug that put a full
+    // URL/query (a secret-bearing field) into the preview is a parse failure, not a silent strip.
+    preview: { host: 'api.example.com', url: 'https://api.example.com/x?token=abc' },
+  },
   'cost:updated (float costMicrocents)': { ...valid['cost:updated'], costMicrocents: 12.5 },
   'node:completed (bad tokensUsed)': {
     type: 'node:completed',
@@ -345,7 +443,49 @@ describe('RunEvent union — every variant', () => {
     ).toBe(true);
   });
 
-  it('covers exactly the 21 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('ACCEPTS a BLANK approval preview for os and egress (the action-bind superRefine must not over-reject)', () => {
+    // APPROVAL_PREVIEW_FIELD maps os → undefined (no field) and egress → host (OPTIONAL), so an all-empty
+    // preview is VALID for read_clipboard/notify (os) and mcp_call/web_search (blank egress). A regression that
+    // mis-resolved the allowed key would silently break the whole os / MCP approval class — pin the accept side.
+    for (const [toolId, action] of [
+      ['read_clipboard', 'os'],
+      ['mcp_call', 'egress'],
+    ] as const) {
+      expect(
+        RunEventSchema.safeParse({
+          type: 'agent:approval_requested',
+          ...env,
+          nodeId: 'n',
+          toolId,
+          action,
+          preview: {},
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it('REJECTS a blank approval preview for fs_write and process (their target is always resolved)', () => {
+    // The mirror of the accept test above: fs_write / process ALWAYS resolve their path / command before the
+    // gate (previewFor sets it from a mandatory policy target), so a blank preview is a host-wiring bug the
+    // union-level refine rejects — while os / egress (above) legitimately stay blank.
+    for (const [toolId, action] of [
+      ['write_file', 'fs_write'],
+      ['run_command', 'process'],
+    ] as const) {
+      expect(
+        RunEventSchema.safeParse({
+          type: 'agent:approval_requested',
+          ...env,
+          nodeId: 'n',
+          toolId,
+          action,
+          preview: {},
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('covers exactly the 22 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -354,6 +494,7 @@ describe('RunEvent union — every variant', () => {
       'agent:token',
       'agent:tool_call',
       'agent:tool_result',
+      'agent:approval_requested',
       'agent:file_patch_proposed',
       'cost:updated',
       'node:completed',
@@ -377,7 +518,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 21
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 22
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -543,10 +684,16 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(withSelection({ file: 'a.ts', startLine: 5, endLine: 1 })).toBe(false);
   });
 
-  it('binds session:turn_completed.stopReason to the closed StopReason enum', () => {
+  it('binds session:turn_completed.stopReason to the SESSION stop-reason enum (the five LLM values + aborted)', () => {
     const ok = validSession['session:turn_completed'];
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'tool_use' }).success).toBe(true);
+    // EA7 (ADR-0057): the session superset adds `aborted` (the mid-turn abort) — accepted here, but NOT in
+    // the LLM StopReason vocabulary (the @relavium/llm seam stays the clean five values). Pin BOTH halves
+    // co-located: the LLM StopReason has exactly five members and REJECTS 'aborted'.
+    expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'aborted' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, stopReason: 'banana' }).success).toBe(false);
+    expect(StopReasonSchema.options).toHaveLength(5);
+    expect(StopReasonSchema.safeParse('aborted').success).toBe(false);
   });
 
   it('rejects session variants missing/emptying a required field', () => {
@@ -573,7 +720,7 @@ describe('SessionEvent union — the agent-first namespace', () => {
 });
 
 describe('event envelope + ErrorCode + attemptNumber invariants', () => {
-  it('enforces exactly one of runId / sessionId on the four dual-envelope events', () => {
+  it('enforces exactly one of runId / sessionId on the dual-envelope events', () => {
     // A reused event carries runId on a run and sessionId on a session — never neither, never both.
     const dual = {
       type: 'agent:token',
@@ -624,6 +771,7 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     for (const name of [
       'agent:tool_call',
       'agent:tool_result',
+      'agent:approval_requested',
       'node:completed',
       'cost:updated',
       'agent:file_patch_proposed',
@@ -631,6 +779,33 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 2 }).success).toBe(true);
       expect(RunEventSchema.safeParse({ ...valid[name], attemptNumber: 0 }).success).toBe(false);
     }
+  });
+
+  it('carries agent:approval_requested on either envelope (dual) with a secret-free preview (ADR-0057 EA5)', () => {
+    const base = {
+      type: 'agent:approval_requested',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 9,
+      nodeId: 'n',
+      toolId: 'run_command',
+      action: 'process',
+      preview: { command: 'npm test' },
+    };
+    // dual: accepted on a run (runId) AND on a session (sessionId), rejected with neither / both.
+    expect(RunEventSchema.safeParse({ ...base, runId: 'run-1' }).success).toBe(true);
+    expect(RunEventSchema.safeParse({ ...base, sessionId: 'sess-1' }).success).toBe(true);
+    expect(RunEventSchema.safeParse(base).success).toBe(false); // neither correlation key
+    expect(RunEventSchema.safeParse({ ...base, runId: 'r', sessionId: 's' }).success).toBe(false); // both
+    // egress preview carries the host only (a secret-free, query-free target)
+    expect(
+      RunEventSchema.safeParse({
+        ...base,
+        sessionId: 'sess-1',
+        toolId: 'http_request',
+        action: 'egress',
+        preview: { host: 'api.example.com' },
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects an agent:file_patch_proposed with an empty patches array', () => {

@@ -8,7 +8,9 @@ import {
   FS_SCOPE_TIERS,
   LLM_PROVIDERS,
   MEDIA_BILLED_MODALITIES,
+  SESSION_STOP_REASONS,
   STOP_REASONS,
+  TOOL_ACTION_CLASSES,
 } from './constants.js';
 import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 
@@ -36,12 +38,14 @@ const runBase = { runId: nonEmptyString, ...timestampSeq };
 const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
 
 /**
- * The dual envelope for the four events reused across both streams (`agent:token` /
- * `agent:tool_call` / `agent:tool_result` / `cost:updated`): they carry `runId` on a run and
- * `sessionId` on a session. A `discriminatedUnion` *member* can't carry a cross-field
- * refinement, so the "exactly one of runId / sessionId" invariant is enforced at the **union**
- * level (see `RunEventSchema`). Run-only / session-only events satisfy it by construction (the
- * other key isn't declared, so it is stripped on parse), so the check only constrains these four.
+ * The dual envelope for the events that may carry EITHER correlation key: the four reused across both
+ * streams (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus
+ * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
+ * approval regime). They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
+ * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
+ * enforced at the **union** level (see `RunEventSchema`). Run-only / session-only events satisfy it by
+ * construction (the other key isn't declared, so it is stripped on parse), so the check only constrains
+ * these `dualBase` events.
  */
 const dualBase = {
   runId: nonEmptyString.optional(),
@@ -87,6 +91,9 @@ export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
 /** The five-value LLM stop reason. Canonical home — the `@relavium/llm` seam re-exports this. */
 export const StopReasonSchema = z.enum(STOP_REASONS);
+
+/** The session turn stop reason — the five LLM values plus `aborted` (the EA7 mid-turn abort, ADR-0057). */
+export const SessionStopReasonSchema = z.enum(SESSION_STOP_REASONS);
 
 /**
  * The shared failure shape: a closed `code`, a user-safe `message`, `retryable`, and an optional,
@@ -175,6 +182,55 @@ export const AgentToolResultEventSchema = z.object({
   outputSummary: z.string(),
   attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated
 });
+
+/** The closed side-effecting action class a per-tool approval governs (ADR-0057 EA3). The `ToolActionClass`
+ *  TYPE is owned by constants.ts (the `TOOL_ACTION_CLASSES` tuple); this is its validating schema. */
+export const ToolActionClassSchema = z.enum(TOOL_ACTION_CLASSES);
+
+/**
+ * A GOVERNED tool dispatch reached the per-tool approval gate (ADR-0057 EA3/EA5) — a durable trace that the
+ * governed action was gated. The engine's `confirmDispatch` emits it just before invoking the host's
+ * `ConfirmActionHook`, whether that hook then PROMPTS a human (accept-edits / auto's protected-path fallback)
+ * or DECIDES without one (ask/plan auto-deny, auto auto-approve) — so a `--json` consumer should read it as
+ * "a governed action was gated", NOT "the user was asked N times". The registry then awaits the verdict
+ * (approve ⇒ dispatch, reject ⇒ a fatal `tool_denied`). A **dual-envelope** event (`runId` on a run,
+ * `sessionId` on a session) in the `agent:*` namespace, like `agent:tool_call` — in Phase 2.5 it is emitted
+ * only on the chat session path (the approval regime), and the session sink carries it (not run-only, so it
+ * is NOT dropped like `agent:file_patch_proposed`). The `preview` is **secret-free and display-only**: the
+ * resolved target path / command / host (never a full URL+query, never a secret). `attemptNumber` is absent on
+ * the session path today (the registry's `ToolApprovalRequest` carries no chain-attempt index — a cross-seam
+ * concept); a `--json` consumer correlates to the following `agent:tool_call` by `sequenceNumber` proximity.
+ */
+export const AgentApprovalRequestedEventSchema = z.object({
+  type: z.literal('agent:approval_requested'),
+  ...dualBase,
+  nodeId: nonEmptyString,
+  toolId: nonEmptyString,
+  action: ToolActionClassSchema,
+  // `.strict()` (the MaskedSecretSchema precedent) makes this secret-hygiene boundary REJECT an unexpected
+  // field (a stray `url` / `query` a host wiring bug might add) LOUDLY rather than silently stripping it.
+  preview: z
+    .object({
+      path: nonEmptyString.optional(), // fs_write — the resolved target path
+      command: nonEmptyString.optional(), // process — the resolved command (always non-empty: `min(1)` + join)
+      host: nonEmptyString.optional(), // egress — the target host only (never the full URL / query string)
+    })
+    .strict(),
+  attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated/agent:tool_call
+});
+export type AgentApprovalRequestedEvent = z.infer<typeof AgentApprovalRequestedEventSchema>;
+
+/**
+ * The preview field a per-tool approval action class produces — `fs_write` → path, `process` → command,
+ * `egress` → host, `os` → none (a blank preview). Consumed by the union-level `superRefine` (a
+ * discriminatedUnion member can't carry its own cross-field refinement) to reject an action-preview DRIFT a
+ * host-wiring bug could introduce (e.g. an `egress` approval must never surface a `path`) — `.strict()` on the
+ * preview already bars an UNKNOWN key; this bars a KNOWN-but-wrong-for-the-action one.
+ */
+const APPROVAL_PREVIEW_FIELD: Record<
+  (typeof TOOL_ACTION_CLASSES)[number],
+  'path' | 'command' | 'host' | undefined
+> = { fs_write: 'path', process: 'command', egress: 'host', os: undefined };
 
 export const AgentFilePatchProposedEventSchema = z.object({
   type: z.literal('agent:file_patch_proposed'),
@@ -414,6 +470,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   AgentTokenEventSchema,
   AgentToolCallEventSchema,
   AgentToolResultEventSchema,
+  AgentApprovalRequestedEventSchema,
   AgentFilePatchProposedEventSchema,
   CostUpdatedEventSchema,
   NodeCompletedEventSchema,
@@ -432,15 +489,17 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   BudgetPausedEventSchema,
 ]);
 
+/** The pre-refinement union value — the input every cross-field refinement helper below receives. */
+type RunEventUnion = z.infer<typeof RunEventUnionSchema>;
+
 /**
- * The full run-event schema every surface consumes: the discriminated union plus the
- * **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md
- * §"Correlation key"). Run-only / session-only events satisfy it by construction — a stray
- * opposite key is stripped by their `z.object` before this refine runs, so the parsed output
- * stays compliant (the deliberate non-strict, forward-compatible posture). The four
- * dual-envelope events declare both keys as optional, so this is where neither/both is rejected.
+ * The **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md §"Correlation
+ * key"). Run-only / session-only events satisfy it by construction — a stray opposite key is stripped by their
+ * `z.object` before this refine runs (the deliberate non-strict, forward-compatible posture). The `dualBase`
+ * events (the four reused agent/cost events plus `agent:approval_requested`) declare both keys as optional, so
+ * this is where neither/both is rejected.
  */
-export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
+function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void {
   const hasRunId = 'runId' in event && event.runId !== undefined;
   const hasSessionId = 'sessionId' in event && event.sessionId !== undefined;
   if (hasRunId === hasSessionId) {
@@ -450,8 +509,10 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: [hasRunId ? 'sessionId' : 'runId'],
     });
   }
-  // A gate's on-timeout policy only has meaning when a timeout is configured — refused at the union level
-  // because a discriminatedUnion member can't carry its own cross-field refinement (see note above).
+}
+
+/** A gate's on-timeout policy only has meaning when a timeout is configured. */
+function refineHumanGateTimeout(event: RunEventUnion, ctx: z.RefinementCtx): void {
   if (
     event.type === 'human_gate:paused' &&
     event.timeoutAction !== undefined &&
@@ -463,35 +524,38 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['timeoutAction'],
     });
   }
-  // A pause always has a reason: ≥1 gate OR ≥1 media job (1.AG Section D). The member's field constraints were
-  // relaxed (a media-only park has 0 gates), so the disjunction is enforced here at the union level (a
-  // discriminatedUnion member can't carry its own cross-field refinement). The engine never emits a zero-reason
-  // run:paused; this rejects a malformed one.
-  if (
-    event.type === 'run:paused' &&
-    event.gateIds.length === 0 &&
-    (event.pendingMediaJobNodeIds?.length ?? 0) === 0
-  ) {
+}
+
+/**
+ * The two `run:paused` structural invariants the relaxed member constraints (a media-only park has 0 gates)
+ * dropped: a pause carries ≥1 reason (a gate OR a media job — 1.AG Section D), and `pendingGateCount` agrees
+ * with `gateIds.length` (a consumer that reads the aggregate count must not diverge from the list it pairs
+ * with). The engine never emits a malformed one; this rejects it.
+ */
+function refineRunPaused(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (event.type !== 'run:paused') return;
+  if (event.gateIds.length === 0 && (event.pendingMediaJobNodeIds?.length ?? 0) === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'run:paused must carry at least one suspension reason (a gate or a media job)',
       path: ['gateIds'],
     });
   }
-  // `pendingGateCount` is the aggregate count of `gateIds` — relaxing both fields to `min(0)` (for a media-only
-  // park) dropped the structural guarantee that they agree, so re-assert it here. A consumer that reads
-  // `pendingGateCount` as the authoritative gate count must not diverge from the `gateIds` list it pairs with.
-  if (event.type === 'run:paused' && event.pendingGateCount !== event.gateIds.length) {
+  if (event.pendingGateCount !== event.gateIds.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'run:paused pendingGateCount must equal gateIds.length',
       path: ['pendingGateCount'],
     });
   }
-  // `deadlineAt = startedAt + media_job_deadline_ms` by construction, so deadlineAt < startedAt is a malformed
-  // durable event that would invert the resume `now > deadlineAt` short-circuit. Compare via Date.parse (an
-  // offset is allowed, so never lexically). Enforced at the union level — a member-level `.refine()` would make
-  // a ZodEffects and break the discriminatedUnion (same reason the run:paused cross-field checks live here).
+}
+
+/**
+ * `deadlineAt = startedAt + media_job_deadline_ms` by construction, so deadlineAt < startedAt is a malformed
+ * durable event that would invert the resume `now > deadlineAt` short-circuit. Compare via Date.parse (an
+ * offset is allowed, so never lexically).
+ */
+function refineMediaJobDeadline(event: RunEventUnion, ctx: z.RefinementCtx): void {
   if (
     event.type === 'media_job:submitted' &&
     Date.parse(event.deadlineAt) < Date.parse(event.startedAt)
@@ -502,6 +566,55 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['deadlineAt'],
     });
   }
+}
+
+/**
+ * Bind an approval preview to its action class (ADR-0057 EA5). Two rules:
+ *  1. DRIFT — a preview may carry ONLY the field its action produces (see {@link APPROVAL_PREVIEW_FIELD}); an
+ *     `egress` approval must never surface a `path`, etc. (`.strict()` on the preview already bars an UNKNOWN
+ *     key; this bars a KNOWN-but-wrong-for-the-action one.)
+ *  2. MISSING — `fs_write` and `process` ALWAYS resolve their target before the gate (the registry's
+ *     `previewFor` sets `path`/`command` from a mandatory policy target), so a BLANK preview there is a
+ *     host-wiring bug — reject it. `egress` is exempt (its `host` is legitimately absent for `mcp_call` /
+ *     `web_search`, a valid blank preview), and `os` carries no target field at all.
+ */
+function refineApprovalPreview(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (event.type !== 'agent:approval_requested') return;
+  const allowed = APPROVAL_PREVIEW_FIELD[event.action];
+  for (const key of ['path', 'command', 'host'] as const) {
+    if (key !== allowed && event.preview[key] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `preview.${key} is not valid for a ${event.action} approval`,
+        path: ['preview', key],
+      });
+    }
+  }
+  if (
+    (event.action === 'fs_write' || event.action === 'process') &&
+    allowed !== undefined &&
+    event.preview[allowed] === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `a ${event.action} approval requires preview.${allowed}`,
+      path: ['preview', allowed],
+    });
+  }
+}
+
+/**
+ * The full run-event schema every surface consumes: the discriminated union plus the cross-field invariants a
+ * `discriminatedUnion` member cannot carry (a member-level `.refine()` would make it a ZodEffects and break the
+ * union). Each concern lives in its own named helper above; this composes them so the schema stays a thin,
+ * readable pipeline.
+ */
+export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
+  refineCorrelationKey(event, ctx);
+  refineHumanGateTimeout(event, ctx);
+  refineRunPaused(event, ctx);
+  refineMediaJobDeadline(event, ctx);
+  refineApprovalPreview(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
@@ -523,7 +636,10 @@ export const SessionTurnStartedEventSchema = z.object({
 export const SessionTurnCompletedEventSchema = z.object({
   type: z.literal('session:turn_completed'),
   ...sessionBase,
-  stopReason: StopReasonSchema,
+  // The session superset of `StopReason` — the five LLM values plus `aborted` (the EA7 mid-turn abort: the
+  // turn ends but the session stays alive, ADR-0057). `aborted` carries NO `error` (it is user-initiated,
+  // not a failure); a failed turn uses `stopReason: 'error'` + the `error` field.
+  stopReason: SessionStopReasonSchema,
   tokensUsed: TokensUsedSchema,
   // A failed turn (provider error, rate limit, cancellation) still completes — with an error.
   error: z.object(eventErrorFields).optional(),
@@ -541,10 +657,10 @@ export const SessionExportedEventSchema = z.object({
 });
 
 /**
- * The five `session:*` lifecycle events. Within a turn a session also reuses the four
- * dual-envelope events above (`agent:token` / `agent:tool_call` / `agent:tool_result` /
- * `cost:updated`), carried with `sessionId` — so the complete session stream is this union
- * plus those four.
+ * The five `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
+ * above (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus, on the chat
+ * approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the complete
+ * session stream is this union plus those five (four when the approval regime is inactive).
  */
 export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionStartedEventSchema,
@@ -559,9 +675,10 @@ export type SessionEvent = z.infer<typeof SessionEventSchema>;
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the
  * `session:*` family on **one** bus (ADR-0036 "one bus, two namespaces"). A `z.union` (not a flat
  * discriminated union) so each family keeps its own refinements — notably `RunEventSchema`'s correlation-key
- * cross-check and its dual-envelope members (the four `agent:*`/`cost:updated` events already validate here
- * carrying `sessionId`); a `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the
- * single validation gate the bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
+ * cross-check and its five `dualBase` members (the four `agent:*`/`cost:updated` events plus
+ * `agent:approval_requested`, which carry `sessionId` when session-emitted and `runId` on a run); a
+ * `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the single validation gate the
+ * bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
  */
 export const RunOrSessionEventSchema = z.union([RunEventSchema, SessionEventSchema]);
 export type RunOrSessionEvent = RunEvent | SessionEvent;

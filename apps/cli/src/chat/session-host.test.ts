@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +18,10 @@ import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
+import { createChatModeControl } from '../commands/chat.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { createChatStore } from '../render/tui/chat-store.js';
+import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession,
@@ -465,6 +468,64 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(2);
   });
 
+  it('createChatModeControl gates a governed dispatch on the RESUMED session too (regression guard)', async () => {
+    // The resumed path shares buildSessionRuntime + runReplLoop→createChatModeControl with the fresh path, so
+    // the fail-closed ask regime activates here too. Lock it against a future refactor that special-cases the
+    // resume assembly and silently reintroduces the ungated-dispatch class the opus round fixed for one-shot.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: record({
+        agentSnapshot: { ...RESUME_AGENT, tools: ['write_file'] },
+        context: { workingDir: workspace, fsScopeTier: 'project' },
+      }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'p' }),
+      ]),
+    });
+    createChatModeControl(built, createChatStore(false)); // ask regime, applied to the resumed session
+    // A resumed session lands at idle and continues without start(); the next sendMessage runs a turn.
+    await built.session.sendMessage('write a file');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+  });
+
+  it('createChatModeControl with interactive:false DENIES a governed dispatch without HANGING (High 9 deadlock)', async () => {
+    // On a non-interactive driver (plain non-TTY / --json) nothing answers `requestApproval`. In `accept-edits`
+    // (a mode that would prompt on a TTY) the reject-immediately prompt must DENY the write, not publish an
+    // unanswerable promise — so `sendMessage` RESOLVES (a regression would hang here and time the test out).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: record({
+        agentSnapshot: { ...RESUME_AGENT, tools: ['write_file'] },
+        context: { workingDir: workspace, fsScopeTier: 'project' },
+      }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'p' }),
+      ]),
+    });
+    const control = createChatModeControl(built, createChatStore(false), { interactive: false });
+    control.onModeChange('accept-edits'); // a prompting mode — but nothing can answer on this driver
+    await built.session.sendMessage('write a file'); // MUST resolve (deny), never hang
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+  }, 10_000);
+
   it('CLAMPS a persisted full fs-scope tier down to project on resume (read-only chat ceiling, ADR-0055)', async () => {
     // SECURITY regression: a session persisted (e.g. pre-2.5.A) with the broad `full` tier must resume at the
     // read-only chat ceiling — `project`, never `full` — so a resumed chat can't read `~/.ssh` / `~/.aws` back
@@ -764,7 +825,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('write_file in a chat session fail-closes as tool_unavailable (chat is read-only until 2.5.E)', async () => {
+  it('write_file in a chat session is DENIED by the ask-mode approval floor (2.5.E) — no file on disk', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
@@ -773,6 +834,17 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
       ]),
     });
+    // The chat host is now WRITE-capable (chat-read-write); safety rests on the mode's fail-closed approval
+    // regime the REPL activates before any turn. Apply the default `ask` mode here so this reflects production:
+    // `ask` denies every governed dispatch (two-layer — the advertise-filter also hides write_file, but the
+    // scripted model calls it anyway, so the confirm floor is what denies it).
+    const env = makeChatModeEnv({
+      session: built.session,
+      tools: built.tools,
+      workspaceDir: workspace,
+      prompt: () => Promise.resolve({ outcome: 'reject' }),
+    });
+    applyChatMode(env, 'ask');
     built.session.start();
     await built.session.sendMessage('write a file');
     built.session.cancel();
@@ -780,17 +852,183 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_unavailable', // the read-only fs writeFile fail-closed (EA1)
+      'tool_denied', // the ask-mode confirm floor denied the governed write (ADR-0057 EA3)
     );
-    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // it fail-closed BEFORE any write — no file on disk
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 
-  it('the advertise-filter drops an unwired tool from the EFFECTIVE grant; the original keeps it', async () => {
+  it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime', async () => {
+    // Prove the PRODUCTION seam — createChatModeControl(built, store) applies the initial ask mode via the real
+    // store.requestApproval prompt — denies a governed write end-to-end (not just the manual-env path above).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+      ]),
+    });
+    createChatModeControl(built, createChatStore(false)); // applies ask → the fail-closed regime is now active
+    built.session.start();
+    await built.session.sendMessage('write a file');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+  });
+
+  it('createChatModeControl ask: denies an EGRESS-class dispatch too (http_request), not just fs_write', async () => {
+    // The confirm floor rejects EVERY governed class; prove the egress class end-to-end (governedAction maps
+    // http_request → 'egress', a distinct ToolActionClass) — the deny happens BEFORE dispatch, so the egress
+    // arm's fetch never runs (no outbound request), and the turn fails tool_denied.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['http_request']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'http_request', { url: 'https://example.test/x' }),
+      ]),
+    });
+    createChatModeControl(built, createChatStore(false)); // ask regime active
+    built.session.start();
+    await built.session.sendMessage('fetch a url');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+  });
+
+  it('createChatModeControl ask: denies an OS-class dispatch too (read_clipboard) — the exfil sink is gated', async () => {
+    // ADR-0057 §security review: read_clipboard reads ambient secret-bearing OS state, so it is a governed os
+    // action — denied in ask (never advertised, and the confirm floor rejects it if the model calls it anyway).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['read_clipboard']),
+      providers: scriptedResolver([callWithArgs('c1', 'read_clipboard', {})]),
+    });
+    createChatModeControl(built, createChatStore(false)); // ask regime active
+    built.session.start();
+    await built.session.sendMessage('read my clipboard');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+  });
+
+  it('createChatModeControl accept-edits: an APPROVE lets the governed write through the store prompt', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'ok.txt', content: 'hi' }),
+        textTurn('done'),
+      ]),
+    });
+    const store = createChatStore(false);
+    const control = createChatModeControl(built, store);
+    control.onModeChange('accept-edits'); // switch to accept-edits (prompts each governed write)
+    built.session.start();
+    const turn = built.session.sendMessage('write a file');
+    // Drive the interactive prompt: wait for the published approval, then approve it.
+    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    store.answerApproval({ outcome: 'approve', scope: 'once' });
+    await turn;
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    expect(existsSync(join(workspace, 'ok.txt'))).toBe(true); // approved ⇒ the write landed
+    expect(readFileSync(join(workspace, 'ok.txt'), 'utf8')).toBe('hi');
+    // EA5 end-to-end: a real AgentSession turn → real registry confirmDispatch → the emit lands on the handle
+    // stream (locks the full compose the unit tests only prove per-hop — nodeId stamped, action-bound preview).
+    const approvalEvent = events.find((e) => e.type === 'agent:approval_requested');
+    expect(approvalEvent?.type).toBe('agent:approval_requested');
+    if (approvalEvent?.type === 'agent:approval_requested') {
+      expect(approvalEvent.toolId).toBe('write_file');
+      expect(approvalEvent.action).toBe('fs_write');
+      expect(approvalEvent.preview.path).toContain('ok.txt'); // the resolved target, nodeId-stamped by the session
+    }
+  });
+
+  it('createChatModeControl auto: a PROTECTED-path write FALLS BACK to a prompt (not auto-approved)', async () => {
+    // The most bespoke ADR-0057 branch, end-to-end (real registry + fs host + store): in auto mode a
+    // protected-path target must NOT auto-approve — it publishes a non-cacheable prompt. Rejecting it denies
+    // the write (the fs protected-paths floor would refuse it regardless — this proves the graceful fallback).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
+      ]),
+    });
+    const store = createChatStore(false);
+    createChatModeControl(built, store).onModeChange('auto');
+    built.session.start();
+    const turn = built.session.sendMessage('write a protected file');
+    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    // auto did NOT auto-approve the protected target — it published a prompt, marked non-cacheable.
+    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    expect(store.getSnapshot().approval?.cacheable).toBe(false);
+    store.answerApproval({ outcome: 'reject' });
+    await turn;
+    built.session.cancel();
+    await drainHandle(built.handle.events);
+    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false);
+  });
+
+  it('auto: even an APPROVED protected-path write STILL fails — the fs floor is the true, approval-INDEPENDENT floor', async () => {
+    // The complement of the reject test: prove the fs-layer protected-paths refusal (not the prompt) is the real
+    // floor. Answer the auto fallback prompt with APPROVE and assert the write is STILL denied + never lands —
+    // so a future refactor that coupled the two layers (letting an approval bypass the fs floor) fails here.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
+      ]),
+    });
+    const store = createChatStore(false);
+    createChatModeControl(built, store).onModeChange('auto');
+    built.session.start();
+    const turn = built.session.sendMessage('write a protected file');
+    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    // The fallback prompt WAS published (non-cacheable) — so the approve below is genuinely consumed, not a
+    // no-op that would let the fs floor pass the test even if auto stopped prompting.
+    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    expect(store.getSnapshot().approval?.cacheable).toBe(false);
+    store.answerApproval({ outcome: 'approve', scope: 'once' }); // APPROVE — the fs floor must refuse it anyway
+    await turn;
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false); // never written despite the approval
+  });
+
+  it('the advertise-filter keeps http_request now that egress is wired (chat-read-write, 2.5.E)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const { providers, requests } = capturingResolver([textTurn('hi')]);
     const built = await build({
       cwd: workspace,
-      agentRef: writeAgent(['read_file', 'http_request']), // http_request needs egress — NOT wired in 2.5.A
+      agentRef: writeAgent(['read_file', 'http_request']), // egress IS wired in the full-capability chat host
       providers,
     });
     built.session.start();
@@ -800,7 +1038,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
 
     const advertised = (requests[0]?.tools ?? []).map((t) => t.name);
     expect(advertised).toContain('read_file'); // fs wired ⇒ advertised
-    expect(advertised).not.toContain('http_request'); // egress unwired ⇒ NOT advertised
+    expect(advertised).toContain('http_request'); // egress wired now ⇒ advertised (was dropped in 2.5.A)
     expect(built.agent.tools).toEqual(['read_file', 'http_request']); // the ORIGINAL keeps the author's grant
   });
 });
