@@ -47,6 +47,55 @@ describe('reduceChatKey', () => {
     expect(reduceChatKey('v', { meta: true }, 'h', false)).toEqual({ kind: 'none' }); // Meta-V
     expect(reduceChatKey('', KEY, 'h', false)).toEqual({ kind: 'none' }); // a bare modifier press
   });
+
+  it('maps Shift+Tab to cycle-mode (idle OR running — a mode change applies to the next turn)', () => {
+    expect(reduceChatKey('', { tab: true, shift: true }, 'h', false)).toEqual({
+      kind: 'cycle-mode',
+    });
+    expect(reduceChatKey('', { tab: true, shift: true }, 'h', true)).toEqual({
+      kind: 'cycle-mode',
+    });
+    // A plain Tab (no shift) is NOT a mode cycle.
+    expect(reduceChatKey('', { tab: true }, 'h', false)).toEqual({ kind: 'none' });
+  });
+
+  it('maps Esc to a mid-turn abort ONLY while running (idle Esc is inert, not an abort)', () => {
+    expect(reduceChatKey('', { escape: true }, 'h', true)).toEqual({ kind: 'abort' });
+    expect(reduceChatKey('', { escape: true }, 'h', false)).toEqual({ kind: 'none' }); // idle Esc: nothing to abort
+  });
+});
+
+describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow bypass, ADR-0057)', () => {
+  const PENDING = true;
+  it('maps [y]/1 to approve-once and [a]/2 to approve-always', () => {
+    expect(reduceChatKey('y', KEY, '', true, PENDING)).toEqual({ kind: 'approve', scope: 'once' });
+    expect(reduceChatKey('1', KEY, '', true, PENDING)).toEqual({ kind: 'approve', scope: 'once' });
+    expect(reduceChatKey('a', KEY, '', true, PENDING)).toEqual({
+      kind: 'approve',
+      scope: 'always',
+    });
+    expect(reduceChatKey('2', KEY, '', true, PENDING)).toEqual({
+      kind: 'approve',
+      scope: 'always',
+    });
+  });
+
+  it('maps [n]/[r]/3 to reject', () => {
+    expect(reduceChatKey('n', KEY, '', true, PENDING)).toEqual({ kind: 'reject' });
+    expect(reduceChatKey('r', KEY, '', true, PENDING)).toEqual({ kind: 'reject' });
+    expect(reduceChatKey('3', KEY, '', true, PENDING)).toEqual({ kind: 'reject' });
+  });
+
+  it('maps Esc to abort (cancels the whole turn AND the pending approval)', () => {
+    expect(reduceChatKey('', { escape: true }, '', true, PENDING)).toEqual({ kind: 'abort' });
+  });
+
+  it('SWALLOWS every other key while an approval is pending (no deadlock, no stray edit)', () => {
+    // Even Ctrl-C / Return / a printable are ignored during the approval — only y/a/n/1/2/3/Esc act.
+    expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('', { return: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('z', KEY, '', true, PENDING)).toEqual({ kind: 'none' });
+  });
 });
 
 describe('applyChatEdit (the functional-updater body)', () => {

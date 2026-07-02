@@ -9,9 +9,12 @@
 export interface ChatKey {
   readonly ctrl?: boolean;
   readonly meta?: boolean;
+  readonly shift?: boolean;
   readonly return?: boolean;
   readonly backspace?: boolean;
   readonly delete?: boolean;
+  readonly tab?: boolean;
+  readonly escape?: boolean;
 }
 
 /**
@@ -26,22 +29,46 @@ export type ChatKeyAction =
   | { readonly kind: 'append'; readonly char: string }
   | { readonly kind: 'backspace' }
   | { readonly kind: 'submit'; readonly line: string }
-  | { readonly kind: 'cancel' };
+  | { readonly kind: 'cancel' }
+  /** Shift+Tab — advance the chat mode (ask → plan → accept-edits → auto → ask), ADR-0057. */
+  | { readonly kind: 'cycle-mode' }
+  /** Esc mid-turn — abort the in-flight turn but KEEP the session alive (EA7), distinct from `cancel`. */
+  | { readonly kind: 'abort' }
+  /** An approval-prompt decision (accept-edits / auto's protected-path fallback): `[y]` once / `[a]` always. */
+  | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
+  /** An approval-prompt rejection (`[n]`). */
+  | { readonly kind: 'reject' };
 
 /**
- * Reduce one keystroke of the chat prompt to an action. Ctrl-C maps to `cancel` even mid-turn (so a streaming
- * turn can always be interrupted); while a turn is `running` every OTHER key is ignored (one turn at a time);
- * Return submits the current buffer (`input`); backspace/delete is a `backspace` op; a printable char (not a
- * ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller folds them functionally,
- * preserving the original `ChatApp` accumulating semantics across a batched multi-event chunk.
+ * Reduce one keystroke of the chat prompt to an action.
+ *
+ * When an approval is pending (`approvalPending`), the prompt OWNS the keyboard — the in-flight key-swallow
+ * bypass (ADR-0057, no deadlock): `[y]`/`1` approve once, `[a]`/`2` approve always, `[n]`/`3` reject, `Esc`
+ * aborts the whole turn; every other key is ignored. Otherwise: `Ctrl-C` maps to `cancel` even mid-turn (a
+ * streaming turn can always be interrupted); `Shift+Tab` cycles the mode (harmless mid-turn — it applies to
+ * the next turn); `Esc` while `running` is a mid-turn `abort` (EA7); while a turn is `running` every OTHER key
+ * is ignored (one turn at a time); `Return` submits the buffer; backspace/delete is a `backspace` op; a
+ * printable char (not a ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller
+ * folds them functionally, preserving the accumulating semantics across a batched multi-event chunk.
  */
 export function reduceChatKey(
   char: string,
   key: ChatKey,
   input: string,
   running: boolean,
+  approvalPending = false,
 ): ChatKeyAction {
+  if (approvalPending) {
+    // The approval prompt intercept — bypasses the running-swallow so the prompt can never deadlock.
+    if (key.escape === true) return { kind: 'abort' }; // Esc cancels the whole turn (and this pending approval)
+    if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
+    if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
+    if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
+    return { kind: 'none' }; // ignore any other key while an approval is pending
+  }
   if (key.ctrl === true && char === 'c') return { kind: 'cancel' };
+  if (key.tab === true && key.shift === true) return { kind: 'cycle-mode' }; // Shift+Tab cycles the chat mode
+  if (key.escape === true && running) return { kind: 'abort' }; // mid-turn abort, keeps the session (EA7)
   if (running) return { kind: 'none' }; // one turn at a time — ignore typing while the assistant streams
   if (key.return === true) return { kind: 'submit', line: input };
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
