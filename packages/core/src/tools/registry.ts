@@ -337,7 +337,7 @@ async function confirmDispatch(
   }
   const action = governedAction(def, target);
   if (action === undefined) {
-    return; // a read-only / pre-approved tool (fs read, git_status, clipboard, invoke_agent) is never gated
+    return; // a read-only / pre-approved tool (fs read, git_status, invoke_agent) is never gated
   }
   // Fail-closed: an active approval regime with no confirm hook DENIES a governed dispatch — so a wiring bug
   // (the chat host wired a write arm but not the hook) can never let `ask` mode write. The floor is the hook,

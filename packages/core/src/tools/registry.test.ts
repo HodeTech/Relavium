@@ -517,6 +517,33 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(req).toMatchObject({ toolId: 'web_search', action: 'egress', preview: {} });
   });
 
+  it('prompts read_clipboard (os) with an empty preview and dispatches on approve (an exfil sink is gated)', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('read_clipboard', {}),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({ toolId: 'read_clipboard', action: 'os', preview: {} });
+  });
+
+  it('denies a rejected read_clipboard as fatal tool_denied and never reads the clipboard', async () => {
+    const readClipboard = vi.fn(() => Promise.resolve('a-secret'));
+    const host: ToolHost = {
+      ...stubHost(),
+      os: { readClipboard, notify: () => Promise.resolve() },
+    };
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      registry(host).dispatch(
+        call('read_clipboard', {}),
+        ctx({ approval: { confirm: rejecting() } }),
+      ),
+    );
+    expect(err.code).toBe('tool_denied');
+    expect(readClipboard).not.toHaveBeenCalled(); // denied BEFORE the host call — no clipboard read
+  });
+
   // --- ordering + cancellation ---
 
   it('runs the enforcePolicy floor BEFORE approval — a denied run_command never reaches the prompt', async () => {

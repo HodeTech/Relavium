@@ -252,8 +252,9 @@ fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not 
 retryable `tool_failed` a *host-capability* throw gets); an absent hook under an active regime ⇒
 `tool_denied` (reason `no_approval_hook`). All three carry the existing non-retryable `tool_denied`
 `ErrorCode`. The action class is derived from `ToolPolicyClass` (§The `ToolDef`): `fsWrite` ⇒ `fs_write`,
-any `egress` ⇒ `egress`, and a `spawnsProcess` **with a model-controlled `command` target** ⇒ `process`
-(so the pre-approved `git_status`, which exposes no command, is **not** gated).
+any `egress` ⇒ `egress`, a `spawnsProcess` **with a model-controlled `command` target** ⇒ `process`
+(so the pre-approved `git_status`, which exposes no command, is **not** gated), and `os` ⇒ `os`
+(`read_clipboard` — an un-jailed exfiltration sink — / `notify`).
 
 ## Guardrail enforcement (policy = engine-pure; mechanism = host)
 

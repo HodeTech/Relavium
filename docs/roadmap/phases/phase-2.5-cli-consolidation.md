@@ -4,8 +4,9 @@
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
 > + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
-> → 2.5.E (modes + per-tool approval, **next**). Experience arm (off the spine, depends on B/C): 2.5.D / F / G. Additive
-> lanes (no dependency chain): 2.5.H / I / J.
+> → 2.5.E (modes + per-tool approval + mid-turn abort) 🟡 **implemented + reviewed; PR pending merge** (ADR-0057
+> Accepted). **Next: the experience arm 2.5.D / F / G** (off the spine, depends on B/C). Additive lanes (no
+> dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
