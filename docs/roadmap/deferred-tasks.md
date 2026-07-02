@@ -495,6 +495,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   optional `reason` (surfaced in the `tool_denied` message), but the REPL prompt only wires `[y]`/`[a]`/`[n]`/`[esc]`
   — a `[c]` that captures a free-text comment (a rejection with feedback for the model) is a bounded input-mode
   addition to `reduceChatKey` + the ink/Home prompt. *(low · apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
+- [ ] **Conversationally recover from a SCOPE denial in chat.** The PR #63 follow-up made an idempotent host
+  EXECUTION failure (a file-not-found READ) fed-back-recoverable via `ToolExecutionError.recoverable`
+  (`recoverToolFailures`), but a `tool_denied` SCOPE denial (reading a path outside the session workspace — a
+  common launch-cwd gotcha) still ends the turn (informative: the reason is shown). Feeding a *scope* denial back
+  so the model explains ("that path is outside my workspace — relaunch `chat` from …") would improve UX, but needs
+  a sub-class split so a SCOPE denial is distinguishable from an approval / protected-path denial (which must stay
+  fatal — never nag). *(low · packages/core/src/tools/errors.ts `HostDeniedError`; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
 - [ ] **Plain / non-TTY non-interactive approval policy.** The interactive `[y]/[a]/[n]` prompt is TTY/controller-only.
   A non-TTY chat defaults to `ask` (which denies governed WITHOUT prompting, so no deadlock), and `auto` auto-approves
   a non-protected target; the only unhandled niche is a non-TTY session switched to `accept-edits` (or `auto` hitting a
@@ -615,12 +622,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > behind the per-tool approval floor (see the resolved items below + the *Phase 2.5.E follow-ups* section). The
 > 2.5.A items were confirmed by the PR #60 review passes and deliberately **not** taken in-PR — none blocked the milestone.
 
-- [x] **`egress` + `os` host arms wired (governed) — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), on `development`, PR pending merge):* `apps/cli/src/engine/tool-host/egress.ts` (over the shared `connectValidated` connect-by-validated-IP mechanism, Host/`:authority`-header-strip) + `os.ts`, wired by the `chat-read-write` factory profile as **governed** classes on the fail-closed approval floor (denied in `ask`, prompt in `accept-edits`). *(apps/cli/src/engine/tool-host/; security-review.md)*
+- [x] **`egress` + `os` host arms wired (governed) — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* `apps/cli/src/engine/tool-host/egress.ts` (over the shared `connectValidated` connect-by-validated-IP mechanism, Host/`:authority`-header-strip) + `os.ts`, wired by the `chat-read-write` factory profile as **governed** classes on the fail-closed approval floor (denied in `ask`, prompt in `accept-edits`). *(apps/cli/src/engine/tool-host/; security-review.md)*
 - [ ] **Project-tier path-allowlist (`extraRoots`) not yet passed by the factory.** The `project` tier therefore
   behaves as **workspace-only** (it can only narrow the jail, never open a hole — `project` ==
   `sandboxed`-minus-tmp). It did **not** land in 2.5.E — carried forward under the *Phase 2.5.E follow-ups*
   entry above (single tracking point). *(low · apps/cli/src/engine/tool-host/assemble.ts; ADR-0057; built-in-tools.md fs-tier note)*
-- [x] **Write-capable chat — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR pending merge):* the `relavium chat` default profile is now the full-capability `chat-read-write` host — `write_file` is wired and gated by the per-tool approval floor (denied in the default `ask` mode as `tool_denied`, not `tool_unavailable`); a declared `full` tier is still **clamped to `project`** for the chat surface (an unjailed read exfiltrates `~/.ssh` / `~/.aws`, a write-capable chat shares that risk). *(apps/cli/src/chat/session-host.ts; ADR-0057)*
+- [x] **Write-capable chat — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* the `relavium chat` default profile is now the full-capability `chat-read-write` host — `write_file` is wired and gated by the per-tool approval floor (denied in the default `ask` mode as `tool_denied`, not `tool_unavailable`); a declared `full` tier is still **clamped to `project`** for the chat surface (an unjailed read exfiltrates `~/.ssh` / `~/.aws`, a write-capable chat shares that risk). *(apps/cli/src/chat/session-host.ts; ADR-0057)*
 - [ ] **Profile-unaware advertise-filter.** `wiredToolIds` narrows the grant by which `ToolHost` **arm** is wired,
   not by the profile's *read-only* posture — `write_file` is still advertised on a read-only chat host and only
   fail-closes at dispatch (`tool_unavailable`). Correct and safe (the dispatch backstop is authoritative), but a

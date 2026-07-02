@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-30
+> Last updated: 2026-07-03
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -151,15 +151,19 @@ in **both** the chat and the bare Home — no command in both); `/help`, the `no
 servers, never a fresh connect/spawn); plus the `name + args` slash dispatch and a context-aware footer hint-bar
 surfacing `/ for commands`. Canonically homed in [commands.md](../reference/cli/commands.md) +
 [chat-session.md](../reference/cli/chat-session.md). **2.5.E** (chat modes + per-tool approval + mid-turn abort)
-is 🟡 **implemented + reviewed on `development`; PR pending merge**, behind
-[ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (now **Accepted** after the mandatory
+is ✅ **Done (PR #63, 2026-07-03)**, behind
+[ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (**Accepted** after the mandatory
 security review): the reseat-less mode system (ask / plan / accept-edits / auto on `Shift+Tab` + `/mode`), the
 fail-closed per-tool `confirmAction` floor (`[y]/[a]/[n]` + a session once/always cache), the `Esc` mid-turn
 abort (EA7), and the host arms closing the 2.5.A deferral — a write-capable `fs` tier + **protected paths**
 (refused in every mode incl. `auto`), the SSRF-hardened `egress` arm (shared with media), and the `os` arm (now
 a governed action class). Wired live into `relavium chat`, one-shot `agent run`, and the Home (each activates
 the regime before its first turn). Every step passed the mandated opus + Sonnet 5 loop plus the dedicated
-holistic security review (~50 findings fixed, 4 HIGH). **Next: 2.5.D / F / G** (the experience arm). See the
+holistic security review (~50 findings fixed, 4 HIGH). A same-PR chat-UX follow-up also landed: a host tool
+EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
+(`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
+side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` hint. **With 2.5.E the CLI
+Consolidation spine (2.5.A → C, E) is complete; next: 2.5.D / F / G** (the experience arm). See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks

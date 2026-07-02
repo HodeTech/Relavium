@@ -4,9 +4,9 @@
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
 > + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
-> → 2.5.E (modes + per-tool approval + mid-turn abort) 🟡 **implemented + reviewed; PR pending merge** (ADR-0057
-> Accepted). **Next: the experience arm 2.5.D / F / G** (off the spine, depends on B/C). Additive lanes (no
-> dependency chain): 2.5.H / I / J.
+> → **2.5.E** (modes + per-tool approval + mid-turn abort) ✅ **Done (PR #63, 2026-07-03)** (ADR-0057 Accepted)
+> — **the spine is complete**. **Next: the experience arm 2.5.D / F / G** (off the spine, depends on B/C).
+> Additive lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -258,10 +258,10 @@ per-turn abort is NOT here** — it requires an engine state and lives in 2.5.E 
 **Acceptance:** multi-line input, history recall/search, and `@`/`!` work; the raw-mode owner is
 preserved; zero engine/seam change.
 
-### 2.5.E — Chat modes (reseat-less) + per-tool approval + mid-turn abort
+### 2.5.E — Chat modes (reseat-less) + per-tool approval + mid-turn abort — ✅ **Done (PR #63, 2026-07-03)**
 
-> **Status:** 🟡 **Implemented + reviewed on `development`; PR pending merge** (behind
-> [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md), now **Accepted** after the
+> **Status:** ✅ **Done (PR #63, 2026-07-03)** (behind
+> [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md), **Accepted** after the
 > mandatory security review). Shipped: the full reseat-less mode system (ask / plan / accept-edits / auto on
 > the `Shift+Tab` cycle + `/mode`), per-tool approval (the fail-closed `confirmAction` floor — `[y]/[a]/[n]`
 > with a session once/always cache), mid-turn `Esc` abort (EA7), and the host capability arms that close the
@@ -271,8 +271,12 @@ preserved; zero engine/seam change.
 > (`read_clipboard`/`notify`) — **now a governed action class** so the clipboard exfiltration sink rides the
 > approval floor. Wired LIVE into `relavium chat`, the one-shot `agent run`, and the 2.5.B Home (each activates
 > the regime before its first turn — no path runs a governed action ungated). Engine amendments EA3/EA4/EA5/EA7
-> landed. Each step went through the mandated loop (opus + Sonnet 5 adversarial review, ~50 findings fixed incl.
-> 4 HIGH security bugs) plus the dedicated holistic security review (the Accept gate). **Deferred follow-ups**
+> landed. A post-review chat-UX follow-up landed in the same PR: a host tool EXECUTION failure on the interactive
+> surface (a file-not-found READ) is now fed back to the model to recover (`AgentTurnLimits.recoverToolFailures`,
+> scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`) while a governed / side-effecting
+> failure stays fail-fast, plus a static secret-free `tool_failed` hint in the chat turn summary. Each step went
+> through the mandated loop (opus + Sonnet 5 adversarial review, ~50 findings fixed incl. 4 HIGH security bugs)
+> plus the dedicated holistic security review (the Accept gate). **Deferred follow-ups**
 > ([../deferred-tasks.md](../deferred-tasks.md)): the `[c]` reject-with-typed-reason prompt, a plain/non-TTY
 > non-interactive approval policy, a live `web_search`/http egress credential resolver, and the session-level
 > budget pause/resume (rides the EA4 machine).

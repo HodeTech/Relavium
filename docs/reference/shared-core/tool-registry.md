@@ -331,6 +331,14 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |
 | *(AbortSignal abort)* | the run was cancelled mid-tool | `cancelled` | fatal (cancel path, not `tool_failed`) |
 
+`ToolExecutionError` additionally carries a `recoverable` flag (stamped at the wrap from `governedAction` — `true`
+only for an **idempotent read**: no `fs_write` / `process` / `egress` / `os` side effect). It is STRICTER than
+`retryable` (which lets a *fresh node-retry* re-run the whole node): `recoverable` gates the interactive-chat
+within-turn recovery ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) `recoverToolFailures`) —
+a recoverable failure is fed back to the model as an `isError` tool result so it can adapt, while a governed /
+side-effecting failure ends the turn (fail-fast, so the model never re-attempts a non-idempotent side effect). A
+WORKFLOW node ignores the flag (fail-fast always).
+
 ## Instantiation
 
 ```ts
