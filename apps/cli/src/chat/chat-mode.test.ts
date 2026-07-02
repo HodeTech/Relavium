@@ -67,6 +67,25 @@ describe('isGovernedTool — mirrors the registry governedAction (advertise-filt
     const mcpTool: ToolDef = { ...builtin('mcp_call'), id: 'mcp__srv__do', source: 'mcp' };
     expect(governedToolIds([mcpTool, builtin('read_file')])).toEqual(new Set(['mcp__srv__do']));
   });
+
+  it('locks governedToolIds(BUILTIN_TOOLS) to the EXACT governed set — a drift guard on the hide-set', () => {
+    // Any new builtin with a mutating policy, or a dropped policy flag, forces a deliberate update here — the
+    // advertise hide-set must never silently drift (a mutating tool advertised in ask, or a read-only one hidden).
+    expect(governedToolIds(BUILTIN_TOOLS)).toEqual(
+      new Set([
+        'write_file',
+        'run_command',
+        'git_commit',
+        'http_request',
+        'web_search',
+        'mcp_call',
+      ]),
+    );
+    // Explicit negatives for the read-only tools the positive cases above don't name.
+    for (const id of ['notify', 'read_media', 'invoke_agent']) {
+      expect(isGovernedTool(builtin(id))).toBe(false);
+    }
+  });
 });
 
 describe('ApprovalCache — session once/always memory', () => {
@@ -87,22 +106,42 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     ...over,
   });
 
-  it('ask: hides governed tools AND its confirm rejects every governed dispatch (two-layer)', async () => {
+  it('ask: hides governed tools (incl. git_commit) AND its confirm rejects EVERY governed class (two-layer)', async () => {
     const d = deps();
     const policy = buildTurnPolicy('ask', d);
     expect(policy.advertise?.('read_file')).toBe(true);
     expect(policy.advertise?.('git_status')).toBe(true); // read-only process tool stays advertised
     expect(policy.advertise?.('write_file')).toBe(false);
     expect(policy.advertise?.('http_request')).toBe(false);
-    const decision = await policy.confirm!(req());
-    expect(decision).toEqual({ outcome: 'reject', reason: 'not allowed in ask mode (read-only)' });
+    // git_commit is the requiresGateApproval superset element — hidden here is its ONLY mode-level containment
+    // on the chat path (the confirm hook is never invoked for it, since governedAction returns undefined).
+    expect(policy.advertise?.('git_commit')).toBe(false);
+    // The authoritative floor: confirm rejects fs_write AND process AND egress dispatches, not just writes.
+    for (const r of [
+      req(),
+      req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+      req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
+    ]) {
+      expect(await policy.confirm!(r)).toEqual({
+        outcome: 'reject',
+        reason: 'not allowed in ask mode (read-only)',
+      });
+    }
     expect(d.prompt).not.toHaveBeenCalled(); // ask never prompts
   });
 
-  it('plan: same read-only posture as ask', async () => {
+  it('plan: same read-only posture as ask (hides git_commit; rejects process + egress too)', async () => {
     const policy = buildTurnPolicy('plan', deps());
     expect(policy.advertise?.('write_file')).toBe(false);
+    expect(policy.advertise?.('git_commit')).toBe(false);
     expect((await policy.confirm!(req())).outcome).toBe('reject');
+    expect(
+      (
+        await policy.confirm!(
+          req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+        )
+      ).outcome,
+    ).toBe('reject');
   });
 
   it('accept-edits: advertises all + prompts; an "always" answer is cached so the next call skips the prompt', async () => {
@@ -117,6 +156,36 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     // Second call to the SAME tool id is short-circuited by the always cache — no second prompt.
     expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('accept-edits: forwards the exact request + AbortSignal to the prompt (the preview the user approves)', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'once' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const signal = new AbortController().signal;
+    const request = req({
+      toolId: 'run_command',
+      action: 'process',
+      preview: { command: 'ls -la' },
+    });
+    await policy.confirm!(request, signal);
+    expect(prompt).toHaveBeenCalledWith(request, signal); // the secret-free preview + the cancel signal reach the host
+  });
+
+  it('accept-edits: an "always" grant is scoped to its tool id — a DIFFERENT governed tool still prompts', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    await policy.confirm!(req()); // always-approve write_file
+    await policy.confirm!(req()); // write_file short-circuits (no 2nd prompt)
+    expect(prompt).toHaveBeenCalledTimes(1);
+    // A different tool id is NOT covered by the write_file grant — it prompts.
+    await policy.confirm!(
+      req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+    );
+    expect(prompt).toHaveBeenCalledTimes(2);
   });
 
   it('accept-edits: a "once" approval does NOT cache — the next call re-prompts', async () => {
@@ -162,5 +231,25 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     const decision = await policy.confirm!(req({ preview: { path: '.git/config' } }));
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(decision.outcome).toBe('reject');
+  });
+
+  it('auto: an "always" answer at the protected-path fallback is NOT cached (no cross-mode escalation)', async () => {
+    // The session cache is shared across modes; an "always" at an auto protected-path prompt must not blanket-
+    // approve that tool id in a later accept-edits turn (a consent-scope violation). So the auto fallback never
+    // remembers — the protected prompt re-asks, and accept-edits still prompts for the same tool.
+    const cache = new ApprovalCache();
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const autoPolicy = buildTurnPolicy('auto', {
+      ...deps({ prompt, cache }),
+      isProtectedTarget: () => true,
+    });
+    await autoPolicy.confirm!(req());
+    expect(cache.isAlways('write_file')).toBe(false); // the always grant was dropped
+    // A subsequent accept-edits turn (same shared cache) still prompts for write_file — no leaked blanket grant.
+    const acceptPolicy = buildTurnPolicy('accept-edits', deps({ prompt, cache }));
+    await acceptPolicy.confirm!(req());
+    expect(prompt).toHaveBeenCalledTimes(2); // auto's prompt + accept-edits' prompt (no short-circuit)
   });
 });

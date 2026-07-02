@@ -168,12 +168,16 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         return { outcome: 'reject', reason: `not allowed in ${MODE_LABEL[mode]} mode (read-only)` };
       case 'accept-edits':
         if (deps.cache.isAlways(request.toolId)) return { outcome: 'approve' };
-        return toDecision(await deps.prompt(request, signal), request.toolId, deps.cache);
+        // An "always" answer here IS remembered (the accept-edits once/always memory).
+        return toDecision(await deps.prompt(request, signal), request.toolId, deps.cache, true);
       case 'auto':
         // auto auto-approves — except a protected-path target, which falls back to an explicit prompt (the fs
-        // layer also hard-denies protected paths, so this is the graceful UX, not the security floor).
+        // layer also hard-denies protected paths, so this is the graceful UX, not the security floor). Its
+        // answer is NOT cacheable: a protected-path prompt must re-ask every time, and — since the session
+        // cache is shared across modes — an "always" here must not silently blanket-approve that tool id in a
+        // later accept-edits turn (a cross-mode consent escalation). So the auto fallback never remembers.
         if (deps.isProtectedTarget?.(request.preview) === true) {
-          return toDecision(await deps.prompt(request, signal), request.toolId, deps.cache);
+          return toDecision(await deps.prompt(request, signal), request.toolId, deps.cache, false);
         }
         return { outcome: 'approve' };
       default: {
@@ -184,17 +188,22 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
   };
 }
 
-/** Lower a REPL {@link ApprovalAnswer} to the engine's approve/reject, updating the once/always cache. */
+/**
+ * Lower a REPL {@link ApprovalAnswer} to the engine's approve/reject. An `always` answer is remembered ONLY
+ * when `allowAlwaysCache` is set (accept-edits) — auto's protected-path fallback passes `false` so a narrow
+ * protected-context grant can never leak into a later mode's blanket approval via the shared session cache.
+ */
 function toDecision(
   answer: ApprovalAnswer,
   toolId: string,
   cache: ApprovalCache,
+  allowAlwaysCache: boolean,
 ): ToolApprovalDecision {
   if (answer.outcome === 'reject') {
     return answer.reason === undefined
       ? { outcome: 'reject' }
       : { outcome: 'reject', reason: answer.reason };
   }
-  if (answer.scope === 'always') cache.rememberAlways(toolId);
+  if (allowAlwaysCache && answer.scope === 'always') cache.rememberAlways(toolId);
   return { outcome: 'approve' };
 }
