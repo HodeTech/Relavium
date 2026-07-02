@@ -799,6 +799,32 @@ describe('ToolRegistry — config-only params and I/O mapping', () => {
     // No fragment of the payload survives anywhere in the event field.
     expect(JSON.stringify(out.events.call.toolInput)).not.toContain('aGVsbG8');
   });
+
+  it('scrubs a secret-shaped value from agent:tool_call.toolInput (a model-set credential in a header/body/url)', async () => {
+    // The security-load-bearing wiring: sanitizeInput runs redactSecretShapedValue so a model-injected token in
+    // an http_request header VALUE / body / url-query never rides toolInput → the --json/event/log stream. The
+    // header NAME is kept; the dispatch still ran on the real args.
+    const out = await registry().dispatch(
+      call('http_request', {
+        url: 'https://api.example.com/x?api_key=sk-' + 'abcdef0123456789xyz',
+        body: 'client_secret=supersecretvalue123',
+        headers: { Authorization: 'Bearer tok_live_abcdef123456', 'x-keep': 'plain' },
+      }),
+      ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } }),
+    );
+    const toolInput = out.events.call.toolInput as {
+      url: string;
+      body: string;
+      headers: Record<string, string>;
+    };
+    expect(toolInput.headers['Authorization']).toBe('Bearer [redacted]'); // value scrubbed, NAME kept
+    expect(toolInput.headers['x-keep']).toBe('plain'); // non-secret header untouched
+    expect(toolInput.body).toBe('[redacted]');
+    expect(toolInput.url).not.toContain('sk-' + 'abcdef0123456789xyz');
+    const serialized = JSON.stringify(out.events.call.toolInput);
+    expect(serialized).not.toContain('supersecretvalue123');
+    expect(serialized).not.toContain('tok_live_abcdef123456');
+  });
 });
 
 /* --- capability availability + execution + cancellation --- */

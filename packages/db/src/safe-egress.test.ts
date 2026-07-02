@@ -153,6 +153,33 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     expect(captured?.headers?.['x-keep']).toBe('ok');
   });
 
+  it('DROPS a non-token header name and a CR/LF/NUL-carrying value (request-splitting defense, transport-independent)', async () => {
+    let captured: HopRequest | undefined;
+    const deps = fakeDeps({
+      resolve: { 'api.example.com': ['203.0.113.5'] },
+      onOpen: (request) => (captured = request),
+    });
+    await connectValidated(
+      'https://api.example.com/x',
+      {
+        allowPrivate: false,
+        method: 'GET',
+        headers: {
+          'X-Forwarded-Host': 'evil-backend.example', // forwarding header → vhost reroute
+          'X-Inject': 'ok\r\nHost: evil.example', // CRLF in value would splice a second header line
+          'Bad Name': 'v', // a space makes it a non-token name
+          'X-Good': 'keep',
+        },
+      },
+      deps,
+      sig(),
+    );
+    expect(captured?.headers?.['X-Forwarded-Host']).toBeUndefined();
+    expect(captured?.headers?.['X-Inject']).toBeUndefined(); // CR/LF value dropped
+    expect(captured?.headers?.['Bad Name']).toBeUndefined(); // non-token name dropped
+    expect(captured?.headers?.['X-Good']).toBe('keep');
+  });
+
   it('rejects a non-HTTPS url and a credentialed url with insecure_url (before any DNS)', async () => {
     let resolved = false;
     const deps: EgressDeps = {

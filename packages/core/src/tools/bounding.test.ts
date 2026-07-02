@@ -231,6 +231,18 @@ describe('boundForModel', () => {
     expect(bounded.summary).toContain('[redacted]');
     expect(bounded.value).toBe(result); // the model still sees the real content
   });
+
+  it('scrubs the summary even when the result is TRUNCATED — the preview (model-facing) keeps the bytes', async () => {
+    const secret = 'sk-' + 'abcdef0123456789abcdef';
+    const spill = vi.fn(() => Promise.resolve({ ref: 'run://spill/1', byteLength: 2048 }));
+    const bounded = await boundForModel(
+      `${secret} ${'z'.repeat(2000)}`,
+      TINY,
+      host({ outputStore: { spill } }),
+    );
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.summary).not.toContain(secret); // outputSummary is scrubbed (derived from the full text)
+  });
 });
 
 describe('redactSecretShapedText', () => {
@@ -248,16 +260,31 @@ describe('redactSecretShapedText', () => {
     expect(redactSecretShapedText('ghp' + '_0123456789abcdef0123456789abcdefABCD')).toBe('[redacted]');
   });
 
+  it('redacts the JSON `"key":"value"` shape — an OAuth / egress response body', () => {
+    for (const s of [
+      '{"access_token":"a1b2c3d4e5f6g7h8"}',
+      '{"client_secret":"shhhhhhhhhh"}',
+      '{ "api_key": "sk-' + 'value-here-1234" }',
+    ]) {
+      expect(redactSecretShapedText(s)).toContain('[redacted]');
+    }
+    expect(redactSecretShapedText('{"access_token":"a1b2c3d4e5f6g7h8"}')).not.toContain(
+      'a1b2c3d4e5f6g7h8',
+    );
+  });
+
   it('leaves ordinary text (and short non-secret values) intact', () => {
     expect(redactSecretShapedText('the quick brown fox')).toBe('the quick brown fox');
     expect(redactSecretShapedText('count = 42')).toBe('count = 42'); // not a secret-ish key
   });
 
-  it('is ReDoS-safe on a long adversarial input (completes fast, no catastrophic backtracking)', () => {
-    const evil = `${'a'.repeat(50_000)} password=`; // key with no value → no runaway
+  it('is ReDoS-safe on a value-ENGAGING adversarial input (no catastrophic backtracking)', () => {
+    // Unlike a keyless run, this drives BOTH the scheme-token run (200k) and the key=value value (50k) — the
+    // exact machinery a quadratic pattern would blow up on. Linear completes in ms; the bound would fail a regression.
+    const evil = `Authorization: Bearer ${'a'.repeat(200_000)} my_secret="${'x'.repeat(50_000)}"`;
     const started = performance.now();
     redactSecretShapedText(evil);
-    expect(performance.now() - started).toBeLessThan(200);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });
 

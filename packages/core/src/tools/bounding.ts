@@ -145,14 +145,17 @@ export function redactSecretShapedText(text: string): string {
     text
       // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`.
       .replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/gi, '$1 [redacted]')
-      // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value.
+      // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
+      // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body) where
+      // a closing quote sits between the key and the `:`.
       .replace(
-        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}\s*[=:]\s*["']?[^\s"',;&]{6,}/gi,
+        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*["']?[^\s"',;&]{6,}/gi,
         '[redacted]',
       )
-      // Well-known standalone credential shapes.
+      // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub tokens + PAT,
+      // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT).
       .replace(
-        /\b(?:sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})/g,
+        /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|ya29\.[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})/g,
         '[redacted]',
       )
   );
@@ -171,7 +174,7 @@ export function redactSecretShapedValue(value: unknown): unknown {
 function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown {
   if (typeof value === 'string') return redactSecretShapedText(value);
   if (typeof value !== 'object' || value === null) return value;
-  if (seen.has(value)) return value;
+  if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
   seen.add(value);
   if (Array.isArray(value)) return value.map((item) => redactSecretShapedWalk(item, seen));
   if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling

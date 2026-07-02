@@ -137,6 +137,17 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
     expect(calls[0]?.headers?.['X-Keep']).toBe('yes'); // unrelated model headers still pass through
   });
 
+  it('with NO host credential, a model-supplied Authorization passes through unchanged', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({ deps }); // no resolveCredential
+    await egress.fetch({
+      method: 'GET',
+      url: 'https://api.example.com/x',
+      headers: { Authorization: 'Bearer MODEL-OWN' },
+    });
+    expect(calls[0]?.headers?.['Authorization']).toBe('Bearer MODEL-OWN'); // untouched — nothing to override
+  });
+
   it('proceeds WITHOUT a credential when the ref does not resolve (a provider 401 surfaces, never a crash)', async () => {
     const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
     const egress = createNodeEgressCapability({

@@ -196,7 +196,14 @@ export async function connectValidated(
  *   connection), bypassing the very Host-strip above; letting Node own the framing closes it.
  * - `connection` / `keep-alive` / `proxy-connection` / `te` / `upgrade` / `expect` — hop-by-hop / protocol-
  *   negotiation headers a caller has no business setting (connection reuse, 100-continue, protocol upgrade).
+ * - `x-forwarded-*` / `forwarded` — a model-set forwarding header can reroute a proxy-trusting target to a
+ *   different backend vhost / spoof the source IP its ACLs see (the vhost-confusion class, one hop deeper).
  * The legitimate `authorization` credential header (attached host-side) is untouched.
+ *
+ * Independently of the name filter, a header whose NAME is not a legal HTTP token or whose VALUE carries a
+ * CR / LF / NUL is DROPPED — so a model cannot inject a second header/request line (request splitting) even if
+ * a future `openConnection` transport is swapped for one that doesn't itself reject those (the default Node dep
+ * does, but this shared SSRF primitive must not delegate that guarantee).
  */
 const STRIPPED_HOP_HEADERS: ReadonlySet<string> = new Set([
   'host',
@@ -209,7 +216,14 @@ const STRIPPED_HOP_HEADERS: ReadonlySet<string> = new Set([
   'te',
   'upgrade',
   'expect',
+  'x-forwarded-host',
+  'x-forwarded-for',
+  'x-forwarded-proto',
+  'forwarded',
 ]);
+
+/** A legal HTTP header field-name is one or more RFC 7230 `tchar`s. Linear (single class), no backtracking. */
+const HTTP_TOKEN_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 function sanitizeHopHeaders(
   headers: Readonly<Record<string, string>> | undefined,
@@ -218,6 +232,8 @@ function sanitizeHopHeaders(
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (STRIPPED_HOP_HEADERS.has(key.trim().toLowerCase())) continue;
+    if (!HTTP_TOKEN_NAME.test(key)) continue; // a non-token name (space/CRLF/`:authority`-style) is dropped
+    if (/[\r\n\0]/.test(value)) continue; // a CR/LF/NUL in the value would splice a second header/request line
     out[key] = value;
   }
   return out;
