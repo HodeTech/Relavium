@@ -85,9 +85,15 @@ palette + slash commands in **both** chat and the bare Home, no command in both)
 `/workflows`, `/cost`, and `/doctor` — fast tier plus a `--deep` tier with a **redacted** provider-key probe + a
 **read-only** MCP-status report that never connects/spawns (a security-review decision); the `name + args` slash
 dispatch + a context-aware footer hint-bar) landed **PR #62 (2026-06-30)**, behind [ADR-0056](docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md);
-**the next pickup is 2.5.E** (chat modes + per-tool approval, ADR-0057). For live status, per-PR history, milestone dates, and open
-obligations, see the canonical home [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md)
-is the public overview.
+and **2.5.E** (the reseat-less chat mode system — ask / plan / accept-edits / auto on `Shift+Tab` + `/mode` — the
+fail-closed per-tool `confirmAction` floor (`[y]/[a]/[n]` + a session once/always cache), the `Esc` mid-turn abort
+(EA7), and the host arms closing the 2.5.A deferral: a write-capable `fs` tier + **protected paths** refused in
+every mode incl. `auto`, the SSRF-hardened `egress` arm shared with media, and the `os` arm as a governed action
+class — wired live into `relavium chat`, one-shot `agent run`, and the Home, each activating the regime before its
+first turn) is 🟡 **implemented + reviewed on `development`; PR pending merge**, behind [ADR-0057](docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)
+(**Accepted** after the mandatory holistic security review). **The next pickup is the 2.5 experience arm (2.5.D / F / G).**
+For live status, per-PR history, milestone dates, and open obligations, see the canonical home
+[docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 
 ## Non-negotiable rules for AI agents
 

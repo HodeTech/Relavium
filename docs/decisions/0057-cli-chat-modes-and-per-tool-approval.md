@@ -1,10 +1,23 @@
 # ADR-0057: Reseat-less chat modes and per-tool approval (with mid-turn abort)
 
-- **Status**: Proposed
-- **Date**: 2026-06-28
+- **Status**: Accepted
+- **Date**: 2026-06-28 (Accepted 2026-07-02, after the mandatory security review)
 - **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0028](0028-workflow-resource-governance.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0041](0041-external-action-governance-seam.md), [ADR-0043](0043-media-egress-failover-rematerialization-ssrf.md), [ADR-0053](0053-mcp-network-transport-egress-security.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0059](0059-cli-mid-session-model-reseat.md), [phase-2.5-cli-consolidation.md](../roadmap/phases/phase-2.5-cli-consolidation.md) (2.5.E), [tool-registry.md](../reference/shared-core/tool-registry.md), [action-guard-seam.md](../reference/shared-core/action-guard-seam.md), [architectural-principles.md](../standards/architectural-principles.md)
 
-> **Draft.** Proposed alongside the Phase 2.5 plan; to be reviewed and finalized (→ Accepted) when workstream 2.5.E begins. **Security review is mandatory before Accept** — and now covers a larger surface than the original draft: the write-capable `fs` tier + protected paths, the SSRF-hardened host `egress` arm, the `os` arm (the 2.5.A deferral closed here), and the maintainer's decision to put `auto` on the `Shift+Tab` cycle (below). Per-tool approval is built as a separate, lighter `confirmAction` primitive that **composes with** the Accepted `ActionGuard` seam ([ADR-0041](0041-external-action-governance-seam.md)) rather than reusing it — see [§Relationship to ADR-0041](#relationship-to-adr-0041-actionguard).
+> **Accepted (2.5.E shipped, 2026-07-02).** The mandatory security review ran as a dedicated adversarial pass
+> over the whole surface — the write-capable `fs` tier + protected paths, the SSRF-hardened host `egress` arm,
+> the `os` arm (the 2.5.A deferral closed here), and the maintainer's decision to put `auto` on the `Shift+Tab`
+> cycle. It confirmed the core guarantees hold (no governed dispatch runs ungated on any entry point — chat /
+> Home / one-shot `agent run` / resume; no fs-jail escape; no SSRF bypass; no command injection; no secret
+> leak) and surfaced two gaps that were fixed before Accept: (1) the `os` arm is now a **governed action class**
+> (`read_clipboard` is an un-jailed exfiltration sink, so it rides the approval floor like `egress`, not the
+> advertise-filter alone); (2) a Windows 8.3 / symlinked-ancestor `createDirs` empty-subdir side-effect inside a
+> protected dir is now refused before the `mkdir`. Per-tool approval is a separate, lighter `confirmAction`
+> primitive that **composes with** the Accepted `ActionGuard` seam ([ADR-0041](0041-external-action-governance-seam.md))
+> rather than reusing it — see [§Relationship to ADR-0041](#relationship-to-adr-0041-actionguard). Deferred
+> follow-ups (tracked in [../roadmap/deferred-tasks.md](../roadmap/deferred-tasks.md)): the `[c]`
+> reject-with-typed-reason prompt, a plain/non-TTY non-interactive approval policy, a live `web_search`/http
+> egress credential resolver, and the session-level budget pause/resume that rides the same EA4 machine.
 
 ## Context
 

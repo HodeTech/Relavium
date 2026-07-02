@@ -259,6 +259,23 @@ preserved; zero engine/seam change.
 
 ### 2.5.E — Chat modes (reseat-less) + per-tool approval + mid-turn abort
 
+> **Status:** 🟡 **Implemented + reviewed on `development`; PR pending merge** (behind
+> [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md), now **Accepted** after the
+> mandatory security review). Shipped: the full reseat-less mode system (ask / plan / accept-edits / auto on
+> the `Shift+Tab` cycle + `/mode`), per-tool approval (the fail-closed `confirmAction` floor — `[y]/[a]/[n]`
+> with a session once/always cache), mid-turn `Esc` abort (EA7), and the host capability arms that close the
+> 2.5.A deferral — a write-capable `fs` tier + **protected paths** (`.git/`/`.relavium/`/`.ssh/` + shell-rc,
+> refused in EVERY mode incl. `auto`, Win32-fold / NTFS-ADS / 8.3 / symlink hardened), the SSRF-hardened
+> `egress` arm (one shared connect-by-validated-IP mechanism with media; Host-header-strip), and the `os` arm
+> (`read_clipboard`/`notify`) — **now a governed action class** so the clipboard exfiltration sink rides the
+> approval floor. Wired LIVE into `relavium chat`, the one-shot `agent run`, and the 2.5.B Home (each activates
+> the regime before its first turn — no path runs a governed action ungated). Engine amendments EA3/EA4/EA5/EA7
+> landed. Each step went through the mandated loop (opus + Sonnet 5 adversarial review, ~50 findings fixed incl.
+> 4 HIGH security bugs) plus the dedicated holistic security review (the Accept gate). **Deferred follow-ups**
+> ([../deferred-tasks.md](../deferred-tasks.md)): the `[c]` reject-with-typed-reason prompt, a plain/non-TTY
+> non-interactive approval policy, a live `web_search`/http egress credential resolver, and the session-level
+> budget pause/resume (rides the EA4 machine).
+
 The capability workstream. Claude-Code-style modes — but a mode is a **policy layer on the same
 session instance**, not a reseat: the `ToolHost` is bound full-capability for the session lifetime,
 and the mode controls only (a) the model-advertised tool subset (a per-turn `buildLlmTools` filter)
