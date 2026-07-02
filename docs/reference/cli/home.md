@@ -81,9 +81,9 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | **Ctrl-C** | **clean exit (`0`)** | **`/cancel`** → end the chat, return to Home | **bail out** (exit) |
 | **Ctrl-D** (EOF) | **clean exit (`0`)** on an **empty** prompt (a non-empty buffer keeps it — no data loss) | — | **clean exit (`0`)** (the prompt is empty while building, so EOF bails the build like Ctrl-C) |
 
-Ctrl-C is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge) and even mid-bracketed-paste (so a dropped paste-end marker can never trap the user). The reseat-less **mode keymap** (`Shift+Tab` + `/mode`) and the fail-closed **per-tool approval** landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); wired into the Home via the same `home-controller.ts` key routing — see [chat-session.md](chat-session.md)). The richer slash palette, `@`-mention, `!`-shell, `Ctrl+J` multiline, and history recall are forthcoming and extend this table.
+Ctrl-C is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge) and even mid-bracketed-paste (so a dropped paste-end marker can never trap the user). The reseat-less **mode keymap** (`Shift+Tab` + `/mode`) and the fail-closed **per-tool approval** landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); wired into the Home via the same `home-controller.ts` key routing — see [chat-session.md](chat-session.md)); the interactive `/` command palette landed in **2.5.C**. `@`-mention, `!`-shell, `Ctrl+J` multiline, and history recall are forthcoming and extend this table.
 
-The **footer hint-bar** in 2.5.B was the single fixed line; the context-aware hint-bar (the two or three most-relevant keys per context/mode, including the active mode) landed in **2.5.C** and extends it.
+The **footer hint-bar** in 2.5.B was the single fixed line; the context-aware hint-bar (the two or three most-relevant keys per context) landed in **2.5.C**, and the always-visible **active-mode footer indicator** (`formatSessionFooterWithMode`) arrived with **2.5.E** (ADR-0057) — together they extend that fixed footer.
 
 ## Bracketed paste (DECSET 2004)
 

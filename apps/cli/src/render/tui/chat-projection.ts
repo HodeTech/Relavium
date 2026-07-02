@@ -64,14 +64,20 @@ const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set(['tool_denied', 'tool_un
  * Secret-free — it carries only counts/codes + a whitelisted reason label, never argument text.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
+  // Terminal-sanitize the whitelisted reason (like every other display string here) BEFORE the whitespace
+  // collapse — the whitelisted messages are host-authored ASCII today, but the render boundary must strip any
+  // ANSI/OSC/control byte regardless so the whitelist stays robust to a future producer.
+  const reason =
+    summary.errorMessage === undefined ? '' : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;
-  } else if (summary.errorMessage !== undefined && SAFE_MESSAGE_CODES.has(summary.errorCode)) {
+  } else if (reason.length > 0 && SAFE_MESSAGE_CODES.has(summary.errorCode)) {
     // Surface WHY a governed action was denied — the reason is the only place it reaches the user, and the turn
-    // died on it (e.g. `error: tool_denied — not allowed in ask mode (read-only)`). Parity with the run path's
-    // final-summary.ts, which already renders errorMessage for the same error taxonomy.
-    head = `error: ${summary.errorCode} — ${summary.errorMessage.replace(/\s+/gu, ' ').trim()}`;
+    // died on it (e.g. `error: tool_denied — not allowed in ask mode (read-only)`). Unlike the run path's
+    // final-summary.ts (which renders errorMessage for every code), the chat path restricts it to the vetted
+    // approval-floor codes, since a chat turn is interactive/lower-trust.
+    head = `error: ${summary.errorCode} — ${reason}`;
   } else {
     head = `error: ${summary.errorCode}`;
   }

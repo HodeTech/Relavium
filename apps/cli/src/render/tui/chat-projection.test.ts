@@ -65,6 +65,28 @@ describe('chat-projection', () => {
       expect(line).not.toContain('model-derived context');
     });
 
+    it('terminal-sanitizes the rendered reason (strips ANSI/OSC/control bytes) and omits an empty reason', () => {
+      const ESC = String.fromCharCode(0x1b);
+      const BEL = String.fromCharCode(0x07);
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_denied',
+        errorMessage: `${ESC}]0;pwn${BEL}denied\r\n here`, // an OSC title-set + BEL + CRLF
+      });
+      // eslint-disable-next-line no-control-regex -- asserting NO control byte survives the sanitizer
+      expect(/[\u0000-\u001f\u007f]/.test(line)).toBe(false); // no raw control byte reaches the terminal
+      expect(line).toContain('error: tool_denied');
+      // A whitespace-only reason renders the bare code (no dangling em-dash).
+      const empty = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_denied',
+        errorMessage: '   ',
+      });
+      expect(empty.split(' \u00b7 ')[0]).toBe('error: tool_denied');
+    });
+
     it('renders the EA7 "aborted" stop reason as a plain label (no error segment)', () => {
       const line = formatTurnSummary({
         stopReason: 'aborted',

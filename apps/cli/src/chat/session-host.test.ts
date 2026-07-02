@@ -1008,6 +1008,10 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
       await new Promise((r) => setImmediate(r));
     }
+    // The fallback prompt WAS published (non-cacheable) — so the approve below is genuinely consumed, not a
+    // no-op that would let the fs floor pass the test even if auto stopped prompting.
+    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    expect(store.getSnapshot().approval?.cacheable).toBe(false);
     store.answerApproval({ outcome: 'approve', scope: 'once' }); // APPROVE — the fs floor must refuse it anyway
     await turn;
     built.session.cancel();
