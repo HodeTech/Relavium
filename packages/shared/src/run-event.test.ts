@@ -232,7 +232,7 @@ const reject: Record<string, Record<string, unknown>> = {
     ...env,
     nodeId: 'n',
     toolId: 'write_file',
-    action: 'fs_read', // not a governed action class (only fs_write | process | egress)
+    action: 'fs_read', // not a governed action class (only fs_write | process | egress | os)
     preview: { path: './out.txt' },
   },
   'agent:approval_requested (empty toolId)': {

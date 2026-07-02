@@ -273,8 +273,8 @@ export interface MediaReadAccess {
  * dependency-inversion pattern as `ToolHost`, so ADR-0037's tool-execution boundary holds: the engine
  * defines the interface + the invocation point, the host supplies the implementation). The registry
  * consults it BETWEEN the `enforcePolicy` guardrail floor and the host side-effect, for a GOVERNED-class
- * dispatch only (fs_write / a model-controlled process / egress — never a read-only fs / `git_status` /
- * clipboard tool). The engine stays mode-agnostic: the host's hook owns the mode policy (ask / plan /
+ * dispatch only (fs_write / a model-controlled process / egress / an `os` action like `read_clipboard` —
+ * never a read-only fs read / `git_status` / `invoke_agent`). The engine stays mode-agnostic: the host's hook owns the mode policy (ask / plan /
  * accept-edits / auto), the once/always cache, the protected-paths rule, and emitting
  * `agent:approval_requested`; the engine only asks "may this governed action proceed?" and honors it.
  * ------------------------------------------------------------------------------------------------ */
@@ -335,8 +335,8 @@ export interface ToolDispatchContext {
   readonly gateApproved: boolean;
   /**
    * Per-tool approval regime (ADR-0057 EA3). PRESENT ⇒ the interactive-approval (chat) path: a
-   * governed-class dispatch (fs_write / a model-controlled process / egress) requires a `confirm` decision,
-   * and an absent `confirm` is fail-closed → denied. ABSENT ⇒ the workflow author-trust path, unchanged.
+   * governed-class dispatch (fs_write / a model-controlled process / egress / an `os` action) requires a
+   * `confirm` decision, and an absent `confirm` is fail-closed → denied. ABSENT ⇒ the workflow author-trust path, unchanged.
    */
   readonly approval?: ToolApprovalContext;
   /** Names of effective-arg keys that are secret-tainted (ADR-0029(c)) — rejected from non-credential args. */
