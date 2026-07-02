@@ -256,3 +256,61 @@ describe('createChatStore', () => {
     ]);
   });
 });
+
+describe('createChatStore — chat mode + per-tool approval coordination (ADR-0057)', () => {
+  const approvalRequest = {
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: 'notes.md' },
+  } as const;
+
+  it('defaults to ask mode; setMode updates the snapshot mode and flushes immediately', () => {
+    const store = createChatStore(false);
+    expect(store.getSnapshot().mode).toBe('ask');
+    let repaints = 0;
+    store.subscribe(() => (repaints += 1));
+    store.setMode('accept-edits');
+    expect(repaints).toBe(1);
+    expect(store.getSnapshot().mode).toBe('accept-edits');
+  });
+
+  it('requestApproval publishes a pending approval, then resolves when answerApproval is called', async () => {
+    const store = createChatStore(false);
+    expect(store.getSnapshot().approval).toBeUndefined();
+    const pending = store.requestApproval(approvalRequest, true);
+    // The prompt is now published for the REPL to render (with its cacheable hint).
+    expect(store.getSnapshot().approval).toEqual({ request: approvalRequest, cacheable: true });
+    store.answerApproval({ outcome: 'approve', scope: 'always' });
+    expect(await pending).toEqual({ outcome: 'approve', scope: 'always' });
+    expect(store.getSnapshot().approval).toBeUndefined(); // cleared on settle
+  });
+
+  it('answerApproval with nothing pending is a no-op (a stray keypress)', () => {
+    const store = createChatStore(false);
+    expect(() => store.answerApproval({ outcome: 'approve', scope: 'once' })).not.toThrow();
+    expect(store.getSnapshot().approval).toBeUndefined();
+  });
+
+  it('an abort while an approval is pending REJECTS with an AbortError and clears the prompt (cancel, not deny)', async () => {
+    const store = createChatStore(false);
+    const ac = new AbortController();
+    const pending = store.requestApproval(approvalRequest, false, ac.signal);
+    expect(store.getSnapshot().approval).toEqual({ request: approvalRequest, cacheable: false });
+    ac.abort();
+    const err = await pending.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).toBe('AbortError'); // classified as a CANCEL by the registry's isAbort
+    expect(store.getSnapshot().approval).toBeUndefined();
+  });
+
+  it('an ALREADY-aborted signal rejects immediately and never publishes a prompt', async () => {
+    const store = createChatStore(false);
+    const ac = new AbortController();
+    ac.abort();
+    const err = await store
+      .requestApproval(approvalRequest, true, ac.signal)
+      .catch((e: unknown) => e);
+    expect((err as Error).name).toBe('AbortError');
+    expect(store.getSnapshot().approval).toBeUndefined(); // no prompt was ever shown
+  });
+});
