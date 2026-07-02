@@ -267,6 +267,22 @@ const reject: Record<string, Record<string, unknown>> = {
     action: 'fs_write',
     preview: { host: 'evil.example' }, // fs_write carries `path` ONLY — a host is action drift
   },
+  'agent:approval_requested (os preview carrying a path — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'read_clipboard',
+    action: 'os',
+    preview: { path: './leak.txt' }, // os carries NO field — any of path/command/host is drift
+  },
+  'agent:approval_requested (process preview carrying a host — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'run_command',
+    action: 'process',
+    preview: { host: 'evil.example' }, // process carries `command` ONLY — a host is action drift
+  },
   'agent:approval_requested (empty preview command)': {
     type: 'agent:approval_requested',
     ...env,
@@ -425,6 +441,27 @@ describe('RunEvent union — every variant', () => {
         pendingMediaJobNodeIds: ['work'],
       }).success,
     ).toBe(true);
+  });
+
+  it('ACCEPTS a BLANK approval preview for os and egress (the action-bind superRefine must not over-reject)', () => {
+    // APPROVAL_PREVIEW_FIELD maps os → undefined (no field) and egress → host (OPTIONAL), so an all-empty
+    // preview is VALID for read_clipboard/notify (os) and mcp_call/web_search (blank egress). A regression that
+    // mis-resolved the allowed key would silently break the whole os / MCP approval class — pin the accept side.
+    for (const [toolId, action] of [
+      ['read_clipboard', 'os'],
+      ['mcp_call', 'egress'],
+    ] as const) {
+      expect(
+        RunEventSchema.safeParse({
+          type: 'agent:approval_requested',
+          ...env,
+          nodeId: 'n',
+          toolId,
+          action,
+          preview: {},
+        }).success,
+      ).toBe(true);
+    }
   });
 
   it('covers exactly the 22 canonical colon-namespaced names, pinned to a literal list', () => {

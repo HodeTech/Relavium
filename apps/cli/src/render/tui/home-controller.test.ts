@@ -945,6 +945,19 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       await expect(pending).resolves.toEqual({ outcome: 'reject' });
     });
 
+    it('Esc with onAbort PRESENT aborts the turn and does NOT also answer the approval (no double-settle)', async () => {
+      // The `if onAbort` branch wins: the turn is aborted (its signal resolves the approval); the fallback
+      // answerApproval must NOT also fire (a refactor to two independent `if`s would double-settle).
+      const onAbort = vi.fn();
+      const store = createChatStore(false);
+      const c = await inChat(makeSession({ onAbort, store }));
+      const pending = store.requestApproval(approvalReq, true);
+      void pending.catch(() => undefined); // onAbort is a mock (doesn't fire the signal) — avoid an unhandled reject
+      c.handleKey('', { escape: true });
+      expect(onAbort).toHaveBeenCalledTimes(1);
+      expect(store.getSnapshot().approval).not.toBeUndefined(); // the fallback did NOT answer it — onAbort owns the abort
+    });
+
     it('a pending approval intercepts keys: `/` stays closed and `[y]` approves-once', async () => {
       const store = createChatStore(false);
       const c = await inChat(makeSession({ store }));

@@ -353,9 +353,11 @@ async function confirmDispatch(
   throwIfAborted(ctx, def.id); // do not prompt for a turn that is already aborting
 
   const request: ToolApprovalRequest = { toolId: def.id, action, preview: previewFor(action, target) };
-  // EA5: emit the observability event just before prompting so a durable trace of the pending decision rides
-  // the session / `--json` stream (the session stamps the envelope + nodeId). Side-effect only — a throwing or
-  // absent emitter must NOT change the fail-closed floor, so it is best-effort (swallow any emit fault).
+  // EA5: emit the observability event for EVERY governed dispatch that reaches this gate, just before the host
+  // decides — a durable "a governed action was gated" trace on the session / `--json` stream (the session
+  // stamps the envelope + nodeId), whether the host then prompts a human or auto-decides. Side-effect only — a
+  // throwing or absent emitter must NOT change the fail-closed floor, so it is best-effort (swallow any fault;
+  // a schema-invalid drift would throw inside the sink's parse and is dropped here rather than breaking the turn).
   try {
     approval.emitApprovalRequested?.(request);
   } catch {

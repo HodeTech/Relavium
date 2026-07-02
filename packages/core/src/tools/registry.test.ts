@@ -442,6 +442,25 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(emitApprovalRequested.mock.calls[0]?.[0]).toBe(confirm.mock.calls[0]?.[0]);
   });
 
+  it('emits agent:approval_requested even for a REJECTING confirm — a denied governed action is still traced', async () => {
+    const order: string[] = [];
+    const confirm = vi.fn<ConfirmFn>(() => {
+      order.push('confirm');
+      return Promise.resolve({ outcome: 'reject', reason: 'no' });
+    });
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>(() => order.push('emit'));
+    const { host, writeFile } = hostWithWriteSpy();
+    await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm, emitApprovalRequested } }),
+      ),
+    );
+    expect(order).toEqual(['emit', 'confirm']); // the trace fires regardless of the (reject) outcome
+    expect(emitApprovalRequested).toHaveBeenCalledOnce();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
   it('a THROWING emitApprovalRequested does not break the approval decision (best-effort observability)', async () => {
     const confirm = approving();
     const { host, writeFile } = hostWithWriteSpy();

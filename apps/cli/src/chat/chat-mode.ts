@@ -183,7 +183,15 @@ function advertiseFor(
  * `always`-cached blank check).
  */
 function isBlankPreview(preview: ToolActionPreview): boolean {
-  return preview.path === undefined && preview.command === undefined && preview.host === undefined;
+  // Keyed by `keyof ToolActionPreview` so a NEW reviewable field breaks the build HERE (it must be added below)
+  // rather than silently making a preview that carries it look "blank" — which would re-open the `always` blank
+  // check this closes. Every field must be absent for the preview to count as blank.
+  const fields: Record<keyof ToolActionPreview, unknown> = {
+    path: preview.path,
+    command: preview.command,
+    host: preview.host,
+  };
+  return Object.values(fields).every((value) => value === undefined);
 }
 
 /** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */

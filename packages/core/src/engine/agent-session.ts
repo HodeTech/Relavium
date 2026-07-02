@@ -308,13 +308,6 @@ export class AgentSession {
     this.#turnPolicy = policy;
   }
 
-  /**
-   * Run one user turn end to end: append the user message, drive the turn core (streaming + tool loop +
-   * fallback), append the assistant reply, and emit `session:turn_started` → `session:turn_completed`.
-   * A turn past the hard cap is blocked **loudly** with `turn_limit` and **no egress**. A classified
-   * turn failure still **completes** — with `stopReason: 'error'` and the mapped error code. Resolves
-   * when the turn settles; a cancel mid-turn resolves quietly (the terminal is `session:cancelled`).
-   */
   /** Guard the send preconditions: the session must be started and idle (not running/cancelled/ended). */
   #assertSendable(): void {
     if (this.#status === 'created') {
@@ -328,6 +321,13 @@ export class AgentSession {
     }
   }
 
+  /**
+   * Run one user turn end to end: append the user message, drive the turn core (streaming + tool loop +
+   * fallback), append the assistant reply, and emit `session:turn_started` → `session:turn_completed`.
+   * A turn past the hard cap is blocked **loudly** with `turn_limit` and **no egress**. A classified
+   * turn failure still **completes** — with `stopReason: 'error'` and the mapped error code. Resolves
+   * when the turn settles; a cancel mid-turn resolves quietly (the terminal is `session:cancelled`).
+   */
   async sendMessage(text: string): Promise<void> {
     this.#assertSendable();
 

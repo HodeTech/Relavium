@@ -7,6 +7,7 @@ import type {
 } from '@relavium/llm';
 import {
   AgentSchema,
+  RunEventSchema,
   SessionContextSchema,
   type Agent,
   type SessionContext,
@@ -799,6 +800,15 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       action: 'fs_write',
       preview: { path: './out.txt' },
     });
+    // The emitted body, once the sink stamps the session envelope (1.W), is a SCHEMA-VALID run event — the
+    // action-bound preview + dual-envelope refinements accept it (this is what the bus parses against).
+    const validated = RunEventSchema.safeParse({
+      ...approvalEvent,
+      sessionId: 's1',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      sequenceNumber: 0,
+    });
+    expect(validated.success).toBe(true);
   });
 
   it('no turn policy ⇒ no approval regime in the dispatch context (workflow author-trust parity)', async () => {

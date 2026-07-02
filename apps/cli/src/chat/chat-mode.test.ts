@@ -167,6 +167,21 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
+  it('accept-edits: a CONCRETE egress preview (host) STILL caches "always" — the blank-check did not over-correct', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const egressReq = req({ toolId: 'http_request', action: 'egress', preview: { host: 'api.example.com' } });
+    expect(await policy.confirm!(egressReq)).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenNthCalledWith(1, egressReq, true, undefined); // cacheable=true (a concrete host)
+    // A concrete-preview grant IS cached — the second call short-circuits (proves isBlankPreview's `host` check).
+    expect(
+      await policy.confirm!(req({ toolId: 'http_request', action: 'egress', preview: { host: 'api.example.com' } })),
+    ).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
   it('accept-edits: a BLANK-preview tool (mcp_call/web_search) NEVER caches "always" — no session-long blank check', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),

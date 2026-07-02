@@ -188,13 +188,18 @@ export const AgentToolResultEventSchema = z.object({
 export const ToolActionClassSchema = z.enum(TOOL_ACTION_CLASSES);
 
 /**
- * A side-effecting tool dispatch is awaiting an interactive per-tool approval decision (ADR-0057 EA3/EA5).
- * The host's `ConfirmActionHook` emits it just before prompting the user; the registry then awaits the
- * verdict (approve ⇒ dispatch, reject ⇒ a fatal `tool_denied`). A **dual-envelope** event (`runId` on a run,
+ * A GOVERNED tool dispatch reached the per-tool approval gate (ADR-0057 EA3/EA5) — a durable trace that the
+ * governed action was gated. The engine's `confirmDispatch` emits it just before invoking the host's
+ * `ConfirmActionHook`, whether that hook then PROMPTS a human (accept-edits / auto's protected-path fallback)
+ * or DECIDES without one (ask/plan auto-deny, auto auto-approve) — so a `--json` consumer should read it as
+ * "a governed action was gated", NOT "the user was asked N times". The registry then awaits the verdict
+ * (approve ⇒ dispatch, reject ⇒ a fatal `tool_denied`). A **dual-envelope** event (`runId` on a run,
  * `sessionId` on a session) in the `agent:*` namespace, like `agent:tool_call` — in Phase 2.5 it is emitted
  * only on the chat session path (the approval regime), and the session sink carries it (not run-only, so it
  * is NOT dropped like `agent:file_patch_proposed`). The `preview` is **secret-free and display-only**: the
- * resolved target path / command / host (never a full URL+query, never a secret).
+ * resolved target path / command / host (never a full URL+query, never a secret). `attemptNumber` is absent on
+ * the session path today (the registry's `ToolApprovalRequest` carries no chain-attempt index — a cross-seam
+ * concept); a `--json` consumer correlates to the following `agent:tool_call` by `sequenceNumber` proximity.
  */
 export const AgentApprovalRequestedEventSchema = z.object({
   type: z.literal('agent:approval_requested'),
