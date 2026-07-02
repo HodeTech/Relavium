@@ -149,10 +149,21 @@ export class ToolExecutionError extends ToolDispatchError {
   readonly code = 'execution_failed';
   readonly runErrorCode: ErrorCode = 'tool_failed';
   readonly retryable = true;
+  /**
+   * Whether this failure is safe to FEED BACK to the model for a within-turn retry (ADR-0057
+   * `recoverToolFailures`, the interactive chat surface) — vs ending the turn. `retryable` (above) means a
+   * fresh node-retry may re-run the whole node; `recoverable` is the STRICTER "the model may re-attempt this
+   * specific call in-turn without a side-effect hazard". True ONLY for an IDEMPOTENT tool (a read — no
+   * `fs_write`/`egress`/`process`/`os` action), stamped by the registry from {@link governedAction}. A
+   * governed / side-effecting tool defaults to **false**, so a non-idempotent failure (a half-run command, a
+   * POST that may have reached the server) ends the turn rather than risking a re-execution.
+   */
+  readonly recoverable: boolean;
 
-  constructor(toolId: ToolId, message: string, cause?: unknown) {
+  constructor(toolId: ToolId, message: string, cause?: unknown, opts?: { recoverable?: boolean }) {
     super(message, toolId, cause);
     this.name = 'ToolExecutionError';
+    this.recoverable = opts?.recoverable ?? false;
   }
 }
 

@@ -148,7 +148,13 @@ async function dispatch(
     if (cause instanceof ToolDispatchError) {
       throw cause; // a typed error from dispatch (e.g. ToolUnavailableError) passes through
     }
-    throw new ToolExecutionError(def.id, `tool \`${def.id}\` failed`, cause);
+    // Stamp whether the failure is safe to feed back to the model for a within-turn retry (ADR-0057): ONLY an
+    // IDEMPOTENT tool — one `governedAction` does not classify as a side-effecting fs_write/process/egress/os
+    // action (a read: read_file / list_directory / git_status / invoke_agent / read_media). A governed tool's
+    // failure is non-idempotent (a half-run command, a POST that may have landed), so it is NOT recoverable.
+    throw new ToolExecutionError(def.id, `tool \`${def.id}\` failed`, cause, {
+      recoverable: governedAction(def, target) === undefined,
+    });
   }
 
   // 8. Brand the model-facing result untrusted + shape the sanitized event payloads.

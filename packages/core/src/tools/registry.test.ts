@@ -958,7 +958,7 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
     expect(err.runErrorCode).toBe('tool_unavailable'); // EA1 (ADR-0055) — actionable, never a bare `internal`
   });
 
-  it('wraps a host throw as a retryable execution error', async () => {
+  it('wraps a host throw as a retryable execution error, flagged RECOVERABLE for an idempotent read (ADR-0057)', async () => {
     const host = stubHost({ fs: fsWith(() => Promise.reject(new Error('disk gone'))) });
     const err = await rejectsWith<ToolExecutionError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
@@ -969,6 +969,35 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
     expect(err).toBeInstanceOf(ToolExecutionError);
     expect(err.runErrorCode).toBe('tool_failed');
     expect(err.retryable).toBe(true);
+    // read_file is NOT a governed action (an idempotent read), so the failure is safe to feed back to the
+    // model for a within-turn retry on the chat surface.
+    expect(err.recoverable).toBe(true);
+  });
+
+  it('flags a GOVERNED (side-effecting) tool failure as NOT recoverable — the ADR-0057 tightening', async () => {
+    // write_file is a governed `fs_write` action, so a failure is non-idempotent (a half-written file, though
+    // the atomic write guards it) and must NOT be auto-fed-back for a retry: recoverable is false.
+    const host = stubHost({
+      fs: {
+        readFile: () =>
+          Promise.resolve({
+            content: 'x',
+            mimeType: 'text/plain',
+            sizeBytes: 1,
+            lastModified: 't',
+          }),
+        writeFile: () => Promise.reject(new Error('disk gone')),
+        listDirectory: () => Promise.resolve({ entries: [] }),
+      },
+    });
+    const err = await rejectsWith<ToolExecutionError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx(),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolExecutionError);
+    expect(err.recoverable).toBe(false);
   });
 
   it('refuses to start when the signal is already aborted', async () => {

@@ -49,7 +49,7 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import { ToolDispatchError } from '../tools/errors.js';
+import { ToolDispatchError, ToolExecutionError } from '../tools/errors.js';
 import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import { unwrapUntrusted } from '../tools/untrusted.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
@@ -234,14 +234,18 @@ export function codeForLlmError(error: LlmError): ErrorCode {
 /**
  * A tool throw the turn recovers by feeding the model an `isError` tool result (which increments the shared
  * `maxToolCorrections` budget) instead of ending the turn. Always the model's own syntactic mistakes
- * (`unknown_tool` / `invalid_args`); PLUS a host `execution_failed` (a file-not-found, a transient egress
- * error) ONLY when `limits.recoverToolFailures` is set (the interactive chat surface — see
- * {@link AgentTurnLimits.recoverToolFailures}). A `tool_denied` / `tool_unavailable` / `cancelled` is NEVER
- * recoverable here (a security/cancel boundary — it stays fatal so it never loops).
+ * (`unknown_tool` / `invalid_args`); PLUS a host execution failure ONLY when BOTH `limits.recoverToolFailures`
+ * is set (the interactive chat surface — see {@link AgentTurnLimits.recoverToolFailures}) AND the error is
+ * flagged {@link ToolExecutionError.recoverable} — i.e. an IDEMPOTENT tool (a read), stamped by the registry
+ * from `governedAction`. A governed / side-effecting failure (a half-run command, a POST that may have landed)
+ * is NOT recoverable, so it ends the turn rather than risk a re-execution. A `tool_denied` / `tool_unavailable`
+ * / `cancelled` is NEVER recoverable here (a security / cancel boundary — it stays fatal so it never loops).
  */
 function isRecoverableToolError(err: ToolDispatchError, limits: AgentTurnLimits): boolean {
   if (err.code === 'unknown_tool' || err.code === 'invalid_args') return true;
-  return err.code === 'execution_failed' && limits.recoverToolFailures === true;
+  return (
+    limits.recoverToolFailures === true && err instanceof ToolExecutionError && err.recoverable
+  );
 }
 
 /** Map a non-correctable tool throw to the node `ErrorCode` (cancel wins; a denial is fatal). */

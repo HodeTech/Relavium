@@ -613,14 +613,17 @@ describe('runAgentTurn — tool loop', () => {
     });
   });
 
-  it('recovers from a host execution_failed by feeding it back when recoverToolFailures is set (ADR-0057 chat surface)', async () => {
-    // The interactive chat surface opts in (session-host wires recoverToolFailures:true) so a file-not-found /
-    // transient host failure is fed to the model as an isError result — it adapts / explains instead of the turn
-    // dying on a bare tool_failed. Mirrors the correctable-recovery test but for a HOST ToolExecutionError.
+  it('recovers a RECOVERABLE host execution_failed (feeds it back) when recoverToolFailures is set (ADR-0057)', async () => {
+    // The interactive chat surface opts in (recoverToolFailures:true); a host failure the registry stamped
+    // `recoverable` (an IDEMPOTENT read — e.g. a file-not-found) is fed to the model as an isError result so it
+    // adapts / explains instead of the turn dying on a bare tool_failed.
     let dispatched = 0;
     const registry = stubRegistry((call) => {
       dispatched += 1;
-      if (dispatched === 1) throw new ToolExecutionError('echo', 'the filesystem operation failed');
+      if (dispatched === 1)
+        throw new ToolExecutionError('echo', 'the filesystem operation failed', undefined, {
+          recoverable: true,
+        });
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return {
         output: 'OK',
@@ -654,6 +657,24 @@ describe('runAgentTurn — tool loop', () => {
     expect(
       eventsOf(params).find((e) => e.type === 'agent:tool_result' && !e.success),
     ).toBeDefined();
+  });
+
+  it('does NOT recover a NON-recoverable execution_failed even with recoverToolFailures set (a governed/side-effecting tool)', async () => {
+    // The tightening: a failure the registry did NOT stamp recoverable (a governed, non-idempotent tool — a
+    // half-run command, a POST that may have landed) ends the turn LOUDLY even on the chat surface, so the
+    // model never re-attempts a side effect. `recoverable` defaults to false.
+    const registry = stubRegistry(() => {
+      throw new ToolExecutionError('echo', 'the network request failed'); // recoverable defaults to false
+    });
+    const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+    await expect(
+      runAgentTurn(
+        baseParams(provider, {
+          registry,
+          limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'tool_failed', retryable: true });
   });
 
   it('attaches the turn’s REAL accumulated usage to a failed turn (EA2)', async () => {
