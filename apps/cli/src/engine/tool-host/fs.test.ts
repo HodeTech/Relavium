@@ -784,6 +784,24 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     expect(names).toContain('top.txt');
     expect(names.some((n) => n.includes('.ssh'))).toBe(false); // neither the dir nor its contents are listed
   });
+
+  itPosix(
+    'list_directory (recursive) SKIPS a symlink whose REALPATH is a sensitive store (resolved, not lexical)',
+    async () => {
+      // A symlink with an INNOCUOUS name (`notes`) pointing into a credential store: its lexical path is harmless,
+      // so a bare-lexical sensitive check would LIST it. The realpath-before-floor (mirroring collectGlobFiles)
+      // resolves it to `.ssh/` and skips it, so a recursive listing never surfaces a symlinked path to a secret.
+      await mkdir(join(workspace, '.ssh'), { recursive: true });
+      await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
+      await symlink(join(workspace, '.ssh'), join(workspace, 'notes'), 'dir'); // harmless name → sensitive target
+      await writeFile(join(workspace, 'keep.txt'), 'x');
+      const { entries } = await sandboxed().listDirectory('.', { recursive: true });
+      const names = entries.map((e) => e.name);
+      expect(names).toContain('keep.txt');
+      expect(names).not.toContain('notes'); // the symlink-to-.ssh is filtered by the RESOLVED sensitive check
+      expect(names.some((n) => n.includes('.ssh'))).toBe(false);
+    },
+  );
 });
 
 describe('createNodeFsCapability — read-only profile (2.5.A chat)', () => {

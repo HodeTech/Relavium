@@ -17,6 +17,11 @@ import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { agentRunCommand, readAllStdin, type AgentRunCommandDeps } from './agent-run.js';
 
+/** A tiny structural guard so an NDJSON event's nested `error.code` is read without an unsafe `as` cast. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 const AGENT_YAML =
   'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.\ntools:\n  - read_file';
 const CASSETTE = {
@@ -111,9 +116,8 @@ describe('agentRunCommand (2.Q)', () => {
     });
     await agentRunCommand({ agent: join(cwd, 'writer.agent.yaml'), input: [] }, d);
     const completed = parseNdjson(out()).find((e) => e['type'] === 'session:turn_completed');
-    expect((completed as { error?: { code?: string } } | undefined)?.error?.code).toBe(
-      'tool_denied',
-    );
+    const error = isRecord(completed) ? completed['error'] : undefined;
+    expect(isRecord(error) ? error['code'] : undefined).toBe('tool_denied');
     expect(existsSync(join(cwd, 'pwned.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 

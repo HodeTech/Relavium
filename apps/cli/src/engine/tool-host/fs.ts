@@ -673,8 +673,13 @@ async function listOne(
   const entries: DirEntry[] = [];
   await walk(realRoot, opts.recursive === true, signal, inScope, async (real, rel, dirent) => {
     if (entries.length >= cap) return false; // stop the walk once the listing cap is hit
-    if (isSensitiveReadPath(real)) return true; // never list a nested .ssh/.relavium/credential entry
     if (matcher !== undefined && !matcher(rel)) return true;
+    // Sensitive-read floor on the RESOLVED target (mirrors collectGlobFiles): `walk` realpaths the parent DIR
+    // but not the entry, so a bare lexical check would let a symlink named innocuously slip a nested
+    // .ssh/.relavium/credential store into the listing. Fall back to the lexical path when realpath fails (a
+    // broken/vanished link) so a sensitively-NAMED entry is still filtered. The DISPLAYED name (`rel`) is unchanged.
+    const realResolved = await realpath(real).catch(() => undefined);
+    if (isSensitiveReadPath(realResolved ?? real)) return true;
     const info = await lstat(real).catch(() => undefined);
     if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
     entries.push({

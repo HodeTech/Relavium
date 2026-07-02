@@ -457,7 +457,9 @@ export function createChatModeControl(
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
   return {
-    onAbort: () => built.session.abort(),
+    onAbort: () => {
+      built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
+    },
     onModeChange: (mode) => {
       store.setMode(mode);
       applyChatMode(modeEnv, mode);

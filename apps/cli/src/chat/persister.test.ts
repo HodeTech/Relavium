@@ -256,6 +256,9 @@ describe('createSessionPersister', () => {
     expect(full?.messages).toHaveLength(2); // ONLY the kept turn's user + assistant
     expect(textOf(full?.messages[0]?.content ?? [])).toBe('kept'); // user
     expect(textOf(full?.messages[1]?.content ?? [])).toBe('kept-reply'); // assistant (the first script)
+    // The title is derived from the first COMPLETED exchange, never the aborted prompt ('abort me') whose rows
+    // were rolled back — so a session's label always has a transcript behind it.
+    expect(full?.session.title).toBe('kept');
   });
 
   it('marks the session ended on cancel (its sole terminal), leaving it resumable', async () => {

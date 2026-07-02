@@ -136,6 +136,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           event.stopReason !== 'aborted' &&
           pendingUserText !== undefined
         ) {
+          // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
+          // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
+          // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
+          title ??= deriveSessionTitle(pendingUserText);
           appendText('user', pendingUserText);
           if (assistantText.length > 0) appendText('assistant', assistantText);
           totalInputTokens += event.tokensUsed.input;
@@ -179,9 +183,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       unsubscribe = deps.handle.subscribe(onEvent);
     },
     beginUserTurn(text: string): void {
-      // Derive the title from the FIRST user message of a titleless session (a fresh chat, or a resumed one that
-      // never got one). A blank message yields undefined, so the next non-blank message becomes the title.
-      title ??= deriveSessionTitle(text);
+      // Only STAGE the user text; the title is derived when (and if) the exchange COMPLETES + persists (see
+      // `session:turn_completed`). Deriving it here would stamp the session row with a title from an ABORTED /
+      // errored first turn whose message rows are rolled back — a label with no transcript behind it.
       pendingUserText = text;
       assistantText = '';
     },

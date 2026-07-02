@@ -79,8 +79,11 @@ interface ChatAppProps {
   readonly onExit: () => void;
   /** Called when a turn rejects UNEXPECTEDLY (a re-thrown turn-core bug) — the driver tears down + propagates. */
   readonly onError: (err: unknown) => void;
-  /** Mid-turn abort (EA7) — Esc aborts the in-flight turn, keeping the session alive. */
-  readonly onAbort: () => void;
+  /** Mid-turn abort (EA7) — Esc aborts the in-flight turn, keeping the session alive. OPTIONAL: a driver/test
+   *  wired without it degrades gracefully (Esc at a pending approval rejects it directly, so it is never a dead
+   *  key — parity with home-controller.ts), rather than a no-op that would hang the decision. `| undefined` so
+   *  the passthrough at the createElement site (exactOptionalPropertyTypes) can forward an absent `ctx.onAbort`. */
+  readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
 }
@@ -291,7 +294,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         props.onModeChange(nextMode(props.store.getSnapshot().mode));
         return;
       case 'abort':
-        props.onAbort(); // Esc — mid-turn abort (keeps the session; distinct from Ctrl-C /cancel)
+        // Esc — mid-turn abort (keeps the session; distinct from Ctrl-C /cancel). `onAbort` aborts the turn,
+        // whose signal also rejects any in-flight approval. If `onAbort` is absent (a driver/test wired without
+        // it), a PENDING approval would otherwise hang — reject it directly so Esc is never a dead key at a
+        // decision (parity with home-controller.ts's handleChatKey).
+        if (props.onAbort !== undefined) {
+          props.onAbort();
+        } else if (props.store.getSnapshot().approval !== undefined) {
+          props.store.answerApproval({ outcome: 'reject' });
+        }
         return;
       case 'approve':
         props.store.answerApproval({ outcome: 'approve', scope: action.scope });
@@ -396,9 +407,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
         // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
         // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
         onError: (err) => rejectExit(err),
-        // ADR-0057 mode/abort wiring — the REPL loop always supplies these; default to a no-op so a driver
-        // wired without them (a test harness) degrades to a fixed mode rather than crashing on a keypress.
-        onAbort: ctx.onAbort ?? ((): void => undefined),
+        // ADR-0057 mode/abort wiring — the REPL loop always supplies these. onModeChange defaults to a no-op so a
+        // driver wired without it degrades to a fixed mode; onAbort is passed through AS-IS (optional) so the
+        // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
+        onAbort: ctx.onAbort,
         onModeChange: ctx.onModeChange ?? ((): void => undefined),
       }),
       {
