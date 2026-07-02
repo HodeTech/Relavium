@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  link,
   mkdir,
   mkdtemp,
   readdir,
@@ -156,6 +157,25 @@ describe('createNodeFsCapability — read (jailed)', () => {
     },
     10_000,
   );
+
+  itPosix('refuses to read a hard-linked file that aliases an out-of-jail inode — FATAL tool_denied', async () => {
+    // The single POSIX aliasing vector the symlink jail misses: a hard link inside the workspace to an outside
+    // secret. realpath keeps it in-scope, but the fd's nlink > 1 refuses it before any byte is read.
+    await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
+    await link(join(outside, 'secret.txt'), join(workspace, 'notes.txt'));
+    const err: unknown = await sandboxed()
+      .readFile('notes.txt', {})
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FsScopeDeniedError);
+    if (err instanceof FsScopeDeniedError) expect(err.retryable).toBe(false);
+  });
+
+  itPosix('the full (unjailed) tier reads a hard-linked file — benign in-scope store links stay readable', async () => {
+    await writeFile(join(outside, 'lib.txt'), 'LIB');
+    await link(join(outside, 'lib.txt'), join(workspace, 'lib.txt'));
+    const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    expect((await fs.readFile('lib.txt', {})).content).toBe('LIB');
+  });
 });
 
 /**
@@ -210,6 +230,25 @@ describe('readJailedFile — the post-jail fd read guard', () => {
     },
     10_000,
   );
+
+  itPosix('flags a HARD-LINKED regular file as `aliased` (st.nlink > 1) — the exfiltration-alias guard', async () => {
+    // realpath resolves symlinks but NOT hard links; a hard link INSIDE the jail can share its inode with a name
+    // OUTSIDE it, so "realpath ∈ scope" no longer implies "content ∈ scope". The fd's st.nlink > 1 is the
+    // race-free signal — refused like a symlink. (link() needs the same filesystem; workspace+outside share one.)
+    await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
+    const alias = join(workspace, 'innocent.txt');
+    await link(join(outside, 'secret.txt'), alias); // hard link — realpath(alias) === alias, but nlink === 2
+    expect((await readJailedFile(alias, 1 << 20)).kind).toBe('aliased');
+  });
+
+  itPosix('reads a hard-linked file when rejectAliased is false (the full/unjailed tier — pnpm store links)', async () => {
+    await writeFile(join(outside, 'store.txt'), 'STORE');
+    const alias = join(workspace, 'dep.txt');
+    await link(join(outside, 'store.txt'), alias);
+    const r = await readJailedFile(alias, 1 << 20, false);
+    expect(r.kind).toBe('file');
+    if (r.kind === 'file') expect(r.bytes.toString('utf8')).toBe('STORE');
+  });
 });
 
 describe('createNodeFsCapability — glob read', () => {
@@ -336,6 +375,32 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     ).rejects.toBeInstanceOf(FsScopeDeniedError);
     expect(await readFile(join(outside, 'target.txt'), 'utf8')).toBe('original'); // never clobbered
   });
+
+  itPosix('refuses to APPEND to a HARD-LINKED file — the aliasing bypass of the protected-paths floor', async () => {
+    // A hard link is not a symlink (assertNotSymlink passes) and its own path has no protected segment
+    // (assertNotProtectedPath passes), yet its inode may be a stand-in ~/.ssh/authorized_keys. The post-open
+    // fstat (st.nlink > 1, race-free on the fd) refuses it before O_APPEND writes through the shared inode.
+    await writeFile(join(outside, 'authorized_keys'), 'original');
+    await link(join(outside, 'authorized_keys'), join(workspace, 'notes.txt'));
+    await expect(
+      sandboxed().writeFile('notes.txt', 'ssh-rsa AAAA-injected', { append: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    expect(await readFile(join(outside, 'authorized_keys'), 'utf8')).toBe('original'); // never appended
+  });
+
+  itPosix(
+    'refuses to APPEND to a FIFO WITHOUT blocking — a reader-less pipe fails closed, never hangs the process',
+    async () => {
+      // The append open lacked O_NONBLOCK, so a reader-less FIFO blocked the write forever (unkillable — fs.open
+      // takes no AbortSignal). O_NONBLOCK now makes the reader-less open return ENXIO immediately → fatal denial.
+      // If this regresses to a blocking open, the test times out (fail) rather than hanging the suite forever.
+      execFileSync('mkfifo', [join(workspace, 'pipe')]);
+      await expect(
+        sandboxed().writeFile('pipe', 'data', { append: true }),
+      ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    },
+    10_000,
+  );
 
   it('cleans up the temp file when the atomic publish fails — no `.relavium-write.*.tmp` orphan', async () => {
     // Force the rename to fail by pointing the final target at an existing NON-EMPTY directory: `rename(tmp,
@@ -477,6 +542,67 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
     await expect(fullTier.writeFile('.bashrc', 'evil', {})).rejects.toBeInstanceOf(
       FsScopeDeniedError,
     );
+  });
+});
+
+describe('createNodeFsCapability — sensitive-read floor (credential/secret stores refused) — ADR-0057 review', () => {
+  it('refuses to read inside `.ssh/` (private keys / authorized_keys / known_hosts)', async () => {
+    await mkdir(join(workspace, '.ssh'), { recursive: true });
+    await writeFile(join(workspace, '.ssh', 'id_rsa'), 'PRIVATE KEY');
+    await expect(sandboxed().readFile('.ssh/id_rsa', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses to read a repo-local `.git/config` but ALLOWS a plain file named `config`', async () => {
+    await mkdir(join(workspace, '.git'), { recursive: true });
+    await writeFile(join(workspace, '.git', 'config'), '[remote]\n url = https://u:tok@h/r');
+    await expect(sandboxed().readFile('.git/config', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+    // A file named `config` NOT under `.git/` is not a credential store — read is allowed.
+    await writeFile(join(workspace, 'config'), 'plain-config');
+    expect((await sandboxed().readFile('config', {})).content).toBe('plain-config');
+  });
+
+  it('refuses the credential dotfiles (.gitconfig / .netrc / .npmrc) and inside `.relavium/`', async () => {
+    for (const f of ['.gitconfig', '.netrc', '.npmrc']) {
+      await writeFile(join(workspace, f), 'token=secret');
+      await expect(sandboxed().readFile(f, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+    }
+    await mkdir(join(workspace, '.relavium'), { recursive: true });
+    await writeFile(join(workspace, '.relavium', 'keys.json'), '{"k":"v"}');
+    await expect(sandboxed().readFile('.relavium/keys.json', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+  });
+
+  it('ALLOWS a normal `.gitignore` — only the credential set is sensitive, not every dotfile', async () => {
+    await writeFile(join(workspace, '.gitignore'), 'node_modules\n');
+    expect((await sandboxed().readFile('.gitignore', {})).content).toBe('node_modules\n');
+  });
+
+  it('is tier-independent — the full (unjailed) tier still refuses a `.ssh/` read', async () => {
+    await mkdir(join(workspace, '.ssh'), { recursive: true });
+    await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
+    const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    await expect(fs.readFile('.ssh/id_rsa', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('a glob never surfaces a sensitive match but returns the safe ones', async () => {
+    await writeFile(join(workspace, 'a.txt'), 'SAFE');
+    await mkdir(join(workspace, '.ssh'), { recursive: true });
+    await writeFile(join(workspace, '.ssh', 'known_hosts.txt'), 'SECRET-HOST');
+    const r = await sandboxed().readFile('**/*.txt', { glob: true });
+    expect(r.content).toContain('SAFE');
+    expect(r.content).not.toContain('SECRET-HOST');
+  });
+
+  it('list_directory refuses a sensitive ROOT and skips a nested sensitive entry in a recursive walk', async () => {
+    await mkdir(join(workspace, '.ssh'), { recursive: true });
+    await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
+    await expect(sandboxed().listDirectory('.ssh', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+    await writeFile(join(workspace, 'top.txt'), 'x');
+    const { entries } = await sandboxed().listDirectory('.', { recursive: true });
+    const names = entries.map((e) => e.name);
+    expect(names).toContain('top.txt');
+    expect(names.some((n) => n.includes('.ssh'))).toBe(false); // neither the dir nor its contents are listed
   });
 });
 
