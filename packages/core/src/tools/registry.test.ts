@@ -350,7 +350,12 @@ describe('governedAction — the authoritative engine confirm-floor classifier (
     // MODEL-command process tool (run_command's policyTarget yields a `command`) trips the process case; a
     // pre-approved process tool (git_status / git_commit — no policyTarget) does not. Each policyTarget reads
     // only its own field, so one permissive sample serves all.
-    const sampleArgs = { command: 'ls', args: [] as string[], path: 'p.txt', url: 'https://example.com' };
+    const sampleArgs = {
+      command: 'ls',
+      args: [] as string[],
+      path: 'p.txt',
+      url: 'https://example.com',
+    };
     const governed: Record<string, string> = {};
     for (const def of BUILTIN_TOOLS) {
       const target = def.policyTarget?.(sampleArgs) ?? {};
@@ -468,7 +473,11 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     );
     expect(order).toEqual(['emit', 'confirm']); // the observability event fires just BEFORE the prompt
     expect(emitApprovalRequested).toHaveBeenCalledWith(
-      expect.objectContaining({ toolId: 'write_file', action: 'fs_write', preview: { path: './out.txt' } }),
+      expect.objectContaining({
+        toolId: 'write_file',
+        action: 'fs_write',
+        preview: { path: './out.txt' },
+      }),
     );
     // The confirm hook received the SAME request object (one construction, EA5-emitted then confirmed).
     expect(emitApprovalRequested.mock.calls[0]?.[0]).toBe(confirm.mock.calls[0]?.[0]);
@@ -480,7 +489,9 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
       order.push('confirm');
       return Promise.resolve({ outcome: 'reject', reason: 'no' });
     });
-    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>(() => order.push('emit'));
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>(() =>
+      order.push('emit'),
+    );
     const { host, writeFile } = hostWithWriteSpy();
     await rejectsWith<ToolDeniedByUserError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
@@ -962,10 +973,7 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
 
   it('refuses to start when the signal is already aborted', async () => {
     const err = await rejectsWith<ToolCancelledError>(
-      registry().dispatch(
-        call('read_file', { path: 'a' }),
-        ctx({ signal: mutableSignal(true) }),
-      ),
+      registry().dispatch(call('read_file', { path: 'a' }), ctx({ signal: mutableSignal(true) })),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
     expect(err.runErrorCode).toBe('cancelled');

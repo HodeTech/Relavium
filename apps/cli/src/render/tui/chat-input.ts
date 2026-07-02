@@ -40,18 +40,6 @@ export type ChatKeyAction =
   | { readonly kind: 'reject' };
 
 /**
- * Reduce one keystroke of the chat prompt to an action.
- *
- * When an approval is pending (`approvalPending`), the prompt OWNS the keyboard — the in-flight key-swallow
- * bypass (ADR-0057, no deadlock): `[y]`/`1` approve once, `[a]`/`2` approve always, `[n]`/`3` reject, `Esc`
- * aborts the whole turn; every other key is ignored. Otherwise: `Ctrl-C` maps to `cancel` even mid-turn (a
- * streaming turn can always be interrupted); `Shift+Tab` cycles the mode (harmless mid-turn — it applies to
- * the next turn); `Esc` while `running` is a mid-turn `abort` (EA7); while a turn is `running` every OTHER key
- * is ignored (one turn at a time); `Return` submits the buffer; backspace/delete is a `backspace` op; a
- * printable char (not a ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller
- * folds them functionally, preserving the accumulating semantics across a batched multi-event chunk.
- */
-/**
  * The approval-prompt keystroke intercept (accept-edits / auto's protected-path fallback), extracted so
  * {@link reduceChatKey} stays flat: `[y]`/`1` approve once, `[a]`/`2` approve always, `[n]`/`r`/`3` reject,
  * `Esc` aborts the whole turn (and this pending approval); every other key is ignored. It bypasses the
@@ -65,6 +53,17 @@ function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   return { kind: 'none' };
 }
 
+/**
+ * Reduce one keystroke of the chat prompt to an action.
+ *
+ * When an approval is pending (`approvalPending`), the prompt OWNS the keyboard (see {@link reduceApprovalKey}) —
+ * the in-flight key-swallow bypass (ADR-0057, no deadlock). Otherwise: `Ctrl-C` maps to `cancel` even mid-turn (a
+ * streaming turn can always be interrupted); `Shift+Tab` cycles the mode (harmless mid-turn — it applies to
+ * the next turn); `Esc` while `running` is a mid-turn `abort` (EA7); while a turn is `running` every OTHER key
+ * is ignored (one turn at a time); `Return` submits the buffer; backspace/delete is a `backspace` op; a
+ * printable char (not a ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller
+ * folds them functionally, preserving the accumulating semantics across a batched multi-event chunk.
+ */
 export function reduceChatKey(
   char: string,
   key: ChatKey,

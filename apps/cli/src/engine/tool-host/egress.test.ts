@@ -150,7 +150,10 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
 
   it('drops BOTH case variants when the model sets Authorization AND authorization simultaneously', async () => {
     const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
-    const egress = createNodeEgressCapability({ deps, resolveCredential: () => Promise.resolve('WON') });
+    const egress = createNodeEgressCapability({
+      deps,
+      resolveCredential: () => Promise.resolve('WON'),
+    });
     await egress.fetch({
       method: 'GET',
       url: 'https://api.example.com/x',

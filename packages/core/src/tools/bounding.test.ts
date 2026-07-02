@@ -224,7 +224,8 @@ describe('boundForModel', () => {
   it('scrubs a secret-shaped value from the summary (outputSummary) but keeps the model-facing value', async () => {
     // A read_clipboard / egress-body / .env-style result carrying a live token must not ride outputSummary
     // (→ agent:tool_result.outputSummary → the --json stream). The model-facing value keeps the real bytes.
-    const result = `export API_KEY=sk-${'abcdef0123456789abcdef'} and Authorization: Bearer tok${'_live_9f8e7d6c5b4a'}`;
+    const result =
+      `export API_KEY=sk-${'abcdef0123456789abcdef'} and Authorization: Bearer tok${'_live_9f8e7d6c5b4a'}`;
     const bounded = await boundForModel(result, BIG, host());
     expect(bounded.summary).not.toContain('sk-' + 'abcdef0123456789abcdef');
     expect(bounded.summary).not.toContain('tok_live_9f8e7d6c5b4a');

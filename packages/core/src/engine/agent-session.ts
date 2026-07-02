@@ -94,8 +94,9 @@ export type SessionApprovalStreamEvent = DistributiveOmit<
 /**
  * Everything a session emits, envelope-less: the five `session:*` lifecycle bodies, the four dual-envelope
  * in-turn bodies the turn core produces (`agent:token` / `agent:tool_call` / `agent:tool_result` /
- * `cost:updated`), and the host-emitted `agent:approval_requested` body (ADR-0057). The injected sink
- * receives these; 1.W routes them onto the bus.
+ * `cost:updated`), and the engine-emitted `agent:approval_requested` body (ADR-0057 EA5 — the registry's
+ * `confirmDispatch` emits it via the dispatch context's `emitApprovalRequested`). The injected sink receives
+ * these; 1.W routes them onto the bus.
  */
 export type SessionStreamEvent =
   | SessionLifecycleEvent

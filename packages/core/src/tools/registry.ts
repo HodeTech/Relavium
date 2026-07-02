@@ -352,7 +352,11 @@ async function confirmDispatch(
   }
   throwIfAborted(ctx, def.id); // do not prompt for a turn that is already aborting
 
-  const request: ToolApprovalRequest = { toolId: def.id, action, preview: previewFor(action, target) };
+  const request: ToolApprovalRequest = {
+    toolId: def.id,
+    action,
+    preview: previewFor(action, target),
+  };
   // EA5: emit the observability event for EVERY governed dispatch that reaches this gate, just before the host
   // decides — a durable "a governed action was gated" trace on the session / `--json` stream (the session
   // stamps the envelope + nodeId), whether the host then prompts a human or auto-decides. Side-effect only — a
@@ -396,18 +400,15 @@ async function confirmDispatch(
 }
 
 /**
- * The side-effecting action class a per-tool approval governs, or `undefined` for an un-gated tool. A
- * model-controlled `run_command` (a resolved `command` target) is `process`; the pre-approved `git_status`
- * (no command target) is NOT governed — matching `enforcePolicy`, which runs the command allowlist only when
- * a command target is present. An fs READ and `invoke_agent` are not governed
+ * Classify a dispatch's governed ACTION class — the authoritative confirmAction floor — or `undefined` for an
+ * un-gated tool. A model-controlled `run_command` (a resolved `command` target) is `process`; the pre-approved
+ * `git_status` (no command target) is NOT governed — matching `enforcePolicy`, which runs the command allowlist
+ * only when a command target is present. An fs READ and `invoke_agent` are not governed
  * ([ADR-0041](../../../../docs/decisions/0041-external-action-governance-seam.md) §ActionClass); every egress
  * IS, even a read-only `web_search` (an exfiltration sink); and an `os` action (`read_clipboard` / `notify`)
  * IS — the clipboard is ambient, un-jailed OS state that routinely holds a freshly-copied secret (ADR-0057).
- */
-/**
- * Classify a dispatch's governed ACTION class (the authoritative confirmAction floor) — or `undefined` for a
- * read-only / pre-approved tool that is never gated. Exported (from this module, NOT the package index) so a
- * drift-lock test can pin the exact engine-governed set, distinct from the CLI advertise-filter's superset.
+ * Exported (from this module, NOT the package index) so a drift-lock test can pin the exact engine-governed
+ * set, distinct from the CLI advertise-filter's superset.
  */
 export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionClass | undefined {
   if (def.policy.fsWrite === true) {

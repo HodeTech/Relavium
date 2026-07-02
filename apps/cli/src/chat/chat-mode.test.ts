@@ -172,12 +172,18 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
     const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
-    const egressReq = req({ toolId: 'http_request', action: 'egress', preview: { host: 'api.example.com' } });
+    const egressReq = req({
+      toolId: 'http_request',
+      action: 'egress',
+      preview: { host: 'api.example.com' },
+    });
     expect(await policy.confirm!(egressReq)).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenNthCalledWith(1, egressReq, true, undefined); // cacheable=true (a concrete host)
     // A concrete-preview grant IS cached — the second call short-circuits (proves isBlankPreview's `host` check).
     expect(
-      await policy.confirm!(req({ toolId: 'http_request', action: 'egress', preview: { host: 'api.example.com' } })),
+      await policy.confirm!(
+        req({ toolId: 'http_request', action: 'egress', preview: { host: 'api.example.com' } }),
+      ),
     ).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenCalledTimes(1);
   });
@@ -187,11 +193,17 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
     const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
-    const procReq = req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } });
+    const procReq = req({
+      toolId: 'run_command',
+      action: 'process',
+      preview: { command: 'ls -la' },
+    });
     expect(await policy.confirm!(procReq)).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenNthCalledWith(1, procReq, true, undefined); // cacheable=true (a concrete command)
     expect(
-      await policy.confirm!(req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } })),
+      await policy.confirm!(
+        req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } }),
+      ),
     ).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenCalledTimes(1); // cached — a dropped `command` check would force a re-prompt here
   });

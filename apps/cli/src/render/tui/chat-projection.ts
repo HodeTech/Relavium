@@ -51,10 +51,15 @@ export function sanitizeInline(text: string): string {
 }
 
 /**
- * Error codes whose `errorMessage` is a vetted, secret-free, host-supplied LABEL safe to render in-chat — the
- * actionable approval-floor denials (ADR-0057): `tool_denied` ("not allowed in ask mode (read-only)", "refusing
- * to write inside a protected directory") and `tool_unavailable` ("fs (read-only in this session)"). Other
- * codes' messages may carry prompt/model context, so only the code is shown for them.
+ * Error codes whose `errorMessage` is safe to render in-chat. This leans on a load-bearing project-wide
+ * contract, not a two-string allowlist: EVERY `tool_denied` / `tool_unavailable` message across the engine is,
+ * by the `ToolDispatchError` reason-only rule (packages/core/src/tools/errors.ts; tool-registry.md §errors), a
+ * static host/engine-authored LABEL that never interpolates an argument value, path, URL, or secret — the
+ * ADR-0057 approval-floor denials ("not allowed in ask mode (read-only)", "refusing to write inside a protected
+ * directory", "fs (read-only in this session)") plus every `ToolPolicyError` / `HostDeniedError` reason. Other
+ * codes (validation / execution_failed / …) MAY carry prompt/model context, so only the code is shown for them.
+ * A new denial subclass becomes chat-visible automatically once its code is one of these — which is safe
+ * precisely because the reason-only contract binds it too (the message is still terminal-sanitized regardless).
  */
 const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set(['tool_denied', 'tool_unavailable']);
 
@@ -68,7 +73,9 @@ export function formatTurnSummary(summary: TurnSummary): string {
   // collapse — the whitelisted messages are host-authored ASCII today, but the render boundary must strip any
   // ANSI/OSC/control byte regardless so the whitelist stays robust to a future producer.
   const reason =
-    summary.errorMessage === undefined ? '' : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
+    summary.errorMessage === undefined
+      ? ''
+      : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;

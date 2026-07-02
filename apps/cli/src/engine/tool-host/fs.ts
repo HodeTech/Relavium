@@ -237,7 +237,11 @@ async function readGlob(
     // can neither redirect the read nor make the size charged diverge from the bytes read. The bounded prefix
     // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
     // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
-    const result = await readJailedFile(m.real, maxReadBytes - totalBytes, rejectAliasedRead(config, m.real));
+    const result = await readJailedFile(
+      m.real,
+      maxReadBytes - totalBytes,
+      rejectAliasedRead(config, m.real),
+    );
     // skip a non-text match (dir / special / aliased / binary); never charge the budget. collectGlobFiles
     // already filters to regular, in-scope, non-sensitive files — but it does NOT check nlink, so the
     // hard-link (`aliased`) skip is enforced HERE by readJailedFile's per-fd guard (the primary aliasing
