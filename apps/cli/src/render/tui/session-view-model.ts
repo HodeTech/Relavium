@@ -317,7 +317,10 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
       : { errorCode: event.error.code, errorMessage: event.error.message }),
   };
   const text = base.liveTokens;
-  const show = text.length > 0 || event.error !== undefined;
+  // Append an entry for a turn that produced text, that ERRORED, OR that was ABORTED (EA7) — so an Esc during
+  // an approval prompt (before any assistant text streamed) still leaves a visible trace ("aborted · …" via the
+  // summary), confirming the abort took effect rather than silently clearing the live region.
+  const show = text.length > 0 || event.error !== undefined || event.stopReason === 'aborted';
   const transcript = show
     ? appendTranscript(base.transcript, { role: 'assistant', text, summary })
     : base.transcript;

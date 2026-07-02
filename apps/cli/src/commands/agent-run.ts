@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
+import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -146,6 +147,22 @@ async function runOneShotTurn(
         turnErrorCode = event.error.code;
       }
     });
+    // ADR-0057: `agent run` is a NON-interactive one-shot over the SAME full-capability chat-read-write host
+    // (session-host.ts). There is no user to approve a governed action, so apply the fail-closed `ask` regime
+    // BEFORE the first turn — every governed dispatch (write / egress / a model-command process) is denied,
+    // restoring the pre-4b fail-closed behavior (read-only tools still work). A deliberate author-trusted
+    // one-shot would be a separate, security-reviewed decision using the workflow-read-write profile, not this.
+    const modeEnv = makeChatModeEnv({
+      session: built.session,
+      tools: built.tools,
+      workspaceDir: built.context.workingDir,
+      prompt: () =>
+        Promise.resolve({
+          outcome: 'reject',
+          reason: 'interactive approval is unavailable in a one-shot agent run',
+        }),
+    });
+    applyChatMode(modeEnv, 'ask');
     built.session.start();
     await built.session.sendMessage(message);
   } catch (err) {

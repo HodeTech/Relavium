@@ -31,7 +31,8 @@ export interface ChatModeEnv {
   readonly governed: ReadonlySet<string>;
   /** The session once/always memory (shared across mode changes — an "always" persists until the session ends). */
   readonly cache: ApprovalCache;
-  /** The REPL's interactive `[a]/[r]/[c]` prompt (accept-edits, and auto's protected-path fallback). */
+  /** The REPL's interactive `[y] yes / [a] always / [n] no / [esc] abort` prompt (accept-edits, and auto's
+   *  protected-path fallback). A reject-with-typed-reason (`[c]` comment) is a deferred follow-up. */
   readonly prompt: ApprovalPrompt;
   /** Whether an approval preview targets a protected path — `auto` then falls back to a prompt (ADR-0057). */
   readonly isProtectedTarget: (preview: ToolActionPreview) => boolean;

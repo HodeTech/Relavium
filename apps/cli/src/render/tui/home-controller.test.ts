@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { type ChatMode } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -43,24 +44,36 @@ const EMPTY: HomeSnapshot = {
 /** A controllable {@link HomeChatSession} fake: records the lines it processes, exposes a teardown spy, and lets a
  *  test script `shouldStop` (the /exit·/cancel signal) and the turn outcome (resolve vs reject). */
 function makeSession(
-  opts: { onProcess?: () => Promise<void>; stop?: () => boolean; running?: boolean } = {},
+  opts: {
+    onProcess?: () => Promise<void>;
+    stop?: () => boolean;
+    running?: boolean;
+    store?: ReturnType<typeof createChatStore>;
+    onAbort?: () => void;
+    onModeChange?: (mode: ChatMode) => void;
+  } = {},
 ): {
   session: HomeChatSession;
   teardown: ReturnType<typeof vi.fn>;
   lines: string[];
+  store: ReturnType<typeof createChatStore>;
 } {
   const lines: string[] = [];
   const teardown = vi.fn(() => Promise.resolve());
+  // A custom store wins; else running ⇒ a status-running store, idle ⇒ a fresh one (the running-gate is false).
+  const store = opts.store ?? (opts.running === true ? runningStore() : createChatStore(false));
   const session: HomeChatSession = {
-    store: opts.running === true ? runningStore() : createChatStore(false), // idle ⇒ the running-gate is false
+    store,
     processLine: async (line) => {
       lines.push(line);
       if (opts.onProcess) await opts.onProcess();
     },
     shouldStop: opts.stop ?? (() => false),
+    ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
+    ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     teardown,
   };
-  return { session, teardown, lines };
+  return { session, teardown, lines, store };
 }
 
 /** Flush the microtask + macrotask queue so the controller's async `startChat`/`processLine` chains settle. */
@@ -883,6 +896,67 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey(PASTE_END, {});
       expect(c.getSnapshot().notice).toBeUndefined();
       expect(c.getSnapshot().input).toBe('pasted');
+    });
+  });
+
+  describe('in-chat mode / approval / abort keys (ADR-0057)', () => {
+    const inChat = async (made: ReturnType<typeof makeSession>): Promise<HomeController> => {
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: () => Promise.resolve(made.session),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush(); // loading → chat, first line sent — now handleKey routes to handleChatKey
+      return c;
+    };
+    const approvalReq = {
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: 'x' },
+    } as const;
+
+    it('Shift+Tab cycles the chat mode via onModeChange (ask → plan)', async () => {
+      const onModeChange = vi.fn();
+      const c = await inChat(makeSession({ onModeChange }));
+      c.handleKey('', { tab: true, shift: true });
+      expect(onModeChange).toHaveBeenCalledWith('plan'); // default ask → plan
+    });
+
+    it('Esc aborts the in-flight turn via onAbort (mid-turn; the session is not cancelled)', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, running: true });
+      const c = await inChat(made);
+      c.handleKey('', { escape: true });
+      expect(onAbort).toHaveBeenCalledTimes(1);
+      expect(made.lines).not.toContain('/cancel'); // abort ≠ /cancel — the session stays alive
+    });
+
+    it('a pending approval intercepts keys: `/` stays closed and `[y]` approves-once', async () => {
+      const store = createChatStore(false);
+      const c = await inChat(makeSession({ store }));
+      const pending = store.requestApproval(approvalReq, true);
+      c.handleKey('/', {}); // the approval owns the keyboard — the palette must NOT open
+      expect(c.getSnapshot().palette).toBeUndefined();
+      c.handleKey('y', {});
+      await expect(pending).resolves.toEqual({ outcome: 'approve', scope: 'once' });
+    });
+
+    it('a pending approval: `[a]` approves-always, `[n]` rejects', async () => {
+      const alwaysStore = createChatStore(false);
+      const ca = await inChat(makeSession({ store: alwaysStore }));
+      const alwaysPending = alwaysStore.requestApproval(approvalReq, true);
+      ca.handleKey('a', {});
+      await expect(alwaysPending).resolves.toEqual({ outcome: 'approve', scope: 'always' });
+
+      const rejectStore = createChatStore(false);
+      const cr = await inChat(makeSession({ store: rejectStore }));
+      const rejectPending = rejectStore.requestApproval(approvalReq, true);
+      cr.handleKey('n', {});
+      await expect(rejectPending).resolves.toEqual({ outcome: 'reject' });
     });
   });
 });

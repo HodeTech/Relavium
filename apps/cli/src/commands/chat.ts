@@ -17,7 +17,13 @@ import {
   REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from './repl-commands.js';
-import { CHAT_MODES, MODE_LABEL, parseMode, type ChatMode } from '../chat/chat-mode.js';
+import {
+  CHAT_MODES,
+  MODE_DESCRIPTION,
+  MODE_LABEL,
+  parseMode,
+  type ChatMode,
+} from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
@@ -571,9 +577,14 @@ export function createChatLineHandler(
     setMode: (modeArg) => {
       const requested = modeArg.trim();
       if (requested.length === 0) {
-        emitOutput(
-          `mode: ${MODE_LABEL[store.getSnapshot().mode]} (options: ${CHAT_MODES.join(', ')})`,
+        // Bare `/mode`: show the current mode + EXPLAIN each one (a discovery affordance — the palette submits
+        // this bare form), listing every mode with its one-line description and marking the active one.
+        const current = store.getSnapshot().mode;
+        const rows = CHAT_MODES.map(
+          (m) =>
+            `  ${MODE_LABEL[m].padEnd(12)} ${MODE_DESCRIPTION[m]}${m === current ? '  (current)' : ''}`,
         );
+        emitOutput(`mode: ${MODE_LABEL[current]}\n${rows.join('\n')}`);
         return;
       }
       const mode = parseMode(requested);

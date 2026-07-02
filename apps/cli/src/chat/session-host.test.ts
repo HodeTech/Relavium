@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +18,9 @@ import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
+import { createChatModeControl } from '../commands/chat.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { createChatStore } from '../render/tui/chat-store.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
@@ -795,6 +797,57 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       'tool_denied', // the ask-mode confirm floor denied the governed write (ADR-0057 EA3)
     );
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // denied BEFORE any write — no file on disk
+  });
+
+  it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime', async () => {
+    // Prove the PRODUCTION seam — createChatModeControl(built, store) applies the initial ask mode via the real
+    // store.requestApproval prompt — denies a governed write end-to-end (not just the manual-env path above).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+      ]),
+    });
+    createChatModeControl(built, createChatStore(false)); // applies ask → the fail-closed regime is now active
+    built.session.start();
+    await built.session.sendMessage('write a file');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+  });
+
+  it('createChatModeControl accept-edits: an APPROVE lets the governed write through the store prompt', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'ok.txt', content: 'hi' }),
+        textTurn('done'),
+      ]),
+    });
+    const store = createChatStore(false);
+    const control = createChatModeControl(built, store);
+    control.onModeChange('accept-edits'); // switch to accept-edits (prompts each governed write)
+    built.session.start();
+    const turn = built.session.sendMessage('write a file');
+    // Drive the interactive prompt: wait for the published approval, then approve it.
+    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    store.answerApproval({ outcome: 'approve', scope: 'once' });
+    await turn;
+    built.session.cancel();
+    await drainHandle(built.handle.events);
+    expect(existsSync(join(workspace, 'ok.txt'))).toBe(true); // approved ⇒ the write landed
+    expect(readFileSync(join(workspace, 'ok.txt'), 'utf8')).toBe('hi');
   });
 
   it('the advertise-filter keeps http_request now that egress is wired (chat-read-write, 2.5.E)', async () => {

@@ -18,7 +18,7 @@ import type { AbortSignalLike } from '@relavium/shared';
  * Two-layer safety (ADR-0057): the advertise-filter is BEST-EFFORT (it keeps a governed tool out of the
  * model's reach), while the `confirm` hook is AUTHORITATIVE — the registry calls it for every governed-class
  * dispatch (fs_write / egress / a model-controlled process), so even if the model names a hidden tool the
- * mode policy still decides. `ask`/`plan` deny governed actions; `accept-edits` prompts (`[a]/[r]/[c]`) with a
+ * mode policy still decides. `ask`/`plan` deny governed actions; `accept-edits` prompts (`[y]/[a]/[n]`) with a
  * session once/always memory; `auto` auto-approves EXCEPT a protected-path write, which falls back to a prompt
  * (and the fs layer hard-denies protected paths regardless — the floor beneath every mode).
  */
@@ -30,15 +30,16 @@ export type ChatMode = (typeof CHAT_MODES)[number];
 /** The default mode: read-only `ask` (secure by default — no governed action without a deliberate mode step). */
 export const DEFAULT_CHAT_MODE: ChatMode = 'ask';
 
-/** Short human labels for the footer indicator + `/mode` output. */
+/** Short labels for the footer indicator + `/mode` output. Kept identical to the mode ids (kebab, no spaces)
+ *  so the footer's `accept-edits mode` is exactly what `/mode accept-edits` accepts — display + input agree. */
 export const MODE_LABEL: Record<ChatMode, string> = {
   ask: 'ask',
   plan: 'plan',
-  'accept-edits': 'accept edits',
+  'accept-edits': 'accept-edits',
   auto: 'auto',
 };
 
-/** One-line descriptions (the `/mode` help + palette). */
+/** One-line descriptions, listed by the bare `/mode` output (the chat command's mode-discovery affordance). */
 export const MODE_DESCRIPTION: Record<ChatMode, string> = {
   ask: 'read-only — writes, commands, and network are declined',
   plan: 'read-only — draft a plan before acting',

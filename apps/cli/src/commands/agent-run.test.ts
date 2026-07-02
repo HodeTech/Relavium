@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { StreamChunk } from '@relavium/llm';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 
 import { buildChatSession } from '../chat/session-host.js';
@@ -85,6 +86,35 @@ describe('agentRunCommand (2.Q)', () => {
     });
     expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
     expect(out()).toContain('the summary');
+  });
+
+  it('DENIES a governed dispatch in the non-interactive one-shot — no user to approve (ADR-0057)', async () => {
+    // agent run shares the full-capability chat-read-write host; a one-shot has no interactive approver, so the
+    // fail-closed `ask` regime must deny a governed write (never execute it), restoring the pre-4b safety.
+    writeFileSync(
+      join(cwd, 'writer.agent.yaml'),
+      `${AGENT_YAML.replace('  - read_file', '  - write_file')}`,
+    );
+    const writeCall: StreamChunk[] = [
+      { type: 'tool_call_start', id: 'c1', name: 'write_file' },
+      {
+        type: 'tool_call_delta',
+        id: 'c1',
+        argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
+      },
+      { type: 'tool_call_end', id: 'c1' },
+      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+    ];
+    const { d, out } = deps('write a file', {
+      json: true,
+      providers: scriptedResolver([writeCall]),
+    });
+    await agentRunCommand({ agent: join(cwd, 'writer.agent.yaml'), input: [] }, d);
+    const completed = parseNdjson(out()).find((e) => e['type'] === 'session:turn_completed');
+    expect((completed as { error?: { code?: string } } | undefined)?.error?.code).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(cwd, 'pwned.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 
   it('an MCP-declaring agent: surfaces dropped tools to stderr and tears the connection down after the turn (2.R)', async () => {

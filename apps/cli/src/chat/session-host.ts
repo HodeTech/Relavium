@@ -58,7 +58,7 @@ export interface BuildChatSessionOptions {
   readonly uuid: () => string;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver, like `relavium run`. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
+  /** The tool-execution host (injectable for tests); defaults to the full-capability chat host (chat-read-write); its writes/egress are gated by the ADR-0057 approval regime, not capability absence. */
   readonly toolHost?: ToolHost;
   /**
    * Injectable MCP connect-all (2.R) — tests pass a fake that never spawns a child; production uses the real
@@ -223,7 +223,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   });
   const context: SessionContext = {
     workingDir: opts.cwd,
-    // The EFFECTIVE tier (full→project clamped for the read-only chat surface) — the SAME value the factory
+    // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory
     // jails the host to, so the dispatch-context `fsScope` and the host jail stay consistent (ADR-0055), and
     // the persisted `SessionContext.fsScope` records what the session actually ran at (a resume re-reads it).
     fsScopeTier: clampChatTier(opts.chat.fsScope ?? DEFAULT_FS_SCOPE),
@@ -332,7 +332,7 @@ export interface BuildResumedChatSessionOptions {
   readonly now: () => number;
   /** The provider seam (injectable for tests); defaults to the env/keychain resolver. */
   readonly providers?: ProviderResolver;
-  /** The tool-execution host (injectable for tests); defaults to the read-only chat factory host (2.5.A). */
+  /** The tool-execution host (injectable for tests); defaults to the full-capability chat host (chat-read-write); its writes/egress are gated by the ADR-0057 approval regime, not capability absence. */
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
@@ -363,7 +363,7 @@ export async function buildResumedChatSession(
       `session ${record.id} has no stored agent snapshot and cannot be resumed`,
     );
   }
-  // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the read-only chat surface),
+  // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the chat surface),
   // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
   // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
   const context: SessionContext = {

@@ -30,7 +30,8 @@ import {
  * rate is capped).
  */
 
-/** A pending per-tool approval the REPL renders as a `[a]/[r]/[c]` prompt (ADR-0057, EA3/EA5). */
+/** A pending per-tool approval the REPL renders as a `[y] yes / [a] always / [n] no / [esc] abort` prompt
+ *  (ADR-0057, EA3/EA5). A reject-with-typed-reason (`[c]` comment) is a deferred follow-up. */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   /** Whether an "always" answer will be remembered (accept-edits) — the prompt greys it out when false. */
@@ -81,7 +82,7 @@ export interface ChatStoreController extends ChatStore {
    * cancel path (not a denial). At most ONE approval is pending at a time (the turn blocks on it).
    */
   requestApproval: ApprovalPrompt;
-  /** Answer the in-flight approval (the input handler's `[a]/[r]/[c]` decision) — a no-op if none is pending. */
+  /** Answer the in-flight approval (the input handler's `[y]/[a]/[n]` decision) — a no-op if none is pending. */
   answerApproval: (answer: ApprovalAnswer) => void;
 }
 
@@ -184,7 +185,7 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
         };
         approval = { request, cacheable };
         signal?.addEventListener('abort', onAbort);
-        flush(); // render the [a]/[r]/[c] prompt
+        flush(); // render the [y]/[a]/[n] prompt
       }),
     answerApproval: (answer) => {
       // A no-op if nothing is pending (a stray keypress); else settle the in-flight promise + repaint.

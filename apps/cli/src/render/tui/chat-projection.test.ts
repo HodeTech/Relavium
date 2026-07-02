@@ -118,7 +118,7 @@ describe('chat-projection', () => {
     it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
       const state = { ...initialSessionViewState(), turnCount: 2 };
       expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
-      expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept edits mode$/);
+      expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept-edits mode$/);
       expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);
     });
   });

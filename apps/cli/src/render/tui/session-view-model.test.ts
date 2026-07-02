@@ -158,6 +158,21 @@ describe('session-view-model', () => {
     expect(state.status).toBe('idle'); // the session stays alive after an abort
   });
 
+  it('an abort with NO streamed text still appends a trace entry (Esc at the approval prompt is confirmed)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      // No token — the common abort-during-approval case (Esc at the [y]/[a]/[n] prompt before any text streamed).
+      e.turnCompleted({ stopReason: 'aborted' }),
+    ]);
+    expect(state.transcript).toHaveLength(1); // NOT silently dropped
+    const entry = state.transcript[0];
+    expect(entry).toMatchObject({ role: 'assistant', text: '' });
+    if (entry?.role === 'assistant') expect(entry.summary.stopReason).toBe('aborted');
+    expect(state.status).toBe('idle');
+  });
+
   it('drops a pre-tool preamble from the stored assistant text (mirrors result.text), annotates the call', () => {
     const e = events();
     const state = reduceAll([
