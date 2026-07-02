@@ -271,6 +271,25 @@ describe('chatCommand', () => {
     expect(err()).toContain("/doctor: unknown argument '--bogus'");
   });
 
+  it('/mode <name> switches the mode; a bare /mode shows the current mode + options (ADR-0057)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/mode', '/mode auto', 'hello', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('mode: ask'); // the bare /mode shows the default (ask) + the options
+    expect(out).toContain('mode: auto'); // /mode auto applied
+    // /mode is read-only: the session continued and the 'hello' turn persisted (user + assistant = 2).
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  it('rejects an invalid /mode value at the dispatch (a positional not in the mode set)', async () => {
+    const { d, err } = deps(['/mode bogus', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain("/mode: unknown argument 'bogus'"); // the positional-value validation rejects it
+  });
+
   it('/workflows reports a project-less cwd without crashing the REPL', async () => {
     const { d, err, store, sessionId } = deps(['/workflows', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d); // the test cwd is a fresh temp dir ⇒ no .relavium/ project

@@ -3,7 +3,7 @@ import {
   HOME_PALETTE_COMMANDS,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
-import { type ChatMode } from '../../chat/chat-mode.js';
+import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
@@ -265,6 +265,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     help: () => undefined,
     showWorkflows: () => undefined,
     showCost: () => undefined,
+    setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
+
     runDoctor: async (deep) => {
       if (exiting) return;
       const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
@@ -320,12 +322,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
+    // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
+    const approvalPending = active.store.getSnapshot().approval !== undefined;
     // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
-    if (shouldOpenPalette(input, key, running, state.input.length)) {
+    if (!approvalPending && shouldOpenPalette(input, key, running, state.input.length)) {
       set({ palette: INITIAL_PALETTE_STATE });
       return;
     }
-    const action = reduceChatKey(input, key, state.input, running);
+    const action = reduceChatKey(input, key, state.input, running, approvalPending);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired) {
@@ -340,6 +344,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'submit':
         set({ input: '' });
         sendChatLine(active, action.line);
+        return;
+      case 'cycle-mode':
+        // Shift+Tab: advance the chat mode on the SAME session (ADR-0057; no reseat) — parity with `relavium chat`.
+        active.onModeChange?.(nextMode(active.store.getSnapshot().mode));
+        return;
+      case 'abort':
+        active.onAbort?.(); // Esc — mid-turn abort (keeps the session; distinct from /cancel)
+        return;
+      case 'approve':
+        active.store.answerApproval({ outcome: 'approve', scope: action.scope });
+        return;
+      case 'reject':
+        active.store.answerApproval({ outcome: 'reject' });
         return;
       case 'none':
         return;

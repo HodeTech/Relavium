@@ -4,7 +4,7 @@ import { createRunHistoryReader } from '@relavium/db';
 import { render } from 'ink';
 import { createElement } from 'react';
 
-import { createChatLineHandler, createChatModeControl } from '../commands/chat.js';
+import { createChatLineHandler } from '../commands/chat.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
@@ -177,14 +177,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           now,
           uuid,
         });
-        const { processLine, cancelOnce, shouldStop } = createChatLineHandler(
-          { built, opened, store, persister, doctorProbes: chatDoctorProbes },
-          deps,
-        );
-        // ADR-0057: activate the reseat-less mode system (applies the initial `ask` mode → the fail-closed
-        // approval regime) BEFORE the session opens, so the full-capability chat host is never live without the
-        // per-tool approval floor — the SAME guarantee the `chat` command's runReplLoop provides.
-        const { onAbort, onModeChange } = createChatModeControl(built, store);
+        // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
+        // fail-closed approval regime — BEFORE the session opens, so the full-capability chat host is never live
+        // without the per-tool approval floor (the SAME guarantee the `chat` command's runReplLoop provides).
+        const { processLine, cancelOnce, shouldStop, onAbort, onModeChange } =
+          createChatLineHandler(
+            { built, opened, store, persister, doctorProbes: chatDoctorProbes },
+            deps,
+          );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         unsubscribe = built.handle.subscribe((event) => store.apply(event));
         frame = setInterval(() => store.tick(), FRAME_MS);

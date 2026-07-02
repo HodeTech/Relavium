@@ -17,7 +17,7 @@ import {
   REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from './repl-commands.js';
-import { type ChatMode } from '../chat/chat-mode.js';
+import { CHAT_MODES, MODE_LABEL, parseMode, type ChatMode } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
@@ -430,8 +430,8 @@ export function createChatModeControl(
   };
 }
 
-/** The slash-aware line handler + the session's cancel/stop state. */
-export interface ChatLineHandler {
+/** The slash-aware line handler + the session's cancel/stop state + the mode/abort control (ADR-0057). */
+export interface ChatLineHandler extends ChatModeControl {
   /** Handle one line (a slash command or a message); awaits the turn for a message. */
   readonly processLine: (raw: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
@@ -459,6 +459,10 @@ export function createChatLineHandler(
       built.session.cancel(); // the session's sole terminal (session:cancelled) — persister marks it 'ended'
     }
   };
+  // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
+  // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the
+  // full-capability host is never live without the fail-closed approval regime (default `ask` denies governed).
+  const modeControl = createChatModeControl(built, store);
 
   // Surface command output (the /help list, /workflows catalog, /cost line) the right way for the active surface:
   // the live ink view (TTY, non-`--json`) renders a NOTICE cleanly in-conversation; on the plain (non-TTY) and
@@ -561,6 +565,25 @@ export function createChatLineHandler(
         emitOutput('doctor: check failed');
       }
     },
+    // `/mode [name]` (ADR-0057): switch the chat mode, or (bare `/mode`) show the current mode + the options.
+    // The dispatch already validated `modeArg` against the mode names, so a non-empty arg parses; still
+    // fail-soft. Applying re-pushes the turn policy on the SAME session (no reseat), effective next turn.
+    setMode: (modeArg) => {
+      const requested = modeArg.trim();
+      if (requested.length === 0) {
+        emitOutput(
+          `mode: ${MODE_LABEL[store.getSnapshot().mode]} (options: ${CHAT_MODES.join(', ')})`,
+        );
+        return;
+      }
+      const mode = parseMode(requested);
+      if (mode === undefined) {
+        emitOutput(`/mode: unknown mode '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`);
+        return;
+      }
+      modeControl.onModeChange(mode);
+      emitOutput(`mode: ${MODE_LABEL[mode]}`);
+    },
   };
 
   const processLine = async (raw: string): Promise<void> => {
@@ -574,9 +597,14 @@ export function createChatLineHandler(
       const command =
         name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
       if (command !== undefined) {
-        // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED
-        // through the notice channel — interactive errors belong in-view (ink), not on stderr behind the live view.
-        const allowed = new Set((command.args ?? []).map((arg) => arg.flag));
+        // Reject a token the command does not declare (a zero-arg command rejects ANY token). A command may also
+        // declare a single POSITIONAL value set (e.g. `/mode plan`), whose values join the allowed set — so an
+        // invalid mode is rejected HERE, before run. Echo a bad token SANITIZED through the notice channel —
+        // interactive errors belong in-view (ink), not on stderr behind the live view.
+        const allowed = new Set([
+          ...(command.args ?? []).map((arg) => arg.flag),
+          ...(command.positional?.values ?? []),
+        ]);
         const bad = tokens.find((token) => !allowed.has(token));
         if (bad !== undefined) {
           emitOutput(
@@ -598,14 +626,23 @@ export function createChatLineHandler(
     await built.session.sendMessage(line);
   };
 
-  return { processLine, cancelOnce, shouldStop: () => stop };
+  return {
+    processLine,
+    cancelOnce,
+    shouldStop: () => stop,
+    onAbort: modeControl.onAbort,
+    onModeChange: modeControl.onModeChange,
+  };
 }
 
 async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
   const { built, opened, store, persister, startSession, intro } = wiring;
-  const { processLine, cancelOnce, shouldStop } = createChatLineHandler(wiring, deps);
-
-  const { onAbort, onModeChange } = createChatModeControl(built, store);
+  // createChatLineHandler owns the mode control (so `/mode` + the driver keys drive one control) — it applies
+  // the initial mode, activating the fail-closed approval regime before the first turn.
+  const { processLine, cancelOnce, shouldStop, onAbort, onModeChange } = createChatLineHandler(
+    wiring,
+    deps,
+  );
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
