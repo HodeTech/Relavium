@@ -215,6 +215,18 @@ export const AgentApprovalRequestedEventSchema = z.object({
 });
 export type AgentApprovalRequestedEvent = z.infer<typeof AgentApprovalRequestedEventSchema>;
 
+/**
+ * The preview field a per-tool approval action class produces — `fs_write` → path, `process` → command,
+ * `egress` → host, `os` → none (a blank preview). Consumed by the union-level `superRefine` (a
+ * discriminatedUnion member can't carry its own cross-field refinement) to reject an action-preview DRIFT a
+ * host-wiring bug could introduce (e.g. an `egress` approval must never surface a `path`) — `.strict()` on the
+ * preview already bars an UNKNOWN key; this bars a KNOWN-but-wrong-for-the-action one.
+ */
+const APPROVAL_PREVIEW_FIELD: Record<
+  (typeof TOOL_ACTION_CLASSES)[number],
+  'path' | 'command' | 'host' | undefined
+> = { fs_write: 'path', process: 'command', egress: 'host', os: undefined };
+
 export const AgentFilePatchProposedEventSchema = z.object({
   type: z.literal('agent:file_patch_proposed'),
   ...runBase,
@@ -542,6 +554,22 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       message: 'media_job:submitted deadlineAt must be >= startedAt',
       path: ['deadlineAt'],
     });
+  }
+  // Bind an approval preview to its action class (ADR-0057 EA5): a preview may carry ONLY the field its action
+  // produces (see {@link APPROVAL_PREVIEW_FIELD}) — an `egress` approval must never surface a `path`, etc. This
+  // rejects an action drift a host-wiring bug could add. Enforced here (not on the member) because the member is
+  // a discriminatedUnion option and a member-level `.refine()` would make it a ZodEffects.
+  if (event.type === 'agent:approval_requested') {
+    const allowed = APPROVAL_PREVIEW_FIELD[event.action];
+    for (const key of ['path', 'command', 'host'] as const) {
+      if (key !== allowed && event.preview[key] !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `preview.${key} is not valid for a ${event.action} approval`,
+          path: ['preview', key],
+        });
+      }
+    }
   }
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;

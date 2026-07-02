@@ -319,6 +319,13 @@ export type ConfirmActionHook = (
  */
 export interface ToolApprovalContext {
   readonly confirm?: ConfirmActionHook;
+  /**
+   * Emit the `agent:approval_requested` observability event (ADR-0057 EA5) — called by `confirmDispatch` for
+   * every GOVERNED dispatch, just before invoking {@link confirm}, so a durable trace of the pending decision
+   * rides the session/`--json` stream (the session fills the envelope + `nodeId`). Optional and side-effect
+   * only: the fail-closed confirm floor is unaffected by its presence or absence.
+   */
+  readonly emitApprovalRequested?: (request: ToolApprovalRequest) => void;
 }
 
 export interface ToolDispatchContext {

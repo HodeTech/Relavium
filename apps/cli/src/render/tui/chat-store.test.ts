@@ -299,7 +299,8 @@ describe('createChatStore — chat mode + per-tool approval coordination (ADR-00
     ac.abort();
     const err = await pending.catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).name).toBe('AbortError'); // classified as a CANCEL by the registry's isAbort
+    // Narrow via instanceof (no `as Error`) before reading `.name` — classified as a CANCEL by isAbort.
+    if (err instanceof Error) expect(err.name).toBe('AbortError');
     expect(store.getSnapshot().approval).toBeUndefined();
   });
 
@@ -310,7 +311,8 @@ describe('createChatStore — chat mode + per-tool approval coordination (ADR-00
     const err = await store
       .requestApproval(approvalRequest, true, ac.signal)
       .catch((e: unknown) => e);
-    expect((err as Error).name).toBe('AbortError');
+    expect(err).toBeInstanceOf(Error);
+    if (err instanceof Error) expect(err.name).toBe('AbortError');
     expect(store.getSnapshot().approval).toBeUndefined(); // no prompt was ever shown
   });
 });

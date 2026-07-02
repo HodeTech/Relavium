@@ -26,6 +26,7 @@ import {
   type PolicyTarget,
   type ToolActionPreview,
   type ToolApprovalDecision,
+  type ToolApprovalRequest,
   type ToolCallPart,
   type ToolDef,
   type ToolDispatchContext,
@@ -351,12 +352,19 @@ async function confirmDispatch(
   }
   throwIfAborted(ctx, def.id); // do not prompt for a turn that is already aborting
 
+  const request: ToolApprovalRequest = { toolId: def.id, action, preview: previewFor(action, target) };
+  // EA5: emit the observability event just before prompting so a durable trace of the pending decision rides
+  // the session / `--json` stream (the session stamps the envelope + nodeId). Side-effect only — a throwing or
+  // absent emitter must NOT change the fail-closed floor, so it is best-effort (swallow any emit fault).
+  try {
+    approval.emitApprovalRequested?.(request);
+  } catch {
+    /* an observability emit must never break the approval decision */
+  }
+
   let decision: ToolApprovalDecision;
   try {
-    decision = await approval.confirm(
-      { toolId: def.id, action, preview: previewFor(action, target) },
-      ctx.signal,
-    );
+    decision = await approval.confirm(request, ctx.signal);
   } catch (cause) {
     // An abort raised WHILE prompting is a cancellation (cancel precedence) — rethrow so the dispatch
     // ladder classifies it as `cancelled`, never a denial. Any OTHER throw is a fault in the consent layer

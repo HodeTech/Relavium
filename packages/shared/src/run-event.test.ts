@@ -251,6 +251,22 @@ const reject: Record<string, Record<string, unknown>> = {
     action: 'fs_write',
     preview: { path: '' }, // path/command/host are all nonEmptyString — an empty display value is rejected
   },
+  'agent:approval_requested (egress preview carrying a path — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'http_request',
+    action: 'egress',
+    preview: { path: './out.txt' }, // an egress approval must carry `host` ONLY — a path is action drift (superRefine)
+  },
+  'agent:approval_requested (fs_write preview carrying a host — action drift)': {
+    type: 'agent:approval_requested',
+    ...env,
+    nodeId: 'n',
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { host: 'evil.example' }, // fs_write carries `path` ONLY — a host is action drift
+  },
   'agent:approval_requested (empty preview command)': {
     type: 'agent:approval_requested',
     ...env,

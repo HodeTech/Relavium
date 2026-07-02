@@ -770,6 +770,37 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     expect(captured?.approval?.confirm).toBe(confirm);
   });
 
+  it('wires emitApprovalRequested (EA5) — it emits agent:approval_requested through the sink, stamping the nodeId', async () => {
+    let captured: ToolDispatchContext | undefined;
+    const capturing: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: (toolCall, ctx) => {
+        captured = ctx;
+        return echoRegistry.dispatch(toolCall, ctx);
+      },
+    };
+    const { deps, events } = harness([toolUseTurn('c1'), textTurn('done')], {}, capturing);
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    s.setTurnPolicy({ confirm: () => Promise.resolve({ outcome: 'approve' }) });
+    await s.sendMessage('use echo');
+    // The engine provided the emit; invoking it (as confirmDispatch does) puts a valid event on the sink.
+    captured?.approval?.emitApprovalRequested?.({
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: './out.txt' },
+    });
+    const approvalEvent = events.find((e) => e.type === 'agent:approval_requested');
+    expect(approvalEvent).toMatchObject({
+      type: 'agent:approval_requested',
+      nodeId: TOOL_AGENT.id, // stamped from the session's agentRef (matches the in-turn events)
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: './out.txt' },
+    });
+  });
+
   it('no turn policy ⇒ no approval regime in the dispatch context (workflow author-trust parity)', async () => {
     let captured: ToolDispatchContext | undefined;
     const capturing: ToolRegistry = {

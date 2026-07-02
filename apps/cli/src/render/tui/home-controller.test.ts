@@ -935,6 +935,16 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(made.lines).not.toContain('/cancel'); // abort ≠ /cancel — the session stays alive
     });
 
+    it('Esc REJECTS a pending approval when onAbort is ABSENT — never a dead key / stuck prompt', async () => {
+      // A session wired WITHOUT onAbort must still let Esc resolve a pending approval (reject) rather than leave
+      // it hung — the home-controller abort fallback (a pending approval + no onAbort ⇒ answerApproval reject).
+      const store = createChatStore(false);
+      const c = await inChat(makeSession({ store })); // no onAbort
+      const pending = store.requestApproval(approvalReq, true);
+      c.handleKey('', { escape: true });
+      await expect(pending).resolves.toEqual({ outcome: 'reject' });
+    });
+
     it('a pending approval intercepts keys: `/` stays closed and `[y]` approves-once', async () => {
       const store = createChatStore(false);
       const c = await inChat(makeSession({ store }));

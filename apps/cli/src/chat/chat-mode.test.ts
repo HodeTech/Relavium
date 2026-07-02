@@ -167,6 +167,20 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
+  it('accept-edits: a BLANK-preview tool (mcp_call/web_search) NEVER caches "always" — no session-long blank check', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const blank = req({ toolId: 'mcp_call', action: 'egress', preview: {} }); // no path/command/host to review
+    expect(await policy.confirm!(blank)).toEqual({ outcome: 'approve' });
+    // The prompt is told cacheable=false (the REPL greys out `[a]`), and the "always" is downgraded to once…
+    expect(prompt).toHaveBeenNthCalledWith(1, blank, false, undefined);
+    // …so the SECOND identical call re-prompts (not blanket-approved for the whole session).
+    expect(await policy.confirm!(blank)).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenCalledTimes(2);
+  });
+
   it('accept-edits: forwards the exact request + AbortSignal to the prompt (the preview the user approves)', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'once' }),

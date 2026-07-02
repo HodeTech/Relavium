@@ -344,6 +344,15 @@ describe('ToolRegistry — git_commit human-gate', () => {
 
 /* --- per-tool approval (ADR-0057 EA3) --- */
 
+/**
+ * A MUTABLE {@link AbortSignalLike} test double: `aborted` can be flipped mid-prompt (a cancel-during-confirm
+ * test), and the listeners are no-ops (the registry's `isAbort` reads `.aborted` / `cause.name`, never the
+ * listener path). Assignable to the `readonly aborted` param without an `as never` cast.
+ */
+function mutableSignal(aborted = false): { aborted: boolean } & AbortSignalLike {
+  return { aborted, addEventListener: () => undefined, removeEventListener: () => undefined };
+}
+
 describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
   // The `vi.fn<Fn>` function-type generic types `.mock.calls[0]` as [ToolApprovalRequest, signal?] (no
   // unused impl param) and contextually types the decision literals (`'approve'`/`'reject'`). The 2nd
@@ -409,6 +418,46 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
       action: 'fs_write',
       preview: { path: './out.txt' },
     });
+  });
+
+  it('emits agent:approval_requested (EA5) BEFORE invoking confirm — same request; an emit fault never breaks the floor', async () => {
+    const order: string[] = [];
+    const confirm = vi.fn<ConfirmFn>(() => {
+      order.push('confirm');
+      return Promise.resolve({ outcome: 'approve' });
+    });
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>(() =>
+      order.push('emit'),
+    );
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({ approval: { confirm, emitApprovalRequested } }),
+    );
+    expect(order).toEqual(['emit', 'confirm']); // the observability event fires just BEFORE the prompt
+    expect(emitApprovalRequested).toHaveBeenCalledWith(
+      expect.objectContaining({ toolId: 'write_file', action: 'fs_write', preview: { path: './out.txt' } }),
+    );
+    // The confirm hook received the SAME request object (one construction, EA5-emitted then confirmed).
+    expect(emitApprovalRequested.mock.calls[0]?.[0]).toBe(confirm.mock.calls[0]?.[0]);
+  });
+
+  it('a THROWING emitApprovalRequested does not break the approval decision (best-effort observability)', async () => {
+    const confirm = approving();
+    const { host, writeFile } = hostWithWriteSpy();
+    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({
+        approval: {
+          confirm,
+          emitApprovalRequested: () => {
+            throw new Error('sink boom');
+          },
+        },
+      }),
+    );
+    expect(out.events.result.success).toBe(true); // the emit fault was swallowed; the write still dispatched
+    expect(writeFile).toHaveBeenCalledOnce();
   });
 
   it('denies a rejected write as a fatal tool_denied (user_rejected) and never reaches the side effect', async () => {
@@ -579,7 +628,7 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     // above exercises only the cause.name branch), and proves cancel precedence over the fail-closed deny.
     // The signal must flip DURING the prompt (not before): an already-aborted signal short-circuits at the
     // dispatch entry guard before the hook ever runs.
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const { host, writeFile } = hostWithWriteSpy();
     const confirm = vi.fn<ConfirmFn>(() => {
       signal.aborted = true; // cancelled while the prompt is pending…
@@ -588,7 +637,7 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('write_file', { path: './out.txt', content: 'hi' }),
-        ctx({ approval: { confirm }, signal: signal as never }),
+        ctx({ approval: { confirm }, signal: signal }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
@@ -598,7 +647,7 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
   it('cancels (never executes) when the signal aborts WHILE prompting and the hook still resolves approve', async () => {
     // The fail-closed cancellation contract: a hook that ignores the AbortSignal and approves anyway must
     // NOT reach the side effect — the trailing throwIfAborted in confirmDispatch catches it.
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const { host, writeFile } = hostWithWriteSpy();
     const confirm = vi.fn<ConfirmFn>(() => {
       signal.aborted = true; // the run is cancelled while the prompt is pending…
@@ -607,7 +656,7 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('write_file', { path: './out.txt', content: 'hi' }),
-        ctx({ approval: { confirm }, signal: signal as never }),
+        ctx({ approval: { confirm }, signal: signal }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
@@ -669,11 +718,11 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
   });
 
   it('forwards ctx.signal to the confirm hook as its second argument', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const confirm = approving();
     await registry().dispatch(
       call('write_file', { path: './out.txt', content: 'hi' }),
-      ctx({ approval: { confirm }, signal: signal as never }),
+      ctx({ approval: { confirm }, signal: signal }),
     );
     expect(confirm.mock.calls[0]?.[1]).toBe(signal);
   });
@@ -715,7 +764,7 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('write_file', { path: './out.txt', content: 'hi' }),
-        ctx({ approval: {}, signal: { aborted: true } as never }),
+        ctx({ approval: {}, signal: mutableSignal(true) }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
@@ -864,7 +913,7 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
     const err = await rejectsWith<ToolCancelledError>(
       registry().dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: { aborted: true } as never }),
+        ctx({ signal: mutableSignal(true) }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
@@ -1151,7 +1200,7 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
   });
 
   it('classifies an abort that flips mid-dispatch (plain host error) as cancelled, not tool_failed', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const host = stubHost({
       fs: fsWith(() => {
         signal.aborted = true; // the run is cancelled while the host is in-flight
@@ -1161,7 +1210,7 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: signal as never }),
+        ctx({ signal: signal }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
@@ -1187,7 +1236,7 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
 
 describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 post-bounding)', () => {
   it('classifies an abort that lands after the host RESOLVES (M-3 / line 109)', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const host = stubHost({
       fs: fsWith(() => {
         signal.aborted = true; // cancelled while in-flight, but the host RESOLVES (no throw)
@@ -1202,14 +1251,14 @@ describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: signal as never }),
+        ctx({ signal: signal }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
   });
 
   it('classifies an abort that lands during bounding (H-1 / post-boundForModel guard)', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const big = 'z'.repeat(5000);
     const host = stubHost({
       fs: fsWith(() =>
@@ -1230,7 +1279,7 @@ describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: signal as never, limits: { maxBytes: 10, maxLines: 1 } }),
+        ctx({ signal: signal, limits: { maxBytes: 10, maxLines: 1 } }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);

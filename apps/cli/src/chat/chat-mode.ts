@@ -61,9 +61,12 @@ export function nextMode(mode: ChatMode): ChatMode {
  */
 export function parseMode(input: string): ChatMode | undefined {
   const normalized = input.trim().toLowerCase().replace(/\s+/gu, '-');
-  return (CHAT_MODES as readonly string[]).includes(normalized)
-    ? (normalized as ChatMode)
-    : undefined;
+  return isChatMode(normalized) ? normalized : undefined;
+}
+
+/** A type guard that narrows a string to {@link ChatMode} via the {@link CHAT_MODES} tuple — no `as` cast. */
+function isChatMode(value: string): value is ChatMode {
+  return (CHAT_MODES as readonly string[]).includes(value);
 }
 
 /**
@@ -173,6 +176,16 @@ function advertiseFor(
   return undefined; // accept-edits / auto advertise every granted tool — the confirm floor gates them
 }
 
+/**
+ * Whether an approval preview carries NO concrete target to review — no `path` (fs_write), `command` (process),
+ * or `host` (egress http). True for `mcp_call` / `web_search` (`previewFor` returns `{}`), whose action class is
+ * "enough" to gate but shows the user no specific server/tool/args. Such a grant must be once-only (never an
+ * `always`-cached blank check).
+ */
+function isBlankPreview(preview: ToolActionPreview): boolean {
+  return preview.path === undefined && preview.command === undefined && preview.host === undefined;
+}
+
 /** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
 function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
   return async (request, signal): Promise<ToolApprovalDecision> => {
@@ -182,8 +195,12 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         return { outcome: 'reject', reason: `not allowed in ${MODE_LABEL[mode]} mode (read-only)` };
       case 'accept-edits': {
         if (deps.cache.isAlways(request.toolId)) return { outcome: 'approve' };
-        // An "always" answer here IS remembered (the accept-edits once/always memory).
-        const cacheable = true;
+        // An "always" answer is remembered (the once/always memory) ONLY when the preview showed a concrete
+        // target. A BLANK preview (mcp_call / web_search — `previewFor` returns no path/command/host) gives the
+        // user nothing to review, so `[a]lways` there would be an unreviewed, session-long blank check over any
+        // future server/tool/args (a prompt-injection-after-one-grant hazard, ADR-0057 review). For those the
+        // grant is once-only (cacheable=false ⇒ the REPL greys out `[a]` and toDecision never caches).
+        const cacheable = !isBlankPreview(request.preview);
         const answer = await deps.prompt(request, cacheable, signal);
         return toDecision(answer, request.toolId, deps.cache, cacheable);
       }

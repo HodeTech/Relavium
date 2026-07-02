@@ -315,7 +315,8 @@ export class AgentSession {
    * turn failure still **completes** — with `stopReason: 'error'` and the mapped error code. Resolves
    * when the turn settles; a cancel mid-turn resolves quietly (the terminal is `session:cancelled`).
    */
-  async sendMessage(text: string): Promise<void> {
+  /** Guard the send preconditions: the session must be started and idle (not running/cancelled/ended). */
+  #assertSendable(): void {
     if (this.#status === 'created') {
       throw new SessionStateError('not_started', `session ${this.sessionId}: call start() first`);
     }
@@ -325,6 +326,10 @@ export class AgentSession {
         `session ${this.sessionId} is ${this.#status}; cannot send a message`,
       );
     }
+  }
+
+  async sendMessage(text: string): Promise<void> {
+    this.#assertSendable();
 
     // Clear any stale EA7 abort marker BEFORE arming the turn, so an `abort()` a prior turn's synchronous
     // turn_started-emit sink set (which then took a pre-`try` early return, bypassing the `finally` reset)
@@ -531,7 +536,28 @@ export class AgentSession {
       // (`approval: {}`). No policy ⇒ no `approval` key ⇒ the workflow author-trust floor, unchanged.
       ...(turnPolicy === undefined
         ? {}
-        : { approval: turnPolicy.confirm === undefined ? {} : { confirm: turnPolicy.confirm } }),
+        : {
+            // No confirm hook ⇒ `approval: {}` (the fail-closed floor — a governed dispatch is denied with
+            // no_approval_hook, before any emit). WITH a hook, also wire EA5: the engine emits
+            // `agent:approval_requested` (stamping this turn's nodeId) through the same session sink the in-turn
+            // bodies use, just before the host's confirm hook prompts — a durable observability trace of the
+            // pending decision on the session / `--json` stream (ADR-0057).
+            approval:
+              turnPolicy.confirm === undefined
+                ? {}
+                : {
+                    confirm: turnPolicy.confirm,
+                    emitApprovalRequested: (request) => {
+                      this.#deps.emit({
+                        type: 'agent:approval_requested',
+                        nodeId: this.#agentRef,
+                        toolId: request.toolId,
+                        action: request.action,
+                        preview: request.preview,
+                      });
+                    },
+                  },
+          }),
     };
     // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.

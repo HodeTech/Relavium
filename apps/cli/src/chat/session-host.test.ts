@@ -497,6 +497,35 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
+  it('createChatModeControl with interactive:false DENIES a governed dispatch without HANGING (High 9 deadlock)', async () => {
+    // On a non-interactive driver (plain non-TTY / --json) nothing answers `requestApproval`. In `accept-edits`
+    // (a mode that would prompt on a TTY) the reject-immediately prompt must DENY the write, not publish an
+    // unanswerable promise — so `sendMessage` RESOLVES (a regression would hang here and time the test out).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: record({
+        agentSnapshot: { ...RESUME_AGENT, tools: ['write_file'] },
+        context: { workingDir: workspace, fsScopeTier: 'project' },
+      }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'p' }),
+      ]),
+    });
+    const control = createChatModeControl(built, createChatStore(false), { interactive: false });
+    control.onModeChange('accept-edits'); // a prompting mode — but nothing can answer on this driver
+    await built.session.sendMessage('write a file'); // MUST resolve (deny), never hang
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+  }, 10_000);
+
   it('CLAMPS a persisted full fs-scope tier down to project on resume (read-only chat ceiling, ADR-0055)', async () => {
     // SECURITY regression: a session persisted (e.g. pre-2.5.A) with the broad `full` tier must resume at the
     // read-only chat ceiling — `project`, never `full` — so a resumed chat can't read `~/.ssh` / `~/.aws` back

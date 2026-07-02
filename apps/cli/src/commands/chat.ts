@@ -22,6 +22,7 @@ import {
   MODE_DESCRIPTION,
   MODE_LABEL,
   parseMode,
+  type ApprovalPrompt,
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
@@ -419,12 +420,26 @@ export interface ChatModeControl {
 export function createChatModeControl(
   built: Pick<BuiltChatSession, 'session' | 'tools' | 'context'>,
   store: ChatStoreController,
+  opts?: { readonly interactive?: boolean },
 ): ChatModeControl {
+  // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
+  // NON-interactive driver (plain non-TTY, or `--json`) NOTHING answers it — `store.requestApproval` would
+  // return an unanswerable promise and DEADLOCK the turn (High 9). So a non-interactive session uses a
+  // reject-immediately prompt: a governed dispatch in `accept-edits`/`auto` is denied (never a hang), mirroring
+  // the one-shot `agent run`. `interactive` defaults true (the ink REPL + the Home are always a TTY).
+  const interactive = opts?.interactive ?? true;
+  const prompt: ApprovalPrompt = interactive
+    ? store.requestApproval
+    : () =>
+        Promise.resolve({
+          outcome: 'reject',
+          reason: 'interactive approval is unavailable on this non-interactive driver',
+        });
   const modeEnv = makeChatModeEnv({
     session: built.session,
     tools: built.tools,
     workspaceDir: built.context.workingDir,
-    prompt: store.requestApproval,
+    prompt,
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
   return {
@@ -465,17 +480,16 @@ export function createChatLineHandler(
       built.session.cancel(); // the session's sole terminal (session:cancelled) — persister marks it 'ended'
     }
   };
+  // Whether an interactive prompt (the ink UI / Home controller) can answer an approval: the ink view is mounted
+  // iff stdout is a TTY and not `--json` (keep in sync with `selectChatDriver` in render/tui/chat-ink.tsx). On a
+  // non-interactive driver nothing answers `requestApproval`, so the mode control uses a reject-immediately
+  // prompt (no deadlock). Also drives `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
+  const interactive = deps.io.stdoutIsTty && !deps.global.json;
+
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the
   // full-capability host is never live without the fail-closed approval regime (default `ask` denies governed).
-  const modeControl = createChatModeControl(built, store);
-
-  // Surface command output (the /help list, /workflows catalog, /cost line) the right way for the active surface:
-  // the live ink view (TTY, non-`--json`) renders a NOTICE cleanly in-conversation; on the plain (non-TTY) and
-  // `--json` paths ink is NOT mounted (those drivers render the event stream, not the chat store), so write to
-  // stderr — a diagnostic that keeps stdout the pure event stream. (ink is mounted iff stdoutIsTty && !json — keep
-  // this condition in sync with `selectChatDriver` in render/tui/chat-ink.tsx, which picks driveInk on the same test.)
-  const interactive = deps.io.stdoutIsTty && !deps.global.json;
+  const modeControl = createChatModeControl(built, store, { interactive });
   const emitOutput = (text: string): void => {
     if (interactive) {
       store.notice(text);

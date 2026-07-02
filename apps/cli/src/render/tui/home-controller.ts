@@ -350,7 +350,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         active.onModeChange?.(nextMode(active.store.getSnapshot().mode));
         return;
       case 'abort':
-        active.onAbort?.(); // Esc — mid-turn abort (keeps the session; distinct from /cancel)
+        // Esc — mid-turn abort (keeps the session; distinct from /cancel). `onAbort` aborts the turn, whose
+        // signal also rejects any in-flight approval. If `onAbort` is absent (a session wired without it), a
+        // PENDING approval would otherwise hang — reject it directly so Esc is never a dead key at a decision.
+        if (active.onAbort !== undefined) {
+          active.onAbort();
+        } else if (active.store.getSnapshot().approval !== undefined) {
+          active.store.answerApproval({ outcome: 'reject' });
+        }
         return;
       case 'approve':
         active.store.answerApproval({ outcome: 'approve', scope: action.scope });
