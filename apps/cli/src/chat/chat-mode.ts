@@ -69,9 +69,16 @@ export type ApprovalAnswer =
   | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' }
   | { readonly outcome: 'reject'; readonly reason?: string };
 
-/** The interactive prompt the REPL supplies (accept-edits, and auto's protected-path fallback). */
+/**
+ * The interactive prompt the REPL supplies (accept-edits, and auto's protected-path fallback). `cacheable`
+ * tells the REPL whether an "always" answer will actually be REMEMBERED for the session: `true` in accept-edits
+ * (offer `[a]lways`), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
+ * REPL should grey out / omit the `always` choice rather than silently discard it). It is a UX signal only —
+ * the `toDecision` floor still enforces the same rule if a prompt returns `always` anyway.
+ */
 export type ApprovalPrompt = (
   request: ToolApprovalRequest,
+  cacheable: boolean,
   signal?: AbortSignalLike,
 ) => Promise<ApprovalAnswer>;
 
@@ -166,20 +173,26 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
       case 'ask':
       case 'plan':
         return { outcome: 'reject', reason: `not allowed in ${MODE_LABEL[mode]} mode (read-only)` };
-      case 'accept-edits':
+      case 'accept-edits': {
         if (deps.cache.isAlways(request.toolId)) return { outcome: 'approve' };
         // An "always" answer here IS remembered (the accept-edits once/always memory).
-        return toDecision(await deps.prompt(request, signal), request.toolId, deps.cache, true);
-      case 'auto':
+        const cacheable = true;
+        const answer = await deps.prompt(request, cacheable, signal);
+        return toDecision(answer, request.toolId, deps.cache, cacheable);
+      }
+      case 'auto': {
         // auto auto-approves — except a protected-path target, which falls back to an explicit prompt (the fs
         // layer also hard-denies protected paths, so this is the graceful UX, not the security floor). Its
         // answer is NOT cacheable: a protected-path prompt must re-ask every time, and — since the session
         // cache is shared across modes — an "always" here must not silently blanket-approve that tool id in a
         // later accept-edits turn (a cross-mode consent escalation). So the auto fallback never remembers.
         if (deps.isProtectedTarget?.(request.preview) === true) {
-          return toDecision(await deps.prompt(request, signal), request.toolId, deps.cache, false);
+          const cacheable = false;
+          const answer = await deps.prompt(request, cacheable, signal);
+          return toDecision(answer, request.toolId, deps.cache, cacheable);
         }
         return { outcome: 'approve' };
+      }
       default: {
         const exhaustive: never = mode;
         return exhaustive;

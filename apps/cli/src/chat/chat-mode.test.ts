@@ -130,18 +130,24 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(d.prompt).not.toHaveBeenCalled(); // ask never prompts
   });
 
-  it('plan: same read-only posture as ask (hides git_commit; rejects process + egress too)', async () => {
-    const policy = buildTurnPolicy('plan', deps());
+  it('plan: same read-only posture as ask (advertises reads, hides governed, rejects all 3 classes)', async () => {
+    const d = deps();
+    const policy = buildTurnPolicy('plan', d);
+    expect(policy.advertise?.('read_file')).toBe(true);
+    expect(policy.advertise?.('git_status')).toBe(true);
     expect(policy.advertise?.('write_file')).toBe(false);
     expect(policy.advertise?.('git_commit')).toBe(false);
-    expect((await policy.confirm!(req())).outcome).toBe('reject');
-    expect(
-      (
-        await policy.confirm!(
-          req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
-        )
-      ).outcome,
-    ).toBe('reject');
+    for (const r of [
+      req(),
+      req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+      req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
+    ]) {
+      expect(await policy.confirm!(r)).toEqual({
+        outcome: 'reject',
+        reason: 'not allowed in plan mode (read-only)',
+      });
+    }
+    expect(d.prompt).not.toHaveBeenCalled();
   });
 
   it('accept-edits: advertises all + prompts; an "always" answer is cached so the next call skips the prompt', async () => {
@@ -170,7 +176,8 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
       preview: { command: 'ls -la' },
     });
     await policy.confirm!(request, signal);
-    expect(prompt).toHaveBeenCalledWith(request, signal); // the secret-free preview + the cancel signal reach the host
+    // The secret-free preview + the cacheable hint (true in accept-edits) + the cancel signal reach the host.
+    expect(prompt).toHaveBeenCalledWith(request, true, signal);
   });
 
   it('accept-edits: an "always" grant is scoped to its tool id — a DIFFERENT governed tool still prompts', async () => {
@@ -179,7 +186,8 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     );
     const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
     await policy.confirm!(req()); // always-approve write_file
-    await policy.confirm!(req()); // write_file short-circuits (no 2nd prompt)
+    // The cache is keyed by tool id ONLY (not tool+args), so a write_file to a DIFFERENT path still short-circuits.
+    await policy.confirm!(req({ preview: { path: 'other.md' } }));
     expect(prompt).toHaveBeenCalledTimes(1);
     // A different tool id is NOT covered by the write_file grant — it prompts.
     await policy.confirm!(
@@ -198,12 +206,14 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(2);
   });
 
-  it('accept-edits: a rejection is passed through with its reason', async () => {
+  it('accept-edits: a rejection is passed through with its reason and NEVER touches the cache', async () => {
+    const cache = new ApprovalCache();
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'reject', reason: 'nope' }),
     );
-    const decision = await buildTurnPolicy('accept-edits', deps({ prompt })).confirm!(req());
+    const decision = await buildTurnPolicy('accept-edits', deps({ prompt, cache })).confirm!(req());
     expect(decision).toEqual({ outcome: 'reject', reason: 'nope' });
+    expect(cache.isAlways('write_file')).toBe(false); // a reject never remembers
   });
 
   it('auto: advertises all + auto-approves a normal target without prompting', async () => {
@@ -227,9 +237,13 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
       outcome: 'approve',
     });
     expect(prompt).not.toHaveBeenCalled();
-    // …but a protected-path write prompts.
-    const decision = await policy.confirm!(req({ preview: { path: '.git/config' } }));
+    // …but a protected-path write prompts, forwarding the request + cacheable:false (the REPL greys out
+    // "always" here) + the cancel signal.
+    const signal = new AbortController().signal;
+    const protectedReq = req({ preview: { path: '.git/config' } });
+    const decision = await policy.confirm!(protectedReq, signal);
     expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt).toHaveBeenCalledWith(protectedReq, false, signal);
     expect(decision.outcome).toBe('reject');
   });
 
