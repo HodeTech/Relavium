@@ -316,6 +316,20 @@ describe('redactSecretShapedText', () => {
     }
   });
 
+  it('fully covers ADJACENT / EMBEDDED multi-credential runs (no raw token survives — regression pin)', () => {
+    // The single-alternation matcher must cover a run of back-to-back / nested credential shapes as ONE
+    // leftmost-longest span. A per-family MULTI-PASS split leaves a trailing shape EXPOSED here: an earlier
+    // pass inserts `[redacted]` (a `[`), truncating a later family's greedy match. These two inputs are the
+    // exact witnesses that split form leaked — they must redact whole (no raw substring left behind).
+    const jwtWithInnerSk =
+      'eyJ' + 'hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig-sk-ABCDEFGHIJKLMNOPqr';
+    expect(redactSecretShapedText(jwtWithInnerSk)).toBe('[redacted]');
+    const slackWithInnerGlpat = 'xoxb' + '-0000000000-glpat-' + 'A'.repeat(16);
+    const out = redactSecretShapedText(slackWithInnerGlpat);
+    expect(out).toBe('[redacted]');
+    expect(out).not.toContain('glpat-'); // no fragment of the embedded token survives
+  });
+
   it('leaves ordinary text (and short non-secret values) intact', () => {
     expect(redactSecretShapedText('the quick brown fox')).toBe('the quick brown fox');
     expect(redactSecretShapedText('count = 42')).toBe('count = 42'); // not a secret-ish key
@@ -341,18 +355,27 @@ describe('redactSecretShapedText', () => {
 });
 
 describe('redactSecretShapedValue', () => {
-  it('scrubs string values at any nesting, keeping object keys (header names) intact', () => {
+  it('scrubs string values at any nesting, keeping normal object keys (header names) intact', () => {
     const input = {
       url: 'https://api.example.com/x?api_key=sk-' + 'secret9876543210',
       headers: { Authorization: 'Bearer tok_abcdef123456', 'X-Trace': 'keep-me' },
       body: 'client_secret=shhhhhhhhhh',
     };
-    const out = redactSecretShapedValue(input) as typeof input;
-    expect(out.headers.Authorization).toBe('Bearer [redacted]');
-    expect(out.headers['X-Trace']).toBe('keep-me'); // non-secret header value untouched
-    expect(Object.keys(out.headers)).toEqual(['Authorization', 'X-Trace']); // header NAMES preserved
-    expect(out.body).toBe('[redacted]');
-    expect(out.url).not.toContain('sk-' + 'secret9876543210');
+    // `redactSecretShapedValue` returns `unknown`; assert the whole shape with `toEqual` — no unsafe cast. This
+    // also pins that a non-secret header NAME (`Authorization`, `X-Trace`) survives the key scrub untouched.
+    expect(redactSecretShapedValue(input)).toEqual({
+      url: 'https://api.example.com/x?[redacted]',
+      headers: { Authorization: 'Bearer [redacted]', 'X-Trace': 'keep-me' },
+      body: '[redacted]',
+    });
+  });
+
+  it('scrubs a secret-SHAPED object key too (not just values)', () => {
+    const secretKey = 'glpat-' + 'A'.repeat(20); // a GitLab-PAT-shaped KEY, built split (Leakwatch policy)
+    expect(redactSecretShapedValue({ [secretKey]: 'v', normalKey: 'keep' })).toEqual({
+      '[redacted]': 'v',
+      normalKey: 'keep',
+    });
   });
 
   it('is cycle-safe', () => {

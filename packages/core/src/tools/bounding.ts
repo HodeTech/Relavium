@@ -149,22 +149,35 @@ export function redactSecretShapedText(text: string): string {
         /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,20000}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
         '[redacted]',
       )
-      // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`.
-      .replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/gi, '$1 [redacted]')
+      // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
+      // `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`).
+      .replace(/\b(bearer|basic|token)\s+[\w.~+/-]{8,}={0,2}/gi, '$1 [redacted]')
       // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
       // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
       // value has two branches: a QUOTED value consumes lazily through the FIRST matching closing quote (so a
       // passphrase with interior spaces — `"hunter2 dragon"` — is redacted whole, however long, not just up to
       // the first space), bounded by the line (`[^\r\n]`); an UNQUOTED value runs to the next whitespace/
-      // delimiter. Lazy `*?` with a single-class body + a fixed backref is linear (finds the first close) ⇒ ReDoS-safe.
+      // delimiter. Lazy `*?` with a single-class body + a fixed backref is linear (finds the first close) ⇒
+      // ReDoS-safe. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
+      // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
+      // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
       .replace(
-        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:(["'])[^\r\n]*?\1|[^\s"',;&]{6,})/gi,
+        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:(["'])[^\r\n]*?\1|[^\s"',;&]{6,})/gi,
         '[redacted]',
       )
-      // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub tokens + PAT,
-      // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT).
+      // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
+      // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
+      // single leftmost-longest scan is required so two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
+      // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) are covered by the outer greedy match
+      // as a single span. A per-family MULTI-PASS split is NOT equivalent — an earlier pass inserting `[redacted]`
+      // (a non-word `[`) truncates a later family's greedy match and can leave a trailing secret-shaped substring
+      // EXPOSED (a real redaction regression, pinned in bounding.test.ts). So this stays a single analyzable
+      // LITERAL and its Sonar per-regex complexity is a deliberate, documented exception — the same trade-off as
+      // the key=value pattern above: correctness of a security redactor + Sonar's static ReDoS (S5852) coverage
+      // outrank the metric. `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
+      // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
       .replace(
-        /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|ya29\.[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})/g,
+        /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[\w-]{30,}|ya29\.[\w-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{6,})/g,
         '[redacted]',
       )
   );
@@ -173,8 +186,10 @@ export function redactSecretShapedText(text: string): string {
 /**
  * Walk an arbitrary value applying {@link redactSecretShapedText} to every string, leaving structure intact —
  * the toolInput twin of the summary scrub. Applied to the `agent:tool_call.toolInput` event field so a
- * model-set credential in a header VALUE / body / url-query never rides the observability stream (the object
- * KEYS — e.g. a header name — are preserved; only string values are scrubbed). Cycle-safe; display-only.
+ * model-set credential in a header VALUE / body / url-query never rides the observability stream. Object KEYS
+ * are scrubbed with the SAME detector as values (a normal header name — `Authorization`, `X-Trace` — is not
+ * secret-SHAPED, so it passes through unchanged; only a model that placed a live-token-shaped string in a KEY
+ * position is redacted, closing that leak path too). Cycle-safe; display-only.
  */
 export function redactSecretShapedValue(value: unknown): unknown {
   return redactSecretShapedWalk(value, new WeakSet<object>());
@@ -188,7 +203,11 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
   if (Array.isArray(value)) return value.map((item) => redactSecretShapedWalk(item, seen));
   if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
   const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) out[key] = redactSecretShapedWalk(item, seen);
+  // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
+  // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
+  for (const [key, item] of Object.entries(value)) {
+    out[redactSecretShapedText(key)] = redactSecretShapedWalk(item, seen);
+  }
   return out;
 }
 

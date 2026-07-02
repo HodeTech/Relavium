@@ -489,16 +489,17 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   BudgetPausedEventSchema,
 ]);
 
+/** The pre-refinement union value — the input every cross-field refinement helper below receives. */
+type RunEventUnion = z.infer<typeof RunEventUnionSchema>;
+
 /**
- * The full run-event schema every surface consumes: the discriminated union plus the
- * **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md
- * §"Correlation key"). Run-only / session-only events satisfy it by construction — a stray
- * opposite key is stripped by their `z.object` before this refine runs, so the parsed output
- * stays compliant (the deliberate non-strict, forward-compatible posture). The `dualBase` events (the
- * four reused agent/cost events plus `agent:approval_requested`) declare both keys as optional, so this
- * is where neither/both is rejected.
+ * The **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md §"Correlation
+ * key"). Run-only / session-only events satisfy it by construction — a stray opposite key is stripped by their
+ * `z.object` before this refine runs (the deliberate non-strict, forward-compatible posture). The `dualBase`
+ * events (the four reused agent/cost events plus `agent:approval_requested`) declare both keys as optional, so
+ * this is where neither/both is rejected.
  */
-export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
+function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void {
   const hasRunId = 'runId' in event && event.runId !== undefined;
   const hasSessionId = 'sessionId' in event && event.sessionId !== undefined;
   if (hasRunId === hasSessionId) {
@@ -508,8 +509,10 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: [hasRunId ? 'sessionId' : 'runId'],
     });
   }
-  // A gate's on-timeout policy only has meaning when a timeout is configured — refused at the union level
-  // because a discriminatedUnion member can't carry its own cross-field refinement (see note above).
+}
+
+/** A gate's on-timeout policy only has meaning when a timeout is configured. */
+function refineHumanGateTimeout(event: RunEventUnion, ctx: z.RefinementCtx): void {
   if (
     event.type === 'human_gate:paused' &&
     event.timeoutAction !== undefined &&
@@ -521,35 +524,38 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['timeoutAction'],
     });
   }
-  // A pause always has a reason: ≥1 gate OR ≥1 media job (1.AG Section D). The member's field constraints were
-  // relaxed (a media-only park has 0 gates), so the disjunction is enforced here at the union level (a
-  // discriminatedUnion member can't carry its own cross-field refinement). The engine never emits a zero-reason
-  // run:paused; this rejects a malformed one.
-  if (
-    event.type === 'run:paused' &&
-    event.gateIds.length === 0 &&
-    (event.pendingMediaJobNodeIds?.length ?? 0) === 0
-  ) {
+}
+
+/**
+ * The two `run:paused` structural invariants the relaxed member constraints (a media-only park has 0 gates)
+ * dropped: a pause carries ≥1 reason (a gate OR a media job — 1.AG Section D), and `pendingGateCount` agrees
+ * with `gateIds.length` (a consumer that reads the aggregate count must not diverge from the list it pairs
+ * with). The engine never emits a malformed one; this rejects it.
+ */
+function refineRunPaused(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (event.type !== 'run:paused') return;
+  if (event.gateIds.length === 0 && (event.pendingMediaJobNodeIds?.length ?? 0) === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'run:paused must carry at least one suspension reason (a gate or a media job)',
       path: ['gateIds'],
     });
   }
-  // `pendingGateCount` is the aggregate count of `gateIds` — relaxing both fields to `min(0)` (for a media-only
-  // park) dropped the structural guarantee that they agree, so re-assert it here. A consumer that reads
-  // `pendingGateCount` as the authoritative gate count must not diverge from the `gateIds` list it pairs with.
-  if (event.type === 'run:paused' && event.pendingGateCount !== event.gateIds.length) {
+  if (event.pendingGateCount !== event.gateIds.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'run:paused pendingGateCount must equal gateIds.length',
       path: ['pendingGateCount'],
     });
   }
-  // `deadlineAt = startedAt + media_job_deadline_ms` by construction, so deadlineAt < startedAt is a malformed
-  // durable event that would invert the resume `now > deadlineAt` short-circuit. Compare via Date.parse (an
-  // offset is allowed, so never lexically). Enforced at the union level — a member-level `.refine()` would make
-  // a ZodEffects and break the discriminatedUnion (same reason the run:paused cross-field checks live here).
+}
+
+/**
+ * `deadlineAt = startedAt + media_job_deadline_ms` by construction, so deadlineAt < startedAt is a malformed
+ * durable event that would invert the resume `now > deadlineAt` short-circuit. Compare via Date.parse (an
+ * offset is allowed, so never lexically).
+ */
+function refineMediaJobDeadline(event: RunEventUnion, ctx: z.RefinementCtx): void {
   if (
     event.type === 'media_job:submitted' &&
     Date.parse(event.deadlineAt) < Date.parse(event.startedAt)
@@ -560,22 +566,55 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
       path: ['deadlineAt'],
     });
   }
-  // Bind an approval preview to its action class (ADR-0057 EA5): a preview may carry ONLY the field its action
-  // produces (see {@link APPROVAL_PREVIEW_FIELD}) — an `egress` approval must never surface a `path`, etc. This
-  // rejects an action drift a host-wiring bug could add. Enforced here (not on the member) because the member is
-  // a discriminatedUnion option and a member-level `.refine()` would make it a ZodEffects.
-  if (event.type === 'agent:approval_requested') {
-    const allowed = APPROVAL_PREVIEW_FIELD[event.action];
-    for (const key of ['path', 'command', 'host'] as const) {
-      if (key !== allowed && event.preview[key] !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `preview.${key} is not valid for a ${event.action} approval`,
-          path: ['preview', key],
-        });
-      }
+}
+
+/**
+ * Bind an approval preview to its action class (ADR-0057 EA5). Two rules:
+ *  1. DRIFT — a preview may carry ONLY the field its action produces (see {@link APPROVAL_PREVIEW_FIELD}); an
+ *     `egress` approval must never surface a `path`, etc. (`.strict()` on the preview already bars an UNKNOWN
+ *     key; this bars a KNOWN-but-wrong-for-the-action one.)
+ *  2. MISSING — `fs_write` and `process` ALWAYS resolve their target before the gate (the registry's
+ *     `previewFor` sets `path`/`command` from a mandatory policy target), so a BLANK preview there is a
+ *     host-wiring bug — reject it. `egress` is exempt (its `host` is legitimately absent for `mcp_call` /
+ *     `web_search`, a valid blank preview), and `os` carries no target field at all.
+ */
+function refineApprovalPreview(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (event.type !== 'agent:approval_requested') return;
+  const allowed = APPROVAL_PREVIEW_FIELD[event.action];
+  for (const key of ['path', 'command', 'host'] as const) {
+    if (key !== allowed && event.preview[key] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `preview.${key} is not valid for a ${event.action} approval`,
+        path: ['preview', key],
+      });
     }
   }
+  if (
+    (event.action === 'fs_write' || event.action === 'process') &&
+    allowed !== undefined &&
+    event.preview[allowed] === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `a ${event.action} approval requires preview.${allowed}`,
+      path: ['preview', allowed],
+    });
+  }
+}
+
+/**
+ * The full run-event schema every surface consumes: the discriminated union plus the cross-field invariants a
+ * `discriminatedUnion` member cannot carry (a member-level `.refine()` would make it a ZodEffects and break the
+ * union). Each concern lives in its own named helper above; this composes them so the schema stays a thin,
+ * readable pipeline.
+ */
+export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
+  refineCorrelationKey(event, ctx);
+  refineHumanGateTimeout(event, ctx);
+  refineRunPaused(event, ctx);
+  refineMediaJobDeadline(event, ctx);
+  refineApprovalPreview(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 

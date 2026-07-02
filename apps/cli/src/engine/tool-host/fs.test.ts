@@ -220,6 +220,21 @@ describe('createNodeFsCapability — read (jailed)', () => {
   );
 
   itPosix(
+    'STILL refuses a hard link planted DIRECTLY under .pnpm/ (not the <pkg>@<ver>/node_modules/<pkg> shape)',
+    async () => {
+      // The exemption trusts ONLY the real store layout `.pnpm/<name>@<version>/node_modules/<name>/…`. A hard
+      // link an attacker drops straight under `.pnpm/` (no nested `<pkg>@<ver>/node_modules`) is NOT exempt —
+      // real store package files never live there, so this closes the "any .pnpm subtree" over-broad exemption.
+      await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
+      await mkdir(join(workspace, 'node_modules', '.pnpm'), { recursive: true });
+      await link(join(outside, 'secret.txt'), join(workspace, 'node_modules', '.pnpm', 'evil.txt'));
+      await expect(sandboxed().readFile('node_modules/.pnpm/evil.txt', {})).rejects.toBeInstanceOf(
+        FsScopeDeniedError,
+      );
+    },
+  );
+
+  itPosix(
     'EXEMPTS a pnpm-store hard link through the GLOB read path too (readGlob recomputes the exemption)',
     async () => {
       await writeFile(join(outside, 'dep.ts'), 'export const x = 1');

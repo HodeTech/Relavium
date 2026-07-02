@@ -354,20 +354,7 @@ export class AgentSession {
 
     // Hard turn cap — checked AFTER turn_started (the turn was attempted) but BEFORE any egress: the
     // blocked turn completes loudly with turn_limit and never calls a provider.
-    if (this.#turnCount >= this.#maxTurns) {
-      this.#status = 'idle';
-      this.#abort = undefined; // no turn ran — release the armed controller (this early return skips finally)
-      this.#emitTurnCompleted(
-        'error',
-        { input: 0, output: 0 },
-        {
-          code: 'turn_limit',
-          message: `session reached its hard cap of ${this.#maxTurns} turns`,
-          retryable: false,
-        },
-      );
-      return;
-    }
+    if (this.#completeIfTurnCapReached()) return;
 
     this.#messages.push({ role: 'user', content: [{ type: 'text', text }] });
     // Snapshot the reseat-less mode policy for the whole turn (ADR-0057): a mid-turn setTurnPolicy applies
@@ -430,6 +417,28 @@ export class AgentSession {
       this.#abortingTurn = false; // clear the per-turn EA7 marker (no stale abort leaks into the next turn)
       if (this.#statusIs('running')) this.#status = 'idle';
     }
+  }
+
+  /**
+   * The hard turn-cap gate, factored out of {@link sendMessage}. When the session has already spent its
+   * `#maxTurns`, complete the just-armed turn LOUDLY with `turn_limit` and no egress, release the armed abort
+   * controller (this path is an early return that skips `sendMessage`'s `finally`), and return `true` so the
+   * caller bails before touching a provider. Returns `false` (turn may proceed) when under the cap.
+   */
+  #completeIfTurnCapReached(): boolean {
+    if (this.#turnCount < this.#maxTurns) return false;
+    this.#status = 'idle';
+    this.#abort = undefined; // no turn ran — release the armed controller (this early return skips finally)
+    this.#emitTurnCompleted(
+      'error',
+      { input: 0, output: 0 },
+      {
+        code: 'turn_limit',
+        message: `session reached its hard cap of ${this.#maxTurns} turns`,
+        retryable: false,
+      },
+    );
+    return true;
   }
 
   /**

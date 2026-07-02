@@ -66,7 +66,7 @@ export function parseMode(input: string): ChatMode | undefined {
 
 /** A type guard that narrows a string to {@link ChatMode} via the {@link CHAT_MODES} tuple — no `as` cast. */
 function isChatMode(value: string): value is ChatMode {
-  return (CHAT_MODES as readonly string[]).includes(value);
+  return CHAT_MODES.some((mode) => mode === value);
 }
 
 /**

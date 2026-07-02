@@ -155,8 +155,19 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
  */
 function isPnpmStorePath(absolutePath: string): boolean {
   const folded = absolutePath.split(sep).map(foldPathComponent);
-  for (let i = 0; i + 1 < folded.length; i += 1) {
-    if (folded[i] === 'node_modules' && folded[i + 1] === '.pnpm') return true;
+  // Match the REAL virtual-store layout ONLY: `…/node_modules/.pnpm/<name>@<version>/node_modules/<name>/…`.
+  // Requiring the `<name>@<version>` segment (it always contains `@`) followed by a nested `node_modules`
+  // rejects a hard link planted DIRECTLY under `.pnpm/` (e.g. `.pnpm/evil`, or `.pnpm/x/y`), which the looser
+  // two-segment adjacency check exempted — the store's package files never live outside that nested shape.
+  for (let i = 0; i + 3 < folded.length; i += 1) {
+    if (
+      folded[i] === 'node_modules' &&
+      folded[i + 1] === '.pnpm' &&
+      (folded[i + 2]?.includes('@') ?? false) &&
+      folded[i + 3] === 'node_modules'
+    ) {
+      return true;
+    }
   }
   return false;
 }

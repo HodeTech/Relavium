@@ -464,6 +464,27 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
+  it('REJECTS a blank approval preview for fs_write and process (their target is always resolved)', () => {
+    // The mirror of the accept test above: fs_write / process ALWAYS resolve their path / command before the
+    // gate (previewFor sets it from a mandatory policy target), so a blank preview is a host-wiring bug the
+    // union-level refine rejects — while os / egress (above) legitimately stay blank.
+    for (const [toolId, action] of [
+      ['write_file', 'fs_write'],
+      ['run_command', 'process'],
+    ] as const) {
+      expect(
+        RunEventSchema.safeParse({
+          type: 'agent:approval_requested',
+          ...env,
+          nodeId: 'n',
+          toolId,
+          action,
+          preview: {},
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('covers exactly the 22 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
