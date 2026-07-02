@@ -65,10 +65,7 @@ export function createNodeEgressCapability(
           request.credentialRef === undefined
             ? undefined
             : await resolveCredentialSafely(config.resolveCredential, request.credentialRef);
-        const headers: Record<string, string> = { ...request.headers };
-        if (credential !== undefined && credential.length > 0) {
-          headers['authorization'] = `Bearer ${credential}`;
-        }
+        const headers = mergeEgressHeaders(request.headers, credential);
         return await withEgressTimeout(signal, timeoutMs, async (sig) => {
           const response = await connectValidated(
             request.url,
@@ -98,15 +95,29 @@ export function createNodeEgressCapability(
 }
 
 /**
- * Map the shared {@link SafeEgressError} to the host error taxonomy: an SSRF range-block or non-HTTPS/
- * credentialed-url denial is a **deterministic** {@link EgressDeniedError} (fatal `tool_denied` — re-issuing
- * re-denies, never burns the node-retry budget); a transient network/size failure is an
- * {@link EgressCapabilityError} (retryable `tool_failed`). The shared message is already a tool-agnostic,
- * reason-only `egress …` string (no url/IP/bytes), so it is passed through verbatim — the SAME arm backs
- * `http_request`, `web_search`, and http-transport `mcp_call`, and the registry attaches the actual invoking
- * tool id when it surfaces the error, so an arm-side `http_request:` prefix would MISATTRIBUTE a `web_search`
- * failure. An abort is classified `cancelled` by the registry's cancel-precedence regardless of this class.
+ * Merge the model-supplied request headers with the host-resolved credential so the resolved credential ALWAYS
+ * wins deterministically. `request.headers` is model-controlled, so it may carry an `Authorization` in any case
+ * (or a duplicate) — when a credential is resolved, every case variant of `authorization` is dropped BEFORE the
+ * canonical `authorization: Bearer …` is set, so the wire never carries a stale/ambiguous auth header. With no
+ * resolved credential, the model headers pass through unchanged (the `Host`/framing strip still applies in
+ * `sanitizeHopHeaders`).
  */
+function mergeEgressHeaders(
+  modelHeaders: Readonly<Record<string, string>> | undefined,
+  credential: string | undefined,
+): Record<string, string> {
+  const hasCredential = credential !== undefined && credential.length > 0;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(modelHeaders ?? {})) {
+    if (hasCredential && key.trim().toLowerCase() === 'authorization') continue; // resolved credential wins
+    out[key] = value;
+  }
+  if (hasCredential) {
+    out['authorization'] = `Bearer ${credential}`;
+  }
+  return out;
+}
+
 /**
  * Resolve a `credentialRef` host-side, degrading an absent OR **rejecting** resolver to `undefined` so a
  * native-keychain fault proceeds credential-less (the documented "never a crash" contract) instead of failing
@@ -125,6 +136,16 @@ async function resolveCredentialSafely(
   }
 }
 
+/**
+ * Map the shared {@link SafeEgressError} to the host error taxonomy: an SSRF range-block or non-HTTPS/
+ * credentialed-url denial is a **deterministic** {@link EgressDeniedError} (fatal `tool_denied` — re-issuing
+ * re-denies, never burns the node-retry budget); a transient network/size failure is an
+ * {@link EgressCapabilityError} (retryable `tool_failed`). The shared message is already a tool-agnostic,
+ * reason-only `egress …` string (no url/IP/bytes), so it is passed through verbatim — the SAME arm backs
+ * `http_request`, `web_search`, and http-transport `mcp_call`, and the registry attaches the actual invoking
+ * tool id when it surfaces the error, so an arm-side `http_request:` prefix would MISATTRIBUTE a `web_search`
+ * failure. An abort is classified `cancelled` by the registry's cancel-precedence regardless of this class.
+ */
 function classifyEgressError(error: unknown): Error {
   if (error instanceof SafeEgressError) {
     if (error.code === 'insecure_url' || error.code === 'blocked_host') {

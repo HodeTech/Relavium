@@ -9,7 +9,7 @@
 
 import { extractHttpsHost, type ToolActionClass } from '@relavium/shared';
 
-import { boundForModel, redactInlineMedia } from './bounding.js';
+import { boundForModel, redactInlineMedia, redactSecretShapedValue } from './bounding.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
@@ -552,12 +552,15 @@ function sanitizeInput(
       delete out[key];
     }
   }
-  // Redact inline media bytes from every surviving arg value before it becomes `agent:tool_call.toolInput`:
-  // that field rides the event/IPC/log stream (an I3 boundary), and a model can emit a base64 `data:` URI
-  // or a `{ kind:'base64', data }` object as a tool argument. Symmetric to the `outputSummary` redaction on
-  // the result side — display-only, the dispatch already ran on the real args.
+  // Redact inline media bytes AND secret-shaped values from every surviving arg before it becomes
+  // `agent:tool_call.toolInput`: that field rides the event/IPC/log/`--json` stream (an I3 boundary). The
+  // `secretArgKeys` deletion above only covers KNOWN top-level key names, so a model-set credential in an
+  // arbitrary place (an `http_request` `Authorization` header value, a token in the body or url query) would
+  // otherwise pass through — `redactSecretShapedValue` scrubs it by shape, keeping the object keys (header
+  // names) intact. Symmetric to the `outputSummary` scrub on the result side — display-only, the dispatch
+  // already ran on the real args.
   for (const key of Object.keys(out)) {
-    out[key] = redactInlineMedia(out[key]);
+    out[key] = redactSecretShapedValue(redactInlineMedia(out[key]));
   }
   return out;
 }

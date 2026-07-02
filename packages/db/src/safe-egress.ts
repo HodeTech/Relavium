@@ -184,21 +184,40 @@ export async function connectValidated(
 }
 
 /**
- * Drop a caller-supplied `Host` / `:authority` header so the wire `Host` is ALWAYS derived from the validated
- * hostname. The IP-pin + SNI fix the TRANSPORT destination, but a shared/CDN/reverse-proxy IP routes at the
- * APPLICATION layer by the `Host` header — so a model-set `Host` (the `http_request` `headers` arg is
- * model-controlled) could otherwise send an `allowedDomains`-approved, correctly-pinned request to a DIFFERENT
- * virtual host at the same IP (a virtual-host-confusion SSRF the pin/SNI alone don't stop). Matched
- * case-insensitively; the legitimate `authorization` credential header is untouched.
+ * Caller-supplied headers that MUST never reach the wire — dropped case-insensitively so a model-controlled
+ * `http_request` `headers` arg cannot subvert routing or message framing:
+ * - `host` / `:authority` — the wire `Host` is ALWAYS derived from the validated hostname. The IP-pin + SNI fix
+ *   the TRANSPORT destination, but a shared/CDN/reverse-proxy IP routes at the APPLICATION layer by `Host`, so a
+ *   model-set `Host` could send an `allowedDomains`-approved, correctly-pinned request to a DIFFERENT virtual
+ *   host at the same IP (virtual-host-confusion SSRF the pin/SNI alone don't stop).
+ * - `content-length` / `transfer-encoding` — Node computes the framing from the actual body bytes. A model-set
+ *   `content-length` that MISMATCHES the body is a classic HTTP request-smuggling primitive (the surplus bytes
+ *   are parsed as a SECOND, fully attacker-controlled request — forged `Host` included — on a keep-alive
+ *   connection), bypassing the very Host-strip above; letting Node own the framing closes it.
+ * - `connection` / `keep-alive` / `proxy-connection` / `te` / `upgrade` / `expect` — hop-by-hop / protocol-
+ *   negotiation headers a caller has no business setting (connection reuse, 100-continue, protocol upgrade).
+ * The legitimate `authorization` credential header (attached host-side) is untouched.
  */
+const STRIPPED_HOP_HEADERS: ReadonlySet<string> = new Set([
+  'host',
+  ':authority',
+  'content-length',
+  'transfer-encoding',
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'te',
+  'upgrade',
+  'expect',
+]);
+
 function sanitizeHopHeaders(
   headers: Readonly<Record<string, string>> | undefined,
 ): Readonly<Record<string, string>> | undefined {
   if (headers === undefined) return undefined;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
-    const k = key.trim().toLowerCase();
-    if (k === 'host' || k === ':authority') continue; // never let the caller override the validated Host
+    if (STRIPPED_HOP_HEADERS.has(key.trim().toLowerCase())) continue;
     out[key] = value;
   }
   return out;
@@ -233,10 +252,14 @@ export async function readBounded(
 }
 
 /**
- * The shared timeout + abort + error-normalization wrapper. Composes the caller's `signal` with a timeout
- * into one `AbortController`, runs `fn(controller.signal)`, and guarantees the ONLY thrown type is a typed,
- * secret-free {@link SafeEgressError} — every raw resolver / socket / `new URL` / body-read error becomes
- * `SafeEgressError('network')`, never a raw leak.
+ * The shared timeout + abort + error-normalization wrapper. Composes the caller's `signal` with a timeout into
+ * one `AbortController`, RACES `fn(controller.signal)` against a hard timeout, and guarantees the ONLY thrown
+ * type is a typed, secret-free {@link SafeEgressError} — every raw resolver / socket / `new URL` / body-read
+ * error becomes `SafeEgressError('network')`, never a raw leak.
+ *
+ * The timeout does BOTH: it `abort()`s the controller (cooperative cancellation for an `fn` that honors the
+ * signal — the Node deps do, tearing down the socket) AND rejects the race after `timeoutMs`, so an `fn` that
+ * IGNORES its signal still fails deterministically at the deadline instead of hanging the caller forever.
  */
 export async function withEgressTimeout<T>(
   signal: AbortSignalLike | undefined,
@@ -249,17 +272,23 @@ export async function withEgressTimeout<T>(
     controller.abort();
   }
   signal?.addEventListener('abort', abort); // removed in the finally below
-  const timer = setTimeout(abort, timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      abort(); // still cancel the inner op (a signal-honoring fn tears down); the reject guards a signal-ignoring one
+      reject(new SafeEgressError('network', 'egress request timed out'));
+    }, timeoutMs);
+  });
   try {
-    return await fn(controller.signal);
+    return await Promise.race([fn(controller.signal), deadline]);
   } catch (error) {
     if (error instanceof SafeEgressError) {
-      throw error; // a typed failure (blocked_host / too_large / bad_status / …) — preserve the discriminant
+      throw error; // a typed failure (blocked_host / too_large / bad_status / timeout / …) — preserve the discriminant
     }
     // Any RAW throw is normalized to the typed, secret-free network failure.
     throw new SafeEgressError('network', 'egress request failed');
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
   }
 }

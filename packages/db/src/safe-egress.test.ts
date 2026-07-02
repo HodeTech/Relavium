@@ -110,6 +110,49 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     expect(captured?.headers?.['authorization']).toBe('Bearer X'); // the legit credential is untouched
   });
 
+  it('STRIPS caller-supplied framing / hop-by-hop headers (HTTP request-smuggling defense)', async () => {
+    let captured: HopRequest | undefined;
+    const deps = fakeDeps({
+      resolve: { 'api.example.com': ['203.0.113.5'] },
+      onOpen: (request) => (captured = request),
+    });
+    await connectValidated(
+      'https://api.example.com/x',
+      {
+        allowPrivate: false,
+        method: 'POST',
+        // A model-set Content-Length that MISMATCHES the body length is a request-smuggling primitive (the
+        // surplus body bytes are parsed as a second, forged request on a keep-alive socket) — the mechanism must
+        // drop it (+ the other framing/hop-by-hop headers) so Node computes the framing from the real body.
+        headers: {
+          'Content-Length': '3',
+          'Transfer-Encoding': 'chunked',
+          Connection: 'keep-alive',
+          'Proxy-Connection': 'keep-alive',
+          TE: 'trailers',
+          Upgrade: 'websocket',
+          Expect: '100-continue',
+          'x-keep': 'ok',
+        },
+        body: 'a much longer body than three bytes',
+      },
+      deps,
+      sig(),
+    );
+    for (const stripped of [
+      'Content-Length',
+      'Transfer-Encoding',
+      'Connection',
+      'Proxy-Connection',
+      'TE',
+      'Upgrade',
+      'Expect',
+    ]) {
+      expect(captured?.headers?.[stripped]).toBeUndefined();
+    }
+    expect(captured?.headers?.['x-keep']).toBe('ok');
+  });
+
   it('rejects a non-HTTPS url and a credentialed url with insecure_url (before any DNS)', async () => {
     let resolved = false;
     const deps: EgressDeps = {
@@ -240,6 +283,13 @@ describe('withEgressTimeout — timeout + abort + error normalization', () => {
     );
     await expect(result).rejects.toMatchObject({ code: 'network' });
   });
+
+  it('times out a fn that IGNORES its signal — the deadline race rejects, never hangs', async () => {
+    // A fn that never resolves and never observes `inner` (a signal-ignoring transport). The timeout must win
+    // the race and reject deterministically rather than hanging the caller forever.
+    const result = withEgressTimeout(undefined, 5, () => new Promise<string>(() => undefined));
+    await expect(result).rejects.toMatchObject({ name: 'SafeEgressError', code: 'network' });
+  });
 });
 
 /* --- the concrete Node mechanism (nodeEgressDeps.openConnection) — the body/headers-on-the-wire path --- */
@@ -270,13 +320,18 @@ function fakeIncoming(status: number, chunks: readonly Uint8Array[] = []): FakeI
   return Object.assign(stream, { statusCode: status, headers: {}, destroy: () => undefined });
 }
 
-/** A ClientRequest stub: openConnection calls `.on('error',…)`, optionally `.write(body)`, then `.end()`. */
+/**
+ * A ClientRequest stub: openConnection calls `.on('error',…)`, optionally `.write(body)`, then `.end()`, and
+ * `dispose()` (via the response) calls `.destroy()` — the stub carries all four so it matches the lifecycle
+ * `nodeEgressDeps.openConnection` actually drives.
+ */
 function stubClientRequest(): {
   on: ReturnType<typeof vi.fn>;
   write: ReturnType<typeof vi.fn>;
   end: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
 } {
-  return { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+  return { on: vi.fn(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() };
 }
 
 function lastHttpsCall(): {

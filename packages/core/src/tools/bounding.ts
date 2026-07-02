@@ -129,6 +129,57 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   return out;
 }
 
+/**
+ * Redact secret-SHAPED substrings from a text projection bound for an **observability field** (the event
+ * `outputSummary` / `toolInput`) — NOT the model-facing value (the model must still see the real tool result
+ * and its own args). A model can put a live credential in an `http_request` header/body, and a tool result can
+ * carry one (a `read_clipboard`, an egress response body, a `.env` read); either would otherwise ride the
+ * `--json` machine stream (ADR-0049) / a log verbatim. High-recall and deliberately conservative (a false
+ * positive redacts a non-secret in a DISPLAY field only — never the model's copy): it targets `Authorization`
+ * schemes, `…secret…=value` pairs, and well-known token shapes (OpenAI/AWS/GitHub/Slack/Google/JWT). Every
+ * pattern is LINEAR — bounded repetition + single character classes, no nested quantifiers — per the engine's
+ * no-backtracking-RegExp / no-ReDoS posture.
+ */
+export function redactSecretShapedText(text: string): string {
+  return (
+    text
+      // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`.
+      .replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/gi, '$1 [redacted]')
+      // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value.
+      .replace(
+        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}\s*[=:]\s*["']?[^\s"',;&]{6,}/gi,
+        '[redacted]',
+      )
+      // Well-known standalone credential shapes.
+      .replace(
+        /\b(?:sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})/g,
+        '[redacted]',
+      )
+  );
+}
+
+/**
+ * Walk an arbitrary value applying {@link redactSecretShapedText} to every string, leaving structure intact —
+ * the toolInput twin of the summary scrub. Applied to the `agent:tool_call.toolInput` event field so a
+ * model-set credential in a header VALUE / body / url-query never rides the observability stream (the object
+ * KEYS — e.g. a header name — are preserved; only string values are scrubbed). Cycle-safe; display-only.
+ */
+export function redactSecretShapedValue(value: unknown): unknown {
+  return redactSecretShapedWalk(value, new WeakSet<object>());
+}
+
+function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return redactSecretShapedText(value);
+  if (typeof value !== 'object' || value === null) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactSecretShapedWalk(item, seen));
+  if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) out[key] = redactSecretShapedWalk(item, seen);
+  return out;
+}
+
 /** Render any result to the text the model would see (a string is itself; else compact JSON). Inline
  *  media bytes are redacted first so the summary/spill/preview can never carry base64 (I3). */
 function toText(result: unknown): string {
@@ -154,9 +205,11 @@ function toText(result: unknown): string {
 
 function makeSummary(text: string): string {
   // Cap the scanned input so the whitespace-collapse never runs over an oversized result (the summary
-  // is bounded to SUMMARY_MAX regardless).
+  // is bounded to SUMMARY_MAX regardless). Scrub secret-shaped substrings BEFORE the length cap so a
+  // credential in the result (a read_clipboard, an egress body, a `.env` read) never rides `outputSummary`
+  // to the `--json` stream / a log (the model-facing value is untouched — this is the observability copy).
   const slice = text.length > SUMMARY_MAX * 8 ? text.slice(0, SUMMARY_MAX * 8) : text;
-  const oneLine = slice.replace(/\s+/g, ' ').trim();
+  const oneLine = redactSecretShapedText(slice.replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 

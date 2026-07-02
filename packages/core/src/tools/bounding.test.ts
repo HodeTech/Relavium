@@ -1,7 +1,12 @@
 import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import { boundForModel, utf8ByteLength } from './bounding.js';
+import {
+  boundForModel,
+  redactSecretShapedText,
+  redactSecretShapedValue,
+  utf8ByteLength,
+} from './bounding.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 const BIG: ToolResultLimits = { maxBytes: 50_000, maxLines: 2000 };
@@ -214,5 +219,66 @@ describe('boundForModel', () => {
   it('leaves a Date / Map result rendered natively (not collapsed to {} by the redaction walk)', async () => {
     const date = await boundForModel({ at: new Date('2026-06-19T00:00:00.000Z') }, BIG, host());
     expect(date.summary).toContain('2026-06-19'); // Date → ISO string via JSON.stringify, not {}
+  });
+
+  it('scrubs a secret-shaped value from the summary (outputSummary) but keeps the model-facing value', async () => {
+    // A read_clipboard / egress-body / .env-style result carrying a live token must not ride outputSummary
+    // (→ agent:tool_result.outputSummary → the --json stream). The model-facing value keeps the real bytes.
+    const result = `export API_KEY=sk-${'abcdef0123456789abcdef'} and Authorization: Bearer tok${'_live_9f8e7d6c5b4a'}`;
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.summary).not.toContain('sk-' + 'abcdef0123456789abcdef');
+    expect(bounded.summary).not.toContain('tok_live_9f8e7d6c5b4a');
+    expect(bounded.summary).toContain('[redacted]');
+    expect(bounded.value).toBe(result); // the model still sees the real content
+  });
+});
+
+describe('redactSecretShapedText', () => {
+  it('redacts Authorization schemes, secret=value pairs, and known token shapes', () => {
+    // `Authorization: Bearer <tok>` is caught by BOTH the scheme pattern and the `authorization=value` pattern;
+    // the over-redaction is the safe direction — assert the token is gone, not an exact shape.
+    const authScrubbed = redactSecretShapedText('Authorization: Bearer abcdef123456789');
+    expect(authScrubbed).not.toContain('abcdef123456789');
+    expect(authScrubbed).toContain('[redacted]');
+    expect(redactSecretShapedText('db_password=hunter2secret')).toBe('[redacted]');
+    const apiKey = redactSecretShapedText('MY_API_KEY = "sk-' + 'XYZ12345abcdef"');
+    expect(apiKey).not.toContain('sk-' + 'XYZ12345abcdef');
+    expect(apiKey).toContain('[redacted]');
+    expect(redactSecretShapedText('token AKIA' + 'IOSFODNN7EXAMPLE here')).toContain('[redacted]');
+    expect(redactSecretShapedText('ghp' + '_0123456789abcdef0123456789abcdefABCD')).toBe('[redacted]');
+  });
+
+  it('leaves ordinary text (and short non-secret values) intact', () => {
+    expect(redactSecretShapedText('the quick brown fox')).toBe('the quick brown fox');
+    expect(redactSecretShapedText('count = 42')).toBe('count = 42'); // not a secret-ish key
+  });
+
+  it('is ReDoS-safe on a long adversarial input (completes fast, no catastrophic backtracking)', () => {
+    const evil = `${'a'.repeat(50_000)} password=`; // key with no value → no runaway
+    const started = performance.now();
+    redactSecretShapedText(evil);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+});
+
+describe('redactSecretShapedValue', () => {
+  it('scrubs string values at any nesting, keeping object keys (header names) intact', () => {
+    const input = {
+      url: 'https://api.example.com/x?api_key=sk-' + 'secret9876543210',
+      headers: { Authorization: 'Bearer tok_abcdef123456', 'X-Trace': 'keep-me' },
+      body: 'client_secret=shhhhhhhhhh',
+    };
+    const out = redactSecretShapedValue(input) as typeof input;
+    expect(out.headers.Authorization).toBe('Bearer [redacted]');
+    expect(out.headers['X-Trace']).toBe('keep-me'); // non-secret header value untouched
+    expect(Object.keys(out.headers)).toEqual(['Authorization', 'X-Trace']); // header NAMES preserved
+    expect(out.body).toBe('[redacted]');
+    expect(out.url).not.toContain('sk-' + 'secret9876543210');
+  });
+
+  it('is cycle-safe', () => {
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic['self'] = cyclic;
+    expect(() => redactSecretShapedValue(cyclic)).not.toThrow();
   });
 });

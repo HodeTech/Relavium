@@ -117,6 +117,26 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
     expect(calls[0]?.headers?.['authorization']).toBe('Bearer SECRET-KEY');
   });
 
+  it('the host-resolved credential WINS over a model-supplied Authorization header (any case)', async () => {
+    // The model could inject its own `Authorization` in any casing; when a credential is resolved host-side it
+    // must win deterministically — no stale/duplicate auth header on the wire.
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({
+      deps,
+      resolveCredential: () => Promise.resolve('RESOLVED'),
+    });
+    await egress.fetch({
+      method: 'GET',
+      url: 'https://api.example.com/x',
+      credentialRef: 'kc:x',
+      headers: { Authorization: 'Bearer MODEL-INJECTED', 'X-Keep': 'yes' },
+    });
+    // Only ONE authorization header reaches the hop, carrying the resolved credential; no capitalized duplicate.
+    expect(calls[0]?.headers?.['authorization']).toBe('Bearer RESOLVED');
+    expect(calls[0]?.headers?.['Authorization']).toBeUndefined();
+    expect(calls[0]?.headers?.['X-Keep']).toBe('yes'); // unrelated model headers still pass through
+  });
+
   it('proceeds WITHOUT a credential when the ref does not resolve (a provider 401 surfaces, never a crash)', async () => {
     const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
     const egress = createNodeEgressCapability({
