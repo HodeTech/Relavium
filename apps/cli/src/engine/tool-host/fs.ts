@@ -357,8 +357,23 @@ function foldPathComponent(name: string): string {
   return beforeStream.toLowerCase().replace(/[. ]+$/u, '');
 }
 
+/**
+ * Whether an absolute path is protected — a `.git`/`.relavium`/`.ssh` directory segment, or a startup/config
+ * basename. The pure predicate behind {@link assertNotProtectedPath}; exported so a caller (the ADR-0057 chat
+ * `auto`-mode approval, which falls back to an explicit prompt on a protected target) can classify a target
+ * WITHOUT triggering the throw — the two share exactly one protected-paths definition.
+ */
+export function isProtectedPath(absoluteTarget: string): boolean {
+  for (const segment of absoluteTarget.split(sep)) {
+    if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) return true;
+  }
+  return PROTECTED_RC_BASENAMES.has(foldPathComponent(basename(absoluteTarget)));
+}
+
 /** Deny a write to a protected path (a `.git`/`.relavium`/`.ssh` directory, or a startup/config file). FATAL. */
 function assertNotProtectedPath(absoluteTarget: string): void {
+  if (!isProtectedPath(absoluteTarget)) return;
+  // Re-derive which class matched for a precise (still reason-only) message.
   for (const segment of absoluteTarget.split(sep)) {
     if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) {
       throw new FsScopeDeniedError(
@@ -366,9 +381,7 @@ function assertNotProtectedPath(absoluteTarget: string): void {
       );
     }
   }
-  if (PROTECTED_RC_BASENAMES.has(foldPathComponent(basename(absoluteTarget)))) {
-    throw new FsScopeDeniedError('write_file: refusing to write a shell startup file');
-  }
+  throw new FsScopeDeniedError('write_file: refusing to write a shell startup file');
 }
 
 async function writeOne(
