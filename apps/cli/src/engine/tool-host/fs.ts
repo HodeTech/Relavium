@@ -136,6 +136,25 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
  * read_file
  * ------------------------------------------------------------------------------------------------ */
 
+/**
+ * A package-manager store path (any `node_modules` segment). pnpm/npm hard-link package files from a shared
+ * content store, so those files legitimately carry `nlink > 1` on Linux/ext4 (macOS/APFS clones them instead ⇒
+ * `nlink == 1`). The hard-link aliasing READ guard exempts a store path: a cross-boundary hard link there cannot
+ * be planted without code execution that already defeats the sandbox (a git clone / tarball cannot carry a hard
+ * link to an out-of-tree path), the local-first trust model owns the workspace, and the sensitive-read floor
+ * still refuses a named secret store even UNDER `node_modules`. This keeps the exfiltration guard everywhere else
+ * while making a dependency-source read work — and behave the SAME across Linux and macOS.
+ */
+function isPackageStorePath(absolutePath: string): boolean {
+  return absolutePath.split(sep).some((segment) => segment === 'node_modules');
+}
+
+/** Whether the hard-link aliasing read guard applies to `real`: ON for the jailed tiers, OFF for the unjailed
+ * `full` tier and for a package-store path ({@link isPackageStorePath}). */
+function rejectAliasedRead(config: NodeFsCapabilityConfig, real: string): boolean {
+  return config.tier !== 'full' && !isPackageStorePath(real);
+}
+
 async function readOne(
   config: NodeFsCapabilityConfig,
   maxReadBytes: number,
@@ -155,7 +174,7 @@ async function readOne(
   // is caught. Reads flow into the model's context (then to the provider), so this mirrors, on the read side,
   // the protected-paths WRITE floor's mode/tier independence (ADR-0057).
   assertNotSensitiveReadPath(real);
-  const result = await readJailedFile(real, maxReadBytes, config.tier !== 'full');
+  const result = await readJailedFile(real, maxReadBytes, rejectAliasedRead(config, real));
   if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
   }
@@ -164,7 +183,7 @@ async function readOne(
   }
   if (result.kind === 'aliased') {
     throw new FsScopeDeniedError(
-      'read_file: refusing to read a hard-linked file (its content may be shared with a file outside the sandbox)',
+      'read_file: refusing to read a hard-linked file — its content may be shared with a file outside the sandbox (package-store links under node_modules are exempt)',
     );
   }
   if (result.kind === 'binary') {
@@ -206,10 +225,11 @@ async function readGlob(
     // can neither redirect the read nor make the size charged diverge from the bytes read. The bounded prefix
     // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
     // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
-    const result = await readJailedFile(m.real, maxReadBytes - totalBytes, config.tier !== 'full');
-    // skip a non-text match (dir / special / aliased / binary); never charge the budget. (collectGlobFiles
-    // already filters to regular, non-hard-linked, non-sensitive files, so these are belt-and-suspenders — a
-    // swap to a FIFO or a hard link after the walk would land here.)
+    const result = await readJailedFile(m.real, maxReadBytes - totalBytes, rejectAliasedRead(config, m.real));
+    // skip a non-text match (dir / special / aliased / binary); never charge the budget. collectGlobFiles
+    // already filters to regular, in-scope, non-sensitive files — but it does NOT check nlink, so the
+    // hard-link (`aliased`) skip is enforced HERE by readJailedFile's per-fd guard (the primary aliasing
+    // filter for a glob read); `directory`/`special` are the belt-and-suspenders for a post-walk swap.
     if (
       result.kind === 'directory' ||
       result.kind === 'special' ||
@@ -431,11 +451,17 @@ function assertNotProtectedPath(absoluteTarget: string): void {
  * write floor's {@link PROTECTED_DIR_SEGMENTS} (which also blocks whole `.git/` for WRITE-side hook RCE, a
  * concern that does not apply to a read) — reads leak CONFIDENTIALITY, so the read floor targets the
  * secret/credential stores specifically.
+ *
+ * NOTE (latent): `.relavium` also names this CLI's sanctioned scratch root `~/.relavium/tmp/` (the `tmpDir`
+ * sandboxed root). Both this read floor AND the write {@link PROTECTED_DIR_SEGMENTS} would refuse that root — but
+ * no call site wires `tmpDir` today, so the collision is inert. Resolve it (home-anchored match, or exclude the
+ * wired tmp root) BEFORE any caller passes `tmpDir`. Tracked in docs/roadmap/deferred-tasks.md.
  */
 const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.ssh', '.relavium']);
-/** Credential/secret dotfiles refused to READ by basename (global git creds, npm/pypi/pg/netrc tokens). */
+/** Credential/secret dotfiles refused to READ by basename (git creds, npm/pypi/pg/netrc tokens). */
 const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.gitconfig', // user-global git config — `[credential]`, insteadOf URLs with embedded tokens
+  '.git-credentials', // git `store` helper — verbatim `https://user:TOKEN@host` lines (the plaintext token store)
   '.netrc',
   '.npmrc', // `_authToken`
   '.pypirc',
@@ -453,16 +479,23 @@ export function isSensitiveReadPath(absoluteTarget: string): boolean {
   for (const segment of folded) {
     if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
   }
-  // A repo-local `.git/config` (any `.git` segment with a `config` basename, incl. submodule `.git/modules/*/config`).
-  if (folded.includes('.git') && foldPathComponent(basename(absoluteTarget)) === 'config') return true;
+  // A git `config` embeds remote-URL credentials: catch it under a `.git` dir (repo / submodule `.git/modules/*`
+  // / worktree) AND under a bare-repo dir (`myrepo.git/config`) — any segment ENDING in `.git` with a `config`
+  // basename. Over-denying a stray `x.git/config` that isn't a repo is the safe direction for a read floor.
+  if (
+    foldPathComponent(basename(absoluteTarget)) === 'config' &&
+    folded.some((segment) => segment === '.git' || segment.endsWith('.git'))
+  ) {
+    return true;
+  }
   return SENSITIVE_READ_BASENAMES.has(foldPathComponent(basename(absoluteTarget)));
 }
 
-/** Deny a read of a secret/credential store (`.ssh`/`.relavium`, `.git/config`, a credential dotfile). FATAL. */
+/** Deny a read of a secret/credential store (`.ssh`/`.relavium`, a git `config`, a credential dotfile). FATAL. */
 function assertNotSensitiveReadPath(absoluteTarget: string): void {
   if (isSensitiveReadPath(absoluteTarget)) {
     throw new FsScopeDeniedError(
-      'refusing to read a credential/secret store (.ssh / .relavium / .git config / a credential dotfile)',
+      'refusing to read a credential/secret store (.ssh / .relavium / a git config / a credential dotfile) — ask the user to share any needed content instead',
     );
   }
 }
@@ -525,9 +558,12 @@ async function writeOne(
       if (code === 'ELOOP' || code === 'ENOTDIR') {
         throw new FsScopeDeniedError('write_file: refusing to write through a symlink');
       }
-      if (code === 'ENXIO') {
-        // O_WRONLY | O_NONBLOCK on a reader-less FIFO returns ENXIO IMMEDIATELY (instead of blocking forever) —
-        // a non-regular target we refuse anyway; surface the same fatal denial the post-open fstat would give.
+      if (code === 'ENXIO' || code === 'EOPNOTSUPP' || code === 'ENODEV') {
+        // A non-regular special file that fails the OPEN itself rather than reaching the fstat: O_WRONLY |
+        // O_NONBLOCK on a reader-less FIFO returns ENXIO immediately (instead of blocking forever); a socket
+        // special file returns ENXIO (Linux) or EOPNOTSUPP (macOS); a device with no driver returns ENODEV. All
+        // are targets we refuse anyway — surface the same fatal denial the post-open fstat gives, not a raw
+        // (retryable, path-leaking) fs error.
         throw new FsScopeDeniedError(
           'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
         );
