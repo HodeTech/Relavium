@@ -17,6 +17,8 @@ import {
   REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from './repl-commands.js';
+import { type ChatMode } from '../chat/chat-mode.js';
+import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
   buildChatSession,
@@ -108,6 +110,17 @@ export interface ChatDriveContext {
    * before `process.exit`. Absent ⇒ nothing to force-close.
    */
   readonly onForceExit?: () => Promise<void>;
+  /**
+   * Mid-turn abort (EA7, ADR-0057) — abort the in-flight turn but KEEP the session alive (distinct from
+   * `/cancel`, which is terminal). The ink driver wires `Esc` to this; a plain/JSON driver ignores it.
+   */
+  readonly onAbort?: () => void;
+  /**
+   * Switch the chat mode (ADR-0057) — updates the footer + re-applies the turn policy (advertise-filter +
+   * fail-closed approval regime) on the SAME session instance (no reseat). The ink driver wires `Shift+Tab`
+   * (cycle) + the `/mode` command to this. Absent on a driver that has no mode UI (the mode stays the default).
+   */
+  readonly onModeChange?: (mode: ChatMode) => void;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -381,6 +394,42 @@ interface ReplWiring {
  * loop), and on teardown emit the session's sole terminal (`session:cancelled`, idempotent) + close the
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
+/** The mode/abort control surface a driver wires to its keys + the `/mode` command (ADR-0057). */
+export interface ChatModeControl {
+  /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive. */
+  readonly onAbort: () => void;
+  /** Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). */
+  readonly onModeChange: (mode: ChatMode) => void;
+}
+
+/**
+ * Wire the reseat-less chat mode system (ADR-0057) for a built session — used by BOTH the `chat`/`chat-resume`
+ * REPL and the 2.5.B Home's in-process chat, so the full-capability host is NEVER live without the fail-closed
+ * approval regime. It builds the session-scoped mode env (the once/always cache, the governed hide-set from the
+ * effective tool defs, the workspace-anchored protected-path check; the interactive prompt IS the store's
+ * `requestApproval`) and **applies the initial mode immediately** — so the regime is active from the first turn
+ * (default `ask` denies every governed action). The returned `onModeChange` re-applies on a Shift+Tab / `/mode`.
+ */
+export function createChatModeControl(
+  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context'>,
+  store: ChatStoreController,
+): ChatModeControl {
+  const modeEnv = makeChatModeEnv({
+    session: built.session,
+    tools: built.tools,
+    workspaceDir: built.context.workingDir,
+    prompt: store.requestApproval,
+  });
+  applyChatMode(modeEnv, store.getSnapshot().mode);
+  return {
+    onAbort: () => built.session.abort(),
+    onModeChange: (mode) => {
+      store.setMode(mode);
+      applyChatMode(modeEnv, mode);
+    },
+  };
+}
+
 /** The slash-aware line handler + the session's cancel/stop state. */
 export interface ChatLineHandler {
   /** Handle one line (a slash command or a message); awaits the turn for a message. */
@@ -556,6 +605,8 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
   const { built, opened, store, persister, startSession, intro } = wiring;
   const { processLine, cancelOnce, shouldStop } = createChatLineHandler(wiring, deps);
 
+  const { onAbort, onModeChange } = createChatModeControl(built, store);
+
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
@@ -576,6 +627,8 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       // MCP teardown to run first so a forced quit never orphans a spawned stdio child (no-op when no servers).
       ...(built.closeMcp === undefined ? {} : { onForceExit: built.closeMcp }),
       ...(intro === undefined ? {} : { intro }),
+      onAbort,
+      onModeChange,
     });
   } finally {
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'

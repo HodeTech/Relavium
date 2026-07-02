@@ -3,6 +3,7 @@ import {
   HOME_PALETTE_COMMANDS,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
+import { type ChatMode } from '../../chat/chat-mode.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
@@ -38,6 +39,10 @@ export interface HomeChatSession {
   readonly processLine: (line: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` has run — the chat ends and the Home returns. */
   readonly shouldStop: () => boolean;
+  /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive (Esc). Present once wired. */
+  readonly onAbort?: () => void;
+  /** Switch the chat mode (Shift+Tab / `/mode`) — re-applies the turn policy on the same session (ADR-0057). */
+  readonly onModeChange?: (mode: ChatMode) => void;
   /** Best-effort, IDEMPOTENT teardown of THIS chat (persister + frame loop + subscription + MCP), never the shared db. */
   readonly teardown: () => Promise<void>;
 }

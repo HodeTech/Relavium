@@ -36,7 +36,7 @@ export interface RootAppProps {
 function ChatRegion(
   props: Readonly<{ store: ChatStoreController; input: string; palette: PaletteState | undefined }>,
 ): ReactElement {
-  const { state, tick, color } = useSyncExternalStore(
+  const { state, tick, color, mode, approval } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
   );
@@ -48,6 +48,8 @@ function ChatRegion(
         color={color}
         input={props.input}
         running={state.status === 'running'}
+        mode={mode}
+        approval={approval}
         paletteOpen={props.palette !== undefined}
       />
       {props.palette !== undefined && (

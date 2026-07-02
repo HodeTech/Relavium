@@ -21,13 +21,15 @@ import {
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
-  formatSessionFooter,
+  formatApprovalTarget,
+  formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
   sanitizeInline,
   stripTerminalControls,
 } from './chat-projection.js';
-import type { ChatStoreController } from './chat-store.js';
+import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
+import type { ChatStoreController, PendingApproval } from './chat-store.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
 /**
@@ -77,6 +79,10 @@ interface ChatAppProps {
   readonly onExit: () => void;
   /** Called when a turn rejects UNEXPECTEDLY (a re-thrown turn-core bug) — the driver tears down + propagates. */
   readonly onError: (err: unknown) => void;
+  /** Mid-turn abort (EA7) — Esc aborts the in-flight turn, keeping the session alive. */
+  readonly onAbort: () => void;
+  /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
+  readonly onModeChange: (mode: ChatMode) => void;
 }
 
 interface ChatViewProps {
@@ -86,6 +92,10 @@ interface ChatViewProps {
   /** The current prompt buffer (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
   readonly input: string;
   readonly running: boolean;
+  /** The active chat mode (ADR-0057) — shown in the footer so `auto` is never a hidden state. */
+  readonly mode: ChatMode;
+  /** An in-flight per-tool approval — when set, the `[y]/[a]/[n]` prompt replaces the idle prompt. */
+  readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
 }
@@ -98,7 +108,7 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, input, running, paletteOpen } = props;
+  const { state, tick, color, input, running, mode, approval, paletteOpen } = props;
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -156,13 +166,34 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           {state.warnings.map((w) => `⚠ ${stripTerminalControls(w)}`).join('\n')}
         </Text>
       )}
-      <Text {...colorProps(color, 'gray')}>{formatSessionFooter(state)}</Text>
+
+      {/* The per-tool approval prompt (ADR-0057) — shown mid-turn when a governed dispatch awaits consent. It
+          OWNS the keyboard via the reduceChatKey approval-intercept (no deadlock): [y] once, [a] always (only
+          when the answer is cacheable — accept-edits, not auto's protected-path fallback), [n] no, Esc aborts. */}
+      {approval !== undefined && (
+        <Box flexDirection="column">
+          <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+            {`Approve ${sanitizeInline(approval.request.toolId)}${
+              formatApprovalTarget(approval.request).length > 0
+                ? ` → ${formatApprovalTarget(approval.request)}`
+                : ''
+            }?`}
+          </Text>
+          <Text {...dimProps(color)}>
+            {approval.cacheable
+              ? '[y] yes   [a] always   [n] no   [esc] abort'
+              : '[y] yes   [n] no   [esc] abort'}
+          </Text>
+        </Box>
+      )}
+
+      <Text {...colorProps(color, 'gray')}>{formatSessionFooterWithMode(state, mode)}</Text>
     </Box>
   );
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
-  const { state, tick, color } = useSyncExternalStore(
+  const { state, tick, color, mode, approval } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
   );
@@ -232,12 +263,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       applyPalette(step.state);
       return;
     }
-    // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point.
-    if (shouldOpenPalette(char, key, isRunning, inputRef.current.length)) {
+    // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
+    const approvalPending = props.store.getSnapshot().approval !== undefined;
+    // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point (never mid-approval).
+    if (!approvalPending && shouldOpenPalette(char, key, isRunning, inputRef.current.length)) {
       applyPalette(INITIAL_PALETTE_STATE);
       return;
     }
-    const action = reduceChatKey(char, key, inputRef.current, isRunning);
+    const action = reduceChatKey(char, key, inputRef.current, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired.current) {
@@ -253,6 +286,19 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         applyInput(() => '');
         submit(action.line);
         return;
+      case 'cycle-mode':
+        // Shift+Tab: advance the mode (read fresh from the store, not the render closure) + re-apply the policy.
+        props.onModeChange(nextMode(props.store.getSnapshot().mode));
+        return;
+      case 'abort':
+        props.onAbort(); // Esc — mid-turn abort (keeps the session; distinct from Ctrl-C /cancel)
+        return;
+      case 'approve':
+        props.store.answerApproval({ outcome: 'approve', scope: action.scope });
+        return;
+      case 'reject':
+        props.store.answerApproval({ outcome: 'reject' });
+        return;
       case 'none':
         return;
     }
@@ -266,6 +312,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         color={color}
         input={input}
         running={running}
+        mode={mode}
+        approval={approval}
         paletteOpen={palette !== undefined}
       />
       {palette !== undefined && (
@@ -348,6 +396,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
         // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
         // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
         onError: (err) => rejectExit(err),
+        // ADR-0057 mode/abort wiring — the REPL loop always supplies these; default to a no-op so a driver
+        // wired without them (a test harness) degrades to a fixed mode rather than crashing on a keypress.
+        onAbort: ctx.onAbort ?? ((): void => undefined),
+        onModeChange: ctx.onModeChange ?? ((): void => undefined),
       }),
       {
         // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.

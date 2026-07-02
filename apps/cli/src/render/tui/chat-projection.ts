@@ -1,3 +1,6 @@
+import type { ToolApprovalRequest } from '@relavium/core';
+
+import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { formatCostUsd, formatDuration, formatTokens } from './format.js';
 import type { SessionViewState, ToolCallView, TurnSummary } from './session-view-model.js';
 
@@ -81,4 +84,22 @@ export function formatSessionFooter(state: SessionViewState): string {
     `${state.turnCount} ${state.turnCount === 1 ? 'turn' : 'turns'}`,
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
+}
+
+/** The footer including the active chat mode (ADR-0057) — the mode is always shown so `auto` is never hidden. */
+export function formatSessionFooterWithMode(state: SessionViewState, mode: ChatMode): string {
+  const base = formatSessionFooter(state);
+  const modePart = `${MODE_LABEL[mode]} mode`;
+  return base.length > 0 ? `${base} · ${modePart}` : modePart;
+}
+
+/**
+ * The secret-free target line for an approval prompt — the resolved path / command / host from the preview
+ * (the registry already stripped any secret / query string). Sanitized for display; empty when the action
+ * class carries no pre-dispatch target (e.g. `web_search` / `mcp_call`, where the action class alone is shown).
+ */
+export function formatApprovalTarget(request: ToolApprovalRequest): string {
+  const { path, command, host } = request.preview;
+  const target = path ?? command ?? host ?? '';
+  return target.length > 0 ? sanitizeInline(target) : '';
 }

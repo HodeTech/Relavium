@@ -19,6 +19,7 @@ import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession,
@@ -764,7 +765,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('write_file in a chat session fail-closes as tool_unavailable (chat is read-only until 2.5.E)', async () => {
+  it('write_file in a chat session is DENIED by the ask-mode approval floor (2.5.E) — no file on disk', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
@@ -773,6 +774,17 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
       ]),
     });
+    // The chat host is now WRITE-capable (chat-read-write); safety rests on the mode's fail-closed approval
+    // regime the REPL activates before any turn. Apply the default `ask` mode here so this reflects production:
+    // `ask` denies every governed dispatch (two-layer — the advertise-filter also hides write_file, but the
+    // scripted model calls it anyway, so the confirm floor is what denies it).
+    const env = makeChatModeEnv({
+      session: built.session,
+      tools: built.tools,
+      workspaceDir: workspace,
+      prompt: () => Promise.resolve({ outcome: 'reject' }),
+    });
+    applyChatMode(env, 'ask');
     built.session.start();
     await built.session.sendMessage('write a file');
     built.session.cancel();
@@ -780,17 +792,17 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_unavailable', // the read-only fs writeFile fail-closed (EA1)
+      'tool_denied', // the ask-mode confirm floor denied the governed write (ADR-0057 EA3)
     );
-    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // it fail-closed BEFORE any write — no file on disk
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 
-  it('the advertise-filter drops an unwired tool from the EFFECTIVE grant; the original keeps it', async () => {
+  it('the advertise-filter keeps http_request now that egress is wired (chat-read-write, 2.5.E)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const { providers, requests } = capturingResolver([textTurn('hi')]);
     const built = await build({
       cwd: workspace,
-      agentRef: writeAgent(['read_file', 'http_request']), // http_request needs egress — NOT wired in 2.5.A
+      agentRef: writeAgent(['read_file', 'http_request']), // egress IS wired in the full-capability chat host
       providers,
     });
     built.session.start();
@@ -800,7 +812,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
 
     const advertised = (requests[0]?.tools ?? []).map((t) => t.name);
     expect(advertised).toContain('read_file'); // fs wired ⇒ advertised
-    expect(advertised).not.toContain('http_request'); // egress unwired ⇒ NOT advertised
+    expect(advertised).toContain('http_request'); // egress wired now ⇒ advertised (was dropped in 2.5.A)
     expect(built.agent.tools).toEqual(['read_file', 'http_request']); // the ORIGINAL keeps the author's grant
   });
 });

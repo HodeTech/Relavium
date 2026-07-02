@@ -118,6 +118,12 @@ export interface BuiltChatSession {
   /** The frozen session context (working dir + fs-scope tier) the session ran against. */
   readonly context: SessionContext;
   /**
+   * The EFFECTIVE granted tool defs the session runs with (built-ins + discovered MCP) — the REPL derives the
+   * chat-mode governed hide-set from these ([chat-mode-host.ts](chat-mode-host.ts), ADR-0057). Exposed here so
+   * the fresh + resumed paths both build the mode environment from the SAME def set the registry dispatches.
+   */
+  readonly tools: readonly ToolDef[];
+  /**
    * Push a SURFACE-originated session event onto the same per-session bus (so it shares the monotonic
    * `sequenceNumber` of the live stream). Used by the in-REPL `/export` to emit `session:exported` under
    * `--json`; the bus stamps the `sessionId`/`sequenceNumber`/`timestamp`.
@@ -165,12 +171,13 @@ function buildSessionRuntime(
   const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
-  // 2.5.A (ADR-0055): the shared factory wires the READ-ONLY chat host (fs read+list, process for the
-  // pre-approved git_status) jailed to the session's fs-scope tier AND the chat-default `ToolPolicy`. Building
-  // it is pure construction (no I/O), so we always assemble it for the policy even when a test injects its own
-  // `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion); production also takes its host.
+  // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
+  // os) jailed to the session's fs-scope tier. Safety rests on the mode's per-tool APPROVAL floor, not on
+  // capability absence — the REPL activates the fail-closed `confirmAction` regime via `applyChatMode` (default
+  // `ask` denies every governed action). Building it is pure (no I/O), so we always assemble it for the policy
+  // even when a test injects its own `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion).
   const factoryEnv = assembleToolEnv({
-    profile: 'chat-read-only',
+    profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
   });
@@ -255,6 +262,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
@@ -400,6 +408,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      tools: deps.tools,
       emitSessionEvent: emit,
       resumeState,
       nextSequenceNumber,

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ToolApprovalRequest } from '@relavium/core';
+
 import {
+  formatApprovalTarget,
   formatSessionFooter,
+  formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
   stripTerminalControls,
@@ -107,6 +111,36 @@ describe('chat-projection', () => {
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(footer).not.toMatch(/[\x00-\x1f\x7f]/);
       expect(footer.startsWith('evil model · ')).toBe(true); // escapes stripped; newline collapsed
+    });
+  });
+
+  describe('formatSessionFooterWithMode', () => {
+    it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
+      const state = { ...initialSessionViewState(), turnCount: 2 };
+      expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
+      expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept edits mode$/);
+      expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);
+    });
+  });
+
+  describe('formatApprovalTarget', () => {
+    const req = (preview: ToolApprovalRequest['preview']): ToolApprovalRequest => ({
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview,
+    });
+    it('surfaces the resolved path / command / host from the preview', () => {
+      expect(formatApprovalTarget(req({ path: 'notes.md' }))).toBe('notes.md');
+      expect(formatApprovalTarget(req({ command: 'git commit' }))).toBe('git commit');
+      expect(formatApprovalTarget(req({ host: 'example.com' }))).toBe('example.com');
+    });
+    it('is empty when the preview carries no target (web_search / mcp_call)', () => {
+      expect(formatApprovalTarget(req({}))).toBe('');
+    });
+    it('sanitizes the target so a preview value cannot inject control sequences', () => {
+      const target = formatApprovalTarget(req({ path: '\x1b[31mx\x07\nname' }));
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(target).not.toMatch(/[\x00-\x1f\x7f]/);
     });
   });
 
