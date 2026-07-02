@@ -182,17 +182,37 @@ describe('createNodeFsCapability — read (jailed)', () => {
     expect((await fs.readFile('lib.txt', {})).content).toBe('LIB');
   });
 
-  itPosix('EXEMPTS a node_modules (package-store) hard link from the aliasing guard — pnpm reads work, cross-OS', async () => {
-    // pnpm hard-links package files from a shared store (nlink>1 on Linux). A cross-boundary hard link cannot be
-    // planted under node_modules without code execution that already defeats the sandbox, so the aliasing READ
-    // guard exempts a node_modules segment — the dependency-source read succeeds (and behaves the same on macOS,
-    // where pnpm clones ⇒ nlink==1). The out-of-workspace target stands in for the shared content store.
+  itPosix('EXEMPTS a pnpm virtual-store hard link (node_modules/.pnpm/…) from the aliasing guard — pnpm reads work', async () => {
+    // pnpm hard-links package files into node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>/… (nlink>1 on Linux).
+    // The aliasing READ guard is disabled ONLY for that virtual-store layout, so a dependency-source read there
+    // succeeds. The out-of-workspace target stands in for pnpm's shared content store.
     await writeFile(join(outside, 'store-index.js'), 'module.exports = 1');
-    await mkdir(join(workspace, 'node_modules', 'lib'), { recursive: true });
-    await link(join(outside, 'store-index.js'), join(workspace, 'node_modules', 'lib', 'index.js'));
-    expect((await sandboxed().readFile('node_modules/lib/index.js', {})).content).toBe(
-      'module.exports = 1',
+    const pkgDir = join(workspace, 'node_modules', '.pnpm', 'lib@1.0.0', 'node_modules', 'lib');
+    await mkdir(pkgDir, { recursive: true });
+    await link(join(outside, 'store-index.js'), join(pkgDir, 'index.js'));
+    expect(
+      (await sandboxed().readFile('node_modules/.pnpm/lib@1.0.0/node_modules/lib/index.js', {})).content,
+    ).toBe('module.exports = 1');
+  });
+
+  itPosix('STILL refuses a hard link under a plain node_modules dir (NO .pnpm) — the exemption is store-shape-scoped', async () => {
+    // A hard link an attacker names `node_modules/<anything>` (not the pnpm virtual store) is NOT exempt — the
+    // narrowed guard only trusts the node_modules/.pnpm adjacency, closing the attacker-named-dir bypass.
+    await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
+    await mkdir(join(workspace, 'node_modules', 'evil'), { recursive: true });
+    await link(join(outside, 'secret.txt'), join(workspace, 'node_modules', 'evil', 'data.bin'));
+    await expect(sandboxed().readFile('node_modules/evil/data.bin', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
     );
+  });
+
+  itPosix('EXEMPTS a pnpm-store hard link through the GLOB read path too (readGlob recomputes the exemption)', async () => {
+    await writeFile(join(outside, 'dep.ts'), 'export const x = 1');
+    const pkgDir = join(workspace, 'node_modules', '.pnpm', 'dep@1', 'node_modules', 'dep');
+    await mkdir(pkgDir, { recursive: true });
+    await link(join(outside, 'dep.ts'), join(pkgDir, 'index.ts'));
+    const result = await sandboxed().readFile('node_modules/.pnpm/**/*.ts', { glob: true });
+    expect(result.content).toContain('export const x = 1');
   });
 
   it('STILL refuses a credential dotfile under node_modules — the exemption is aliasing-only, not the name floor', async () => {
@@ -425,6 +445,18 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     expect(await readFile(join(outside, 'authorized_keys'), 'utf8')).toBe('original'); // never appended
   });
 
+  itPosix('the APPEND hard-link guard is unconditional — even the full tier / a store path is refused (no read-side carve-out)', async () => {
+    // The append guard has NO `full`-tier or pnpm-store exemption (unlike the read guard): appending MODIFIES the
+    // shared inode, a strictly worse outcome, so it is refused in every tier. Pin both directions of that asymmetry.
+    await writeFile(join(outside, 'target'), 'original');
+    await link(join(outside, 'target'), join(workspace, 'alias.txt'));
+    const fullTier = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    await expect(
+      fullTier.writeFile('alias.txt', 'x', { append: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    expect(await readFile(join(outside, 'target'), 'utf8')).toBe('original');
+  });
+
   itPosix(
     'refuses to APPEND to a FIFO WITHOUT blocking — a reader-less pipe fails closed, never hangs the process',
     async () => {
@@ -630,6 +662,23 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     await expect(sandboxed().readFile('.relavium/keys.json', {})).rejects.toBeInstanceOf(
       FsScopeDeniedError,
     );
+  });
+
+  it('folds the read floor like the write floor — a case variant (`.SSH/`) is still refused', async () => {
+    await mkdir(join(workspace, '.SSH'), { recursive: true });
+    await writeFile(join(workspace, '.SSH', 'id_rsa'), 'KEY');
+    await expect(sandboxed().readFile('.SSH/id_rsa', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+  });
+
+  it('refuses the git XDG credential store `git/credentials` (bare `credentials` under a `git` dir)', async () => {
+    await mkdir(join(workspace, 'git'), { recursive: true });
+    await writeFile(join(workspace, 'git', 'credentials'), 'https://u:tok@h');
+    await expect(sandboxed().readFile('git/credentials', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    // a bare `credentials` NOT under a git dir is not floored (avoids over-blocking an unrelated file).
+    await writeFile(join(workspace, 'credentials'), 'not-a-secret');
+    expect((await sandboxed().readFile('credentials', {})).content).toBe('not-a-secret');
   });
 
   it('refuses a symlink whose REALPATH resolves INTO a sensitive store (the floor runs on the realpath)', async () => {

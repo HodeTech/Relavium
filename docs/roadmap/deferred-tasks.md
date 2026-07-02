@@ -510,6 +510,19 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   session-budget follow-up above. *(medium · apps/cli/src/chat + agent-session.ts)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
   workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
+- [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
+  The hard-link aliasing READ guard (`st.nlink > 1` ⇒ refused) is disabled ONLY for pnpm's `node_modules/.pnpm/…`
+  virtual store (`isPnpmStorePath`), so dependency-source reads work on Linux (where pnpm hard-links). The bounded
+  residual: a **compromised dependency** (a malicious postinstall, or a hard-link path-traversal in the extractor —
+  the node-tar CVE class) could plant a cross-boundary hard link UNDER `node_modules/.pnpm/` that a later read would
+  follow; the same actor already has local RCE, and the sensitive-read floor still refuses a NAMED secret store even
+  there. A future opt-out (`allow_aliased_reads` config, or resolving the inode's other name against a tool-known
+  pnpm store root) would let a stricter deployment disable even this. *(low · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **fs `.relavium` sensitive-read/write segment vs. the `~/.relavium/tmp` sandboxed root (latent).** Both the
+  read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
+  segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires
+  `tmpDir`). Resolve (home-anchored match, or exclude the wired tmp root) before any caller passes `tmpDir`.
+  *(low · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
 
 ## Phase-2 CLI (2.D) follow-ups
 

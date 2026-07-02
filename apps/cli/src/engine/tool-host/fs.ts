@@ -137,22 +137,34 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
  * ------------------------------------------------------------------------------------------------ */
 
 /**
- * A package-manager store path (any `node_modules` segment). pnpm/npm hard-link package files from a shared
- * content store, so those files legitimately carry `nlink > 1` on Linux/ext4 (macOS/APFS clones them instead ⇒
- * `nlink == 1`). The hard-link aliasing READ guard exempts a store path: a cross-boundary hard link there cannot
- * be planted without code execution that already defeats the sandbox (a git clone / tarball cannot carry a hard
- * link to an out-of-tree path), the local-first trust model owns the workspace, and the sensitive-read floor
- * still refuses a named secret store even UNDER `node_modules`. This keeps the exfiltration guard everywhere else
- * while making a dependency-source read work — and behave the SAME across Linux and macOS.
+ * Whether `real` sits inside **pnpm's virtual store** — a `node_modules/.pnpm/…` adjacency. pnpm is the one
+ * package manager that hard-links package files from a content-addressable store, and those hard links live ONLY
+ * under `node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>/…` (a top-level `node_modules/<pkg>` is a symlink INTO
+ * `.pnpm`, which the jail's realpath resolves to this same store path before the check). npm/yarn-classic copy
+ * files (`nlink == 1`) and never need this; macOS/APFS pnpm clones (`nlink == 1`) so the guard is a no-op there.
+ *
+ * SECURITY (narrowed after the ADR-0057 review): the hard-link aliasing read guard is disabled ONLY for this
+ * specific store layout — NOT for any `node_modules` segment (an earlier, too-broad form let an attacker-named
+ * `node_modules/<anything>` hard link exfiltrate). The residual is deliberate and bounded: reaching under
+ * `node_modules/.pnpm/` to plant a cross-boundary hard link requires a COMPROMISED DEPENDENCY in the tree (a
+ * malicious postinstall, or a hard-link path-traversal in the extractor — the node-tar CVE class), at which point
+ * the same actor already has local RCE; a benign git clone / normal tarball cannot carry such a link. We accept
+ * this to keep dependency-source reads working (a core coding-agent flow) rather than blocking every pnpm read on
+ * Linux; the sensitive-read floor still refuses a NAMED secret store even under the store. Tracked for the
+ * ADR-0057 security-review record in docs/roadmap/deferred-tasks.md.
  */
-function isPackageStorePath(absolutePath: string): boolean {
-  return absolutePath.split(sep).some((segment) => segment === 'node_modules');
+function isPnpmStorePath(absolutePath: string): boolean {
+  const folded = absolutePath.split(sep).map(foldPathComponent);
+  for (let i = 0; i + 1 < folded.length; i += 1) {
+    if (folded[i] === 'node_modules' && folded[i + 1] === '.pnpm') return true;
+  }
+  return false;
 }
 
 /** Whether the hard-link aliasing read guard applies to `real`: ON for the jailed tiers, OFF for the unjailed
- * `full` tier and for a package-store path ({@link isPackageStorePath}). */
+ * `full` tier and for pnpm's virtual store ({@link isPnpmStorePath}). */
 function rejectAliasedRead(config: NodeFsCapabilityConfig, real: string): boolean {
-  return config.tier !== 'full' && !isPackageStorePath(real);
+  return config.tier !== 'full' && !isPnpmStorePath(real);
 }
 
 async function readOne(
@@ -183,7 +195,7 @@ async function readOne(
   }
   if (result.kind === 'aliased') {
     throw new FsScopeDeniedError(
-      'read_file: refusing to read a hard-linked file — its content may be shared with a file outside the sandbox (package-store links under node_modules are exempt)',
+      'read_file: refusing to read a hard-linked file — its content may be shared with a file outside the sandbox (only pnpm virtual-store links under node_modules/.pnpm are exempt)',
     );
   }
   if (result.kind === 'binary') {
@@ -482,13 +494,17 @@ export function isSensitiveReadPath(absoluteTarget: string): boolean {
   // A git `config` embeds remote-URL credentials: catch it under a `.git` dir (repo / submodule `.git/modules/*`
   // / worktree) AND under a bare-repo dir (`myrepo.git/config`) — any segment ENDING in `.git` with a `config`
   // basename. Over-denying a stray `x.git/config` that isn't a repo is the safe direction for a read floor.
+  const base = foldPathComponent(basename(absoluteTarget));
   if (
-    foldPathComponent(basename(absoluteTarget)) === 'config' &&
+    base === 'config' &&
     folded.some((segment) => segment === '.git' || segment.endsWith('.git'))
   ) {
     return true;
   }
-  return SENSITIVE_READ_BASENAMES.has(foldPathComponent(basename(absoluteTarget)));
+  // git's XDG credential store `$XDG_CONFIG_HOME/git/credentials` — same plaintext `user:TOKEN@host` lines as
+  // `.git-credentials`, but the basename is a bare `credentials` under a `git` dir (no leading dot).
+  if (base === 'credentials' && folded.includes('git')) return true;
+  return SENSITIVE_READ_BASENAMES.has(base);
 }
 
 /** Deny a read of a secret/credential store (`.ssh`/`.relavium`, a git `config`, a credential dotfile). FATAL. */
