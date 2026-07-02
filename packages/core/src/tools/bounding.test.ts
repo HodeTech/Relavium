@@ -1,7 +1,12 @@
 import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import { boundForModel, utf8ByteLength } from './bounding.js';
+import {
+  boundForModel,
+  redactSecretShapedText,
+  redactSecretShapedValue,
+  utf8ByteLength,
+} from './bounding.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 const BIG: ToolResultLimits = { maxBytes: 50_000, maxLines: 2000 };
@@ -214,5 +219,168 @@ describe('boundForModel', () => {
   it('leaves a Date / Map result rendered natively (not collapsed to {} by the redaction walk)', async () => {
     const date = await boundForModel({ at: new Date('2026-06-19T00:00:00.000Z') }, BIG, host());
     expect(date.summary).toContain('2026-06-19'); // Date → ISO string via JSON.stringify, not {}
+  });
+
+  it('scrubs a secret-shaped value from the summary (outputSummary) but keeps the model-facing value', async () => {
+    // A read_clipboard / egress-body / .env-style result carrying a live token must not ride outputSummary
+    // (→ agent:tool_result.outputSummary → the --json stream). The model-facing value keeps the real bytes.
+    const result = `export API_KEY=sk-${'abcdef0123456789abcdef'} and Authorization: Bearer tok${'_live_9f8e7d6c5b4a'}`;
+    const bounded = await boundForModel(result, BIG, host());
+    expect(bounded.summary).not.toContain('sk-' + 'abcdef0123456789abcdef');
+    expect(bounded.summary).not.toContain('tok_live_9f8e7d6c5b4a');
+    expect(bounded.summary).toContain('[redacted]');
+    expect(bounded.value).toBe(result); // the model still sees the real content
+  });
+
+  it('scrubs the summary even when the result is TRUNCATED — the preview (model-facing) keeps the bytes', async () => {
+    const secret = 'sk-' + 'abcdef0123456789abcdef';
+    const spill = vi.fn(() => Promise.resolve({ ref: 'run://spill/1', byteLength: 2048 }));
+    const bounded = await boundForModel(
+      `${secret} ${'z'.repeat(2000)}`,
+      TINY,
+      host({ outputStore: { spill } }),
+    );
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.summary).not.toContain(secret); // outputSummary is scrubbed (derived from the full text)
+  });
+});
+
+describe('redactSecretShapedText', () => {
+  it('redacts Authorization schemes, secret=value pairs, and known token shapes', () => {
+    // `Authorization: Bearer <tok>` is caught by BOTH the scheme pattern and the `authorization=value` pattern;
+    // the over-redaction is the safe direction — assert the token is gone, not an exact shape.
+    const authScrubbed = redactSecretShapedText('Authorization: Bearer abcdef123456789');
+    expect(authScrubbed).not.toContain('abcdef123456789');
+    expect(authScrubbed).toContain('[redacted]');
+    expect(redactSecretShapedText('db_password=hunter2secret')).toBe('[redacted]');
+    const apiKey = redactSecretShapedText('MY_API_KEY = "sk-' + 'XYZ12345abcdef"');
+    expect(apiKey).not.toContain('sk-' + 'XYZ12345abcdef');
+    expect(apiKey).toContain('[redacted]');
+    expect(redactSecretShapedText('token AKIA' + 'IOSFODNN7EXAMPLE here')).toContain('[redacted]');
+    expect(redactSecretShapedText('ghp' + '_0123456789abcdef0123456789abcdefABCD')).toBe(
+      '[redacted]',
+    );
+  });
+
+  it('redacts the JSON `"key":"value"` shape — an OAuth / egress response body', () => {
+    for (const s of [
+      '{"access_token":"a1b2c3d4e5f6g7h8"}',
+      '{"client_secret":"shhhhhhhhhh"}',
+      '{ "api_key": "sk-' + 'value-here-1234" }',
+    ]) {
+      expect(redactSecretShapedText(s)).toContain('[redacted]');
+    }
+    expect(redactSecretShapedText('{"access_token":"a1b2c3d4e5f6g7h8"}')).not.toContain(
+      'a1b2c3d4e5f6g7h8',
+    );
+  });
+
+  it('redacts a QUOTED multi-word passphrase WHOLE — no interior-space tail leak', () => {
+    // The value must be consumed through the closing quote, not stopped at the first space.
+    const out = redactSecretShapedText('{"password":"hunter2 dragon rider"}');
+    expect(out).not.toContain('dragon');
+    expect(out).not.toContain('rider');
+  });
+
+  it('redacts a PEM private-key block (space-separated markers the key-pattern cannot see)', () => {
+    const pem = [
+      '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----',
+      'b3BlbnNzaC1r' + 'ZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAA',
+      'MIIEvQIBADAN' + 'BgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ',
+      '-----END ' + 'OPENSSH PRIVATE KEY-----',
+    ].join('\n');
+    const out = redactSecretShapedText(`key material:\n${pem}\ndone`);
+    expect(out).toContain('[redacted]');
+    expect(out).not.toContain('MIIEvQ' + 'IBADAN');
+    expect(out).not.toContain('b3Blbn' + 'NzaC1r');
+  });
+
+  it('redacts every standalone token PREFIX shape (locks the extended alternation against a typo)', () => {
+    const tokens = [
+      'sk-' + 'abcdef0123456789ABCDEF',
+      'sk' + '_live_abcdef0123456789ABCD',
+      'AKIA' + 'IOSFODNN7EXAMPLE',
+      'ASIA' + 'IOSFODNN7EXAMPLE',
+      'ghp' + '_0123456789abcdef0123456789abcdefABCD',
+      'github' + '_pat_0123456789abcdefABCDEF_more',
+      'glpat' + '-0123456789abcdefABCD',
+      'xoxb' + '-0123456789-abcdefABCDEF',
+      'AIza' + 'SyA0123456789abcdefABCDEF0123456789',
+      'ya29' + '.a0AbCdEf0123456789_-abcdef',
+      'hf' + '_0123456789abcdefABCDEFGHIJ',
+      'npm' + '_0123456789abcdefABCDEFGHIJ',
+      'eyJ' + 'hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY.SflKxwRJSMeKKF2QT4',
+    ];
+    for (const tok of tokens) {
+      expect(redactSecretShapedText(`value ${tok} end`)).not.toContain(tok);
+    }
+  });
+
+  it('fully covers ADJACENT / EMBEDDED multi-credential runs (no raw token survives — regression pin)', () => {
+    // The single-alternation matcher must cover a run of back-to-back / nested credential shapes as ONE
+    // leftmost-longest span. A per-family MULTI-PASS split leaves a trailing shape EXPOSED here: an earlier
+    // pass inserts `[redacted]` (a `[`), truncating a later family's greedy match. These two inputs are the
+    // exact witnesses that split form leaked — they must redact whole (no raw substring left behind).
+    const jwtWithInnerSk =
+      'eyJ' + 'hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig-sk-ABCDEFGHIJKLMNOPqr';
+    expect(redactSecretShapedText(jwtWithInnerSk)).toBe('[redacted]');
+    const slackWithInnerGlpat = 'xoxb' + '-0000000000-glpat-' + 'A'.repeat(16);
+    const out = redactSecretShapedText(slackWithInnerGlpat);
+    expect(out).toBe('[redacted]');
+    expect(out).not.toContain('glpat-'); // no fragment of the embedded token survives
+  });
+
+  it('leaves ordinary text (and short non-secret values) intact', () => {
+    expect(redactSecretShapedText('the quick brown fox')).toBe('the quick brown fox');
+    expect(redactSecretShapedText('count = 42')).toBe('count = 42'); // not a secret-ish key
+  });
+
+  it('over-redaction is the safe direction — a benign `token: <long>` is swept up (documented tradeoff)', () => {
+    // A DISPLAY-field false positive is acceptable (the model's copy is untouched). This pins the deliberate
+    // over-redaction so a future "tighten precision" change is a conscious test edit, not a silent secret leak.
+    expect(redactSecretShapedText('token abcdefghijklmnop')).toContain('[redacted]');
+  });
+
+  it('is ReDoS-safe on a value-ENGAGING input AND fully redacts it (timing + correctness)', () => {
+    // Drives BOTH the scheme-token run (200k) and a long quoted value (50k) — the machinery a quadratic pattern
+    // blows up on. The correctness assertions catch a quantifier-narrowing regression that would leak the tail
+    // (a pure timing bound would pass such a regression — it runs FASTER, not slower).
+    const evil = `Authorization: Bearer ${'a'.repeat(200_000)} my_secret="${'x'.repeat(50_000)}"`;
+    const started = performance.now();
+    const out = redactSecretShapedText(evil);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone
+    expect(out).not.toContain('x'.repeat(100)); // the long quoted value tail is gone
+  });
+});
+
+describe('redactSecretShapedValue', () => {
+  it('scrubs string values at any nesting, keeping normal object keys (header names) intact', () => {
+    const input = {
+      url: 'https://api.example.com/x?api_key=sk-' + 'secret9876543210',
+      headers: { Authorization: 'Bearer tok_abcdef123456', 'X-Trace': 'keep-me' },
+      body: 'client_secret=shhhhhhhhhh',
+    };
+    // `redactSecretShapedValue` returns `unknown`; assert the whole shape with `toEqual` — no unsafe cast. This
+    // also pins that a non-secret header NAME (`Authorization`, `X-Trace`) survives the key scrub untouched.
+    expect(redactSecretShapedValue(input)).toEqual({
+      url: 'https://api.example.com/x?[redacted]',
+      headers: { Authorization: 'Bearer [redacted]', 'X-Trace': 'keep-me' },
+      body: '[redacted]',
+    });
+  });
+
+  it('scrubs a secret-SHAPED object key too (not just values)', () => {
+    const secretKey = 'glpat-' + 'A'.repeat(20); // a GitLab-PAT-shaped KEY, built split (Leakwatch policy)
+    expect(redactSecretShapedValue({ [secretKey]: 'v', normalKey: 'keep' })).toEqual({
+      '[redacted]': 'v',
+      normalKey: 'keep',
+    });
+  });
+
+  it('is cycle-safe', () => {
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic['self'] = cyclic;
+    expect(() => redactSecretShapedValue(cyclic)).not.toThrow();
   });
 });

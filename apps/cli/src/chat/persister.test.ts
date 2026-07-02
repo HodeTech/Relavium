@@ -236,6 +236,31 @@ describe('createSessionPersister', () => {
     expect(full?.session.status).toBe('active');
   });
 
+  it('persists NO messages for a mid-turn ABORTED turn (EA7), then the next turn persists cleanly', async () => {
+    // An aborted turn (stopReason:'aborted', error:undefined — ADR-0057) is rolled back by the engine just
+    // like an error turn, so the persister must NOT write its rows: gating only on `error === undefined`
+    // would orphan the user message in history.db (no in-memory counterpart on chat-resume).
+    const { built, persister } = await setup(scriptedResolver([textTurn('kept-reply')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('abort me');
+    const p = built.session.sendMessage('abort me');
+    built.session.abort(); // mid-turn abort (pre-egress → the turn settles 'aborted', no provider script used)
+    await p;
+    expect(store.loadFull('sess-1')?.messages).toHaveLength(0); // the aborted turn left no rows
+
+    // pendingUserText was reset by the aborted turn, so the next successful turn persists cleanly.
+    persister.beginUserTurn('kept');
+    await built.session.sendMessage('kept');
+    const full = store.loadFull('sess-1');
+    expect(full?.messages).toHaveLength(2); // ONLY the kept turn's user + assistant
+    expect(textOf(full?.messages[0]?.content ?? [])).toBe('kept'); // user
+    expect(textOf(full?.messages[1]?.content ?? [])).toBe('kept-reply'); // assistant (the first script)
+    // The title is derived from the first COMPLETED exchange, never the aborted prompt ('abort me') whose rows
+    // were rolled back — so a session's label always has a transcript behind it.
+    expect(full?.session.title).toBe('kept');
+  });
+
   it('marks the session ended on cancel (its sole terminal), leaving it resumable', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();

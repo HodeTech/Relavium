@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { assembleToolEnv, wiredToolIds } from './assemble.js';
 
 /**
- * The factory is the single seam both surfaces use (ADR-0055). These tests pin the two profiles' wired arms +
- * the read-only fail-close, and the advertise-filter's tool→arm mapping (the subtle MCP-vs-egress case).
+ * The factory is the single seam both surfaces use (ADR-0055). These tests pin the three profiles' wired arms
+ * (read-only chat, the full-capability `chat-read-write` host that closes the 2.5.E egress/os deferral, and the
+ * author-trusted run host), the read-only fail-close, the chat-tier clamp, and the advertise-filter's tool→arm
+ * mapping (the subtle MCP-vs-egress case).
  */
 
 let workspace: string;
@@ -49,14 +51,69 @@ describe('assembleToolEnv', () => {
     expect((await fs.readFile('out.txt', {})).content).toBe('data');
   });
 
-  it('does NOT wire egress or os in 2.5.A (deferred to 2.5.E)', () => {
-    const { host } = assembleToolEnv({
-      profile: 'workflow-read-write',
+  it('does NOT wire egress or os for the read-only chat or the workflow-run profile', () => {
+    for (const profile of ['chat-read-only', 'workflow-read-write'] as const) {
+      const { host } = assembleToolEnv({
+        profile,
+        fsScopeTier: 'sandboxed',
+        workspaceDir: workspace,
+      });
+      expect(host.egress).toBeUndefined();
+      expect(host.os).toBeUndefined();
+    }
+  });
+
+  it('chat-read-write: the full-capability host wires fs-write + process + egress + os (ADR-0057)', async () => {
+    const { host, policy } = assembleToolEnv({
+      profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
     });
-    expect(host.egress).toBeUndefined();
-    expect(host.os).toBeUndefined();
+    expect(host.fs).toBeDefined();
+    expect(host.process).toBeDefined();
+    expect(host.egress).toBeDefined(); // the egress arm — gated by the ADR-0057 approval floor at the session
+    expect(host.os).toBeDefined(); // the os arm (clipboard/notify) — non-governed, gated by the advertise-filter
+    // fs is write-capable (readOnly:false) — its writes are gated by the approval floor + protected-paths, not
+    // by capability absence; a plain in-workspace write succeeds at the host layer.
+    const written = await host.fs!.writeFile('w.txt', 'data', {});
+    expect(written.bytesWritten).toBe(4);
+    expect(policy).toEqual({});
+  });
+
+  it('chat-read-write: clamps the `full` tier to `project` (a write-capable chat still cannot read whole-FS)', async () => {
+    const outside = join(workspace, '..', 'outside-rw-clamp');
+    await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'secret.txt'), 'SECRET');
+    try {
+      const { host } = assembleToolEnv({
+        profile: 'chat-read-write',
+        fsScopeTier: 'full',
+        workspaceDir: workspace,
+      });
+      await expect(host.fs!.readFile(join(outside, 'secret.txt'), {})).rejects.toThrow();
+    } finally {
+      await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('chat-read-write: threads the egress credentialRef resolver into the egress arm (host-side bearer)', async () => {
+    let resolvedRef: string | undefined;
+    const { host } = assembleToolEnv({
+      profile: 'chat-read-write',
+      fsScopeTier: 'sandboxed',
+      workspaceDir: workspace,
+      egressCredentialResolver: (ref) => {
+        resolvedRef = ref;
+        return Promise.resolve(undefined);
+      },
+    });
+    // A fetch to a non-resolving public host fails (no network in the unit env) AFTER consulting the resolver;
+    // we only assert the resolver was threaded, not the (environment-dependent) network outcome.
+    await host
+      .egress!.fetch({ method: 'GET', url: 'https://example.test/x', credentialRef: 'kc:search' })
+      .catch(() => undefined);
+    expect(resolvedRef).toBe('kc:search');
   });
 
   it('clamps the `full` tier to `project` for chat (read-only does not stop whole-FS exfiltration)', async () => {
@@ -118,6 +175,16 @@ describe('wiredToolIds (advertise-filter)', () => {
     expect(kept).toEqual(['read_file']); // egress not wired ⇒ http_request / web_search not advertised
   });
 
+  it('keeps egress (http/search) tools on the full-capability chat-read-write host', () => {
+    const fullHost: ToolHost = assembleToolEnv({
+      profile: 'chat-read-write',
+      fsScopeTier: 'sandboxed',
+      workspaceDir: '/tmp/relavium-advertise-full',
+    }).host;
+    const kept = wiredToolIds(['read_file', 'http_request', 'web_search'], fullHost, defs);
+    expect(kept).toEqual(['read_file', 'http_request', 'web_search']); // egress wired ⇒ all advertised
+  });
+
   it('keeps write_file because its fs arm is present (the read-only writeFile fail-closes at dispatch instead)', () => {
     // The advertise-filter is capability-presence based; the read-only fs writeFile is the authoritative gate.
     expect(wiredToolIds(['write_file'], fsHost, defs)).toEqual(['write_file']);
@@ -133,5 +200,15 @@ describe('wiredToolIds (advertise-filter)', () => {
 
   it('keeps an unknown granted id (a dynamically-registered tool resolved elsewhere)', () => {
     expect(wiredToolIds(['not_a_builtin'], fsHost, defs)).toEqual(['not_a_builtin']);
+  });
+
+  it('keeps os tools (read_clipboard/notify) even when host.os is absent — the EA1 backstop is their gate', () => {
+    // OS_POLICY carries no arm class (no fsScoped/spawnsProcess/egress), so requiredArmPresent falls through to
+    // keep them: the advertise-filter is best-effort for os tools and the dispatch tool_unavailable backstop
+    // (EA1) is their authoritative gate. `fsHost` has no `os` arm, yet both are still advertised.
+    expect(wiredToolIds(['read_clipboard', 'notify'], fsHost, defs)).toEqual([
+      'read_clipboard',
+      'notify',
+    ]);
   });
 });

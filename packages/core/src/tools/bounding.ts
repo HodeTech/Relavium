@@ -129,6 +129,88 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   return out;
 }
 
+/**
+ * Redact secret-SHAPED substrings from a text projection bound for an **observability field** (the event
+ * `outputSummary` / `toolInput`) — NOT the model-facing value (the model must still see the real tool result
+ * and its own args). A model can put a live credential in an `http_request` header/body, and a tool result can
+ * carry one (a `read_clipboard`, an egress response body, a `.env` read); either would otherwise ride the
+ * `--json` machine stream (ADR-0049) / a log verbatim. High-recall and deliberately conservative (a false
+ * positive redacts a non-secret in a DISPLAY field only — never the model's copy): it targets `Authorization`
+ * schemes, `…secret…=value` pairs, and well-known token shapes (OpenAI/AWS/GitHub/Slack/Google/JWT). Every
+ * pattern is LINEAR — bounded repetition + single character classes, no nested quantifiers — per the engine's
+ * no-backtracking-RegExp / no-ReDoS posture.
+ */
+export function redactSecretShapedText(text: string): string {
+  return (
+    text
+      // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
+      // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
+      .replace(
+        /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,20000}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
+        '[redacted]',
+      )
+      // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
+      // `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`).
+      .replace(/\b(bearer|basic|token)\s+[\w.~+/-]{8,}={0,2}/gi, '$1 [redacted]')
+      // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
+      // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
+      // value has two branches: a QUOTED value consumes lazily through the FIRST matching closing quote (so a
+      // passphrase with interior spaces — `"hunter2 dragon"` — is redacted whole, however long, not just up to
+      // the first space), bounded by the line (`[^\r\n]`); an UNQUOTED value runs to the next whitespace/
+      // delimiter. Lazy `*?` with a single-class body + a fixed backref is linear (finds the first close) ⇒
+      // ReDoS-safe. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
+      // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
+      // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
+      .replace(
+        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:(["'])[^\r\n]*?\1|[^\s"',;&]{6,})/gi,
+        '[redacted]',
+      )
+      // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
+      // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
+      // single leftmost-longest scan is required so two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
+      // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) are covered by the outer greedy match
+      // as a single span. A per-family MULTI-PASS split is NOT equivalent — an earlier pass inserting `[redacted]`
+      // (a non-word `[`) truncates a later family's greedy match and can leave a trailing secret-shaped substring
+      // EXPOSED (a real redaction regression, pinned in bounding.test.ts). So this stays a single analyzable
+      // LITERAL and its Sonar per-regex complexity is a deliberate, documented exception — the same trade-off as
+      // the key=value pattern above: correctness of a security redactor + Sonar's static ReDoS (S5852) coverage
+      // outrank the metric. `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
+      // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
+      .replace(
+        /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[\w-]{30,}|ya29\.[\w-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{6,})/g,
+        '[redacted]',
+      )
+  );
+}
+
+/**
+ * Walk an arbitrary value applying {@link redactSecretShapedText} to every string, leaving structure intact —
+ * the toolInput twin of the summary scrub. Applied to the `agent:tool_call.toolInput` event field so a
+ * model-set credential in a header VALUE / body / url-query never rides the observability stream. Object KEYS
+ * are scrubbed with the SAME detector as values (a normal header name — `Authorization`, `X-Trace` — is not
+ * secret-SHAPED, so it passes through unchanged; only a model that placed a live-token-shaped string in a KEY
+ * position is redacted, closing that leak path too). Cycle-safe; display-only.
+ */
+export function redactSecretShapedValue(value: unknown): unknown {
+  return redactSecretShapedWalk(value, new WeakSet<object>());
+}
+
+function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return redactSecretShapedText(value);
+  if (typeof value !== 'object' || value === null) return value;
+  if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactSecretShapedWalk(item, seen));
+  if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
+  const out: Record<string, unknown> = {};
+  // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
+  // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
+  for (const [key, item] of Object.entries(value)) {
+    out[redactSecretShapedText(key)] = redactSecretShapedWalk(item, seen);
+  }
+  return out;
+}
+
 /** Render any result to the text the model would see (a string is itself; else compact JSON). Inline
  *  media bytes are redacted first so the summary/spill/preview can never carry base64 (I3). */
 function toText(result: unknown): string {
@@ -154,9 +236,11 @@ function toText(result: unknown): string {
 
 function makeSummary(text: string): string {
   // Cap the scanned input so the whitespace-collapse never runs over an oversized result (the summary
-  // is bounded to SUMMARY_MAX regardless).
+  // is bounded to SUMMARY_MAX regardless). Scrub secret-shaped substrings BEFORE the length cap so a
+  // credential in the result (a read_clipboard, an egress body, a `.env` read) never rides `outputSummary`
+  // to the `--json` stream / a log (the model-facing value is untouched — this is the observability copy).
   const slice = text.length > SUMMARY_MAX * 8 ? text.slice(0, SUMMARY_MAX * 8) : text;
-  const oneLine = slice.replace(/\s+/g, ' ').trim();
+  const oneLine = redactSecretShapedText(slice.replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 

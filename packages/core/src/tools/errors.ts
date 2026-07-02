@@ -82,6 +82,32 @@ export type ToolPolicyDenyReason =
   | 'gate_required' // git_commit reached without a human-gate approval
   | 'media_scope_denied'; // read_media: the requesting scope is not in the handle's allowedScopes (ADR-0044 §1)
 
+/**
+ * A per-tool approval (ADR-0057 EA3) denied the dispatch — the user rejected it, or (fail-closed) the
+ * interactive-approval regime was active for a governed-class tool but no `confirm` hook was wired. Carries
+ * the **existing** `tool_denied` run code (already absent from `RETRYABLE_ERROR_CODES`), so a user denial is
+ * **fatal, never retried** (re-issuing the same call just re-prompts/re-denies — like a guardrail denial). A
+ * distinct class from {@link ToolPolicyError} (a guardrail/grant denial of the engine's OWN policy): this is
+ * the user's interactive consent verdict, with its own reason discriminant. The message is secret-free.
+ */
+export class ToolDeniedByUserError extends ToolDispatchError {
+  readonly code = 'tool_denied';
+  readonly runErrorCode: ErrorCode = 'tool_denied';
+  readonly retryable = false;
+  /** Why the dispatch was denied — a stable label, never an authored value. */
+  readonly reason: ToolApprovalDenyReason;
+
+  constructor(toolId: ToolId, reason: ToolApprovalDenyReason, message: string) {
+    super(message, toolId, undefined);
+    this.name = 'ToolDeniedByUserError';
+    this.reason = reason;
+  }
+}
+export type ToolApprovalDenyReason =
+  | 'user_rejected' // the user (or the host's mode policy) rejected the interactive approval prompt
+  | 'no_approval_hook' // fail-closed: the approval regime was active for a governed tool but no confirm hook was wired
+  | 'approval_error'; // fail-closed: the confirm hook itself threw (a non-abort fault), so consent could not be obtained
+
 /** The effective argument set failed the tool's validator or the secret-taint check. Field names only. */
 export class ToolArgsInvalidError extends ToolDispatchError {
   readonly code = 'invalid_args';

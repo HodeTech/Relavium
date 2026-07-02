@@ -1,5 +1,5 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import type { StopReason } from '@relavium/shared';
+import type { SessionStopReason } from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `relavium chat` ink REPL (workstream **2.M**) — the session
@@ -30,13 +30,16 @@ export interface ToolCallView {
 
 /** The per-turn summary shown after a completed assistant turn. */
 export interface TurnSummary {
-  readonly stopReason: StopReason;
+  // The SESSION stop-reason superset — the five LLM `StopReason`s plus `'aborted'` (the EA7 mid-turn abort,
+  // ADR-0057); a `session:turn_completed` can carry `'aborted'`, so this mirrors the event field exactly.
+  readonly stopReason: SessionStopReason;
   readonly tokensUsed: { readonly input: number; readonly output: number };
   readonly durationMs?: number;
   /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */
   readonly errorCode?: string;
-  /** The classified error message — kept for diagnostics, but NOT rendered (it may carry prompt context);
-   *  `formatTurnSummary` surfaces only `errorCode`. */
+  /** The classified error message. `formatTurnSummary` renders it ONLY for the vetted secret-free approval-floor
+   *  codes (`tool_denied` / `tool_unavailable`, whose message is a host-supplied label) — other codes' messages
+   *  may carry prompt context, so only `errorCode` is shown for them. */
   readonly errorMessage?: string;
 }
 
@@ -60,7 +63,11 @@ export interface SessionViewState {
   readonly liveToolCalls: readonly ToolCallView[];
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
   readonly cumulativeCostMicrocents: number;
-  /** Completed turns that engaged the provider (success or failure) — the chat-mode turn counter. */
+  /**
+   * The chat-mode turn counter — incremented on **every** `session:turn_completed` (success, failure, OR
+   * an EA7 `aborted` turn). This is a monotonic UI display count, distinct from the engine's hard-cap
+   * `#turnCount` (which counts only provider-engaged turns); a footer counter wants every attempted turn.
+   */
   readonly turnCount: number;
   /** The wall-clock (ms) of the in-flight turn's `session:turn_started`, for the completed-turn duration
    *  (required-nullable, not optional, so it can be reset to `undefined` between turns under
@@ -311,7 +318,10 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
       : { errorCode: event.error.code, errorMessage: event.error.message }),
   };
   const text = base.liveTokens;
-  const show = text.length > 0 || event.error !== undefined;
+  // Append an entry for a turn that produced text, that ERRORED, OR that was ABORTED (EA7) — so an Esc during
+  // an approval prompt (before any assistant text streamed) still leaves a visible trace ("aborted · …" via the
+  // summary), confirming the abort took effect rather than silently clearing the live region.
+  const show = text.length > 0 || event.error !== undefined || event.stopReason === 'aborted';
   const transcript = show
     ? appendTranscript(base.transcript, { role: 'assistant', text, summary })
     : base.transcript;

@@ -15,8 +15,18 @@ import {
   formatReplHelp,
   replCommandList,
   REPL_COMMANDS_BY_NAME,
+  type ReplCommand,
   type ReplCommandContext,
 } from './repl-commands.js';
+import {
+  CHAT_MODES,
+  MODE_DESCRIPTION,
+  MODE_LABEL,
+  parseMode,
+  type ApprovalPrompt,
+  type ChatMode,
+} from '../chat/chat-mode.js';
+import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import {
   buildChatSession,
@@ -108,6 +118,17 @@ export interface ChatDriveContext {
    * before `process.exit`. Absent ⇒ nothing to force-close.
    */
   readonly onForceExit?: () => Promise<void>;
+  /**
+   * Mid-turn abort (EA7, ADR-0057) — abort the in-flight turn but KEEP the session alive (distinct from
+   * `/cancel`, which is terminal). The ink driver wires `Esc` to this; a plain/JSON driver ignores it.
+   */
+  readonly onAbort?: () => void;
+  /**
+   * Switch the chat mode (ADR-0057) — updates the footer + re-applies the turn policy (advertise-filter +
+   * fail-closed approval regime) on the SAME session instance (no reseat). The ink driver wires `Shift+Tab`
+   * (cycle) + the `/mode` command to this. Absent on a driver that has no mode UI (the mode stays the default).
+   */
+  readonly onModeChange?: (mode: ChatMode) => void;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -381,14 +402,107 @@ interface ReplWiring {
  * loop), and on teardown emit the session's sole terminal (`session:cancelled`, idempotent) + close the
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
-/** The slash-aware line handler + the session's cancel/stop state. */
-export interface ChatLineHandler {
+/** The mode/abort control surface a driver wires to its keys + the `/mode` command (ADR-0057). */
+export interface ChatModeControl {
+  /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive. */
+  readonly onAbort: () => void;
+  /** Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). */
+  readonly onModeChange: (mode: ChatMode) => void;
+}
+
+/**
+ * Wire the reseat-less chat mode system (ADR-0057) for a built session — used by BOTH the `chat`/`chat-resume`
+ * REPL and the 2.5.B Home's in-process chat, so the full-capability host is NEVER live without the fail-closed
+ * approval regime. It builds the session-scoped mode env (the once/always cache, the governed hide-set from the
+ * effective tool defs, the workspace-anchored protected-path check; the interactive prompt IS the store's
+ * `requestApproval`) and **applies the initial mode immediately** — so the regime is active from the first turn
+ * (default `ask` denies every governed action). The returned `onModeChange` re-applies on a Shift+Tab / `/mode`.
+ */
+/**
+ * Whether the chat surface can answer an interactive approval prompt — the ink UI is mounted (stdout is a TTY
+ * AND not `--json`), the SAME condition `selectChatDriver` (render/tui/chat-ink.tsx) picks `driveInk` on. A
+ * non-interactive driver (plain non-TTY / `--json`) has nothing to answer `requestApproval`, so the mode control
+ * uses a reject-immediately prompt (no deadlock, High 9). Named + exported so the derivation is unit-locked.
+ */
+export function chatIsInteractive(
+  io: Pick<CliIo, 'stdoutIsTty'>,
+  global: Pick<GlobalOptions, 'json'>,
+): boolean {
+  return io.stdoutIsTty && !global.json;
+}
+
+export function createChatModeControl(
+  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context'>,
+  store: ChatStoreController,
+  opts?: { readonly interactive?: boolean },
+): ChatModeControl {
+  // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
+  // NON-interactive driver (plain non-TTY, or `--json`) NOTHING answers it — `store.requestApproval` would
+  // return an unanswerable promise and DEADLOCK the turn (High 9). So a non-interactive session uses a
+  // reject-immediately prompt: a governed dispatch in `accept-edits`/`auto` is denied (never a hang), mirroring
+  // the one-shot `agent run`. `interactive` defaults true (the ink REPL + the Home are always a TTY).
+  const interactive = opts?.interactive ?? true;
+  const prompt: ApprovalPrompt = interactive
+    ? store.requestApproval
+    : () =>
+        Promise.resolve({
+          outcome: 'reject',
+          reason: 'interactive approval is unavailable on this non-interactive driver',
+        });
+  const modeEnv = makeChatModeEnv({
+    session: built.session,
+    tools: built.tools,
+    workspaceDir: built.context.workingDir,
+    prompt,
+  });
+  applyChatMode(modeEnv, store.getSnapshot().mode);
+  return {
+    onAbort: () => {
+      built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
+    },
+    onModeChange: (mode) => {
+      store.setMode(mode);
+      applyChatMode(modeEnv, mode);
+    },
+  };
+}
+
+/** The slash-aware line handler + the session's cancel/stop state + the mode/abort control (ADR-0057). */
+export interface ChatLineHandler extends ChatModeControl {
   /** Handle one line (a slash command or a message); awaits the turn for a message. */
   readonly processLine: (raw: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
   readonly cancelOnce: () => void;
   /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
+}
+
+/**
+ * Validate the arg tokens of a resolved REPL command against what it declares, returning a ready-to-emit
+ * rejection message or `undefined` when the tokens are acceptable. Two rules: (1) every token must be a
+ * declared flag or a declared positional VALUE (a zero-arg command rejects ANY token — so `/exit now` fails);
+ * (2) a `{ name, values }` positional is a SINGLE value, so more than one positional-value token
+ * (`/mode plan accept-edits`) is rejected rather than silently dropping the extras downstream. When the command
+ * declares a positional, the rejection lists its valid values (so `/mode aggressive` teaches the names). Bad
+ * tokens are sanitized (non-printable → `?`, truncated) so a crafted arg can't smuggle a control sequence.
+ */
+function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): string | undefined {
+  const positionalValues = command.positional?.values ?? [];
+  const allowed = new Set([...(command.args ?? []).map((arg) => arg.flag), ...positionalValues]);
+  const validHint =
+    command.positional === undefined ? '' : ` Valid: ${positionalValues.join(', ')}.`;
+  const bad = tokens.find((token) => !allowed.has(token));
+  if (bad !== undefined) {
+    return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
+  }
+  if (command.positional !== undefined) {
+    const positionalSet = new Set(positionalValues);
+    const positionalCount = tokens.filter((token) => positionalSet.has(token)).length;
+    if (positionalCount > 1) {
+      return `/${command.name}: takes a single ${command.positional.name} value (got ${positionalCount}).${validHint}`;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -410,13 +524,16 @@ export function createChatLineHandler(
       built.session.cancel(); // the session's sole terminal (session:cancelled) — persister marks it 'ended'
     }
   };
+  // Whether an interactive prompt (the ink UI / Home controller) can answer an approval — the ink view is
+  // mounted (the same condition `selectChatDriver` picks driveInk on). On a non-interactive driver nothing
+  // answers `requestApproval`, so the mode control uses a reject-immediately prompt (no deadlock). Also drives
+  // `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
+  const interactive = chatIsInteractive(deps.io, deps.global);
 
-  // Surface command output (the /help list, /workflows catalog, /cost line) the right way for the active surface:
-  // the live ink view (TTY, non-`--json`) renders a NOTICE cleanly in-conversation; on the plain (non-TTY) and
-  // `--json` paths ink is NOT mounted (those drivers render the event stream, not the chat store), so write to
-  // stderr — a diagnostic that keeps stdout the pure event stream. (ink is mounted iff stdoutIsTty && !json — keep
-  // this condition in sync with `selectChatDriver` in render/tui/chat-ink.tsx, which picks driveInk on the same test.)
-  const interactive = deps.io.stdoutIsTty && !deps.global.json;
+  // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
+  // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the
+  // full-capability host is never live without the fail-closed approval regime (default `ask` denies governed).
+  const modeControl = createChatModeControl(built, store, { interactive });
   const emitOutput = (text: string): void => {
     if (interactive) {
       store.notice(text);
@@ -432,8 +549,9 @@ export function createChatLineHandler(
       stop = true;
     },
     cancel: () => {
-      // 1.V has no per-turn abort that keeps the session alive, so /cancel ends the (persisted, resumable)
-      // session — its in-flight turn is aborted and `chat-resume` (2.N) can reload it later.
+      // `/cancel` ends the session TERMINALLY (session:cancelled) — its in-flight turn is aborted and
+      // `chat-resume` (2.N) can reload the persisted session later. For a mid-turn abort that KEEPS the
+      // session alive (Esc), use `session.abort()` (EA7, ADR-0057) — wired into the REPL in 2.5.E Step 4.
       cancelOnce();
       stop = true;
     },
@@ -511,36 +629,62 @@ export function createChatLineHandler(
         emitOutput('doctor: check failed');
       }
     },
+    // `/mode [name]` (ADR-0057): switch the chat mode, or (bare `/mode`) show the current mode + the options.
+    // The dispatch already validated `modeArg` against the mode names, so a non-empty arg parses; still
+    // fail-soft. Applying re-pushes the turn policy on the SAME session (no reseat), effective next turn.
+    setMode: (modeArg) => {
+      const requested = modeArg.trim();
+      if (requested.length === 0) {
+        // Bare `/mode`: show the current mode + EXPLAIN each one (a discovery affordance — the palette submits
+        // this bare form), listing every mode with its one-line description and marking the active one.
+        const current = store.getSnapshot().mode;
+        const rows = CHAT_MODES.map(
+          (m) =>
+            `  ${MODE_LABEL[m].padEnd(12)} ${MODE_DESCRIPTION[m]}${m === current ? '  (current)' : ''}`,
+        );
+        emitOutput(`mode: ${MODE_LABEL[current]}\n${rows.join('\n')}`);
+        return;
+      }
+      const mode = parseMode(requested);
+      if (mode === undefined) {
+        emitOutput(`/mode: unknown mode '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`);
+        return;
+      }
+      modeControl.onModeChange(mode);
+      emitOutput(`mode: ${MODE_LABEL[mode]}`);
+    },
+  };
+
+  // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
+  // cognitive-complexity ceiling). Returns after emitting any error/echo through the notice channel — an
+  // interactive error belongs in-view (ink), not on stderr behind the live view.
+  const handleSlashCommand = async (line: string): Promise<void> => {
+    // Split the post-slash string into a command name + arg tokens, so `/doctor --deep` dispatches `doctor`
+    // with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is rejected), preserving the prior
+    // exact-match strictness while admitting declared flags.
+    const [name, ...tokens] = line.slice(1).split(/\s+/);
+    const command =
+      name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
+    if (command === undefined) {
+      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
+      // terminal control sequence (or a flood).
+      const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
+      emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
+      return;
+    }
+    const rejection = validateSlashTokens(command, tokens);
+    if (rejection !== undefined) {
+      emitOutput(rejection);
+      return;
+    }
+    await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
   };
 
   const processLine = async (raw: string): Promise<void> => {
     const line = raw.trim();
     if (line.length === 0) return;
     if (line.startsWith('/')) {
-      // Parse `/name [args]` (S5): split the post-slash string into a command name + arg tokens, so `/doctor
-      // --deep` dispatches `doctor` with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is
-      // rejected below), preserving the prior exact-match strictness while admitting declared flags.
-      const [name, ...tokens] = line.slice(1).split(/\s+/);
-      const command =
-        name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
-      if (command !== undefined) {
-        // Reject a token the command does not declare (a zero-arg command rejects ANY token). Echo it SANITIZED
-        // through the notice channel — interactive errors belong in-view (ink), not on stderr behind the live view.
-        const allowed = new Set((command.args ?? []).map((arg) => arg.flag));
-        const bad = tokens.find((token) => !allowed.has(token));
-        if (bad !== undefined) {
-          emitOutput(
-            `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.`,
-          );
-          return;
-        }
-        await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
-        return;
-      }
-      // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a terminal
-      // control sequence (or a flood). Routed through the notice channel (in-view on a TTY, stderr otherwise).
-      const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
+      await handleSlashCommand(line);
       return;
     }
     store.appendUser(line);
@@ -548,12 +692,23 @@ export function createChatLineHandler(
     await built.session.sendMessage(line);
   };
 
-  return { processLine, cancelOnce, shouldStop: () => stop };
+  return {
+    processLine,
+    cancelOnce,
+    shouldStop: () => stop,
+    onAbort: modeControl.onAbort,
+    onModeChange: modeControl.onModeChange,
+  };
 }
 
 async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
   const { built, opened, store, persister, startSession, intro } = wiring;
-  const { processLine, cancelOnce, shouldStop } = createChatLineHandler(wiring, deps);
+  // createChatLineHandler owns the mode control (so `/mode` + the driver keys drive one control) — it applies
+  // the initial mode, activating the fail-closed approval regime before the first turn.
+  const { processLine, cancelOnce, shouldStop, onAbort, onModeChange } = createChatLineHandler(
+    wiring,
+    deps,
+  );
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
@@ -575,6 +730,8 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       // MCP teardown to run first so a forced quit never orphans a spawned stdio child (no-op when no servers).
       ...(built.closeMcp === undefined ? {} : { onForceExit: built.closeMcp }),
       ...(intro === undefined ? {} : { intro }),
+      onAbort,
+      onModeChange,
     });
   } finally {
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'

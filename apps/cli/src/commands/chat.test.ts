@@ -25,6 +25,7 @@ import { createChatStore } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import {
   chatCommand,
+  chatIsInteractive,
   chatResumeCommand,
   driveJson,
   drivePlain,
@@ -269,6 +270,33 @@ describe('chatCommand', () => {
     });
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain("/doctor: unknown argument '--bogus'");
+  });
+
+  it('/mode <name> switches the mode; a bare /mode shows the current mode + options (ADR-0057)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/mode', '/mode auto', 'hello', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('mode: ask'); // the bare /mode shows the default (ask) + the options
+    expect(out).toContain('mode: auto'); // /mode auto applied
+    // /mode is read-only: the session continued and the 'hello' turn persisted (user + assistant = 2).
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  it('rejects an invalid /mode value at the dispatch, LISTING the valid names (a positional not in the mode set)', async () => {
+    const { d, err } = deps(['/mode bogus', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain("/mode: unknown argument 'bogus'"); // the positional-value validation rejects it
+    expect(out).toContain('Valid: ask, plan, accept-edits, auto.'); // …and teaches the four names
+  });
+
+  it('rejects `/mode plan accept-edits` — a single-value positional takes ONE value, not silently dropping extras', async () => {
+    const { d, err } = deps(['/mode plan accept-edits', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/mode: takes a single mode value (got 2).'); // arity enforced, not silently dropped
   });
 
   it('/workflows reports a project-less cwd without crashing the REPL', async () => {
@@ -1016,6 +1044,15 @@ describe('makePlainPrinter', () => {
     });
     expect(out()).toContain('turn_limit');
     expect(out()).not.toContain('secret-ish detail'); // only the code, never the message
+  });
+});
+
+describe('chatIsInteractive (the High-9 deadlock derivation — mirrors selectChatDriver`s ink-mount)', () => {
+  it('is true ONLY for a TTY without --json; false when piped OR --json (a dropped `!` would break this)', () => {
+    expect(chatIsInteractive({ stdoutIsTty: true }, { json: false })).toBe(true); // ink mounts → can prompt
+    expect(chatIsInteractive({ stdoutIsTty: false }, { json: false })).toBe(false); // piped → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: true }, { json: true })).toBe(false); // --json → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: false }, { json: true })).toBe(false);
   });
 });
 

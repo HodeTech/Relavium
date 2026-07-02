@@ -5,17 +5,20 @@ import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
+  ToolDeniedByUserError,
   ToolExecutionError,
   ToolPolicyError,
   ToolUnavailableError,
   UnknownToolError,
 } from './errors.js';
-import { createToolRegistry } from './registry.js';
+import { createToolRegistry, governedAction } from './registry.js';
 import { isUntrusted, unwrapUntrusted } from './untrusted.js';
 import type {
   EgressRequest,
   EgressResponse,
   FsCapability,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
   ToolCallPart,
   ToolDispatchContext,
   ToolHost,
@@ -339,6 +342,498 @@ describe('ToolRegistry — git_commit human-gate', () => {
   });
 });
 
+/* --- per-tool approval (ADR-0057 EA3) --- */
+
+describe('governedAction — the authoritative engine confirm-floor classifier (drift-lock)', () => {
+  it('pins the EXACT engine-governed built-in set + its action class (distinct from the CLI advertise superset)', () => {
+    // Compute each tool's target the SAME way confirmDispatch does — `def.policyTarget?.(args) ?? {}` — so only a
+    // MODEL-command process tool (run_command's policyTarget yields a `command`) trips the process case; a
+    // pre-approved process tool (git_status / git_commit — no policyTarget) does not. Each policyTarget reads
+    // only its own field, so one permissive sample serves all.
+    const sampleArgs = {
+      command: 'ls',
+      args: [] as string[],
+      path: 'p.txt',
+      url: 'https://example.com',
+    };
+    const governed: Record<string, string> = {};
+    for (const def of BUILTIN_TOOLS) {
+      const target = def.policyTarget?.(sampleArgs) ?? {};
+      const action = governedAction(def, target);
+      if (action !== undefined) governed[def.id] = action;
+    }
+    // A new governed built-in (or a policy-flag change) MUST update this map — the fail-closed floor can't drift.
+    expect(governed).toEqual({
+      write_file: 'fs_write',
+      run_command: 'process',
+      http_request: 'egress',
+      web_search: 'egress',
+      mcp_call: 'egress',
+      read_clipboard: 'os',
+      notify: 'os',
+    });
+    // git_commit is NOT engine-governed here: its requiresGateApproval is enforced by the human-gate floor
+    // (enforcePolicy), NOT confirmAction — the exact distinction from the CLI advertise-filter's governedToolIds
+    // superset (chat-mode.test.ts), which DOES hide git_commit. Pin both halves of that asymmetry.
+    expect(governed).not.toHaveProperty('git_commit');
+    expect(governed).not.toHaveProperty('read_file');
+    expect(governed).not.toHaveProperty('git_status');
+  });
+});
+
+/**
+ * A MUTABLE {@link AbortSignalLike} test double: `aborted` can be flipped mid-prompt (a cancel-during-confirm
+ * test), and the listeners are no-ops (the registry's `isAbort` reads `.aborted` / `cause.name`, never the
+ * listener path). Assignable to the `readonly aborted` param without an `as never` cast.
+ */
+function mutableSignal(aborted = false): { aborted: boolean } & AbortSignalLike {
+  return { aborted, addEventListener: () => undefined, removeEventListener: () => undefined };
+}
+
+describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
+  // The `vi.fn<Fn>` function-type generic types `.mock.calls[0]` as [ToolApprovalRequest, signal?] (no
+  // unused impl param) and contextually types the decision literals (`'approve'`/`'reject'`). The 2nd
+  // (signal) param lets a test assert ctx.signal is forwarded to the hook.
+  type ConfirmFn = (
+    req: ToolApprovalRequest,
+    signal?: AbortSignalLike,
+  ) => Promise<ToolApprovalDecision>;
+  const approving = () => vi.fn<ConfirmFn>(() => Promise.resolve({ outcome: 'approve' }));
+  const rejecting = (reason?: string) =>
+    vi.fn<ConfirmFn>(() =>
+      Promise.resolve({ outcome: 'reject', ...(reason === undefined ? {} : { reason }) }),
+    );
+
+  /** A host whose `writeFile` is a spy, so a denied write can be proven to never reach the side effect. */
+  function hostWithWriteSpy(): { host: ToolHost; writeFile: ReturnType<typeof vi.fn> } {
+    const writeFile = vi.fn((path: string, data: string) =>
+      Promise.resolve({ path, bytesWritten: data.length }),
+    );
+    return {
+      writeFile,
+      host: stubHost({
+        fs: {
+          readFile: () =>
+            Promise.resolve({
+              content: 'x',
+              mimeType: 'text/plain',
+              sizeBytes: 1,
+              lastModified: 't',
+            }),
+          writeFile,
+          listDirectory: () => Promise.resolve({ entries: [] }),
+        },
+      }),
+    };
+  }
+
+  // --- the regime gate: present ⇒ chat (governed), absent ⇒ workflow author-trust (unchanged) ---
+
+  it('does NOT prompt on the workflow path (no ctx.approval) — a governed write dispatches under the floor', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx(), // no approval regime
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('prompts a governed write under the approval regime and dispatches on approve, with an fs_write preview', async () => {
+    const confirm = approving();
+    const { host, writeFile } = hostWithWriteSpy();
+    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(writeFile).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: './out.txt' },
+    });
+  });
+
+  it('emits agent:approval_requested (EA5) BEFORE invoking confirm — same request; an emit fault never breaks the floor', async () => {
+    const order: string[] = [];
+    const confirm = vi.fn<ConfirmFn>(() => {
+      order.push('confirm');
+      return Promise.resolve({ outcome: 'approve' });
+    });
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>(() =>
+      order.push('emit'),
+    );
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({ approval: { confirm, emitApprovalRequested } }),
+    );
+    expect(order).toEqual(['emit', 'confirm']); // the observability event fires just BEFORE the prompt
+    expect(emitApprovalRequested).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolId: 'write_file',
+        action: 'fs_write',
+        preview: { path: './out.txt' },
+      }),
+    );
+    // The confirm hook received the SAME request object (one construction, EA5-emitted then confirmed).
+    expect(emitApprovalRequested.mock.calls[0]?.[0]).toBe(confirm.mock.calls[0]?.[0]);
+  });
+
+  it('emits agent:approval_requested even for a REJECTING confirm — a denied governed action is still traced', async () => {
+    const order: string[] = [];
+    const confirm = vi.fn<ConfirmFn>(() => {
+      order.push('confirm');
+      return Promise.resolve({ outcome: 'reject', reason: 'no' });
+    });
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>(() =>
+      order.push('emit'),
+    );
+    const { host, writeFile } = hostWithWriteSpy();
+    await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm, emitApprovalRequested } }),
+      ),
+    );
+    expect(order).toEqual(['emit', 'confirm']); // the trace fires regardless of the (reject) outcome
+    expect(emitApprovalRequested).toHaveBeenCalledOnce();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('a THROWING emitApprovalRequested does not break the approval decision (best-effort observability)', async () => {
+    const confirm = approving();
+    const { host, writeFile } = hostWithWriteSpy();
+    const out = await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({
+        approval: {
+          confirm,
+          emitApprovalRequested: () => {
+            throw new Error('sink boom');
+          },
+        },
+      }),
+    );
+    expect(out.events.result.success).toBe(true); // the emit fault was swallowed; the write still dispatched
+    expect(writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('denies a rejected write as a fatal tool_denied (user_rejected) and never reaches the side effect', async () => {
+    const confirm = rejecting();
+    const { host, writeFile } = hostWithWriteSpy();
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolDeniedByUserError);
+    expect(err.code).toBe('tool_denied');
+    expect(err.runErrorCode).toBe('tool_denied');
+    expect(err.retryable).toBe(false);
+    expect(err.reason).toBe('user_rejected');
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('echoes a host-supplied, secret-free reject reason in the (secret-free) message', async () => {
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      registry().dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm: rejecting('writes are not allowed in ask mode') } }),
+      ),
+    );
+    expect(err.message).toContain('writes are not allowed in ask mode');
+  });
+
+  it('is FAIL-CLOSED: an active regime with no confirm hook denies a governed write (no_approval_hook)', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: {} }), // regime active, but the hook was never wired (a bug)
+      ),
+    );
+    expect(err.reason).toBe('no_approval_hook');
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  // --- only governed classes are gated (read-only / pre-approved tools bypass the prompt) ---
+
+  it('does NOT prompt for a read-only fs tool (read_file) even under the regime', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('read_file', { path: 'a.txt' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('does NOT prompt for the pre-approved git_status (a process tool with no model command target)', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(call('git_status', {}), ctx({ approval: { confirm } }));
+    expect(out.events.result.success).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  // --- the governed process / egress classes, with their previews ---
+
+  it('prompts a model-controlled run_command (process) with the resolved command preview', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('run_command', { command: 'ls', args: ['-la'] }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommands: ['ls -la'] } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({
+      toolId: 'run_command',
+      action: 'process',
+      preview: { command: 'ls -la' },
+    });
+  });
+
+  it('prompts http_request (egress) with the host-only preview (never the full URL)', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('http_request', { url: 'https://api.example.com/secret?token=abc' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedDomains: ['api.example.com'] } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({
+      toolId: 'http_request',
+      action: 'egress',
+      preview: { host: 'api.example.com' },
+    });
+    // the query string (and its token) never enters the preview — assert over all recorded call args
+    expect(JSON.stringify(confirm.mock.calls)).not.toContain('token');
+  });
+
+  it('prompts web_search (egress) with an empty preview — it exposes no pre-dispatch URL target', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('web_search', { query: 'hi' }),
+      ctx({
+        approval: { confirm },
+        config: { parameters: { endpoint: 'https://search.example.com' } },
+      }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({ toolId: 'web_search', action: 'egress', preview: {} });
+  });
+
+  it('prompts read_clipboard (os) with an empty preview and dispatches on approve (an exfil sink is gated)', async () => {
+    const confirm = approving();
+    const out = await registry().dispatch(
+      call('read_clipboard', {}),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    const req = confirm.mock.calls[0]?.[0];
+    expect(req).toMatchObject({ toolId: 'read_clipboard', action: 'os', preview: {} });
+  });
+
+  it('denies a rejected read_clipboard as fatal tool_denied and never reads the clipboard', async () => {
+    const readClipboard = vi.fn(() => Promise.resolve('a-secret'));
+    const host: ToolHost = {
+      ...stubHost(),
+      os: { readClipboard, notify: () => Promise.resolve() },
+    };
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      registry(host).dispatch(
+        call('read_clipboard', {}),
+        ctx({ approval: { confirm: rejecting() } }),
+      ),
+    );
+    expect(err.code).toBe('tool_denied');
+    expect(readClipboard).not.toHaveBeenCalled(); // denied BEFORE the host call — no clipboard read
+  });
+
+  // --- ordering + cancellation ---
+
+  it('runs the enforcePolicy floor BEFORE approval — a denied run_command never reaches the prompt', async () => {
+    const confirm = approving();
+    const err = await rejectsWith<ToolPolicyError>(
+      registry().dispatch(
+        call('run_command', { command: 'rm', args: ['-rf', '/'] }),
+        ctx({ approval: { confirm }, toolPolicy: { allowedCommands: [] } }), // empty ⇒ deny-all
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolPolicyError);
+    expect(err.reason).toBe('command_not_allowed');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('classifies an abort raised while prompting (hook throws AbortError) as cancelled, not a denial', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn(() =>
+      Promise.reject(Object.assign(new Error('prompt aborted'), { name: 'AbortError' })),
+    );
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('cancel-wins-all: a signal that aborts mid-prompt + a hook that throws a PLAIN error classifies as cancelled, not approval_error', async () => {
+    // Exercises the `ctx.signal?.aborted` branch of isAbort in the confirm catch (the AbortError test
+    // above exercises only the cause.name branch), and proves cancel precedence over the fail-closed deny.
+    // The signal must flip DURING the prompt (not before): an already-aborted signal short-circuits at the
+    // dispatch entry guard before the hook ever runs.
+    const signal = mutableSignal();
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn<ConfirmFn>(() => {
+      signal.aborted = true; // cancelled while the prompt is pending…
+      return Promise.reject(new Error('hook bug while cancelling')); // …and the hook then throws a plain error
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm }, signal: signal }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('cancels (never executes) when the signal aborts WHILE prompting and the hook still resolves approve', async () => {
+    // The fail-closed cancellation contract: a hook that ignores the AbortSignal and approves anyway must
+    // NOT reach the side effect — the trailing throwIfAborted in confirmDispatch catches it.
+    const signal = mutableSignal();
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn<ConfirmFn>(() => {
+      signal.aborted = true; // the run is cancelled while the prompt is pending…
+      return Promise.resolve({ outcome: 'approve' }); // …but the hook approves anyway
+    });
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm }, signal: signal }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('is FAIL-CLOSED on a hook that THROWS a non-abort error — denies (approval_error), never retryable', async () => {
+    const { host, writeFile } = hostWithWriteSpy();
+    const confirm = vi.fn<ConfirmFn>(() => Promise.reject(new Error('hook bug')));
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: { confirm } }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolDeniedByUserError);
+    expect(err.reason).toBe('approval_error');
+    expect(err.runErrorCode).toBe('tool_denied'); // fatal, NOT the retryable tool_failed a host throw gets
+    expect(err.retryable).toBe(false);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('gates mcp_call (egress) — confirm prompts with an empty preview; approve runs it, reject denies it', async () => {
+    const call_ = vi.fn(() => Promise.resolve({ ok: true }));
+    const host = stubHost({ mcp: { call: call_ } });
+    const reg = () => createToolRegistry({ tools: BUILTIN_TOOLS, host });
+    // approve
+    const confirm = approving();
+    const out = await reg().dispatch(
+      call('mcp_call', { server: 's', tool: 't' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(call_).toHaveBeenCalledOnce();
+    expect(confirm.mock.calls[0]?.[0]).toMatchObject({
+      toolId: 'mcp_call',
+      action: 'egress',
+      preview: {},
+    });
+    // reject — the side effect must not run
+    call_.mockClear();
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      reg().dispatch(
+        call('mcp_call', { server: 's', tool: 't' }),
+        ctx({ approval: { confirm: rejecting() } }),
+      ),
+    );
+    expect(err.reason).toBe('user_rejected');
+    expect(call_).not.toHaveBeenCalled();
+  });
+
+  it('previews a no-args run_command as the bare command (join yields { command:"ls" }, not "ls ")', async () => {
+    const confirm = approving();
+    await registry().dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommands: ['ls'] } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ command: 'ls' });
+  });
+
+  it('forwards ctx.signal to the confirm hook as its second argument', async () => {
+    const signal = mutableSignal();
+    const confirm = approving();
+    await registry().dispatch(
+      call('write_file', { path: './out.txt', content: 'hi' }),
+      ctx({ approval: { confirm }, signal: signal }),
+    );
+    expect(confirm.mock.calls[0]?.[1]).toBe(signal);
+  });
+
+  it('denies a rejected http_request (egress) — the host fetch is never reached', async () => {
+    const fetch = vi.fn(() => Promise.resolve({ status: 200, headers: {}, body: '{}' }));
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ egress: { fetch } }) }).dispatch(
+        call('http_request', { url: 'https://api.example.com/x' }),
+        ctx({
+          approval: { confirm: rejecting() },
+          toolPolicy: { allowedDomains: ['api.example.com'] },
+        }),
+      ),
+    );
+    expect(err.reason).toBe('user_rejected');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('denies a rejected run_command (process) — the host spawn is never reached', async () => {
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    const err = await rejectsWith<ToolDeniedByUserError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host: stubHost({ process: { spawn } }) }).dispatch(
+        call('run_command', { command: 'ls' }),
+        ctx({ approval: { confirm: rejecting() }, toolPolicy: { allowedCommands: ['ls'] } }),
+      ),
+    );
+    expect(err.reason).toBe('user_rejected');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('cancel-wins-all: an already-aborted signal yields cancelled (never a fail-closed deny) for a governed write', async () => {
+    // An already-aborted signal short-circuits at the dispatch entry guard (cancel precedence, ADR-0036)
+    // BEFORE the approval gate runs — so a would-be fail-closed `no_approval_hook` deny on an aborted turn
+    // correctly surfaces as cancelled, not denied, and the side effect never runs.
+    const { host, writeFile } = hostWithWriteSpy();
+    const err = await rejectsWith<ToolCancelledError>(
+      createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+        call('write_file', { path: './out.txt', content: 'hi' }),
+        ctx({ approval: {}, signal: mutableSignal(true) }),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolCancelledError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+});
+
 /* --- config-only params + I/O mapping --- */
 
 describe('ToolRegistry — config-only params and I/O mapping', () => {
@@ -415,6 +910,32 @@ describe('ToolRegistry — config-only params and I/O mapping', () => {
     // No fragment of the payload survives anywhere in the event field.
     expect(JSON.stringify(out.events.call.toolInput)).not.toContain('aGVsbG8');
   });
+
+  it('scrubs a secret-shaped value from agent:tool_call.toolInput (a model-set credential in a header/body/url)', async () => {
+    // The security-load-bearing wiring: sanitizeInput runs redactSecretShapedValue so a model-injected token in
+    // an http_request header VALUE / body / url-query never rides toolInput → the --json/event/log stream. The
+    // header NAME is kept; the dispatch still ran on the real args.
+    const out = await registry().dispatch(
+      call('http_request', {
+        url: 'https://api.example.com/x?api_key=sk-' + 'abcdef0123456789xyz',
+        body: 'client_secret=supersecretvalue123',
+        headers: { Authorization: 'Bearer tok_live_abcdef123456', 'x-keep': 'plain' },
+      }),
+      ctx({ toolPolicy: { allowedDomains: ['api.example.com'] } }),
+    );
+    const toolInput = out.events.call.toolInput as {
+      url: string;
+      body: string;
+      headers: Record<string, string>;
+    };
+    expect(toolInput.headers['Authorization']).toBe('Bearer [redacted]'); // value scrubbed, NAME kept
+    expect(toolInput.headers['x-keep']).toBe('plain'); // non-secret header untouched
+    expect(toolInput.body).toBe('[redacted]');
+    expect(toolInput.url).not.toContain('sk-' + 'abcdef0123456789xyz');
+    const serialized = JSON.stringify(out.events.call.toolInput);
+    expect(serialized).not.toContain('supersecretvalue123');
+    expect(serialized).not.toContain('tok_live_abcdef123456');
+  });
 });
 
 /* --- capability availability + execution + cancellation --- */
@@ -452,10 +973,7 @@ describe('ToolRegistry — host capability, execution, cancellation', () => {
 
   it('refuses to start when the signal is already aborted', async () => {
     const err = await rejectsWith<ToolCancelledError>(
-      registry().dispatch(
-        call('read_file', { path: 'a' }),
-        ctx({ signal: { aborted: true } as never }),
-      ),
+      registry().dispatch(call('read_file', { path: 'a' }), ctx({ signal: mutableSignal(true) })),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
     expect(err.runErrorCode).toBe('cancelled');
@@ -741,7 +1259,7 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
   });
 
   it('classifies an abort that flips mid-dispatch (plain host error) as cancelled, not tool_failed', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const host = stubHost({
       fs: fsWith(() => {
         signal.aborted = true; // the run is cancelled while the host is in-flight
@@ -751,7 +1269,7 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: signal as never }),
+        ctx({ signal: signal }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
@@ -777,7 +1295,7 @@ describe('ToolRegistry — glob, provider_executed, and mid-dispatch cancel', ()
 
 describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 post-bounding)', () => {
   it('classifies an abort that lands after the host RESOLVES (M-3 / line 109)', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const host = stubHost({
       fs: fsWith(() => {
         signal.aborted = true; // cancelled while in-flight, but the host RESOLVES (no throw)
@@ -792,14 +1310,14 @@ describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: signal as never }),
+        ctx({ signal: signal }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);
   });
 
   it('classifies an abort that lands during bounding (H-1 / post-boundForModel guard)', async () => {
-    const signal = { aborted: false };
+    const signal = mutableSignal();
     const big = 'z'.repeat(5000);
     const host = stubHost({
       fs: fsWith(() =>
@@ -820,7 +1338,7 @@ describe('ToolRegistry — abort precedence after each await (M-3 line-109, H-1 
     const err = await rejectsWith<ToolCancelledError>(
       createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
         call('read_file', { path: 'a' }),
-        ctx({ signal: signal as never, limits: { maxBytes: 10, maxLines: 1 } }),
+        ctx({ signal: signal, limits: { maxBytes: 10, maxLines: 1 } }),
       ),
     );
     expect(err).toBeInstanceOf(ToolCancelledError);

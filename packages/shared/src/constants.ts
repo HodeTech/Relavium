@@ -16,9 +16,9 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * The canonical, **colon-namespaced** run-event type names (sse-event-schema.md).
  * Never the legacy dotted names (`node.started`), never `node:error`/`run:error`,
  * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
- * `RunEvent` union in the spec: `agent:file_patch_proposed` sits after `agent:tool_result`, and
- * the four governance events (`run:paused`, `run:timeout`, `budget:warning`, `budget:paused`;
- * ADR-0028) close the list.
+ * `RunEvent` union in the spec: `agent:approval_requested` + `agent:file_patch_proposed` sit after
+ * `agent:tool_result`, and the four governance events (`run:paused`, `run:timeout`, `budget:warning`,
+ * `budget:paused`; ADR-0028) close the list.
  */
 export const RUN_EVENT_TYPES = [
   'run:started',
@@ -26,6 +26,10 @@ export const RUN_EVENT_TYPES = [
   'agent:token',
   'agent:tool_call',
   'agent:tool_result',
+  // A side-effecting tool dispatch is awaiting an interactive per-tool approval decision (ADR-0057 EA3/EA5).
+  // A dual-envelope event (runId on a run, sessionId on a session); in Phase 2.5 it is session-only (the chat
+  // approval regime). The host's ConfirmActionHook emits it before prompting; never carries a secret.
+  'agent:approval_requested',
   'agent:file_patch_proposed',
   'cost:updated',
   'node:completed',
@@ -117,6 +121,21 @@ export const RETRYABLE_ERROR_CODES = [
 export type RetryableErrorCode = (typeof RETRYABLE_ERROR_CODES)[number];
 
 /**
+ * The side-effecting **tool ACTION classes** a per-tool approval governs (ADR-0057 EA3). Derived from a
+ * tool's `ToolPolicyClass` (tool-registry.md): `fs_write` (a `write_file`), `process` (a model-controlled
+ * `run_command` — **not** the pre-approved `git_status`, which exposes no model command), `egress`
+ * (`http_request` / `web_search` / `mcp_call`), and `os` (`read_clipboard` / `notify` — the clipboard is
+ * ambient, un-jailed OS state that routinely holds a freshly-copied secret, so a READ is an exfiltration
+ * sink, and `notify` paints a native desktop notification; both are gated like any governed action, ADR-0057
+ * §security review). Read-only fs reads + `git_status` are **not** governed (mirrors
+ * [ADR-0041](../decisions/0041-external-action-governance-seam.md) §ActionClass). Carried by
+ * `agent:approval_requested` and the engine's `ConfirmActionHook`; it lives here so `@relavium/shared` owns
+ * the vocabulary and the engine derives its `ToolActionClass` type from this one list (no second home).
+ */
+export const TOOL_ACTION_CLASSES = ['fs_write', 'process', 'egress', 'os'] as const;
+export type ToolActionClass = (typeof TOOL_ACTION_CLASSES)[number];
+
+/**
  * The five-value LLM **stop reason** vocabulary, used today by `session:turn_completed`.
  * Intended canonical home: `@relavium/shared`, with the `@relavium/llm` seam re-exporting it
  * rather than redefining it. (The seam doc still defines it locally; codifying the re-export is
@@ -124,6 +143,16 @@ export type RetryableErrorCode = (typeof RETRYABLE_ERROR_CODES)[number];
  */
 export const STOP_REASONS = ['stop', 'length', 'tool_use', 'content_filter', 'error'] as const;
 export type StopReason = (typeof STOP_REASONS)[number];
+
+/**
+ * The **session** turn stop-reason vocabulary — the five LLM {@link STOP_REASONS} **plus** `aborted`, the
+ * user's **mid-turn abort** (ADR-0057 EA7: `Esc` ends the in-flight turn but keeps the session alive, so the
+ * turn settles with `session:turn_completed{stopReason:'aborted'}`, **not** `session:cancelled`). `aborted` is
+ * a session-lifecycle concept, **not** an LLM stop reason, so it lives here and the `@relavium/llm` seam's
+ * `StopReason` stays the clean five-value set. Only `session:turn_completed.stopReason` uses this superset.
+ */
+export const SESSION_STOP_REASONS = [...STOP_REASONS, 'aborted'] as const;
+export type SessionStopReason = (typeof SESSION_STOP_REASONS)[number];
 
 /**
  * The four **media input modalities** a `media` content part can carry (ADR-0031). The modality

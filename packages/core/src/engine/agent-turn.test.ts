@@ -600,7 +600,9 @@ describe('runAgentTurn — tool loop', () => {
     }
   });
 
-  it('maps ToolExecutionError to tool_failed (retryable — the 1.S node-retry signal)', async () => {
+  it('maps ToolExecutionError to tool_failed (retryable — the 1.S node-retry signal) with recoverToolFailures ABSENT (the workflow default)', async () => {
+    // The default (every WORKFLOW node): a host execution_failed ends the turn loudly so node-retry / run-failure
+    // engages — an unattended run must NOT silently recover. The chat-surface opt-in is pinned by the next test.
     const registry = stubRegistry(() => {
       throw new ToolExecutionError('echo', 'disk full');
     });
@@ -609,6 +611,49 @@ describe('runAgentTurn — tool loop', () => {
       code: 'tool_failed',
       retryable: true,
     });
+  });
+
+  it('recovers from a host execution_failed by feeding it back when recoverToolFailures is set (ADR-0057 chat surface)', async () => {
+    // The interactive chat surface opts in (session-host wires recoverToolFailures:true) so a file-not-found /
+    // transient host failure is fed to the model as an isError result — it adapts / explains instead of the turn
+    // dying on a bare tool_failed. Mirrors the correctable-recovery test but for a HOST ToolExecutionError.
+    let dispatched = 0;
+    const registry = stubRegistry((call) => {
+      dispatched += 1;
+      if (dispatched === 1) throw new ToolExecutionError('echo', 'the filesystem operation failed');
+      const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
+      return {
+        output: 'OK',
+        toolResult: markUntrusted(result),
+        truncated: false,
+        events: {
+          call: { toolId: call.name, toolInput: {} },
+          result: { toolId: call.name, success: true, outputSummary: 'OK' },
+        },
+      };
+    });
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'echo' },
+        { type: 'tool_call_end', id: 'c1' },
+        STOP('tool_use'),
+      ],
+      [
+        { type: 'tool_call_start', id: 'c2', name: 'echo' },
+        { type: 'tool_call_end', id: 'c2' },
+        STOP('tool_use'),
+      ],
+      [{ type: 'text_delta', text: 'recovered' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      registry,
+      limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+    });
+    const result = await runAgentTurn(params);
+    expect(result.text).toBe('recovered'); // the turn continued past the host failure
+    expect(
+      eventsOf(params).find((e) => e.type === 'agent:tool_result' && !e.success),
+    ).toBeDefined();
   });
 
   it('attaches the turn’s REAL accumulated usage to a failed turn (EA2)', async () => {

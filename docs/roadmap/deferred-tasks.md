@@ -40,7 +40,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   defined in `packages/core/src/tools/types.ts`). When the desktop or CLI surface implements that fetch
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
-  catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **general tool/MCP** `EgressCapability.fetch` enforcement still lands when the desktop/CLI surface implements that fetch hook. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; tool/MCP → surface fetch hook)*
+  catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **CLI tool** `EgressCapability.fetch` **landed in 2.5.E** ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — `apps/cli/src/engine/tool-host/egress.ts` over the shared `connectValidated` connect-by-validated-IP mechanism (`packages/db/src/safe-egress.ts`), with the Host/`:authority`-header strip; the **desktop** surface's fetch hook still lands when the desktop implements it. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; CLI tool → 2.5.E/ADR-0057; desktop → surface fetch hook)*
 - [ ] **MCP SDK network transport — upgrade to connect-by-validated-IP ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2).** 2.R ships **pre-connect host validation** as the floor for the `http` (Streamable HTTP) / `websocket` MCP transports — the `@modelcontextprotocol/sdk` opens its **own** socket, architecturally distinct from the `EgressCapability.fetch` hook above. When the SDK transport exposes an injectable `fetch`/dialer hook, upgrade to **connect-by-validated-IP**: resolve DNS → validate the IP against the shared range-block primitive → connect to that IP, re-validating on each redirect hop — closing the residual DNS-rebind window. **The dialer + redirect re-validation MUST enforce the authored `host:port`** (ADR-0053 §3 / SEC-EGRESS-3), not just the host: an `allow_local_endpoint` server is permitted exactly its declared `host:port`, so a resolved/redirected target on a *different* port of the same permitted-private host (`:6379`/`:5432`/`:22`/the Docker socket) must be re-blocked. (2.R's pre-connect floor is host:port-safe by construction — the SDK dials exactly the one authored url — so this constraint binds the dialer, not the floor.) Each MCP network mechanism gets a dedicated security-review pass when it lands. *(packages/mcp/src; ADR-0053 §2/§3; ADR-0043 mechanism)*
 - [ ] **MCP `stdio` spawn — import-trust/consent gate + `npx` dependency pinning ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** Spawning a declared `stdio` MCP server runs arbitrary local code / an `npx`-installed package. 2.R treats a server declared in the user's **own** committed YAML as author trust; the **imported/shared untrusted workflow** case is out of baseline scope. When the import/share path matures, gate the first spawn of a server from an untrusted-provenance `.relavium.yaml` behind explicit consent, and pin the `npx` package version/integrity for the built-in auto-install servers. *(packages/mcp/src; apps/cli; ADR-0052 §2; ADR-0029 trust model)*
 - [x] **MCP host boundary — strip `McpConnectError.cause` from `--json` / event output (2.R Step 3, [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** *Resolved in the 2.R Step 3 host wiring:* `startMcpClientFailLoud` (apps/cli/src/engine/mcp-servers.ts) wraps an `McpError` into a typed `CliError` whose message is the secret-free MCP summary with **no** `{ cause }` attached, and the top-level `--json` renderer (apps/cli/src/process/render-error.ts) serializes only `{ type, code, message }` — never `cause`. Regression-locked by `run.test.ts` (`expect(err.cause).toBeUndefined()`). *(apps/cli; packages/mcp/src/errors.ts; 2.R Step 3)*
@@ -485,6 +485,54 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   pass over the session prompt against a `RunScope` built from `context.variables` (deliberately deferred —
   no surface needed it before 2.Q). *(medium · packages/core/src/engine/agent-session.ts)*
 
+## Phase 2.5.E (chat modes + per-tool approval) follow-ups
+
+> **2026-07-02 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), Accepted).** The
+> reseat-less mode system + per-tool approval + mid-turn abort + the host arms shipped. These bounded pieces
+> were deliberately deferred (each is additive, none blocks the mode system's security guarantees):
+
+- [ ] **`[c]` reject-with-typed-reason approval prompt.** The `ApprovalAnswer` reject variant already carries an
+  optional `reason` (surfaced in the `tool_denied` message), but the REPL prompt only wires `[y]`/`[a]`/`[n]`/`[esc]`
+  — a `[c]` that captures a free-text comment (a rejection with feedback for the model) is a bounded input-mode
+  addition to `reduceChatKey` + the ink/Home prompt. *(low · apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
+- [ ] **Plain / non-TTY non-interactive approval policy.** The interactive `[y]/[a]/[n]` prompt is TTY/controller-only.
+  A non-TTY chat defaults to `ask` (which denies governed WITHOUT prompting, so no deadlock), and `auto` auto-approves
+  a non-protected target; the only unhandled niche is a non-TTY session switched to `accept-edits` (or `auto` hitting a
+  protected path) — its `requestApproval` would publish an unanswerable prompt. Add an explicit non-interactive policy
+  (deny, or a configured default) for the plain/`--json` driver so that niche is deterministic. *(low · apps/cli/src/commands/chat.ts drivePlain/driveJson)*
+- [ ] **Live `web_search` / `http_request` egress credential resolver.** `assembleToolEnv` accepts an
+  `egressCredentialResolver` and the egress arm attaches it host-side as a Bearer, but the chat/Home session-host does
+  not yet wire it to the keychain — so a `web_search` needing a provider key currently 401s (surfaced, never a crash).
+  Wire the provider-key resolver through when the chat surface needs authenticated egress. *(low · apps/cli/src/chat/session-host.ts)*
+- [ ] **Session-level budget pause/resume (rides the EA4 machine).** The EA4 pause/resume state landed for mid-turn
+  abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
+  cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
+  session-budget follow-up above. *(medium · apps/cli/src/chat + agent-session.ts)*
+- [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
+  workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
+- [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
+  The hard-link aliasing READ guard (`st.nlink > 1` ⇒ refused) is disabled ONLY for pnpm's `node_modules/.pnpm/…`
+  virtual store (`isPnpmStorePath`), so dependency-source reads work on Linux (where pnpm hard-links). The bounded
+  residual: a **compromised dependency** (a malicious postinstall, or a hard-link path-traversal in the extractor —
+  the node-tar CVE class) could plant a cross-boundary hard link UNDER `node_modules/.pnpm/` that a later read would
+  follow; the same actor already has local RCE, and the sensitive-read floor still refuses a NAMED secret store even
+  there. A future opt-out (`allow_aliased_reads` config, or resolving the inode's other name against a tool-known
+  pnpm store root) would let a stricter deployment disable even this. *(low · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **Target-scoped approval cache + a per-tool preview target (ADR-0057 review elevation).** The once/always
+  `ApprovalCache` is keyed by tool id only, so an `[a]lways` grant blankets every allowlisted target of that tool
+  for the session (a `write_file` always covers every non-protected path; an `http_request` always covers every
+  `allowedDomains` host). It is bounded (enforcePolicy's allowlists + the fs protected-paths floor still gate each
+  dispatch) and is the documented accept-edits semantics — but keying by `(toolId, target)` (a path prefix for
+  fs, a host for egress, a server for mcp) would make `always` track what the user actually reviewed. Pairs with:
+  surface the MCP server/tool in `ToolActionPreview` (today `mcp_call`/`web_search` return a BLANK preview, so
+  F3 correctly forbids caching their `always`) — a structured `{mcpServer,mcpTool}` preview would turn the
+  blank-check downgrade into a real, reviewable, cacheable per-server grant. *(medium · apps/cli/src/chat/chat-mode.ts + packages/core/src/tools/{types,registry,builtins}.ts + run-event.ts)*
+- [ ] **fs `.relavium` sensitive-read/write segment vs. the `~/.relavium/tmp` sandboxed root (latent).** Both the
+  read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
+  segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires
+  `tmpDir`). Resolve (home-anchored match, or exclude the wired tmp root) before any caller passes `tmpDir`.
+  *(low · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
+
 ## Phase-2 CLI (2.D) follow-ups
 
 > **2026-06-22 2.D (`relavium run`) implementation.** The CLI was wired to `@relavium/core` — the first
@@ -560,27 +608,19 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 > **2026-06-28 2.5.A ([ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)).**
 > The shared CLI **tool-environment factory** landed the `fs` + `process` `ToolHost` arms behind one
-> `assembleToolEnv({ profile, fsScopeTier, workspaceDir })` seam (read-only chat / read-write run), the
-> advertise-filter, the `tool_unavailable` (EA1) fail-closed backstop, and real failed-turn usage (EA2). This
-> directly advances the 2.D *"CLI `ToolHost` is fail-closed"* item above — the **fs** and **process** halves are
-> now wired and security-reviewed; the **egress** and **os** halves remain deferred (below). The items here were
-> confirmed by the PR #60 review passes (a 10-lens excellence workflow + two verify-against-code rounds) and
-> deliberately **not** taken in-PR — none blocks the milestone.
+> `assembleToolEnv({ profile, fsScopeTier, workspaceDir })` seam, the advertise-filter, the `tool_unavailable`
+> (EA1) fail-closed backstop, and real failed-turn usage (EA2). This directly advanced the 2.D *"CLI `ToolHost`
+> is fail-closed"* item above. The `fs`/`process` halves were wired + security-reviewed in 2.5.A; the **`egress`
+> and `os` halves + the write-capable chat tier landed in 2.5.E** ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
+> behind the per-tool approval floor (see the resolved items below + the *Phase 2.5.E follow-ups* section). The
+> 2.5.A items were confirmed by the PR #60 review passes and deliberately **not** taken in-PR — none blocked the milestone.
 
-- [ ] **`egress` + `os` host arms are still unwired (fail-closed).** 2.5.A wired only `fs`/`process`; a built-in
-  needing `egress` (`http_request`/`web_search`) or `os` surfaces a clean `tool_unavailable` (EA1). `egress`
-  lands with [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)/2.5.E behind the per-tool
-  approval floor + the existing host-side SSRF primitive (DNS-resolve + connect-by-validated-IP + per-hop
-  redirect re-validation); `os` follows the same approval-gated path. *(medium · apps/cli/src/engine/tool-host/;
-  security-review.md; the 2.D ToolHost item above)*
+- [x] **`egress` + `os` host arms wired (governed) — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), on `development`, PR pending merge):* `apps/cli/src/engine/tool-host/egress.ts` (over the shared `connectValidated` connect-by-validated-IP mechanism, Host/`:authority`-header-strip) + `os.ts`, wired by the `chat-read-write` factory profile as **governed** classes on the fail-closed approval floor (denied in `ask`, prompt in `accept-edits`). *(apps/cli/src/engine/tool-host/; security-review.md)*
 - [ ] **Project-tier path-allowlist (`extraRoots`) not yet passed by the factory.** The `project` tier therefore
   behaves as **workspace-only** (it can only narrow the jail, never open a hole — `project` ==
-  `sandboxed`-minus-tmp). The real path-allowlist + the native first-run approval arrive with the approval-gated
-  surface in 2.5.E. *(medium · apps/cli/src/engine/tool-host/assemble.ts; ADR-0057; built-in-tools.md fs-tier note)*
-- [ ] **Write-capable chat is deferred to 2.5.E.** The `relavium chat` default profile is **read-only**, so
-  `write_file` is `tool_unavailable` and a declared `full` tier is **clamped to `project`** (an unjailed read
-  could exfiltrate `~/.ssh` / `~/.aws`). Per-tool approval ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
-  is the gate that unlocks a write-capable / `full` chat. *(medium · apps/cli/src/chat/session-host.ts; ADR-0057)*
+  `sandboxed`-minus-tmp). It did **not** land in 2.5.E — carried forward under the *Phase 2.5.E follow-ups*
+  entry above (single tracking point). *(low · apps/cli/src/engine/tool-host/assemble.ts; ADR-0057; built-in-tools.md fs-tier note)*
+- [x] **Write-capable chat — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR pending merge):* the `relavium chat` default profile is now the full-capability `chat-read-write` host — `write_file` is wired and gated by the per-tool approval floor (denied in the default `ask` mode as `tool_denied`, not `tool_unavailable`); a declared `full` tier is still **clamped to `project`** for the chat surface (an unjailed read exfiltrates `~/.ssh` / `~/.aws`, a write-capable chat shares that risk). *(apps/cli/src/chat/session-host.ts; ADR-0057)*
 - [ ] **Profile-unaware advertise-filter.** `wiredToolIds` narrows the grant by which `ToolHost` **arm** is wired,
   not by the profile's *read-only* posture — `write_file` is still advertised on a read-only chat host and only
   fail-closes at dispatch (`tool_unavailable`). Correct and safe (the dispatch backstop is authoritative), but a
@@ -592,10 +632,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `openat`/`openat2` (nor Linux `RESOLVE_BENEATH`) to pin the parent by fd, so a pure-path open re-walks the
   (possibly swapped) parents. The window is narrowed to the gap between `jailExisting`/`jailWriteTarget`'s
   `realpath` and the immediately-following open. Additionally, `O_NOFOLLOW` is `0` on **Windows**, so even the
-  final-component guard there rests on the pre-op `lstat` alone (the non-race case). Reads are bounded and the
-  write arm is the author-trusted workflow-run path (chat is read-only), so both residuals are accepted for
-  2.5.A; close the parent-swap gap with a native `openat`-based helper (or a Rust-side resolver) if a
-  write-capable / untrusted-read surface raises the bar. *(low · apps/cli/src/engine/tool-host/fs.ts)*
+  final-component guard there rests on the pre-op `lstat` alone (the non-race case). Reads are bounded, and the
+  write arm now serves the approval-gated `chat-read-write` chat as well as the author-trusted workflow-run path;
+  the **ADR-0057 mandatory security review explicitly re-assessed and accepted** this Windows-only parent-swap
+  residual for the write-capable surface (the protected-paths refusal + fs jail still hold). Close the gap with a
+  native `openat`-based helper (or a Rust-side resolver) if an untrusted-read surface raises the bar. *(low · apps/cli/src/engine/tool-host/fs.ts)*
 - [ ] **Deliberate non-fixes from the PR #60 excellence review (recorded, not bugs).** Each was weighed and
   skipped with a reason: (a) **no host-arm memoization** (fs scope-checker, process base-env, exec cache) —
   each would cache a security-relevant `realpath` on an I/O-dominated cold path, defeating the per-call

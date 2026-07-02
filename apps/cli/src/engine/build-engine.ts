@@ -59,9 +59,11 @@ export interface BuildEngineOptions {
  * The `ToolHost` (2.5.A, ADR-0055): when `options.toolEnv` is given, the shared factory wires the
  * **read+write** `fs` + `process` arms jailed to the workspace at the resolved `fs_scope` (the workflow-author
  * trust model governs the run path); the inbound-MCP `McpCapability` (2.R) is then **merged** on top with a
- * conditional spread — a true merge, never a replace. The `egress` / `os` arms stay unwired in 2.5.A (egress
- * lands with ADR-0057/2.5.E behind the approval floor), so a tool needing one is cleanly `tool_unavailable`.
- * Absent `toolEnv` (the in-memory unit/harness path) ⇒ a fail-closed `{}` base host.
+ * conditional spread — a true merge, never a replace. The `egress` / `os` arms are **intentionally never wired
+ * on this run path** — they belong only to the ADR-0057 approval-gated `chat-read-write` profile (a permanent
+ * scope boundary, not a 2.5.E deferral: workflow-run egress/os is a separate author-trusted concern) — so a
+ * tool needing one is cleanly `tool_unavailable`. Absent `toolEnv` (the in-memory unit/harness path) ⇒ a
+ * fail-closed `{}` base host.
  */
 export async function buildEngine(options: BuildEngineOptions = {}): Promise<WorkflowEngine> {
   const host = options.host ?? createCliHost();
