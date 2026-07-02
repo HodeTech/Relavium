@@ -31,12 +31,12 @@
       "Bash(head:*)",
       "Bash(tail:*)",
       "Bash(wc:*)",
+      "Bash(git push:*)",
       "Bash(tree:*)"
     ],
     "deny": [
       "Bash(sudo:*)",
       "Bash(rm -rf:*)",
-      "Bash(git push:*)",
       "Read(.env)",
       "Read(.env.*)",
       "Read(**/*.pem)"
