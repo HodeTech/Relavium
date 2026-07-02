@@ -65,6 +65,21 @@ describe('chat-projection', () => {
       expect(line).not.toContain('model-derived context');
     });
 
+    it('shows a STATIC actionable hint for a tool_failed turn, never echoing the (context-carrying) message', () => {
+      // ADR-0057 (A): a tool_failed message MAY carry model/MCP-server context (so it stays OUT of
+      // SAFE_MESSAGE_CODES), but a bare `error: tool_failed` is unhelpful — render a host-authored STATIC hint
+      // at the #1 real cause (a path outside the session workspace) WITHOUT echoing errorMessage.
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_failed',
+        errorMessage: 'some model/MCP-derived context that must not be shown',
+      });
+      expect(line).toContain('error: tool_failed —'); // an actionable hint, not the bare code
+      expect(line).toContain("outside this session's workspace");
+      expect(line).not.toContain('model/MCP-derived context'); // the raw message is NOT echoed (F4 constraint)
+    });
+
     it('terminal-sanitizes the rendered reason (strips ANSI/OSC/control bytes) and omits an empty reason', () => {
       const ESC = String.fromCharCode(0x1b);
       const BEL = String.fromCharCode(0x07);

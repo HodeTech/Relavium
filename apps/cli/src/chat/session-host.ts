@@ -2,6 +2,7 @@ import {
   AgentSession,
   BUILTIN_TOOLS,
   BudgetGovernor,
+  DEFAULT_AGENT_TURN_LIMITS,
   RunEventBus,
   createSessionEventSink,
   createSessionHandle,
@@ -206,6 +207,11 @@ function buildSessionRuntime(
     // "empty/absent ⇒ run_command disabled"). Wiring it now means a 2.5.E/ADR-0057 per-mode allowlist flows
     // through automatically rather than being silently dropped by reading only the factory's `host`.
     toolPolicy: factoryEnv.policy,
+    // Interactive-surface turn bounds: recover from a host tool EXECUTION failure (a file-not-found read, a
+    // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
+    // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
+    // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
+    limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     ...(governor === undefined
       ? {}

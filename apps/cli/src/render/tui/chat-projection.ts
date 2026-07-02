@@ -85,6 +85,15 @@ export function formatTurnSummary(summary: TurnSummary): string {
     // final-summary.ts (which renders errorMessage for every code), the chat path restricts it to the vetted
     // approval-floor codes, since a chat turn is interactive/lower-trust.
     head = `error: ${summary.errorCode} — ${reason}`;
+  } else if (summary.errorCode === 'tool_failed') {
+    // A tool call ended the turn (a repeated failure spent the correction budget, or a non-recoverable tool
+    // error). On the chat surface a file-not-found is usually fed back to the model (ADR-0057 recoverToolFailures)
+    // so it seldom reaches here — but when the turn DOES die on tool_failed we owe the user more than a bare code.
+    // We must NOT echo `errorMessage` (a tool_failed message MAY carry model/prompt/MCP-server context — the very
+    // reason it is outside SAFE_MESSAGE_CODES); instead a STATIC, host-authored hint at the most common real
+    // cause: a path outside the session workspace (the #1 launch-cwd gotcha) or an unavailable target.
+    head =
+      "error: tool_failed — a tool call failed (a path may be outside this session's workspace, or the target was unavailable)";
   } else {
     head = `error: ${summary.errorCode}`;
   }

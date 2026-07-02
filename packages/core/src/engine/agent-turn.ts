@@ -61,8 +61,9 @@ import type { NodeStreamEvent } from './node-executor.js';
  * The two bounds are **not multiplicative** — `maxToolTurns` is the worst-case **egress ceiling** (the
  * tool loop engages a provider at most `maxToolTurns + 1` times before the guard fails the turn with
  * `turn_limit`), while `maxToolCorrections` is a **monotonic sub-budget** *within* that loop: a
- * model-correctable tool error (`unknown_tool` / `invalid_args`) increments it and, once exceeded, ends
- * the turn EARLY with `tool_failed`. A genuine (non-correctable) tool round never resets it, so
+ * recoverable tool error (`unknown_tool` / `invalid_args`, plus a host `execution_failed` when
+ * {@link AgentTurnLimits.recoverToolFailures} is set) increments it and, once exceeded, ends the turn EARLY
+ * with `tool_failed`. A genuine (non-recoverable) tool round never resets it, so
  * corrections accumulate across interleaved genuine rounds. Net worst-case egress is `maxToolTurns + 1`
  * provider calls regardless of `maxToolCorrections` — the correction budget can only *shorten* a turn,
  * never extend its egress (so the DoS bound is the turn budget alone, not the product of the two).
@@ -72,6 +73,16 @@ export interface AgentTurnLimits {
   readonly maxToolTurns: number;
   /** Max model-correctable tool-error rounds (`unknown_tool` / `invalid_args`) before escalating. */
   readonly maxToolCorrections: number;
+  /**
+   * When `true`, a HOST tool EXECUTION failure (`execution_failed` — a file-not-found read, a transient egress
+   * error) is fed back to the model as a correctable `isError` tool result (so it can adapt — try another path,
+   * or tell the user) instead of ENDING the turn with `tool_failed`. It shares the `maxToolCorrections` budget,
+   * so a model looping on a failing tool is still bounded. **Opt-in for the INTERACTIVE chat surface only**
+   * (`relavium chat` / Home / one-shot `agent run`). Absent/`false` (the default, and every WORKFLOW node) keeps
+   * the fail-fast behavior an unattended run relies on — a genuine host failure ends the turn loudly and the
+   * node-retry / run-failure path engages, rather than the model silently papering over it.
+   */
+  readonly recoverToolFailures?: boolean;
 }
 
 /** The run-default loop bounds (1.O). 1.V overrides these via the same `limits` param — no restructuring. */
@@ -220,9 +231,17 @@ export function codeForLlmError(error: LlmError): ErrorCode {
   }
 }
 
-/** A tool throw the model can correct by seeing an `isError` tool result and trying again. */
-function isModelCorrectable(err: ToolDispatchError): boolean {
-  return err.code === 'unknown_tool' || err.code === 'invalid_args';
+/**
+ * A tool throw the turn recovers by feeding the model an `isError` tool result (which increments the shared
+ * `maxToolCorrections` budget) instead of ending the turn. Always the model's own syntactic mistakes
+ * (`unknown_tool` / `invalid_args`); PLUS a host `execution_failed` (a file-not-found, a transient egress
+ * error) ONLY when `limits.recoverToolFailures` is set (the interactive chat surface — see
+ * {@link AgentTurnLimits.recoverToolFailures}). A `tool_denied` / `tool_unavailable` / `cancelled` is NEVER
+ * recoverable here (a security/cancel boundary — it stays fatal so it never loops).
+ */
+function isRecoverableToolError(err: ToolDispatchError, limits: AgentTurnLimits): boolean {
+  if (err.code === 'unknown_tool' || err.code === 'invalid_args') return true;
+  return err.code === 'execution_failed' && limits.recoverToolFailures === true;
 }
 
 /** Map a non-correctable tool throw to the node `ErrorCode` (cancel wins; a denial is fatal). */
@@ -521,7 +540,7 @@ async function dispatchToolCalls(
         toolInput: {},
         attemptNumber,
       });
-      if (err instanceof ToolDispatchError && isModelCorrectable(err)) {
+      if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
         correctable = true;
         results.push({
           role: 'tool',
