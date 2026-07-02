@@ -123,13 +123,16 @@ export type RetryableErrorCode = (typeof RETRYABLE_ERROR_CODES)[number];
 /**
  * The side-effecting **tool ACTION classes** a per-tool approval governs (ADR-0057 EA3). Derived from a
  * tool's `ToolPolicyClass` (tool-registry.md): `fs_write` (a `write_file`), `process` (a model-controlled
- * `run_command` — **not** the pre-approved `git_status`, which exposes no model command), and `egress`
- * (`http_request` / `web_search` / `mcp_call`). Read-only fs reads, `git_status`, and clipboard are **not**
- * governed (mirrors [ADR-0041](../decisions/0041-external-action-governance-seam.md) §ActionClass). Carried
- * by `agent:approval_requested` and the engine's `ConfirmActionHook`; it lives here so `@relavium/shared`
- * owns the vocabulary and the engine derives its `ToolActionClass` type from this one list (no second home).
+ * `run_command` — **not** the pre-approved `git_status`, which exposes no model command), `egress`
+ * (`http_request` / `web_search` / `mcp_call`), and `os` (`read_clipboard` / `notify` — the clipboard is
+ * ambient, un-jailed OS state that routinely holds a freshly-copied secret, so a READ is an exfiltration
+ * sink, and `notify` paints a native desktop notification; both are gated like any governed action, ADR-0057
+ * §security review). Read-only fs reads + `git_status` are **not** governed (mirrors
+ * [ADR-0041](../decisions/0041-external-action-governance-seam.md) §ActionClass). Carried by
+ * `agent:approval_requested` and the engine's `ConfirmActionHook`; it lives here so `@relavium/shared` owns
+ * the vocabulary and the engine derives its `ToolActionClass` type from this one list (no second home).
  */
-export const TOOL_ACTION_CLASSES = ['fs_write', 'process', 'egress'] as const;
+export const TOOL_ACTION_CLASSES = ['fs_write', 'process', 'egress', 'os'] as const;
 export type ToolActionClass = (typeof TOOL_ACTION_CLASSES)[number];
 
 /**

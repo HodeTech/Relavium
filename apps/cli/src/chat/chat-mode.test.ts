@@ -47,20 +47,21 @@ describe('mode cycle + parsing', () => {
 });
 
 describe('isGovernedTool — mirrors the registry governedAction (advertise-filter hide set)', () => {
-  it('governs write_file (fsWrite), http_request/web_search/mcp_call (egress), run_command (model command)', () => {
+  it('governs write_file (fsWrite), egress, run_command (model command), and os (read_clipboard/notify)', () => {
     expect(isGovernedTool(builtin('write_file'))).toBe(true);
     expect(isGovernedTool(builtin('http_request'))).toBe(true);
     expect(isGovernedTool(builtin('web_search'))).toBe(true);
     expect(isGovernedTool(builtin('mcp_call'))).toBe(true);
     expect(isGovernedTool(builtin('run_command'))).toBe(true);
     expect(isGovernedTool(builtin('git_commit'))).toBe(true);
+    expect(isGovernedTool(builtin('read_clipboard'))).toBe(true); // os — an un-jailed exfiltration sink (ADR-0057)
+    expect(isGovernedTool(builtin('notify'))).toBe(true); // os — a native-notification side effect
   });
 
   it('does NOT govern the read-only tools (read_file, list_directory, git_status without a policyTarget)', () => {
     expect(isGovernedTool(builtin('read_file'))).toBe(false);
     expect(isGovernedTool(builtin('list_directory'))).toBe(false);
     expect(isGovernedTool(builtin('git_status'))).toBe(false); // spawnsProcess but NO policyTarget ⇒ read-only
-    expect(isGovernedTool(builtin('read_clipboard'))).toBe(false); // os, non-governed
   });
 
   it('governs a discovered MCP tool (egress: mcp)', () => {
@@ -79,10 +80,12 @@ describe('isGovernedTool — mirrors the registry governedAction (advertise-filt
         'http_request',
         'web_search',
         'mcp_call',
+        'read_clipboard',
+        'notify',
       ]),
     );
     // Explicit negatives for the read-only tools the positive cases above don't name.
-    for (const id of ['notify', 'read_media', 'invoke_agent']) {
+    for (const id of ['read_media', 'invoke_agent']) {
       expect(isGovernedTool(builtin(id))).toBe(false);
     }
   });

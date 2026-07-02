@@ -874,6 +874,26 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     );
   });
 
+  it('createChatModeControl ask: denies an OS-class dispatch too (read_clipboard) — the exfil sink is gated', async () => {
+    // ADR-0057 §security review: read_clipboard reads ambient secret-bearing OS state, so it is a governed os
+    // action — denied in ask (never advertised, and the confirm floor rejects it if the model calls it anyway).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['read_clipboard']),
+      providers: scriptedResolver([callWithArgs('c1', 'read_clipboard', {})]),
+    });
+    createChatModeControl(built, createChatStore(false)); // ask regime active
+    built.session.start();
+    await built.session.sendMessage('read my clipboard');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+  });
+
   it('createChatModeControl accept-edits: an APPROVE lets the governed write through the store prompt', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({

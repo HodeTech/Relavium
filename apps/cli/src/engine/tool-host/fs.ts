@@ -557,9 +557,14 @@ async function jailWriteTarget(
 ): Promise<{ realDir: string; finalTarget: string }> {
   const lexical = lexicalTarget(config, path);
   const targetDir = dirname(lexical);
-  // Verify the deepest EXISTING ancestor is in-scope before creating anything, so a symlinked ancestor
-  // pointing outside the scope is caught before a single byte or stray dir is written there.
-  assertInScope(inScope, await deepestExistingReal(targetDir));
+  // Verify the deepest EXISTING ancestor is in-scope AND not protected before creating anything, so a
+  // symlinked/aliased ancestor pointing outside the scope — OR resolving INTO a protected dir (a Win32 8.3
+  // short name like `GIT~1` → `.git`, which the lexical pre-check misses) — is caught before `mkdir` creates
+  // even an empty subdir there. This closes the createDirs side-effect the realpath'd finalTarget check alone
+  // would only catch AFTER the mkdir.
+  const deepestReal = await deepestExistingReal(targetDir);
+  assertInScope(inScope, deepestReal);
+  assertNotProtectedPath(deepestReal);
   if (createDirs) await mkdir(targetDir, { recursive: true });
   // The parent must now exist (created above, or pre-existing) — re-resolve + re-check (tightens the window).
   const realDir = await realpath(targetDir).catch(() => {

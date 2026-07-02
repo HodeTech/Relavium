@@ -389,9 +389,10 @@ async function confirmDispatch(
  * The side-effecting action class a per-tool approval governs, or `undefined` for an un-gated tool. A
  * model-controlled `run_command` (a resolved `command` target) is `process`; the pre-approved `git_status`
  * (no command target) is NOT governed — matching `enforcePolicy`, which runs the command allowlist only when
- * a command target is present. An fs READ, clipboard, and `invoke_agent` are not governed
+ * a command target is present. An fs READ and `invoke_agent` are not governed
  * ([ADR-0041](../../../../docs/decisions/0041-external-action-governance-seam.md) §ActionClass); every egress
- * IS, even a read-only `web_search` (an exfiltration sink).
+ * IS, even a read-only `web_search` (an exfiltration sink); and an `os` action (`read_clipboard` / `notify`)
+ * IS — the clipboard is ambient, un-jailed OS state that routinely holds a freshly-copied secret (ADR-0057).
  */
 function governedAction(def: ToolDef, target: PolicyTarget): ToolActionClass | undefined {
   if (def.policy.fsWrite === true) {
@@ -402,6 +403,9 @@ function governedAction(def: ToolDef, target: PolicyTarget): ToolActionClass | u
   }
   if (def.policy.spawnsProcess && target.command !== undefined) {
     return 'process';
+  }
+  if (def.policy.os === true) {
+    return 'os';
   }
   return undefined;
 }
@@ -420,9 +424,13 @@ function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPr
       const parsed = extractHttpsHost(target.url);
       return parsed === null ? {} : { host: parsed.host };
     }
+    case 'os':
+      // read_clipboard / notify carry no path/command/host target — the action class + the tool id (on the
+      // approval request) are the whole preview (the prompt reads "Approve read_clipboard?").
+      return {};
     default: {
-      // Exhaustiveness guard — a future ToolActionClass member (e.g. an `os` action) fails loud HERE at
-      // compile time (the `never` assignment) with a precise error, not a generic "not all paths return".
+      // Exhaustiveness guard — a future ToolActionClass member fails loud HERE at compile time (the `never`
+      // assignment) with a precise error, not a generic "not all paths return".
       const exhaustive: never = action;
       return exhaustive;
     }

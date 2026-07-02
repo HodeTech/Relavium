@@ -60,6 +60,13 @@ export interface ToolPolicyClass {
   readonly spawnsProcess: boolean;
   /** Outbound egress, discriminated by kind — `http_request` / `web_search` / `mcp_call`. */
   readonly egress?: EgressKind;
+  /**
+   * An OS-integration action — `read_clipboard` (an unjailed read of ambient, secret-bearing OS state) /
+   * `notify` (a native desktop notification). Governed like the other action classes so the interactive
+   * approval floor gates it (ADR-0057 §security review): the clipboard is an exfiltration sink no fs jail
+   * covers, so it must not run unapproved in a read-only mode. Absent/false ⇒ not an os action.
+   */
+  readonly os?: boolean;
   /** Requires a human-gate approval in an automated workflow before it may execute — `git_commit`. */
   readonly requiresGateApproval: boolean;
 }

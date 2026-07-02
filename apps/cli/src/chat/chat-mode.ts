@@ -110,15 +110,16 @@ export class ApprovalCache {
  * of the registry's runtime `confirmAction` `governedAction`: it also hides a `requiresGateApproval` tool
  * (`git_commit`), which `confirmAction` does NOT gate (its `enforcePolicy` human-gate floor denies it on the
  * chat path instead) but which is plainly not read-only. Covered: `write_file` (`fsWrite`), any `egress`
- * (`http_request` / `web_search` / `mcp_call` / a discovered MCP tool), a process tool that resolves a
- * MODEL-CONTROLLED command (a `policyTarget` — `run_command`), and a gate-approval tool. `git_status` has NO
- * `policyTarget` and no gate flag ⇒ read-only, advertised in every mode; `read_file` / `list_directory` /
- * `read_clipboard` are likewise read-only. (The `confirm` floor stays authoritative for the confirmAction
- * classes regardless of what the filter offers.)
+ * (`http_request` / `web_search` / `mcp_call` / a discovered MCP tool), an `os` action (`read_clipboard` /
+ * `notify`), a process tool that resolves a MODEL-CONTROLLED command (a `policyTarget` — `run_command`), and a
+ * gate-approval tool. `git_status` has NO `policyTarget` and no gate flag ⇒ read-only, advertised in every
+ * mode; `read_file` / `list_directory` are likewise read-only. (The `confirm` floor stays authoritative for
+ * the confirmAction classes regardless of what the filter offers.)
  */
 export function isGovernedTool(def: ToolDef): boolean {
   if (def.policy.fsWrite === true) return true;
   if (def.policy.egress !== undefined) return true;
+  if (def.policy.os === true) return true; // read_clipboard / notify — a governed os action (ADR-0057)
   if (def.policy.requiresGateApproval === true) return true;
   return def.policy.spawnsProcess === true && def.policyTarget !== undefined;
 }

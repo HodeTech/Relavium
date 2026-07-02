@@ -446,6 +446,18 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
   // platform; its pass-path (an existing non-protected target realpaths cleanly) is exercised by the overwrite
   // test above. A final-component SYMLINK — the POSIX aliasing vector — is caught earlier by assertNotSymlink.
 
+  it('refuses createDirs THROUGH a symlinked ancestor resolving into `.git/` BEFORE any mkdir side-effect', async () => {
+    // The deepest-existing ancestor is realpath'd + protected-checked BEFORE mkdir, so a symlink/alias ancestor
+    // resolving into `.git` can't even create an empty subdir there (the Win32 8.3 `GIT~1` case, reproduced on
+    // POSIX via a symlink). Denied at the ancestor, not merely at the final file.
+    await mkdir(join(workspace, '.git'), { recursive: true });
+    await symlink(join(workspace, '.git'), join(workspace, 'glink'));
+    await expect(
+      sandboxed().writeFile('glink/newdir/x', 'y', { createDirs: true }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    await expect(readdir(join(workspace, '.git', 'newdir'))).rejects.toThrow(); // no empty subdir was created
+  });
+
   it('ALLOWS a `.gitignore` FILE — only the `.git` DIRECTORY segment is protected', async () => {
     const result = await sandboxed().writeFile('.gitignore', 'node_modules\n', {});
     expect(result.bytesWritten).toBeGreaterThan(0);

@@ -108,10 +108,11 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
     // command. Loosening the chat `allowedCommands` in a future profile is therefore a security-review trigger.
     process: createNodeProcessCapability({ workspaceDir: opts.workspaceDir }),
     // egress + os: wired ONLY for the full-capability `chat-read-write` profile (ADR-0057 closes the 2.5.A
-    // deferral). `egress` rides the fail-closed approval floor (a governed class); `os` (clipboard/notify) is
-    // non-governed and gated only by the mode's advertise-filter. The read-only chat + workflow profiles wire
-    // neither: a read-only chat must not reach the network, and the workflow run path's egress/os is a separate
-    // (author-trusted) concern, not part of the chat approval story.
+    // deferral). BOTH are GOVERNED classes that ride the fail-closed approval floor — `egress` (an
+    // exfiltration sink) and `os` (`read_clipboard` reads ambient secret-bearing OS state; `notify` paints a
+    // native notification), so both are denied in `ask`/`plan` and prompt in `accept-edits`. The read-only chat
+    // + workflow profiles wire neither: a read-only chat must not reach the network or the clipboard, and the
+    // workflow run path's egress/os is a separate (author-trusted) concern, not part of the chat approval story.
     ...(wireEgressOs
       ? {
           egress: createNodeEgressCapability(
