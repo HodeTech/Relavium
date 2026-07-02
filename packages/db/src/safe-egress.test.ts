@@ -128,8 +128,12 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
           'Content-Length': '3',
           'Transfer-Encoding': 'chunked',
           Connection: 'keep-alive',
+          'Keep-Alive': 'timeout=5',
           'Proxy-Connection': 'keep-alive',
+          'Proxy-Authorization': 'Basic xxx',
+          'Proxy-Authenticate': 'Basic',
           TE: 'trailers',
+          Trailer: 'X-Checksum',
           Upgrade: 'websocket',
           Expect: '100-continue',
           'x-keep': 'ok',
@@ -143,8 +147,12 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
       'Content-Length',
       'Transfer-Encoding',
       'Connection',
+      'Keep-Alive',
       'Proxy-Connection',
+      'Proxy-Authorization',
+      'Proxy-Authenticate',
       'TE',
+      'Trailer',
       'Upgrade',
       'Expect',
     ]) {
@@ -166,6 +174,9 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
         method: 'GET',
         headers: {
           'X-Forwarded-Host': 'evil-backend.example', // forwarding header → vhost reroute
+          'X-Forwarded-For': '10.0.0.1',
+          'X-Forwarded-Proto': 'http',
+          Forwarded: 'for=10.0.0.1',
           'X-Inject': 'ok\r\nHost: evil.example', // CRLF in value would splice a second header line
           'Bad Name': 'v', // a space makes it a non-token name
           'X-Good': 'keep',
@@ -174,9 +185,16 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
       deps,
       sig(),
     );
-    expect(captured?.headers?.['X-Forwarded-Host']).toBeUndefined();
-    expect(captured?.headers?.['X-Inject']).toBeUndefined(); // CR/LF value dropped
-    expect(captured?.headers?.['Bad Name']).toBeUndefined(); // non-token name dropped
+    for (const stripped of [
+      'X-Forwarded-Host',
+      'X-Forwarded-For',
+      'X-Forwarded-Proto',
+      'Forwarded',
+      'X-Inject', // CR/LF value dropped
+      'Bad Name', // non-token name dropped
+    ]) {
+      expect(captured?.headers?.[stripped]).toBeUndefined();
+    }
     expect(captured?.headers?.['X-Good']).toBe('keep');
   });
 

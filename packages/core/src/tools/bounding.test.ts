@@ -273,18 +273,68 @@ describe('redactSecretShapedText', () => {
     );
   });
 
+  it('redacts a QUOTED multi-word passphrase WHOLE — no interior-space tail leak', () => {
+    // The value must be consumed through the closing quote, not stopped at the first space.
+    const out = redactSecretShapedText('{"password":"hunter2 dragon rider"}');
+    expect(out).not.toContain('dragon');
+    expect(out).not.toContain('rider');
+  });
+
+  it('redacts a PEM private-key block (space-separated markers the key-pattern cannot see)', () => {
+    const pem = [
+      '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----',
+      'b3BlbnNzaC1r' + 'ZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAA',
+      'MIIEvQIBADAN' + 'BgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ',
+      '-----END ' + 'OPENSSH PRIVATE KEY-----',
+    ].join('\n');
+    const out = redactSecretShapedText(`key material:\n${pem}\ndone`);
+    expect(out).toContain('[redacted]');
+    expect(out).not.toContain('MIIEvQ' + 'IBADAN');
+    expect(out).not.toContain('b3Blbn' + 'NzaC1r');
+  });
+
+  it('redacts every standalone token PREFIX shape (locks the extended alternation against a typo)', () => {
+    const tokens = [
+      'sk-' + 'abcdef0123456789ABCDEF',
+      'sk' + '_live_abcdef0123456789ABCD',
+      'AKIA' + 'IOSFODNN7EXAMPLE',
+      'ASIA' + 'IOSFODNN7EXAMPLE',
+      'ghp' + '_0123456789abcdef0123456789abcdefABCD',
+      'github' + '_pat_0123456789abcdefABCDEF_more',
+      'glpat' + '-0123456789abcdefABCD',
+      'xoxb' + '-0123456789-abcdefABCDEF',
+      'AIza' + 'SyA0123456789abcdefABCDEF0123456789',
+      'ya29' + '.a0AbCdEf0123456789_-abcdef',
+      'hf' + '_0123456789abcdefABCDEFGHIJ',
+      'npm' + '_0123456789abcdefABCDEFGHIJ',
+      'eyJ' + 'hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY.SflKxwRJSMeKKF2QT4',
+    ];
+    for (const tok of tokens) {
+      expect(redactSecretShapedText(`value ${tok} end`)).not.toContain(tok);
+    }
+  });
+
   it('leaves ordinary text (and short non-secret values) intact', () => {
     expect(redactSecretShapedText('the quick brown fox')).toBe('the quick brown fox');
     expect(redactSecretShapedText('count = 42')).toBe('count = 42'); // not a secret-ish key
   });
 
-  it('is ReDoS-safe on a value-ENGAGING adversarial input (no catastrophic backtracking)', () => {
-    // Unlike a keyless run, this drives BOTH the scheme-token run (200k) and the key=value value (50k) — the
-    // exact machinery a quadratic pattern would blow up on. Linear completes in ms; the bound would fail a regression.
+  it('over-redaction is the safe direction — a benign `token: <long>` is swept up (documented tradeoff)', () => {
+    // A DISPLAY-field false positive is acceptable (the model's copy is untouched). This pins the deliberate
+    // over-redaction so a future "tighten precision" change is a conscious test edit, not a silent secret leak.
+    expect(redactSecretShapedText('token abcdefghijklmnop')).toContain('[redacted]');
+  });
+
+  it('is ReDoS-safe on a value-ENGAGING input AND fully redacts it (timing + correctness)', () => {
+    // Drives BOTH the scheme-token run (200k) and a long quoted value (50k) — the machinery a quadratic pattern
+    // blows up on. The correctness assertions catch a quantifier-narrowing regression that would leak the tail
+    // (a pure timing bound would pass such a regression — it runs FASTER, not slower).
     const evil = `Authorization: Bearer ${'a'.repeat(200_000)} my_secret="${'x'.repeat(50_000)}"`;
     const started = performance.now();
-    redactSecretShapedText(evil);
+    const out = redactSecretShapedText(evil);
     expect(performance.now() - started).toBeLessThan(500);
+    expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone
+    expect(out).not.toContain('x'.repeat(100)); // the long quoted value tail is gone
   });
 });
 

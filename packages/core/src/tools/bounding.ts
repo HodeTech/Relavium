@@ -143,13 +143,22 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
 export function redactSecretShapedText(text: string): string {
   return (
     text
+      // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
+      // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
+      .replace(
+        /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,20000}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
+        '[redacted]',
+      )
       // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`.
       .replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/gi, '$1 [redacted]')
       // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
-      // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body) where
-      // a closing quote sits between the key and the `:`.
+      // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
+      // value has two branches: a QUOTED value consumes lazily through the FIRST matching closing quote (so a
+      // passphrase with interior spaces — `"hunter2 dragon"` — is redacted whole, however long, not just up to
+      // the first space), bounded by the line (`[^\r\n]`); an UNQUOTED value runs to the next whitespace/
+      // delimiter. Lazy `*?` with a single-class body + a fixed backref is linear (finds the first close) ⇒ ReDoS-safe.
       .replace(
-        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*["']?[^\s"',;&]{6,}/gi,
+        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:(["'])[^\r\n]*?\1|[^\s"',;&]{6,})/gi,
         '[redacted]',
       )
       // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub tokens + PAT,

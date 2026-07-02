@@ -106,14 +106,19 @@ function mergeEgressHeaders(
   modelHeaders: Readonly<Record<string, string>> | undefined,
   credential: string | undefined,
 ): Record<string, string> {
-  const hasCredential = credential !== undefined && credential.length > 0;
+  // Trim the resolved credential: a stored key pasted with a trailing newline is a common footgun, and an
+  // untrimmed CR/LF in the value would be dropped by sanitizeHopHeaders' request-splitting guard — sending the
+  // request UNauthenticated with no diagnostic. Trimming keeps the common case working (an internal CR/LF is a
+  // malformed token that legitimately fails downstream).
+  const trimmed = credential?.trim();
+  const hasCredential = trimmed !== undefined && trimmed.length > 0;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(modelHeaders ?? {})) {
     if (hasCredential && key.trim().toLowerCase() === 'authorization') continue; // resolved credential wins
     out[key] = value;
   }
   if (hasCredential) {
-    out['authorization'] = `Bearer ${credential}`;
+    out['authorization'] = `Bearer ${trimmed}`;
   }
   return out;
 }

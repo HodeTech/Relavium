@@ -214,7 +214,10 @@ const STRIPPED_HOP_HEADERS: ReadonlySet<string> = new Set([
   'keep-alive',
   'proxy-connection',
   'te',
+  'trailer',
   'upgrade',
+  'proxy-authenticate',
+  'proxy-authorization',
   'expect',
   'x-forwarded-host',
   'x-forwarded-for',
@@ -273,9 +276,14 @@ export async function readBounded(
  * type is a typed, secret-free {@link SafeEgressError} — every raw resolver / socket / `new URL` / body-read
  * error becomes `SafeEgressError('network')`, never a raw leak.
  *
- * The timeout does BOTH: it `abort()`s the controller (cooperative cancellation for an `fn` that honors the
- * signal — the Node deps do, tearing down the socket) AND rejects the race after `timeoutMs`, so an `fn` that
- * IGNORES its signal still fails deterministically at the deadline instead of hanging the caller forever.
+ * The timeout does BOTH: it `abort()`s the controller (cooperative cancellation) AND rejects the race after
+ * `timeoutMs`, so the CALLER is always unblocked at the deadline — even for an `fn` that ignores its signal.
+ *
+ * CANCELLATION SCOPE: the abort reaches the CONNECTION phase (`openConnection` passes the signal to
+ * `https.request`, which tears the socket down), but NOT the DNS-resolution phase — Node's
+ * `dns.promises.lookup` is not abortable, so a hung authoritative resolver keeps a background `getaddrinfo`
+ * running (a libuv threadpool slot) until the OS resolver's own timeout, even though the deadline already
+ * rejected the caller. The deadline bounds the caller's wait, not that background resource.
  */
 export async function withEgressTimeout<T>(
   signal: AbortSignalLike | undefined,

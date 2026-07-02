@@ -148,6 +148,30 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
     expect(calls[0]?.headers?.['Authorization']).toBe('Bearer MODEL-OWN'); // untouched — nothing to override
   });
 
+  it('drops BOTH case variants when the model sets Authorization AND authorization simultaneously', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({ deps, resolveCredential: () => Promise.resolve('WON') });
+    await egress.fetch({
+      method: 'GET',
+      url: 'https://api.example.com/x',
+      credentialRef: 'kc:x',
+      headers: { Authorization: 'Bearer A', authorization: 'Bearer B' }, // both casings present
+    });
+    expect(calls[0]?.headers?.['Authorization']).toBeUndefined();
+    expect(calls[0]?.headers?.['authorization']).toBe('Bearer WON'); // exactly one, the resolved credential
+  });
+
+  it('TRIMS a resolved credential with stray surrounding whitespace (a pasted-key footgun)', async () => {
+    const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
+    const egress = createNodeEgressCapability({
+      deps,
+      resolveCredential: () => Promise.resolve('  KEY-WITH-NEWLINE\n'),
+    });
+    await egress.fetch({ method: 'GET', url: 'https://api.example.com/x', credentialRef: 'kc:x' });
+    // Without the trim the CR/LF value would be dropped by the request-splitting guard → sent unauthenticated.
+    expect(calls[0]?.headers?.['authorization']).toBe('Bearer KEY-WITH-NEWLINE');
+  });
+
   it('proceeds WITHOUT a credential when the ref does not resolve (a provider 401 surfaces, never a crash)', async () => {
     const { deps, calls } = fakeDeps({ resolve: PUBLIC, response: { status: 200 } });
     const egress = createNodeEgressCapability({
