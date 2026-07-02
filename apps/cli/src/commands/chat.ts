@@ -639,16 +639,34 @@ export function createChatLineHandler(
         // declare a single POSITIONAL value set (e.g. `/mode plan`), whose values join the allowed set — so an
         // invalid mode is rejected HERE, before run. Echo a bad token SANITIZED through the notice channel —
         // interactive errors belong in-view (ink), not on stderr behind the live view.
+        const positionalValues = command.positional?.values ?? [];
         const allowed = new Set([
           ...(command.args ?? []).map((arg) => arg.flag),
-          ...(command.positional?.values ?? []),
+          ...positionalValues,
         ]);
+        // When the command declares a positional, list its valid values in the rejection (so `/mode aggressive`
+        // teaches the four names, not just "unknown argument").
+        const validHint =
+          command.positional === undefined ? '' : ` Valid: ${positionalValues.join(', ')}.`;
         const bad = tokens.find((token) => !allowed.has(token));
         if (bad !== undefined) {
           emitOutput(
-            `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.`,
+            `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`,
           );
           return;
+        }
+        // Enforce the declared positional ARITY: a `{ name, values }` positional is a SINGLE value, so more than
+        // one positional-value token (`/mode plan accept-edits`) is rejected here rather than silently dropping
+        // the extras downstream. (Flag tokens are not positional values, so they don't count against the arity.)
+        if (command.positional !== undefined) {
+          const positionalSet = new Set(positionalValues);
+          const positionalCount = tokens.filter((token) => positionalSet.has(token)).length;
+          if (positionalCount > 1) {
+            emitOutput(
+              `/${command.name}: takes a single ${command.positional.name} value (got ${positionalCount}).${validHint}`,
+            );
+            return;
+          }
         }
         await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
         return;

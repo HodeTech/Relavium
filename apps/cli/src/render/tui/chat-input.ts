@@ -51,6 +51,20 @@ export type ChatKeyAction =
  * printable char (not a ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller
  * folds them functionally, preserving the accumulating semantics across a batched multi-event chunk.
  */
+/**
+ * The approval-prompt keystroke intercept (accept-edits / auto's protected-path fallback), extracted so
+ * {@link reduceChatKey} stays flat: `[y]`/`1` approve once, `[a]`/`2` approve always, `[n]`/`r`/`3` reject,
+ * `Esc` aborts the whole turn (and this pending approval); every other key is ignored. It bypasses the
+ * running-swallow so a pending approval can never deadlock.
+ */
+function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
+  if (key.escape === true) return { kind: 'abort' };
+  if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
+  if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
+  if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
+  return { kind: 'none' };
+}
+
 export function reduceChatKey(
   char: string,
   key: ChatKey,
@@ -58,14 +72,7 @@ export function reduceChatKey(
   running: boolean,
   approvalPending = false,
 ): ChatKeyAction {
-  if (approvalPending) {
-    // The approval prompt intercept — bypasses the running-swallow so the prompt can never deadlock.
-    if (key.escape === true) return { kind: 'abort' }; // Esc cancels the whole turn (and this pending approval)
-    if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
-    if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
-    if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
-    return { kind: 'none' }; // ignore any other key while an approval is pending
-  }
+  if (approvalPending) return reduceApprovalKey(char, key);
   if (key.ctrl === true && char === 'c') return { kind: 'cancel' };
   if (key.tab === true && key.shift === true) return { kind: 'cycle-mode' }; // Shift+Tab cycles the chat mode
   if (key.escape === true && running) return { kind: 'abort' }; // mid-turn abort, keeps the session (EA7)

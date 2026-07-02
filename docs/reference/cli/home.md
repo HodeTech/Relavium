@@ -1,8 +1,8 @@
 # `relavium` — Bare-invocation interactive Home
 
-> Last updated: 2026-06-29
+> Last updated: 2026-07-02
 
-- **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste). The in-app slash palette / `/help` / `/doctor` (2.5.C), the reseat-less mode keymap + per-tool approval (2.5.E), and the Home-side `/models` picker land in later 2.5 workstreams and **extend** this same canonical home.
+- **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste); the in-app slash palette / `/help` / `/doctor` + the context-aware footer landed in **2.5.C**; and the reseat-less mode keymap (`Shift+Tab` / `/mode`) + the fail-closed per-tool approval + the `Esc` mid-turn abort landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — all **extend** this same canonical home. The Home-side `/models` picker is a later 2.5 workstream.
 - **Surface**: CLI (a bare `relavium` with no subcommand, on a TTY)
 - **Scope**: Phase 2.5, local-first. The Home is a thin surface over the **same** `@relavium/core` engine + `AgentSession` as `relavium chat` — it is a management + chat shell, never an IDE.
 - **Related**: [commands.md](commands.md), [chat-session.md](chat-session.md), [../contracts/config-spec.md](../contracts/config-spec.md), [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md), [../../decisions/0054-cli-bare-invocation-interactive-home.md](../../decisions/0054-cli-bare-invocation-interactive-home.md), [../../decisions/0049-cli-machine-output-contract.md](../../decisions/0049-cli-machine-output-contract.md), [../../decisions/0047-cli-framework-commander-ink-clack.md](../../decisions/0047-cli-framework-commander-ink-clack.md), [../../decisions/0024-agent-first-entry-point-agentsession.md](../../decisions/0024-agent-first-entry-point-agentsession.md), [../../decisions/0007-desktop-is-not-an-ide.md](../../decisions/0007-desktop-is-not-an-ide.md)
@@ -75,12 +75,15 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | printable | append to the prompt buffer | append (idle) / ignored mid-turn | ignored |
 | Return | submit → start a chat | submit the turn (idle) / ignored mid-turn | ignored |
 | Backspace / Delete | erase one char | erase one char (idle) / ignored mid-turn | ignored |
+| **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
+| **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
+| **`[y]`/`[a]`/`[n]`/`[esc]`** (2.5.E) | — | **answer a pending per-tool approval** — `[y]` once · `[a]` always · `[n]` no · `[esc]` abort (the prompt owns the keyboard) | — |
 | **Ctrl-C** | **clean exit (`0`)** | **`/cancel`** → end the chat, return to Home | **bail out** (exit) |
 | **Ctrl-D** (EOF) | **clean exit (`0`)** on an **empty** prompt (a non-empty buffer keeps it — no data loss) | — | **clean exit (`0`)** (the prompt is empty while building, so EOF bails the build like Ctrl-C) |
 
-Ctrl-C is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge) and even mid-bracketed-paste (so a dropped paste-end marker can never trap the user). The richer slash palette, `@`-mention, `!`-shell, `Ctrl+J` multiline, history recall, and the ask/plan/accept-edits/auto **mode keymap** with per-tool approval are forthcoming (2.5.C / 2.5.E) and extend this table.
+Ctrl-C is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge) and even mid-bracketed-paste (so a dropped paste-end marker can never trap the user). The reseat-less **mode keymap** (`Shift+Tab` + `/mode`) and the fail-closed **per-tool approval** landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); wired into the Home via the same `home-controller.ts` key routing — see [chat-session.md](chat-session.md)). The richer slash palette, `@`-mention, `!`-shell, `Ctrl+J` multiline, and history recall are forthcoming and extend this table.
 
-The **footer hint-bar** in 2.5.B is the single fixed line under the prompt — `type a message to start a new chat · Ctrl-C to exit` — plus the `Ctrl-C to exit` line on the degrade frame. The context-aware hint-bar (the two or three most-relevant keys per context/mode) lands in 2.5.C and extends this fixed footer.
+The **footer hint-bar** in 2.5.B was the single fixed line; the context-aware hint-bar (the two or three most-relevant keys per context/mode, including the active mode) landed in **2.5.C** and extends it.
 
 ## Bracketed paste (DECSET 2004)
 
@@ -110,7 +113,8 @@ A chat launched from the Home has its **own** exit code `4` ([chat-session.md](c
 
 Settled in 2.5.B, recorded here as the canonical home (not re-litigated elsewhere):
 
-- **In-flight build surface** — a slow `buildChatSession` shows a static `Starting chat…` loading state that echoes the pending message (the typed text never visually vanishes). A richer spinner + an in-build abort ride the 2.5.E mid-turn-abort work.
+- **In-flight build surface** — a slow `buildChatSession` shows a static `Starting chat…` loading state that echoes the pending message (the typed text never visually vanishes). A richer spinner is deferred; the `Esc` mid-turn abort (once a chat is built) landed in 2.5.E.
 - **Attention ordering is a recency proxy, not a deadline sort** — gates are ordered by the paused run's `created_at DESC` (a glanceable proxy); true gate-recency / soonest-expiry-first would need the pending-gate read to carry the raise time. The renderer escalates an *expired* gate to red regardless of position.
 - **Continue excludes lifted runs by status** — a failed or human-gated run lives only in *Attention*, never duplicated in *Continue*; the strip over-fetches to backfill *Continue* to its limit.
-- **Forthcoming, extending this doc** — the interactive `/` palette UI (filterable, keyboard-navigable — 2.5.C S3b; the curated slash command set + the command-manifest shape are already homed in [commands.md](commands.md)), `@`-mention semantics, and the ask/plan/accept-edits/auto mode keymap (2.5.C / 2.5.E); the Home-side `/models` picker over a connected-provider catalog; and an in-app message-queue/type-ahead while a turn runs (deferred, see [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md)).
+- **Landed since 2.5.B** — the interactive `/` palette UI (filterable, keyboard-navigable — 2.5.C S3b; the curated slash command set + the command-manifest shape are homed in [commands.md](commands.md)) and the ask/plan/accept-edits/auto mode keymap + per-tool approval + `Esc` abort (2.5.E, [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)).
+- **Forthcoming, extending this doc** — `@`-mention semantics; the Home-side `/models` picker over a connected-provider catalog; and an in-app message-queue/type-ahead while a turn runs (deferred, see [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md)).

@@ -37,6 +37,34 @@ describe('chat-projection', () => {
       expect(line).toContain('error: turn_limit');
     });
 
+    it('surfaces the secret-free REASON for a tool_denied / tool_unavailable turn (the actionable ADR-0057 codes)', () => {
+      const denied = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_denied',
+        errorMessage: 'not allowed in ask mode (read-only)',
+      });
+      expect(denied).toContain('error: tool_denied — not allowed in ask mode (read-only)');
+      const unavailable = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_unavailable',
+        errorMessage: 'fs (read-only in this session)',
+      });
+      expect(unavailable).toContain('error: tool_unavailable — fs (read-only in this session)');
+    });
+
+    it('does NOT render the message for a non-whitelisted code (it may carry prompt context)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'execution_failed',
+        errorMessage: 'some model-derived context that must not be shown',
+      });
+      expect(line).toContain('error: execution_failed');
+      expect(line).not.toContain('model-derived context');
+    });
+
     it('renders the EA7 "aborted" stop reason as a plain label (no error segment)', () => {
       const line = formatTurnSummary({
         stopReason: 'aborted',

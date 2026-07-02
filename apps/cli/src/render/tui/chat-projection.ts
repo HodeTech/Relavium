@@ -51,11 +51,30 @@ export function sanitizeInline(text: string): string {
 }
 
 /**
- * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code),
- * the turn's token usage, and its duration. Secret-free — it carries only counts/codes, never argument text.
+ * Error codes whose `errorMessage` is a vetted, secret-free, host-supplied LABEL safe to render in-chat — the
+ * actionable approval-floor denials (ADR-0057): `tool_denied` ("not allowed in ask mode (read-only)", "refusing
+ * to write inside a protected directory") and `tool_unavailable` ("fs (read-only in this session)"). Other
+ * codes' messages may carry prompt/model context, so only the code is shown for them.
+ */
+const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set(['tool_denied', 'tool_unavailable']);
+
+/**
+ * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code +,
+ * for the vetted approval-floor codes, its secret-free reason), the turn's token usage, and its duration.
+ * Secret-free — it carries only counts/codes + a whitelisted reason label, never argument text.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
-  const head = summary.errorCode === undefined ? summary.stopReason : `error: ${summary.errorCode}`;
+  let head: string;
+  if (summary.errorCode === undefined) {
+    head = summary.stopReason;
+  } else if (summary.errorMessage !== undefined && SAFE_MESSAGE_CODES.has(summary.errorCode)) {
+    // Surface WHY a governed action was denied — the reason is the only place it reaches the user, and the turn
+    // died on it (e.g. `error: tool_denied — not allowed in ask mode (read-only)`). Parity with the run path's
+    // final-summary.ts, which already renders errorMessage for the same error taxonomy.
+    head = `error: ${summary.errorCode} — ${summary.errorMessage.replace(/\s+/gu, ' ').trim()}`;
+  } else {
+    head = `error: ${summary.errorCode}`;
+  }
   const parts = [
     head,
     formatTokens(summary.tokensUsed),

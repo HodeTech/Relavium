@@ -989,6 +989,36 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, '.git', 'config'))).toBe(false);
   });
 
+  it('auto: even an APPROVED protected-path write STILL fails — the fs floor is the true, approval-INDEPENDENT floor', async () => {
+    // The complement of the reject test: prove the fs-layer protected-paths refusal (not the prompt) is the real
+    // floor. Answer the auto fallback prompt with APPROVE and assert the write is STILL denied + never lands —
+    // so a future refactor that coupled the two layers (letting an approval bypass the fs floor) fails here.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    const built = await build({
+      cwd: workspace,
+      agentRef: writeAgent(['write_file']),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
+      ]),
+    });
+    const store = createChatStore(false);
+    createChatModeControl(built, store).onModeChange('auto');
+    built.session.start();
+    const turn = built.session.sendMessage('write a protected file');
+    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    store.answerApproval({ outcome: 'approve', scope: 'once' }); // APPROVE — the fs floor must refuse it anyway
+    await turn;
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'tool_denied',
+    );
+    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false); // never written despite the approval
+  });
+
   it('the advertise-filter keeps http_request now that egress is wired (chat-read-write, 2.5.E)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const { providers, requests } = capturingResolver([textTurn('hi')]);

@@ -285,10 +285,18 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
-  it('rejects an invalid /mode value at the dispatch (a positional not in the mode set)', async () => {
+  it('rejects an invalid /mode value at the dispatch, LISTING the valid names (a positional not in the mode set)', async () => {
     const { d, err } = deps(['/mode bogus', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain("/mode: unknown argument 'bogus'"); // the positional-value validation rejects it
+    const out = err();
+    expect(out).toContain("/mode: unknown argument 'bogus'"); // the positional-value validation rejects it
+    expect(out).toContain('Valid: ask, plan, accept-edits, auto.'); // …and teaches the four names
+  });
+
+  it('rejects `/mode plan accept-edits` — a single-value positional takes ONE value, not silently dropping extras', async () => {
+    const { d, err } = deps(['/mode plan accept-edits', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/mode: takes a single mode value (got 2).'); // arity enforced, not silently dropped
   });
 
   it('/workflows reports a project-less cwd without crashing the REPL', async () => {

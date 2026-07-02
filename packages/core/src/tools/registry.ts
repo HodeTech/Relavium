@@ -404,7 +404,12 @@ async function confirmDispatch(
  * IS, even a read-only `web_search` (an exfiltration sink); and an `os` action (`read_clipboard` / `notify`)
  * IS — the clipboard is ambient, un-jailed OS state that routinely holds a freshly-copied secret (ADR-0057).
  */
-function governedAction(def: ToolDef, target: PolicyTarget): ToolActionClass | undefined {
+/**
+ * Classify a dispatch's governed ACTION class (the authoritative confirmAction floor) — or `undefined` for a
+ * read-only / pre-approved tool that is never gated. Exported (from this module, NOT the package index) so a
+ * drift-lock test can pin the exact engine-governed set, distinct from the CLI advertise-filter's superset.
+ */
+export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionClass | undefined {
   if (def.policy.fsWrite === true) {
     return 'fs_write';
   }

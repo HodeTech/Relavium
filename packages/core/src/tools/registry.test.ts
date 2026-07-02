@@ -11,7 +11,7 @@ import {
   ToolUnavailableError,
   UnknownToolError,
 } from './errors.js';
-import { createToolRegistry } from './registry.js';
+import { createToolRegistry, governedAction } from './registry.js';
 import { isUntrusted, unwrapUntrusted } from './untrusted.js';
 import type {
   EgressRequest,
@@ -343,6 +343,38 @@ describe('ToolRegistry — git_commit human-gate', () => {
 });
 
 /* --- per-tool approval (ADR-0057 EA3) --- */
+
+describe('governedAction — the authoritative engine confirm-floor classifier (drift-lock)', () => {
+  it('pins the EXACT engine-governed built-in set + its action class (distinct from the CLI advertise superset)', () => {
+    // Compute each tool's target the SAME way confirmDispatch does — `def.policyTarget?.(args) ?? {}` — so only a
+    // MODEL-command process tool (run_command's policyTarget yields a `command`) trips the process case; a
+    // pre-approved process tool (git_status / git_commit — no policyTarget) does not. Each policyTarget reads
+    // only its own field, so one permissive sample serves all.
+    const sampleArgs = { command: 'ls', args: [] as string[], path: 'p.txt', url: 'https://example.com' };
+    const governed: Record<string, string> = {};
+    for (const def of BUILTIN_TOOLS) {
+      const target = def.policyTarget?.(sampleArgs) ?? {};
+      const action = governedAction(def, target);
+      if (action !== undefined) governed[def.id] = action;
+    }
+    // A new governed built-in (or a policy-flag change) MUST update this map — the fail-closed floor can't drift.
+    expect(governed).toEqual({
+      write_file: 'fs_write',
+      run_command: 'process',
+      http_request: 'egress',
+      web_search: 'egress',
+      mcp_call: 'egress',
+      read_clipboard: 'os',
+      notify: 'os',
+    });
+    // git_commit is NOT engine-governed here: its requiresGateApproval is enforced by the human-gate floor
+    // (enforcePolicy), NOT confirmAction — the exact distinction from the CLI advertise-filter's governedToolIds
+    // superset (chat-mode.test.ts), which DOES hide git_commit. Pin both halves of that asymmetry.
+    expect(governed).not.toHaveProperty('git_commit');
+    expect(governed).not.toHaveProperty('read_file');
+    expect(governed).not.toHaveProperty('git_status');
+  });
+});
 
 /**
  * A MUTABLE {@link AbortSignalLike} test double: `aborted` can be flipped mid-prompt (a cancel-during-confirm
