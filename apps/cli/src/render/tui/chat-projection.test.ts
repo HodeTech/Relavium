@@ -54,6 +54,31 @@ describe('chat-projection', () => {
       expect(unavailable).toContain('error: tool_unavailable — fs (read-only in this session)');
     });
 
+    it('surfaces the PROVIDER status message for a provider_* / content_filter turn (already secret-scrubbed at the seam)', () => {
+      // The 402 "Insufficient Balance" case: the classifier now maps it to provider_auth (not internal), and the
+      // footer shows the upstream message so the user sees WHY — a provider status line, not a prompt echo.
+      const auth = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'provider_auth',
+        errorMessage: '402 Insufficient Balance',
+      });
+      expect(auth).toContain('error: provider_auth — 402 Insufficient Balance');
+      for (const code of [
+        'provider_rate_limit',
+        'provider_unavailable',
+        'content_filter',
+      ] as const) {
+        const line = formatTurnSummary({
+          stopReason: 'error',
+          tokensUsed: { input: 0, output: 0 },
+          errorCode: code,
+          errorMessage: 'upstream reason',
+        });
+        expect(line).toContain(`error: ${code} — upstream reason`);
+      }
+    });
+
     it('does NOT render the message for a non-whitelisted code (it may carry prompt context)', () => {
       const line = formatTurnSummary({
         stopReason: 'error',

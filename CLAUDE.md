@@ -90,8 +90,12 @@ fail-closed per-tool `confirmAction` floor (`[y]/[a]/[n]` + a session once/alway
 (EA7), and the host arms closing the 2.5.A deferral: a write-capable `fs` tier + **protected paths** refused in
 every mode incl. `auto`, the SSRF-hardened `egress` arm shared with media, and the `os` arm as a governed action
 class — wired live into `relavium chat`, one-shot `agent run`, and the Home, each activating the regime before its
-first turn) is 🟡 **implemented + reviewed on `development`; PR pending merge**, behind [ADR-0057](docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)
-(**Accepted** after the mandatory holistic security review). **The next pickup is the 2.5 experience arm (2.5.D / F / G).**
+first turn) is ✅ **Done (PR #63, 2026-07-03)**, behind [ADR-0057](docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)
+(**Accepted** after the mandatory holistic security review); a same-PR chat-UX follow-up also landed — a host tool
+EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
+(`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
+side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` chat hint. **With 2.5.E the CLI
+Consolidation spine (2.5.A/B/C/E) is complete; the next pickup is the 2.5 experience arm (2.5.D / F / G).**
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 

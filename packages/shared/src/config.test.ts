@@ -310,4 +310,20 @@ describe('config schemas', () => {
       false,
     );
   });
+
+  it('accepts [chat].allowed_commands / allowed_command_globs (the `!`-shell allowlist — ADR-0061)', () => {
+    expect(
+      ProjectConfigSchema.safeParse({
+        chat: { allowed_commands: ['git status', 'ls -la'], allowed_command_globs: ['git *'] },
+      }).success,
+    ).toBe(true);
+    // Absent ⇒ `!`-shell disabled (secure-by-default) — a bare [chat] is still valid.
+    expect(ProjectConfigSchema.safeParse({ chat: {} }).success).toBe(true);
+    // An empty-string entry is rejected (nonEmptyString) — an empty allowlist entry can never match.
+    expect(ProjectConfigSchema.safeParse({ chat: { allowed_commands: [''] } }).success).toBe(false);
+    // A non-array is rejected.
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { allowed_commands: 'git status' } }).success,
+    ).toBe(false);
+  });
 });

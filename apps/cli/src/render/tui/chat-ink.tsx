@@ -11,8 +11,53 @@ import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
-import { applyChatEdit, reduceChatKey } from './chat-input.js';
+import {
+  applyEditorAction,
+  editorFromText,
+  emptyEditor,
+  insertAtCursor,
+  reduceChatKey,
+  type EditorState,
+} from './chat-input.js';
+import {
+  foldMentionKey,
+  mentionOpensAt,
+  type MentionReader,
+  type MentionState,
+} from './mention.js';
+import { MentionView } from './mention-view.js';
+import {
+  appendAttachment,
+  buildOutbound,
+  commandResultPreview,
+  fileAttachmentWarning,
+  mentionMarker,
+  MAX_PENDING_ATTACHMENTS,
+  type PendingAttachment,
+} from './attachments.js';
+import { AttachmentBar } from './attachment-bar.js';
+import {
+  commandLine,
+  isShellLine,
+  shellDenyHint,
+  tokenizeCommand,
+  type ShellCommand,
+} from './shell.js';
+import type { UserCommandOutcome } from '@relavium/core';
+import {
+  EMPTY_HISTORY,
+  INITIAL_REVERSE_SEARCH,
+  foldReverseSearchKey,
+  historyNext,
+  historyPrev,
+  recordHistory,
+  resetHistoryNav,
+  type InputHistory,
+  type ReverseSearchState,
+} from './input-history.js';
 import { PaletteView } from './palette-view.js';
+import { PromptEditor } from './prompt-view.js';
+import { ReverseSearchView } from './reverse-search-view.js';
 import {
   foldPaletteKey,
   INITIAL_PALETTE_STATE,
@@ -71,8 +116,10 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
-  /** Handle a submitted line (slash or message); resolves when the turn settles. */
-  readonly onSubmit: (line: string) => Promise<void>;
+  /** Handle a submitted turn; resolves when it settles. `message` is the full framed text sent to the model +
+   *  persisted; the optional `display` is the compact transcript form (prose + a `[📎 …]` note for carried
+   *  command outputs). When `display` is absent the two are identical. */
+  readonly onSubmit: (message: string, display?: string) => Promise<void>;
   /** `true` once the session should end — the app unmounts via {@link onExit}. */
   readonly shouldStop: () => boolean;
   /** Called once the session has ended (clean exit) so the driver can unmount + finalize. */
@@ -86,14 +133,26 @@ interface ChatAppProps {
   readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
+  /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
+   *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
+   *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
+   *  `| undefined` so the createElement passthrough can forward an absent `ctx.mentionReader` (exactOptionalPropertyTypes). */
+  readonly mentionReader?: MentionReader | undefined;
+  /** The `!`-shell runner (2.5.D step 5, ADR-0061) — runs a user-typed `!command` through `runUserCommand` (the one
+   *  command boundary). When present, a submitted line starting with `!` is tokenized + run (its output injected as
+   *  UNTRUSTED context) instead of sent to the model. Absent ⇒ a leading `!` is a literal message. `| undefined` so
+   *  the createElement passthrough forwards an absent `ctx.runShellCommand`. */
+  readonly runShellCommand?:
+    | ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>)
+    | undefined;
 }
 
 interface ChatViewProps {
   readonly state: SessionViewState;
   readonly tick: number;
   readonly color: boolean;
-  /** The current prompt buffer (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
-  readonly input: string;
+  /** The current prompt editor — text + cursor (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
+  readonly editor: EditorState;
   readonly running: boolean;
   /** The active chat mode (ADR-0057) — shown in the footer so `auto` is never a hidden state. */
   readonly mode: ChatMode;
@@ -101,6 +160,11 @@ interface ChatViewProps {
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
+  /** Pending `@`/`!` attachments (2.5.D chip redesign) — rendered as a compact chip bar above the idle prompt. */
+  readonly attachments?: readonly PendingAttachment[];
+  /** The in-flight `!`-shell command line (2.5.D) — when set, the busy indicator labels WHAT is running (a `!`-
+   *  command emits no session tokens, so without this the spinner would be bare) + how to cancel (Esc). */
+  readonly busyCommand?: string | undefined;
 }
 
 /**
@@ -111,7 +175,8 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, input, running, mode, approval, paletteOpen } = props;
+  const { state, tick, color, editor, running, mode, approval, paletteOpen } = props;
+  const attachments = props.attachments ?? [];
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -122,7 +187,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
       </Static>
 
-      {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. */}
+      {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
+          flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
+          the honest Esc-to-cancel affordance (Esc aborts the command, keeping the session; Ctrl-C would end it). */}
       {running && (
         <Box flexDirection="column">
           {state.liveToolCalls.map((call) => (
@@ -130,33 +197,37 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               {formatToolCall(call)}
             </Text>
           ))}
-          <Text>
-            {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
-          </Text>
+          {props.busyCommand === undefined ? (
+            <Text>
+              {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
+            </Text>
+          ) : (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
+            </Text>
+          )}
         </Box>
       )}
 
-      {/* The input prompt (idle) and the persistent footer. The live input echo is sanitized so a paste
-          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. A trailing
-          inverse-space block cursor marks the prompt as a live field (shared with the Home's prompt). */}
-      {showIdlePrompt && (
-        <Text>
-          <Text {...colorProps(color, 'cyan')}>
-            {'> '}
-            {sanitizeInline(input)}
-          </Text>
-          {color && <Text inverse> </Text>}
-        </Text>
+      {/* The pending `@`/`!` attachment chip bar (2.5.D) — shown above the idle prompt so the queued file/command
+          context is always visible without flooding the editor. */}
+      {showIdlePrompt && attachments.length > 0 && (
+        <AttachmentBar attachments={attachments} color={color} />
       )}
+
+      {/* The multi-line input prompt (idle) with the cursor at its position. Every segment is sanitized inside
+          PromptEditor so a pasted/typed control sequence cannot corrupt the display or inject ANSI/OSC. Shared
+          with the Home's prompt so both surfaces render the editor identically. */}
+      {showIdlePrompt && <PromptEditor editor={editor} color={color} />}
       {/* The context-aware idle hint bar (2.5.C S6). At an EMPTY prompt, surface the `/` palette as the command-
           discovery entry point (it lists /export, /doctor, /workflows, …) — `/` only opens it from an empty
-          buffer, so the hint appears exactly when it works. Once the user is composing, swap to the submit hint.
-          The palette renders its own nav hints when open, so keys stay discoverable without a separate command. */}
+          buffer, so the hint appears exactly when it works. Once the user is composing, swap to the submit hint
+          (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {input.length === 0
+          {editor.text.length === 0
             ? '/ for commands · /exit or Ctrl-C to end'
-            : 'Enter to send · Ctrl-C to end'}
+            : 'Enter to send · Ctrl+J newline · Ctrl-C to end'}
         </Text>
       )}
 
@@ -200,24 +271,24 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     props.store.subscribe,
     props.store.getSnapshot,
   );
-  const [input, setInput] = useState('');
-  // A ref SHADOW of the buffer: in a coalesced stdin chunk ink dispatches every event synchronously with no
-  // render flush, so the `input` closure stays stale across the burst. Reading `inputRef.current` gives the
-  // latest COMMITTED value, so even a Return that arrives in the same chunk as a preceding char submits the full
-  // buffer (not the stale render capture). `applyInput` wraps `setInput` to keep the ref in lockstep with state.
-  const inputRef = useRef('');
-  const applyInput = (next: (current: string) => string): void => {
-    setInput((prev) => {
-      const value = next(prev);
-      inputRef.current = value;
-      return value;
-    });
+  const [editor, setEditor] = useState<EditorState>(emptyEditor());
+  // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
+  // event synchronously with no render flush, so React's queued-updater `prev` is stale for the 2nd+ event of the
+  // burst (only the first dispatch runs eagerly). `applyEditor` therefore folds against `editorRef.current` (the
+  // synchronous latest — updated the INSTANT it is called, matching the palette/search/mention/shellBusy ref-
+  // shadows) and mirrors the result into React state for render, so a same-chunk edit→edit→Return reads the fully
+  // folded buffer, never a stale capture.
+  const editorRef = useRef<EditorState>(emptyEditor());
+  const applyEditor = (next: (current: EditorState) => EditorState): void => {
+    const value = next(editorRef.current);
+    editorRef.current = value;
+    setEditor(value);
   };
   const cancelFired = useRef(false);
   const running = state.status === 'running';
   // The interactive `/` palette (2.5.C S3b) — `undefined` ⇒ closed. React-local here (the external-store Home
   // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
-  // A ref SHADOW (like `inputRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
+  // A ref SHADOW (like `editorRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
   // in one chunk synchronously with no render flush, so reading the render-closure `palette` would be stale (a
   // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette`
   // keeps the ref in lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`.
@@ -227,13 +298,174 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     paletteRef.current = next;
     setPalette(next);
   };
+  // Per-session command history (2.5.D step 3): Up/Down recall, Ctrl+R reverse-searches. History is a ref (not
+  // rendered directly); the reverse-search submode is React-local + ref-shadowed like the palette (it renders a
+  // search line and must survive a coalesced stdin chunk).
+  const historyRef = useRef<InputHistory>(EMPTY_HISTORY);
+  const [search, setSearch] = useState<ReverseSearchState | undefined>(undefined);
+  const searchRef = useRef<ReverseSearchState | undefined>(undefined);
+  const applySearch = (next: ReverseSearchState | undefined): void => {
+    searchRef.current = next;
+    setSearch(next);
+  };
+  // The `@`-mention completion submode (2.5.D step 4, ADR-0061) — dir-navigable file completion whose accepted file
+  // is injected into the buffer as UNTRUSTED, user-position context. React-local + ref-shadowed (survives a
+  // coalesced stdin chunk, like the palette/search). ASYNC: opening/descending a dir fires an fs `list()` whose
+  // result lands via `applyMention` only if the submode is still open on the SAME dir (a stale resolve is dropped).
+  // Present only when a `mentionReader` was wired (an interactive session); absent ⇒ `@` is a literal char.
+  const [mention, setMention] = useState<MentionState | undefined>(undefined);
+  const mentionRef = useRef<MentionState | undefined>(undefined);
+  const applyMention = (next: MentionState | undefined): void => {
+    mentionRef.current = next;
+    setMention(next);
+  };
+  // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
+  // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
+  // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
+  const submitGenRef = useRef(0);
+  // A `!`-shell command in flight (2.5.D step 5). `runUserCommand` makes the session busy (`#status: 'running'`)
+  // but emits NO session event, so the store's `state.status` stays idle — WITHOUT this flag a plain message typed
+  // during a slow `!npm test` would reach `sendMessage`, throw `SessionStateError`, and crash the whole session.
+  // The REF gates keystrokes (coalesced-chunk safe, like `editorRef`); the state drives a busy indicator. Cleared
+  // in EVERY settle branch (ran/denied/failed/cancelled + the reject arm).
+  const [shellBusy, setShellBusy] = useState(false);
+  const shellBusyRef = useRef(false);
+  // The command line labeling the busy indicator (2.5.D) — `undefined` between commands. Set alongside the busy
+  // flag so a slow `!`-command shows WHAT is running (it emits no session tokens); cleared in every settle branch.
+  const [busyCommand, setBusyCommand] = useState<string | undefined>(undefined);
+  const applyShellBusy = (busy: boolean, command?: string): void => {
+    shellBusyRef.current = busy;
+    setShellBusy(busy);
+    setBusyCommand(busy ? command : undefined);
+  };
+  // Pending `@`/`!` attachments (2.5.D chip redesign) — an @-mentioned FILE (referenced inline by its `@path`
+  // marker) or a `!`-command's captured OUTPUT. Ref-shadowed for coalesced-chunk-safe submit reads + state for the
+  // chip bar; expanded into the UNTRUSTED frame at submit; cleared on send / Esc (idle) / unmount (chat end). One
+  // file entry per path (dedup).
+  const [attachments, setAttachments] = useState<readonly PendingAttachment[]>([]);
+  const attachmentsRef = useRef<readonly PendingAttachment[]>([]);
+  const applyAttachments = (next: readonly PendingAttachment[]): void => {
+    attachmentsRef.current = next;
+    setAttachments(next);
+  };
+  const addAttachment = (a: PendingAttachment): void => {
+    const { list, dropped } = appendAttachment(attachmentsRef.current, a);
+    applyAttachments(list);
+    if (dropped > 0) {
+      props.store.note(
+        `pending attachment limit (${MAX_PENDING_ATTACHMENTS}) reached — oldest dropped`,
+      );
+    }
+  };
+  // List `dir`'s entries through the fs jail (listing-gate + noise filter enforced by the reader), applying them
+  // ONLY if the submode is still open on that dir — a resolve from a since-closed or since-descended submode is
+  // dropped. A `list()` rejection (the dir vanished) leaves the submode open with an empty, not-loading list.
+  const loadMentions = (dir: string): void => {
+    const reader = props.mentionReader;
+    if (reader === undefined) return;
+    void reader.list(dir).then(
+      (candidates) => {
+        const open = mentionRef.current;
+        if (open !== undefined && open.dir === dir)
+          applyMention({ ...open, candidates, loading: false });
+      },
+      () => {
+        const open = mentionRef.current;
+        if (open !== undefined && open.dir === dir)
+          applyMention({ ...open, candidates: [], loading: false });
+      },
+    );
+  };
+  // Open the completion at the workspace root (the caller has already decided `@` opens — word boundary + reader).
+  const openMention = (): void => {
+    applyMention({ dir: '', filter: '', candidates: [], selected: 0, loading: true });
+    loadMentions('');
+  };
+  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then queue it as a
+  // pending FILE attachment and insert a compact `@path` marker at the cursor (the chip bar shows it; it expands
+  // into the UNTRUSTED frame only at submit, and only if the marker is still present). A read rejection (a floor
+  // refusal, a binary file, oversize, since-deleted) surfaces a STATIC, secret-free note — never the raw error. A
+  // large/truncated file adds an honest soft size note (the fs 8 MiB cap is the hard ceiling).
+  const acceptMention = (path: string): void => {
+    const reader = props.mentionReader;
+    if (reader === undefined) return;
+    const gen = submitGenRef.current; // capture: a submit since accept ⇒ the buffer moved on (drop the marker/attachment)
+    void reader.read(path).then(
+      ({ content, sizeBytes }) => {
+        if (submitGenRef.current !== gen) return; // the buffer was submitted since accept — never touch the next message
+        applyEditor((current) => {
+          historyRef.current = resetHistoryNav(historyRef.current); // a real edit ends history navigation
+          return insertAtCursor(current, `${mentionMarker(path)} `);
+        });
+        addAttachment({ kind: 'file', path, content, sizeBytes });
+        const warn = fileAttachmentWarning(path, content, sizeBytes);
+        if (warn !== undefined) props.store.note(warn);
+      },
+      () => {
+        if (submitGenRef.current !== gen) return;
+        props.store.note('@ mention could not read that file (refused, binary, or too large)');
+      },
+    );
+  };
 
-  const submit = (line: string): void => {
+  // Render a `!`-shell outcome: on `ran`, queue the (full) output as a pending COMMAND attachment (it rides the
+  // next message) and show a compact, read-only preview via the store; otherwise surface the actionable deny /
+  // failure note. `gen` guards a stale resolve (a submit since the run) so a slow command never re-queues.
+  const handleShellOutcome = (
+    parsed: ShellCommand,
+    outcome: UserCommandOutcome,
+    mode: ChatMode,
+    gen: number,
+  ): void => {
+    if (submitGenRef.current !== gen) return;
+    if (outcome.kind === 'ran') {
+      addAttachment({
+        kind: 'command',
+        cmd: parsed,
+        exitCode: outcome.exitCode,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+      });
+      props.store.notice(
+        commandResultPreview(parsed, outcome.exitCode, outcome.stdout, outcome.stderr),
+      );
+      return;
+    }
+    if (outcome.kind === 'denied') {
+      props.store.note(shellDenyHint(parsed, outcome.allowlist, mode));
+      return;
+    }
+    props.store.note(
+      outcome.kind === 'cancelled' ? '! command cancelled' : `! ${commandLine(parsed)} failed`,
+    );
+  };
+  // Run a tokenized `!`-shell command through the session boundary (runUserCommand). The buffer is already cleared
+  // by the submit case; the outcome injects/notes below. A truly unexpected rejection (e.g. a state guard) notes.
+  const runShell = (parsed: ShellCommand): void => {
+    const runner = props.runShellCommand;
+    if (runner === undefined) return;
+    const gen = submitGenRef.current;
+    const mode = props.store.getSnapshot().mode; // captured for a mode-aware deny hint
+    // Gate input + show a LABELED busy indicator (the command line) until it settles (else a submit crashes).
+    applyShellBusy(true, commandLine(parsed));
+    void runner(parsed.command, parsed.args).then(
+      (outcome) => {
+        applyShellBusy(false);
+        handleShellOutcome(parsed, outcome, mode, gen);
+      },
+      () => {
+        applyShellBusy(false);
+        if (submitGenRef.current === gen) props.store.note('! shell command failed unexpectedly');
+      },
+    );
+  };
+
+  const submit = (message: string, display?: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
     // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
     // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
     void props
-      .onSubmit(line)
+      .onSubmit(message, display)
       .then(
         () => {
           if (props.shouldStop()) props.onExit();
@@ -247,8 +479,65 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
-    // settles sees the current status — matching the ref-shadow `inputRef`/`paletteRef` reads below.
-    const isRunning = props.store.getSnapshot().state.status === 'running';
+    // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
+    // Busy = a streaming turn OR a `!`-shell command in flight (the latter has no store status — read the ref so a
+    // coalesced same-chunk key after the `!`-submit is gated too). A gated keystroke can't reach `sendMessage`.
+    const isRunning = props.store.getSnapshot().state.status === 'running' || shellBusyRef.current;
+    // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
+    // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
+    // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
+    // just-applied state. Checked FIRST — it is mutually exclusive with the palette/search (one submode at a time).
+    const activeMention = mentionRef.current;
+    if (activeMention !== undefined) {
+      const step = foldMentionKey(char, key, activeMention);
+      if (step.kind === 'close') {
+        applyMention(undefined);
+        // Restore the literal keystrokes (`@` + filter on cancel; `''` on backspace-past) so nothing typed is lost.
+        // A restore is a real edit ⇒ end history navigation (idempotent), inside the functional updater.
+        if (step.restore.length > 0) {
+          applyEditor((current) => {
+            historyRef.current = resetHistoryNav(historyRef.current);
+            return insertAtCursor(current, step.restore);
+          });
+        }
+        return;
+      }
+      if (step.kind === 'descend') {
+        applyMention({ dir: step.dir, filter: '', candidates: [], selected: 0, loading: true });
+        loadMentions(step.dir);
+        return;
+      }
+      if (step.kind === 'accept') {
+        applyMention(undefined);
+        acceptMention(step.path);
+        return;
+      }
+      applyMention(step.state);
+      return;
+    }
+    // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
+    // older). Read the REF so a coalesced same-chunk event sees a just-applied close/accept. It is mutually
+    // exclusive with the palette (only one submode opens at a time) and yields to a pending approval (below).
+    const openSearch = searchRef.current;
+    if (openSearch !== undefined) {
+      const step = foldReverseSearchKey(char, key, openSearch, historyRef.current.entries);
+      if (step.kind === 'close') {
+        applySearch(undefined);
+        return;
+      }
+      if (step.kind === 'accept') {
+        applySearch(undefined);
+        applyEditor(() => {
+          // The accepted entry becomes the live buffer, NOT a history-nav result — reset nav (idempotent) so a
+          // subsequent Down doesn't clobber it with the stale pre-search draft, and a subsequent Up saves it fresh.
+          historyRef.current = resetHistoryNav(historyRef.current);
+          return editorFromText(step.text); // load the matched entry (a replace, not a fold)
+        });
+        return;
+      }
+      applySearch(step.state);
+      return;
+    }
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
     const openPalette = paletteRef.current;
@@ -269,11 +558,46 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
     const approvalPending = props.store.getSnapshot().approval !== undefined;
     // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point (never mid-approval).
-    if (!approvalPending && shouldOpenPalette(char, key, isRunning, inputRef.current.length)) {
+    if (
+      !approvalPending &&
+      shouldOpenPalette(char, key, isRunning, editorRef.current.text.length)
+    ) {
       applyPalette(INITIAL_PALETTE_STATE);
       return;
     }
-    const action = reduceChatKey(char, key, inputRef.current, isRunning, approvalPending);
+    // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — a keyboard-owning submode.
+    if (!approvalPending && !isRunning && key.ctrl === true && char === 'r') {
+      applySearch(INITIAL_REVERSE_SEARCH);
+      return;
+    }
+    // `@` at a word boundary opens dir-navigable file completion (2.5.D step 4) — idle, not mid-approval, and only
+    // when a reader was wired (an interactive session). The `@` is NOT inserted (it lives in the overlay); a cancel
+    // restores it. A mid-word `@` (an email/handle) or an absent reader falls through to `reduceChatKey` as a literal.
+    if (
+      !approvalPending &&
+      !isRunning &&
+      char === '@' &&
+      key.ctrl !== true &&
+      key.meta !== true &&
+      props.mentionReader !== undefined &&
+      mentionOpensAt(editorRef.current.text, editorRef.current.cursor)
+    ) {
+      openMention();
+      return;
+    }
+    // Esc at an IDLE prompt with pending `@`/`!` attachments discards them (a clean cancel affordance — parity with
+    // home-controller.ts; when a turn is running Esc is the mid-turn abort, reduced below).
+    if (
+      key.escape === true &&
+      !isRunning &&
+      !approvalPending &&
+      attachmentsRef.current.length > 0
+    ) {
+      applyAttachments([]);
+      props.store.note('cleared pending attachments');
+      return;
+    }
+    const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired.current) {
@@ -283,12 +607,69 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'append':
       case 'backspace':
-        applyInput((current) => applyChatEdit(current, action));
+      case 'newline':
+      case 'kill':
+        // A TRUE functional updater (chains React's `prev`), so a coalesced stdin chunk that interleaves edits
+        // with a move/history action folds EVERY edit onto the accumulator — a constant `() => next` precomputed
+        // from editorRef.current (stale until the queued updater flushes) would drop all but the last. The no-op
+        // check + the idempotent resetHistoryNav (a real edit ends history navigation) live INSIDE the updater.
+        applyEditor((current) => {
+          const next = applyEditorAction(current, action);
+          if (next !== current) historyRef.current = resetHistoryNav(historyRef.current);
+          return next;
+        });
         return;
-      case 'submit':
-        applyInput(() => '');
-        submit(action.line);
+      case 'move':
+        // Functional updater too (folds over the accumulator across a burst). A real move returns the moved editor;
+        // a vertical no-op at the top/bottom edge recalls history (mutating historyRef — ink does not run under
+        // React StrictMode, so the updater runs once); a no-op horizontal motion returns `current` unchanged.
+        applyEditor((current) => {
+          const moved = applyEditorAction(current, action);
+          if (moved !== current) return moved;
+          if (action.motion !== 'up' && action.motion !== 'down') return current;
+          const recall =
+            action.motion === 'up'
+              ? historyPrev(historyRef.current, current.text)
+              : historyNext(historyRef.current);
+          if (recall === null) return current;
+          historyRef.current = recall.history;
+          return editorFromText(recall.text);
+        });
         return;
+      case 'submit': {
+        submitGenRef.current += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
+        // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
+        // message; a bare `!` or an absent runner falls through to a normal message send.
+        const trimmed = action.line.trim();
+        const parsed =
+          props.runShellCommand !== undefined && isShellLine(trimmed)
+            ? tokenizeCommand(trimmed.slice(1))
+            : undefined;
+        if (parsed !== undefined) {
+          historyRef.current = recordHistory(historyRef.current, action.line);
+          applyEditor(() => emptyEditor());
+          runShell(parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+          return;
+        }
+        if (trimmed.startsWith('/') || attachmentsRef.current.length === 0) {
+          // a slash command, or a plain message with no attachments — the simple path (message === display)
+          historyRef.current = recordHistory(historyRef.current, action.line);
+          applyEditor(() => emptyEditor());
+          submit(action.line);
+          return;
+        }
+        // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.
+        const { message, display, consumed } = buildOutbound(action.line, attachmentsRef.current);
+        if (message.trim().length === 0) {
+          applyEditor(() => emptyEditor()); // nothing to send (empty prose + no consumable attachment)
+          return;
+        }
+        historyRef.current = recordHistory(historyRef.current, action.line); // history recalls the PROSE, not the frame
+        applyAttachments(attachmentsRef.current.filter((a) => !consumed.includes(a)));
+        applyEditor(() => emptyEditor());
+        submit(message, display);
+        return;
+      }
       case 'cycle-mode':
         // Shift+Tab: advance the mode (read fresh from the store, not the render closure) + re-apply the policy.
         props.onModeChange(nextMode(props.store.getSnapshot().mode));
@@ -321,15 +702,21 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         state={state}
         tick={tick}
         color={color}
-        input={input}
-        running={running}
+        editor={editor}
+        running={running || shellBusy}
         mode={mode}
         approval={approval}
-        paletteOpen={palette !== undefined}
+        attachments={attachments}
+        busyCommand={busyCommand}
+        paletteOpen={palette !== undefined || search !== undefined || mention !== undefined}
       />
       {palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
       )}
+      {search !== undefined && (
+        <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
+      )}
+      {mention !== undefined && <MentionView state={mention} color={color} />}
     </Box>
   );
 }
@@ -412,6 +799,11 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
         // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
         onAbort: ctx.onAbort,
         onModeChange: ctx.onModeChange ?? ((): void => undefined),
+        // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
+        // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
+        mentionReader: ctx.mentionReader,
+        // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
+        runShellCommand: ctx.runShellCommand,
       }),
       {
         // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.

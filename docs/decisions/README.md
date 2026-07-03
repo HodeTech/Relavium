@@ -104,6 +104,7 @@ flowchart TD
 | 0058 | [`@relavium/authoring` package and the conversational-authoring pre-flight contract](0058-relavium-authoring-package-and-conversational-authoring.md) | Proposed | 2026-06-28 |
 | 0059 | [Mid-session model switching via host-side reseat (refines ADR-0024)](0059-cli-mid-session-model-reseat.md) | Proposed | 2026-06-28 |
 | 0060 | [Session `{{ctx.*}}` prompt interpolation](0060-session-ctx-prompt-interpolation.md) | Proposed | 2026-06-28 |
+| 0061 | [CLI chat input-layer file-injection (`@`-mention) and shell-escape (`!`-shell) security model](0061-cli-input-layer-file-injection-and-shell-escape.md) | Accepted | 2026-07-03 |
 
 ## Creating a new ADR
 

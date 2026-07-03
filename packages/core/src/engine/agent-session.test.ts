@@ -16,7 +16,14 @@ import { describe, expect, it } from 'vitest';
 
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
 import { ToolExecutionError } from '../tools/errors.js';
-import type { ToolDispatchContext, ToolRegistry, ToolResultPart } from '../tools/types.js';
+import { createToolRegistry } from '../tools/registry.js';
+import type {
+  ProcessResult,
+  ToolDispatchContext,
+  ToolHost,
+  ToolRegistry,
+  ToolResultPart,
+} from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
   AgentSession,
@@ -1007,5 +1014,148 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     s.setTurnPolicy(undefined); // CLEAR
     await s.sendMessage('cleared');
     expect(captured?.approval).toBeUndefined(); // regime gone — back to author-trust parity
+  });
+});
+
+describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)', () => {
+  const RAN: ProcessResult = { exitCode: 0, stdout: 'FILES\n', stderr: '', durationMs: 3 };
+  /** The REAL registry over the `run_command` builtin + a fake process arm, so a dispatch exercises the ACTUAL
+   *  enforcePolicy (allowlist) → confirmDispatch (approval) → spawn path — never a stubbed registry. */
+  const commandRegistry = (
+    spawn: (command: string, args: readonly string[]) => Promise<ProcessResult>,
+  ): { registry: ToolRegistry; calls: { command: string; args: readonly string[] }[] } => {
+    const calls: { command: string; args: readonly string[] }[] = [];
+    const host: ToolHost = {
+      process: {
+        spawn: (command, args) => {
+          calls.push({ command, args });
+          return spawn(command, args);
+        },
+      },
+    };
+    return { registry: createToolRegistry({ tools: BUILTIN_TOOLS, host }), calls };
+  };
+  const startedSession = (deps: SessionDeps): AgentSession => {
+    const s = session(deps, AGENT); // the default agent does NOT grant run_command — runUserCommand grants it itself
+    s.start();
+    return s;
+  };
+
+  it('an unlisted command is DENIED before any spawn, flagged as an allowlist miss (actionable hint)', async () => {
+    const { registry, calls } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness([], { toolPolicy: {} }, registry); // empty allowlist ⇒ `!` disabled
+    const outcome = await startedSession(deps).runUserCommand('ls', ['-la']);
+    expect(outcome.kind).toBe('denied');
+    expect(outcome.kind === 'denied' && outcome.allowlist).toBe(true); // an allowlist miss (not an approval reject)
+    expect(calls).toHaveLength(0); // enforcePolicy denied BEFORE the side effect — the process never spawned
+  });
+
+  it('an allowlisted command with no approval regime RUNS and returns the bounded output', async () => {
+    const { registry, calls } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls -la'] } }, registry);
+    const outcome = await startedSession(deps).runUserCommand('ls', ['-la']);
+    expect(outcome).toEqual({
+      kind: 'ran',
+      exitCode: 0,
+      stdout: 'FILES\n',
+      stderr: '',
+    });
+    // The exact-match allowlist matched the joined `command + args`; the process spawned with the split argv.
+    expect(calls).toEqual([{ command: 'ls', args: ['-la'] }]);
+  });
+
+  it('rejects a process result missing a required field (durationMs) as an unexpected shape — the boundary guard', async () => {
+    // Simulate a future process-arm drift that omits `durationMs`; the FULL-shape boundary guard must fail loudly,
+    // not pass a partial result to the model. (A deliberate cast — the guard exists to catch exactly this untyped
+    // runtime shape that the type system cannot see across the dispatch boundary.)
+    const malformed = { exitCode: 0, stdout: 'x', stderr: '' } as unknown as ProcessResult;
+    const { registry } = commandRegistry(() => Promise.resolve(malformed));
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls'] } }, registry);
+    const outcome = await startedSession(deps).runUserCommand('ls', []);
+    expect(outcome).toEqual({
+      kind: 'failed',
+      message: 'run_command returned an unexpected result shape',
+    });
+  });
+
+  it('a glob-allowlisted command RUNS (opt-in allowedCommandGlobs)', async () => {
+    const { registry } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness([], { toolPolicy: { allowedCommandGlobs: ['git *'] } }, registry);
+    const outcome = await startedSession(deps).runUserCommand('git', ['status']);
+    expect(outcome.kind).toBe('ran');
+  });
+
+  it('under an approval regime, a REJECT denies (not an allowlist miss) and never spawns', async () => {
+    const { registry, calls } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls'] } }, registry);
+    const s = startedSession(deps);
+    s.setTurnPolicy({ confirm: () => Promise.resolve({ outcome: 'reject', reason: 'ask mode' }) });
+    const outcome = await s.runUserCommand('ls', []);
+    expect(outcome.kind).toBe('denied');
+    expect(outcome.kind === 'denied' && outcome.allowlist).toBe(false); // a mode/approval deny, not an allowlist miss
+    expect(calls).toHaveLength(0); // confirmAction rejected BEFORE the spawn
+  });
+
+  it('under an approval regime, an APPROVE runs the allowlisted command', async () => {
+    const { registry, calls } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls'] } }, registry);
+    const s = startedSession(deps);
+    s.setTurnPolicy({ confirm: () => Promise.resolve({ outcome: 'approve' }) });
+    const outcome = await s.runUserCommand('ls', []);
+    expect(outcome.kind).toBe('ran');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a spawn fault classifies as `failed` with a secret-free message (never a raw throw)', async () => {
+    // A raw host fault (a plain Error) — the registry stamps it as a ToolExecutionError naming the tool, and
+    // runUserCommand maps that to `failed` (the message is the registry's secret-free `tool ... failed`).
+    const { registry } = commandRegistry(() =>
+      Promise.reject(new Error('spawn ENOENT secret-path')),
+    );
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['nope'] } }, registry);
+    const outcome = await startedSession(deps).runUserCommand('nope', []);
+    expect(outcome.kind).toBe('failed');
+    expect(outcome.kind === 'failed' && outcome.message).toContain('run_command');
+    expect(outcome.kind === 'failed' && outcome.message).not.toContain('secret-path'); // raw detail not echoed
+  });
+
+  it('classifies a mid-command cancel as `cancelled` (an aborted dispatch signal, not a failure)', async () => {
+    // The spawn cancels the session mid-run — aborting the dispatch signal `runUserCommand` armed — then rejects.
+    // The registry classifies an aborted dispatch as ToolCancelledError (cancel precedence), which runUserCommand
+    // maps to `cancelled` (never `failed`).
+    const ref: { s?: AgentSession } = {};
+    const { registry } = commandRegistry(() => {
+      ref.s?.cancel(); // aborts the command's signal
+      return Promise.reject(new Error('killed'));
+    });
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['sleep'] } }, registry);
+    const s = startedSession(deps);
+    ref.s = s;
+    const outcome = await s.runUserCommand('sleep', []); // joined 'sleep' matches the allowlist → reaches the spawn
+    expect(outcome.kind).toBe('cancelled');
+  });
+
+  it('is lifecycle-guarded: runUserCommand before start throws SessionStateError', async () => {
+    const { registry } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls'] } }, registry);
+    const s = session(deps, AGENT); // NOT started
+    await expect(s.runUserCommand('ls', [])).rejects.toBeInstanceOf(SessionStateError);
+  });
+
+  it('leaves the session idle + reusable after a command (a sendMessage still works)', async () => {
+    const { registry } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps, events } = harness(
+      [textTurn('after')],
+      { toolPolicy: { allowedCommands: ['ls'] } },
+      registry,
+    );
+    const s = startedSession(deps);
+    await s.runUserCommand('ls', []);
+    await s.sendMessage('and now a message'); // no SessionStateError — the command left the session idle
+    // The message drove ONE real turn to a clean completion — a loud postcondition that the command left the
+    // session idle + reusable (`runUserCommand` itself emits no turn events, so this turn is the message's).
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(1);
+    expect(completes[0]?.type === 'session:turn_completed' && completes[0].stopReason).toBe('stop');
   });
 });

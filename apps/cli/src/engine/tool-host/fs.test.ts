@@ -711,14 +711,60 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     expect((await sandboxed().readFile('config', {})).content).toBe('plain-config');
   });
 
-  it('refuses every credential dotfile (.gitconfig / .git-credentials / .netrc / .npmrc / .pypirc / .pgpass) and `.relavium/`', async () => {
-    for (const f of ['.gitconfig', '.git-credentials', '.netrc', '.npmrc', '.pypirc', '.pgpass']) {
+  it('refuses every credential dotfile (.gitconfig / .git-credentials / .netrc / .npmrc / .pypirc / .pgpass / .envrc / .dockercfg) and `.relavium/`', async () => {
+    for (const f of [
+      '.gitconfig',
+      '.git-credentials',
+      '.netrc',
+      '.npmrc',
+      '.pypirc',
+      '.pgpass',
+      '.envrc', // direnv — holds `export AWS_SECRET_ACCESS_KEY=…` (2.5.D / ADR-0061 step-4 review)
+      '.dockercfg', // legacy Docker registry auth (pre-config.json)
+    ]) {
       await writeFile(join(workspace, f), 'token=secret');
       await expect(sandboxed().readFile(f, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
     }
     await mkdir(join(workspace, '.relavium'), { recursive: true });
     await writeFile(join(workspace, '.relavium', 'keys.json'), '{"k":"v"}');
     await expect(sandboxed().readFile('.relavium/keys.json', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+  });
+
+  it('refuses .env / .env.* + .aws/ + .docker/config.json (2.5.D / ADR-0061 read-floor expansion)', async () => {
+    for (const f of ['.env', '.env.local', '.env.production']) {
+      await writeFile(join(workspace, f), 'API_KEY=secret');
+      await expect(sandboxed().readFile(f, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+    }
+    // The ENTIRE `.aws/` directory is floored (a directory-segment match), not just the `credentials` file — so a
+    // non-credentials file under it (e.g. `.aws/config`, which holds profile/region + can reference secrets) is
+    // also refused. `.docker/config.json` below is the specific-basename denial check.
+    await mkdir(join(workspace, '.aws'), { recursive: true });
+    await writeFile(join(workspace, '.aws', 'credentials'), '[default]\naws_secret_access_key=x');
+    await writeFile(join(workspace, '.aws', 'config'), '[default]\nregion=us-east-1');
+    await expect(sandboxed().readFile('.aws/credentials', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    await expect(sandboxed().readFile('.aws/config', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    await mkdir(join(workspace, '.docker'), { recursive: true });
+    await writeFile(join(workspace, '.docker', 'config.json'), '{"auths":{}}');
+    await expect(sandboxed().readFile('.docker/config.json', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    // Non-secret lookalikes are NOT floored: '.environment' (starts with '.env' but not '.env.') + a plain config.json.
+    await writeFile(join(workspace, '.environment'), 'not-a-secret');
+    expect((await sandboxed().readFile('.environment', {})).content).toBe('not-a-secret');
+    await writeFile(join(workspace, 'config.json'), '{"ok":true}');
+    expect((await sandboxed().readFile('config.json', {})).content).toBe('{"ok":true}');
+  });
+
+  it('refuses `.env` as a DIRECTORY segment (per-environment secret store), not only a `.env` file (2.5.D step-4 review)', async () => {
+    await mkdir(join(workspace, '.env'), { recursive: true });
+    await writeFile(join(workspace, '.env', 'production'), 'API_KEY=secret');
+    await expect(sandboxed().readFile('.env/production', {})).rejects.toBeInstanceOf(
       FsScopeDeniedError,
     );
   });

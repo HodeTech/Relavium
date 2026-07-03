@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import { type ReactElement } from 'react';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
+import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { StatusColor } from './format.js';
 import {
@@ -14,6 +15,7 @@ import {
   tooSmallMessage,
 } from './home-projection.js';
 import { colorProps, dimProps } from './projection.js';
+import { PromptEditor } from './prompt-view.js';
 
 /**
  * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a read-only management strip — an "Attention
@@ -32,8 +34,8 @@ import { colorProps, dimProps } from './projection.js';
 
 interface HomeViewProps {
   readonly snapshot: HomeSnapshot;
-  /** The current prompt buffer (owned by the `RootApp`). */
-  readonly input: string;
+  /** The current prompt editor — text + cursor (owned by the `RootApp`). */
+  readonly editor: EditorState;
   /** A build-failure message to show above the prompt (cleared on the next submit / a clean return). */
   readonly errorText?: string | undefined;
   /** Transient command output — the `/doctor` report (2.5.C S5), shown above the prompt, cleared on the next
@@ -81,22 +83,8 @@ function Section(
   );
 }
 
-/** The live prompt line — a sanitized echo of the buffer with a trailing block cursor so it reads as a live
- *  field. The inverse-space cursor is a terminal attribute, so it is gated on `color` like every other style. */
-function Prompt(props: Readonly<{ input: string; color: boolean }>): ReactElement {
-  return (
-    <Text wrap="truncate-end">
-      <Text {...colorProps(props.color, 'cyan')}>
-        {'> '}
-        {sanitizeInline(props.input)}
-      </Text>
-      {props.color && <Text inverse> </Text>}
-    </Text>
-  );
-}
-
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, input, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
+  const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
 
   // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
   // until a resize arrives, so the user must still be able to leave without resizing.
@@ -214,13 +202,14 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
       {paletteOpen !== true && (
         <Box marginTop={1} flexDirection="column">
-          <Prompt input={input} color={color} />
+          <PromptEditor editor={editor} color={color} />
           {/* The context-aware Home hint bar (2.5.C S6): at an empty prompt, surface the `/` palette (it only opens
-              from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint. */}
+              from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint
+              (which surfaces Ctrl+J for a newline). */}
           <Text {...dimProps(color)} wrap="truncate-end">
-            {input.length === 0
+            {editor.text.length === 0
               ? '/ for commands · type a message to start a chat · Ctrl-C to exit'
-              : 'Enter to start the chat · Ctrl-C to exit'}
+              : 'Enter to start the chat · Ctrl+J newline · Ctrl-C to exit'}
           </Text>
         </Box>
       )}

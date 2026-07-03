@@ -120,6 +120,18 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   interpolated into a prompt** (event-payload masking does not save you once it is in the
   prompt body); see the parse-time rejection rule under
   [Sandbox and tool policy](#sandbox-and-tool-policy-run_command-node-tools-secret-inputs).
+- **The chat input layer (`@`-mention / `!`-shell) must reuse the audited boundaries, never fork them**
+  ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md), 2.5.D). `@`-mention reads a
+  file into the message through the **same** `FsCapability` `read_file` uses — the jail + the sensitive-read
+  confidentiality floor (`isSensitiveReadPath`: `.ssh` / `.env*` / `.aws` / `.docker/config.json` / `.envrc` /
+  `.dockercfg` / … — never listed nor read) + the binary/size guards; a user typing `@path` replaces the
+  `confirmAction` prompt, **never** the floor. `!`-shell runs through the **one** `run_command` boundary via the
+  additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): `enforcePolicy(allowedCommands)`
+  **before** `confirmAction`, then `spawn`/`shell:false` (no metachar expansion). **`[chat].allowed_commands` defaults
+  EMPTY ⇒ `!`-shell disabled** — a non-empty chat default is the "chat-specific relaxation" this section forbids
+  (`run_command` has no argument/file floor, so even a read-only default reopens `!cat .env`). Both inject their
+  bytes as **UNTRUSTED, nonce-fenced, bounded** context. **Editing the chat `allowed_commands` set, the input-layer
+  boundary reuse, or the read-side confidentiality floor is a mandatory-review trigger** (below).
 
 ## Network and outbound URLs (SSRF — four egress paths, all on one primitive)
 
@@ -342,8 +354,10 @@ Rust-delegated egress path (`llm_stream` / `Channel<StreamChunk>`), provider bas
 handling, the `http_request` tool or MCP server-URL handling (the other two SSRF egress
 paths), the `run_command` sandbox, **the host file reader behind the `read_file` interpolation
 filter (`ResolverCapabilities.readFile`) — which must jail to the workspace root and reject path
-traversal, a duty the pure engine delegates to each host**, node `tools:` narrowing or
-`secret`-typed input handling, prompt/tool-call construction, **media byte delivery (`read_media` /
+traversal, a duty the pure engine delegates to each host**, **the CLI chat input layer — the `@`-mention
+read path, the `!`-shell `runUserCommand` boundary, the `[chat].allowed_commands` set, or the read-side
+confidentiality floor (`isSensitiveReadPath`) ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))**,
+node `tools:` narrowing or `secret`-typed input handling, prompt/tool-call construction, **media byte delivery (`read_media` /
 Range / upload) and the media `url` carrier**, the DB encryption path, or a new dependency. For
 **managed mode**, also: the gateway authn/z path, key-pool selection, the metering/billing
 path, and the master-key vault. When in doubt, run the checklist.

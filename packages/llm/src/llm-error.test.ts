@@ -34,12 +34,16 @@ describe('LlmError classification (the fallback contract)', () => {
     expect(kindFromHttpStatus(503)).toBe('overloaded'); // 5xx
     expect(kindFromHttpStatus(401)).toBe('auth');
     expect(kindFromHttpStatus(403)).toBe('auth');
+    // 402 Payment Required (e.g. DeepSeek "Insufficient Balance") is a fatal account/billing problem —
+    // it rides the `auth` bucket → `provider_auth`, never `unknown` → `internal`.
+    expect(kindFromHttpStatus(402)).toBe('auth');
     expect(kindFromHttpStatus(400)).toBe('bad_request');
     expect(kindFromHttpStatus(409)).toBe('bad_request');
     expect(kindFromHttpStatus(413)).toBe('bad_request');
     expect(kindFromHttpStatus(418)).toBe('unknown');
     expect(isRetryable(kindFromHttpStatus(429))).toBe(true);
     expect(isRetryable(kindFromHttpStatus(401))).toBe(false);
+    expect(isRetryable(kindFromHttpStatus(402))).toBe(false); // billing is fatal — never retried
   });
 
   it('builds a valid LlmError with retryable derived from kind', () => {

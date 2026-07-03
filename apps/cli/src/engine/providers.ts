@@ -76,7 +76,7 @@ export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], Provid
   deepseek: {
     displayName: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
-    testModel: 'deepseek-chat',
+    testModel: 'deepseek-v4-flash',
   },
 };
 

@@ -147,14 +147,22 @@ export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
 
 /**
  * Chat-mode (`[chat]`) defaults for the agent-first entry point (config-spec.md, ADR-0024).
- * Distinct from `[defaults]` (which governs workflow runs); a chat session reuses the workflow
- * `allowedCommands` policy (not re-declared here) and may carry its own pre-egress cost cap
- * (`max_cost_microcents` + `on_exceed`) enforced by the same governor as a workflow budget (ADR-0028).
+ * Distinct from `[defaults]` (which governs workflow runs); a chat session may carry its own pre-egress cost cap
+ * (`max_cost_microcents` + `on_exceed`) enforced by the same governor as a workflow budget (ADR-0028), and — since
+ * 2.5.D ([ADR-0061](../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — its own
+ * `allowed_commands` / `allowed_command_globs` gating the `!`-shell escape (mapping to the engine's camelCase
+ * `allowedCommands` / `allowedCommandGlobs`). **Empty/absent ⇒ `!`-shell is disabled** (the `empty ⇒ disabled`
+ * symmetry security-review.md pins) — there is NO chat-specific relaxation of the command allowlist.
  */
 export const ChatConfigSchema = z
   .object({
     default_model: z.string().optional(),
     fs_scope: FsScopeSchema.optional(),
+    // `!`-shell allowlist (ADR-0061): exact full-command-string match (`allowed_commands`) + opt-in glob patterns
+    // (`allowed_command_globs`, riskier). Both empty/absent ⇒ `!` denied (secure-by-default; the user opts in per
+    // config-spec.md `[chat]`). Enforced by the SAME `enforcePolicy(allowedCommands)` the workflow run_command uses.
+    allowed_commands: z.array(nonEmptyString).optional(),
+    allowed_command_globs: z.array(nonEmptyString).optional(),
     // Hard session **turn cap** — the surface-mapped form of the engine knob `SessionDeps.maxTurns`
     // (a finite DoS fail-safe; engine default 50, absent ⇒ that default). This config field is a
     // `positiveInt`, so 0 is rejected at parse and never reaches the engine's own `<= 0 ⇒ default` arm.

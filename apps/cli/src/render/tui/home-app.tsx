@@ -2,14 +2,20 @@ import { Box, Text, useInput } from 'ink';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import type { PendingAttachment } from './attachments.js';
 import { ChatView } from './chat-ink.js';
+import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
+import type { ReverseSearchState } from './input-history.js';
+import type { MentionState } from './mention.js';
+import { MentionView } from './mention-view.js';
 import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
+import { ReverseSearchView } from './reverse-search-view.js';
 
 /**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
@@ -34,7 +40,17 @@ export interface RootAppProps {
  *  plus the `/` palette overlay (2.5.C S3b) when open. It owns NO `useInput` — {@link RootApp} is the single
  *  raw-mode owner and forwards keys to the controller. */
 function ChatRegion(
-  props: Readonly<{ store: ChatStoreController; input: string; palette: PaletteState | undefined }>,
+  props: Readonly<{
+    store: ChatStoreController;
+    editor: EditorState;
+    palette: PaletteState | undefined;
+    search: ReverseSearchState | undefined;
+    mention: MentionState | undefined;
+    shellBusy: boolean;
+    shellCommand: string | undefined;
+    historyEntries: readonly string[];
+    attachments: readonly PendingAttachment[];
+  }>,
 ): ReactElement {
   const { state, tick, color, mode, approval } = useSyncExternalStore(
     props.store.subscribe,
@@ -46,15 +62,23 @@ function ChatRegion(
         state={state}
         tick={tick}
         color={color}
-        input={props.input}
-        running={state.status === 'running'}
+        editor={props.editor}
+        running={state.status === 'running' || props.shellBusy}
         mode={mode}
         approval={approval}
-        paletteOpen={props.palette !== undefined}
+        attachments={props.attachments}
+        busyCommand={props.shellCommand}
+        paletteOpen={
+          props.palette !== undefined || props.search !== undefined || props.mention !== undefined
+        }
       />
       {props.palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
       )}
+      {props.search !== undefined && (
+        <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
+      )}
+      {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
     </Box>
   );
 }
@@ -70,7 +94,19 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useInput((input, key) => controller.handleKey(input, key));
 
   if (state.mode === 'chat' && state.session !== undefined) {
-    return <ChatRegion store={state.session.store} input={state.input} palette={state.palette} />;
+    return (
+      <ChatRegion
+        store={state.session.store}
+        editor={state.input}
+        palette={state.palette}
+        search={state.search}
+        mention={state.mention}
+        shellBusy={state.shellBusy}
+        shellCommand={state.shellCommand}
+        historyEntries={state.historyEntries}
+        attachments={state.attachments}
+      />
+    );
   }
   if (state.mode === 'loading') {
     return (
@@ -89,7 +125,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     <Box flexDirection="column">
       <HomeView
         snapshot={state.snapshot}
-        input={state.input}
+        editor={state.input}
         errorText={state.errorText}
         notice={state.notice}
         nowMs={props.nowMs()}

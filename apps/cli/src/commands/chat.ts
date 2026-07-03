@@ -5,6 +5,7 @@ import {
   DEFAULT_SESSION_MAX_TURNS,
   type SessionHandle,
   type SessionStreamHandleEvent,
+  type UserCommandOutcome,
 } from '@relavium/core';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
@@ -34,6 +35,7 @@ import {
   type BuiltChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -47,6 +49,7 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 
 /**
@@ -89,7 +92,7 @@ export interface ChatDriveContext {
    */
   readonly startSession: () => void;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
-  readonly processLine: (line: string) => Promise<void>;
+  readonly processLine: (line: string, display?: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
@@ -129,6 +132,26 @@ export interface ChatDriveContext {
    * (cycle) + the `/mode` command to this. Absent on a driver that has no mode UI (the mode stays the default).
    */
   readonly onModeChange?: (mode: ChatMode) => void;
+  /**
+   * The `@`-mention completion reader (2.5.D, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
+   * — a thin wrapper over a READ-ONLY `FsCapability` jailed to the SAME fs-scope tier + workspace as the session's
+   * tools, so `@`-completion browses + injects files through the identical jail + confidentiality floor + listing-gate
+   * (a `.ssh`/`.env` entry is never listed nor read). Present on an interactive (TTY, non-`--json`) session; the ink
+   * driver wires `@` at a word boundary to the dir-navigable completion. Absent ⇒ a plain/`--json` driver treats a
+   * leading `@` as a literal (no completion). Read-only by construction — the mention path never writes.
+   */
+  readonly mentionReader?: MentionReader;
+  /**
+   * Run a USER-invoked `!`-shell command (2.5.D step 5, ADR-0061) through the session's `runUserCommand` — the one
+   * `run_command` boundary (allowlist BEFORE approval → mode-aware `confirmAction` → hardened process arm). The
+   * caller pre-tokenizes the line into `command` + `args`. Present on an interactive (TTY, non-`--json`) session;
+   * the driver injects the classified output as UNTRUSTED context / renders the actionable deny hint. Absent ⇒ a
+   * plain/`--json` driver treats a leading `!` as a literal message (no shell escape).
+   */
+  readonly runShellCommand?: (
+    command: string,
+    args: readonly string[],
+  ) => Promise<UserCommandOutcome>;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -470,7 +493,7 @@ export function createChatModeControl(
 /** The slash-aware line handler + the session's cancel/stop state + the mode/abort control (ADR-0057). */
 export interface ChatLineHandler extends ChatModeControl {
   /** Handle one line (a slash command or a message); awaits the turn for a message. */
-  readonly processLine: (raw: string) => Promise<void>;
+  readonly processLine: (raw: string, display?: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
   readonly cancelOnce: () => void;
   /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
@@ -680,14 +703,16 @@ export function createChatLineHandler(
     await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
   };
 
-  const processLine = async (raw: string): Promise<void> => {
+  const processLine = async (raw: string, display?: string): Promise<void> => {
     const line = raw.trim();
     if (line.length === 0) return;
     if (line.startsWith('/')) {
       await handleSlashCommand(line);
       return;
     }
-    store.appendUser(line);
+    // `display` is the COMPACT transcript form (prose + chip note) when a message carried `@`/`!` attachments; the
+    // model + the durable transcript get the full framed `line` (resume fidelity), the live transcript the compact one.
+    store.appendUser(display ?? line);
     persister.beginUserTurn(line);
     await built.session.sendMessage(line);
   };
@@ -709,6 +734,28 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     wiring,
     deps,
   );
+
+  // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
+  // as the session's tools, so `@`-completion browses + injects through the identical confidentiality floor +
+  // listing-gate (a `.ssh`/`.env` entry is never listed nor read). READ-ONLY by construction — the mention path
+  // never writes. TTY-only: an interactive driver wires the completion; a plain/`--json` driver treats a leading
+  // `@` as a literal, so it needs no reader. Building it is pure (no I/O).
+  const mentionReader = ((): MentionReader | undefined => {
+    if (!chatIsInteractive(deps.io, deps.global)) return undefined;
+    const fsArm = assembleToolEnv({
+      profile: 'chat-read-only',
+      fsScopeTier: built.context.fsScopeTier,
+      workspaceDir: built.context.workingDir,
+    }).host.fs;
+    return fsArm === undefined ? undefined : createMentionReader(fsArm);
+  })();
+
+  // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only:
+  // an interactive driver intercepts a leading `!`; a plain/`--json` driver treats it as a literal message.
+  const runShellCommand = chatIsInteractive(deps.io, deps.global)
+    ? (command: string, args: readonly string[]): Promise<UserCommandOutcome> =>
+        built.session.runUserCommand(command, args)
+    : undefined;
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
@@ -732,6 +779,8 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       ...(intro === undefined ? {} : { intro }),
       onAbort,
       onModeChange,
+      ...(mentionReader === undefined ? {} : { mentionReader }),
+      ...(runShellCommand === undefined ? {} : { runShellCommand }),
     });
   } finally {
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'

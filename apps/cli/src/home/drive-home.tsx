@@ -10,13 +10,16 @@ import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
+import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore } from '../render/tui/chat-store.js';
+import { createMentionReader } from '../render/tui/mention.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -87,8 +90,17 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const providers = deps.providers ?? createProviderResolver(deps.io.env);
-  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+  // One OS-keychain accessor shared by the provider key resolver (2.C) + the MCP named-secret resolver (2.R) — the
+  // Home's composition-root wiring, mirroring `dispatch.ts`'s `keyResolvers` for the named commands. WITHOUT the
+  // keychain the Home defaulted to an ENV-ONLY resolver, so a key stored in the OS keychain (the normal
+  // `relavium provider add` path) was invisible → a `provider_auth` error on the first Home-chat turn, even though
+  // `relavium chat` (which IS keychain-wired via dispatch) worked. `createOsKeychainStore()` reads nothing until a
+  // key is actually resolved (the default agent has no MCP servers, so the MCP resolver stays inert), so building
+  // it here is side-effect-free; a test injects `providers` and never reaches the keychain.
+  const keychain = createOsKeychainStore();
+  const providers = deps.providers ?? createProviderResolver(deps.io.env, keychain);
+  const mcpSecretResolver =
+    deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
   const doctorProbes =
     deps.doctorProbes ??
     assembleDoctorProbes({
@@ -191,6 +203,24 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         frame.unref();
         persister.start();
         built.session.start();
+        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier +
+        // workspace as the session's tools, so in-Home `@`-completion browses + injects through the identical
+        // confidentiality floor + listing-gate. READ-ONLY by construction (the Home is always a TTY). Building it is
+        // pure (no I/O). Absent (an unwired fs arm) ⇒ `@` degrades to a literal char.
+        const mentionFs = assembleToolEnv({
+          profile: 'chat-read-only',
+          fsScopeTier: built.context.fsScopeTier,
+          workspaceDir: built.context.workingDir,
+        }).host.fs;
+        const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
+        // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand` (the one
+        // command boundary: allowlist BEFORE approval → mode-aware confirmAction → hardened process arm). The Home is
+        // always a TTY, so it is always wired; the empty-default `[chat].allowed_commands` keeps `!` inert until opt-in.
+        const runShellCommand = (
+          command: string,
+          args: readonly string[],
+        ): ReturnType<typeof built.session.runUserCommand> =>
+          built.session.runUserCommand(command, args);
         let torn = false;
         const teardown = async (): Promise<void> => {
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
@@ -204,7 +234,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
           }
         };
-        return { store, processLine, shouldStop, teardown, onAbort, onModeChange };
+        return {
+          store,
+          processLine,
+          shouldStop,
+          teardown,
+          onAbort,
+          onModeChange,
+          ...(mentionReader === undefined ? {} : { mentionReader }),
+          runShellCommand,
+        };
       } catch (err) {
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();

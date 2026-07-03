@@ -80,7 +80,7 @@ const OPENAI_SUPPORTS: CapabilityFlags = {
   },
 };
 
-/** DeepSeek's capability surface (deepseek-reasoner exposes reasoning; text-only — no media, ADR-0031). */
+/** DeepSeek's capability surface (deepseek-v4-flash / -pro both expose thinking; text-only — no media, ADR-0031). */
 const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   tools: true,
   streaming: true,

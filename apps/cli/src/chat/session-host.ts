@@ -23,6 +23,7 @@ import type {
   McpServerRegistration,
   SessionContext,
   SessionMessage,
+  ToolPolicy,
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -186,6 +187,20 @@ function buildSessionRuntime(
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const registry = createToolRegistry({ tools, host });
+  // The chat `ToolPolicy` (ADR-0055's single source) extended with the `[chat].allowed_commands` /
+  // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒
+  // `run_command` denied (the secure `empty ⇒ disabled` symmetry). Threaded into `SessionDeps.toolPolicy`, it is
+  // what BOTH a model `run_command` (advertised only if the agent grants it) AND the user `!`-shell
+  // (`runUserCommand`) enforce — the ONE allowlist, never a chat-specific fork.
+  const chatToolPolicy: ToolPolicy = {
+    ...factoryEnv.policy,
+    ...(opts.chat.allowedCommands === undefined
+      ? {}
+      : { allowedCommands: opts.chat.allowedCommands }),
+    ...(opts.chat.allowedCommandGlobs === undefined
+      ? {}
+      : { allowedCommandGlobs: opts.chat.allowedCommandGlobs }),
+  };
   const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
@@ -204,9 +219,9 @@ function buildSessionRuntime(
     // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
     // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
     // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`
-    // "empty/absent ⇒ run_command disabled"). Wiring it now means a 2.5.E/ADR-0057 per-mode allowlist flows
-    // through automatically rather than being silently dropped by reading only the factory's `host`.
-    toolPolicy: factoryEnv.policy,
+    // "empty/absent ⇒ run_command disabled"). Extended with the `[chat].allowed_commands` `!`-shell allowlist
+    // (ADR-0061) — see `chatToolPolicy` above. A 2.5.E/ADR-0057 per-mode allowlist flows through automatically.
+    toolPolicy: chatToolPolicy,
     // Interactive-surface turn bounds: recover from a host tool EXECUTION failure (a file-not-found read, a
     // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
     // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in

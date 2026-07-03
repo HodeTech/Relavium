@@ -19,10 +19,42 @@ describe('resolveConfig', () => {
         maxMessages: undefined,
         maxCostMicrocents: undefined,
         onExceed: undefined,
+        allowedCommands: undefined,
+        allowedCommandGlobs: undefined,
       },
       variables: {},
       mcpServers: [],
     });
+  });
+
+  it('resolves the [chat] `!`-shell allowlist as a COUPLED unit — a project that sets EITHER field owns the whole policy (ADR-0061)', () => {
+    const workspace: ProjectConfig = {
+      chat: { allowed_commands: ['ls', 'pwd'], allowed_command_globs: ['git *'] },
+    };
+    // The project narrows to `git status` and sets NO globs. It must NOT inherit the workspace's broad `git *`
+    // glob — else `git push` would still be allowed, defeating the narrowing (a security regression).
+    const project: ProjectConfig = { chat: { allowed_commands: ['git status'] } };
+    const resolved = resolveConfig({ workspace, project }).chat;
+    expect(resolved.allowedCommands).toEqual(['git status']); // project REPLACES (never merges) the workspace list
+    expect(resolved.allowedCommandGlobs).toBeUndefined(); // NOT inherited — the project owns the whole allowlist
+    // Symmetric: a project setting ONLY globs drops the workspace's exact commands too.
+    const globsOnly = resolveConfig({
+      workspace,
+      project: { chat: { allowed_command_globs: ['npm run *'] } },
+    }).chat;
+    expect(globsOnly.allowedCommandGlobs).toEqual(['npm run *']);
+    expect(globsOnly.allowedCommands).toBeUndefined();
+    // A project that sets NEITHER allowlist field DOES fall through to the workspace, per field (both inherited).
+    const inherited = resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat;
+    expect(inherited.allowedCommands).toEqual(['ls', 'pwd']);
+    expect(inherited.allowedCommandGlobs).toEqual(['git *']);
+    // The `[]` OPT-OUT (ADR-0061): a project setting `allowed_commands: []` explicitly disables exact commands and
+    // must NOT inherit the workspace's globs either — else `git push` would still run via the inherited `git *`.
+    const optOut = resolveConfig({ workspace, project: { chat: { allowed_commands: [] } } }).chat;
+    expect(optOut.allowedCommands).toEqual([]);
+    expect(optOut.allowedCommandGlobs).toBeUndefined(); // NOT inherited — the opt-out is real
+    // Absent everywhere ⇒ undefined ⇒ `!`-shell disabled (secure default).
+    expect(resolveConfig({}).chat.allowedCommands).toBeUndefined();
   });
 
   it('resolves the [chat] block last-writer-wins (project > workspace), per field', () => {

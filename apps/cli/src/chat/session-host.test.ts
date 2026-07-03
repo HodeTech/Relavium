@@ -84,6 +84,8 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   maxMessages: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
+  allowedCommands: undefined,
+  allowedCommandGlobs: undefined,
 };
 
 function deterministicIds() {
