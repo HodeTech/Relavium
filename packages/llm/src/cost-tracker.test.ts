@@ -24,6 +24,22 @@ describe('priceModel', () => {
     expect(p.inputPerMtokMicrocents).toBe(500_000_000); // $5/MTok → 5e8 micro-cents
   });
 
+  it('prices the current DeepSeek ids deepseek-v4-flash (default) and deepseek-v4-pro (premium)', () => {
+    // Verified 2026-07-03 against api-docs.deepseek.com/quick_start/pricing. nativeId is the exact wire string.
+    const flash = priceModel('deepseek-v4-flash');
+    expect(flash.provider).toBe('deepseek');
+    expect(flash.nativeId).toBe('deepseek-v4-flash');
+    expect(flash.inputPerMtokMicrocents).toBe(14_000_000); // $0.14/MTok
+    expect(flash.outputPerMtokMicrocents).toBe(28_000_000); // $0.28/MTok
+    expect(flash.cachedInputPerMtokMicrocents).toBe(280_000); // $0.0028/MTok cache-hit
+    const pro = priceModel('deepseek-v4-pro');
+    expect(pro.provider).toBe('deepseek');
+    expect(pro.nativeId).toBe('deepseek-v4-pro');
+    expect(pro.inputPerMtokMicrocents).toBe(43_500_000); // $0.435/MTok
+    expect(pro.outputPerMtokMicrocents).toBe(87_000_000); // $0.87/MTok
+    expect(pro.cachedInputPerMtokMicrocents).toBe(362_500); // $0.003625/MTok cache-hit
+  });
+
   it('throws a typed UnknownModelError (never a silent zero)', () => {
     expect(() => priceModel('gpt-9-ultra')).toThrowError(UnknownModelError);
     try {

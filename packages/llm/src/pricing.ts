@@ -20,8 +20,9 @@ import type { ProviderId } from './types.js';
  * `gpt-4o` / `gpt-4o-mini` / `gemini-2.0-flash` / `gemini-1.5-pro` rows were retired — shut down or
  * removed from the provider catalogs — and replaced with the current flagship/mini and Pro/Flash
  * models. Gemini Pro/Flash are context-tiered: the ≤200K (Pro) and text/image/video (Flash) tier is
- * used here. DeepSeek's `deepseek-chat`/`-reasoner` ids alias `deepseek-v4-flash` (non-thinking /
- * thinking) and are scheduled for deprecation on 2026-07-24 — re-verify then.
+ * used here. **DeepSeek re-verified 2026-07-03** (api-docs.deepseek.com/quick_start/pricing): the current ids
+ * are `deepseek-v4-flash` (default) and `deepseek-v4-pro` (premium), each serving non-thinking + thinking on one
+ * id; the legacy `deepseek-chat`/`-reasoner` aliases deprecate 2026-07-24 15:59 UTC (re-verify / remove then).
  */
 
 export interface ModelPricing {
@@ -150,12 +151,38 @@ export const MODEL_PRICING = {
     cachedInputPerMtokMicrocents: usd(0.125),
   },
 
-  // --- DeepSeek (verified 2026-06-11: api-docs.deepseek.com; via the OpenAI-compatible adapter) -
-  // deepseek-chat/-reasoner alias deepseek-v4-flash (non-thinking / thinking); deprecating 2026-07-24.
+  // --- DeepSeek (verified 2026-07-03: api-docs.deepseek.com/quick_start/pricing; via the OpenAI-compatible
+  // adapter) — the current ids are `deepseek-v4-flash` (default tier) and `deepseek-v4-pro` (premium tier). Each
+  // serves BOTH non-thinking and thinking (default) modes on ONE id — the mode is a request param, not a
+  // separate model — so there is no per-mode row. The legacy `deepseek-chat` / `deepseek-reasoner` ids (the old
+  // non-thinking / thinking aliases of v4-flash) are kept below until they deprecate on 2026-07-24 15:59 UTC.
+  'deepseek-v4-flash': {
+    provider: 'deepseek',
+    nativeId: 'deepseek-v4-flash',
+    displayName: 'DeepSeek-V4-Flash',
+    contextWindowTokens: 1_000_000,
+    maxOutputTokens: 384_000,
+    inputPerMtokMicrocents: usd(0.14),
+    outputPerMtokMicrocents: usd(0.28),
+    cachedInputPerMtokMicrocents: usd(0.0028), // cache-hit input
+  },
+  'deepseek-v4-pro': {
+    provider: 'deepseek',
+    nativeId: 'deepseek-v4-pro',
+    displayName: 'DeepSeek-V4-Pro',
+    contextWindowTokens: 1_000_000,
+    maxOutputTokens: 384_000,
+    inputPerMtokMicrocents: usd(0.435),
+    outputPerMtokMicrocents: usd(0.87),
+    cachedInputPerMtokMicrocents: usd(0.003625), // cache-hit input
+  },
+  // Legacy aliases — deprecating 2026-07-24 15:59 UTC. Kept so an existing agent/config that still names them
+  // keeps costing correctly until then; the pricing page no longer lists them, so these hold the last verified
+  // (2026-06-11) values — re-verify or remove at deprecation.
   'deepseek-chat': {
     provider: 'deepseek',
     nativeId: 'deepseek-chat',
-    displayName: 'DeepSeek-V4-Flash (chat)',
+    displayName: 'DeepSeek-V4-Flash (chat, legacy)',
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 384_000,
     inputPerMtokMicrocents: usd(0.14),
@@ -165,7 +192,7 @@ export const MODEL_PRICING = {
   'deepseek-reasoner': {
     provider: 'deepseek',
     nativeId: 'deepseek-reasoner',
-    displayName: 'DeepSeek-V4-Flash (reasoner)',
+    displayName: 'DeepSeek-V4-Flash (reasoner, legacy)',
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 384_000,
     inputPerMtokMicrocents: usd(0.435),
