@@ -168,9 +168,12 @@ export function foldReverseSearchKey(
     // Shrinking widens the search — re-anchor to the newest match.
     return { kind: 'state', state: reverseSearchSetQuery(entries, state.query.slice(0, -1)) };
   }
-  if (char.length > 0 && key.ctrl !== true && key.meta !== true) {
-    // Extending narrows — keep the selection at/older than the current match, never yanked back to the newest.
+  // Only a SINGLE printable code point extends the query. A multi-character blob (a paste — the standalone chat
+  // has no bracketed-paste latch, so a paste arrives as one multi-char event) is dropped, keeping the query sane
+  // and matching the Home's paste gate (which drops a paste while search owns the keyboard). Extending narrows —
+  // keep the selection at/older than the current match, never yanked back to the newest.
+  if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
     return { kind: 'state', state: reverseSearchExtendQuery(entries, state, state.query + char) };
   }
-  return { kind: 'state', state }; // ignore other keys, stay open
+  return { kind: 'state', state }; // ignore other keys (incl. a multi-char paste blob), stay open
 }

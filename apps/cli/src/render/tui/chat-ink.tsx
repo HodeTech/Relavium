@@ -282,10 +282,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
       if (step.kind === 'accept') {
         applySearch(undefined);
-        // The accepted entry becomes the live buffer, NOT a history-nav result — reset nav so a subsequent Down
-        // doesn't clobber it with the stale pre-search draft (and a subsequent Up saves it as the fresh draft).
-        historyRef.current = resetHistoryNav(historyRef.current);
-        applyEditor(() => editorFromText(step.text)); // load the matched entry into the buffer
+        applyEditor(() => {
+          // The accepted entry becomes the live buffer, NOT a history-nav result — reset nav (idempotent) so a
+          // subsequent Down doesn't clobber it with the stale pre-search draft, and a subsequent Up saves it fresh.
+          historyRef.current = resetHistoryNav(historyRef.current);
+          return editorFromText(step.text); // load the matched entry (a replace, not a fold)
+        });
         return;
       }
       applySearch(step.state);
@@ -334,31 +336,34 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'append':
       case 'backspace':
       case 'newline':
-      case 'kill': {
-        const next = applyEditorAction(editorRef.current, action);
-        if (next === editorRef.current) return; // a no-op edit must not discard the history draft or re-render
-        historyRef.current = resetHistoryNav(historyRef.current); // a real text edit ends history navigation
-        applyEditor(() => next);
+      case 'kill':
+        // A TRUE functional updater (chains React's `prev`), so a coalesced stdin chunk that interleaves edits
+        // with a move/history action folds EVERY edit onto the accumulator — a constant `() => next` precomputed
+        // from editorRef.current (stale until the queued updater flushes) would drop all but the last. The no-op
+        // check + the idempotent resetHistoryNav (a real edit ends history navigation) live INSIDE the updater.
+        applyEditor((current) => {
+          const next = applyEditorAction(current, action);
+          if (next !== current) historyRef.current = resetHistoryNav(historyRef.current);
+          return next;
+        });
         return;
-      }
-      case 'move': {
-        // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
-        const current = editorRef.current;
-        const moved = applyEditorAction(current, action);
-        if (moved !== current || (action.motion !== 'up' && action.motion !== 'down')) {
-          applyEditor(() => moved); // a real move (vertical mid-buffer, or any horizontal/word/line motion)
-          return;
-        }
-        const recall =
-          action.motion === 'up'
-            ? historyPrev(historyRef.current, current.text)
-            : historyNext(historyRef.current);
-        if (recall !== null) {
+      case 'move':
+        // Functional updater too (folds over the accumulator across a burst). A real move returns the moved editor;
+        // a vertical no-op at the top/bottom edge recalls history (mutating historyRef — ink does not run under
+        // React StrictMode, so the updater runs once); a no-op horizontal motion returns `current` unchanged.
+        applyEditor((current) => {
+          const moved = applyEditorAction(current, action);
+          if (moved !== current) return moved;
+          if (action.motion !== 'up' && action.motion !== 'down') return current;
+          const recall =
+            action.motion === 'up'
+              ? historyPrev(historyRef.current, current.text)
+              : historyNext(historyRef.current);
+          if (recall === null) return current;
           historyRef.current = recall.history;
-          applyEditor(() => editorFromText(recall.text));
-        }
+          return editorFromText(recall.text);
+        });
         return;
-      }
       case 'submit':
         historyRef.current = recordHistory(historyRef.current, action.line);
         applyEditor(() => emptyEditor());

@@ -130,5 +130,16 @@ describe('reverse-search (Ctrl+R) over the history (2.5.D step 3)', () => {
       kind: 'state',
       state: { query: 'fo', matchIndex: 2 },
     });
+    // A multi-character blob (a paste in the standalone chat, which has no bracketed-paste latch) is DROPPED —
+    // it must not corrupt the query; a single code point (incl. an astral emoji) still extends it.
+    const st = { query: 'fo', matchIndex: 2 };
+    expect(foldReverseSearchKey('pasted blob', {}, st, entries)).toEqual({
+      kind: 'state',
+      state: st,
+    });
+    expect(foldReverseSearchKey('😀', {}, { query: '', matchIndex: null }, entries)).toEqual({
+      kind: 'state',
+      state: { query: '😀', matchIndex: null },
+    });
   });
 });
