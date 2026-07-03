@@ -45,6 +45,7 @@ function ChatRegion(
     palette: PaletteState | undefined;
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
+    shellBusy: boolean;
     historyEntries: readonly string[];
   }>,
 ): ReactElement {
@@ -59,7 +60,7 @@ function ChatRegion(
         tick={tick}
         color={color}
         editor={props.editor}
-        running={state.status === 'running'}
+        running={state.status === 'running' || props.shellBusy}
         mode={mode}
         approval={approval}
         paletteOpen={
@@ -95,6 +96,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         palette={state.palette}
         search={state.search}
         mention={state.mention}
+        shellBusy={state.shellBusy}
         historyEntries={state.historyEntries}
       />
     );

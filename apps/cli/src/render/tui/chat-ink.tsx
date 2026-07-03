@@ -297,6 +297,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
   const submitGenRef = useRef(0);
+  // A `!`-shell command in flight (2.5.D step 5). `runUserCommand` makes the session busy (`#status: 'running'`)
+  // but emits NO session event, so the store's `state.status` stays idle — WITHOUT this flag a plain message typed
+  // during a slow `!npm test` would reach `sendMessage`, throw `SessionStateError`, and crash the whole session.
+  // The REF gates keystrokes (coalesced-chunk safe, like `editorRef`); the state drives a busy indicator. Cleared
+  // in EVERY settle branch (ran/denied/failed/cancelled + the reject arm).
+  const [shellBusy, setShellBusy] = useState(false);
+  const shellBusyRef = useRef(false);
+  const applyShellBusy = (busy: boolean): void => {
+    shellBusyRef.current = busy;
+    setShellBusy(busy);
+  };
   // List `dir`'s entries through the fs jail (listing-gate + noise filter enforced by the reader), applying them
   // ONLY if the submode is still open on that dir — a resolve from a since-closed or since-descended submode is
   // dropped. A `list()` rejection (the dir vanished) leaves the submode open with an empty, not-loading list.
@@ -391,9 +402,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (runner === undefined) return;
     const gen = submitGenRef.current;
     const mode = props.store.getSnapshot().mode; // captured for a mode-aware deny hint
+    applyShellBusy(true); // gate input + show a busy indicator until the command settles (else a submit crashes)
     void runner(parsed.command, parsed.args).then(
-      (outcome) => handleShellOutcome(parsed, outcome, mode, gen),
+      (outcome) => {
+        applyShellBusy(false);
+        handleShellOutcome(parsed, outcome, mode, gen);
+      },
       () => {
+        applyShellBusy(false);
         if (submitGenRef.current === gen) props.store.note('! shell command failed unexpectedly');
       },
     );
@@ -419,7 +435,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   useInput((char, key) => {
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
-    const isRunning = props.store.getSnapshot().state.status === 'running';
+    // Busy = a streaming turn OR a `!`-shell command in flight (the latter has no store status — read the ref so a
+    // coalesced same-chunk key after the `!`-submit is gated too). A gated keystroke can't reach `sendMessage`.
+    const isRunning = props.store.getSnapshot().state.status === 'running' || shellBusyRef.current;
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
     // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
     // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
@@ -612,7 +630,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         tick={tick}
         color={color}
         editor={editor}
-        running={running}
+        running={running || shellBusy}
         mode={mode}
         approval={approval}
         paletteOpen={palette !== undefined || search !== undefined || mention !== undefined}

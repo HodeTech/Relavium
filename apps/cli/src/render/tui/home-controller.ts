@@ -117,6 +117,10 @@ export interface HomeControllerState {
   /** The open `@`-mention completion submode of the in-Home chat (2.5.D step 4, ADR-0061) — `undefined` ⇒ closed.
    *  Chat-only (its reader is per-session); mutually exclusive with the palette/search, yields to a pending approval. */
   readonly mention: MentionState | undefined;
+  /** A `!`-shell command is in flight (2.5.D step 5) — the session is busy (`#status: 'running'`) but emits no
+   *  event, so this flag gates input + shows a busy indicator; WITHOUT it a message submitted mid-command reaches
+   *  `sendMessage`, throws `SessionStateError`, and crashes the chat. Cleared on settle + on chat end. */
+  readonly shellBusy: boolean;
   /** A published copy of the history entries (the closure `history` is not in state) so the external render can
    *  compute the reverse-search match; changes only on submit. */
   readonly historyEntries: readonly string[];
@@ -167,6 +171,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     palette: undefined,
     search: undefined,
     mention: undefined,
+    shellBusy: false,
     historyEntries: [],
     notice: undefined,
   };
@@ -251,6 +256,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
+          shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
         });
       })
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
@@ -497,9 +503,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (runner === undefined) return;
     const epoch = submitEpoch;
     const mode = active.store.getSnapshot().mode; // captured for a mode-aware deny hint
+    set({ shellBusy: true }); // gate input + show busy until the command settles (else a submit crashes the chat)
+    // Clear the busy flag only if THIS session is still current (a swap's endChat already reset it — never un-gate
+    // a new session's own in-flight command).
+    const clearBusy = (): void => {
+      if (state.session === active) set({ shellBusy: false });
+    };
     void runner(parsed.command, parsed.args).then(
-      (outcome) => handleShellOutcome(active, parsed, outcome, mode, epoch),
+      (outcome) => {
+        clearBusy();
+        handleShellOutcome(active, parsed, outcome, mode, epoch);
+      },
       () => {
+        clearBusy();
         if (state.session === active && state.mode === 'chat' && submitEpoch === epoch) {
           active.store.note('! shell command failed unexpectedly');
         }
@@ -509,7 +525,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
-    const running = active.store.getSnapshot().state.status === 'running';
+    // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
+    // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
+    const running = active.store.getSnapshot().state.status === 'running' || state.shellBusy;
     // The open `@`-mention completion owns every key (2.5.D step 4) — parity with ChatApp. Mutually exclusive with
     // the palette/search; yields to a pending approval (only opens below when idle). The reader is per-session.
     const openMentionState = state.mention;
@@ -732,6 +750,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           const editable =
             state.mode !== 'loading' &&
             !chatRunning() &&
+            !state.shellBusy && // a paste while a `!`-command runs must not leak into the buffer (input is gated)
             state.palette === undefined &&
             state.search === undefined &&
             state.mention === undefined;

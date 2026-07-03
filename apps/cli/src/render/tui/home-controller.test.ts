@@ -336,7 +336,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       exitCode: 0,
       stdout: 'a.ts\nb.ts',
       stderr: '',
-      truncated: false,
     };
     const shellCalls: { command: string; args: readonly string[] }[] = [];
     const made = makeSession({
@@ -418,6 +417,51 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     await flush();
     expect(made.lines).toEqual(['!']); // sent as a message, not run as a command
+  });
+
+  it('gates input WHILE a `!`-command is in flight — a message typed mid-command never reaches sendMessage (no crash)', async () => {
+    // A DEFERRED command: it stays pending so we can act while the session is busy (`#status: running`, but the
+    // store has no status for it — this is the exact window the crash lived in).
+    let resolveCmd: (o: UserCommandOutcome) => void = () => {};
+    const onError = vi.fn();
+    const made = makeSession({
+      runShellCommand: () =>
+        new Promise((resolve) => {
+          resolveCmd = resolve;
+        }),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError,
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0;
+
+    type(c, '!sleep 9'); // a long-running command
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().shellBusy).toBe(true); // the busy flag is set — input is now gated
+
+    // The user, seeing an (apparently idle) prompt, types a message + Enter BEFORE the command resolves.
+    type(c, 'a normal message');
+    c.handleKey('', ENTER);
+    await flush();
+    // The message is GATED — it never reached sendMessage (no SessionStateError → no onError crash), and the
+    // buffer edit itself was ignored (input gated), so nothing was sent.
+    expect(made.lines).toEqual([]);
+    expect(onError).not.toHaveBeenCalled();
+    expect(c.getSnapshot().input.text).toBe('');
+
+    // The command resolves → busy clears, the output injects, and the session is usable again.
+    resolveCmd({ kind: 'ran', exitCode: 0, stdout: 'done', stderr: '' });
+    await flush();
+    expect(c.getSnapshot().shellBusy).toBe(false);
+    expect(c.getSnapshot().input.text).toContain('<command');
   });
 
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {

@@ -1059,7 +1059,6 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
       exitCode: 0,
       stdout: 'FILES\n',
       stderr: '',
-      truncated: false,
     });
     // The exact-match allowlist matched the joined `command + args`; the process spawned with the split argv.
     expect(calls).toEqual([{ command: 'ls', args: ['-la'] }]);

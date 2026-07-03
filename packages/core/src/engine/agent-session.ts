@@ -218,9 +218,10 @@ type PlanResult =
 /**
  * The classified result of a `!`-shell {@link AgentSession.runUserCommand} (ADR-0061). A discriminated union so
  * the host renders each case explicitly and no raw error escapes:
- * - `ran` — the command executed; `stdout`/`stderr` are process-arm bounded (the host applies a second injection
- *   bound before feeding them to the model as UNTRUSTED context). `exitCode` may be non-zero (a normal command
- *   failure, still `ran`).
+ * - `ran` — the command executed; `stdout`/`stderr` are the process-arm–bounded output (the host applies a second
+ *   injection bound + its own truncation marker before feeding them to the model as UNTRUSTED context — so this
+ *   type does NOT carry a `truncated` flag, which would describe a different, model-facing bounding pass over data
+ *   the caller never receives). `exitCode` may be non-zero (a normal command failure, still `ran`).
  * - `denied` — refused BEFORE any side effect: `allowlist: true` ⇒ the command is not in `[chat].allowed_commands`
  *   (the host shows the actionable opt-in hint); `false` ⇒ an interactive approval reject / protected-path denial.
  * - `failed` — a transient execution/wiring fault (a spawn error, a capability gap) — `message` is secret-free.
@@ -232,7 +233,6 @@ export type UserCommandOutcome =
       readonly exitCode: number;
       readonly stdout: string;
       readonly stderr: string;
-      readonly truncated: boolean;
     }
   | { readonly kind: 'denied'; readonly allowlist: boolean; readonly message: string }
   | { readonly kind: 'failed'; readonly message: string }
@@ -655,12 +655,14 @@ export class AgentSession {
       if (!isProcessResult(result)) {
         return { kind: 'failed', message: 'run_command returned an unexpected result shape' };
       }
+      // Return the process-arm–bounded stdout/stderr (the identity `output`, no `outputMapping`). NOT
+      // `outcome.truncated` — that flag comes from the SEPARATE model-facing `boundForModel` pass whose bounded
+      // value is discarded here, so it would describe data the caller never receives. The host re-bounds on inject.
       return {
         kind: 'ran',
         exitCode: result.exitCode,
         stdout: result.stdout,
         stderr: result.stderr,
-        truncated: outcome.truncated,
       };
     } catch (err) {
       if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
