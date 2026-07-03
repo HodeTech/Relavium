@@ -75,15 +75,16 @@ export type ChatKeyAction =
  * running-swallow so a pending approval can never deadlock.
  */
 function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
-  if (key.escape === true) return { kind: 'abort' };
-  // Only an UNMODIFIED letter answers the prompt — otherwise a now-bound editor chord (Ctrl+A line-start, Ctrl+W
-  // kill, Alt+B word-left) would, during a pending approval, silently pick the most-permissive, session-persistent
-  // approve-always / approve-once / reject, subverting the fail-closed confirmAction floor (ADR-0057). The digit
-  // shortcuts stay unconditional (no chord produces a bare digit).
+  if (key.escape === true) return { kind: 'abort' }; // Esc aborts regardless of modifiers
+  // Only an UNMODIFIED key answers the prompt. Otherwise a now-bound editor chord (Ctrl+A line-start, Ctrl+W kill,
+  // Alt+B word-left) OR a meta+digit (Alt+1 — reachable via ink's ESC-prefixed parsing, `\x1b1` → char '1',
+  // meta:true) would, during a pending approval, silently pick the most-permissive, session-persistent approve /
+  // reject, subverting the fail-closed confirmAction floor (ADR-0057). Both letters AND digits require `bare`.
   const bare = key.ctrl !== true && key.meta !== true;
-  if ((bare && char === 'y') || char === '1') return { kind: 'approve', scope: 'once' };
-  if ((bare && char === 'a') || char === '2') return { kind: 'approve', scope: 'always' };
-  if ((bare && (char === 'n' || char === 'r')) || char === '3') return { kind: 'reject' };
+  if (!bare) return { kind: 'none' };
+  if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
+  if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
+  if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
   return { kind: 'none' };
 }
 
@@ -250,7 +251,7 @@ function stepRight(text: string, i: number): number {
 }
 
 /** Whether the code point starting at code-unit index `i` is a "word" char (Unicode letter / number / `_`). */
-const WORD_CODE_POINT = /[\p{L}\p{N}_]/u;
+const WORD_CODE_POINT = /[\p{L}\p{M}\p{N}_]/u; // include \p{M} so a base + combining diacritic is ONE word
 function isWordAt(text: string, i: number): boolean {
   const cp = text.codePointAt(i);
   return cp !== undefined && WORD_CODE_POINT.test(String.fromCodePoint(cp));
@@ -322,7 +323,10 @@ export function killRange(editor: EditorState, motion: KillMotion): EditorState 
   let to: number;
   switch (motion) {
     case 'word-back':
-      from = wordLeft(text, cursor);
+      // Line-scoped like to-line-start / to-line-end: a word-back kill never crosses a '\n'. Without the clamp,
+      // wordLeft treats '\n' as ordinary whitespace, so Ctrl+W on / just after a blank line would wipe the whole
+      // previous line or paragraph in one keystroke.
+      from = Math.max(wordLeft(text, cursor), lineStart(text, cursor));
       to = cursor;
       break;
     case 'to-line-start':

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { sanitizeInline } from './chat-projection.js';
 import { promptRows } from './prompt-cursor.js';
 
 describe('promptRows (multi-line prompt cursor placement, 2.5.D step 2)', () => {
@@ -41,5 +42,25 @@ describe('promptRows (multi-line prompt cursor placement, 2.5.D step 2)', () => 
       { before: '', at: undefined, after: '' },
       { before: 'b', at: ' ', after: '' },
     ]);
+  });
+
+  it('a control/escape sequence split across the cursor is stripped in EVERY segment (no ANSI/OSC injection)', () => {
+    // PromptEditor sanitizes before / at / after INDEPENDENTLY. A crafted ESC/CSI/OSC must not survive in any
+    // segment at ANY cursor position — even when the cursor splits the sequence (ESC as the `at` cell, or `[`
+    // right after an ESC that ended `before`). The concatenated sanitized render must carry NO control bytes.
+    // eslint-disable-next-line no-control-regex -- deliberately matching the C0/C1 control bytes we must strip
+    const CONTROL = /[\x00-\x1f\x7f-\x9f]/;
+    const crafted = ['a\x1b[31mb', 'a\x1b]0;pwn\x07b', 'a\x1bb', '\x1b[2J\x1b[0;0Hx'];
+    for (const text of crafted) {
+      for (let cursor = 0; cursor <= text.length; cursor++) {
+        for (const row of promptRows(text, cursor)) {
+          const rendered =
+            sanitizeInline(row.before) +
+            (row.at === undefined ? '' : sanitizeInline(row.at)) +
+            sanitizeInline(row.after);
+          expect(rendered).not.toMatch(CONTROL); // no ESC / CSI / OSC / C0 / C1 byte survives the display boundary
+        }
+      }
+    }
   });
 });

@@ -14,6 +14,11 @@ import { colorProps } from './projection.js';
  * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block (a terminal
  * attribute, gated on `color` like every other style); without color the underlying char is still rendered,
  * just not highlighted — matching the prior trailing-block behavior.
+ *
+ * The rows INTENTIONALLY reflow (ink's default `wrap`), unlike the Home strip's read-only `truncate-end` rows:
+ * this is a LIVE editor, so the full input + the cursor must always stay visible (a `truncate-end` prompt would
+ * hide the cursor once a line runs past the terminal edge, and would defeat the multi-line buffer entirely). A
+ * long/many-line prompt therefore grows downward — it is the bottom element, so the strip above is unaffected.
  */
 export function PromptEditor(
   props: Readonly<{ editor: EditorState; color: boolean }>,

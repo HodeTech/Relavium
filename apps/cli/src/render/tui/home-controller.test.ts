@@ -483,10 +483,12 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         onError: vi.fn(),
       });
       c.handleKey(PASTE_START, {});
-      c.handleKey('line1\nline2\r\nline3', {}); // ink delivers the bracketed content as one event
+      c.handleKey('line1\nline2\r\nline3', {}); // ink delivers the bracketed content as one event (with a CRLF)
       c.handleKey(PASTE_END, {});
       // The whole EditorState: insertAtCursor advances the cursor past the multi-char pasted block (18 units).
-      expect(c.getSnapshot().input).toEqual({ text: 'line1\nline2\r\nline3', cursor: 18 });
+      // The pasted CRLF is normalized to a single LF (no stray '\r' reaches the model/transcript), so the block
+      // is 17 units, not 18 — matching the reduceEditorMotion append path.
+      expect(c.getSnapshot().input).toEqual({ text: 'line1\nline2\nline3', cursor: 17 });
       expect(startChat).not.toHaveBeenCalled(); // nothing submitted by the embedded newlines
       expect(c.getSnapshot().mode).toBe('home');
     });
@@ -538,7 +540,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('second', {});
       c.handleKey(PASTE_END, {});
       // The cursor advances across EVERY chunk's insert (6 + 1 + 6 = 13 units), not just the first.
-      expect(c.getSnapshot().input).toEqual({ text: 'first\n\rsecond', cursor: 13 });
+      // The lone CR chunk between the two lines normalizes to LF (never a stray '\r'); length is unchanged (13).
+      expect(c.getSnapshot().input).toEqual({ text: 'first\n\nsecond', cursor: 13 });
       expect(startChat).not.toHaveBeenCalled();
     });
 

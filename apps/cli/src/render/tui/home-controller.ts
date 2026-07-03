@@ -348,9 +348,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'backspace':
       case 'newline':
       case 'move':
-      case 'kill':
-        set({ input: applyEditorAction(state.input, action) });
+      case 'kill': {
+        const next = applyEditorAction(state.input, action);
+        if (next === state.input) return; // a no-op motion (a cursor key at a boundary) must not re-render
+        set({ input: next });
         return;
+      }
       case 'submit':
         set({ input: emptyEditor() });
         sendChatLine(active, action.line);
@@ -443,15 +446,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // Escape hatch: Ctrl-C ALWAYS breaks out (a lost paste-end marker must never trap the user with no way
         // to exit/submit) — clear the latch and fall through to the normal dispatch (Home → exit, chat → /cancel).
         if (!(key.ctrl === true && input === 'c')) {
-          // Literal content. Append verbatim (newlines kept) ONLY when the buffer is editable — drop it while a
-          // session builds (`loading`), a chat turn streams (`chatRunning`), or the `/` palette is open, exactly
-          // as the keystroke gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B).
+          // Literal content (newlines kept) ONLY when the buffer is editable — drop it while a session builds
+          // (`loading`), a chat turn streams (`chatRunning`), or the `/` palette is open, exactly as the keystroke
+          // gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B). CRLF/bare-CR are
+          // normalized to LF (matching the reduceEditorMotion append), so a pasted line break is a real newline in
+          // the buffer + sent to the model, never a stray '\r' the display strips but the transcript keeps.
           const editable =
             state.mode !== 'loading' && !chatRunning() && state.palette === undefined;
-          if (input.length > 0 && editable) {
+          const pasted = input.replace(/\r\n?/g, '\n');
+          if (pasted.length > 0 && editable) {
             // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
             doctorRunId += 1;
-            set({ input: insertAtCursor(state.input, input), notice: undefined });
+            set({ input: insertAtCursor(state.input, pasted), notice: undefined });
           }
           return;
         }

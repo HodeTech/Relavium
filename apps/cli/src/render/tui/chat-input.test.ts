@@ -176,14 +176,18 @@ describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow byp
     expect(reduceChatKey('', { escape: true }, '', true, PENDING)).toEqual({ kind: 'abort' });
   });
 
-  it('an editor CHORD (Ctrl+A / Ctrl+Y / Ctrl+N / Alt+A) does NOT answer a pending approval (fail-closed floor)', () => {
+  it('a modified CHORD (Ctrl+A/Y/N, Alt+A, Alt+1/2/3) does NOT answer a pending approval (fail-closed floor)', () => {
     // Ctrl+A is now a line-start motion; during a pending approval it must be SWALLOWED, never silently taken as
-    // the persistent approve-always — that would subvert the ADR-0057 fail-closed confirmAction floor.
+    // the persistent approve-always — that would subvert the ADR-0057 fail-closed confirmAction floor. The DIGIT
+    // shortcuts require `bare` too: Alt+1/2/3 are reachable via ink's ESC-prefixed parsing, so they must NOT answer.
     expect(reduceChatKey('a', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT approve-always
     expect(reduceChatKey('y', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT approve-once
     expect(reduceChatKey('n', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT reject
     expect(reduceChatKey('a', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    // The digit shortcuts still answer regardless (no chord produces a bare digit).
+    expect(reduceChatKey('1', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+1: NOT approve-once
+    expect(reduceChatKey('2', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+2: NOT approve-always
+    expect(reduceChatKey('3', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+3: NOT reject
+    // A BARE digit still answers (the fast numeric shortcut).
     expect(reduceChatKey('2', KEY, '', true, PENDING)).toEqual({
       kind: 'approve',
       scope: 'always',
@@ -377,6 +381,35 @@ describe('cursor motions + kills (2.5.D step 2)', () => {
     });
     const atStart: EditorState = { text: 'abc', cursor: 0 };
     expect(killRange(atStart, 'word-back')).toBe(atStart); // nothing before the cursor ⇒ no-op, same reference
+  });
+
+  it('killRange word-back (Ctrl+W) is LINE-SCOPED — it never crosses a newline into a prior line', () => {
+    // Without the lineStart clamp, Ctrl+W on/just after a blank line would wipe the whole previous line/paragraph.
+    expect(killRange({ text: 'hello\n', cursor: 6 }, 'word-back')).toEqual({
+      text: 'hello\n',
+      cursor: 6,
+    }); // no-op at line start
+    expect(killRange({ text: 'para1\n\npara2', cursor: 6 }, 'word-back')).toEqual({
+      text: 'para1\n\npara2',
+      cursor: 6,
+    }); // on the blank separator line ⇒ no-op, does NOT delete 'para1'
+    expect(killRange({ text: 'ab\ncde', cursor: 6 }, 'word-back')).toEqual({
+      text: 'ab\n',
+      cursor: 3,
+    }); // kills 'cde' only
+  });
+
+  it('word motions treat a base letter + combining diacritic as ONE word (\\p{M})', () => {
+    // 'e' + U+0301 (combining acute) = 'é' as two code points; a word motion must not split them.
+    const combined = 'éf g'; // "éf g" — one word "éf", then " g"
+    expect(moveCursor({ text: combined, cursor: combined.length }, 'word-left')).toEqual({
+      text: combined,
+      cursor: 4,
+    }); // to the start of " g"'s word ('g' at 4)
+    expect(moveCursor({ text: combined, cursor: 4 }, 'word-left')).toEqual({
+      text: combined,
+      cursor: 0,
+    }); // to start of "éf"
   });
 
   it('applyEditorAction routes newline / move / kill onto the editor', () => {
