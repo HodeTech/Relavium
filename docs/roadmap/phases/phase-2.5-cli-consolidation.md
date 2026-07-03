@@ -244,9 +244,9 @@ discoverable (no separate `/shortcuts`); the palette filters; an unknown slash /
 `/doctor --deep` never connects/spawns an unreferenced MCP server. **Required ADR: in-app slash command
 system + command manifest (ADR-0056).**
 
-### 2.5.D — Chat input ergonomics — **Implemented (PR pending merge, 2026-07-03)**
+### 2.5.D — Chat input ergonomics — **Implemented (PR #64, pending merge, 2026-07-03)**
 
-> **Status:** Implemented across both interactive surfaces (`relavium chat` + the 2.5.B Home); PR open for
+> **Status:** Implemented across both interactive surfaces (`relavium chat` + the 2.5.B Home); **PR #64** open for
 > review, **pending merge** (the ✅ flips on merge). The two data-moving affordances (`@`/`!`) are behind
 > [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) (**Accepted** after a
 > two-round maintainer security review + the mandatory adversarial security pass folded into the step-4/5 opus +

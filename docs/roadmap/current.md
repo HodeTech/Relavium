@@ -163,7 +163,7 @@ holistic security review (~50 findings fixed, 4 HIGH). A same-PR chat-UX follow-
 EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
 (`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
 side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` hint. **With 2.5.E the CLI
-Consolidation spine (2.5.A → C, E) is complete.** **2.5.D** (chat input ergonomics) is **implemented (PR open,
+Consolidation spine (2.5.A → C, E) is complete.** **2.5.D** (chat input ergonomics) is **implemented (PR #64,
 pending merge, 2026-07-03)** — the first experience-arm workstream: the pure-ergonomics half (`Ctrl+J` multiline,
 `↑/↓` history + `Ctrl+R` reverse-search, readline motions, a shared cursor-bearing `EditorState`) plus the two
 data-moving affordances behind [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)
