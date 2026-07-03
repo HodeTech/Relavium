@@ -723,6 +723,28 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     );
   });
 
+  it('refuses .env / .env.* + .aws/ + .docker/config.json (2.5.D / ADR-0061 read-floor expansion)', async () => {
+    for (const f of ['.env', '.env.local', '.env.production']) {
+      await writeFile(join(workspace, f), 'API_KEY=secret');
+      await expect(sandboxed().readFile(f, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
+    }
+    await mkdir(join(workspace, '.aws'), { recursive: true });
+    await writeFile(join(workspace, '.aws', 'credentials'), '[default]\naws_secret_access_key=x');
+    await expect(sandboxed().readFile('.aws/credentials', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    await mkdir(join(workspace, '.docker'), { recursive: true });
+    await writeFile(join(workspace, '.docker', 'config.json'), '{"auths":{}}');
+    await expect(sandboxed().readFile('.docker/config.json', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    // Non-secret lookalikes are NOT floored: '.environment' (starts with '.env' but not '.env.') + a plain config.json.
+    await writeFile(join(workspace, '.environment'), 'not-a-secret');
+    expect((await sandboxed().readFile('.environment', {})).content).toBe('not-a-secret');
+    await writeFile(join(workspace, 'config.json'), '{"ok":true}');
+    expect((await sandboxed().readFile('config.json', {})).content).toBe('{"ok":true}');
+  });
+
   it('folds the read floor like the write floor — a case variant (`.SSH/`) is still refused', async () => {
     await mkdir(join(workspace, '.SSH'), { recursive: true });
     await writeFile(join(workspace, '.SSH', 'id_rsa'), 'KEY');

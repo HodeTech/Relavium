@@ -484,7 +484,7 @@ function assertNotProtectedPath(absoluteTarget: string): void {
  * no call site wires `tmpDir` today, so the collision is inert. Resolve it (home-anchored match, or exclude the
  * wired tmp root) BEFORE any caller passes `tmpDir`. Tracked in docs/roadmap/deferred-tasks.md.
  */
-const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.ssh', '.relavium']);
+const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.ssh', '.relavium', '.aws']);
 /** Credential/secret dotfiles refused to READ by basename (git creds, npm/pypi/pg/netrc tokens). */
 const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.gitconfig', // user-global git config — `[credential]`, insteadOf URLs with embedded tokens
@@ -497,19 +497,28 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
 
 /**
  * Whether an absolute path is a secret/credential store that must never be read into the model's context (and
- * thence to the provider): under a `.ssh`/`.relavium` segment, a repo-local `.git/config` (embeds remote-URL
- * credentials), or a credential dotfile. The read-side confidentiality analogue of {@link isProtectedPath};
- * exported for direct testing. Folds each component like the write floor (NTFS ADS / case / trailing dot-space).
+ * thence to the provider): under a `.ssh`/`.relavium`/`.aws` segment, a `.env` / `.env.*` dotenv file, a
+ * `.docker/config.json` (registry auth), a repo-local `.git/config` (embeds remote-URL credentials), or a
+ * credential dotfile. The read-side confidentiality analogue of {@link isProtectedPath}; exported for direct
+ * testing. Folds each component like the write floor (NTFS ADS / case / trailing dot-space). This floor is the
+ * one control the CLI `@`-mention read (2.5.D / [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
+ * shares with `read_file`; the `.env`/`.aws`/`.docker` members were added there and strengthen `read_file` on
+ * every surface.
  */
 export function isSensitiveReadPath(absoluteTarget: string): boolean {
   const folded = absoluteTarget.split(sep).map(foldPathComponent);
   for (const segment of folded) {
     if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
   }
+  const base = foldPathComponent(basename(absoluteTarget));
+  // dotenv secret files — `.env`, `.env.local`, `.env.production`, … (foldPathComponent strips a trailing dot, so
+  // `.env.` folds to `.env`). The single most common in-repo secret store.
+  if (base === '.env' || base.startsWith('.env.')) return true;
+  // Docker registry auth (`~/.docker/config.json` or a project `.docker/config.json`) — base64-embedded creds.
+  if (base === 'config.json' && folded.includes('.docker')) return true;
   // A git `config` embeds remote-URL credentials: catch it under a `.git` dir (repo / submodule `.git/modules/*`
   // / worktree) AND under a bare-repo dir (`myrepo.git/config`) — any segment ENDING in `.git` with a `config`
   // basename. Over-denying a stray `x.git/config` that isn't a repo is the safe direction for a read floor.
-  const base = foldPathComponent(basename(absoluteTarget));
   if (
     base === 'config' &&
     folded.some((segment) => segment === '.git' || segment.endsWith('.git'))
