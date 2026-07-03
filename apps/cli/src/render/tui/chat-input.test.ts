@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyEditorAction,
-  deleteAfterCursor,
   deleteBeforeCursor,
   dropLastCodePoint,
   editorFromText,
@@ -40,9 +39,11 @@ describe('reduceChatKey', () => {
     expect(reduceChatKey('', { return: true }, '', false)).toEqual({ kind: 'submit', line: '' });
   });
 
-  it('emits a backspace OP on Backspace and a delete OP on Delete (delete-after-cursor, distinct)', () => {
+  it('emits a backspace OP for BOTH Backspace and the terminal Delete key (delete-before-cursor)', () => {
     expect(reduceChatKey('', { backspace: true }, 'abc', false)).toEqual({ kind: 'backspace' });
-    expect(reduceChatKey('', { delete: true }, 'abc', false)).toEqual({ kind: 'delete' }); // Delete ≠ backspace
+    // ink reports the Unix physical Backspace (DEL) as `key.delete`, indistinguishable from the forward-Delete
+    // key — both mean a backward delete to the user, so both fold to backspace (parity with the submodes).
+    expect(reduceChatKey('', { delete: true }, 'abc', false)).toEqual({ kind: 'backspace' });
   });
 
   it('emits an append OP carrying the printable char', () => {
@@ -291,17 +292,6 @@ describe('the cursor-bearing editor primitives (2.5.D step 1)', () => {
     // A LONE low surrogate before the cursor (with trailing content after it) drops just itself — the wrapper's
     // tail-append + cursor arithmetic must not over-delete the 'a' or corrupt the trailing 'b'.
     expect(deleteBeforeCursor({ text: 'a\uDC00b', cursor: 2 })).toEqual({ text: 'ab', cursor: 1 });
-  });
-
-  it('deleteAfterCursor removes the code point AT the cursor (Delete key), leaving the cursor put', () => {
-    expect(deleteAfterCursor({ text: 'abc', cursor: 1 })).toEqual({ text: 'ac', cursor: 1 }); // mid-buffer, cursor stays
-    expect(deleteAfterCursor({ text: 'abc', cursor: 0 })).toEqual({ text: 'bc', cursor: 0 }); // at the start
-    expect(deleteAfterCursor({ text: 'abc', cursor: 3 })).toEqual({ text: 'abc', cursor: 3 }); // no-op at the end
-    // A whole astral char under the cursor is removed (2 units); the cursor does not move.
-    expect(deleteAfterCursor({ text: 'a😀b', cursor: 1 })).toEqual({ text: 'ab', cursor: 1 });
-    // A no-op (cursor at the end) returns the SAME reference (the Object.is render-skip contract).
-    const e = { text: 'x', cursor: 1 };
-    expect(deleteAfterCursor(e)).toBe(e);
   });
 
   it('returns the SAME reference on a no-op (the documented Object.is render-skip contract)', () => {

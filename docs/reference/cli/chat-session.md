@@ -81,7 +81,7 @@ The TTY prompt is a first-class line editor. All of these are **interactive-only
 | `↑` / `↓` | Recall the previous / next submitted line (at the top/bottom edge of a multi-line buffer); mid-buffer they move the cursor by line. History is per-session (not persisted; a `chat-resume` starts fresh). |
 | `Ctrl+R` | Reverse-incremental search of the session history — type to match, `Ctrl+R` steps older, `Enter` accepts, `Esc` cancels. |
 | `Ctrl+A`/`Ctrl+E`, `Ctrl+←`/`Ctrl+→`, `Ctrl+W`, `Ctrl+U`/`Ctrl+K` | readline cursor / word / line motions + kills (word-back, to-line-start, to-line-end). |
-| `Backspace` / `Delete` | erase the char **before** the cursor (`Backspace`) or **after / under** it (`Delete`, forward-delete). |
+| `Backspace` / `Delete` | erase the char **before** the cursor. (On Unix terminals ink reports the physical Backspace as the `Delete` key, so both are bound to a backward delete.) |
 
 Both data-moving affordances use a **pending-attachment (chip) model** (ADR-0061, refined in PR #64): instead of splicing framed bytes into the editor, `@`/`!` content is queued as a compact **chip** shown in a bar above the prompt, and expanded into the shared **UNTRUSTED, nonce-fenced** frame **only at submit** — so the model receives byte-identical framed context while your prompt stays clean. **`Esc` at an idle prompt discards all pending chips.**
 

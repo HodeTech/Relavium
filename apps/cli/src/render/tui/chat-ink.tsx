@@ -607,7 +607,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'append':
       case 'backspace':
-      case 'delete':
       case 'newline':
       case 'kill':
         // A TRUE functional updater (chains React's `prev`), so a coalesced stdin chunk that interleaves edits

@@ -20,9 +20,9 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
     expect(reduceHomeKey('', KEY({ return: true }))).toEqual({ kind: 'submit' });
   });
 
-  it('Backspace erases before the cursor; Delete erases after (delete-after-cursor, distinct)', () => {
+  it('Backspace erases before the cursor; the terminal Delete key does too (ink reports DEL as key.delete)', () => {
     expect(reduceHomeKey('', KEY({ backspace: true }))).toEqual({ kind: 'backspace' });
-    expect(reduceHomeKey('', KEY({ delete: true }))).toEqual({ kind: 'delete' }); // standard Delete key
+    expect(reduceHomeKey('', KEY({ delete: true }))).toEqual({ kind: 'backspace' }); // Unix Backspace ⇒ key.delete
   });
 
   it('a printable char appends', () => {

@@ -74,8 +74,7 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | --- | --- | --- | --- |
 | printable | append to the prompt buffer | append (idle) / ignored mid-turn | ignored |
 | Return | submit → start a chat | submit the turn (idle) / ignored mid-turn | ignored |
-| Backspace | erase the char **before** the cursor | erase before the cursor (idle) / ignored mid-turn | ignored |
-| Delete (2.5.D) | erase the char **after / under** the cursor (forward-delete) | forward-delete (idle) / ignored mid-turn | ignored |
+| Backspace / Delete | erase the char **before** the cursor | erase before the cursor (idle) / ignored mid-turn | ignored |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
 | **`[y]`/`[a]`/`[n]`/`[esc]`** (2.5.E) | — | **answer a pending per-tool approval** — `[y]` once · `[a]` always · `[n]` no · `[esc]` abort (the prompt owns the keyboard) | — |

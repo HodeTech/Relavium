@@ -51,10 +51,9 @@ export type KillMotion = 'word-back' | 'to-line-start' | 'to-line-end';
  */
 export type EditorEditAction =
   | { readonly kind: 'append'; readonly char: string }
-  /** Backspace — delete the code point BEFORE the cursor. */
+  /** Backspace — delete the code point BEFORE the cursor. Also covers the terminal `Delete` key: on Unix ink
+   *  reports the physical Backspace (DEL, `\x7f`) as `key.delete`, indistinguishable from the forward-Delete key. */
   | { readonly kind: 'backspace' }
-  /** `Delete` — delete the code point AFTER (under) the cursor (standard editor behavior, distinct from backspace). */
-  | { readonly kind: 'delete' }
   /** `Ctrl+J` (canonical) / `Shift+Enter` (best-effort) — insert a newline at the cursor, NOT submit. */
   | { readonly kind: 'newline' }
   /** A cursor motion (no text change) — arrows / word / line-start / line-end. */
@@ -134,8 +133,9 @@ function reduceKill(char: string, key: ChatKey): EditorEditAction | undefined {
  * surface reducer handles its own keys — plain `Return`, `Ctrl-C`, `Shift+Tab`, …). This is the ONE home for the
  * buffer-edit + cursor-motion keystroke contract; both {@link reduceChatKey} and `reduceHomeKey` delegate here so
  * the two surfaces can never drift. `Shift+Enter` / `Ctrl+J` insert a newline (delegating cursor motions to
- * {@link reduceCursorMotion} and kills to {@link reduceKill}); Backspace deletes BEFORE the cursor and Delete
- * AFTER; a printable char appends. Plain `Return` returns `undefined` so the surface submits instead of appending.
+ * {@link reduceCursorMotion} and kills to {@link reduceKill}); Backspace (and the terminal Delete key, which ink
+ * reports as `key.delete`) deletes BEFORE the cursor; a printable char appends. Plain `Return` returns `undefined`
+ * so the surface submits instead of appending.
  */
 export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction | undefined {
   // Newline vs submit: Shift+Enter / Ctrl+J / a bare LF insert a newline; plain Return is surface-specific (submit).
@@ -145,8 +145,12 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   if (motion !== undefined) return motion;
   const kill = reduceKill(char, key);
   if (kill !== undefined) return kill;
-  if (key.backspace === true) return { kind: 'backspace' }; // delete BEFORE the cursor
-  if (key.delete === true) return { kind: 'delete' }; // delete AFTER (under) the cursor — standard Delete key
+  // Delete the code point BEFORE the cursor. BOTH `key.backspace` AND `key.delete` map here: on Unix terminals the
+  // physical Backspace key sends DEL (`\x7f`), which ink reports as `key.delete` (NOT `key.backspace` — see ink's
+  // parse-keypress), and the true forward-Delete key (`\x1b[3~`) is reported as `key.delete` too and is
+  // indistinguishable at this layer. A backward delete is what a user pressing Backspace means (the common case),
+  // so both go here — consistent with the palette / reverse-search / mention submodes, which already fold both.
+  if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
   if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true) {
     // Normalize any carriage return WITHIN the inserted text (a multi-char paste can carry CRLF / a bare CR):
     // CRLF/CR → LF, so a pasted line break becomes a real newline in the buffer + sent to the model, never a
@@ -260,18 +264,6 @@ export function deleteBeforeCursor(editor: EditorState): EditorState {
   const before = text.slice(0, cursor);
   const trimmed = dropLastCodePoint(before);
   return { text: trimmed + text.slice(cursor), cursor: cursor - (before.length - trimmed.length) };
-}
-
-/**
- * Delete the one Unicode code point immediately AFTER (under) the cursor — the standard `Delete` key; a no-op at
- * the end of the buffer. The cursor does NOT move. An astral char at the cursor (a surrogate pair) is removed whole
- * (2 units); a BMP char or a lone surrogate drops one unit.
- */
-export function deleteAfterCursor(editor: EditorState): EditorState {
-  const { text, cursor } = editor;
-  if (cursor >= text.length) return editor;
-  const width = (text.codePointAt(cursor) ?? 0) > 0xffff ? 2 : 1;
-  return { text: text.slice(0, cursor) + text.slice(cursor + width), cursor };
 }
 
 /* --- Cursor motions (2.5.D step 2). All step by whole CODE POINTS and clamp to `0..text.length`, so the cursor
@@ -430,8 +422,6 @@ export function applyEditorAction(editor: EditorState, action: ChatKeyAction): E
       return insertAtCursor(editor, action.char);
     case 'backspace':
       return deleteBeforeCursor(editor);
-    case 'delete':
-      return deleteAfterCursor(editor);
     case 'newline':
       return insertAtCursor(editor, '\n');
     case 'move':

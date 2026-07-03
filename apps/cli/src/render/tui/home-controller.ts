@@ -687,7 +687,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       case 'append':
       case 'backspace':
-      case 'delete':
       case 'newline':
       case 'kill': {
         const next = applyEditorAction(state.input, action);
