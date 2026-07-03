@@ -34,6 +34,11 @@ export interface ResolvedChatConfig {
   /** `[chat].on_exceed` — action when the cost cap trips (in an interactive REPL, `pause_for_approval`
    *  degrades to a loud turn-end since the prompt itself is the approval gate). */
   readonly onExceed: ChatConfig['on_exceed'];
+  /** `[chat].allowed_commands` — the `!`-shell exact-match allowlist (→ engine `allowedCommands`; ADR-0061).
+   *  Absent/empty ⇒ `!`-shell disabled (the `empty ⇒ disabled` symmetry; no chat-specific relaxation). */
+  readonly allowedCommands: ChatConfig['allowed_commands'];
+  /** `[chat].allowed_command_globs` — the opt-in glob form of the `!`-shell allowlist (→ `allowedCommandGlobs`). */
+  readonly allowedCommandGlobs: ChatConfig['allowed_command_globs'];
 }
 
 export interface ResolvedConfig {
@@ -111,6 +116,10 @@ function resolveChat(
     maxMessages: p?.max_messages ?? w?.max_messages,
     maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
     onExceed: p?.on_exceed ?? w?.on_exceed,
+    // Per-field last-writer-wins (project over workspace), REPLACE not merge — a project that sets an allowlist
+    // fully overrides the workspace's, so a narrower project can't inherit a broader workspace entry (ADR-0061).
+    allowedCommands: p?.allowed_commands ?? w?.allowed_commands,
+    allowedCommandGlobs: p?.allowed_command_globs ?? w?.allowed_command_globs,
   };
 }
 

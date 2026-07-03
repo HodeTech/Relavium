@@ -30,6 +30,16 @@ import {
   type MentionState,
 } from './mention.js';
 import { MentionView } from './mention-view.js';
+import { injectionNonce } from './injection.js';
+import {
+  commandLine,
+  formatCommandInjection,
+  isShellLine,
+  shellDenyHint,
+  tokenizeCommand,
+  type ShellCommand,
+} from './shell.js';
+import type { UserCommandOutcome } from '@relavium/core';
 import {
   EMPTY_HISTORY,
   INITIAL_REVERSE_SEARCH,
@@ -122,6 +132,13 @@ interface ChatAppProps {
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
    *  `| undefined` so the createElement passthrough can forward an absent `ctx.mentionReader` (exactOptionalPropertyTypes). */
   readonly mentionReader?: MentionReader | undefined;
+  /** The `!`-shell runner (2.5.D step 5, ADR-0061) — runs a user-typed `!command` through `runUserCommand` (the one
+   *  command boundary). When present, a submitted line starting with `!` is tokenized + run (its output injected as
+   *  UNTRUSTED context) instead of sent to the model. Absent ⇒ a leading `!` is a literal message. `| undefined` so
+   *  the createElement passthrough forwards an absent `ctx.runShellCommand`. */
+  readonly runShellCommand?:
+    | ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>)
+    | undefined;
 }
 
 interface ChatViewProps {
@@ -333,6 +350,55 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     );
   };
 
+  // Render a `!`-shell outcome: inject the (nonce-fenced, bounded) output as UNTRUSTED context into the CLEARED
+  // buffer (it rides the next message), or surface the actionable deny / failure note. `gen` guards a stale resolve
+  // (a submit since the run) so a slow command never injects into the next message's buffer.
+  const handleShellOutcome = (
+    parsed: ShellCommand,
+    outcome: UserCommandOutcome,
+    mode: ChatMode,
+    gen: number,
+  ): void => {
+    if (submitGenRef.current !== gen) return;
+    if (outcome.kind === 'ran') {
+      const injection = formatCommandInjection(
+        parsed,
+        outcome.exitCode,
+        outcome.stdout,
+        outcome.stderr,
+        injectionNonce(),
+      );
+      applyEditor((current) => {
+        historyRef.current = resetHistoryNav(historyRef.current);
+        return insertAtCursor(current, injection);
+      });
+      const exit = outcome.exitCode === 0 ? '' : ` (exit ${outcome.exitCode})`;
+      props.store.note(`! ${commandLine(parsed)}${exit} — output added to your next message`);
+      return;
+    }
+    if (outcome.kind === 'denied') {
+      props.store.note(shellDenyHint(parsed, outcome.allowlist, mode));
+      return;
+    }
+    props.store.note(
+      outcome.kind === 'cancelled' ? '! command cancelled' : `! ${commandLine(parsed)} failed`,
+    );
+  };
+  // Run a tokenized `!`-shell command through the session boundary (runUserCommand). The buffer is already cleared
+  // by the submit case; the outcome injects/notes below. A truly unexpected rejection (e.g. a state guard) notes.
+  const runShell = (parsed: ShellCommand): void => {
+    const runner = props.runShellCommand;
+    if (runner === undefined) return;
+    const gen = submitGenRef.current;
+    const mode = props.store.getSnapshot().mode; // captured for a mode-aware deny hint
+    void runner(parsed.command, parsed.args).then(
+      (outcome) => handleShellOutcome(parsed, outcome, mode, gen),
+      () => {
+        if (submitGenRef.current === gen) props.store.note('! shell command failed unexpectedly');
+      },
+    );
+  };
+
   const submit = (line: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
     // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
@@ -495,12 +561,24 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           return editorFromText(recall.text);
         });
         return;
-      case 'submit':
-        submitGenRef.current += 1; // the buffer is cleared → a pending mention read must not inject into the next message
+      case 'submit': {
+        submitGenRef.current += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
         historyRef.current = recordHistory(historyRef.current, action.line);
         applyEditor(() => emptyEditor());
-        submit(action.line);
+        // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
+        // message; a bare `!` or an absent runner falls through to a normal message send.
+        const trimmed = action.line.trim();
+        const parsed =
+          props.runShellCommand !== undefined && isShellLine(trimmed)
+            ? tokenizeCommand(trimmed.slice(1))
+            : undefined;
+        if (parsed !== undefined) {
+          runShell(parsed);
+        } else {
+          submit(action.line);
+        }
         return;
+      }
       case 'cycle-mode':
         // Shift+Tab: advance the mode (read fresh from the store, not the render closure) + re-apply the policy.
         props.onModeChange(nextMode(props.store.getSnapshot().mode));
@@ -631,6 +709,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
         // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
         // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
         mentionReader: ctx.mentionReader,
+        // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
+        runShellCommand: ctx.runShellCommand,
       }),
       {
         // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.

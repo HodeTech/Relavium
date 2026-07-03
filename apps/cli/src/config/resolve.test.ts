@@ -19,10 +19,24 @@ describe('resolveConfig', () => {
         maxMessages: undefined,
         maxCostMicrocents: undefined,
         onExceed: undefined,
+        allowedCommands: undefined,
+        allowedCommandGlobs: undefined,
       },
       variables: {},
       mcpServers: [],
     });
+  });
+
+  it('resolves the [chat] `!`-shell allowlist per field (project REPLACES workspace, no merge — ADR-0061)', () => {
+    const workspace: ProjectConfig = {
+      chat: { allowed_commands: ['ls', 'pwd'], allowed_command_globs: ['git *'] },
+    };
+    const project: ProjectConfig = { chat: { allowed_commands: ['git status'] } };
+    const resolved = resolveConfig({ workspace, project }).chat;
+    expect(resolved.allowedCommands).toEqual(['git status']); // project REPLACES (never merges) the workspace list
+    expect(resolved.allowedCommandGlobs).toEqual(['git *']); // absent on project ⇒ falls through to workspace
+    // Absent everywhere ⇒ undefined ⇒ `!`-shell disabled (secure default).
+    expect(resolveConfig({}).chat.allowedCommands).toBeUndefined();
   });
 
   it('resolves the [chat] block last-writer-wins (project > workspace), per field', () => {

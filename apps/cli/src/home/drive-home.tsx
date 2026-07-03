@@ -203,6 +203,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           workspaceDir: built.context.workingDir,
         }).host.fs;
         const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
+        // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand` (the one
+        // command boundary: allowlist BEFORE approval → mode-aware confirmAction → hardened process arm). The Home is
+        // always a TTY, so it is always wired; the empty-default `[chat].allowed_commands` keeps `!` inert until opt-in.
+        const runShellCommand = (
+          command: string,
+          args: readonly string[],
+        ): ReturnType<typeof built.session.runUserCommand> =>
+          built.session.runUserCommand(command, args);
         let torn = false;
         const teardown = async (): Promise<void> => {
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
@@ -224,6 +232,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           onAbort,
           onModeChange,
           ...(mentionReader === undefined ? {} : { mentionReader }),
+          runShellCommand,
         };
       } catch (err) {
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw

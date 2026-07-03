@@ -5,6 +5,7 @@ import {
   DEFAULT_SESSION_MAX_TURNS,
   type SessionHandle,
   type SessionStreamHandleEvent,
+  type UserCommandOutcome,
 } from '@relavium/core';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
@@ -140,6 +141,17 @@ export interface ChatDriveContext {
    * leading `@` as a literal (no completion). Read-only by construction — the mention path never writes.
    */
   readonly mentionReader?: MentionReader;
+  /**
+   * Run a USER-invoked `!`-shell command (2.5.D step 5, ADR-0061) through the session's `runUserCommand` — the one
+   * `run_command` boundary (allowlist BEFORE approval → mode-aware `confirmAction` → hardened process arm). The
+   * caller pre-tokenizes the line into `command` + `args`. Present on an interactive (TTY, non-`--json`) session;
+   * the driver injects the classified output as UNTRUSTED context / renders the actionable deny hint. Absent ⇒ a
+   * plain/`--json` driver treats a leading `!` as a literal message (no shell escape).
+   */
+  readonly runShellCommand?: (
+    command: string,
+    args: readonly string[],
+  ) => Promise<UserCommandOutcome>;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -736,6 +748,13 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     return fsArm === undefined ? undefined : createMentionReader(fsArm);
   })();
 
+  // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only:
+  // an interactive driver intercepts a leading `!`; a plain/`--json` driver treats it as a literal message.
+  const runShellCommand = chatIsInteractive(deps.io, deps.global)
+    ? (command: string, args: readonly string[]): Promise<UserCommandOutcome> =>
+        built.session.runUserCommand(command, args)
+    : undefined;
+
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
@@ -759,6 +778,7 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       onAbort,
       onModeChange,
       ...(mentionReader === undefined ? {} : { mentionReader }),
+      ...(runShellCommand === undefined ? {} : { runShellCommand }),
     });
   } finally {
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'

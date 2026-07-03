@@ -9,6 +9,8 @@ import {
   type HomeChatSession,
   type HomeController,
 } from './home-controller.js';
+import type { UserCommandOutcome } from '@relavium/core';
+
 import type { MentionReader } from './mention.js';
 
 // The paste-boundary markers exactly as ink 6.8's input layer surfaces them (the leading ESC is stripped).
@@ -53,6 +55,7 @@ function makeSession(
     onAbort?: () => void;
     onModeChange?: (mode: ChatMode) => void;
     mentionReader?: MentionReader;
+    runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
   } = {},
 ): {
   session: HomeChatSession;
@@ -74,6 +77,7 @@ function makeSession(
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
+    ...(opts.runShellCommand === undefined ? {} : { runShellCommand: opts.runShellCommand }),
     teardown,
   };
   return { session, teardown, lines, store };
@@ -324,6 +328,96 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     resolveRead({ content: '// app.ts', sizeBytes: 9 });
     await flush();
     expect(c.getSnapshot().input.text).toBe(''); // the buffer stays clean — the stale inject was dropped
+  });
+
+  it('a `!`-shell line runs the command (not a message) and injects the output as untrusted context (2.5.D step 5)', async () => {
+    const ran: UserCommandOutcome = {
+      kind: 'ran',
+      exitCode: 0,
+      stdout: 'a.ts\nb.ts',
+      stderr: '',
+      truncated: false,
+    };
+    const shellCalls: { command: string; args: readonly string[] }[] = [];
+    const made = makeSession({
+      runShellCommand: (command, args) => {
+        shellCalls.push({ command, args });
+        return Promise.resolve(ran);
+      },
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0; // isolate: only shell/message activity AFTER the chat started
+
+    type(c, '!ls -la');
+    c.handleKey('', ENTER);
+    await flush();
+    // The `!` line was tokenized + run through the runner — NOT sent to the model as a message.
+    expect(shellCalls).toEqual([{ command: 'ls', args: ['-la'] }]);
+    expect(made.lines).toEqual([]); // no message sent
+    // The output was injected as a nonce-fenced <command> block into the (cleared) buffer for the next message.
+    const framed = c
+      .getSnapshot()
+      .input.text.match(
+        /^\n\n<command id="([0-9a-f]{32})" cmd="ls -la" exit="0">\na\.ts\nb\.ts\n<\/command:([0-9a-f]{32})>$/,
+      );
+    expect(framed).not.toBeNull();
+    expect(framed?.[1]).toBe(framed?.[2]); // open nonce === close nonce
+  });
+
+  it('a denied `!`-shell command injects NOTHING and surfaces the actionable allowlist hint (2.5.D step 5)', async () => {
+    const made = makeSession({
+      runShellCommand: () =>
+        Promise.resolve({ kind: 'denied', allowlist: true, message: 'not allowed' }),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+
+    type(c, '!rm -rf /');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().input.text).toBe(''); // nothing injected — the command was denied before any side effect
+    // The store carries an actionable, secret-free hint naming the exact allowed_commands line to add.
+    const warned = made.store
+      .getSnapshot()
+      .state.warnings.some((w) => w.includes('allowed_commands') && w.includes('rm -rf /'));
+    expect(warned).toBe(true);
+  });
+
+  it('a bare `!` (no command) falls through to a normal message send', async () => {
+    const made = makeSession({ runShellCommand: () => Promise.reject(new Error('unused')) });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0;
+
+    type(c, '!'); // a bare `!` with no command tokenizes to undefined → a normal message
+    c.handleKey('', ENTER);
+    await flush();
+    expect(made.lines).toEqual(['!']); // sent as a message, not run as a command
   });
 
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {

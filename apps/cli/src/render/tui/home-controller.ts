@@ -1,3 +1,5 @@
+import type { UserCommandOutcome } from '@relavium/core';
+
 import {
   CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
@@ -38,6 +40,15 @@ import {
   type MentionReader,
   type MentionState,
 } from './mention.js';
+import { injectionNonce } from './injection.js';
+import {
+  commandLine,
+  formatCommandInjection,
+  isShellLine,
+  shellDenyHint,
+  tokenizeCommand,
+  type ShellCommand,
+} from './shell.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 import {
   foldPaletteKey,
@@ -77,6 +88,12 @@ export interface HomeChatSession {
    *  workspace, so in-Home `@`-completion browses + injects files through the identical confidentiality floor +
    *  listing-gate as the session's tools. Present once wired; absent ⇒ `@` is a literal char. */
   readonly mentionReader?: MentionReader;
+  /** The `!`-shell runner (2.5.D step 5, ADR-0061) — runs a user-typed `!command` through `runUserCommand` (the one
+   *  command boundary). Present once wired; absent ⇒ a leading `!` is a literal message. */
+  readonly runShellCommand?: (
+    command: string,
+    args: readonly string[],
+  ) => Promise<UserCommandOutcome>;
   /** Best-effort, IDEMPOTENT teardown of THIS chat (persister + frame loop + subscription + MCP), never the shared db. */
   readonly teardown: () => Promise<void>;
 }
@@ -438,6 +455,58 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  // The in-Home chat's `!`-shell escape (2.5.D step 5, ADR-0061) — mirrors ChatApp. Render the classified outcome:
+  // inject the (nonce-fenced, bounded) output as UNTRUSTED context into the CLEARED buffer, or note the actionable
+  // deny / failure. The epoch + session/mode guard drops a stale resolve (a submit / chat-swap since the run).
+  const handleShellOutcome = (
+    active: HomeChatSession,
+    parsed: ShellCommand,
+    outcome: UserCommandOutcome,
+    mode: ChatMode,
+    epoch: number,
+  ): void => {
+    if (state.session !== active || state.mode !== 'chat' || submitEpoch !== epoch) return;
+    if (outcome.kind === 'ran') {
+      history = resetHistoryNav(history);
+      set({
+        input: insertAtCursor(
+          state.input,
+          formatCommandInjection(
+            parsed,
+            outcome.exitCode,
+            outcome.stdout,
+            outcome.stderr,
+            injectionNonce(),
+          ),
+        ),
+      });
+      const exit = outcome.exitCode === 0 ? '' : ` (exit ${outcome.exitCode})`;
+      active.store.note(`! ${commandLine(parsed)}${exit} — output added to your next message`);
+      return;
+    }
+    if (outcome.kind === 'denied') {
+      active.store.note(shellDenyHint(parsed, outcome.allowlist, mode));
+      return;
+    }
+    active.store.note(
+      outcome.kind === 'cancelled' ? '! command cancelled' : `! ${commandLine(parsed)} failed`,
+    );
+  };
+  const runShell = (active: HomeChatSession, parsed: ShellCommand): void => {
+    const runner = active.runShellCommand;
+    if (runner === undefined) return;
+    const epoch = submitEpoch;
+    const mode = active.store.getSnapshot().mode; // captured for a mode-aware deny hint
+    void runner(parsed.command, parsed.args).then(
+      (outcome) => handleShellOutcome(active, parsed, outcome, mode, epoch),
+      () => {
+        if (state.session === active && state.mode === 'chat' && submitEpoch === epoch) {
+          active.store.note('! shell command failed unexpectedly');
+        }
+      },
+    );
+  };
+
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
@@ -547,12 +616,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         }
         return;
       }
-      case 'submit':
-        submitEpoch += 1; // the buffer is cleared → a pending mention read must not inject into the next message
+      case 'submit': {
+        submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
         history = recordHistory(history, action.line);
         set({ input: emptyEditor(), historyEntries: history.entries });
-        sendChatLine(active, action.line);
+        // A leading `!` (with a runner + a non-empty command) runs the shell escape; else send a normal message.
+        const trimmed = action.line.trim();
+        const parsed =
+          active.runShellCommand !== undefined && isShellLine(trimmed)
+            ? tokenizeCommand(trimmed.slice(1))
+            : undefined;
+        if (parsed !== undefined) {
+          runShell(active, parsed);
+        } else {
+          sendChatLine(active, action.line);
+        }
         return;
+      }
       case 'cycle-mode':
         // Shift+Tab: advance the chat mode on the SAME session (ADR-0057; no reseat) — parity with `relavium chat`.
         active.onModeChange?.(nextMode(active.store.getSnapshot().mode));

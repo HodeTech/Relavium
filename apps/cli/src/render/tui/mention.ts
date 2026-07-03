@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
-
 import type { FsCapability } from '@relavium/core';
+
+import { frameUntrusted, injectionNonce, INJECT_MAX_CHARS, INJECT_MAX_LINES } from './injection.js';
 
 /**
  * The `@`-mention file-context injection (2.5.D step 4, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
@@ -232,90 +232,21 @@ export function estimateTokens(bytes: number): number {
 /** The token count above which a mentioned file gets a size warning (a soft, informational threshold). */
 export const MENTION_TOKEN_WARN = 8000;
 
-/**
- * The HARD caps on the content spliced into the live editor buffer. A mentioned file up to the fs 8 MiB read cap
- * would otherwise be inserted verbatim and re-split/re-wrapped by the multiline `PromptEditor` on every subsequent
- * keystroke — freezing the TUI (and bloating the model context). TWO bounds are needed: a BYTE cap (a huge single
- * line) AND a LINE cap (a many-short-line file whose bytes are under the byte cap but whose newline count would
- * still flood `promptRows` with one `<Text>` per row). Both keep `@` usable for normal source files; a larger file
- * is head+tail truncated with an explicit marker.
- */
-export const MENTION_MAX_INJECT_CHARS = 128 * 1024;
-export const MENTION_MAX_INJECT_LINES = 400;
+/** The `@`-injection content bounds — the shared injection caps ({@link injection.ts}). Re-exported under the
+ *  historical names the tests + callers reference. */
+export const MENTION_MAX_INJECT_CHARS = INJECT_MAX_CHARS;
+export const MENTION_MAX_INJECT_LINES = INJECT_MAX_LINES;
 
-/** Snap a head length DOWN so the slice never ends on a lone HIGH surrogate (its low half would be lost, corrupting
- *  the astral char into a U+FFFD downstream). */
-function snapHead(s: string, n: number): number {
-  if (n <= 0 || n >= s.length) return Math.max(0, Math.min(n, s.length));
-  const code = s.charCodeAt(n - 1);
-  return code >= 0xd800 && code <= 0xdbff ? n - 1 : n;
-}
-/** Snap a tail START index DOWN so the tail never begins on a lone LOW surrogate (its high half is in the elided
- *  middle) — include the whole pair instead. */
-function snapTail(s: string, i: number): number {
-  if (i <= 0 || i >= s.length) return Math.max(0, Math.min(i, s.length));
-  const code = s.charCodeAt(i);
-  return code >= 0xdc00 && code <= 0xdfff ? i - 1 : i;
-}
-
-/** Bound the injected content by BOTH byte size and line count, each with a head + tail + explicit truncation
- *  marker (mirrors the process arm's `applyOutputBounding` — keep the start and the end, elide the middle). The
- *  byte cut is code-point-safe (never splits a surrogate pair); the byte bound runs first so the line split then
- *  operates on an already-bounded (≤ cap) string. */
-function boundInjectedContent(content: string): string {
-  let out = content;
-  if (out.length > MENTION_MAX_INJECT_CHARS) {
-    const headLen = snapHead(out, Math.floor(MENTION_MAX_INJECT_CHARS * 0.75));
-    const tailStart = snapTail(
-      out,
-      out.length - (MENTION_MAX_INJECT_CHARS - Math.floor(MENTION_MAX_INJECT_CHARS * 0.75)),
-    );
-    const elided = tailStart - headLen;
-    out = `${out.slice(0, headLen)}\n… [truncated ${elided} of ${content.length} chars] …\n${out.slice(tailStart)}`;
-  }
-  const lines = out.split('\n');
-  if (lines.length > MENTION_MAX_INJECT_LINES) {
-    const headLines = Math.floor(MENTION_MAX_INJECT_LINES * 0.75);
-    const tailLines = MENTION_MAX_INJECT_LINES - headLines;
-    const elidedLines = lines.length - headLines - tailLines;
-    out = [
-      ...lines.slice(0, headLines),
-      `… [truncated ${elidedLines} lines] …`,
-      ...lines.slice(lines.length - tailLines),
-    ].join('\n');
-  }
-  return out;
-}
+/** A fresh per-injection fence nonce ({@link injectionNonce}) — re-exported under the `@`-scoped name. */
+export const mentionNonce = injectionNonce;
 
 /**
- * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context. Two boundaries
- * are made unforgeable: (1) the PATH lands inside the `path="…"` attribute, so it is stripped of the framing chars
- * (`<` `>` `"`) AND every control code — C0 (`< 0x20`, incl. newline/CR/tab), DEL, and C1 (`0x80–0x9f`) — so a
- * crafted filename (POSIX filenames may contain newlines) can neither break out of the attribute nor forge a tag;
- * (2) the CONTENT is verbatim data the model must NOT treat as instructions, fenced with a per-injection random
- * `nonce` on BOTH the open and close tags (`<file id="NONCE" …>…</file:NONCE>`), so a file whose bytes contain a
- * literal `</file>` (or a forged `<file …>`) cannot close/forge the frame without guessing the nonce. The content
- * is also head+tail bounded to {@link MENTION_MAX_INJECT_CHARS} so a large file cannot freeze the editor.
+ * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context — the shared
+ * {@link frameUntrusted} framing over a `<file id="NONCE" path="…">` tag: the path is sanitized (control + bidi +
+ * framing chars stripped, so a crafted filename can neither break the attribute nor forge a tag), the content is
+ * nonce-fenced (its bytes cannot forge/close the frame) and byte+line bounded (a large file cannot freeze the
+ * editor). The content is verbatim data the model must NOT treat as instructions.
  */
-/** A fresh, unguessable per-injection fence nonce (128 bits, dash-free) for {@link formatMentionInjection}. */
-export function mentionNonce(): string {
-  return randomUUID().replace(/-/g, '');
-}
-
 export function formatMentionInjection(path: string, content: string, nonce: string): string {
-  const safePath = [...path]
-    .filter((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) return false; // C0 / DEL / C1
-      // Unicode bidi/format controls — a crafted name could otherwise visually misrepresent the path at the
-      // human-review boundary (RLO makes `gpj.exe` read as `exe.jpg`). Strip the marks + embeddings + isolates.
-      if (code === 0x200e || code === 0x200f || code === 0x061c) return false; // LRM / RLM / ALM
-      if (code >= 0x202a && code <= 0x202e) return false; // LRE / RLE / PDF / LRO / RLO
-      if (code >= 0x2066 && code <= 0x2069) return false; // LRI / RLI / FSI / PDI
-      return true;
-    })
-    .join('')
-    .replace(/[<>"]/g, '');
-  const body = boundInjectedContent(content);
-  return `\n\n<file id="${nonce}" path="${safePath}">\n${body}\n</file:${nonce}>`;
+  return frameUntrusted('file', { path }, content, nonce);
 }

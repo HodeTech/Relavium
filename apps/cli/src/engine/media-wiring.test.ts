@@ -30,6 +30,8 @@ const EMPTY_CONFIG: ResolvedConfig = {
     maxMessages: undefined,
     maxCostMicrocents: undefined,
     onExceed: undefined,
+    allowedCommands: undefined,
+    allowedCommandGlobs: undefined,
   },
   variables: {},
   mcpServers: [],
