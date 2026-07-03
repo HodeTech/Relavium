@@ -485,6 +485,28 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   pass over the session prompt against a `RunScope` built from `context.variables` (deliberately deferred —
   no surface needed it before 2.Q). *(medium · packages/core/src/engine/agent-session.ts)*
 
+## Phase 2.5.D (`@`-mention / input ergonomics) follow-ups
+
+> **2026-07-03 2.5.D ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md), Accepted).**
+> The `@`-mention file injection (dir-navigable completion + fs-jailed reader + nonce-fenced, size/line-bounded
+> untrusted injection) shipped. These bounded pieces were deliberately deferred (each is additive; the
+> confidentiality floor + jail + injection framing hold without them):
+
+- [ ] **Advisory `.gitignore` / `.relaviumignore` completion trim.** The picker's advisory noise filter is a fixed
+  `NOISE_DIRS` set (`node_modules`, `dist`, `.git`, …) as the v1 trim; ADR-0061's promised in-house, ReDoS-safe
+  ignore-file matcher (fold a workspace `.gitignore` / `.relaviumignore` into the candidate filter, no new `ignore`
+  dependency) is deferred. It is a UX nicety, NOT a security control — the confidentiality floor + listing-gate are
+  enforced separately by the fs capability regardless. *(low · apps/cli/src/render/tui/mention.ts `NOISE_DIRS`; ADR-0061)*
+- [ ] **`@`-glob / directory expansion.** Single-file injection ships; `@src/**/*.ts` glob / whole-directory
+  expansion is deferred (ADR-0061). *(low · apps/cli/src/render/tui/mention.ts)*
+- [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);
+  a durable media-handle injection path (ADR-0031) is a follow-up. *(low · apps/cli/src/render/tui/mention.ts)*
+- [ ] **Strip Unicode bidi/format controls at the shared display boundary.** `formatMentionInjection` strips the
+  bidi range (U+202A–U+202E, U+2066–U+2069, LRM/RLM/ALM) from the injected PATH, but the shared
+  `stripTerminalControls` / `sanitizeInline` (chat-projection.ts) that render every transcript / candidate / prompt
+  string still pass bidi controls through — a general spoofing gap beyond `@`. Extending the shared sanitizer would
+  harden all surfaces at once. *(low · apps/cli/src/render/tui/chat-projection.ts)*
+
 ## Phase 2.5.E (chat modes + per-tool approval) follow-ups
 
 > **2026-07-02 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), Accepted).** The

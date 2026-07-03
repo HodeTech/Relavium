@@ -288,6 +288,44 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe('@srfoo@');
   });
 
+  it('`@` accept: a read that resolves AFTER a submit is dropped (never injects into the next message)', async () => {
+    // A deferred read: capture its resolver so the test can settle it AFTER a submit.
+    let resolveRead: (r: { content: string; sizeBytes: number }) => void = () => {};
+    const mentionReader: MentionReader = {
+      list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+      read: () =>
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        }),
+    };
+    const made = makeSession({ mentionReader });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER); // start the chat
+    await flush();
+
+    c.handleKey('@', {}); // open completion
+    await flush(); // list resolves (app.ts)
+    c.handleKey('', ENTER); // accept the file → read is now PENDING (deferred)
+    expect(c.getSnapshot().mention).toBeUndefined();
+
+    // The user submits a NEW message before the read resolves — the buffer is cleared.
+    type(c, 'next message');
+    c.handleKey('', ENTER);
+    expect(made.lines).toEqual(['hi', 'next message']); // no injected `<file>` block in either
+
+    // NOW the stale read resolves — its injection must be DROPPED (not spliced into the empty next buffer).
+    resolveRead({ content: '// app.ts', sizeBytes: 9 });
+    await flush();
+    expect(c.getSnapshot().input.text).toBe(''); // the buffer stays clean — the stale inject was dropped
+  });
+
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));

@@ -165,6 +165,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
   // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
   let doctorRunId = 0;
+  // A monotonic submit generation: bumped when the compose buffer is submitted (cleared). An async mention read
+  // captures it at accept time and drops its inject if a submit has since happened — so a slow read resolving after
+  // Enter can never splice the file into the (now-empty) buffer meant for the NEXT message (the session-identity
+  // guard only catches a chat SWAP, not an in-chat submit that stays in the same session/mode).
+  let submitEpoch = 0;
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
   // graceful close never settles; the teardown still runs to completion in the background.
@@ -409,9 +414,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const acceptMention = (active: HomeChatSession, path: string): void => {
     const reader = active.mentionReader;
     if (reader === undefined) return;
+    const epoch = submitEpoch; // capture: a submit since accept ⇒ the buffer moved on (drop the inject)
+    // Stale if the chat swapped/ended (session/mode) OR the compose buffer was submitted since accept.
+    const stale = (): boolean =>
+      state.session !== active || state.mode !== 'chat' || submitEpoch !== epoch;
     void reader.read(path).then(
       ({ content, sizeBytes }) => {
-        if (state.session !== active || state.mode !== 'chat') return; // the chat ended mid-read — drop it
+        if (stale()) return; // the chat ended or the buffer was submitted mid-read — drop it
         history = resetHistoryNav(history); // a real edit ends history navigation
         set({
           input: insertAtCursor(state.input, formatMentionInjection(path, content, mentionNonce())),
@@ -423,7 +432,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         }
       },
       () => {
-        if (state.session !== active || state.mode !== 'chat') return;
+        if (stale()) return;
         active.store.note('@ mention could not read that file (refused, binary, or too large)');
       },
     );
@@ -539,6 +548,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       }
       case 'submit':
+        submitEpoch += 1; // the buffer is cleared → a pending mention read must not inject into the next message
         history = recordHistory(history, action.line);
         set({ input: emptyEditor(), historyEntries: history.entries });
         sendChatLine(active, action.line);

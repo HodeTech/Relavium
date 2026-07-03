@@ -276,6 +276,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     mentionRef.current = next;
     setMention(next);
   };
+  // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
+  // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
+  // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
+  const submitGenRef = useRef(0);
   // List `dir`'s entries through the fs jail (listing-gate + noise filter enforced by the reader), applying them
   // ONLY if the submode is still open on that dir — a resolve from a since-closed or since-descended submode is
   // dropped. A `list()` rejection (the dir vanished) leaves the submode open with an empty, not-loading list.
@@ -307,8 +311,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const acceptMention = (path: string): void => {
     const reader = props.mentionReader;
     if (reader === undefined) return;
+    const gen = submitGenRef.current; // capture: a submit since accept ⇒ the buffer moved on (drop the inject)
     void reader.read(path).then(
       ({ content, sizeBytes }) => {
+        if (submitGenRef.current !== gen) return; // the buffer was submitted since accept — never inject into the next message
         const injection = formatMentionInjection(path, content, mentionNonce());
         applyEditor((current) => {
           historyRef.current = resetHistoryNav(historyRef.current); // a real edit ends history navigation
@@ -321,6 +327,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         }
       },
       () => {
+        if (submitGenRef.current !== gen) return;
         props.store.note('@ mention could not read that file (refused, binary, or too large)');
       },
     );
@@ -489,6 +496,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         });
         return;
       case 'submit':
+        submitGenRef.current += 1; // the buffer is cleared → a pending mention read must not inject into the next message
         historyRef.current = recordHistory(historyRef.current, action.line);
         applyEditor(() => emptyEditor());
         submit(action.line);

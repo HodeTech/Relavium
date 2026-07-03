@@ -57,6 +57,7 @@ export function visibleMentions(state: MentionState): readonly MentionCandidate[
 export interface MentionKey {
   readonly ctrl?: boolean;
   readonly meta?: boolean;
+  readonly shift?: boolean;
   readonly escape?: boolean;
   readonly return?: boolean;
   readonly tab?: boolean;
@@ -120,7 +121,10 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
       state: { ...state, selected: clampSelection(state.selected + 1, visible.length) },
     };
   }
-  if (key.return === true || key.tab === true || char === '/') {
+  // Shift+Tab is the mode-cycle chord (reduceChatKey), NOT an accept — the overlay must not swallow it as a Tab
+  // accept. It is ignored here (stays open); the user Escs first to cycle the mode. Plain Tab / Enter / `/` accept.
+  const acceptKey = (key.tab === true && key.shift !== true) || key.return === true || char === '/';
+  if (acceptKey) {
     const chosen = visible[state.selected];
     // Nothing to accept (an empty/over-filtered list) — treat like Esc: cancel + restore the typed keystrokes.
     if (chosen === undefined) return { kind: 'close', restore: `@${state.filter}` };
@@ -147,8 +151,10 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
  * The reader — a thin wrapper over the session's FsCapability (the ONE audited jail + floor).
  * -------------------------------------------------------------------------------------------------- */
 
-/** Directories always skipped from the completion candidate list (advisory noise — build output, VCS, deps). The
- *  confidentiality floor (`.git`, `.ssh`, `.env`, …) is enforced SEPARATELY by the fs listing-gate, not here. */
+/** Directories always skipped from the completion candidate list (advisory noise — build output, VCS, deps). This
+ *  fixed set is the **v1 advisory trim**; the ADR-0061 `.gitignore` / `.relaviumignore` matcher is a deferred
+ *  follow-up (docs/roadmap/deferred-tasks.md) — NOT a security control (the confidentiality floor is enforced
+ *  SEPARATELY by the fs listing-gate, `.git`/`.ssh`/`.env`/… never appear here regardless of this set). */
 const NOISE_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   'dist',
@@ -227,21 +233,58 @@ export function estimateTokens(bytes: number): number {
 export const MENTION_TOKEN_WARN = 8000;
 
 /**
- * The HARD cap on the content spliced into the live editor buffer (a code-unit proxy for bytes). A mentioned file
- * up to the fs 8 MiB read cap would otherwise be inserted verbatim and re-split/re-wrapped by the multiline
- * `PromptEditor` on every subsequent keystroke — freezing the TUI (and bloating the model context). 128 KiB keeps
- * `@` usable for normal source files while removing the footgun; a larger file is head+tail truncated with a marker.
+ * The HARD caps on the content spliced into the live editor buffer. A mentioned file up to the fs 8 MiB read cap
+ * would otherwise be inserted verbatim and re-split/re-wrapped by the multiline `PromptEditor` on every subsequent
+ * keystroke — freezing the TUI (and bloating the model context). TWO bounds are needed: a BYTE cap (a huge single
+ * line) AND a LINE cap (a many-short-line file whose bytes are under the byte cap but whose newline count would
+ * still flood `promptRows` with one `<Text>` per row). Both keep `@` usable for normal source files; a larger file
+ * is head+tail truncated with an explicit marker.
  */
 export const MENTION_MAX_INJECT_CHARS = 128 * 1024;
+export const MENTION_MAX_INJECT_LINES = 400;
 
-/** Bound the injected content to {@link MENTION_MAX_INJECT_CHARS} with a head + tail + explicit truncation marker
- *  (mirrors the process arm's `applyOutputBounding` — keep the start and the end, elide the middle). */
+/** Snap a head length DOWN so the slice never ends on a lone HIGH surrogate (its low half would be lost, corrupting
+ *  the astral char into a U+FFFD downstream). */
+function snapHead(s: string, n: number): number {
+  if (n <= 0 || n >= s.length) return Math.max(0, Math.min(n, s.length));
+  const code = s.charCodeAt(n - 1);
+  return code >= 0xd800 && code <= 0xdbff ? n - 1 : n;
+}
+/** Snap a tail START index DOWN so the tail never begins on a lone LOW surrogate (its high half is in the elided
+ *  middle) — include the whole pair instead. */
+function snapTail(s: string, i: number): number {
+  if (i <= 0 || i >= s.length) return Math.max(0, Math.min(i, s.length));
+  const code = s.charCodeAt(i);
+  return code >= 0xdc00 && code <= 0xdfff ? i - 1 : i;
+}
+
+/** Bound the injected content by BOTH byte size and line count, each with a head + tail + explicit truncation
+ *  marker (mirrors the process arm's `applyOutputBounding` — keep the start and the end, elide the middle). The
+ *  byte cut is code-point-safe (never splits a surrogate pair); the byte bound runs first so the line split then
+ *  operates on an already-bounded (≤ cap) string. */
 function boundInjectedContent(content: string): string {
-  if (content.length <= MENTION_MAX_INJECT_CHARS) return content;
-  const head = Math.floor(MENTION_MAX_INJECT_CHARS * 0.75);
-  const tail = MENTION_MAX_INJECT_CHARS - head;
-  const elided = content.length - head - tail;
-  return `${content.slice(0, head)}\n… [truncated ${elided} of ${content.length} chars] …\n${content.slice(content.length - tail)}`;
+  let out = content;
+  if (out.length > MENTION_MAX_INJECT_CHARS) {
+    const headLen = snapHead(out, Math.floor(MENTION_MAX_INJECT_CHARS * 0.75));
+    const tailStart = snapTail(
+      out,
+      out.length - (MENTION_MAX_INJECT_CHARS - Math.floor(MENTION_MAX_INJECT_CHARS * 0.75)),
+    );
+    const elided = tailStart - headLen;
+    out = `${out.slice(0, headLen)}\n… [truncated ${elided} of ${content.length} chars] …\n${out.slice(tailStart)}`;
+  }
+  const lines = out.split('\n');
+  if (lines.length > MENTION_MAX_INJECT_LINES) {
+    const headLines = Math.floor(MENTION_MAX_INJECT_LINES * 0.75);
+    const tailLines = MENTION_MAX_INJECT_LINES - headLines;
+    const elidedLines = lines.length - headLines - tailLines;
+    out = [
+      ...lines.slice(0, headLines),
+      `… [truncated ${elidedLines} lines] …`,
+      ...lines.slice(lines.length - tailLines),
+    ].join('\n');
+  }
+  return out;
 }
 
 /**
@@ -263,7 +306,13 @@ export function formatMentionInjection(path: string, content: string, nonce: str
   const safePath = [...path]
     .filter((ch) => {
       const code = ch.codePointAt(0) ?? 0;
-      return code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f);
+      if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) return false; // C0 / DEL / C1
+      // Unicode bidi/format controls — a crafted name could otherwise visually misrepresent the path at the
+      // human-review boundary (RLO makes `gpj.exe` read as `exe.jpg`). Strip the marks + embeddings + isolates.
+      if (code === 0x200e || code === 0x200f || code === 0x061c) return false; // LRM / RLM / ALM
+      if (code >= 0x202a && code <= 0x202e) return false; // LRE / RLE / PDF / LRO / RLO
+      if (code >= 0x2066 && code <= 0x2069) return false; // LRI / RLI / FSI / PDI
+      return true;
     })
     .join('')
     .replace(/[<>"]/g, '');

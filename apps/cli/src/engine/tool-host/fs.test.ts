@@ -754,6 +754,14 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     expect((await sandboxed().readFile('config.json', {})).content).toBe('{"ok":true}');
   });
 
+  it('refuses `.env` as a DIRECTORY segment (per-environment secret store), not only a `.env` file (2.5.D step-4 review)', async () => {
+    await mkdir(join(workspace, '.env'), { recursive: true });
+    await writeFile(join(workspace, '.env', 'production'), 'API_KEY=secret');
+    await expect(sandboxed().readFile('.env/production', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+  });
+
   it('folds the read floor like the write floor — a case variant (`.SSH/`) is still refused', async () => {
     await mkdir(join(workspace, '.SSH'), { recursive: true });
     await writeFile(join(workspace, '.SSH', 'id_rsa'), 'KEY');

@@ -261,3 +261,22 @@ reconciled into [built-in-tools.md](../reference/shared-core/built-in-tools.md) 
   default + `empty ⇒ disabled`, the allowlist-before-approval ordering, the reused-not-forked dispatch context,
   the `spawn`/`shell:false` process-arm envelope, untrusted-brand + double-bounding on injected output, and the
   TTY-only literal behavior in `--json`).
+
+### Deferred at implementation (2.5.D step-4 review, 2026-07-03)
+
+The `@`-mention design above ships with these bounded pieces deferred (each additive; none weakens the
+confidentiality floor, the jail, the listing-gate, or the injection framing). Tracked in
+[deferred-tasks.md](../roadmap/deferred-tasks.md) §"Phase 2.5.D follow-ups":
+
+- The **advisory `.gitignore` / `.relaviumignore` completion trim** ("(ii)" of the candidate-list design) ships as
+  a **fixed `NOISE_DIRS` set** in v1; the in-house ReDoS-safe ignore-file matcher is the deferred follow-up. This
+  is an advisory UX trim only — the confidentiality floor + listing-gate remain the security control.
+- **`@`-glob / whole-directory expansion**, and **`@`-mention of a binary/media file** (durable media-handle path,
+  ADR-0031), are deferred — v1 injects a single text file.
+- Injection hardening added during the review beyond the drafted design: the `<file>` frame is fenced with a
+  **per-injection random nonce** on both tags (a file's bytes cannot forge `</file>`); the injected content is
+  **byte- AND line-bounded** (head+tail+marker, surrogate-safe) so a large / many-line file cannot freeze the
+  editor; the path strips **Unicode bidi/format controls** (extending the shared display sanitizer is a deferred
+  general hardening); and the async accept carries a **submit-generation guard** so a slow read cannot inject into
+  the next message. The read floor additionally covers `.envrc` / `.dockercfg` and `.env` as a **directory**
+  segment (not just a file basename).

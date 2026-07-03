@@ -10,6 +10,7 @@ import {
   mentionNonce,
   mentionOpensAt,
   MENTION_MAX_INJECT_CHARS,
+  MENTION_MAX_INJECT_LINES,
   parentDir,
   visibleMentions,
   type MentionState,
@@ -50,6 +51,11 @@ describe('@-mention completion model (2.5.D step 4)', () => {
       path: 'app.ts',
     }); // a file
     expect(foldMentionKey('/', {}, STATE)).toEqual({ kind: 'descend', dir: 'src' }); // '/' descends the selected dir
+    // Shift+Tab is the mode-cycle chord, NOT an accept — the overlay must not swallow it (stays open, unchanged).
+    expect(foldMentionKey('', { tab: true, shift: true }, { ...STATE, selected: 1 })).toEqual({
+      kind: 'state',
+      state: { ...STATE, selected: 1 },
+    });
   });
 
   it('foldMentionKey: filter edits, backspace trims / closes, Esc closes, multi-char paste dropped', () => {
@@ -138,7 +144,7 @@ describe('@-mention completion model (2.5.D step 4)', () => {
     expect(a).not.toBe(b);
   });
 
-  it('formatMentionInjection head+tail truncates content past the hard inject cap (TUI-freeze guard)', () => {
+  it('formatMentionInjection head+tail truncates content past the hard BYTE cap (TUI-freeze guard)', () => {
     const big = 'x'.repeat(MENTION_MAX_INJECT_CHARS + 5000);
     const out = formatMentionInjection('big.txt', big, 'N');
     expect(out.length).toBeLessThan(big.length); // bounded, not verbatim
@@ -148,6 +154,26 @@ describe('@-mention completion model (2.5.D step 4)', () => {
     expect(formatMentionInjection('small.txt', small, 'N')).toBe(
       `\n\n<file id="N" path="small.txt">\n${small}\n</file:N>`,
     );
+  });
+
+  it('boundInjectedContent also caps the LINE count (a many-short-line file under the byte cap)', () => {
+    // 1000 lines but only ~2000 chars — under the byte cap, over the line cap.
+    const manyLines = Array.from({ length: 1000 }, (_, i) => `L${i}`).join('\n');
+    expect(manyLines.length).toBeLessThan(MENTION_MAX_INJECT_CHARS);
+    const out = formatMentionInjection('many.txt', manyLines, 'N');
+    expect(out).toMatch(/\[truncated \d+ lines\]/); // a line-truncation marker
+    // Row count is bounded well under the 1000 source lines (a few framing rows over the line cap).
+    expect(out.split('\n').length).toBeLessThanOrEqual(MENTION_MAX_INJECT_LINES + 5);
+  });
+
+  it('boundInjectedContent never splits a surrogate pair at the truncation boundary (no lone surrogate)', () => {
+    // Place an astral char (😀 = a surrogate pair) straddling the head cut point (floor(cap*0.75)).
+    const head = Math.floor(MENTION_MAX_INJECT_CHARS * 0.75);
+    const content = 'a'.repeat(head - 1) + '😀' + 'b'.repeat(MENTION_MAX_INJECT_CHARS);
+    const out = formatMentionInjection('astral.txt', content, 'N');
+    // Well-formed UTF-16: a UTF-8 round-trip introduces no U+FFFD (a lone surrogate would become the replacement).
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+    expect(out).not.toContain('�');
   });
 });
 

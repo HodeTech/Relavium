@@ -484,7 +484,15 @@ function assertNotProtectedPath(absoluteTarget: string): void {
  * no call site wires `tmpDir` today, so the collision is inert. Resolve it (home-anchored match, or exclude the
  * wired tmp root) BEFORE any caller passes `tmpDir`. Tracked in docs/roadmap/deferred-tasks.md.
  */
-const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.ssh', '.relavium', '.aws']);
+const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set([
+  '.ssh',
+  '.relavium',
+  '.aws',
+  // `.env` as a DIRECTORY (some tooling stores per-environment secrets as `.env/production`, etc.) — the basename
+  // check below only catches a `.env` FILE, so anything NESTED under a `.env/` dir needs the segment guard too.
+  // Over-denying a rare `.env` virtualenv read is the safe direction for a confidentiality floor.
+  '.env',
+]);
 /** Credential/secret dotfiles refused to READ by basename (git creds, npm/pypi/pg/netrc tokens). */
 const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.gitconfig', // user-global git config — `[credential]`, insteadOf URLs with embedded tokens
