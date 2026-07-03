@@ -366,6 +366,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       }
       if (step.kind === 'accept') {
+        history = resetHistoryNav(history); // the accepted entry is the live buffer, not a nav result (Down mustn't clobber it)
         set({ search: undefined, input: editorFromText(step.text) }); // load the matched entry
         return;
       }
@@ -396,9 +397,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'backspace':
       case 'newline':
       case 'kill': {
-        history = resetHistoryNav(history); // a text edit ends history navigation
         const next = applyEditorAction(state.input, action);
-        if (next === state.input) return; // a no-op edit must not re-render
+        if (next === state.input) return; // a no-op edit must not reset the history draft or re-render
+        history = resetHistoryNav(history); // a real text edit ends history navigation
         set({ input: next });
         return;
       }
@@ -516,8 +517,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B). CRLF/bare-CR are
           // normalized to LF (matching the reduceEditorMotion append), so a pasted line break is a real newline in
           // the buffer + sent to the model, never a stray '\r' the display strips but the transcript keeps.
+          // `state.search === undefined`: while the Ctrl+R reverse-search submode owns the keyboard, a paste is
+          // dropped (like the palette) — it must not leak into the hidden input buffer behind the search line.
           const editable =
-            state.mode !== 'loading' && !chatRunning() && state.palette === undefined;
+            state.mode !== 'loading' &&
+            !chatRunning() &&
+            state.palette === undefined &&
+            state.search === undefined;
           const pasted = input.replace(/\r\n?/g, '\n');
           if (pasted.length > 0 && editable) {
             // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.

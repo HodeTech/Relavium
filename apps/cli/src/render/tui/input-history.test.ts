@@ -7,6 +7,7 @@ import {
   historyPrev,
   recordHistory,
   resetHistoryNav,
+  reverseSearchExtendQuery,
   reverseSearchMatchText,
   reverseSearchOlder,
   reverseSearchSetQuery,
@@ -79,6 +80,22 @@ describe('reverse-search (Ctrl+R) over the history (2.5.D step 3)', () => {
     const older = reverseSearchOlder(entries, first);
     expect(older).toEqual({ query: 'foo', matchIndex: 0 }); // 'foo' at index 0
     expect(reverseSearchOlder(entries, older)).toBe(older); // no older 'foo' match ⇒ same reference
+  });
+
+  it('extending the query keeps the selection at/older than the CURRENT match (not yanked to the newest)', () => {
+    // After Ctrl+R-stepping to the older 'foo' (index 0), typing more keeps us anchored there, not re-jumped to
+    // the newest 'foobar' (index 2) — reverseSearchSetQuery (newest-anchored) would wrongly return index 2.
+    const older = { query: 'fo', matchIndex: 0 };
+    expect(reverseSearchExtendQuery(entries, older, 'foo')).toEqual({
+      query: 'foo',
+      matchIndex: 0,
+    });
+    expect(reverseSearchSetQuery(entries, 'foo')).toEqual({ query: 'foo', matchIndex: 2 }); // contrast: newest-anchored
+    // Extending past what the current (and older) entries contain ⇒ no match.
+    expect(reverseSearchExtendQuery(entries, { query: 'foo', matchIndex: 2 }, 'foox')).toEqual({
+      query: 'foox',
+      matchIndex: null,
+    });
   });
 
   it('reverseSearchMatchText resolves the match, undefined when none', () => {

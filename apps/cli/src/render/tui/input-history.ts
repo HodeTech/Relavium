@@ -88,13 +88,26 @@ function findMatch(entries: readonly string[], query: string, fromIndex: number)
   return null;
 }
 
-/** Set the search query and re-search from the newest entry (an empty query has no match). */
+/** Set the search query and re-search from the newest entry (an empty query has no match). Used when SHRINKING
+ *  the query (backspace) — a shorter query may match a newer entry, so re-anchor to the newest. */
 export function reverseSearchSetQuery(
   entries: readonly string[],
   query: string,
 ): ReverseSearchState {
   const matchIndex = query.length === 0 ? null : findMatch(entries, query, entries.length - 1);
   return { query, matchIndex };
+}
+
+/** EXTEND the query (a printable char), re-searching from the CURRENT match downward so refining after Ctrl+R
+ *  stepping to an older match keeps the selection at/older than the current one (never yanked back to the newest). */
+export function reverseSearchExtendQuery(
+  entries: readonly string[],
+  state: ReverseSearchState,
+  query: string,
+): ReverseSearchState {
+  if (query.length === 0) return { query, matchIndex: null };
+  const from = state.matchIndex ?? entries.length - 1;
+  return { query, matchIndex: findMatch(entries, query, from) };
 }
 
 /** `Ctrl+R` again — step to the NEXT older match for the same query (a no-op at the oldest match / no match). */
@@ -152,10 +165,12 @@ export function foldReverseSearchKey(
     return { kind: 'state', state: reverseSearchOlder(entries, state) };
   }
   if (key.backspace === true || key.delete === true) {
+    // Shrinking widens the search — re-anchor to the newest match.
     return { kind: 'state', state: reverseSearchSetQuery(entries, state.query.slice(0, -1)) };
   }
   if (char.length > 0 && key.ctrl !== true && key.meta !== true) {
-    return { kind: 'state', state: reverseSearchSetQuery(entries, state.query + char) };
+    // Extending narrows — keep the selection at/older than the current match, never yanked back to the newest.
+    return { kind: 'state', state: reverseSearchExtendQuery(entries, state, state.query + char) };
   }
   return { kind: 'state', state }; // ignore other keys, stay open
 }

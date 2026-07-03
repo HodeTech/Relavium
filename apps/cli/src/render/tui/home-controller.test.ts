@@ -171,6 +171,33 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input).toEqual({ text: 'hello world', cursor: 11 });
   });
 
+  it('in-Home chat: reverse-search accept resets history nav so a following Down does not clobber it', async () => {
+    const made = makeSession();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'alpha');
+    c.handleKey('', ENTER); // records 'alpha', starts the chat
+    await flush();
+    type(c, 'beta');
+    c.handleKey('', ENTER); // records 'beta' → history ['alpha','beta']
+    expect(made.lines).toEqual(['alpha', 'beta']);
+
+    c.handleKey('', { upArrow: true }); // Up-recall makes history navigation active (navIndex set)
+    expect(c.getSnapshot().input.text).toBe('beta');
+    c.handleKey('r', { ctrl: true }); // open reverse-search
+    type(c, 'al'); // matches 'alpha'
+    c.handleKey('', ENTER); // accept 'alpha' — must reset history nav
+    expect(c.getSnapshot().input).toEqual({ text: 'alpha', cursor: 5 });
+    // Down is now a no-op (nav reset by accept), NOT a historyNext that clobbers 'alpha' with the stale draft.
+    c.handleKey('', { downArrow: true });
+    expect(c.getSnapshot().input).toEqual({ text: 'alpha', cursor: 5 });
+  });
+
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));

@@ -282,6 +282,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
       if (step.kind === 'accept') {
         applySearch(undefined);
+        // The accepted entry becomes the live buffer, NOT a history-nav result — reset nav so a subsequent Down
+        // doesn't clobber it with the stale pre-search draft (and a subsequent Up saves it as the fresh draft).
+        historyRef.current = resetHistoryNav(historyRef.current);
         applyEditor(() => editorFromText(step.text)); // load the matched entry into the buffer
         return;
       }
@@ -331,10 +334,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'append':
       case 'backspace':
       case 'newline':
-      case 'kill':
-        historyRef.current = resetHistoryNav(historyRef.current); // a text edit ends history navigation
-        applyEditor((current) => applyEditorAction(current, action));
+      case 'kill': {
+        const next = applyEditorAction(editorRef.current, action);
+        if (next === editorRef.current) return; // a no-op edit must not discard the history draft or re-render
+        historyRef.current = resetHistoryNav(historyRef.current); // a real text edit ends history navigation
+        applyEditor(() => next);
         return;
+      }
       case 'move': {
         // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
         const current = editorRef.current;
