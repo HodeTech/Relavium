@@ -3,6 +3,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactElement } from 're
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { ChatView } from './chat-ink.js';
+import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
@@ -34,7 +35,11 @@ export interface RootAppProps {
  *  plus the `/` palette overlay (2.5.C S3b) when open. It owns NO `useInput` — {@link RootApp} is the single
  *  raw-mode owner and forwards keys to the controller. */
 function ChatRegion(
-  props: Readonly<{ store: ChatStoreController; input: string; palette: PaletteState | undefined }>,
+  props: Readonly<{
+    store: ChatStoreController;
+    editor: EditorState;
+    palette: PaletteState | undefined;
+  }>,
 ): ReactElement {
   const { state, tick, color, mode, approval } = useSyncExternalStore(
     props.store.subscribe,
@@ -46,7 +51,7 @@ function ChatRegion(
         state={state}
         tick={tick}
         color={color}
-        input={props.input}
+        editor={props.editor}
         running={state.status === 'running'}
         mode={mode}
         approval={approval}
@@ -70,9 +75,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useInput((input, key) => controller.handleKey(input, key));
 
   if (state.mode === 'chat' && state.session !== undefined) {
-    return (
-      <ChatRegion store={state.session.store} input={state.input.text} palette={state.palette} />
-    );
+    return <ChatRegion store={state.session.store} editor={state.input} palette={state.palette} />;
   }
   if (state.mode === 'loading') {
     return (
@@ -91,7 +94,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     <Box flexDirection="column">
       <HomeView
         snapshot={state.snapshot}
-        input={state.input.text}
+        editor={state.input}
         errorText={state.errorText}
         notice={state.notice}
         nowMs={props.nowMs()}

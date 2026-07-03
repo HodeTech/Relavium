@@ -31,13 +31,29 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
     expect(reduceHomeKey(' ', KEY())).toEqual({ kind: 'append', char: ' ' });
   });
 
-  it('a modified char is NOT appended (a ctrl/meta chord is not text)', () => {
-    expect(reduceHomeKey('a', KEY({ ctrl: true }))).toEqual({ kind: 'none' });
-    expect(reduceHomeKey('a', KEY({ meta: true }))).toEqual({ kind: 'none' });
+  it('an UNBOUND modified char is NOT appended and is none (bound chords are motions — see below)', () => {
+    expect(reduceHomeKey('x', KEY({ ctrl: true }))).toEqual({ kind: 'none' }); // Ctrl-X: unbound
+    expect(reduceHomeKey('a', KEY({ meta: true }))).toEqual({ kind: 'none' }); // Meta-A: unbound (Alt+B/F are word motions)
   });
 
-  it('a bare modifier / arrow / function key (no char) is none', () => {
+  it('a bare modifier or an empty keystroke (no char, no bound key) is none', () => {
     expect(reduceHomeKey('', KEY())).toEqual({ kind: 'none' });
+  });
+
+  it('the Home prompt shares the chat editor motions (2.5.D step 2 — reduceEditorMotion)', () => {
+    // The bare Home prompt is a first-class line editor too: the same Ctrl+J newline + cursor/word/line motions +
+    // kills the chat prompt has, delegated to the shared reduceEditorMotion so the two surfaces cannot drift.
+    expect(reduceHomeKey('\n', KEY())).toEqual({ kind: 'newline' }); // Ctrl+J (a bare LF)
+    expect(reduceHomeKey('', KEY({ leftArrow: true }))).toEqual({ kind: 'move', motion: 'left' });
+    expect(reduceHomeKey('', KEY({ rightArrow: true, ctrl: true }))).toEqual({
+      kind: 'move',
+      motion: 'word-right',
+    });
+    expect(reduceHomeKey('a', KEY({ ctrl: true }))).toEqual({ kind: 'move', motion: 'line-start' }); // Ctrl+A
+    expect(reduceHomeKey('', KEY({ end: true }))).toEqual({ kind: 'move', motion: 'line-end' });
+    expect(reduceHomeKey('w', KEY({ ctrl: true }))).toEqual({ kind: 'kill', motion: 'word-back' });
+    // A plain Return still submits (reduceEditorMotion declines it so the surface owns submit).
+    expect(reduceHomeKey('\r', KEY({ return: true }))).toEqual({ kind: 'submit' });
   });
 
   it('Ctrl-C takes precedence over a coincident return flag', () => {

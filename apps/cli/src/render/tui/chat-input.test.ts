@@ -7,6 +7,8 @@ import {
   editorFromText,
   emptyEditor,
   insertAtCursor,
+  killRange,
+  moveCursor,
   reduceChatKey,
   type ChatKey,
   type ChatKeyAction,
@@ -47,10 +49,83 @@ describe('reduceChatKey', () => {
     expect(reduceChatKey(' ', KEY, 'h', false)).toEqual({ kind: 'append', char: ' ' });
   });
 
-  it('ignores a ctrl/meta chord that is not Ctrl-C, and an empty keystroke', () => {
-    expect(reduceChatKey('a', { ctrl: true }, 'h', false)).toEqual({ kind: 'none' }); // Ctrl-A
-    expect(reduceChatKey('v', { meta: true }, 'h', false)).toEqual({ kind: 'none' }); // Meta-V
+  it('ignores an UNBOUND ctrl/meta chord and an empty keystroke (bound chords are motions — see below)', () => {
+    expect(reduceChatKey('x', { ctrl: true }, 'h', false)).toEqual({ kind: 'none' }); // Ctrl-X: unbound
+    expect(reduceChatKey('v', { meta: true }, 'h', false)).toEqual({ kind: 'none' }); // Meta-V: unbound
     expect(reduceChatKey('', KEY, 'h', false)).toEqual({ kind: 'none' }); // a bare modifier press
+  });
+
+  it('newline vs submit: Ctrl+J (bare LF) / Shift+Enter insert a newline; plain Return (CR) submits', () => {
+    expect(reduceChatKey('\n', KEY, 'hi', false)).toEqual({ kind: 'newline' }); // Ctrl+J arrives as a bare '\n'
+    expect(reduceChatKey('j', { ctrl: true }, 'hi', false)).toEqual({ kind: 'newline' }); // explicit Ctrl+J
+    expect(reduceChatKey('', { return: true, shift: true }, 'hi', false)).toEqual({
+      kind: 'newline',
+    }); // Shift+Enter
+    expect(reduceChatKey('\r', { return: true }, 'hi', false)).toEqual({
+      kind: 'submit',
+      line: 'hi',
+    }); // Return=CR
+  });
+
+  it('maps the cursor motions (arrows / word / line) and the kills (Ctrl+W/U/K)', () => {
+    expect(reduceChatKey('', { leftArrow: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'left',
+    });
+    expect(reduceChatKey('', { rightArrow: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'right',
+    });
+    expect(reduceChatKey('', { leftArrow: true, ctrl: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'word-left',
+    }); // a MODIFIED arrow is a word motion
+    expect(reduceChatKey('', { rightArrow: true, meta: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'word-right',
+    });
+    expect(reduceChatKey('a', { ctrl: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'line-start',
+    }); // Ctrl+A
+    expect(reduceChatKey('e', { ctrl: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'line-end',
+    }); // Ctrl+E
+    expect(reduceChatKey('', { home: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'line-start',
+    });
+    expect(reduceChatKey('', { end: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'line-end',
+    });
+    expect(reduceChatKey('b', { meta: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'word-left',
+    }); // Alt+B
+    expect(reduceChatKey('f', { meta: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'word-right',
+    }); // Alt+F
+    expect(reduceChatKey('w', { ctrl: true }, 'hi', false)).toEqual({
+      kind: 'kill',
+      motion: 'word-back',
+    });
+    expect(reduceChatKey('u', { ctrl: true }, 'hi', false)).toEqual({
+      kind: 'kill',
+      motion: 'to-line-start',
+    });
+    expect(reduceChatKey('k', { ctrl: true }, 'hi', false)).toEqual({
+      kind: 'kill',
+      motion: 'to-line-end',
+    });
+  });
+
+  it('motions/edits are ignored while a turn is running (one turn at a time)', () => {
+    expect(reduceChatKey('', { leftArrow: true }, 'hi', true)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('\n', KEY, 'hi', true)).toEqual({ kind: 'none' }); // Ctrl+J too
+    expect(reduceChatKey('a', { ctrl: true }, 'hi', true)).toEqual({ kind: 'none' }); // Ctrl+A too
   });
 
   it('maps Shift+Tab to cycle-mode (idle OR running — a mode change applies to the next turn)', () => {
@@ -196,6 +271,94 @@ describe('the cursor-bearing editor primitives (2.5.D step 1)', () => {
     expect(deleteBeforeCursor(e2)).toBe(e2); // backspace at the start of the buffer
     const e3 = emptyEditor();
     expect(applyEditorAction(e3, { kind: 'backspace' })).toBe(e3); // backspace on an empty buffer
+  });
+});
+
+describe('cursor motions + kills (2.5.D step 2)', () => {
+  it('moveCursor left/right steps by CODE POINTS and clamps at the bounds (same ref when unchanged)', () => {
+    expect(moveCursor({ text: 'abc', cursor: 2 }, 'left')).toEqual({ text: 'abc', cursor: 1 });
+    expect(moveCursor({ text: 'abc', cursor: 1 }, 'right')).toEqual({ text: 'abc', cursor: 2 });
+    const atStart: EditorState = { text: 'abc', cursor: 0 };
+    expect(moveCursor(atStart, 'left')).toBe(atStart); // clamp at 0 ⇒ no-op, same reference
+    const atEnd: EditorState = { text: 'abc', cursor: 3 };
+    expect(moveCursor(atEnd, 'right')).toBe(atEnd); // clamp at length ⇒ no-op, same reference
+  });
+
+  it('moveCursor steps OVER an astral char (2 units), never landing mid-surrogate-pair (the step-1 MEDIUM)', () => {
+    // 'a😀b' — 😀 is 2 units at index 1..2. Right from 1 lands at 3 (after 😀), NOT 2 (which would split the pair).
+    expect(moveCursor({ text: 'a😀b', cursor: 1 }, 'right')).toEqual({ text: 'a😀b', cursor: 3 });
+    expect(moveCursor({ text: 'a😀b', cursor: 3 }, 'left')).toEqual({ text: 'a😀b', cursor: 1 });
+  });
+
+  it('moveCursor word-left / word-right skip non-word then the word run (readline Alt+B/F)', () => {
+    expect(moveCursor({ text: 'foo bar', cursor: 7 }, 'word-left')).toEqual({
+      text: 'foo bar',
+      cursor: 4,
+    });
+    expect(moveCursor({ text: 'foo bar', cursor: 4 }, 'word-left')).toEqual({
+      text: 'foo bar',
+      cursor: 0,
+    });
+    expect(moveCursor({ text: 'foo bar', cursor: 0 }, 'word-right')).toEqual({
+      text: 'foo bar',
+      cursor: 3,
+    });
+    expect(moveCursor({ text: 'foo bar', cursor: 3 }, 'word-right')).toEqual({
+      text: 'foo bar',
+      cursor: 7,
+    });
+  });
+
+  it('moveCursor line-start / line-end are multiline-aware (bounded by the surrounding newlines)', () => {
+    // 'ab\ncd\nef' — line1 spans [3,5]; the cursor at 4 is inside it.
+    expect(moveCursor({ text: 'ab\ncd\nef', cursor: 4 }, 'line-start')).toEqual({
+      text: 'ab\ncd\nef',
+      cursor: 3,
+    });
+    expect(moveCursor({ text: 'ab\ncd\nef', cursor: 4 }, 'line-end')).toEqual({
+      text: 'ab\ncd\nef',
+      cursor: 5,
+    });
+    // first line clamps line-start to 0; last line clamps line-end to text.length.
+    expect(moveCursor({ text: 'ab\ncd', cursor: 1 }, 'line-start')).toEqual({
+      text: 'ab\ncd',
+      cursor: 0,
+    });
+    expect(moveCursor({ text: 'ab\ncd', cursor: 4 }, 'line-end')).toEqual({
+      text: 'ab\ncd',
+      cursor: 5,
+    });
+  });
+
+  it('killRange word-back / to-line-start / to-line-end delete the expected range', () => {
+    expect(killRange({ text: 'foo bar', cursor: 7 }, 'word-back')).toEqual({
+      text: 'foo ',
+      cursor: 4,
+    });
+    expect(killRange({ text: 'ab\ncd', cursor: 5 }, 'to-line-start')).toEqual({
+      text: 'ab\n',
+      cursor: 3,
+    });
+    expect(killRange({ text: 'ab\ncd', cursor: 3 }, 'to-line-end')).toEqual({
+      text: 'ab\n',
+      cursor: 3,
+    });
+    const atStart: EditorState = { text: 'abc', cursor: 0 };
+    expect(killRange(atStart, 'word-back')).toBe(atStart); // nothing before the cursor ⇒ no-op, same reference
+  });
+
+  it('applyEditorAction routes newline / move / kill onto the editor', () => {
+    expect(applyEditorAction({ text: 'ab', cursor: 1 }, { kind: 'newline' })).toEqual({
+      text: 'a\nb',
+      cursor: 2,
+    });
+    expect(applyEditorAction({ text: 'ab', cursor: 2 }, { kind: 'move', motion: 'left' })).toEqual({
+      text: 'ab',
+      cursor: 1,
+    });
+    expect(
+      applyEditorAction({ text: 'foo bar', cursor: 7 }, { kind: 'kill', motion: 'word-back' }),
+    ).toEqual({ text: 'foo ', cursor: 4 });
   });
 });
 

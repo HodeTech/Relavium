@@ -13,6 +13,7 @@ import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import { applyEditorAction, emptyEditor, reduceChatKey, type EditorState } from './chat-input.js';
 import { PaletteView } from './palette-view.js';
+import { PromptEditor } from './prompt-view.js';
 import {
   foldPaletteKey,
   INITIAL_PALETTE_STATE,
@@ -92,8 +93,8 @@ interface ChatViewProps {
   readonly state: SessionViewState;
   readonly tick: number;
   readonly color: boolean;
-  /** The current prompt buffer (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
-  readonly input: string;
+  /** The current prompt editor — text + cursor (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
+  readonly editor: EditorState;
   readonly running: boolean;
   /** The active chat mode (ADR-0057) — shown in the footer so `auto` is never a hidden state. */
   readonly mode: ChatMode;
@@ -111,7 +112,7 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, input, running, mode, approval, paletteOpen } = props;
+  const { state, tick, color, editor, running, mode, approval, paletteOpen } = props;
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -136,27 +137,19 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         </Box>
       )}
 
-      {/* The input prompt (idle) and the persistent footer. The live input echo is sanitized so a paste
-          containing terminal control sequences cannot corrupt the display or inject ANSI/OSC escapes. A trailing
-          inverse-space block cursor marks the prompt as a live field (shared with the Home's prompt). */}
-      {showIdlePrompt && (
-        <Text>
-          <Text {...colorProps(color, 'cyan')}>
-            {'> '}
-            {sanitizeInline(input)}
-          </Text>
-          {color && <Text inverse> </Text>}
-        </Text>
-      )}
+      {/* The multi-line input prompt (idle) with the cursor at its position. Every segment is sanitized inside
+          PromptEditor so a pasted/typed control sequence cannot corrupt the display or inject ANSI/OSC. Shared
+          with the Home's prompt so both surfaces render the editor identically. */}
+      {showIdlePrompt && <PromptEditor editor={editor} color={color} />}
       {/* The context-aware idle hint bar (2.5.C S6). At an EMPTY prompt, surface the `/` palette as the command-
           discovery entry point (it lists /export, /doctor, /workflows, …) — `/` only opens it from an empty
-          buffer, so the hint appears exactly when it works. Once the user is composing, swap to the submit hint.
-          The palette renders its own nav hints when open, so keys stay discoverable without a separate command. */}
+          buffer, so the hint appears exactly when it works. Once the user is composing, swap to the submit hint
+          (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {input.length === 0
+          {editor.text.length === 0
             ? '/ for commands · /exit or Ctrl-C to end'
-            : 'Enter to send · Ctrl-C to end'}
+            : 'Enter to send · Ctrl+J newline · Ctrl-C to end'}
         </Text>
       )}
 
@@ -286,6 +279,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'append':
       case 'backspace':
+      case 'newline':
+      case 'move':
+      case 'kill':
         applyEditor((current) => applyEditorAction(current, action));
         return;
       case 'submit':
@@ -324,7 +320,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         state={state}
         tick={tick}
         color={color}
-        input={editor.text}
+        editor={editor}
         running={running}
         mode={mode}
         approval={approval}

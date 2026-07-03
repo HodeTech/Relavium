@@ -15,20 +15,48 @@ export interface ChatKey {
   readonly delete?: boolean;
   readonly tab?: boolean;
   readonly escape?: boolean;
+  readonly leftArrow?: boolean;
+  readonly rightArrow?: boolean;
+  readonly home?: boolean;
+  readonly end?: boolean;
 }
 
+/** A cursor MOVE (no text change). A modified arrow (Ctrl/Alt) or Alt+B/F is a word motion; Home/End (or
+ *  Ctrl+A/Ctrl+E) go to the start/end of the CURRENT line (multiline-aware). */
+export type CursorMotion =
+  | 'left'
+  | 'right'
+  | 'word-left'
+  | 'word-right'
+  | 'line-start'
+  | 'line-end';
+/** A KILL (delete a range): Ctrl+W deletes the word before the cursor, Ctrl+U to the line start, Ctrl+K to the
+ *  line end. */
+export type KillMotion = 'word-back' | 'to-line-start' | 'to-line-end';
+
 /**
- * What a keystroke maps to. The buffer EDITS are operations (`append` / `backspace`), NOT a precomputed value,
- * so the caller folds them onto the accumulated editor — the ChatApp via React's functional updater
- * (`setEditor((cur) => applyEditorAction(cur, action))`), the Home via a synchronous `set({ input })` — which is
- * load-bearing: ink dispatches every event parsed from one stdin chunk synchronously with no render flush (a
- * coalesced burst, e.g. a printable interleaved with an escape sequence), so a precomputed `value` would read a
- * STALE buffer and drop all but the last edit. `none` is a deliberately-ignored key (a chord, or mid-turn).
+ * The editor-mutating keystroke actions SHARED by the chat and Home reducers — the one keystroke contract for
+ * buffer edits + cursor motions. Both surfaces map these identically via {@link reduceEditorMotion}; each adds
+ * its own surface actions (submit / cancel / … for chat, exit / submit for the Home) on top. The edits are
+ * OPERATIONS (`append` / `newline` / a motion), NOT a precomputed value, so the caller folds them onto the
+ * accumulated editor — the ChatApp via React's functional updater (`setEditor((cur) => applyEditorAction(cur,
+ * action))`), the Home via a synchronous `set({ input })`. This is load-bearing: ink dispatches every event
+ * parsed from one stdin chunk synchronously with no render flush (a coalesced burst — a printable interleaved
+ * with an escape sequence), so a precomputed value would read a STALE buffer and drop all but the last edit.
  */
-export type ChatKeyAction =
-  | { readonly kind: 'none' }
+export type EditorEditAction =
   | { readonly kind: 'append'; readonly char: string }
   | { readonly kind: 'backspace' }
+  /** `Ctrl+J` (canonical) / `Shift+Enter` (best-effort) — insert a newline at the cursor, NOT submit. */
+  | { readonly kind: 'newline' }
+  /** A cursor motion (no text change) — arrows / word / line-start / line-end. */
+  | { readonly kind: 'move'; readonly motion: CursorMotion }
+  /** A kill (delete a range) — `Ctrl+W` / `Ctrl+U` / `Ctrl+K`. */
+  | { readonly kind: 'kill'; readonly motion: KillMotion };
+
+export type ChatKeyAction =
+  | EditorEditAction
+  | { readonly kind: 'none' }
   | { readonly kind: 'submit'; readonly line: string }
   | { readonly kind: 'cancel' }
   /** Shift+Tab — advance the chat mode (ask → plan → accept-edits → auto → ask), ADR-0057. */
@@ -55,15 +83,49 @@ function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
 }
 
 /**
+ * Map one keystroke to a SHARED editor edit/motion action, or `undefined` when it is not an editor key (so the
+ * surface reducer handles its own keys — plain `Return`, `Ctrl-C`, `Shift+Tab`, …). This is the ONE home for the
+ * buffer-edit + cursor-motion keystroke contract; both {@link reduceChatKey} and `reduceHomeKey` delegate here so
+ * the two surfaces can never drift. `Shift+Enter` (best-effort, Kitty only) and `Ctrl+J` (a bare LF, `char === '\n'`,
+ * which ink names `'enter'` while `Return`/CR is `'return'`) insert a newline; the arrows / `Ctrl+A`/`Ctrl+E` /
+ * `Home`/`End` / `Alt+B`/`Alt+F` move the cursor (a modified arrow is a word motion); `Ctrl+W`/`Ctrl+U`/`Ctrl+K`
+ * kill a range; backspace/delete deletes; a printable char (not a ctrl/meta chord, not the LF) appends. Plain
+ * `Return` (CR arrives as `char === '\r'`) returns `undefined` so the surface submits instead of appending it.
+ */
+export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction | undefined {
+  if (key.return === true && key.shift === true) return { kind: 'newline' }; // Shift+Enter (best-effort)
+  if (key.return === true) return undefined; // plain Return is surface-specific (submit) — not an editor edit
+  if (char === '\n' || (key.ctrl === true && char === 'j')) return { kind: 'newline' }; // Ctrl+J (canonical)
+  // Cursor motions. A modified arrow (Ctrl/Alt+arrow) is a word motion; a bare arrow is one code point.
+  const wordMod = key.ctrl === true || key.meta === true;
+  if (key.leftArrow === true) return { kind: 'move', motion: wordMod ? 'word-left' : 'left' };
+  if (key.rightArrow === true) return { kind: 'move', motion: wordMod ? 'word-right' : 'right' };
+  if (key.home === true || (key.ctrl === true && char === 'a'))
+    return { kind: 'move', motion: 'line-start' };
+  if (key.end === true || (key.ctrl === true && char === 'e'))
+    return { kind: 'move', motion: 'line-end' };
+  if (key.meta === true && char === 'b') return { kind: 'move', motion: 'word-left' }; // readline Alt+B
+  if (key.meta === true && char === 'f') return { kind: 'move', motion: 'word-right' }; // readline Alt+F
+  if (key.ctrl === true && char === 'w') return { kind: 'kill', motion: 'word-back' };
+  if (key.ctrl === true && char === 'u') return { kind: 'kill', motion: 'to-line-start' };
+  if (key.ctrl === true && char === 'k') return { kind: 'kill', motion: 'to-line-end' };
+  if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
+  if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true)
+    return { kind: 'append', char };
+  return undefined;
+}
+
+/**
  * Reduce one keystroke of the chat prompt to an action.
  *
  * When an approval is pending (`approvalPending`), the prompt OWNS the keyboard (see {@link reduceApprovalKey}) —
  * the in-flight key-swallow bypass (ADR-0057, no deadlock). Otherwise: `Ctrl-C` maps to `cancel` even mid-turn (a
- * streaming turn can always be interrupted); `Shift+Tab` cycles the mode (harmless mid-turn — it applies to
- * the next turn); `Esc` while `running` is a mid-turn `abort` (EA7); while a turn is `running` every OTHER key
- * is ignored (one turn at a time); `Return` submits the buffer; backspace/delete is a `backspace` op; a
- * printable char (not a ctrl/meta chord) is an `append` op. The edit ops carry no buffer value — the caller
- * folds them functionally, preserving the accumulating semantics across a batched multi-event chunk.
+ * streaming turn can always be interrupted); `Shift+Tab` cycles the mode (harmless mid-turn — it applies to the
+ * next turn); `Esc` while `running` is a mid-turn `abort` (EA7); while a turn is `running` every OTHER key is
+ * ignored (one turn at a time). Idle, the buffer edits + cursor motions come from the shared
+ * {@link reduceEditorMotion}; a plain `Return` (which that helper declines) submits the buffer. The edit/motion
+ * ops carry no buffer value — the caller folds them functionally over the accumulated editor, preserving the
+ * accumulating semantics across a batched multi-event chunk.
  */
 export function reduceChatKey(
   char: string,
@@ -77,9 +139,9 @@ export function reduceChatKey(
   if (key.tab === true && key.shift === true) return { kind: 'cycle-mode' }; // Shift+Tab cycles the chat mode
   if (key.escape === true && running) return { kind: 'abort' }; // mid-turn abort, keeps the session (EA7)
   if (running) return { kind: 'none' }; // one turn at a time — ignore typing while the assistant streams
+  const edit = reduceEditorMotion(char, key);
+  if (edit !== undefined) return edit;
   if (key.return === true) return { kind: 'submit', line: input };
-  if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
-  if (char.length > 0 && key.ctrl !== true && key.meta !== true) return { kind: 'append', char };
   return { kind: 'none' };
 }
 
@@ -159,11 +221,116 @@ export function deleteBeforeCursor(editor: EditorState): EditorState {
   return { text: trimmed + text.slice(cursor), cursor: cursor - (before.length - trimmed.length) };
 }
 
+/* --- Cursor motions (2.5.D step 2). All step by whole CODE POINTS and clamp to `0..text.length`, so the cursor
+ * the insert/delete primitives TRUST can never land mid-surrogate-pair or out of range (closing the step-1
+ * codepoint-review MEDIUM). --- */
+
+/** The code-unit index of the code-point boundary one step LEFT of `i` (clamped to 0). */
+function stepLeft(text: string, i: number): number {
+  if (i <= 0) return 0;
+  // codePointAt(i-2) > 0xffff ⇒ text[i-2..i-1] is a real astral pair ending at the cursor — step over both units.
+  if (i >= 2 && (text.codePointAt(i - 2) ?? 0) > 0xffff) return i - 2;
+  return i - 1;
+}
+
+/** The code-unit index of the code-point boundary one step RIGHT of `i` (clamped to `text.length`). */
+function stepRight(text: string, i: number): number {
+  if (i >= text.length) return text.length;
+  // codePointAt(i) > 0xffff ⇒ an astral pair STARTS at i — step over both units.
+  return (text.codePointAt(i) ?? 0) > 0xffff ? i + 2 : i + 1;
+}
+
+/** Whether the code point starting at code-unit index `i` is a "word" char (Unicode letter / number / `_`). */
+const WORD_CODE_POINT = /[\p{L}\p{N}_]/u;
+function isWordAt(text: string, i: number): boolean {
+  const cp = text.codePointAt(i);
+  return cp !== undefined && WORD_CODE_POINT.test(String.fromCodePoint(cp));
+}
+
+/** The code-unit index one word LEFT of `i`: skip non-word code points, then the word run (readline `Alt+B`). */
+function wordLeft(text: string, i: number): number {
+  let j = i;
+  while (j > 0 && !isWordAt(text, stepLeft(text, j))) j = stepLeft(text, j);
+  while (j > 0 && isWordAt(text, stepLeft(text, j))) j = stepLeft(text, j);
+  return j;
+}
+
+/** The code-unit index one word RIGHT of `i`: skip non-word code points, then the word run (readline `Alt+F`). */
+function wordRight(text: string, i: number): number {
+  let j = i;
+  const n = text.length;
+  while (j < n && !isWordAt(text, j)) j = stepRight(text, j);
+  while (j < n && isWordAt(text, j)) j = stepRight(text, j);
+  return j;
+}
+
+/** The start of the line containing `i` (just after the previous `\n`, or 0) — multiline `Ctrl+A` / `Home`. */
+function lineStart(text: string, i: number): number {
+  const nl = text.lastIndexOf('\n', i - 1);
+  return nl === -1 ? 0 : nl + 1;
+}
+
+/** The end of the line containing `i` (just before the next `\n`, or `text.length`) — multiline `Ctrl+E` / `End`. */
+function lineEnd(text: string, i: number): number {
+  const nl = text.indexOf('\n', i);
+  return nl === -1 ? text.length : nl;
+}
+
+/** Move the cursor per a {@link CursorMotion} (text unchanged); a no-op returns the same reference. */
+export function moveCursor(editor: EditorState, motion: CursorMotion): EditorState {
+  const { text, cursor } = editor;
+  let next: number;
+  switch (motion) {
+    case 'left':
+      next = stepLeft(text, cursor);
+      break;
+    case 'right':
+      next = stepRight(text, cursor);
+      break;
+    case 'word-left':
+      next = wordLeft(text, cursor);
+      break;
+    case 'word-right':
+      next = wordRight(text, cursor);
+      break;
+    case 'line-start':
+      next = lineStart(text, cursor);
+      break;
+    case 'line-end':
+      next = lineEnd(text, cursor);
+      break;
+  }
+  return next === cursor ? editor : { text, cursor: next };
+}
+
+/** Delete a range per a {@link KillMotion}, leaving the cursor at the cut point; a no-op returns the same ref. */
+export function killRange(editor: EditorState, motion: KillMotion): EditorState {
+  const { text, cursor } = editor;
+  let from: number;
+  let to: number;
+  switch (motion) {
+    case 'word-back':
+      from = wordLeft(text, cursor);
+      to = cursor;
+      break;
+    case 'to-line-start':
+      from = lineStart(text, cursor);
+      to = cursor;
+      break;
+    case 'to-line-end':
+      from = cursor;
+      to = lineEnd(text, cursor);
+      break;
+  }
+  if (from === to) return editor;
+  return { text: text.slice(0, from) + text.slice(to), cursor: from };
+}
+
 /**
- * Apply a buffer-edit action to the editor (the functional-updater body). `submit`/`cancel`/`none`/the
- * motion+approval actions don't edit the buffer here. Kept as OPS (not precomputed values) so a coalesced
- * multi-event stdin chunk folds onto the accumulated state — a precomputed value would read a stale buffer
- * and drop all but the last edit (see the burst regression test).
+ * Apply a buffer-edit / motion action to the editor (the functional-updater body). `submit`/`cancel`/`none`/the
+ * approval actions don't change the editor here. Kept as OPS (not precomputed values) so a coalesced multi-event
+ * stdin chunk folds onto the accumulated state — a precomputed value would read a stale buffer and drop all but
+ * the last edit (see the burst regression test).
  */
 export function applyEditorAction(editor: EditorState, action: ChatKeyAction): EditorState {
   switch (action.kind) {
@@ -171,6 +338,12 @@ export function applyEditorAction(editor: EditorState, action: ChatKeyAction): E
       return insertAtCursor(editor, action.char);
     case 'backspace':
       return deleteBeforeCursor(editor);
+    case 'newline':
+      return insertAtCursor(editor, '\n');
+    case 'move':
+      return moveCursor(editor, action.motion);
+    case 'kill':
+      return killRange(editor, action.motion);
     default:
       return editor;
   }

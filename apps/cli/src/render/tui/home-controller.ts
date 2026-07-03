@@ -8,7 +8,6 @@ import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../ch
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import {
   applyEditorAction,
-  deleteBeforeCursor,
   emptyEditor,
   insertAtCursor,
   reduceChatKey,
@@ -347,6 +346,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       case 'append':
       case 'backspace':
+      case 'newline':
+      case 'move':
+      case 'kill':
         set({ input: applyEditorAction(state.input, action) });
         return;
       case 'submit':
@@ -400,17 +402,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'submit':
         submit();
         return;
-      case 'append':
-        // The first keystroke after reading a `/doctor` report clears it (moving on) — no lingering block; the
-        // bump also invalidates an in-flight run so a slow `--deep` report can't reappear over what's now typed.
-        doctorRunId += 1;
-        set({ input: insertAtCursor(state.input, action.char), notice: undefined });
-        return;
-      case 'backspace':
-        doctorRunId += 1;
-        set({ input: deleteBeforeCursor(state.input), notice: undefined });
-        return;
       case 'none':
+        return;
+      default:
+        // Every buffer edit / cursor motion (append / backspace / newline / move / kill) folds via the shared
+        // applyEditorAction — the Home prompt is a first-class line editor too (2.5.D step 2). A typed edit / a
+        // motion clears any stale `/doctor` report + invalidates an in-flight run (the first keystroke after
+        // reading a report means the user has moved on; the bump stops a slow `--deep` report reappearing).
+        doctorRunId += 1;
+        set({ input: applyEditorAction(state.input, action), notice: undefined });
         return;
     }
   };
