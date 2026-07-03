@@ -1064,6 +1064,20 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
     expect(calls).toEqual([{ command: 'ls', args: ['-la'] }]);
   });
 
+  it('rejects a process result missing a required field (durationMs) as an unexpected shape — the boundary guard', async () => {
+    // Simulate a future process-arm drift that omits `durationMs`; the FULL-shape boundary guard must fail loudly,
+    // not pass a partial result to the model. (A deliberate cast — the guard exists to catch exactly this untyped
+    // runtime shape that the type system cannot see across the dispatch boundary.)
+    const malformed = { exitCode: 0, stdout: 'x', stderr: '' } as unknown as ProcessResult;
+    const { registry } = commandRegistry(() => Promise.resolve(malformed));
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls'] } }, registry);
+    const outcome = await startedSession(deps).runUserCommand('ls', []);
+    expect(outcome).toEqual({
+      kind: 'failed',
+      message: 'run_command returned an unexpected result shape',
+    });
+  });
+
   it('a glob-allowlisted command RUNS (opt-in allowedCommandGlobs)', async () => {
     const { registry } = commandRegistry(() => Promise.resolve(RAN));
     const { deps } = harness([], { toolPolicy: { allowedCommandGlobs: ['git *'] } }, registry);

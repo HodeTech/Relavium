@@ -109,6 +109,14 @@ function resolveChat(
 ): ResolvedChatConfig {
   const p = project?.chat;
   const w = workspace?.chat;
+  // The command allowlist is a COUPLED security policy: `allowed_commands` (exact) + `allowed_command_globs`
+  // (patterns) together decide what `!`-shell may run. A project that sets EITHER owns the WHOLE policy and must
+  // NOT inherit the other field from the workspace — else a project narrowing `allowed_commands` would silently
+  // keep the workspace's broader globs (e.g. lock to `git status` yet still allow `git push` via an inherited
+  // `git *`), the exact "narrower project can't inherit a broader workspace entry" the override guarantees
+  // (ADR-0061). Only when the project sets NEITHER do both fall through to the workspace, per field.
+  const projectSetsAllowlist =
+    p?.allowed_commands !== undefined || p?.allowed_command_globs !== undefined;
   return {
     defaultModel: p?.default_model ?? w?.default_model,
     fsScope: p?.fs_scope ?? w?.fs_scope,
@@ -116,10 +124,8 @@ function resolveChat(
     maxMessages: p?.max_messages ?? w?.max_messages,
     maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
     onExceed: p?.on_exceed ?? w?.on_exceed,
-    // Per-field last-writer-wins (project over workspace), REPLACE not merge — a project that sets an allowlist
-    // fully overrides the workspace's, so a narrower project can't inherit a broader workspace entry (ADR-0061).
-    allowedCommands: p?.allowed_commands ?? w?.allowed_commands,
-    allowedCommandGlobs: p?.allowed_command_globs ?? w?.allowed_command_globs,
+    allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,
+    allowedCommandGlobs: projectSetsAllowlist ? p?.allowed_command_globs : w?.allowed_command_globs,
   };
 }
 

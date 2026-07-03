@@ -737,9 +737,16 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
       await writeFile(join(workspace, f), 'API_KEY=secret');
       await expect(sandboxed().readFile(f, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
     }
+    // The ENTIRE `.aws/` directory is floored (a directory-segment match), not just the `credentials` file — so a
+    // non-credentials file under it (e.g. `.aws/config`, which holds profile/region + can reference secrets) is
+    // also refused. `.docker/config.json` below is the specific-basename denial check.
     await mkdir(join(workspace, '.aws'), { recursive: true });
     await writeFile(join(workspace, '.aws', 'credentials'), '[default]\naws_secret_access_key=x');
+    await writeFile(join(workspace, '.aws', 'config'), '[default]\nregion=us-east-1');
     await expect(sandboxed().readFile('.aws/credentials', {})).rejects.toBeInstanceOf(
+      FsScopeDeniedError,
+    );
+    await expect(sandboxed().readFile('.aws/config', {})).rejects.toBeInstanceOf(
       FsScopeDeniedError,
     );
     await mkdir(join(workspace, '.docker'), { recursive: true });

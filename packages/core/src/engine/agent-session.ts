@@ -238,15 +238,20 @@ export type UserCommandOutcome =
   | { readonly kind: 'failed'; readonly message: string }
   | { readonly kind: 'cancelled' };
 
-/** Structural guard for the `run_command` dispatch result (a {@link ProcessResult}) — validates at the boundary
- *  rather than an unsafe cast, so a future tool-shape drift is caught, not silently mis-read. */
+/** Structural guard for the `run_command` dispatch result (a {@link ProcessResult}) — validates the FULL shape at
+ *  the boundary via `in`-narrowing (no cast), so a future tool-shape drift is caught, not silently mis-read. */
 function isProcessResult(value: unknown): value is ProcessResult {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
   return (
-    typeof v['exitCode'] === 'number' &&
-    typeof v['stdout'] === 'string' &&
-    typeof v['stderr'] === 'string'
+    typeof value === 'object' &&
+    value !== null &&
+    'exitCode' in value &&
+    typeof value.exitCode === 'number' &&
+    'stdout' in value &&
+    typeof value.stdout === 'string' &&
+    'stderr' in value &&
+    typeof value.stderr === 'string' &&
+    'durationMs' in value &&
+    typeof value.durationMs === 'number'
   );
 }
 

@@ -65,6 +65,36 @@ unwinds that tension explicitly rather than letting it drive an unsafe `apps/cli
 secure-by-default, and treat the one small engine addition `!`-shell requires as a bounded, pure, documented
 exception to 2.5.D's "no engine change" line, not a license to relax any guarantee.**
 
+Both `apps/cli` input preprocessors **re-enter** the audited boundary for their side, rather than growing a second
+file-read path / command sandbox — the "reuse, never fork" flow at a glance:
+
+```mermaid
+flowchart TD
+    U["apps/cli input line<br/>(TTY preprocessor)"]
+    U -->|"@path"| M["@-mention"]
+    U -->|"!command"| S["!-shell"]
+
+    subgraph FS["Audited fs read boundary — reused, not forked"]
+        M --> FSJ["FsCapability:<br/>realpath + workspace jail"]
+        FSJ --> FLOOR{"isSensitiveReadPath?<br/>.ssh / .env / .aws / .docker / …"}
+        FLOOR -->|match| DENYR["refuse — never read<br/>(holds even with user consent)"]
+        FLOOR -->|clear| READ["read → UNTRUSTED,<br/>user-position context"]
+    end
+
+    subgraph REG["Audited command boundary — ToolRegistry.dispatch — reused, not forked"]
+        S --> RUC["AgentSession.runUserCommand<br/>(additive; reuses #runTurn dispatch context)"]
+        RUC --> POL{"enforcePolicy(allowedCommands)<br/>BEFORE approval"}
+        POL -->|miss| DENYC["denied — actionable hint"]
+        POL -->|allow| CONF{"confirmAction<br/>(mode-aware)"}
+        CONF -->|reject| DENYC
+        CONF -->|approve| PROC["process arm:<br/>spawn, shell:false → UNTRUSTED output"]
+    end
+```
+
+The asymmetry the diagram makes visible: for `@`-mention the human typing `@path` replaces the `confirmAction`
+prompt but **never** the confidentiality floor (a manipulated human is the threat); for `!`-shell
+`enforcePolicy` runs **before** `confirmAction`, so the allowlist is the mode-independent floor even in `auto`.
+
 ### `@`-mention reads through the `read_file` jail + confidentiality floor (which this ADR expands)
 
 An `@`-mention read goes through the **same** host `fs` capability the `read_file` tool uses — the
@@ -312,3 +342,10 @@ bare-invocation Home, kept at parity):
   context explicit, gives a deterministic removal affordance (delete the `@marker`; **`Esc` at an idle prompt
   discards all pending chips**), and labels the in-flight `!`-command busy indicator with an honest **`Esc` to
   cancel** (Esc aborts the command, keeping the session; Ctrl-C's `/cancel` would end it).
+- **Allowlist resolution is COUPLED, not per-field.** A review found that resolving `allowed_commands` and
+  `allowed_command_globs` independently (each last-writer-wins) reopened the very inheritance the override
+  guarantees against: a project narrowing `allowed_commands` to `git status` while leaving globs unset would
+  **inherit the workspace's broader `allowed_command_globs` (e.g. `git *`)** and still run `git push`. The two
+  arrays are now a **coupled unit** — a project that sets **either** owns the whole allowlist and inherits
+  **neither** array from the workspace; both fall through only when the project sets neither. Canonical home:
+  [config-spec.md](../reference/contracts/config-spec.md) (`resolveChat`, `apps/cli/src/config/resolve.ts`).
