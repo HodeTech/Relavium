@@ -70,7 +70,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useInput((input, key) => controller.handleKey(input, key));
 
   if (state.mode === 'chat' && state.session !== undefined) {
-    return <ChatRegion store={state.session.store} input={state.input} palette={state.palette} />;
+    return (
+      <ChatRegion store={state.session.store} input={state.input.text} palette={state.palette} />
+    );
   }
   if (state.mode === 'loading') {
     return (
@@ -89,7 +91,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     <Box flexDirection="column">
       <HomeView
         snapshot={state.snapshot}
-        input={state.input}
+        input={state.input.text}
         errorText={state.errorText}
         notice={state.notice}
         nowMs={props.nowMs()}

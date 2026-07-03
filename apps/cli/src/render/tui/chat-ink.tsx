@@ -11,7 +11,7 @@ import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
-import { applyChatEdit, reduceChatKey } from './chat-input.js';
+import { applyEditorAction, emptyEditor, reduceChatKey, type EditorState } from './chat-input.js';
 import { PaletteView } from './palette-view.js';
 import {
   foldPaletteKey,
@@ -200,16 +200,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     props.store.subscribe,
     props.store.getSnapshot,
   );
-  const [input, setInput] = useState('');
-  // A ref SHADOW of the buffer: in a coalesced stdin chunk ink dispatches every event synchronously with no
-  // render flush, so the `input` closure stays stale across the burst. Reading `inputRef.current` gives the
+  const [editor, setEditor] = useState<EditorState>(emptyEditor());
+  // A ref SHADOW of the editor: in a coalesced stdin chunk ink dispatches every event synchronously with no
+  // render flush, so the `editor` closure stays stale across the burst. Reading `editorRef.current` gives the
   // latest COMMITTED value, so even a Return that arrives in the same chunk as a preceding char submits the full
-  // buffer (not the stale render capture). `applyInput` wraps `setInput` to keep the ref in lockstep with state.
-  const inputRef = useRef('');
-  const applyInput = (next: (current: string) => string): void => {
-    setInput((prev) => {
+  // buffer (not the stale render capture). `applyEditor` wraps `setEditor` to keep the ref in lockstep with state.
+  const editorRef = useRef<EditorState>(emptyEditor());
+  const applyEditor = (next: (current: EditorState) => EditorState): void => {
+    setEditor((prev) => {
       const value = next(prev);
-      inputRef.current = value;
+      editorRef.current = value;
       return value;
     });
   };
@@ -217,7 +217,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const running = state.status === 'running';
   // The interactive `/` palette (2.5.C S3b) — `undefined` ⇒ closed. React-local here (the external-store Home
   // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
-  // A ref SHADOW (like `inputRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
+  // A ref SHADOW (like `editorRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
   // in one chunk synchronously with no render flush, so reading the render-closure `palette` would be stale (a
   // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette`
   // keeps the ref in lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`.
@@ -247,7 +247,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
-    // settles sees the current status — matching the ref-shadow `inputRef`/`paletteRef` reads below.
+    // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     const isRunning = props.store.getSnapshot().state.status === 'running';
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
@@ -269,11 +269,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
     const approvalPending = props.store.getSnapshot().approval !== undefined;
     // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point (never mid-approval).
-    if (!approvalPending && shouldOpenPalette(char, key, isRunning, inputRef.current.length)) {
+    if (
+      !approvalPending &&
+      shouldOpenPalette(char, key, isRunning, editorRef.current.text.length)
+    ) {
       applyPalette(INITIAL_PALETTE_STATE);
       return;
     }
-    const action = reduceChatKey(char, key, inputRef.current, isRunning, approvalPending);
+    const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired.current) {
@@ -283,10 +286,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'append':
       case 'backspace':
-        applyInput((current) => applyChatEdit(current, action));
+        applyEditor((current) => applyEditorAction(current, action));
         return;
       case 'submit':
-        applyInput(() => '');
+        applyEditor(() => emptyEditor());
         submit(action.line);
         return;
       case 'cycle-mode':
@@ -321,7 +324,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         state={state}
         tick={tick}
         color={color}
-        input={input}
+        input={editor.text}
         running={running}
         mode={mode}
         approval={approval}

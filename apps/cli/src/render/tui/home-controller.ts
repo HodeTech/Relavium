@@ -6,7 +6,15 @@ import {
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
-import { applyChatEdit, dropLastCodePoint, reduceChatKey, type ChatKey } from './chat-input.js';
+import {
+  applyEditorAction,
+  deleteBeforeCursor,
+  emptyEditor,
+  insertAtCursor,
+  reduceChatKey,
+  type ChatKey,
+  type EditorState,
+} from './chat-input.js';
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 import {
@@ -55,7 +63,7 @@ export interface HomeControllerState {
   readonly snapshot: HomeSnapshot;
   readonly errorText: string | undefined;
   readonly pendingMessage: string;
-  readonly input: string;
+  readonly input: EditorState;
   readonly session: HomeChatSession | undefined;
   /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
    *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
@@ -102,7 +110,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     snapshot: deps.homeStore.read(),
     errorText: undefined,
     pendingMessage: '',
-    input: '',
+    input: emptyEditor(),
     session: undefined,
     palette: undefined,
     notice: undefined,
@@ -171,7 +179,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         if (exiting) return; // an error/exit closed the db while we awaited teardown — do not read it
         set({
           session: undefined,
-          input: '',
+          input: emptyEditor(),
           errorText: undefined, // a stale build-failure banner must not haunt a clean return from a good chat
           notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
           pendingMessage: '',
@@ -206,16 +214,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   const submit = (): void => {
-    const trimmed = state.input.trim();
+    const trimmed = state.input.text.trim();
     if (trimmed.length === 0) {
-      set({ input: '' }); // an empty prompt stays on the Home (no chat)
+      set({ input: emptyEditor() }); // an empty prompt stays on the Home (no chat)
       return;
     }
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
     doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
     set({
-      input: '',
+      input: emptyEditor(),
       errorText: undefined,
       notice: undefined,
       pendingMessage: trimmed,
@@ -325,11 +333,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
     const approvalPending = active.store.getSnapshot().approval !== undefined;
     // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
-    if (!approvalPending && shouldOpenPalette(input, key, running, state.input.length)) {
+    if (!approvalPending && shouldOpenPalette(input, key, running, state.input.text.length)) {
       set({ palette: INITIAL_PALETTE_STATE });
       return;
     }
-    const action = reduceChatKey(input, key, state.input, running, approvalPending);
+    const action = reduceChatKey(input, key, state.input.text, running, approvalPending);
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired) {
@@ -339,10 +347,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       case 'append':
       case 'backspace':
-        set({ input: applyChatEdit(state.input, action) });
+        set({ input: applyEditorAction(state.input, action) });
         return;
       case 'submit':
-        set({ input: '' });
+        set({ input: emptyEditor() });
         sendChatLine(active, action.line);
         return;
       case 'cycle-mode':
@@ -372,7 +380,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   const handleHomeKey = (input: string, key: HomeKey): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
-    if (key.ctrl === true && input === 'd' && state.input.length === 0) {
+    if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
       exitHome();
       return;
     }
@@ -384,7 +392,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl-C above still bails)
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
-    if (shouldOpenPalette(input, key, false, state.input.length)) {
+    if (shouldOpenPalette(input, key, false, state.input.text.length)) {
       set({ palette: INITIAL_PALETTE_STATE, notice: undefined }); // running another command clears a stale report
       return;
     }
@@ -396,11 +404,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // The first keystroke after reading a `/doctor` report clears it (moving on) — no lingering block; the
         // bump also invalidates an in-flight run so a slow `--deep` report can't reappear over what's now typed.
         doctorRunId += 1;
-        set({ input: state.input + action.char, notice: undefined });
+        set({ input: insertAtCursor(state.input, action.char), notice: undefined });
         return;
       case 'backspace':
         doctorRunId += 1;
-        set({ input: dropLastCodePoint(state.input), notice: undefined });
+        set({ input: deleteBeforeCursor(state.input), notice: undefined });
         return;
       case 'none':
         return;
@@ -439,7 +447,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           if (input.length > 0 && editable) {
             // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
             doctorRunId += 1;
-            set({ input: state.input + input, notice: undefined });
+            set({ input: insertAtCursor(state.input, input), notice: undefined });
           }
           return;
         }

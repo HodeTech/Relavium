@@ -112,9 +112,9 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       onError: vi.fn(),
     });
     type(c, 'hi');
-    expect(c.getSnapshot().input).toBe('hi');
+    expect(c.getSnapshot().input.text).toBe('hi');
     c.handleKey('', { backspace: true });
-    expect(c.getSnapshot().input).toBe('h');
+    expect(c.getSnapshot().input.text).toBe('h');
   });
 
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
@@ -132,7 +132,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     expect(c.getSnapshot().mode).toBe('loading');
     expect(c.getSnapshot().pendingMessage).toBe('hello'); // echoed under "Starting chat…"
-    expect(c.getSnapshot().input).toBe(''); // the buffer clears on submit
+    expect(c.getSnapshot().input.text).toBe(''); // the buffer clears on submit
 
     await flush();
     expect(startChat).toHaveBeenCalledTimes(1);
@@ -153,7 +153,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     expect(startChat).not.toHaveBeenCalled();
     expect(c.getSnapshot().mode).toBe('home');
-    expect(c.getSnapshot().input).toBe('');
+    expect(c.getSnapshot().input.text).toBe('');
   });
 
   it('a build failure routes back to Home with the banner (no session)', async () => {
@@ -433,7 +433,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     type(c, 'draft');
     c.handleKey('d', { ctrl: true }); // Ctrl-D with a non-empty buffer → ignored
     expect(onExit).not.toHaveBeenCalled();
-    expect(c.getSnapshot().input).toBe('draft'); // the buffer is preserved
+    expect(c.getSnapshot().input.text).toBe('draft'); // the buffer is preserved
 
     type(c, ''); // (no-op)
     c.handleKey('', { backspace: true });
@@ -441,7 +441,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', { backspace: true });
     c.handleKey('', { backspace: true });
     c.handleKey('', { backspace: true }); // empty the buffer
-    expect(c.getSnapshot().input).toBe('');
+    expect(c.getSnapshot().input.text).toBe('');
     c.handleKey('d', { ctrl: true }); // Ctrl-D on the empty buffer → clean exit (EOF)
     expect(onExit).toHaveBeenCalledTimes(1);
   });
@@ -459,7 +459,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey(PASTE_START, {});
       c.handleKey('line1\nline2\r\nline3', {}); // ink delivers the bracketed content as one event
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input).toBe('line1\nline2\r\nline3'); // literal, newlines preserved
+      expect(c.getSnapshot().input.text).toBe('line1\nline2\r\nline3'); // literal, newlines preserved
       expect(startChat).not.toHaveBeenCalled(); // nothing submitted by the embedded newlines
       expect(c.getSnapshot().mode).toBe('home');
     });
@@ -474,7 +474,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       });
       c.handleKey(PASTE_START, {});
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input).toBe('');
+      expect(c.getSnapshot().input.text).toBe('');
     });
 
     it('a literal Enter still submits once the paste has ended', async () => {
@@ -510,7 +510,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('\r', { return: true }); // even a lone CR chunk INSIDE the paste is literal, not a submit
       c.handleKey('second', {});
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input).toBe('first\n\rsecond');
+      expect(c.getSnapshot().input.text).toBe('first\n\rsecond');
       expect(startChat).not.toHaveBeenCalled();
     });
 
@@ -567,7 +567,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey(PASTE_START, {});
       c.handleKey('type-ahead block', {});
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input).toBe(''); // dropped mid-turn, like every other key
+      expect(c.getSnapshot().input.text).toBe(''); // dropped mid-turn, like every other key
     });
 
     it('drops paste content during the `loading` build window, matching the keystroke gate (no leak into the chat prompt)', async () => {
@@ -592,7 +592,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       resolveBuild(made.session);
       await flush();
       expect(c.getSnapshot().mode).toBe('chat');
-      expect(c.getSnapshot().input).toBe(''); // the paste did NOT leak into the freshly-mounted chat prompt
+      expect(c.getSnapshot().input.text).toBe(''); // the paste did NOT leak into the freshly-mounted chat prompt
     });
 
     it('drops EVERY chunk of a multi-chunk paste while a turn runs', async () => {
@@ -613,7 +613,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('chunk1\n', {});
       c.handleKey('chunk2', {});
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input).toBe(''); // all chunks dropped, not just the first
+      expect(c.getSnapshot().input.text).toBe(''); // all chunks dropped, not just the first
     });
   });
 
@@ -680,7 +680,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       type(c, 'ab');
       c.handleKey('/', {});
       expect(c.getSnapshot().palette).toBeUndefined();
-      expect(c.getSnapshot().input).toBe('ab/');
+      expect(c.getSnapshot().input.text).toBe('ab/');
     });
 
     it('does not open mid-turn — "/" while a turn streams is ignored, not a palette trigger', async () => {
@@ -750,7 +750,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       type(c, 'ab');
       c.handleKey('/', {});
       expect(c.getSnapshot().palette).toBeUndefined();
-      expect(c.getSnapshot().input).toBe('ab/');
+      expect(c.getSnapshot().input.text).toBe('ab/');
     });
 
     it('does not open while a build is loading (the loading guard fires before the trigger)', () => {
@@ -818,7 +818,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().notice).toBeDefined();
       type(c, 'x'); // typing moves on — the report clears
       expect(c.getSnapshot().notice).toBeUndefined();
-      expect(c.getSnapshot().input).toBe('x');
+      expect(c.getSnapshot().input.text).toBe('x');
     });
 
     it('a faulting fast-tier probe surfaces as a failed check (secret-free), never a crash', async () => {
@@ -858,7 +858,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       type(c, 'x'); // edit the prompt BEFORE the run settles — bumps the run token + clears the notice
       await flush(); // the run resolves; its report is dropped (token mismatch), not re-shown over what's typed
       expect(c.getSnapshot().notice).toBeUndefined();
-      expect(c.getSnapshot().input).toBe('x');
+      expect(c.getSnapshot().input.text).toBe('x');
     });
 
     it('a report does NOT land if the palette is re-opened during the run (the palette branch of the guard)', async () => {
@@ -895,7 +895,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('pasted', {});
       c.handleKey(PASTE_END, {});
       expect(c.getSnapshot().notice).toBeUndefined();
-      expect(c.getSnapshot().input).toBe('pasted');
+      expect(c.getSnapshot().input.text).toBe('pasted');
     });
   });
 

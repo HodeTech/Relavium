@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  applyChatEdit,
+  applyEditorAction,
+  deleteBeforeCursor,
   dropLastCodePoint,
+  editorFromText,
+  emptyEditor,
+  insertAtCursor,
   reduceChatKey,
   type ChatKey,
   type ChatKeyAction,
+  type EditorState,
 } from './chat-input.js';
 
 /** A bare key (no modifiers/specials set) — overlay only what a case exercises. */
@@ -98,33 +103,35 @@ describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow byp
   });
 });
 
-describe('applyChatEdit (the functional-updater body)', () => {
-  it('appends / backspaces, and leaves the buffer untouched for non-edit actions', () => {
-    expect(applyChatEdit('ab', { kind: 'append', char: 'c' })).toBe('abc');
-    expect(applyChatEdit('abc', { kind: 'backspace' })).toBe('ab');
-    expect(applyChatEdit('', { kind: 'backspace' })).toBe(''); // no-op on an empty buffer
-    expect(applyChatEdit('ab', { kind: 'cancel' })).toBe('ab');
-    expect(applyChatEdit('ab', { kind: 'none' })).toBe('ab');
-    expect(applyChatEdit('ab', { kind: 'submit', line: 'ab' })).toBe('ab'); // submit is a non-edit
+describe('applyEditorAction (the functional-updater body, cursor-general)', () => {
+  const at = (text: string, cursor = text.length): EditorState => ({ text, cursor });
+
+  it('appends / backspaces at the cursor, and leaves the editor untouched for non-edit actions', () => {
+    expect(applyEditorAction(at('ab'), { kind: 'append', char: 'c' })).toEqual(at('abc'));
+    expect(applyEditorAction(at('abc'), { kind: 'backspace' })).toEqual(at('ab'));
+    expect(applyEditorAction(at(''), { kind: 'backspace' })).toEqual(at('')); // no-op on an empty buffer
+    expect(applyEditorAction(at('ab'), { kind: 'cancel' })).toEqual(at('ab'));
+    expect(applyEditorAction(at('ab'), { kind: 'none' })).toEqual(at('ab'));
+    expect(applyEditorAction(at('ab'), { kind: 'submit', line: 'ab' })).toEqual(at('ab')); // submit is a non-edit
   });
 
-  it('REGRESSION: a coalesced multi-event chunk composes onto the LATEST buffer (no dropped char)', () => {
+  it('REGRESSION: a coalesced multi-event chunk folds onto the LATEST editor (no dropped char)', () => {
     // ink dispatches every event parsed from one stdin chunk synchronously with no render flush between them
     // (e.g. a printable interleaved with an escape sequence: ['a', ESC[C (ignored), 'b']). The reducer is fed the
-    // SAME stale `input` for each, so it MUST emit edit OPS that fold functionally — a precomputed value would
+    // SAME stale text for each, so it MUST emit edit OPS that fold functionally — a precomputed value would
     // overwrite to 'b' (dropping 'a'). Fold the ops the way the functional updater does (over the accumulator).
     const events: Array<[string, ChatKey]> = [
       ['a', KEY],
       ['', { return: false }], // a non-edit event in the same chunk (e.g. an arrow-key CSI ink ignores)
       ['b', KEY],
     ];
-    const STALE = ''; // every event in the chunk sees the same render-captured (stale) buffer
-    let buffer = STALE;
+    const STALE = ''; // every event in the chunk sees the same render-captured (stale) text
+    let editor = emptyEditor();
     for (const [char, key] of events) {
       const action: ChatKeyAction = reduceChatKey(char, key, STALE, false);
-      buffer = applyChatEdit(buffer, action); // functional fold over the ACCUMULATED buffer
+      editor = applyEditorAction(editor, action); // functional fold over the ACCUMULATED editor
     }
-    expect(buffer).toBe('ab'); // not 'b' — the 'a' is not dropped
+    expect(editor).toEqual(at('ab')); // not 'b' — the 'a' is not dropped, and the cursor tracks the end
 
     // Anti-proof: the OLD value-form (a precomputed `value: STALE + char` applied by REPLACING the buffer) drops
     // 'a' — proving the op-form + functional fold is what fixes it, not just that the test produces 'ab'.
@@ -136,14 +143,39 @@ describe('applyChatEdit (the functional-updater body)', () => {
   });
 
   it('NOTE: a same-chunk [type, Return] submits the stale render-captured buffer (the known [append, Return] limit)', () => {
-    // reduceChatKey bakes the submit line from the `input` argument (the render capture), NOT the accumulated
-    // buffer — so a Return arriving in the same chunk as a preceding char submits the PRE-edit buffer. The
-    // ChatApp ref-shadow (inputRef.current) mitigates this for the real component by passing the latest committed
-    // value; at the pure-reducer level the line is whatever `input` it was called with.
+    // reduceChatKey bakes the submit line from the `text` argument (the render capture), NOT the accumulated
+    // editor — so a Return arriving in the same chunk as a preceding char submits the PRE-edit buffer. The
+    // ChatApp/Home ref-shadow (editorRef.current.text / state.input.text) mitigates this for the real component
+    // by passing the latest committed value; at the pure-reducer level the line is whatever `text` it was given.
     expect(reduceChatKey('', { return: true }, 'partial', false)).toEqual({
       kind: 'submit',
       line: 'partial',
     });
+  });
+});
+
+describe('the cursor-bearing editor primitives (2.5.D step 1)', () => {
+  it('emptyEditor / editorFromText set the expected cursor', () => {
+    expect(emptyEditor()).toEqual({ text: '', cursor: 0 });
+    expect(editorFromText('hello')).toEqual({ text: 'hello', cursor: 5 }); // cursor at the END
+  });
+
+  it('insertAtCursor splices at the cursor and advances past the insert', () => {
+    expect(insertAtCursor({ text: 'ac', cursor: 1 }, 'b')).toEqual({ text: 'abc', cursor: 2 }); // mid-buffer
+    expect(insertAtCursor({ text: '', cursor: 0 }, 'hi')).toEqual({ text: 'hi', cursor: 2 }); // multi-char (paste)
+    expect(insertAtCursor({ text: 'xy', cursor: 2 }, '')).toEqual({ text: 'xy', cursor: 2 }); // empty ⇒ no-op
+    expect(insertAtCursor({ text: 'ab', cursor: 0 }, 'Z')).toEqual({ text: 'Zab', cursor: 1 }); // at the start
+  });
+
+  it('deleteBeforeCursor removes the code point before the cursor, moving it back', () => {
+    expect(deleteBeforeCursor({ text: 'abc', cursor: 2 })).toEqual({ text: 'ac', cursor: 1 }); // mid-buffer
+    expect(deleteBeforeCursor({ text: 'abc', cursor: 3 })).toEqual({ text: 'ab', cursor: 2 }); // at the end
+    expect(deleteBeforeCursor({ text: 'abc', cursor: 0 })).toEqual({ text: 'abc', cursor: 0 }); // no-op at start
+  });
+
+  it('deleteBeforeCursor removes a whole astral char before the cursor (cursor back by 2 units)', () => {
+    expect(deleteBeforeCursor({ text: 'a😀b', cursor: 3 })).toEqual({ text: 'ab', cursor: 1 }); // 😀 is 2 units
+    expect(deleteBeforeCursor(editorFromText('hi😀'))).toEqual({ text: 'hi', cursor: 2 });
   });
 });
 
@@ -171,7 +203,10 @@ describe('dropLastCodePoint (code-point-aware backspace)', () => {
     expect(dropLastCodePoint('hi😀')).toBe('hi');
   });
 
-  it('applyChatEdit backspace uses code-point removal', () => {
-    expect(applyChatEdit('go👍', { kind: 'backspace' })).toBe('go');
+  it('applyEditorAction backspace uses code-point removal (via deleteBeforeCursor)', () => {
+    expect(applyEditorAction(editorFromText('go👍'), { kind: 'backspace' })).toEqual({
+      text: 'go',
+      cursor: 2,
+    });
   });
 });
