@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 
 /** A fresh, unguessable per-injection fence nonce (128 bits, dash-free). */
 export function injectionNonce(): string {
-  return randomUUID().replace(/-/g, '');
+  return randomUUID().replaceAll('-', '');
 }
 
 /** The HARD byte cap (code-unit proxy) on injected content — a larger payload is head+tail truncated. 128 KiB keeps
@@ -24,17 +24,17 @@ export const INJECT_MAX_CHARS = 128 * 1024;
  *  (bytes under the byte cap) would still flood the editor; cap the row count independently. */
 export const INJECT_MAX_LINES = 400;
 
-/** Snap a head length DOWN so the slice never ends on a lone HIGH surrogate (its low half would be lost → U+FFFD). */
+/** Snap a head length DOWN so the slice never ends mid-surrogate-pair (its low half would be lost → U+FFFD).
+ *  `codePointAt(n-1) > 0xffff` ⇔ a real astral pair straddles `n` (high at `n-1`, low at `n`) — back off one unit. */
 function snapHead(s: string, n: number): number {
   if (n <= 0 || n >= s.length) return Math.max(0, Math.min(n, s.length));
-  const code = s.charCodeAt(n - 1);
-  return code >= 0xd800 && code <= 0xdbff ? n - 1 : n;
+  return (s.codePointAt(n - 1) ?? 0) > 0xffff ? n - 1 : n;
 }
-/** Snap a tail START index DOWN so the tail never begins on a lone LOW surrogate (its high half is elided). */
+/** Snap a tail START index DOWN so the tail never begins mid-surrogate-pair. `codePointAt(i-1) > 0xffff` ⇔ a pair
+ *  straddles `i` (high at `i-1`, low at `i`) — include the whole pair (start one unit earlier). */
 function snapTail(s: string, i: number): number {
   if (i <= 0 || i >= s.length) return Math.max(0, Math.min(i, s.length));
-  const code = s.charCodeAt(i);
-  return code >= 0xdc00 && code <= 0xdfff ? i - 1 : i;
+  return (s.codePointAt(i - 1) ?? 0) > 0xffff ? i - 1 : i;
 }
 
 /** Bound injected content by BOTH byte size and line count, each with a head + tail + explicit truncation marker

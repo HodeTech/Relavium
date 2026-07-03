@@ -1114,7 +1114,7 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
 
   it('leaves the session idle + reusable after a command (a sendMessage still works)', async () => {
     const { registry } = commandRegistry(() => Promise.resolve(RAN));
-    const { deps } = harness(
+    const { deps, events } = harness(
       [textTurn('after')],
       { toolPolicy: { allowedCommands: ['ls'] } },
       registry,
@@ -1122,5 +1122,10 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
     const s = startedSession(deps);
     await s.runUserCommand('ls', []);
     await s.sendMessage('and now a message'); // no SessionStateError — the command left the session idle
+    // The message drove ONE real turn to a clean completion — a loud postcondition that the command left the
+    // session idle + reusable (`runUserCommand` itself emits no turn events, so this turn is the message's).
+    const completes = events.filter((e) => e.type === 'session:turn_completed');
+    expect(completes).toHaveLength(1);
+    expect(completes[0]?.type === 'session:turn_completed' && completes[0].stopReason).toBe('stop');
   });
 });

@@ -29,36 +29,54 @@ export function isShellLine(line: string): boolean {
  * unterminated quote tolerantly runs to end of line. Returns `undefined` when there is no command token (a bare
  * `!` / `!   ` — the caller treats that as a no-op, not a shell run).
  */
-export function tokenizeCommand(rest: string): ShellCommand | undefined {
-  const tokens: string[] = [];
-  let cur = '';
-  let started = false; // whether `cur` is an open token (so a quoted empty string `""` still yields a token)
-  let quote: "'" | '"' | undefined;
-  for (const ch of rest) {
-    if (quote !== undefined) {
-      if (ch === quote) quote = undefined;
-      else cur += ch;
-      started = true;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      started = true;
-      continue;
-    }
-    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
-      if (started) {
-        tokens.push(cur);
-        cur = '';
-        started = false;
-      }
-      continue;
-    }
-    cur += ch;
-    started = true;
+/** The mutable tokenizer state — `cur` is the open token (`started` distinguishes an empty quoted token `""` from
+ *  no token); `quote` is the active quote char (in a quoted span) or `undefined`. */
+interface TokenizeState {
+  readonly tokens: string[];
+  cur: string;
+  started: boolean;
+  quote: "'" | '"' | undefined;
+}
+
+const isTokenBreak = (ch: string): boolean =>
+  ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+
+/** Flush the open token (if any) to `tokens` and reset. */
+function flushToken(st: TokenizeState): void {
+  if (st.started) {
+    st.tokens.push(st.cur);
+    st.cur = '';
+    st.started = false;
   }
-  if (started) tokens.push(cur);
-  const [command, ...args] = tokens;
+}
+
+/** Fold one character into the tokenizer: inside a quote it accumulates (or closes on the matching quote); outside,
+ *  a quote opens a span, whitespace breaks a token, and anything else accumulates. */
+function stepTokenize(st: TokenizeState, ch: string): void {
+  if (st.quote !== undefined) {
+    if (ch === st.quote) st.quote = undefined;
+    else st.cur += ch;
+    st.started = true;
+    return;
+  }
+  if (ch === "'" || ch === '"') {
+    st.quote = ch;
+    st.started = true;
+    return;
+  }
+  if (isTokenBreak(ch)) {
+    flushToken(st);
+    return;
+  }
+  st.cur += ch;
+  st.started = true;
+}
+
+export function tokenizeCommand(rest: string): ShellCommand | undefined {
+  const st: TokenizeState = { tokens: [], cur: '', started: false, quote: undefined };
+  for (const ch of rest) stepTokenize(st, ch);
+  flushToken(st);
+  const [command, ...args] = st.tokens;
   if (command === undefined || command.length === 0) return undefined;
   return { command, args };
 }

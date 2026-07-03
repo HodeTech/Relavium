@@ -1,6 +1,14 @@
 import type { FsCapability } from '@relavium/core';
 
-import { frameUntrusted, injectionNonce, INJECT_MAX_CHARS, INJECT_MAX_LINES } from './injection.js';
+import { frameUntrusted } from './injection.js';
+
+// The `@`-injection content bounds + fence nonce — the shared injection primitives ({@link injection.ts}),
+// re-exported directly under the historical `@`-scoped names the tests + callers reference.
+export {
+  INJECT_MAX_CHARS as MENTION_MAX_INJECT_CHARS,
+  INJECT_MAX_LINES as MENTION_MAX_INJECT_LINES,
+  injectionNonce as mentionNonce,
+} from './injection.js';
 
 /**
  * The `@`-mention file-context injection (2.5.D step 4, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
@@ -95,13 +103,62 @@ export function parentDir(dir: string): string {
   return slash <= 0 ? '' : dir.slice(0, slash);
 }
 
+/** `↑`/`↓` move the selection (clamped to the visible list); `undefined` when the key is not an arrow. */
+function foldMentionArrow(
+  key: MentionKey,
+  state: MentionState,
+  visibleCount: number,
+): MentionStep | undefined {
+  if (key.upArrow === true) {
+    return {
+      kind: 'state',
+      state: { ...state, selected: clampSelection(state.selected - 1, visibleCount) },
+    };
+  }
+  if (key.downArrow === true) {
+    return {
+      kind: 'state',
+      state: { ...state, selected: clampSelection(state.selected + 1, visibleCount) },
+    };
+  }
+  return undefined;
+}
+
+/** `Enter` / plain `Tab` / `/` accept the selected candidate (a dir descends, a file injects; an empty list cancels
+ *  + restores). Shift+Tab is NOT an accept (it stays for the mode-cycle chord). `undefined` when not an accept key. */
+function foldMentionAccept(
+  char: string,
+  key: MentionKey,
+  state: MentionState,
+  visible: readonly MentionCandidate[],
+): MentionStep | undefined {
+  const acceptKey = (key.tab === true && key.shift !== true) || key.return === true || char === '/';
+  if (!acceptKey) return undefined;
+  const chosen = visible[state.selected];
+  if (chosen === undefined) return { kind: 'close', restore: `@${state.filter}` };
+  return chosen.type === 'directory'
+    ? { kind: 'descend', dir: chosen.path }
+    : { kind: 'accept', path: chosen.path };
+}
+
+/** Backspace/Delete trims the filter, then — below the root — ASCENDS one directory (never a dead-end descent);
+ *  at the root it deletes the `@` (restore nothing). `undefined` when not a backspace/delete key. */
+function foldMentionBackspace(key: MentionKey, state: MentionState): MentionStep | undefined {
+  if (key.backspace !== true && key.delete !== true) return undefined;
+  if (state.filter.length > 0) {
+    return { kind: 'state', state: { ...state, filter: state.filter.slice(0, -1), selected: 0 } };
+  }
+  if (state.dir.length > 0) return { kind: 'descend', dir: parentDir(state.dir) };
+  return { kind: 'close', restore: '' };
+}
+
 /**
  * Fold one keystroke into the open `@`-completion submode (the keyboard-owning contract, mirroring the `/`
  * palette): `Esc`/`Ctrl-C` cancels; `↑`/`↓` move the selection; `Enter`/`Tab` (and `/`) accept the selected
  * candidate (a directory descends, a file injects); backspace trims the filter, then — below the root — ASCENDS
  * one directory (at the root, backspace on an empty filter cancels, dropping the `@`); a single printable code
  * point extends the filter (a multi-char paste blob is dropped, matching the other submodes); every other key is
- * ignored (stays open).
+ * ignored (stays open). Delegates to `foldMentionArrow` / `foldMentionAccept` / `foldMentionBackspace`.
  */
 export function foldMentionKey(char: string, key: MentionKey, state: MentionState): MentionStep {
   // Esc / Ctrl-C cancels but RESTORES the literal keystrokes (`@` + filter) — canceling never silently eats text.
@@ -109,42 +166,17 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
     return { kind: 'close', restore: `@${state.filter}` };
   }
   const visible = visibleMentions(state);
-  if (key.upArrow === true) {
-    return {
-      kind: 'state',
-      state: { ...state, selected: clampSelection(state.selected - 1, visible.length) },
-    };
-  }
-  if (key.downArrow === true) {
-    return {
-      kind: 'state',
-      state: { ...state, selected: clampSelection(state.selected + 1, visible.length) },
-    };
-  }
-  // Shift+Tab is the mode-cycle chord (reduceChatKey), NOT an accept — the overlay must not swallow it as a Tab
-  // accept. It is ignored here (stays open); the user Escs first to cycle the mode. Plain Tab / Enter / `/` accept.
-  const acceptKey = (key.tab === true && key.shift !== true) || key.return === true || char === '/';
-  if (acceptKey) {
-    const chosen = visible[state.selected];
-    // Nothing to accept (an empty/over-filtered list) — treat like Esc: cancel + restore the typed keystrokes.
-    if (chosen === undefined) return { kind: 'close', restore: `@${state.filter}` };
-    return chosen.type === 'directory'
-      ? { kind: 'descend', dir: chosen.path }
-      : { kind: 'accept', path: chosen.path };
-  }
-  if (key.backspace === true || key.delete === true) {
-    if (state.filter.length > 0) {
-      return { kind: 'state', state: { ...state, filter: state.filter.slice(0, -1), selected: 0 } };
-    }
-    // Backspace PAST the filter, below the root, ASCENDS one directory (competitor muscle memory — never a
-    // dead-end descent); AT the root it deletes the `@` itself (restore nothing — the user is deleting through it).
-    if (state.dir.length > 0) return { kind: 'descend', dir: parentDir(state.dir) };
-    return { kind: 'close', restore: '' };
-  }
-  if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
-    return { kind: 'state', state: { ...state, filter: state.filter + char, selected: 0 } };
-  }
-  return { kind: 'state', state };
+  // A single printable code point extends the filter (a multi-char paste blob is dropped); any other key stays open.
+  const printable =
+    [...char].length === 1 && key.ctrl !== true && key.meta !== true
+      ? { kind: 'state' as const, state: { ...state, filter: state.filter + char, selected: 0 } }
+      : { kind: 'state' as const, state };
+  return (
+    foldMentionArrow(key, state, visible.length) ??
+    foldMentionAccept(char, key, state, visible) ??
+    foldMentionBackspace(key, state) ??
+    printable
+  );
 }
 
 /* -------------------------------------------------------------------------------------------------- *
@@ -231,14 +263,6 @@ export function estimateTokens(bytes: number): number {
 
 /** The token count above which a mentioned file gets a size warning (a soft, informational threshold). */
 export const MENTION_TOKEN_WARN = 8000;
-
-/** The `@`-injection content bounds — the shared injection caps ({@link injection.ts}). Re-exported under the
- *  historical names the tests + callers reference. */
-export const MENTION_MAX_INJECT_CHARS = INJECT_MAX_CHARS;
-export const MENTION_MAX_INJECT_LINES = INJECT_MAX_LINES;
-
-/** A fresh per-injection fence nonce ({@link injectionNonce}) — re-exported under the `@`-scoped name. */
-export const mentionNonce = injectionNonce;
 
 /**
  * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context — the shared

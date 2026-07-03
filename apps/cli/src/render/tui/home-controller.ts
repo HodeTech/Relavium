@@ -15,6 +15,7 @@ import {
   insertAtCursor,
   reduceChatKey,
   type ChatKey,
+  type ChatKeyAction,
   type EditorState,
 } from './chat-input.js';
 import {
@@ -413,14 +414,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // (mirrors acceptMention's session-identity guard).
     const applyIfCurrent = (candidates: readonly MentionCandidate[]): void => {
       const open = state.mention;
-      if (
-        state.session === active &&
-        state.mode === 'chat' &&
-        open !== undefined &&
-        open.dir === dir
-      ) {
-        set({ mention: { ...open, candidates, loading: false } });
-      }
+      if (open === undefined || open.dir !== dir) return; // a since-closed / since-descended submode — drop it
+      if (state.session !== active || state.mode !== 'chat') return; // a different session / mode — drop it
+      set({ mention: { ...open, candidates, loading: false } });
     };
     void reader.list(dir).then(
       (candidates) => applyIfCurrent(candidates),
@@ -523,73 +519,69 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
-  const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
-    if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
-    // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
-    // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
-    const running = active.store.getSnapshot().state.status === 'running' || state.shellBusy;
-    // The open `@`-mention completion owns every key (2.5.D step 4) — parity with ChatApp. Mutually exclusive with
-    // the palette/search; yields to a pending approval (only opens below when idle). The reader is per-session.
-    const openMentionState = state.mention;
-    if (openMentionState !== undefined) {
-      const step = foldMentionKey(input, key, openMentionState);
-      if (step.kind === 'close') {
-        // Restore the literal keystrokes (`@` + filter on cancel; `''` on backspace-past) so nothing typed is lost.
-        if (step.restore.length > 0) {
-          history = resetHistoryNav(history); // a restore is a real edit ⇒ end history navigation
-          set({ mention: undefined, input: insertAtCursor(state.input, step.restore) });
-        } else {
-          set({ mention: undefined });
-        }
-        return;
-      }
-      if (step.kind === 'descend') {
-        set({ mention: { dir: step.dir, filter: '', candidates: [], selected: 0, loading: true } });
-        loadMentions(active, step.dir);
-        return;
-      }
-      if (step.kind === 'accept') {
+  // The open `@`-mention completion owns every key (2.5.D step 4) — parity with ChatApp. Returns whether the key
+  // was consumed (the overlay was open); mutually exclusive with the palette/search.
+  const routeMentionKey = (active: HomeChatSession, input: string, key: ChatKey): boolean => {
+    const open = state.mention;
+    if (open === undefined) return false;
+    const step = foldMentionKey(input, key, open);
+    if (step.kind === 'close') {
+      // Restore the literal keystrokes (`@` + filter on cancel; `''` on backspace-past) so nothing typed is lost.
+      if (step.restore.length > 0) {
+        history = resetHistoryNav(history); // a restore is a real edit ⇒ end history navigation
+        set({ mention: undefined, input: insertAtCursor(state.input, step.restore) });
+      } else {
         set({ mention: undefined });
-        acceptMention(active, step.path);
-        return;
       }
+    } else if (step.kind === 'descend') {
+      set({ mention: { dir: step.dir, filter: '', candidates: [], selected: 0, loading: true } });
+      loadMentions(active, step.dir);
+    } else if (step.kind === 'accept') {
+      set({ mention: undefined });
+      acceptMention(active, step.path);
+    } else {
       set({ mention: step.state });
-      return;
     }
-    // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
-    // older). Mutually exclusive with the palette; yields to a pending approval (only opens below when idle).
-    const openSearch = state.search;
-    if (openSearch !== undefined) {
-      const step = foldReverseSearchKey(input, key, openSearch, history.entries);
-      if (step.kind === 'close') {
-        set({ search: undefined });
-        return;
-      }
-      if (step.kind === 'accept') {
-        history = resetHistoryNav(history); // the accepted entry is the live buffer, not a nav result (Down mustn't clobber it)
-        set({ search: undefined, input: editorFromText(step.text) }); // load the matched entry
-        return;
-      }
+    return true;
+  };
+
+  // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
+  // older). Returns whether the key was consumed. Mutually exclusive with the palette.
+  const routeSearchKey = (input: string, key: ChatKey): boolean => {
+    const open = state.search;
+    if (open === undefined) return false;
+    const step = foldReverseSearchKey(input, key, open, history.entries);
+    if (step.kind === 'close') {
+      set({ search: undefined });
+    } else if (step.kind === 'accept') {
+      history = resetHistoryNav(history); // the accepted entry is the live buffer, not a nav result (Down mustn't clobber it)
+      set({ search: undefined, input: editorFromText(step.text) }); // load the matched entry
+    } else {
       set({ search: step.state });
-      return;
     }
-    // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
-    const approvalPending = active.store.getSnapshot().approval !== undefined;
-    // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
-    if (!approvalPending && shouldOpenPalette(input, key, running, state.input.text.length)) {
+    return true;
+  };
+
+  // Open a keyboard-owning overlay from an idle prompt (not mid-approval): the `/` palette, `Ctrl+R` reverse-search,
+  // or the `@`-completion (at a word boundary, reader wired). Returns whether one opened.
+  const tryOpenOverlay = (
+    active: HomeChatSession,
+    input: string,
+    key: ChatKey,
+    running: boolean,
+    approvalPending: boolean,
+  ): boolean => {
+    if (approvalPending) return false; // a pending approval OWNS the keyboard — never opens an overlay
+    if (shouldOpenPalette(input, key, running, state.input.text.length)) {
       set({ palette: INITIAL_PALETTE_STATE });
-      return;
+      return true;
     }
-    // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — parity with `relavium chat`.
-    if (!approvalPending && !running && key.ctrl === true && input === 'r') {
+    if (!running && key.ctrl === true && input === 'r') {
       set({ search: INITIAL_REVERSE_SEARCH });
-      return;
+      return true;
     }
-    // `@` at a word boundary opens dir-navigable file completion (2.5.D step 4) — idle, not mid-approval, and only
-    // when a reader was wired. The `@` is NOT inserted (it lives in the overlay); a cancel restores it. A mid-word
-    // `@` (an email/handle) or an absent reader falls through to `reduceChatKey` as a literal — parity with ChatApp.
+    // A mid-word `@` (an email/handle) or an absent reader falls through as a literal (parity with ChatApp).
     if (
-      !approvalPending &&
       !running &&
       input === '@' &&
       key.ctrl !== true &&
@@ -598,9 +590,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mentionOpensAt(state.input.text, state.input.cursor)
     ) {
       openMention(active);
-      return;
+      return true;
     }
-    const action = reduceChatKey(input, key, state.input.text, running, approvalPending);
+    return false;
+  };
+
+  // Apply one reduced chat-key action: edits/motions fold the buffer, submit runs a `!`-command or sends a message,
+  // and the surface actions (cancel / cycle-mode / abort / approve / reject) drive the session.
+  const applyChatAction = (active: HomeChatSession, action: ChatKeyAction): void => {
     switch (action.kind) {
       case 'cancel':
         if (!cancelFired) {
@@ -610,6 +607,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       case 'append':
       case 'backspace':
+      case 'delete':
       case 'newline':
       case 'kill': {
         const next = applyEditorAction(state.input, action);
@@ -644,10 +642,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           active.runShellCommand !== undefined && isShellLine(trimmed)
             ? tokenizeCommand(trimmed.slice(1))
             : undefined;
-        if (parsed !== undefined) {
-          runShell(active, parsed);
+        if (parsed === undefined) {
+          sendChatLine(active, action.line); // a bare `!` / no runner → a normal message
         } else {
-          sendChatLine(active, action.line);
+          runShell(active, parsed); // a `!command` → the shell escape
         }
         return;
       }
@@ -674,6 +672,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'none':
         return;
     }
+  };
+
+  const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
+    if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
+    // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
+    // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
+    const running = active.store.getSnapshot().state.status === 'running' || state.shellBusy;
+    if (routeMentionKey(active, input, key)) return;
+    if (routeSearchKey(input, key)) return;
+    const approvalPending = active.store.getSnapshot().approval !== undefined;
+    if (tryOpenOverlay(active, input, key, running, approvalPending)) return;
+    applyChatAction(active, reduceChatKey(input, key, state.input.text, running, approvalPending));
   };
 
   const handleHomeKey = (input: string, key: HomeKey): void => {

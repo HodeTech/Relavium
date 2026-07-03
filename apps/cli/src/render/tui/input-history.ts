@@ -20,7 +20,7 @@ export const EMPTY_HISTORY: InputHistory = { entries: [], navIndex: null, draft:
 /** Record a submitted line (skips an empty line and a consecutive duplicate); resets any active navigation. */
 export function recordHistory(history: InputHistory, line: string): InputHistory {
   if (line.length === 0) return resetHistoryNav(history);
-  const last = history.entries[history.entries.length - 1];
+  const last = history.entries.at(-1);
   const entries = last === line ? history.entries : [...history.entries, line];
   return { entries, navIndex: null, draft: '' };
 }
@@ -82,8 +82,7 @@ export const INITIAL_REVERSE_SEARCH: ReverseSearchState = { query: '', matchInde
 function findMatch(entries: readonly string[], query: string, fromIndex: number): number | null {
   const needle = query.toLowerCase();
   for (let i = Math.min(fromIndex, entries.length - 1); i >= 0; i--) {
-    const entry = entries[i];
-    if (entry !== undefined && entry.toLowerCase().includes(needle)) return i;
+    if (entries[i]?.toLowerCase().includes(needle) === true) return i;
   }
   return null;
 }

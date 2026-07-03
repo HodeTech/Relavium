@@ -30,11 +30,12 @@ const { keychainSentinel, resolverKeychainArg } = vi.hoisted(() => {
 vi.mock('../secrets/os-keychain.js', () => ({ createOsKeychainStore: () => keychainSentinel }));
 vi.mock('../engine/providers.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../engine/providers.js')>();
+  type Params = Parameters<typeof actual.createProviderResolver>;
   return {
     ...actual,
-    createProviderResolver: (env: Record<string, string | undefined>, keychain?: unknown) => {
+    createProviderResolver: (env: Params[0], keychain?: Params[1]) => {
       resolverKeychainArg.value = keychain;
-      return actual.createProviderResolver(env, keychain as never);
+      return actual.createProviderResolver(env, keychain); // type-safe forward (no cast)
     },
   };
 });

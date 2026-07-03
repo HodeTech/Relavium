@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
 import { visibleMentions, type MentionState } from './mention.js';
@@ -42,35 +42,44 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   const where = state.dir.length === 0 ? './' : `${sanitizeInline(state.dir)}/`;
   const { start, end } = mentionWindow(visible.length, selected);
   const windowed = visible.slice(start, end);
+  // The body: a "loading…" hint, a "no matching file" hint, or the windowed candidate rows — as early-return
+  // branches (not a nested ternary) so the JSX stays scannable.
+  const renderBody = (): ReactNode => {
+    if (state.loading) {
+      return (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          loading…
+        </Text>
+      );
+    }
+    if (visible.length === 0) {
+      return (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          no matching file
+        </Text>
+      );
+    }
+    return windowed.map((candidate, index) => {
+      const isSelected = start + index === selected;
+      const marker = candidate.type === 'directory' ? '/' : '';
+      return (
+        <Text
+          key={candidate.path}
+          {...(isSelected ? colorProps(color, 'cyan') : {})}
+          wrap="truncate-end"
+        >
+          {`${isSelected ? '›' : ' '} ${sanitizeInline(candidate.name)}${marker}`}
+        </Text>
+      );
+    });
+  };
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         {`@ ${where}`}
         <Text bold>{sanitizeInline(state.filter)}</Text>
       </Text>
-      {state.loading ? (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          loading…
-        </Text>
-      ) : visible.length === 0 ? (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          no matching file
-        </Text>
-      ) : (
-        windowed.map((candidate, index) => {
-          const isSelected = start + index === selected;
-          const marker = candidate.type === 'directory' ? '/' : '';
-          return (
-            <Text
-              key={candidate.path}
-              {...(isSelected ? colorProps(color, 'cyan') : {})}
-              wrap="truncate-end"
-            >
-              {`${isSelected ? '›' : ' '} ${sanitizeInline(candidate.name)}${marker}`}
-            </Text>
-          );
-        })
-      )}
+      {renderBody()}
       <Text {...dimProps(color)} wrap="truncate-end">
         ↑/↓ select · Enter open/insert · Esc cancel
       </Text>

@@ -20,9 +20,9 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
     expect(reduceHomeKey('', KEY({ return: true }))).toEqual({ kind: 'submit' });
   });
 
-  it('Backspace and Delete both erase one char', () => {
+  it('Backspace erases before the cursor; Delete erases after (delete-after-cursor, distinct)', () => {
     expect(reduceHomeKey('', KEY({ backspace: true }))).toEqual({ kind: 'backspace' });
-    expect(reduceHomeKey('', KEY({ delete: true }))).toEqual({ kind: 'backspace' });
+    expect(reduceHomeKey('', KEY({ delete: true }))).toEqual({ kind: 'delete' }); // standard Delete key
   });
 
   it('a printable char appends', () => {

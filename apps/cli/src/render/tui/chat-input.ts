@@ -51,7 +51,10 @@ export type KillMotion = 'word-back' | 'to-line-start' | 'to-line-end';
  */
 export type EditorEditAction =
   | { readonly kind: 'append'; readonly char: string }
+  /** Backspace — delete the code point BEFORE the cursor. */
   | { readonly kind: 'backspace' }
+  /** `Delete` — delete the code point AFTER (under) the cursor (standard editor behavior, distinct from backspace). */
+  | { readonly kind: 'delete' }
   /** `Ctrl+J` (canonical) / `Shift+Enter` (best-effort) — insert a newline at the cursor, NOT submit. */
   | { readonly kind: 'newline' }
   /** A cursor motion (no text change) — arrows / word / line-start / line-end. */
@@ -93,21 +96,9 @@ function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   return { kind: 'none' };
 }
 
-/**
- * Map one keystroke to a SHARED editor edit/motion action, or `undefined` when it is not an editor key (so the
- * surface reducer handles its own keys — plain `Return`, `Ctrl-C`, `Shift+Tab`, …). This is the ONE home for the
- * buffer-edit + cursor-motion keystroke contract; both {@link reduceChatKey} and `reduceHomeKey` delegate here so
- * the two surfaces can never drift. `Shift+Enter` (best-effort, Kitty only) and `Ctrl+J` (a bare LF, `char === '\n'`,
- * which ink names `'enter'` while `Return`/CR is `'return'`) insert a newline; the arrows / `Ctrl+A`/`Ctrl+E` /
- * `Home`/`End` / `Alt+B`/`Alt+F` move the cursor (a modified arrow is a word motion); `Ctrl+W`/`Ctrl+U`/`Ctrl+K`
- * kill a range; backspace/delete deletes; a printable char (not a ctrl/meta chord, not the LF) appends. Plain
- * `Return` (CR arrives as `char === '\r'`) returns `undefined` so the surface submits instead of appending it.
- */
-export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction | undefined {
-  if (key.return === true && key.shift === true) return { kind: 'newline' }; // Shift+Enter (best-effort)
-  if (key.return === true) return undefined; // plain Return is surface-specific (submit) — not an editor edit
-  if (char === '\n' || (key.ctrl === true && char === 'j')) return { kind: 'newline' }; // Ctrl+J (canonical)
-  // Cursor motions. A modified arrow (Ctrl/Alt+arrow) is a word motion; a bare arrow is one code point.
+/** A cursor motion (arrows / `Ctrl+A`/`Ctrl+E` / `Home`/`End` / `Alt+B`/`Alt+F`), or `undefined` when not a motion.
+ *  A modified arrow (Ctrl/Alt+arrow) is a WORD motion; a bare arrow steps one code point. */
+function reduceCursorMotion(char: string, key: ChatKey): EditorEditAction | undefined {
   const wordMod = key.ctrl === true || key.meta === true;
   if (key.leftArrow === true) return { kind: 'move', motion: wordMod ? 'word-left' : 'left' };
   if (key.rightArrow === true) return { kind: 'move', motion: wordMod ? 'word-right' : 'right' };
@@ -121,10 +112,35 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
     return { kind: 'move', motion: 'line-end' };
   if (key.meta === true && char === 'b') return { kind: 'move', motion: 'word-left' }; // readline Alt+B
   if (key.meta === true && char === 'f') return { kind: 'move', motion: 'word-right' }; // readline Alt+F
+  return undefined;
+}
+
+/** A kill (delete a range) — `Ctrl+W` word-back / `Ctrl+U` to-line-start / `Ctrl+K` to-line-end — or `undefined`. */
+function reduceKill(char: string, key: ChatKey): EditorEditAction | undefined {
   if (key.ctrl === true && char === 'w') return { kind: 'kill', motion: 'word-back' };
   if (key.ctrl === true && char === 'u') return { kind: 'kill', motion: 'to-line-start' };
   if (key.ctrl === true && char === 'k') return { kind: 'kill', motion: 'to-line-end' };
-  if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
+  return undefined;
+}
+
+/**
+ * Map one keystroke to a SHARED editor edit/motion action, or `undefined` when it is not an editor key (so the
+ * surface reducer handles its own keys — plain `Return`, `Ctrl-C`, `Shift+Tab`, …). This is the ONE home for the
+ * buffer-edit + cursor-motion keystroke contract; both {@link reduceChatKey} and `reduceHomeKey` delegate here so
+ * the two surfaces can never drift. `Shift+Enter` / `Ctrl+J` insert a newline (delegating cursor motions to
+ * {@link reduceCursorMotion} and kills to {@link reduceKill}); Backspace deletes BEFORE the cursor and Delete
+ * AFTER; a printable char appends. Plain `Return` returns `undefined` so the surface submits instead of appending.
+ */
+export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction | undefined {
+  // Newline vs submit: Shift+Enter / Ctrl+J / a bare LF insert a newline; plain Return is surface-specific (submit).
+  if (key.return === true) return key.shift === true ? { kind: 'newline' } : undefined;
+  if (char === '\n' || (key.ctrl === true && char === 'j')) return { kind: 'newline' }; // Ctrl+J (canonical)
+  const motion = reduceCursorMotion(char, key);
+  if (motion !== undefined) return motion;
+  const kill = reduceKill(char, key);
+  if (kill !== undefined) return kill;
+  if (key.backspace === true) return { kind: 'backspace' }; // delete BEFORE the cursor
+  if (key.delete === true) return { kind: 'delete' }; // delete AFTER (under) the cursor — standard Delete key
   if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true) {
     // Normalize any carriage return WITHIN the inserted text (a multi-char paste can carry CRLF / a bare CR):
     // CRLF/CR → LF, so a pasted line break becomes a real newline in the buffer + sent to the model, never a
@@ -240,6 +256,18 @@ export function deleteBeforeCursor(editor: EditorState): EditorState {
   return { text: trimmed + text.slice(cursor), cursor: cursor - (before.length - trimmed.length) };
 }
 
+/**
+ * Delete the one Unicode code point immediately AFTER (under) the cursor — the standard `Delete` key; a no-op at
+ * the end of the buffer. The cursor does NOT move. An astral char at the cursor (a surrogate pair) is removed whole
+ * (2 units); a BMP char or a lone surrogate drops one unit.
+ */
+export function deleteAfterCursor(editor: EditorState): EditorState {
+  const { text, cursor } = editor;
+  if (cursor >= text.length) return editor;
+  const width = (text.codePointAt(cursor) ?? 0) > 0xffff ? 2 : 1;
+  return { text: text.slice(0, cursor) + text.slice(cursor + width), cursor };
+}
+
 /* --- Cursor motions (2.5.D step 2). All step by whole CODE POINTS and clamp to `0..text.length`, so the cursor
  * the insert/delete primitives TRUST can never land mid-surrogate-pair or out of range (closing the step-1
  * codepoint-review MEDIUM). --- */
@@ -299,13 +327,9 @@ function lineEnd(text: string, i: number): number {
 }
 
 /** Back off `i` to a code-point boundary if it splits a surrogate pair (a column-preserving vertical move can land
- *  mid-pair on a line with an astral char). */
+ *  mid-pair on a line with an astral char). `codePointAt(i-1) > 0xffff` ⇔ a real astral pair straddles `i`. */
 function snapCodePoint(text: string, i: number): number {
-  if (i > 0 && i < text.length) {
-    const prev = text.charCodeAt(i - 1);
-    const cur = text.charCodeAt(i);
-    if (prev >= 0xd800 && prev <= 0xdbff && cur >= 0xdc00 && cur <= 0xdfff) return i - 1;
-  }
+  if (i > 0 && i < text.length && (text.codePointAt(i - 1) ?? 0) > 0xffff) return i - 1;
   return i;
 }
 
@@ -400,6 +424,8 @@ export function applyEditorAction(editor: EditorState, action: ChatKeyAction): E
       return insertAtCursor(editor, action.char);
     case 'backspace':
       return deleteBeforeCursor(editor);
+    case 'delete':
+      return deleteAfterCursor(editor);
     case 'newline':
       return insertAtCursor(editor, '\n');
     case 'move':

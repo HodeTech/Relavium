@@ -635,9 +635,10 @@ export class AgentSession {
     this.#status = 'running';
     const abort = this.#deps.newAbortController();
     this.#abort = abort; // so cancel()/abort() can interrupt a long-running command
+    this.#userCommandSeq += 1; // a fresh synthetic tool-call id per `!`-command
     const toolCall: ToolCallPart = {
       type: 'tool_call',
-      id: `usercmd-${(this.#userCommandSeq += 1)}`,
+      id: `usercmd-${this.#userCommandSeq}`,
       name: 'run_command',
       args: { command, args: [...args] },
     };
