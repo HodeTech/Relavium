@@ -17,6 +17,7 @@ import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
+import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { createMentionReader } from '../render/tui/mention.js';
 import {
@@ -89,8 +90,17 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const providers = deps.providers ?? createProviderResolver(deps.io.env);
-  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+  // One OS-keychain accessor shared by the provider key resolver (2.C) + the MCP named-secret resolver (2.R) — the
+  // Home's composition-root wiring, mirroring `dispatch.ts`'s `keyResolvers` for the named commands. WITHOUT the
+  // keychain the Home defaulted to an ENV-ONLY resolver, so a key stored in the OS keychain (the normal
+  // `relavium provider add` path) was invisible → a `provider_auth` error on the first Home-chat turn, even though
+  // `relavium chat` (which IS keychain-wired via dispatch) worked. `createOsKeychainStore()` reads nothing until a
+  // key is actually resolved (the default agent has no MCP servers, so the MCP resolver stays inert), so building
+  // it here is side-effect-free; a test injects `providers` and never reaches the keychain.
+  const keychain = createOsKeychainStore();
+  const providers = deps.providers ?? createProviderResolver(deps.io.env, keychain);
+  const mcpSecretResolver =
+    deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
   const doctorProbes =
     deps.doctorProbes ??
     assembleDoctorProbes({

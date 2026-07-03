@@ -15,6 +15,30 @@ import type { RootAppProps } from '../render/tui/home-app.js';
 import { ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
+// Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
+// keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
+// Mock the keychain accessor (the test env never touches the real store) + spy the resolver's keychain arg. Both
+// mocks delegate to real behavior, so the other tests (which inject `providers`) are unaffected — the default
+// resolver path (and thus these spies) only runs when `providers` is NOT injected.
+const { keychainSentinel, resolverKeychainArg } = vi.hoisted(() => {
+  const resolverKeychainArg: { value: unknown } = { value: 'unset' };
+  return {
+    keychainSentinel: { get: () => null, set: () => undefined, delete: () => false },
+    resolverKeychainArg,
+  };
+});
+vi.mock('../secrets/os-keychain.js', () => ({ createOsKeychainStore: () => keychainSentinel }));
+vi.mock('../engine/providers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../engine/providers.js')>();
+  return {
+    ...actual,
+    createProviderResolver: (env: Record<string, string | undefined>, keychain?: unknown) => {
+      resolverKeychainArg.value = keychain;
+      return actual.createProviderResolver(env, keychain as never);
+    },
+  };
+});
+
 /**
  * `driveHome` owns the PROCESS lifetime: it opens the durable db once, wires the controller + the single-ink
  * mount, the SIGINT/SIGTERM lifecycle, and the bracketed-paste DECSET toggles. These drive it through an injected
@@ -250,5 +274,21 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(exitSpy).toHaveBeenCalledWith(130);
     expect(exitSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // the force-exit + the race-settled exit
     expect(closeSpy).toHaveBeenCalledTimes(1); // closeDb is idempotent across both signals
+  });
+
+  it('builds a KEYCHAIN-backed key resolver when `providers` is not injected (regression: provider_auth)', async () => {
+    resolverKeychainArg.value = 'unset';
+    // OMIT the injected `providers` (rest-destructure) → the composition-root default path runs, which MUST pass the
+    // OS keychain to the resolver (else a keychain-stored key is invisible and the first Home-chat turn fails
+    // `provider_auth`).
+    const { deps: injected } = makeDeps(() => undefined, {
+      subscribeSignals: () => () => undefined,
+      exit: () => undefined,
+    });
+    const deps: HomeDeps = { ...injected };
+    delete (deps as { providers?: unknown }).providers; // exercise the default (keychain) resolver path
+    void driveHome(deps); // the provider wiring runs synchronously before the ink mount
+    await flush();
+    expect(resolverKeychainArg.value).toBe(keychainSentinel); // the resolver received the keychain, not env-only
   });
 });
