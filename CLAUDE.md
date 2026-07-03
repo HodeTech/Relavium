@@ -95,7 +95,13 @@ first turn) is ✅ **Done (PR #63, 2026-07-03)**, behind [ADR-0057](docs/decisio
 EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
 (`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
 side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` chat hint. **With 2.5.E the CLI
-Consolidation spine (2.5.A/B/C/E) is complete; the next pickup is the 2.5 experience arm (2.5.D / F / G).**
+Consolidation spine (2.5.A/B/C/E) is complete.** The first experience-arm workstream **2.5.D** (chat input
+ergonomics + the `@`-mention / `!`-shell **pending-attachment "chip" model**) is ✅ **Done (PR #64, 2026-07-03)**,
+behind [ADR-0061](docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) (**Accepted** after a
+two-round maintainer security review): the accepted file / command output is queued as a compact chip and expanded
+into the shared UNTRUSTED nonce-fenced frame only at submit (byte-identical model context, a clean prompt); the
+`[chat]` command allowlist resolves as a **coupled unit** (a project setting either the exact or glob array owns
+the whole allowlist). **The next pickup is the rest of the 2.5 experience arm (2.5.F / G).**
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 

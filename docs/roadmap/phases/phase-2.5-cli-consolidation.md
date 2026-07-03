@@ -5,8 +5,9 @@
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
 > + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
 > → **2.5.E** (modes + per-tool approval + mid-turn abort) ✅ **Done (PR #63, 2026-07-03)** (ADR-0057 Accepted)
-> — **the spine is complete**. **Next: the experience arm 2.5.D / F / G** (off the spine, depends on B/C).
-> Additive lanes (no dependency chain): 2.5.H / I / J.
+> — **the spine is complete**. Experience arm: **2.5.D** (chat input ergonomics + `@`/`!` chip model) ✅ **Done
+> (PR #64, 2026-07-03)** behind [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md).
+> **Next: 2.5.F / G** (off the spine, depends on B/C). Additive lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -244,27 +245,35 @@ discoverable (no separate `/shortcuts`); the palette filters; an unknown slash /
 `/doctor --deep` never connects/spawns an unreferenced MCP server. **Required ADR: in-app slash command
 system + command manifest (ADR-0056).**
 
-### 2.5.D — Chat input ergonomics — **Implemented (PR #64, pending merge, 2026-07-03)**
+### 2.5.D — Chat input ergonomics — ✅ **Done (PR #64, 2026-07-03)**
 
-> **Status:** Implemented across both interactive surfaces (`relavium chat` + the 2.5.B Home); **PR #64** open for
-> review, **pending merge** (the ✅ flips on merge). The two data-moving affordances (`@`/`!`) are behind
+> **Status:** ✅ **Done (PR #64, merged 2026-07-03)** across both interactive surfaces (`relavium chat` + the 2.5.B
+> Home). The two data-moving affordances (`@`/`!`) are behind
 > [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) (**Accepted** after a
 > two-round maintainer security review + the mandatory adversarial security pass folded into the step-4/5 opus +
-> sonnet review loops). Shipped:
+> sonnet review loops). A post-implementation comprehensive review then **refined the `@`/`!` presentation to a
+> pending-attachment (chip) model** — the accepted file / command output is queued as a compact chip (an inline
+> `@path` marker for a file; a read-only preview for a command) and expanded into the SAME UNTRUSTED nonce-fenced
+> frame only at submit, so the model receives byte-identical context while the prompt stays clean (ADR-0061
+> "Refined at implementation" append). Two further review passes hardened the `[chat]` allowlist resolution (the
+> exact + glob arrays are now a **coupled unit** — a project setting either owns the whole allowlist) and fixed a
+> Backspace regression (ink reports the Unix physical Backspace as `key.delete`). Shipped:
 >
 > - **Ergonomics (no security surface):** `Ctrl+J` newline + multi-line render, `↑/↓` history + `Ctrl+R`
 >   reverse-search, readline cursor/word/line motions — a shared `reduceEditorMotion` + a cursor-bearing
 >   `EditorState` across both surfaces (one raw-mode owner preserved).
 > - **`@`-mention:** dir-navigable file completion (a `..` ascend row + backspace-to-parent) that reads through
 >   the **same** `FsCapability` `read_file` uses (jail + the sensitive-read confidentiality floor, expanded to
->   `.env*`/`.aws`/`.docker`/`.envrc`/`.dockercfg` + `.env/` as a dir; the listing-gate; binary/size guards), and
->   injects as **UNTRUSTED, nonce-fenced, byte+line-bounded** context. The `.gitignore`/`.relaviumignore` advisory
->   trim ships as a fixed `NOISE_DIRS` set (the matcher is a deferred follow-up).
+>   `.env*`/`.aws`/`.docker`/`.envrc`/`.dockercfg` + `.env/` as a dir; the listing-gate; binary/size guards). The
+>   accepted file becomes a compact `@path`-marker **chip**; at submit it expands into **UNTRUSTED, nonce-fenced,
+>   byte+line-bounded** context (only while its marker survives). The `.gitignore`/`.relaviumignore` advisory trim
+>   ships as a fixed `NOISE_DIRS` set (the matcher is a deferred follow-up).
 > - **`!`-shell:** the additive **`AgentSession.runUserCommand`** (the documented engine exception below) routes a
 >   `!command` through the **one** `run_command` boundary — `enforcePolicy([chat].allowed_commands)` **before** the
 >   mode-aware `confirmAction` → `spawn`/`shell:false`. **Empty-default allowlist ⇒ `!` inert** (secure-by-default;
 >   the reversal of an earlier curated-default, per the maintainer security review); a non-allowlisted `!cmd` gets
->   an actionable, secret-free hint. Output is injected as UNTRUSTED, doubly-bounded context. `@`/`!` are TTY-only.
+>   an actionable, secret-free hint. Output is shown read-only and rides the next message as a **chip** carrying
+>   UNTRUSTED, doubly-bounded context. `@`/`!` are TTY-only.
 >
 > **Documented engine exception:** the "no engine/seam change" acceptance line below is amended by ADR-0061 —
 > `AgentSession.runUserCommand` is one additive, pure method reusing `#runTurn`'s dispatch-context construction
